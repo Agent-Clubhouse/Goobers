@@ -323,6 +323,14 @@ func TestGeneratedPortalWireFixturesAreCurrent(t *testing.T) {
 	assertGeneratedFileCurrent(t, "wire.generated.ts", want)
 }
 
+func TestGeneratedCompatibilityManifestIsCurrent(t *testing.T) {
+	want, err := CompatibilityManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertGeneratedFileCurrent(t, "contract.generated.json", want)
+}
+
 func assertGeneratedFileCurrent(t *testing.T, name string, want []byte) {
 	t.Helper()
 	path := filepath.Join("..", "..", "portal", "src", "api", name)

@@ -39,6 +39,7 @@ execFileSync(process.execPath, [join(portal, "node_modules/typescript/bin/tsc"),
 await cp(join(repository, "LICENSE"), join(pkg, "LICENSE"));
 await cp(join(portal, "PACKAGE.md"), join(pkg, "README.md"));
 await cp(join(portal, "public"), join(pkg, "assets"), { recursive: true });
+await cp(join(portal, "src/api/contract.generated.json"), join(pkg, "api-contract.json"));
 await writeFile(join(pkg, "package.json"), JSON.stringify({
   name: "@goobers/portal",
   version,
@@ -46,10 +47,11 @@ await writeFile(join(pkg, "package.json"), JSON.stringify({
   type: "module",
   license: "MIT",
   description: "Reusable Goobers portal workbench with an injected daemon client",
-  files: ["dist", "types", "assets", "portal-artifact.json", "README.md", "LICENSE"],
+  files: ["dist", "types", "assets", "api-contract.json", "portal-artifact.json", "README.md", "LICENSE"],
   exports: {
     ".": { types: "./types/package.d.ts", import: "./dist/portal.js" },
     "./styles.css": "./dist/portal.css",
+    "./api-contract.json": "./api-contract.json",
     "./portal-artifact.json": "./portal-artifact.json",
     "./assets/*": "./assets/*",
   },
@@ -59,9 +61,10 @@ await writeFile(join(pkg, "package.json"), JSON.stringify({
 }, null, 2) + "\n");
 const hash = async (file) => createHash("sha256").update(await readFile(file)).digest("hex");
 await writeFile(join(pkg, "portal-artifact.json"), JSON.stringify({
-  artifactVersion: 1, packageVersion: version, commit, dirty,
+  artifactVersion: 2, packageVersion: version, commit, dirty,
   apiContractVersion: "v1",
   contractSha256: await hash(join(portal, "src/api/contract.generated.ts")),
+  compatibilityManifestSha256: await hash(join(portal, "src/api/contract.generated.json")),
   lockfileSha256: await hash(join(portal, "package-lock.json")),
   hostContract: {
     oneWorkbenchPerDocument: true,

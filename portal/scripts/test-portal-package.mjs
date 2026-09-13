@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -58,10 +59,22 @@ execFileSync(process.execPath, [join(portal, "node_modules/typescript/bin/tsc"),
 execFileSync(process.execPath, [join(consumer, "smoke.mjs")], { cwd: consumer, stdio: "inherit" });
 const installed = join(consumer, "node_modules/@goobers/portal");
 const packaged = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
+const apiContractBytes = await readFile(join(installed, "api-contract.json"));
+const apiContract = JSON.parse(apiContractBytes);
 assert.ok(packaged.peerDependencies.react);
 assert.equal(packaged.dependencies.react, undefined);
 assert.equal(packaged.private, true);
 assert.ok((await readFile(join(installed, "dist/portal.css"))).length > 0);
 assert.ok((await readdir(join(installed, "assets"))).includes("goober-mascot.png"));
+assert.equal(apiContract.schemaVersion, 1);
+assert.equal(apiContract.apiVersion, manifest.apiContractVersion);
+assert.ok(apiContract.routes.some(route =>
+  route.id === "health" &&
+  route.method === "GET" &&
+  route.actionClass === "read-only-navigation"));
+assert.equal(
+  createHash("sha256").update(apiContractBytes).digest("hex"),
+  manifest.compatibilityManifestSha256,
+);
 assert.equal(manifest.hostContract.pollingFallback, false);
-console.log("Tarball exports, declarations, peer dependencies, assets and provenance verified.");
+console.log("Tarball exports, declarations, API contract, peer dependencies, assets and provenance verified.");
