@@ -337,6 +337,9 @@ func DefaultChecks() map[string]CheckFunc {
 			if got == executor.CIStatusTimeout {
 				return OutcomeTimeout, nil
 			}
+			if got == executor.CIStatusMerged {
+				return OutcomePass, nil
+			}
 			return boolOutcome(got == want), nil
 		},
 		// "land-outcome": reports merge-pr's Outputs["landOutcome"] (issue
