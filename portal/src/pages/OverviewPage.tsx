@@ -168,7 +168,6 @@ function Overview({
   return (
     <>
       <header className="page-heading">
-        <p className="page-kicker">Instance overview</p>
         {overview.instance.rootIdentity?.decommissionedAt && (
           <p role="alert">Historical root; do not use. Decommissioned {overview.instance.rootIdentity.decommissionedAt}: {overview.instance.rootIdentity.decommissionReason}</p>
         )}
