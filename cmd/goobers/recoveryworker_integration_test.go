@@ -77,6 +77,11 @@ func TestIntegrationWorkerRecoveryPreservesSourceWithoutRunCustody(t *testing.T)
 	}
 	destination := t.TempDir()
 	recoveryCLIGit(t, destination, "init", "--initial-branch=main")
+	// An independent host that already tracks the base branch, the same
+	// property a real managed mirror has, is what makes a delta bundle
+	// restorable here. destination has main checked out (even unborn), so
+	// fetch into a distinct ref rather than refs/heads/main.
+	recoveryCLIGit(t, destination, "fetch", source, "main:refs/heads/mirrored-base")
 	entry := entries[0]
 	if err := recovery.ImportSnapshotBundle(ctx, destination, filepath.Join(filepath.Dir(entry.RecordPath), recovery.BundleFileName), entry.Record, 512<<20); err != nil {
 		t.Fatal(err)

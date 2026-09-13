@@ -66,6 +66,13 @@ func recordFromEvent(event journal.Event) (Record, error) {
 		}
 		fields["baseRef"] = baseRef
 	}
+	if value, exists := event.Runner["recoveryArchiveFormat"]; exists {
+		archiveFormat, ok := value.(string)
+		if !ok || len(archiveFormat) > 4096 {
+			return Record{}, fmt.Errorf("invalid recovery observation field recoveryArchiveFormat")
+		}
+		fields["archiveFormat"] = archiveFormat
+	}
 	for field, source := range map[string]string{
 		"repositoryKey": "recoveryRepositoryKey", "ref": "recoveryRef",
 		"baseSha": "recoveryBaseSHA", "snapshotSha": "recoverySnapshotSHA",
