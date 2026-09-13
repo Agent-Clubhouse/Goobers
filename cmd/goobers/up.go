@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -505,33 +504,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		livenessTimeout:         livenessTimeout,
 		now:                     time.Now,
 	}
-	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
-	startingHandler := httpapi.WrapWithProbes(
-		http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-			http.Error(response, "daemon is starting", http.StatusServiceUnavailable)
-		}),
-		probes.liveness,
-		probes.readiness,
-	)
-	apiHandler, err := httpapi.NewSwitchHandler(
-		startingHandler,
-		startupConfig.API.Auth != nil || !instance.IsLoopbackListenAddress(apiListenAddress(startupConfig)),
-	)
+	apiHandler, apiServer, apiLog, err := startStartupAPI(startupConfig, probes, tracker, apiAddressPath, stdout, stderr)
 	if err != nil {
-		pf(stderr, "error: initialize startup HTTP API: %v\n", err)
-		return 1
-	}
-	var apiServerOpts []httpapi.ServerOption
-	if tlsConfig := startupConfig.API.TLS; tlsConfig != nil {
-		apiServerOpts = append(apiServerOpts, httpapi.WithTLS(tlsConfig.CertFile, tlsConfig.KeyFile))
-	}
-	apiServer, err := httpapi.NewServer(apiListenAddress(startupConfig), apiHandler, apiLog, apiServerOpts...)
-	if err != nil {
-		pf(stderr, "error: initialize HTTP API: %v\n", err)
-		return 1
-	}
-	if err := runStartupPhase(stdout, tracker, "api-bind", apiListenAddress(startupConfig), apiServer.Start); err != nil {
-		pf(stderr, "error: start HTTP API: %v\n", err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	apiListening.Store(true)
@@ -554,10 +529,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			}
 		}
 	}()
-	if err := publishDaemonAPIAddress(apiAddressPath, apiServer.Address()); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
 	apiAddressPublished := true
 	defer func() {
 		if apiAddressPublished {
