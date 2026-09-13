@@ -906,18 +906,58 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	if err := retryOnFileLock(ctx, func() error {
 		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", wt.Path)
 	}); err != nil {
+		return wt.finishFailedGitRemoval(ctx, repoDir, markerPath, mk, markerErr, worktreeMeasured, &measurementErr, err)
+	}
+	return wt.removeRegistrationRecords(markerPath)
+}
+
+func (wt *Worktree) finishFailedGitRemoval(
+	ctx context.Context,
+	repoDir, markerPath string,
+	mk marker,
+	markerErr error,
+	worktreeMeasured bool,
+	measurementErr *error,
+	removeErr error,
+) error {
+	if err := wt.manager.removeUnregisteredWorktreeDirectory(ctx, repoDir, wt.Path, removeErr); err != nil {
 		if worktreeMeasured && markerErr == nil {
 			if usageErr := writeMarker(markerPath, mk); usageErr != nil {
-				measurementErr = errors.Join(measurementErr, fmt.Errorf("worktree: persist usage for run %s: %w", wt.RunID, usageErr))
+				*measurementErr = errors.Join(*measurementErr, fmt.Errorf("worktree: persist usage for run %s: %w", wt.RunID, usageErr))
 			}
 		}
 		return fmt.Errorf("worktree: remove for run %s: %w", wt.RunID, err)
 	}
+	return wt.removeRegistrationRecords(markerPath)
+}
+
+func (wt *Worktree) removeRegistrationRecords(markerPath string) error {
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: unregister run %s: %w", wt.RunID, err)
 	}
 	if err := os.Remove(wt.manager.ownershipPath(wt.key, filepath.Base(wt.Path))); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: remove ownership record for run %s: %w", wt.RunID, err)
+	}
+	return nil
+}
+
+func (m *Manager) removeUnregisteredWorktreeDirectory(ctx context.Context, repoDir, path string, removeErr error) error {
+	var timeoutErr *GitCleanupTimeoutError
+	if errors.As(removeErr, &timeoutErr) {
+		return removeErr
+	}
+	registered, err := worktreeRegistered(ctx, repoDir, path)
+	if err != nil {
+		return errors.Join(removeErr, fmt.Errorf("inspect worktree registration: %w", err))
+	}
+	if registered {
+		return removeErr
+	}
+	if err := retryOnFileLock(ctx, func() error { return os.RemoveAll(path) }); err != nil {
+		return errors.Join(removeErr, fmt.Errorf("remove unregistered worktree directory: %w", err))
+	}
+	if err := runCleanupGit(ctx, repoDir, "worktree prune", "worktree", "prune"); err != nil {
+		return errors.Join(removeErr, fmt.Errorf("prune unregistered worktree metadata: %w", err))
 	}
 	return nil
 }

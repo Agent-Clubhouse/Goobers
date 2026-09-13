@@ -1258,6 +1258,38 @@ func TestManager_Remove_TearsDown(t *testing.T) {
 	}
 }
 
+func TestManager_Remove_CleansUnregisteredLeftoverDirectory(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-unregistered", OwnerRunID: "owner", BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	repoDir := m.repoDirForKey(wt.key)
+	runTestGit(t, repoDir, "worktree", "remove", "--force", wt.Path)
+	if err := os.MkdirAll(wt.Path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, "leftover.txt"), "already handed off\n")
+
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove unregistered leftover: %v", err)
+	}
+	if _, err := os.Lstat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("leftover directory still exists: %v", err)
+	}
+	if _, err := os.Lstat(m.markerPath(wt.key, wt.RunID)); !os.IsNotExist(err) {
+		t.Fatalf("run marker still exists: %v", err)
+	}
+	if _, err := os.Lstat(m.ownershipPath(wt.key, filepath.Base(wt.Path))); !os.IsNotExist(err) {
+		t.Fatalf("ownership record still exists: %v", err)
+	}
+}
+
 func TestWorktree_RemoveRestoresGuardedBranchWithCorruptMetadata(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
@@ -1286,6 +1318,9 @@ func TestWorktree_RemoveRestoresGuardedBranchWithCorruptMetadata(t *testing.T) {
 		t.Fatalf("run branch = %s, want restored ref %s", branchRef, wt.startRef)
 	}
 	if removeErr != nil {
+		if _, err := os.Stat(wt.Path); err != nil {
+			t.Fatalf("registered worktree path lost after failed removal: %v (remove error: %v)", err, removeErr)
+		}
 		if _, err := os.Stat(m.markerPath(wt.key, wt.RunID)); err != nil {
 			t.Fatalf("guard marker lost after failed removal: %v (remove error: %v)", err, removeErr)
 		}
