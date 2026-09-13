@@ -172,6 +172,16 @@ func (m *Manager) retryCleanupPendingOne(ctx context.Context, candidate cleanupR
 	if err != nil {
 		return nil, fmt.Errorf("worktree: read pending ownership record: %w", err)
 	}
+	if ownership.Status == statusCleanupRetained && sameWorkspaceIdentity(primary, ownership) &&
+		ownership.CleanupDisposition != "" {
+		primary.Status = statusCleanupRetained
+		primary.RetainedAt = ownership.RetainedAt
+		primary.CleanupDisposition = ownership.CleanupDisposition
+		if err := writeMarker(candidate.markerPath, primary); err != nil {
+			return nil, fmt.Errorf("worktree: repair cleanup retention marker: %w", err)
+		}
+		return nil, fmt.Errorf("%w: %s", ErrCleanupRetained, ownership.CleanupDisposition)
+	}
 	if ownership.Status != statusCleanupPending || !sameWorkspaceIdentity(primary, ownership) {
 		return nil, fmt.Errorf("worktree: pending ownership records disagree")
 	}
@@ -193,7 +203,7 @@ func (m *Manager) retryCleanupPendingOne(ctx context.Context, candidate cleanupR
 // optional because their Manager/OS sources are explicitly best-effort.
 func validCleanupRetryIdentity(m marker, key string) bool {
 	if !validRunID(m.RunID) || !validRunID(m.OwnerRunID) || m.Directory == "" ||
-		m.Directory != worktreeDirectoryName(m.RunID) || m.BaseRef == "" ||
+		m.Directory != worktreeDirectoryName(m.RunID) ||
 		m.CreatedAt.IsZero() || m.PID <= 0 || len(m.RepositoryDigest) != 64 ||
 		len(key) != 16 || m.RepositoryDigest[:16] != key {
 		return false

@@ -12,12 +12,13 @@ import (
 // lookups into the instance journal. The first lookup establishes a sequence
 // watermark; subsequent lookups parse only records appended after it (#4863).
 type instanceAnnotationFold struct {
-	mu            sync.Mutex
-	seq           uint64
-	journalState  journal.InstanceLogState
-	initialized   bool
-	itemRepos     map[string]recordedItemRepo
-	keptWorktrees map[string]bool
+	mu             sync.Mutex
+	seq            uint64
+	journalState   journal.InstanceLogState
+	initialized    bool
+	itemRepos      map[string]recordedItemRepo
+	keptWorktrees  map[string]bool
+	worktreeStates map[string]string
 }
 
 var instanceAnnotationFolds sync.Map // scheduler directory -> *instanceAnnotationFold
@@ -69,6 +70,7 @@ func (f *instanceAnnotationFold) reset(state journal.InstanceLogState) {
 	f.initialized = true
 	f.itemRepos = nil
 	f.keptWorktrees = nil
+	f.worktreeStates = nil
 }
 
 func (f *instanceAnnotationFold) apply(events []journal.Event) {
@@ -99,9 +101,16 @@ func (f *instanceAnnotationFold) apply(events []journal.Event) {
 				kind: kind,
 			}
 		}
-		if event.RunID != "" && event.Runner["worktreeID"] != nil && event.Runner["worktreeStatus"] == "kept" {
+		if event.RunID != "" && event.Runner["worktreeID"] != nil {
 			worktreeID, _ := event.Runner["worktreeID"].(string)
-			if worktreeID != "" {
+			worktreeStatus, _ := event.Runner["worktreeStatus"].(string)
+			if worktreeID != "" && worktreeStatus != "" {
+				if f.worktreeStates == nil {
+					f.worktreeStates = make(map[string]string)
+				}
+				f.worktreeStates[event.RunID+"\x00"+worktreeID] = worktreeStatus
+			}
+			if worktreeID != "" && worktreeStatus == "kept" {
 				if f.keptWorktrees == nil {
 					f.keptWorktrees = make(map[string]bool)
 				}
@@ -109,6 +118,15 @@ func (f *instanceAnnotationFold) apply(events []journal.Event) {
 			}
 		}
 	}
+}
+
+func (f *instanceAnnotationFold) worktreeState(schedulerDir, runID, worktreeID string) (string, error) {
+	if err := f.refresh(schedulerDir); err != nil {
+		return "", fmt.Errorf("read instance log for worktree disposition: %w", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.worktreeStates[runID+"\x00"+worktreeID], nil
 }
 
 func (f *instanceAnnotationFold) itemRepositories(schedulerDir, runID string, itemIDs []string) (map[string]recordedItemRepo, error) {

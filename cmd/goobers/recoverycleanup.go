@@ -63,45 +63,83 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		if _, err := recovery.RefForRun(target.OwnerRunID); err != nil {
 			return err
 		}
+		legacyMissingBase := strings.TrimSpace(target.BaseRef) == ""
 		reader, err := journal.OpenReadOnly(filepath.Join(layout.RunsDir(), target.OwnerRunID))
 		if err != nil {
+			if legacyMissingBase {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, fmt.Errorf("owning run journal unavailable: %w", err))
+			}
 			return err
 		}
 		identity, err := reader.Identity()
 		if err != nil {
+			if legacyMissingBase {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, fmt.Errorf("owning run identity unavailable: %w", err))
+			}
 			return err
 		}
 		if identity.RunID != target.OwnerRunID || identity.StartedAt.IsZero() {
+			if legacyMissingBase {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, fmt.Errorf("recovery run identity does not match cleanup ownership"))
+			}
 			return fmt.Errorf("recovery run identity does not match cleanup ownership")
 		}
-		captureAt, err := recoveryCaptureTime(ctx, reader, identity.StartedAt, terminal)
+		captureAt, err := recoveryCaptureTime(ctx, reader, identity.StartedAt, terminal || legacyMissingBase)
 		if err != nil {
+			if legacyMissingBase {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, fmt.Errorf("terminal run evidence unavailable: %w", err))
+			}
 			return err
+		}
+		if legacyMissingBase {
+			events, err := reader.Events()
+			if err != nil {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, fmt.Errorf("terminal run evidence unavailable: %w", err))
+			}
+			if journal.PhaseFromEvents(events) == journal.PhaseRunning {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, fmt.Errorf("owning run is not terminal"))
+			}
 		}
 		root, err := prepareRecoveryInventory(layout.Root)
 		if err != nil {
+			if legacyMissingBase {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, fmt.Errorf("recovery inventory unavailable: %w", err))
+			}
 			return err
 		}
 		recoveryCfg := cfg.Retention.RecoveryEffective()
 		retainWindow, err := recoveryCfg.RetainWindowEffective()
 		if err != nil {
-			return err
-		}
-		baseRef, err := recoveryCleanupBaseRef(target)
-		if err != nil {
+			if legacyMissingBase {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, fmt.Errorf("recovery retention policy unavailable: %w", err))
+			}
 			return err
 		}
 		request := recovery.RetentionRequest{
 			Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID,
-			BaseRef: baseRef, IdentityTime: captureAt, RetainUntil: captureAt.Add(retainWindow),
+			IdentityTime: captureAt, RetainUntil: captureAt.Add(retainWindow),
 			InventoryRoot: root, CleanupRoots: []string{cleanupRoot},
 			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(), SkipEmpty: true,
 			EvictFull: recoveryEvictFunc(layout, cfg, manager, key),
 		}
 		publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
 		if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
+			if legacyMissingBase {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, fmt.Errorf("abandoned recovery preparation could not be retained: %w", err))
+			}
 			return err
 		}
+		if legacyMissingBase {
+			if err := worktree.VerifyCleanupTargetUnchanged(ctx, target); err != nil {
+				return worktree.RetainCleanupTarget(worktree.CleanupDispositionUnknownBase, err)
+			}
+			return nil
+		}
+		baseRef, err := recoveryCleanupBaseRef(target)
+		if err != nil {
+			return err
+		}
+		request.BaseRef = baseRef
 		_, _, err = recovery.Retain(ctx, request, publication)
 		return err
 	}

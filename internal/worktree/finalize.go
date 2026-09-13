@@ -12,9 +12,10 @@ import (
 
 // FinalizeResult reports how terminal cleanup handled one owned worktree.
 type FinalizeResult struct {
-	WorktreeID string
-	Path       string
-	Kept       bool
+	WorktreeID         string
+	Path               string
+	Kept               bool
+	CleanupDisposition string
 }
 
 // FinalizeRun removes every worktree owned by runID across all managed repos.
@@ -100,6 +101,14 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 				})
 				continue
 			}
+			if mk.Status == statusCleanupRetained {
+				results = append(results, FinalizeResult{
+					WorktreeID:         worktreeID,
+					Path:               filepath.Join(m.runsDirForKey(key), directory),
+					CleanupDisposition: mk.CleanupDisposition,
+				})
+				continue
+			}
 			if mk.Status != statusActive && mk.Status != statusCleanupPending {
 				finalizeErr = errors.Join(finalizeErr,
 					fmt.Errorf("worktree: finalize run %s: marker %s has unknown status %q", runID, markerPath, mk.Status))
@@ -125,6 +134,15 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 		worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
 		if err := m.forceClear(ctx, key, path, worktreeID); err != nil {
 			m.observeUsage(ctx, UsageOperationTeardown, runID, worktreeID, worktreeBytes, worktreeMeasured, measurementErr)
+			var retained *CleanupRetentionError
+			if errors.Is(err, ErrCleanupRetained) && errors.As(err, &retained) {
+				results = append(results, FinalizeResult{
+					WorktreeID:         worktreeID,
+					Path:               path,
+					CleanupDisposition: retained.Disposition,
+				})
+				continue
+			}
 			finalizeErr = errors.Join(finalizeErr,
 				fmt.Errorf("worktree: finalize run %s worktree %s: %w", runID, worktreeID, err))
 			continue
