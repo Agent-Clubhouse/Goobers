@@ -517,7 +517,7 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	}
 	for _, want := range []string{
 		"expectedOutputs is declared but the stage has no inputs.resultFile",
-		"configuration has 1 warning(s); --strict treats warnings as errors",
+		"configuration has 1 strict-promoted warning(s); --strict exits 1",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("strict validate output missing %q:\n%s", want, stdout)

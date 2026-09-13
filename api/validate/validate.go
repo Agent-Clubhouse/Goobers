@@ -61,6 +61,10 @@ const (
 	WarningCompatibility WarningCode = "VER003"
 	// WarningImplicitWritableWorkspace identifies a non-mutating stage that
 	// relies on the historical writable repository workspace default.
+	// STRICT-NEUTRAL: this advisory was added after the workspace default
+	// shipped, so promoting it would turn unchanged, working configs red on
+	// upgrade. It recommends an explicit least-privilege declaration without
+	// changing or condemning the compatible writable default.
 	WarningImplicitWritableWorkspace WarningCode = "WS001"
 	// ErrorRemovedFeature identifies use of a removed DSL feature.
 	ErrorRemovedFeature WarningCode = "VER004"
@@ -84,7 +88,9 @@ const (
 	ErrorPreviewDSLVersionBlocked WarningCode = "DVL011"
 	// WarningDeprecatedDSLVersion identifies a workflow pinned to a
 	// deprecated dslVersion — loads, but names its replacement and
-	// unsupported-after release.
+	// unsupported-after release. STRICT-NEUTRAL: deprecation may first appear
+	// when the binary upgrades, so it remains visible without newly breaking
+	// an existing --strict pipeline before the documented removal boundary.
 	WarningDeprecatedDSLVersion WarningCode = "DVL020"
 	// ErrorUnsupportedDSLVersion identifies a workflow pinned to a dslVersion
 	// this binary either does not recognize or has marked unsupported — fails
