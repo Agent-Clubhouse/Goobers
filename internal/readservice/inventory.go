@@ -316,13 +316,15 @@ func newInventoryProjection(definitions *instance.ConfigSet, report *validate.Re
 		if err := validateWorkflowOwners(def, gooberGaggles); err != nil {
 			return nil, err
 		}
+		// Preview authorization is per-Workflow (#4220): def's OWN annotations,
+		// never the Manifest's or its gaggle's.
 		machine, err := workflow.Compile(
 			workflow.Definition{
-				Name: def.Name, Version: currentWorkflowVersion, DSLVersion: def.DSLVersion, Spec: def.Spec,
+				Name: def.Name, Version: currentWorkflowVersion, DSLVersion: def.DSLVersion, Spec: def.Spec, Annotations: def.Annotations,
 			},
 			workflow.WithGoobers(goobers),
 			workflow.WithPreviewFeatures(
-				definitions.Manifest != nil && workflow.PreviewFeaturesEnabled(definitions.Manifest.Annotations),
+				workflow.PreviewFeaturesEnabled(def.Annotations),
 			),
 		)
 		if err != nil {

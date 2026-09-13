@@ -710,7 +710,6 @@ func (e *workflowCompileError) Unwrap() error {
 func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, envPassthrough []string, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error)) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
-	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
 	// The admission registry resolves harness config (model/options), and model
 	// resolution spawns the configured launcher for model discovery whenever a
 	// goober declares spec.Model — so the launcher override must apply here too,
@@ -747,14 +746,16 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
+		// Preview authorization is per-Workflow (#4220): wf's OWN annotations,
+		// never the Manifest's or its gaggle's.
 		m, err := workflow.Compile(
 			workflow.Definition{
-				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
 			},
 			workflow.WithGoobers(goobers),
 			workflow.WithKnownChecks(knownChecks),
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
-			workflow.WithPreviewFeatures(allowPreview),
+			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
 			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
 		)

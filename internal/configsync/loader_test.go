@@ -113,10 +113,14 @@ spec:
   gaggles: [web]
 `)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "gaggle.yaml", gaggleYAML("web"))
-	// Pin a NON-default loadable version (3.0, opted-in via the manifest above)
-	// to prove the loader retains the workflow's own dslVersion rather than
-	// normalizing it. 1.4 no longer works here — it is dropped (#3507).
+	// Pin a NON-default loadable version (3.0) to prove the loader retains the
+	// workflow's own dslVersion rather than normalizing it. 1.4 no longer
+	// works here — it is dropped (#3507). Preview authorization is
+	// per-Workflow (#4220), so the workflow carries its own acknowledgement
+	// rather than relying on the manifest's, which no longer authorizes it.
 	workflow := strings.Replace(workflowYAML("web", "deploy"), `dslVersion: "2.0"`, `dslVersion: "3.0"`, 1)
+	workflow = strings.Replace(workflow, "metadata:\n  name: deploy",
+		"metadata:\n  name: deploy\n  annotations: {goobers.dev/allow-preview-features: \"true\"}", 1)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "workflow.yaml", workflow)
 
 	l, err := NewLoader("")
