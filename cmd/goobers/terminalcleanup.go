@@ -118,10 +118,6 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 	return errors.Join(worktreeErr, annotationErr, noOpErr, claimErr)
 }
 
-func keptWorktreeJournaled(schedulerDir, runID, worktreeID string) (bool, error) {
-	return worktreeDispositionJournaled(schedulerDir, runID, worktreeID, "kept")
-}
-
 func worktreeDispositionJournaled(schedulerDir, runID, worktreeID, status string) (bool, error) {
 	recorded, err := annotationsForInstance(schedulerDir).worktreeState(schedulerDir, runID, worktreeID)
 	return recorded == status, err

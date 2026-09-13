@@ -20,8 +20,11 @@ var ErrCleanupDeferred = errors.New("worktree cleanup deferred pending durable h
 // operator-visible disposition and removes the target from prompt retries.
 var ErrCleanupRetained = errors.New("worktree cleanup retained for operator review")
 
+// CleanupDispositionUnknownBase identifies a target retained because its
+// historical marker has no trustworthy recovery base.
 const CleanupDispositionUnknownBase = "retained-unknown-base"
 
+// CleanupRetentionError requests a durable, non-retrying cleanup disposition.
 type CleanupRetentionError struct {
 	Disposition string
 	Cause       error

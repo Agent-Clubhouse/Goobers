@@ -17,7 +17,6 @@ type instanceAnnotationFold struct {
 	journalState   journal.InstanceLogState
 	initialized    bool
 	itemRepos      map[string]recordedItemRepo
-	keptWorktrees  map[string]bool
 	worktreeStates map[string]string
 }
 
@@ -69,7 +68,6 @@ func (f *instanceAnnotationFold) reset(state journal.InstanceLogState) {
 	f.journalState = state
 	f.initialized = true
 	f.itemRepos = nil
-	f.keptWorktrees = nil
 	f.worktreeStates = nil
 }
 
@@ -119,12 +117,6 @@ func (f *instanceAnnotationFold) applyWorktreeState(event journal.Event) {
 	}
 	key := event.RunID + "\x00" + worktreeID
 	f.worktreeStates[key] = worktreeStatus
-	if worktreeStatus == "kept" {
-		if f.keptWorktrees == nil {
-			f.keptWorktrees = make(map[string]bool)
-		}
-		f.keptWorktrees[key] = true
-	}
 }
 
 func (f *instanceAnnotationFold) worktreeState(schedulerDir, runID, worktreeID string) (string, error) {
@@ -149,13 +141,4 @@ func (f *instanceAnnotationFold) itemRepositories(schedulerDir, runID string, it
 		}
 	}
 	return found, nil
-}
-
-func (f *instanceAnnotationFold) worktreeKept(schedulerDir, runID, worktreeID string) (bool, error) {
-	if err := f.refresh(schedulerDir); err != nil {
-		return false, err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.keptWorktrees[runID+"\x00"+worktreeID], nil
 }
