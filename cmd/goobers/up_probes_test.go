@@ -237,14 +237,20 @@ func seedInterruptedRun(t *testing.T, root, runID string) {
 // literal regression) satisfies identically.
 //
 // It holds a real daemon inside crash-resume — after apiServer.Start() has
-// opened the listener, before resumeComplete/sweepsStarted/ready flip — and
-// asserts /readyz there: 503, Ready false, and the named checks split exactly
-// along the startup point being held (configLoaded/stateOpen already true;
-// resumeComplete/sweepsStarted still false). That last split is what makes a
-// hardcoded Checks map fail too, not just a hardcoded Ready. /healthz is
-// asserted healthy in the same held window, since liveness is deliberately
-// decoupled from startup completing — an unbounded crash-resume must not read
-// as a wedged main loop.
+// opened the listener (so planeReady has already flipped), before
+// resumeComplete/sweepsStarted/the scheduler-ready gate flip — and asserts
+// /readyz there: 200, Ready (plane-ready) true, SchedulerReady false, and the
+// named checks split exactly along the startup point being held
+// (configLoaded/stateOpen already true; resumeComplete/sweepsStarted still
+// false). This is #4252's core regression: an already-running stage pod must
+// be able to keep reaching the daemon's planes for the entire crash-resume
+// window (Ready true drives the Kubernetes Service's routing decision), while
+// SchedulerReady staying false is what keeps new dispatch refused
+// (cmd/goobers/writeplanes.go's daemonTriggerService) until resume actually
+// finishes. That checks split is also what makes a hardcoded Checks map fail,
+// not just a hardcoded Ready. /healthz is asserted healthy in the same held
+// window, since liveness is deliberately decoupled from startup completing —
+// an unbounded crash-resume must not read as a wedged main loop.
 //
 // The hold is a blocking stdout writer (startupHoldWriter above), not a
 // timing window: this test's earlier polling form asserted on winning a race
@@ -280,21 +286,26 @@ func TestReadyzReportsNotReadyBeforeStartupCompletesOnRealDaemon(t *testing.T) {
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// Held mid-startup: the listener answers, the ready gate has not flipped.
+	// Held mid-startup: the listener answers, plane-ready has already
+	// flipped (it flips right after api-bind), but the scheduler-ready gate
+	// has not — crash-resume is still in progress.
 	response, err := client.Get("http://" + address + httpapi.ReadinessPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var notReady httpapi.ReadinessStatus
-	decodeErr := json.NewDecoder(response.Body).Decode(&notReady)
-	notReadyStatus := response.StatusCode
+	var midStartup httpapi.ReadinessStatus
+	decodeErr := json.NewDecoder(response.Body).Decode(&midStartup)
+	midStartupStatus := response.StatusCode
 	_ = response.Body.Close()
 	if decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
-	if notReadyStatus != http.StatusServiceUnavailable || notReady.Ready {
-		t.Fatalf("mid-startup /readyz status = %d, ready = %t, want %d / false — the probe must read the live ready gate, not a constant",
-			notReadyStatus, notReady.Ready, http.StatusServiceUnavailable)
+	if midStartupStatus != http.StatusOK || !midStartup.Ready {
+		t.Fatalf("mid-startup /readyz status = %d, ready = %t, want %d / true — plane-ready must flip well before crash-resume finishes (#4252)",
+			midStartupStatus, midStartup.Ready, http.StatusOK)
+	}
+	if midStartup.SchedulerReady {
+		t.Fatal("mid-startup /readyz schedulerReady = true, want false — crash-resume has not finished yet")
 	}
 	for check, want := range map[string]bool{
 		"apiListening":      true,
@@ -305,9 +316,9 @@ func TestReadyzReportsNotReadyBeforeStartupCompletesOnRealDaemon(t *testing.T) {
 		"resumeComplete":    false,
 		"sweepsStarted":     false,
 	} {
-		if notReady.Checks[check] != want {
+		if midStartup.Checks[check] != want {
 			t.Fatalf("mid-startup /readyz check %q = %t, want %t — the named checks must track the startup phase actually reached: checks = %+v",
-				check, notReady.Checks[check], want, notReady.Checks)
+				check, midStartup.Checks[check], want, midStartup.Checks)
 		}
 	}
 
@@ -352,6 +363,9 @@ func TestReadyzReportsNotReadyBeforeStartupCompletesOnRealDaemon(t *testing.T) {
 	}
 	if readyStatus != http.StatusOK || !ready.Ready {
 		t.Fatalf("post-startup /readyz status = %d, ready = %t, want %d / true", readyStatus, ready.Ready, http.StatusOK)
+	}
+	if !ready.SchedulerReady {
+		t.Fatal("post-startup /readyz schedulerReady = false, want true — crash-resume/sweeps have finished by now")
 	}
 	for _, check := range []string{"configLoaded", "stateOpen", "resumeComplete", "sweepsStarted"} {
 		if !ready.Checks[check] {

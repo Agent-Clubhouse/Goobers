@@ -70,6 +70,10 @@ contract the Goobernetes-Infra collector pipeline is configured against:
 | `goobers.stage.metric.value` | histogram (float64) | `1` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.metric.name`, `goobers.metric.unit` |
 | `goobers.worktree.disk.usage` | gauge (int64) | `By` | `goobers.storage.operation` |
 | `goobers.workcopy.disk.usage` | gauge (int64) | `By` | `goobers.storage.operation` |
+| `goobers.recovery.snapshot.format` | counter (int64) | `{capture}` | `goobers.recovery.format` (`full`/`delta`) |
+| `goobers.recovery.snapshot.bytes` | histogram (float64) | `By` | `goobers.recovery.format` (`full`/`delta`) |
+| `goobers.recovery.snapshot.fallback` | counter (int64) | `{capture}` | `goobers.recovery.reason` (`no_base_ref`/`base_unreachable`) |
+| `goobers.recovery.restore.failures` | counter (int64) | `{failure}` | `goobers.recovery.reason` (`archive_invalid`/`base_missing`/`import_failed`) |
 
 Cardinality and privacy are enforced in two layers, both in `metrics.go`:
 

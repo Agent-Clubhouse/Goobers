@@ -121,6 +121,12 @@ type Conditions struct {
 	// providerQuota above. Read under c.mu in Admit; its UnderPressure is a
 	// cached in-memory read with its own lock — no file read per admission.
 	memory MemoryGate
+	// disk backs tiered low-disk protection's critical-tier admission stop
+	// (#4873): nil means no gate is wired, so it is never enforced
+	// (fail-open), like memory above. Read under c.mu in Admit; its
+	// UnderPressure reads a periodically-sampled cached tier — no stat call
+	// per admission.
+	disk DiskGate
 }
 
 // NewConditions returns an empty Conditions tracker.
@@ -170,6 +176,15 @@ func (c *Conditions) SetProviderQuota(gate ProviderQuotaGate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.providerQuota = gate
+}
+
+// SetDiskGate wires tiered low-disk protection's critical-tier admission stop
+// (#4873). Call once at setup, before Admit is first used. Nil (the default)
+// leaves it unenforced.
+func (c *Conditions) SetDiskGate(gate DiskGate) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.disk = gate
 }
 
 // Reconcile sets the initial active-run counts after a restart (Conditions'
@@ -368,6 +383,22 @@ func (c *Conditions) admitProviderWorkflow(identity WorkflowIdentity, provider a
 	if c.memory != nil {
 		if pressured, detail := c.memory.UnderPressure(); pressured {
 			reason := ReasonMemoryPressure
+			if detail != "" {
+				reason += ": " + detail
+			}
+			return false, reason
+		}
+	}
+	// Tiered low-disk protection's critical tier (#4873), checked last for the
+	// same reason as memory: it is not policy the operator can configure into
+	// their own limits — it is the physical filesystem every admitted run's
+	// journal appends, worktree, and artifacts share. Deliberately not applied
+	// in ReserveContinuation, matching the memory gate: an already-started run
+	// holds a checkpoint that resuming lets finish and reclaim space, so
+	// refusing to resume it would strand work instead of draining it.
+	if c.disk != nil {
+		if pressured, detail := c.disk.UnderPressure(); pressured {
+			reason := ReasonStorageCritical
 			if detail != "" {
 				reason += ": " + detail
 			}

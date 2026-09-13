@@ -113,9 +113,14 @@ func TestPublishADOPassVerdictPublishesValidationStatus(t *testing.T) {
 		p.BaseURL = server.URL
 	})
 	var stdout, stderr bytes.Buffer
-	resultFile := filepath.Join(t.TempDir(), "verdict-result.json")
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "scheduler"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resultFile := filepath.Join(root, "verdict-result.json")
 	code := publishADOPassVerdict(
 		context.Background(),
+		root,
 		provider,
 		providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"},
 		359,
@@ -341,9 +346,14 @@ func TestPublishADONonPassVerdictPublishesFailedStatusLabelAndThread(t *testing.
 		p.BaseURL = server.URL
 	})
 	var stdout, stderr bytes.Buffer
-	resultFile := filepath.Join(t.TempDir(), "verdict-result.json")
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "scheduler"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resultFile := filepath.Join(root, "verdict-result.json")
 	code := publishADONonPassVerdict(
 		context.Background(),
+		root,
 		provider,
 		providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"},
 		359,
@@ -443,9 +453,14 @@ func TestPublishADOFailVerdictEscalatesAndClearsRemediation(t *testing.T) {
 		p.BaseURL = server.URL
 	})
 	var stdout, stderr bytes.Buffer
-	resultFile := filepath.Join(t.TempDir(), "verdict-result.json")
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "scheduler"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resultFile := filepath.Join(root, "verdict-result.json")
 	code := publishADONonPassVerdict(
 		context.Background(),
+		root,
 		provider,
 		providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"},
 		359,

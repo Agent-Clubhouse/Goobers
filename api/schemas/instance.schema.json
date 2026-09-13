@@ -897,6 +897,40 @@
           "maximum": 1,
           "description": "Fraction of the container's memory limit above which the cgroup-aware admission gate refuses new runs. Zero or omitted uses the built-in default. GOOBERS_MEMORY_HIGH_WATER overrides this at daemon startup for the specific container the daemon was actually given (\"off\" disables the gate); `goobers status` and the /api/v1/instance payload report the effective value, whichever source set it.",
           "examples": [0.85]
+        },
+        "storage": {
+          "description": "Tiered low-disk protection for the filesystem containing the instance root. Crossing the warning floor marks storage health degraded; crossing the critical floor stops admitting and dispatching NEW runs (existing work keeps draining) until free space recovers past the critical floor with hysteresis. Omitted uses conservative defaults derived from the configured recovery archive bound.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "warningFloorBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Absolute free-space floor for the warning tier. Zero or omitted disables the absolute check for this tier; warningFloorPercent may still apply. When both are set, the higher of the two applies."
+            },
+            "warningFloorPercent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Free-space floor for the warning tier, as a percentage of the filesystem's total size. Zero or omitted disables the percentage check for this tier."
+            },
+            "criticalFloorBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Absolute free-space floor for the critical tier (new-run admission stops below this). Zero or omitted defaults to the configured recovery archive bound, so admission-stop always leaves room for a recovery capture already in flight."
+            },
+            "criticalFloorPercent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Free-space floor for the critical tier, as a percentage of the filesystem's total size. Zero or omitted disables the percentage check for this tier."
+            },
+            "checkInterval": {
+              "description": "How often the daemon re-measures free space after its one-time startup check. Omitted or zero uses the built-in default (1 minute).",
+              "$ref": "#/$defs/duration",
+              "examples": ["1m"]
+            }
+          }
         }
       }
     },

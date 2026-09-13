@@ -35,7 +35,7 @@ func TestIntegrationWorkerRecoveryPreservesSourceWithoutRunCustody(t *testing.T)
 		t.Fatal(err)
 	}
 	clone := func(apiv1.RepoRef) (string, error) { return source, nil }
-	option, err := recoveryCleanupOption(layout, cfg, manager.Root, clone, journal.NewRegistryScrubber())
+	option, err := recoveryCleanupOption(layout, cfg, manager.Root, clone, journal.NewRegistryScrubber(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

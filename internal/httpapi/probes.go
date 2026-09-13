@@ -37,19 +37,39 @@ type LivenessCheck func() bool
 // subsystem checks composing it, for /readyz's JSON body.
 type ReadinessCheck func() ReadinessStatus
 
-// ReadinessStatus is the /readyz response body. Ready is the single
-// authoritative gate — the same value already exposed to authenticated
-// callers on /api/v1/health's Ready field and driving readservice's Ready
-// status — so a kubelet's view of readiness can never drift from a human's.
-// Checks decomposes that single gate into the named subsystem booleans this
-// issue asks for (configLoaded, stateOpen, resumeComplete, sweepsStarted for
+// ReadinessStatus is the /readyz response body.
+//
+// Ready is the "plane-ready" gate (#4252, maintainer decision on the same
+// issue): true once the HTTP listener and the credential/blob/journal/
+// surrender planes are safe to serve, independent of whether crash-resume
+// has finished. This is deliberately NOT the same value /api/v1/health's
+// Ready field exposes to authenticated callers (that stays the full
+// scheduler-ready gate, unchanged) — the split is intentional: a pod already
+// running a stage needs to keep reaching those planes for the entire
+// crash-resume window, which can be minutes, so the Kubernetes
+// Service/readinessProbe must not hold the pod out of rotation for that
+// whole window (that was #4252's actual bug). Ready therefore drives this
+// endpoint's HTTP status code, and by extension the reference
+// deployment's readinessProbe/startupProbe.
+//
+// SchedulerReady is the fuller "safe to admit new dispatch" gate: crash-
+// resume of interrupted runs, plus the initial trigger/claim/cancel/apply
+// sweeps, have completed. New scheduling (e.g. the trigger plane minting a
+// run from an HTTP-delivered trigger) stays refused until this flips true,
+// even though Ready may already be true and the Service may already be
+// routing traffic — the pod can safely answer plane requests for
+// already-running work without yet being allowed to admit new work.
+//
+// Checks decomposes both gates into the named subsystem booleans this issue
+// asks for (configLoaded, stateOpen, resumeComplete, sweepsStarted for
 // cmd/goobers/up.go's daemon); it is diagnostic detail layered on top, not a
-// second source of truth — Ready is never recomputed from Checks, precisely
-// to avoid the two surfaces disagreeing.
+// second source of truth — neither Ready nor SchedulerReady is ever
+// recomputed from Checks, precisely to avoid the surfaces disagreeing.
 type ReadinessStatus struct {
-	Ready   bool            `json:"ready"`
-	Checks  map[string]bool `json:"checks,omitempty"`
-	Startup *StartupStatus  `json:"startup,omitempty"`
+	Ready          bool            `json:"ready"`
+	SchedulerReady bool            `json:"schedulerReady"`
+	Checks         map[string]bool `json:"checks,omitempty"`
+	Startup        *StartupStatus  `json:"startup,omitempty"`
 }
 
 // StartupStatus identifies the operation currently blocking daemon readiness.

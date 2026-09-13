@@ -585,7 +585,7 @@ siblingLoop:
 		if aerr != nil {
 			return failProviderStage(stderr, "resolve merge-review verdict author", aerr, "sibling-context.json")
 		}
-		if verdict := gatherPRVerdict(comments, author); verdict != nil {
+		if verdict := gatherPRVerdict(root, repo, selectedNumber, comments, author); verdict != nil {
 			hasSubstantiveFindings = verdictHasIndependentSubstantiveFindingForPR(
 				verdict, selectedNumber, overlappingSiblings, resolveMinSeverity(stderr),
 			)

@@ -96,9 +96,17 @@ func testDaemonInitialCounts(t *testing.T, mode string) {
 		t.Fatalf("held first query health=%+v", health)
 	}
 	var readiness httpapi.ReadinessStatus
-	getStartupJSON(t, client, address, httpapi.ReadinessPath, http.StatusServiceUnavailable, &readiness)
-	if readiness.Ready {
-		t.Fatal("probe advertised ready without initial active counts")
+	// #4252: Ready (plane-ready) is already true here — the full versioned
+	// handler, planes included, has been live since well before this point —
+	// so the probe answers 200. SchedulerReady is the gate this test is
+	// actually pinning: it must stay false until the initial active-count
+	// sample completes, same as it always has.
+	getStartupJSON(t, client, address, httpapi.ReadinessPath, http.StatusOK, &readiness)
+	if !readiness.Ready {
+		t.Fatal("probe did not advertise plane-ready even though the full handler is live")
+	}
+	if readiness.SchedulerReady {
+		t.Fatal("probe advertised schedulerReady without initial active counts")
 	}
 	// All prior startup subsystems have completed. Only the first observation is
 	// held, so this pins its dependency rather than a generic slow startup.
@@ -118,7 +126,10 @@ func testDaemonInitialCounts(t *testing.T, mode string) {
 		t.Fatalf("startup did not wait for its first query: code=%d stderr=%s", code, stderr.String())
 	case <-time.After(100 * time.Millisecond):
 	}
-	getStartupJSON(t, client, address, httpapi.ReadinessPath, http.StatusServiceUnavailable, &readiness)
+	getStartupJSON(t, client, address, httpapi.ReadinessPath, http.StatusOK, &readiness)
+	if readiness.SchedulerReady {
+		t.Fatal("schedulerReady flipped true before the active-count sample completed")
+	}
 	if mode == "shutdown-before-readiness" {
 		cancel()
 	} else {
@@ -132,7 +143,7 @@ func testDaemonInitialCounts(t *testing.T, mode string) {
 		}
 		getStartupJSON(t, client, address, httpapi.HealthPath, http.StatusOK, &health)
 		getStartupJSON(t, client, address, httpapi.ReadinessPath, http.StatusOK, &readiness)
-		if !health.Ready || !readiness.Ready {
+		if !health.Ready || !readiness.Ready || !readiness.SchedulerReady {
 			t.Fatal("successful sample did not open shared readiness")
 		}
 		var inventory readservice.Instance

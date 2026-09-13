@@ -46,6 +46,30 @@ const (
 	// MetricJournalAppendsDropped counts explicitly best-effort instance-log
 	// appends that failed and therefore left no authoritative journal record.
 	MetricJournalAppendsDropped = "goobers.journal.appends_dropped"
+	// MetricRecoverySnapshotFormat counts recovery snapshot bundle captures
+	// by the format selected (see internal/recovery's archiveFormatFull and
+	// archiveFormatDelta), so operators can watch the delta/full mix (#5028).
+	MetricRecoverySnapshotFormat = "goobers.recovery.snapshot.format"
+	// MetricRecoverySnapshotBytes measures one captured recovery bundle's
+	// emitted size in bytes, labeled by the format selected.
+	MetricRecoverySnapshotBytes = "goobers.recovery.snapshot.bytes"
+	// MetricRecoverySnapshotFallback counts recovery captures that could not
+	// use the smaller delta format, labeled by why.
+	MetricRecoverySnapshotFallback = "goobers.recovery.snapshot.fallback"
+	// MetricRecoveryRestoreFailures counts recovery bundle restore failures,
+	// labeled by a bounded failure class.
+	MetricRecoveryRestoreFailures = "goobers.recovery.restore.failures"
+	// MetricStorageFreeBytes reports the most recent free-space sample of the
+	// filesystem containing the instance root (#4873).
+	MetricStorageFreeBytes = "goobers.storage.free_bytes"
+	// MetricStorageHealthTierChanges counts tiered low-disk protection tier
+	// transitions (#4873), tagged by MetricAttrStorageTier — the tier this
+	// transition entered, not the one it left. Dimensionless per journal
+	// entries would lose exactly the information an operator needs first
+	// ("did we just start refusing runs, or did we recover?"), and the tier
+	// is a small, fixed, non-sensitive set of values, unlike the paths and
+	// error text MetricJournalAppendsDropped's doc explains staying off of.
+	MetricStorageHealthTierChanges = "goobers.storage.health.tier_changes"
 )
 
 const (
@@ -55,6 +79,17 @@ const (
 	// MetricAttrRedactionLayer distinguishes exact registry matches from the
 	// pattern backstop on MetricRedactionsTotal.
 	MetricAttrRedactionLayer = "layer"
+	// MetricAttrRecoverySnapshotFormat distinguishes full and delta recovery
+	// bundle captures on MetricRecoverySnapshotFormat/MetricRecoverySnapshotBytes.
+	MetricAttrRecoverySnapshotFormat = "goobers.recovery.format"
+	// MetricAttrRecoveryReason labels why a recovery capture fell back to a
+	// full bundle (MetricRecoverySnapshotFallback) or why a restore failed
+	// (MetricRecoveryRestoreFailures).
+	MetricAttrRecoveryReason = "goobers.recovery.reason"
+	// MetricAttrStorageTier labels MetricStorageHealthTierChanges with the
+	// tier a transition entered: "healthy", "warning", "admission-stopped",
+	// or "measurement-unavailable" (localscheduler.StorageTier.String()).
+	MetricAttrStorageTier = "goobers.storage.tier"
 
 	metricNameAttribute = "goobers.metric.name"
 
@@ -80,38 +115,46 @@ const (
 // error messages, agent/model usage detail — is either unbounded or sensitive
 // and stays on spans only.
 var metricAttributeAllowlist = map[string]struct{}{
-	AttrWorkflow:         {},
-	AttrStage:            {},
-	AttrStageType:        {},
-	AttrOutcome:          {},
-	AttrErrorCode:        {},
-	AttrAttemptKind:      {},
-	AttrGateDecision:     {},
-	AttrModel:            {},
-	AttrStorageOperation: {},
-	metricNameAttribute:  {},
-	metricUnitAttribute:  {},
-	MetricAttrSpanKind:   {},
+	AttrWorkflow:                     {},
+	AttrStage:                        {},
+	AttrStageType:                    {},
+	AttrOutcome:                      {},
+	AttrErrorCode:                    {},
+	AttrAttemptKind:                  {},
+	AttrGateDecision:                 {},
+	AttrModel:                        {},
+	AttrStorageOperation:             {},
+	metricNameAttribute:              {},
+	metricUnitAttribute:              {},
+	MetricAttrSpanKind:               {},
+	MetricAttrRecoverySnapshotFormat: {},
+	MetricAttrRecoveryReason:         {},
 }
 
 // instruments owns the process-wide Goobers metric instruments. A nil
 // *instruments disables metric recording, which is what every client built
 // without a metric reader gets.
 type instruments struct {
-	runDuration   apimetric.Float64Histogram
-	runOutcomes   apimetric.Int64Counter
-	stageDuration apimetric.Float64Histogram
-	stageOutcomes apimetric.Int64Counter
-	stageRetries  apimetric.Int64Counter
-	gateDecisions apimetric.Int64Counter
-	escalations   apimetric.Int64Counter
-	redactions    apimetric.Int64Counter
-	journalDrops  apimetric.Int64Counter
-	activeWork    apimetric.Int64UpDownCounter
-	stageMetrics  apimetric.Float64Histogram
-	worktreeBytes apimetric.Int64Gauge
-	workcopyBytes apimetric.Int64Gauge
-	limiter       *cardinalityLimiter
+	runDuration              apimetric.Float64Histogram
+	runOutcomes              apimetric.Int64Counter
+	stageDuration            apimetric.Float64Histogram
+	stageOutcomes            apimetric.Int64Counter
+	stageRetries             apimetric.Int64Counter
+	gateDecisions            apimetric.Int64Counter
+	escalations              apimetric.Int64Counter
+	redactions               apimetric.Int64Counter
+	journalDrops             apimetric.Int64Counter
+	activeWork               apimetric.Int64UpDownCounter
+	stageMetrics             apimetric.Float64Histogram
+	worktreeBytes            apimetric.Int64Gauge
+	workcopyBytes            apimetric.Int64Gauge
+	recoverySnapshotFormat   apimetric.Int64Counter
+	recoverySnapshotBytes    apimetric.Float64Histogram
+	recoverySnapshotFallback apimetric.Int64Counter
+	recoveryRestoreFailures  apimetric.Int64Counter
+	storageFreeBytes         apimetric.Int64Gauge
+	storageHealthChanges     apimetric.Int64Counter
+	limiter                  *cardinalityLimiter
 }
 
 func newInstruments(meter apimetric.Meter) (*instruments, error) {
@@ -163,6 +206,24 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	record(err)
 	inst.workcopyBytes, err = meter.Int64Gauge(EventWorkcopyDiskUsage,
 		apimetric.WithUnit("By"), apimetric.WithDescription("Aggregate apparent bytes of managed workcopies."))
+	record(err)
+	inst.recoverySnapshotFormat, err = meter.Int64Counter(MetricRecoverySnapshotFormat,
+		apimetric.WithUnit("{capture}"), apimetric.WithDescription("Recovery snapshot bundle captures by format selected."))
+	record(err)
+	inst.recoverySnapshotBytes, err = meter.Float64Histogram(MetricRecoverySnapshotBytes,
+		apimetric.WithUnit("By"), apimetric.WithDescription("Emitted recovery snapshot bundle size."))
+	record(err)
+	inst.recoverySnapshotFallback, err = meter.Int64Counter(MetricRecoverySnapshotFallback,
+		apimetric.WithUnit("{capture}"), apimetric.WithDescription("Recovery captures that fell back to a full bundle, by reason."))
+	record(err)
+	inst.recoveryRestoreFailures, err = meter.Int64Counter(MetricRecoveryRestoreFailures,
+		apimetric.WithUnit("{failure}"), apimetric.WithDescription("Recovery bundle restore failures, by reason."))
+	record(err)
+	inst.storageFreeBytes, err = meter.Int64Gauge(MetricStorageFreeBytes,
+		apimetric.WithUnit("By"), apimetric.WithDescription("Most recent free-space sample of the filesystem containing the instance root."))
+	record(err)
+	inst.storageHealthChanges, err = meter.Int64Counter(MetricStorageHealthTierChanges,
+		apimetric.WithUnit("{transition}"), apimetric.WithDescription("Tiered low-disk protection tier transitions, tagged by the tier entered."))
 	record(err)
 
 	if len(errs) != 0 {

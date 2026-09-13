@@ -460,6 +460,8 @@ kind: Workflow
 dslVersion: "3.0"
 metadata:
   name: win-build
+  annotations:
+    goobers.dev/allow-preview-features: "true"
 spec:
   gaggle: example
   triggers:

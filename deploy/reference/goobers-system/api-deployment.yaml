@@ -59,19 +59,24 @@ spec:
           # api.tls points at is sufficient FOR PROBES. Workers and stage pods
           # must separately trust its CA for authenticated API/blob requests.
           #
-          # startupProbe alone gates when liveness/readiness probing begins:
-          # crash-resume of interrupted runs at daemon start
+          # startupProbe alone gates when liveness/readiness probing begins.
+          # /readyz's HTTP status (#4252) now reflects "plane-ready" — the
+          # listener plus the credential/blob/journal/surrender planes are
+          # open — NOT the fuller "crash-resume finished" gate: crash-resume
+          # of interrupted runs at daemon start
           # (cmd/goobers/up.go's resumeInterruptedRunsWithRunners) is
           # UNBOUNDED and scales with how many runs were in flight when the
-          # prior process stopped — a short initialDelaySeconds on
-          # livenessProbe would kill the pod mid legitimate resume. The
-          # failureThreshold below is NOT derived from a measured worst-case
-          # resume time (none has been collected yet) — it is a starting
-          # point giving resume up to 10 minutes before kubelet gives up on
-          # startup ever completing. CHANGE-ME: raise it if your instance's
-          # typical in-flight-run count at restart makes 10 minutes tight;
-          # only once startupProbe succeeds do livenessProbe/readinessProbe
-          # start being evaluated at all.
+          # prior process stopped, but a pod mid legitimate resume can still
+          # answer plane-readiness (and so this startupProbe) almost
+          # immediately after api-bind — it does not need to wait out resume
+          # first. The failureThreshold below is left generous regardless
+          # (a starting point giving up to 10 minutes before kubelet gives up
+          # on startup ever completing): a daemon that is merely slow to open
+          # its listener — as opposed to one that opened it in seconds, as is
+          # now typical — should still get this much grace. CHANGE-ME: raise
+          # it if your instance's startup profile makes 10 minutes tight; only
+          # once startupProbe succeeds do livenessProbe/readinessProbe start
+          # being evaluated at all.
           startupProbe:
             httpGet:
               path: /readyz
@@ -80,11 +85,19 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 60
-          # readinessProbe reuses /readyz's SAME signal so kubectl rollout
-          # status (and the Service's endpoint set) reflect exactly what
-          # /api/v1/health.Ready already tells an authenticated caller — the
-          # daemon is fully started: config loaded, run state reconciled,
-          # crash-resume finished, sweeps running.
+          # readinessProbe reuses /readyz's SAME signal, which is deliberately
+          # NOT the same thing /api/v1/health.Ready tells an authenticated
+          # caller (#4252): the Service is allowed to route traffic to this
+          # pod once it is plane-ready, so an already-running stage's pod can
+          # keep reaching the credential/blob/journal/surrender planes for
+          # the rest of a long crash-resume, instead of being held out of the
+          # Service's endpoint set for that entire (unbounded) window. New
+          # dispatch admission (the trigger plane) independently refuses
+          # until the daemon is fully scheduler-ready — see
+          # httpapi.ReadinessStatus's SchedulerReady field and
+          # cmd/goobers/writeplanes.go's daemonTriggerService — so routing
+          # here earlier does not let new work start before crash-resume
+          # finishes.
           readinessProbe:
             httpGet:
               path: /readyz

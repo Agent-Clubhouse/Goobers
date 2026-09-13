@@ -870,16 +870,15 @@ func buildSchedulerDefinitions(
 	// engineRuntime. Every engineStarter shares this holder and up.go attaches
 	// it once both exist.
 	engineRuntimeHolder := &engineRuntime{}
-	// The instance's preview posture, resolved exactly as
-	// bootstrap.RegisterGaggleWorkflows resolves it, so a run this daemon
-	// dispatches pins the same value a `goobers engine-start` run would.
-	allowPreviewFeatures := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
 
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		identity := localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}
 		machine := machines[identity]
+		// Preview authorization is per-Workflow (#4220): wf's OWN annotations,
+		// never the Manifest's or its gaggle's.
+		allowPreviewFeatures := workflow.PreviewFeaturesEnabled(wf.Annotations)
 		// #341: a workflow may declare more than one schedule-type trigger
 		// (e.g. a weekday cadence and a separate weekend one) — collect all
 		// of them rather than stopping at the first; Scheduler.Tick fires if

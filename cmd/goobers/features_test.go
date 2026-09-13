@@ -220,11 +220,16 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 // gone. The instance must already carry the preview opt-in (optInPreviewFeatures).
 func writeLegacyV3Workflow(t *testing.T, workflowsDir string) {
 	t.Helper()
+	// Preview authorization is per-Workflow (#4220): this workflow carries its
+	// own acknowledgement rather than relying on optInPreviewFeatures'
+	// Manifest-level annotation, which no longer authorizes it.
 	legacy := "apiVersion: goobers.dev/v1alpha1\n" +
 		"kind: Workflow\n" +
 		"dslVersion: \"" + supportmatrix.V3DSLVersion + "\"\n" +
 		"metadata:\n" +
 		"  name: legacy-implement\n" +
+		"  annotations:\n" +
+		"    " + workflow.PreviewFeaturesAnnotation + ": \"true\"\n" +
 		"spec:\n" +
 		"  gaggle: example\n" +
 		"  triggers:\n" +

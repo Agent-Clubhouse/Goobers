@@ -281,7 +281,7 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 	if handled, code := handleGatherPRContextUnchangedDigest(root, a, ctx, selected, comments, stdout, stderr); handled {
 		return code
 	}
-	return writeGatherPRContextResult(selected, behind, gatherPRVerdict(comments, author), comments, stdout, stderr)
+	return writeGatherPRContextResult(selected, behind, gatherPRVerdict(root, repo, selected.Number, comments, author), comments, stdout, stderr)
 }
 func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter, ctx context.Context, pr providers.PullRequestSummary, comments []providers.Comment, stdout, stderr io.Writer) (bool, int) {
 	state, prior, ok := latestRemediationStateForPR(pr.Body, comments)
@@ -585,11 +585,27 @@ func gatherPRContextSelectCandidate(
 	return *claimed, false, 0
 }
 
-// gatherPRVerdict prefers the oldest trusted marked comment because
-// reconciliation keeps that comment as the canonical status. Before marked
-// comments existed, each review appended a new comment, so the migration
-// fallback uses the newest parseable verdict from the trusted author.
-func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict {
+// gatherPRVerdict reads the PR's authoritative remediation-verdict
+// scheduler-state key first (Goobers#3025/#5030): once that key exists,
+// editing or deleting the provider comment cannot change what this returns.
+// root is the instance root that keys the scheduler-state store; an empty
+// root (a caller with no root in scope) skips the KV lookup outright and
+// falls through to the legacy comment-parsing path unchanged.
+//
+// An absent key falls back to the pre-#5030 behavior verbatim: it prefers
+// the oldest trusted marked comment because reconciliation keeps that comment
+// as the canonical status; before marked comments existed, each review
+// appended a new comment, so the migration fallback uses the newest
+// parseable verdict from the trusted author. A verdict recovered this way is
+// opportunistically migrated into the KV key (best-effort — see
+// migrateVerdictState) so a later read is authoritative without needing the
+// provider at all.
+func gatherPRVerdict(root string, repo providers.RepositoryRef, prNumber int, comments []providers.Comment, author string) *apiv1.Verdict {
+	if root != "" {
+		if verdict, ok, err := loadVerdictState(root, repo, prNumber); err == nil && ok {
+			return &verdict
+		}
+	}
 	var legacy *apiv1.Verdict
 	for _, comment := range comments {
 		if !isTrustedMergeReviewAuthor(comment.Author, author) {
@@ -600,11 +616,17 @@ func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict
 			if !ok {
 				return nil
 			}
+			if root != "" {
+				migrateVerdictState(root, repo, prNumber, candidate)
+			}
 			return &candidate
 		}
 		if ok {
 			legacy = &candidate
 		}
+	}
+	if root != "" && legacy != nil {
+		migrateVerdictState(root, repo, prNumber, *legacy)
 	}
 	return legacy
 }

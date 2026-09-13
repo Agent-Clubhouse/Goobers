@@ -156,7 +156,12 @@ type LocalSources struct {
 	// InstanceLogStats is present only in the live daemon. Dropped appends are
 	// process-lifetime state because the failing journal cannot persist its own
 	// write failure; offline readers therefore report no journal-health value.
-	InstanceLogStats   func() journal.InstanceLogStats
+	InstanceLogStats func() journal.InstanceLogStats
+	// StorageHealthStats is present only in the live daemon, mirroring
+	// InstanceLogStats: tiered low-disk protection's current tier (#4873) is
+	// this process's own sampled state, not something an offline reader can
+	// reconstruct from the journal.
+	StorageHealthStats func() localscheduler.StorageHealthStats
 	WorkItemLookup     WorkItemLookup
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration

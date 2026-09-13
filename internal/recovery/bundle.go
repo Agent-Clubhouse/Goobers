@@ -37,8 +37,11 @@ func WriteSnapshotBundle(ctx context.Context, repository string, record Record, 
 		return "", "", err
 	}
 	format = archiveFormatFull
-	if baseProvablyReachable(ctx, repository, record) {
+	observer := observeSnapshot(ctx)
+	if reachable, fallbackReason := baseProvablyReachable(ctx, repository, record); reachable {
 		format = archiveFormatDelta
+	} else if observer != nil {
+		observer.SnapshotFallback(string(fallbackReason))
 	}
 	args := []string{"bundle", "create", "--version=3", "-", record.Ref}
 	if format == archiveFormatDelta {
@@ -54,6 +57,9 @@ func WriteSnapshotBundle(ctx context.Context, repository string, record Record, 
 	if err := verifyBundleHeaderBytes(output.header, record, format); err != nil {
 		return "", "", err
 	}
+	if observer != nil {
+		observer.SnapshotCaptured(format, maxBytes-output.remaining)
+	}
 	return fmt.Sprintf("sha256:%x", sum.Sum(nil)), format, nil
 }
 
@@ -61,12 +67,16 @@ func WriteSnapshotBundle(ctx context.Context, repository string, record Record, 
 // tracked base ref independent of this run's workspace, so excluding its
 // history from the bundle cannot create a knowingly unrestorable delta
 // (maintainer decision, #4862). A record with no BaseRef (pre-#4823) or a
-// base ref that has since been rewritten past the base falls back to "full".
-func baseProvablyReachable(ctx context.Context, repository string, record Record) bool {
+// base ref that has since been rewritten past the base falls back to "full",
+// labeled with why for the caller's observer (#5028).
+func baseProvablyReachable(ctx context.Context, repository string, record Record) (bool, FallbackReason) {
 	if record.BaseRef == "" {
-		return false
+		return false, FallbackReasonNoBaseRef
 	}
-	return recoveryGit(ctx, repository, io.Discard, "merge-base", "--is-ancestor", record.BaseSHA, record.BaseRef) == nil
+	if recoveryGit(ctx, repository, io.Discard, "merge-base", "--is-ancestor", record.BaseSHA, record.BaseRef) != nil {
+		return false, FallbackReasonBaseUnreachable
+	}
+	return true, ""
 }
 
 func expectedBundleHeader(record Record) string {

@@ -55,7 +55,7 @@ func runPinnedRecoveryBaseBranchFixture(t *testing.T, baseBranch string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	option, err := recoveryCleanupOption(layout, cfg, manager.Root, func(apiv1.RepoRef) (string, error) { return source, nil }, journal.NewRegistryScrubber())
+	option, err := recoveryCleanupOption(layout, cfg, manager.Root, func(apiv1.RepoRef) (string, error) { return source, nil }, journal.NewRegistryScrubber(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

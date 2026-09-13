@@ -61,7 +61,12 @@ type Definition struct {
 	Name       string
 	Version    int
 	DSLVersion string `json:"dslVersion,omitempty"`
-	Spec       apiv1.WorkflowSpec
+	// Annotations is the Workflow object's own metadata.annotations — in
+	// particular goobers.dev/allow-preview-features, which (per the DSL 3.0
+	// v0.4.0 ruling, #4220) authorizes preview DSL features for THIS workflow
+	// only. There is no inheritance from a Manifest or Gaggle annotation.
+	Annotations map[string]string `json:"annotations,omitempty"`
+	Spec        apiv1.WorkflowSpec
 }
 
 // Machine is a compiled, validated view of a Definition with O(1) state lookup

@@ -345,11 +345,11 @@ func FailureStreakKey(digest string) string {
 	return "failure-streak-" + digest + ".json"
 }
 
-// RemediationVerdictKey is not yet constructed by any production caller —
-// the verdict-json half of Goobers#3025 is tracked separately (#5030) — so no
-// exported constructor lives here yet; the reserved namespace shape is
-// verdictStateKeyPattern above, exercised directly by ValidKey's tests. Add
-// the constructor back alongside #5030's writer/reader.
+// RemediationVerdictKey names the remediation-verdict record for one PR's
+// record-key digest (Goobers#3025/#5030).
+func RemediationVerdictKey(digest string) string {
+	return "remediation-verdict-" + digest + ".json"
+}
 
 // ValidKey reports whether key is one of the closed scheduler-state keys.
 func ValidKey(key string) bool {
