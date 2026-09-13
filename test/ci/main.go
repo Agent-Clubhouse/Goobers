@@ -82,6 +82,20 @@ var knownGroups = map[string]bool{
 	groupShipped:   true,
 }
 
+// uncoveredBuildTags names the four build tags with no coverage in any other
+// CI or Makefile command. Vet compiles their files without running the tagged
+// live-network, Docker, or authoring-capture tests (#4855).
+const uncoveredBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture"
+
+func versionLDFlags(metadata buildMetadata) string {
+	return fmt.Sprintf(
+		"-X %s.Version=%s -X %s.Commit=%s -X %s.Date=%s",
+		versionPackage, metadata.version,
+		versionPackage, metadata.commit,
+		versionPackage, metadata.date,
+	)
+}
+
 type executor interface {
 	run(check) ([]byte, error)
 }
@@ -316,12 +330,7 @@ func commandPackages(directory string) ([]string, error) {
 }
 
 func checks(commands []string, tools toolchain, metadata buildMetadata, goos, timingOutput string) []check {
-	ldflags := fmt.Sprintf(
-		"-X %s.Version=%s -X %s.Commit=%s -X %s.Date=%s",
-		versionPackage, metadata.version,
-		versionPackage, metadata.commit,
-		versionPackage, metadata.date,
-	)
+	ldflags := versionLDFlags(metadata)
 
 	result := []check{
 		{
@@ -338,6 +347,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
 		{label: "stage-name-lint", command: tools.goCommand, args: []string{"run", "./test/stagenamelint"}, group: groupChecks},
 		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}, group: groupChecks},
+		{label: "uncovered-build-tags", command: tools.goCommand, args: []string{"vet", "-tags", uncoveredBuildTags, "./..."}, group: groupPreflight},
 		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
 		// Complexity that was decomposed by hand regrows silently without an
 		// observer watching the baseline (#4231).
