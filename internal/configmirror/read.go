@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/platform/durability"
-	"github.com/goobers/goobers/internal/platform/safeopen"
 )
 
 // Snapshot pins one opened archive for the entire seed operation, even if a
@@ -32,7 +31,9 @@ func openSnapshot(path string) (*Snapshot, error) {
 	// Readers must permit replacement of the public name on Windows while
 	// retaining this generation's handle. safeopen includes FILE_SHARE_DELETE
 	// there, as well as refusing a symlink at the archive leaf on every platform.
-	f, err := safeopen.Open(path)
+	// openArchive additionally retries a just-published name on Windows; see
+	// open_windows.go.
+	f, err := openArchive(path)
 	if err != nil {
 		return nil, err
 	}
