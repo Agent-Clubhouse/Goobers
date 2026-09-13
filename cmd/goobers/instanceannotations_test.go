@@ -68,7 +68,7 @@ func TestHotAnnotationReadsCostDoesNotGrowWithInstanceHistory(t *testing.T) {
 		if found, err := loadItemRepositories(layout, "run-1", []string{"17"}); err != nil || found["17"].repo != repo {
 			t.Fatalf("item repositories = %+v, %v", found, err)
 		}
-		if kept, err := keptWorktreeJournaled(layout.SchedulerDir(), "run-1", "worktree-1"); err != nil || !kept {
+		if kept, err := worktreeDispositionJournaled(layout.SchedulerDir(), "run-1", "worktree-1", "kept"); err != nil || !kept {
 			t.Fatalf("kept worktree = %v, %v", kept, err)
 		}
 		work := readprobe.Take()
