@@ -82,9 +82,26 @@ func hostile(parameter *journal.InstanceLog, intended livejournal.InstanceAppend
 	declaredMethod(journal.Event{})
 	intendedMethod := intended.Append
 	_ = intendedMethod(journal.Event{})
+	direct := parameter.Append
+	copied := direct
+	_ = copied(journal.Event{})
+	var branched func(journal.Event) error
+	if parameter != nil { branched = parameter.Append } else { branched = other.Append }
+	_ = branched(journal.Event{})
+	func() {
+		inside := parameter.Append
+		insideCopy := inside
+		insideCopy(journal.Event{})
+	}()
+	type promoted struct { *journal.InstanceLog }
+	value := promoted{parameter}
+	value.Append(journal.Event{})
 	misleading.Append(journal.Event{})
 	other.Append(journal.Event{})
 	_ = other.Append(journal.Event{})
+	otherDirect := other.Append
+	otherCopied := otherDirect
+	otherCopied(journal.Event{})
 	if err := parameter.Append(journal.Event{}); err != nil { return err }
 	err := parameter.Append(journal.Event{})
 	if err != nil { return err }
@@ -92,14 +109,33 @@ func hostile(parameter *journal.InstanceLog, intended livejournal.InstanceAppend
 	return parameter.Append(journal.Event{})
 }
 `)
-	runTestGit(t, repo, "add", "go.mod", "internal/journal/journal.go", "internal/livejournal/livejournal.go", "fixture.go")
+	writeFixtureFile(t, repo, "platform.go", `package fixture
+import "github.com/goobers/goobers/internal/journal"
+func platform(value platformAppender) { value.Append(journal.Event{}) }
+`)
+	writeFixtureFile(t, repo, "platform_darwin.go", `//go:build darwin
+package fixture
+type platformAppender = arbitrary
+`)
+	writeFixtureFile(t, repo, "platform_windows.go", `//go:build windows
+package fixture
+import "github.com/goobers/goobers/internal/journal"
+type platformAppender = *journal.InstanceLog
+`)
+	writeFixtureFile(t, repo, "platform_other.go", `//go:build !darwin && !windows
+package fixture
+type platformAppender = arbitrary
+`)
+	runTestGit(t, repo, "add", "go.mod", "internal/journal/journal.go", "internal/livejournal/livejournal.go", "fixture.go",
+		"platform.go", "platform_darwin.go", "platform_windows.go", "platform_other.go")
 
 	findings := discardedInstanceAppends(t, repo, trackedProductionGoFiles(t, repo))
-	// Four direct statement forms, a discarded DeclStmt, the DeclStmt receiver,
-	// two concrete method values, and the intended interface method value.
+	// The original nine shapes plus copied and branch-merged method values, a
+	// method value inside a function literal, an embedded/promoted method, and
+	// the common file whose receiver is an InstanceLog only on Windows.
 	// Arbitrary/misleading Append types and all propagated results remain legal.
-	if len(findings) != 9 {
-		t.Fatalf("findings = %d, want 9:\n%s", len(findings), strings.Join(findings, "\n"))
+	if len(findings) != 14 {
+		t.Fatalf("findings = %d, want 14:\n%s", len(findings), strings.Join(findings, "\n"))
 	}
 }
 
@@ -140,7 +176,7 @@ func trackedProductionGoFiles(t *testing.T, repo string) []string {
 func discardedInstanceAppends(t *testing.T, repo string, tracked []string) []string {
 	t.Helper()
 	trackedSet := make(map[string]struct{}, len(tracked))
-	remaining := make(map[string]struct{})
+	candidates := make(map[string]struct{})
 	for _, relative := range tracked {
 		trackedSet[relative] = struct{}{}
 		source, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(relative)))
@@ -148,15 +184,13 @@ func discardedInstanceAppends(t *testing.T, repo string, tracked []string) []str
 			t.Fatalf("read %s: %v", relative, err)
 		}
 		if bytes.Contains(source, []byte("Append")) {
-			remaining[relative] = struct{}{}
+			candidates[relative] = struct{}{}
 		}
 	}
 
-	var findings []string
+	compiled := make(map[string]bool, len(candidates))
+	findingSet := make(map[string]struct{})
 	for _, goos := range uniqueStrings(runtime.GOOS, "linux", "darwin", "windows") {
-		if len(remaining) == 0 {
-			break
-		}
 		cfg := &packages.Config{
 			Dir: repo,
 			Env: append(os.Environ(), "GOOS="+goos, "CGO_ENABLED=0"),
@@ -168,7 +202,7 @@ func discardedInstanceAppends(t *testing.T, repo string, tracked []string) []str
 			t.Fatalf("load production packages for %s: %v", goos, err)
 		}
 		for _, pkg := range loaded {
-			if len(pkg.Errors) != 0 && packageContainsCandidate(repo, pkg.CompiledGoFiles, remaining) {
+			if len(pkg.Errors) != 0 && packageContainsCandidate(repo, pkg.CompiledGoFiles, candidates) {
 				t.Fatalf("type-check candidate package %s for %s: %s", pkg.PkgPath, goos, pkg.Errors[0])
 			}
 			for i, syntax := range pkg.Syntax {
@@ -181,21 +215,29 @@ func discardedInstanceAppends(t *testing.T, repo string, tracked []string) []str
 				if _, tracked := trackedSet[relative]; !tracked {
 					continue
 				}
-				if _, candidate := remaining[relative]; !candidate {
+				if _, candidate := candidates[relative]; !candidate {
 					continue
 				}
-				findings = append(findings, discardedAppendsInFile(pkg.Fset, syntax, pkg.TypesInfo)...)
-				delete(remaining, relative)
+				compiled[relative] = true
+				for _, finding := range discardedAppendsInFile(pkg.Fset, syntax, pkg.TypesInfo) {
+					findingSet[finding] = struct{}{}
+				}
 			}
 		}
 	}
-	if len(remaining) != 0 {
-		missing := make([]string, 0, len(remaining))
-		for path := range remaining {
+	var missing []string
+	for path := range candidates {
+		if !compiled[path] {
 			missing = append(missing, path)
 		}
+	}
+	if len(missing) != 0 {
 		sort.Strings(missing)
 		t.Fatalf("type-check tracked Append sources on supported platforms: %s", strings.Join(missing, ", "))
+	}
+	findings := make([]string, 0, len(findingSet))
+	for finding := range findingSet {
+		findings = append(findings, finding)
 	}
 	sort.Strings(findings)
 	return findings
@@ -221,13 +263,12 @@ func discardedAppendsInFile(files *token.FileSet, parsed *ast.File, info *types.
 		if !ok || function.Body == nil {
 			continue
 		}
-		methodValues := make(map[types.Object]bool)
+		methodValues := instanceAppendMethodValues(function.Body, info)
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			switch statement := node.(type) {
 			case *ast.AssignStmt:
-				rememberMethodValues(statement.Lhs, statement.Rhs, info, methodValues)
 				if len(statement.Lhs) == 1 && isBlankIdentifier(statement.Lhs[0]) && len(statement.Rhs) == 1 && isInstanceAppendCall(statement.Rhs[0], info, methodValues) {
-					findings = append(findings, files.Position(statement.Pos()).String())
+					findings = append(findings, physicalPosition(files, statement.Pos()))
 				}
 			case *ast.DeclStmt:
 				if declaration, ok := statement.Decl.(*ast.GenDecl); ok {
@@ -236,25 +277,24 @@ func discardedAppendsInFile(files *token.FileSet, parsed *ast.File, info *types.
 						if !ok {
 							continue
 						}
-						rememberMethodValues(identsToExpressions(values.Names), values.Values, info, methodValues)
 						for i, name := range values.Names {
 							if name.Name == "_" && i < len(values.Values) && isInstanceAppendCall(values.Values[i], info, methodValues) {
-								findings = append(findings, files.Position(values.Pos()).String())
+								findings = append(findings, physicalPosition(files, values.Pos()))
 							}
 						}
 					}
 				}
 			case *ast.ExprStmt:
 				if isInstanceAppendCall(statement.X, info, methodValues) {
-					findings = append(findings, files.Position(statement.Pos()).String())
+					findings = append(findings, physicalPosition(files, statement.Pos()))
 				}
 			case *ast.DeferStmt:
 				if isInstanceAppendCall(statement.Call, info, methodValues) {
-					findings = append(findings, files.Position(statement.Pos()).String())
+					findings = append(findings, physicalPosition(files, statement.Pos()))
 				}
 			case *ast.GoStmt:
 				if isInstanceAppendCall(statement.Call, info, methodValues) {
-					findings = append(findings, files.Position(statement.Pos()).String())
+					findings = append(findings, physicalPosition(files, statement.Pos()))
 				}
 			}
 			return true
@@ -263,18 +303,74 @@ func discardedAppendsInFile(files *token.FileSet, parsed *ast.File, info *types.
 	return findings
 }
 
-func rememberMethodValues(lhs, rhs []ast.Expr, info *types.Info, aliases map[types.Object]bool) {
+type methodValueFlow struct {
+	destination types.Object
+	source      types.Object
+	seed        bool
+}
+
+// instanceAppendMethodValues computes a conservative whole-function fixed
+// point. A destination is tainted if any assignment can give it an instance
+// Append method value; a later assignment cannot erase a path that remains
+// possible through a branch or closure.
+func instanceAppendMethodValues(body *ast.BlockStmt, info *types.Info) map[types.Object]bool {
+	var flows []methodValueFlow
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch statement := node.(type) {
+		case *ast.AssignStmt:
+			flows = append(flows, methodValueFlows(statement.Lhs, statement.Rhs, info)...)
+		case *ast.DeclStmt:
+			declaration, ok := statement.Decl.(*ast.GenDecl)
+			if !ok {
+				return true
+			}
+			for _, spec := range declaration.Specs {
+				if values, ok := spec.(*ast.ValueSpec); ok {
+					flows = append(flows, methodValueFlows(identsToExpressions(values.Names), values.Values, info)...)
+				}
+			}
+		}
+		return true
+	})
+
+	tainted := make(map[types.Object]bool)
+	changed := true
+	for changed {
+		changed = false
+		for _, flow := range flows {
+			if tainted[flow.destination] || (!flow.seed && !tainted[flow.source]) {
+				continue
+			}
+			tainted[flow.destination] = true
+			changed = true
+		}
+	}
+	return tainted
+}
+
+func methodValueFlows(lhs, rhs []ast.Expr, info *types.Info) []methodValueFlow {
+	var flows []methodValueFlow
 	for i, left := range lhs {
 		identifier, ok := unparen(left).(*ast.Ident)
-		if !ok || identifier.Name == "_" {
+		if !ok || identifier.Name == "_" || i >= len(rhs) {
 			continue
 		}
-		object := info.ObjectOf(identifier)
-		if object == nil {
+		destination := info.ObjectOf(identifier)
+		if destination == nil {
 			continue
 		}
-		aliases[object] = i < len(rhs) && isInstanceAppendMethod(unparen(rhs[i]), info)
+		right := unparen(rhs[i])
+		if isInstanceAppendMethod(right, info) {
+			flows = append(flows, methodValueFlow{destination: destination, seed: true})
+			continue
+		}
+		if source, ok := right.(*ast.Ident); ok {
+			if object := info.ObjectOf(source); object != nil {
+				flows = append(flows, methodValueFlow{destination: destination, source: object})
+			}
+		}
 	}
+	return flows
 }
 
 func isInstanceAppendCall(expression ast.Expr, info *types.Info, aliases map[types.Object]bool) bool {
@@ -299,7 +395,24 @@ func isInstanceAppendMethod(expression ast.Expr, info *types.Info) bool {
 
 func isInstanceAppendSelection(selector *ast.SelectorExpr, info *types.Info) bool {
 	selection := info.Selections[selector]
-	return selector.Sel.Name == "Append" && selection != nil && isInstanceAppenderType(selection.Recv())
+	if selector.Sel.Name != "Append" || selection == nil {
+		return false
+	}
+	if isInstanceAppenderType(selection.Recv()) {
+		return true
+	}
+	// For an embedded *InstanceLog, Recv is the promoting outer struct. The
+	// selected method object retains Append's declaring receiver.
+	function, ok := selection.Obj().(*types.Func)
+	if !ok {
+		return false
+	}
+	signature, ok := function.Type().(*types.Signature)
+	return ok && signature.Recv() != nil && isInstanceAppenderType(signature.Recv().Type())
+}
+
+func physicalPosition(files *token.FileSet, position token.Pos) string {
+	return files.PositionFor(position, false).String()
 }
 
 func isInstanceAppenderType(value types.Type) bool {
