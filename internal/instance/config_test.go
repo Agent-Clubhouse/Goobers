@@ -1309,6 +1309,48 @@ func TestRetentionConfigEnabledWithNoLimitsIsRejected(t *testing.T) {
 	}
 }
 
+// TestRecoverySnapshotConfigRefusesWorstCaseOverVolume pins #4862's second
+// requirement: a recovery-snapshot config whose declared worst case (every
+// slot at its per-snapshot ceiling) cannot possibly fit the declared volume
+// is refused at load, not left to fail the first time the volume fills.
+func TestRecoverySnapshotConfigRefusesWorstCaseOverVolume(t *testing.T) {
+	// Omitted maxVolumeBytes stays unbounded: no worst-case check is made,
+	// even against the (large) resolved defaults.
+	if err := (RecoverySnapshotConfig{}).validate(); err != nil {
+		t.Fatalf("validate(unbounded volume) error = %v, want nil", err)
+	}
+	fits := RecoverySnapshotConfig{MaxSnapshots: 4, MaxArchiveBytes: 10, MaxVolumeBytes: 40}
+	if err := fits.validate(); err != nil {
+		t.Fatalf("validate(exactly fits) error = %v, want nil", err)
+	}
+	tooSmall := RecoverySnapshotConfig{MaxSnapshots: 4, MaxArchiveBytes: 10, MaxVolumeBytes: 39}
+	if err := tooSmall.validate(); err == nil || !strings.Contains(err.Error(), "maxVolumeBytes") {
+		t.Fatalf("validate(one byte short) error = %v, want a maxVolumeBytes error", err)
+	}
+	// Resolved defaults (128 snapshots x 512 MiB) apply when the axes are
+	// omitted, so an explicit volume too small for the DEFAULT worst case is
+	// refused too, not just an explicitly configured one.
+	defaultsExceedVolume := RecoverySnapshotConfig{MaxVolumeBytes: 1}
+	if err := defaultsExceedVolume.validate(); err == nil || !strings.Contains(err.Error(), "maxVolumeBytes") {
+		t.Fatalf("validate(volume too small for resolved defaults) error = %v, want a maxVolumeBytes error", err)
+	}
+	for name, cfg := range map[string]RecoverySnapshotConfig{
+		"negative maxSnapshots":    {MaxSnapshots: -1},
+		"negative maxArchiveBytes": {MaxArchiveBytes: -1},
+		"negative maxVolumeBytes":  {MaxVolumeBytes: -1},
+		"bad retainWindow":         {RetainWindow: "not-a-duration"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := cfg.validate(); err == nil {
+				t.Fatal("invalid recovery config accepted")
+			}
+		})
+	}
+	if err := (&Config{Retention: RetentionConfig{Recovery: &tooSmall}}).Validate(); err == nil || !strings.Contains(err.Error(), "maxVolumeBytes") {
+		t.Fatalf("Config.Validate did not surface the recovery volume check: %v", err)
+	}
+}
+
 func TestProjectionFullFidelityRetentionDaysPolicy(t *testing.T) {
 	if got := (*Config)(nil).ProjectionFullFidelityRetentionDays(); got != DefaultProjectionFullFidelityDays {
 		t.Fatalf("nil config default = %d, want %d", got, DefaultProjectionFullFidelityDays)

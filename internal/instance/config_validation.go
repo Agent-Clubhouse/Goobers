@@ -304,6 +304,34 @@ func (c RetentionConfig) validate() error {
 	if c.FirstEnable != "" && c.FirstEnable != "gracePeriod" && c.FirstEnable != "immediate" {
 		return fmt.Errorf("retention.firstEnable must be %q or %q, got %q", "gracePeriod", "immediate", c.FirstEnable)
 	}
+	return c.RecoveryEffective().validate()
+}
+
+// validate refuses a recovery-snapshot configuration whose declared worst
+// case (every retained slot at its per-snapshot ceiling) could not possibly
+// fit the volume it is meant to protect (#4862).
+func (c RecoverySnapshotConfig) validate() error {
+	if c.MaxSnapshots < 0 {
+		return fmt.Errorf("retention.recovery.maxSnapshots must not be negative")
+	}
+	if c.MaxArchiveBytes < 0 {
+		return fmt.Errorf("retention.recovery.maxArchiveBytes must not be negative")
+	}
+	if c.MaxVolumeBytes < 0 {
+		return fmt.Errorf("retention.recovery.maxVolumeBytes must not be negative")
+	}
+	if _, err := c.RetainWindowEffective(); err != nil {
+		return err
+	}
+	if c.MaxVolumeBytes == 0 {
+		return nil
+	}
+	// Divide rather than multiply to avoid overflowing int64 on a large
+	// declared ceiling times a large snapshot count.
+	if c.MaxArchiveBytesEffective() > c.MaxVolumeBytes/int64(c.MaxSnapshotsEffective()) {
+		return fmt.Errorf("retention.recovery: maxSnapshots (%d) x maxArchiveBytes (%d) exceeds maxVolumeBytes (%d)",
+			c.MaxSnapshotsEffective(), c.MaxArchiveBytesEffective(), c.MaxVolumeBytes)
+	}
 	return nil
 }
 

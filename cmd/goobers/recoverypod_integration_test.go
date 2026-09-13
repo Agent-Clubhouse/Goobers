@@ -50,6 +50,11 @@ func testPodRecoveryRepositoryTransfer(t *testing.T, repo providers.RepositoryRe
 	}
 	hostRepository := t.TempDir()
 	recoveryCLIGit(t, hostRepository, "init", "--bare")
+	// The managed mirror this represents ordinarily already tracks the
+	// repository's base branch (an ephemeral pod workspace shares its
+	// object store via `git worktree add`), which is what makes the delta
+	// bundle recovery.Retain produces below restorable here.
+	recoveryCLIGit(t, hostRepository, "fetch", source, "main")
 	const runID = "pod-recovery-upload"
 	key := repo.CanonicalKey()
 	var allow atomic.Bool

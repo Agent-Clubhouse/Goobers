@@ -17,6 +17,11 @@ import (
 // replacement of the source path cannot change the imported bytes.
 func ImportSnapshotBundle(ctx context.Context, repository, path string, record Record, maxBytes int64) error {
 	return withVerifiedArchive(ctx, path, record, maxBytes, func(staged string) error {
+		if record.archiveFormat() == archiveFormatDelta {
+			if err := recoveryGit(ctx, repository, io.Discard, "cat-file", "-e", record.BaseSHA+"^{commit}"); err != nil {
+				return fmt.Errorf("recovery delta bundle requires its base commit %s to already be present in %q: %w", record.BaseSHA, repository, err)
+			}
+		}
 		var heads snapshotPathOutput
 		if err := recoveryGit(ctx, repository, &heads, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", staged); err != nil {
 			return fmt.Errorf("import recovery objects: %w", err)
@@ -81,18 +86,52 @@ func copyRecoveryArchive(path string, destination io.Writer) error {
 }
 
 func verifyBundleHeader(path string, record Record) error {
-	file, err := os.Open(path)
+	header, err := readBundleHeader(path)
 	if err != nil {
 		return err
+	}
+	return verifyBundleHeaderBytes(header, record, record.archiveFormat())
+}
+
+// readBundleHeader returns the bundle header including its terminating blank
+// line, without buffering the rest of the (potentially large) archive.
+func readBundleHeader(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = file.Close() }()
 	header, err := io.ReadAll(io.LimitReader(file, 4096))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	end := bytes.Index(header, []byte("\n\n"))
-	if end < 0 || string(header[:end+2]) != expectedBundleHeader(record) {
-		return fmt.Errorf("recovery bundle does not contain the expected self-contained snapshot")
+	if end < 0 {
+		return nil, fmt.Errorf("recovery bundle header not found")
 	}
-	return nil
+	return header[:end+2], nil
+}
+
+// inspectBundleFormat reports the format an already-written bundle file
+// declares in its own header, for a crash-resumed publication that must
+// record the format the earlier attempt actually chose (#4862). It infers
+// shape only; the caller still verifies the header against the trusted
+// record via verifyBundleHeader/ImportSnapshotBundle before relying on it.
+func inspectBundleFormat(path string) (string, error) {
+	header, err := readBundleHeader(path)
+	if err != nil {
+		return "", err
+	}
+	trimmed, ok := strings.CutSuffix(string(header), "\n\n")
+	if !ok {
+		return "", fmt.Errorf("recovery bundle header not found")
+	}
+	switch strings.Count(trimmed, "\n") {
+	case 2:
+		return archiveFormatFull, nil
+	case 3:
+		return archiveFormatDelta, nil
+	default:
+		return "", fmt.Errorf("recovery bundle header has an unexpected shape")
+	}
 }

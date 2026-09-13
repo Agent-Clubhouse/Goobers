@@ -36,6 +36,11 @@ func TestIntegrationArchiveIntakeRequiresVerifiedDurableAcknowledgement(t *testi
 		t.Fatal(err)
 	}
 	recoveryTestGit(t, host, "init", "--bare")
+	// The managed mirror this represents ordinarily already tracks the
+	// repository's base branch (the worker's workspace shares its object
+	// store), which is what makes the delta bundle PrepareRecord/
+	// PublishRetainedState just produced above restorable here.
+	recoveryTestGit(t, host, "fetch", source, "main")
 	request := RetentionRequest{Repository: host, RepositoryKey: record.RepositoryKey, RunID: record.RunID, IdentityTime: record.CreatedAt, RetainUntil: record.RetainUntil, InventoryRoot: inventory, CleanupRoots: []string{host}, MaxSnapshots: 1, MaxArchiveBytes: 1 << 20}
 	// The host supplies its own run identity time and retention policy, not
 	// whatever dates the worker placed in its otherwise valid envelope.
