@@ -223,7 +223,12 @@ func TestResumeScanReattachesEngineDrivenRunInsteadOfResumingIt(t *testing.T) {
 	}
 	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
-	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+	recoveryRunDir, err := l.FindRunDir(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryRunDirs := []string{recoveryRunDir}
+	if err := sched.ReconcileRunDirs([]string{l.RunsDir()}, recoveryRunDirs, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -247,6 +252,7 @@ func TestResumeScanReattachesEngineDrivenRunInsteadOfResumingIt(t *testing.T) {
 			sched.ReleaseReconciled(runID, workflowName)
 		},
 		&wg,
+		recoveryRunDirs,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -335,7 +341,12 @@ func TestResumeScanStillResumesRunnerDrivenRun(t *testing.T) {
 	}
 	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
-	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+	recoveryRunDir, err := l.FindRunDir(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryRunDirs := []string{recoveryRunDir}
+	if err := sched.ReconcileRunDirs([]string{l.RunsDir()}, recoveryRunDirs, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -344,6 +355,7 @@ func TestResumeScanStillResumesRunnerDrivenRun(t *testing.T) {
 		ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, &engineRunGuards{client: fake},
 		setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog,
 		setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg,
+		recoveryRunDirs,
 	)
 	if err != nil {
 		t.Fatal(err)

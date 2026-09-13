@@ -1225,12 +1225,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: %v\n", err)
 		})
 	}
-	runDirs, err := l.RunDirs()
+	recoveryRunDirs, err := reconcileStartupRuns(ctx, l, setup, sched, tracker, stdout)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := sched.ReconcileAll(runDirs, time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -1248,7 +1244,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
-	sweepStalled := func(now time.Time) error {
+	sweepStalled := func(now time.Time, recoveryRunDirs ...[]string) error {
 		return sweepStalledRuns(
 			ctx,
 			l,
@@ -1274,11 +1270,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			now,
 			stalledRunTimeout,
 			maxRunDuration,
+			recoveryRunDirs...,
 		)
 	}
 	// Reap stale journals before crash-resume can refresh them with a new
 	// stage heartbeat.
-	stalledSweepErrors.report(sweepStalled(time.Now()))
+	stalledSweepErrors.report(runStartupPhase(stdout, tracker, "stalled-run-reconcile", fmt.Sprintf("candidates=%d", len(recoveryRunDirs)), func() error {
+		return sweepStalled(time.Now(), recoveryRunDirs)
+	}))
 
 	cancelPlane.AttachRelease(sched.ReleaseRun)
 
@@ -1344,7 +1343,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// and would delete out from under an in-flight build. Running it here
 	// preserves the invariant SweepOrphans' own doc requires: called before
 	// this process has established any Scope of its own.
-	sweepOrphanedEphemeralTmp(setup.Config, setup.InstanceLog)
+	reconcileStartupEphemeralTemp(setup, tracker, stdout)
 
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
@@ -1353,7 +1352,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, reattached, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, engineGuards, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
+	resumed, warned, reattached, err := resumeStartupRuns(ctx, l, setup, engineGuards, sched, &wg, recoveryRunDirs, tracker, stdout)
 	if err != nil {
 		return daemonStartupFailure(ctx, err, func() {
 			pf(stderr, "error: %v\n", err)
@@ -1379,7 +1378,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// same as the periodic sweep: a renewal failure here does not fail daemon
 	// start, since the claim ledger's own reap is what it would fail open to.
 	if len(resumed) > 0 {
-		_, _, renewErr := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease)
+		renewErr := renewResumedClaimsAtStartup(ctx, l, claimLiveness, len(resumed), tracker, stdout)
 		if isJournaledClaimsLockTimeout(renewErr) {
 			renewErr = nil
 		}
@@ -1393,10 +1392,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
-	// #3806: crash-resume of every interrupted run finished (this is the
-	// startup phase whose duration is unbounded and scales with interrupted-
-	// run count, so a kubelet startupProbe against /readyz must wait this
-	// out with a generous failureThreshold, not a short initialDelay).
+	// #3806: crash-resume of every interrupted run in the non-terminal
+	// inventory finished. Its duration scales with genuinely recoverable work,
+	// so a kubelet startupProbe against /readyz must still allow enough time
+	// for those runs, not for retained terminal history.
 	resumeComplete.Store(true)
 
 	// Sweep once before announcing readiness so requests and responses orphaned
@@ -1406,9 +1405,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		err := errors.Join(durableTriggers.Drain(ctx), sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
 		return recordTriggerSweepProgress(&lastTriggerSweepAtNanos, err, time.Now())
 	}
-	triggerSweepErrors.report(triggerSweep())
+	triggerSweepErrors.report(runStartupPhase(stdout, tracker, "trigger-request-reconcile", "", triggerSweep))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
-	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
+	claimAdminSweepErrors.report(reconcileStartupClaimAdmin(l, setup, recoverExpiredClaims, tracker, stdout))
 	// #831's daemon-side half: cancel one live in-flight run on operator request
 	// by resolving its owning Runner and calling CancelRun. Its own ticker (below)
 	// keeps a worst-case wedged-stage cancellation — which blocks in CancelRun for
@@ -1418,7 +1417,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	cancelSweep := func() error {
 		return sweepPendingCancelRequests(l.SchedulerDir(), setup.RunnerRegistry, setup.InstanceLog, sched.ReleaseRun, time.Now)
 	}
-	cancelSweepErrors.report(cancelSweep())
+	cancelSweepErrors.report(runStartupPhase(stdout, tracker, "cancel-request-reconcile", "", cancelSweep))
 
 	// #459's daemon-side half: on operator request (`goobers apply`), run
 	// exactly one config-reload check now instead of waiting for
@@ -1471,7 +1470,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	applySweep := func() error {
 		return sweepPendingApplyRequests(ctx, l.SchedulerDir(), reconcileApply, time.Now)
 	}
-	applySweepErrors.report(applySweep())
+	applySweepErrors.report(runStartupPhase(stdout, tracker, "apply-request-reconcile", "", applySweep))
 
 	// The periodic sweep runs on its own goroutine for the daemon's entire
 	// lifetime, concurrently with the main goroutine's own stdout/stderr
@@ -1743,7 +1742,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: %v\n", err)
 		})
 	}
-	fleetConnectorDone, fleetConnectorStarted, fleetConnectorErr := startDaemonFleetConnector(ctx, root)
+	fleetConnectorDone, fleetConnectorStarted, fleetConnectorErr := startFleetConnectorPhase(ctx, root, tracker, stdout)
 	if fleetConnectorErr != nil {
 		pf(stdout, "warning: Fleet connector unavailable: %v\n", fleetConnectorErr)
 	}

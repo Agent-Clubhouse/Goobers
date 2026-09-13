@@ -63,6 +63,9 @@ type schedulerSetup struct {
 	// because they are different databases with different writers: anything that
 	// advances a run records here, while only the projector touches ReadModel.
 	Watermarks *intake.Store
+	// ProjectorRestartComplete means the bounded pending/non-terminal startup
+	// catch-up succeeded, so read-model recovery inventory is safe to consume.
+	ProjectorRestartComplete bool
 	// StopProjector shuts the projector's commit loop down. Held on the setup so
 	// the daemon's shutdown path stops it with everything else, rather than the
 	// loop outliving the process's other goroutines.
@@ -305,7 +308,6 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err != nil {
 		return nil, err
 	}
-
 	var tel *telemetry.Client
 	var rollupDB *rollup.DB
 	var readModel *readmodel.Store
@@ -314,6 +316,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	var stopProjector func()
 	var retentionStats func() readmodel.RetentionStats
 	var projectorStats func() projector.Stats
+	var projectorRestartComplete bool
 	var instanceLog *journal.InstanceLog
 	// telemetryOTLPDegradeErr holds a non-nil buildTelemetryClient error that
 	// wraps telemetry.ErrOTLPUnavailable (invalid OTLP TLS material). It is
@@ -379,7 +382,6 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 			return nil, err
 		}
 	}
-
 	// Construct read.db alongside the existing store (design §6.6 step 1).
 	// Nothing reads it yet: the transition is deliberately additive so that
 	// rollback at this stage is deleting a file. The projector, the change
@@ -455,7 +457,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
 			} else {
 				watermarks = intakeStore
-				stopProjector, retentionStats, projectorStats = startProjector(ctx, readStore, intakeStore, l, cfg)
+				stopProjector, retentionStats, projectorStats, projectorRestartComplete = startProjector(ctx, readStore, intakeStore, l, cfg)
 			}
 		}
 	}
@@ -537,40 +539,41 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 
 	return &schedulerSetup{
-		Root:              l.Root,
-		Runner:            definitions.Runner,
-		Runners:           definitions.Runners,
-		LegacyRunner:      legacyRunner,
-		Telemetry:         tel,
-		RollupDB:          rollupDB,
-		ReadModel:         readModel,
-		Watermarks:        watermarks,
-		StopProjector:     stopProjector,
-		RetentionStats:    retentionStats,
-		ProjectorStats:    projectorStats,
-		ReadModelEpoch:    readModelEpoch,
-		Config:            cfg,
-		Definitions:       definitions.Set,
-		Worktrees:         definitions.Worktrees,
-		WorktreesByGaggle: definitions.WorktreesByGaggle,
-		LegacyWorktrees:   legacyWorktrees,
-		InstanceLog:       instanceLog,
-		Entries:           definitions.Entries,
-		Machines:          definitions.Machines,
-		GooberDigests:     definitions.GooberDigests,
-		RepoRefs:          definitions.RepoRefs,
-		RunConditions:     cfg.RunConditions,
-		Validation:        definitions.Validation,
-		ConfigDigest:      configDigest,
-		RecoveredClaims:   recoveredClaims,
-		OpenPRRefresher:   definitions.OpenPRRefresher,
-		EngineRuntime:     definitions.EngineRuntime,
-		ProviderQuota:     providerQuota,
-		SharedRegistry:    sharedReg,
-		TerminalNotifier:  terminalNotifier,
-		RunnerRegistry:    runnerRegistry,
-		Interventions:     interventionRegistry,
-		SecretStores:      secretStores,
+		Root:                     l.Root,
+		Runner:                   definitions.Runner,
+		Runners:                  definitions.Runners,
+		LegacyRunner:             legacyRunner,
+		Telemetry:                tel,
+		RollupDB:                 rollupDB,
+		ReadModel:                readModel,
+		Watermarks:               watermarks,
+		ProjectorRestartComplete: projectorRestartComplete,
+		StopProjector:            stopProjector,
+		RetentionStats:           retentionStats,
+		ProjectorStats:           projectorStats,
+		ReadModelEpoch:           readModelEpoch,
+		Config:                   cfg,
+		Definitions:              definitions.Set,
+		Worktrees:                definitions.Worktrees,
+		WorktreesByGaggle:        definitions.WorktreesByGaggle,
+		LegacyWorktrees:          legacyWorktrees,
+		InstanceLog:              instanceLog,
+		Entries:                  definitions.Entries,
+		Machines:                 definitions.Machines,
+		GooberDigests:            definitions.GooberDigests,
+		RepoRefs:                 definitions.RepoRefs,
+		RunConditions:            cfg.RunConditions,
+		Validation:               definitions.Validation,
+		ConfigDigest:             configDigest,
+		RecoveredClaims:          recoveredClaims,
+		OpenPRRefresher:          definitions.OpenPRRefresher,
+		EngineRuntime:            definitions.EngineRuntime,
+		ProviderQuota:            providerQuota,
+		SharedRegistry:           sharedReg,
+		TerminalNotifier:         terminalNotifier,
+		RunnerRegistry:           runnerRegistry,
+		Interventions:            interventionRegistry,
+		SecretStores:             secretStores,
 	}, nil
 }
 
@@ -1668,207 +1671,196 @@ func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*
 	return current, "current-config"
 }
 
-func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, guards *engineRunGuards, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, reattached []string, err error) {
-	runDirs, err := l.RunDirs()
+func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, guards *engineRunGuards, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup, recoveryRunDirs ...[]string) (resumed []string, warned []string, reattached []string, err error) {
+	candidates, err := recoveryRunCandidates(ctx, l, recoveryRunDirs...)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	for _, runsDir := range runDirs {
-		entries, exists, err := readDirectory(runsDir)
-		if !exists {
+	for _, dir := range candidates {
+		runsDir := filepath.Dir(dir)
+		runName := filepath.Base(dir)
+		rd, err := journal.OpenRead(dir)
+		if err != nil {
+			if errors.Is(err, journal.ErrNotRunDirectory) {
+				continue
+			}
+			return resumed, warned, reattached, fmt.Errorf("open run journal %q: %w", runName, err)
+		}
+		id, err := rd.Identity()
+		if err != nil {
 			continue
 		}
-		if err != nil {
-			return resumed, warned, reattached, fmt.Errorf("read runs directory: %w", err)
+		rn := fallback
+		runLayout := l
+		if filepath.Clean(runsDir) != filepath.Clean(l.RunsDir()) {
+			runLayout = l.ForGaggle(id.Gaggle)
 		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			dir := filepath.Join(runsDir, e.Name())
-			rd, err := journal.OpenRead(dir)
-			if err != nil {
-				if errors.Is(err, journal.ErrNotRunDirectory) {
-					continue
-				}
-				return resumed, warned, reattached, fmt.Errorf("open run journal %q: %w", e.Name(), err)
-			}
-			id, err := rd.Identity()
-			if err != nil {
-				continue
-			}
-			rn := fallback
-			runLayout := l
-			if filepath.Clean(runsDir) != filepath.Clean(l.RunsDir()) {
-				runLayout = l.ForGaggle(id.Gaggle)
-			}
-			if runners != nil && runLayout.Gaggle() != "" {
-				rn = runners[id.Gaggle]
-			}
-			// Event-log-first (#242): state.json can lag a crash-fsynced
-			// run.finished event, so Phase() (reconstructed from the log) is
-			// what decides whether this run is actually terminal — trusting
-			// the checkpoint directly here risks spinning up a resume
-			// goroutine for a run that already finished.
-			if phase, err := rd.Phase(); err == nil {
-				switch phase {
-				case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-					var finalizeErr error
-					if rn != nil {
-						finalizeErr = rn.FinalizeTerminal(id.RunID, phase)
+		if runners != nil && runLayout.Gaggle() != "" {
+			rn = runners[id.Gaggle]
+		}
+		// Event-log-first (#242): state.json can lag a crash-fsynced
+		// run.finished event, so Phase() (reconstructed from the log) is
+		// what decides whether this run is actually terminal — trusting
+		// the checkpoint directly here risks spinning up a resume
+		// goroutine for a run that already finished.
+		if phase, err := rd.Phase(); err == nil {
+			switch phase {
+			case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+				var finalizeErr error
+				if rn != nil {
+					finalizeErr = rn.FinalizeTerminal(id.RunID, phase)
+				} else {
+					manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
+					if managerErr != nil {
+						finalizeErr = managerErr
 					} else {
-						manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
-						if managerErr != nil {
-							finalizeErr = managerErr
-						} else {
-							finalizeErr = finalizeTerminalRun(runLayout, log, manager, id.RunID)
-						}
-					}
-					if finalizeErr != nil {
-						if !errors.Is(finalizeErr, worktree.ErrCleanupDeferred) {
-							return resumed, warned, reattached, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
-						}
-						if log != nil {
-							if err := log.Append(journal.Event{
-								Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
-								Error: &journal.ErrorDetail{
-									Code:    "terminal_cleanup_deferred",
-									Message: fmt.Sprintf("terminal cleanup deferred for retry: %v", finalizeErr),
-								},
-							}); err != nil {
-								return resumed, warned, reattached, fmt.Errorf("journal deferred terminal cleanup for run %q: %w", id.RunID, err)
-							}
-						}
-					}
-					// #2190: a run that resumed here and was already terminal
-					// took a different path than a normal terminal run's
-					// telemetryingest.RunTelemetry call below (line ~1080) — it
-					// never recorded its intake watermark, so the read model
-					// never discovered it advanced.
-					telemetryingest.RunIntake(watermarks, runLayout, id.RunID, log)
-					release(id.RunID, id.Workflow)
-					continue // terminal: nothing to resume
-				}
-			}
-
-			// Engine-driven runs are re-attached, never resumed. Every WF-016
-			// check Runner.Resume applies passes on an engine-authored
-			// journal — the pinned definition, digest and inputs are all
-			// there — so without this branch a goobers-api restart during an
-			// engine run walks it a SECOND time in-process while the worker
-			// keeps walking it on Temporal: two drivers, two open-pr /
-			// push-branch / merge-pr attempts, one journal. The daemon's job
-			// here is not to drive the run but to stop pretending it can.
-			if id.EngineDriven() {
-				reattached = append(reattached, id.RunID)
-				if log != nil {
-					if err := log.Append(journal.Event{
-						Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
-						Runner: map[string]any{
-							"kind":   journal.RunnerAnnotationRunRecovery,
-							"reason": "daemon_restart",
-							"action": journal.RecoveryActionReattached,
-							"driver": string(id.Driver),
-						},
-					}); err != nil {
-						return resumed, warned, reattached, fmt.Errorf("journal engine re-attachment for run %q: %w", id.RunID, err)
+						finalizeErr = finalizeTerminalRun(runLayout, log, manager, id.RunID)
 					}
 				}
-				// Deliberately outside wg and outside the runner registry: see
-				// reattachEngineRun. Waiting for another process's run would
-				// hold this daemon's SIGTERM drain open for that run's whole
-				// duration, and hard-stopping it is not even meaningful.
-				go reattachEngineRun(ctx, guards, id, engineReattachDeps{
-					layout:     runLayout,
-					log:        log,
-					telemetry:  tel,
-					rollupDB:   rollupDB,
-					watermarks: watermarks,
-					release:    release,
-				})
-				continue
-			}
-
-			identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
-			machine, ok := machines[identity]
-			if rn == nil || !ok {
-				warned = append(warned, id.RunID)
-				if log != nil {
-					code := "resume_unresolvable_workflow"
-					message := fmt.Sprintf("run %q references unknown workflow %q — recover with `goobers run abort %s`", id.RunID, id.Workflow, id.RunID)
-					if rn == nil {
-						code = "resume_unresolvable_gaggle"
-						message = fmt.Sprintf("run %q references inactive gaggle %q — recover with `goobers run abort %s`", id.RunID, id.Gaggle, id.RunID)
+				if finalizeErr != nil {
+					if !errors.Is(finalizeErr, worktree.ErrCleanupDeferred) {
+						return resumed, warned, reattached, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
 					}
-					log.AppendBestEffort(journal.Event{
-						Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
-						Error: &journal.ErrorDetail{
-							Code:    code,
-							Message: message,
-						},
-					})
+					if log != nil {
+						if err := log.Append(journal.Event{
+							Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+							Error: &journal.ErrorDetail{
+								Code:    "terminal_cleanup_deferred",
+								Message: fmt.Sprintf("terminal cleanup deferred for retry: %v", finalizeErr),
+							},
+						}); err != nil {
+							return resumed, warned, reattached, fmt.Errorf("journal deferred terminal cleanup for run %q: %w", id.RunID, err)
+						}
+					}
 				}
-				continue
+				// #2190: a run that resumed here and was already terminal
+				// took a different path than a normal terminal run's
+				// telemetryingest.RunTelemetry call below (line ~1080) — it
+				// never recorded its intake watermark, so the read model
+				// never discovered it advanced.
+				telemetryingest.RunIntake(watermarks, runLayout, id.RunID, log)
+				release(id.RunID, id.Workflow)
+				continue // terminal: nothing to resume
 			}
-			// Never reinterpret a historical run under the current workflow
-			// merely because the name still matches.
-			machine, machineSource := interruptedRunMachine(id, machine)
-			repoRef := repoRefs[identity]
-			gooberDigest := gooberDigests[identity]
+		}
 
-			resumed = append(resumed, id.RunID)
+		// Engine-driven runs are re-attached, never resumed. Every WF-016
+		// check Runner.Resume applies passes on an engine-authored
+		// journal — the pinned definition, digest and inputs are all
+		// there — so without this branch a goobers-api restart during an
+		// engine run walks it a SECOND time in-process while the worker
+		// keeps walking it on Temporal: two drivers, two open-pr /
+		// push-branch / merge-pr attempts, one journal. The daemon's job
+		// here is not to drive the run but to stop pretending it can.
+		if id.EngineDriven() {
+			reattached = append(reattached, id.RunID)
 			if log != nil {
 				if err := log.Append(journal.Event{
 					Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
 					Runner: map[string]any{
-						"kind":                     journal.RunnerAnnotationRunRecovery,
-						"reason":                   "daemon_restart",
-						"action":                   journal.RecoveryActionResumed,
-						"workflowDigest":           id.WorkflowDigest,
-						"workflowDefinitionSource": machineSource,
+						"kind":   journal.RunnerAnnotationRunRecovery,
+						"reason": "daemon_restart",
+						"action": journal.RecoveryActionReattached,
+						"driver": string(id.Driver),
 					},
 				}); err != nil {
-					return resumed, warned, reattached, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)
+					return resumed, warned, reattached, fmt.Errorf("journal engine re-attachment for run %q: %w", id.RunID, err)
 				}
 			}
-			wg.Add(1)
-			untrack := runnerRegistry.Track(id.RunID, id.Workflow, rn)
-			go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
-				defer wg.Done()
-				defer release(runID, wfName)
-				defer untrack()
-				result, err := rn.Resume(ctx, runner.ResumeInput{
-					RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef,
-					RecoveryReason: "daemon_restart",
-				})
-				telemetryingest.RunTelemetry(tel, rollupDB, watermarks, runLayout, runID, log)
-				// #710: same fix as localscheduler/scheduler.go's dispatch echo —
-				// a business failure (result.Phase == PhaseFailed, err == nil:
-				// e.g. a WF-016 refuseResume, or Resume replaying a stage's own
-				// business-failure terminal transition) used to echo a bare
-				// "failed" here too. result is runner.Result directly (this path
-				// calls Runner.Resume, not through the scheduler's Starter seam),
-				// so FailureStage/Code/Message need no extra mirroring. The
-				// infra-error branch is deliberately untouched: a genuine Go
-				// error from Resume already carries its own full detail.
-				ev := journal.Event{Type: journal.EventRunFinished, Gaggle: gaggle, Workflow: wfName, RunID: runID, Status: string(result.Phase)}
-				switch {
-				case err != nil:
-					ev.Status = "error: " + err.Error()
-				case result.FailureCode != "":
-					ev.Stage = result.FailureStage
-					ev.Error = &journal.ErrorDetail{Code: result.FailureCode, Message: result.FailureMessage}
-					if result.FailureStage != "" {
-						ev.Status = fmt.Sprintf("%s (%s: %s)", ev.Status, result.FailureStage, result.FailureCode)
-					} else {
-						ev.Status = fmt.Sprintf("%s (%s)", ev.Status, result.FailureCode)
-					}
-				}
-				if log != nil {
-					log.AppendBestEffort(ev)
-				}
-			}(id.RunID, id.Gaggle, id.Workflow, gooberDigest, rn, runLayout, untrack)
+			// Deliberately outside wg and outside the runner registry: see
+			// reattachEngineRun. Waiting for another process's run would
+			// hold this daemon's SIGTERM drain open for that run's whole
+			// duration, and hard-stopping it is not even meaningful.
+			go reattachEngineRun(ctx, guards, id, engineReattachDeps{
+				layout:     runLayout,
+				log:        log,
+				telemetry:  tel,
+				rollupDB:   rollupDB,
+				watermarks: watermarks,
+				release:    release,
+			})
+			continue
 		}
+
+		identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
+		machine, ok := machines[identity]
+		if rn == nil || !ok {
+			warned = append(warned, id.RunID)
+			if log != nil {
+				code := "resume_unresolvable_workflow"
+				message := fmt.Sprintf("run %q references unknown workflow %q — recover with `goobers run abort %s`", id.RunID, id.Workflow, id.RunID)
+				if rn == nil {
+					code = "resume_unresolvable_gaggle"
+					message = fmt.Sprintf("run %q references inactive gaggle %q — recover with `goobers run abort %s`", id.RunID, id.Gaggle, id.RunID)
+				}
+				log.AppendBestEffort(journal.Event{
+					Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+					Error: &journal.ErrorDetail{
+						Code:    code,
+						Message: message,
+					},
+				})
+			}
+			continue
+		}
+		// Never reinterpret a historical run under the current workflow
+		// merely because the name still matches.
+		machine, machineSource := interruptedRunMachine(id, machine)
+		repoRef := repoRefs[identity]
+		gooberDigest := gooberDigests[identity]
+
+		resumed = append(resumed, id.RunID)
+		if log != nil {
+			if err := log.Append(journal.Event{
+				Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+				Runner: map[string]any{
+					"kind":                     journal.RunnerAnnotationRunRecovery,
+					"reason":                   "daemon_restart",
+					"action":                   journal.RecoveryActionResumed,
+					"workflowDigest":           id.WorkflowDigest,
+					"workflowDefinitionSource": machineSource,
+				},
+			}); err != nil {
+				return resumed, warned, reattached, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)
+			}
+		}
+		wg.Add(1)
+		untrack := runnerRegistry.Track(id.RunID, id.Workflow, rn)
+		go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
+			defer wg.Done()
+			defer release(runID, wfName)
+			defer untrack()
+			result, err := rn.Resume(ctx, runner.ResumeInput{
+				RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef,
+				RecoveryReason: "daemon_restart",
+			})
+			telemetryingest.RunTelemetry(tel, rollupDB, watermarks, runLayout, runID, log)
+			// #710: same fix as localscheduler/scheduler.go's dispatch echo —
+			// a business failure (result.Phase == PhaseFailed, err == nil:
+			// e.g. a WF-016 refuseResume, or Resume replaying a stage's own
+			// business-failure terminal transition) used to echo a bare
+			// "failed" here too. result is runner.Result directly (this path
+			// calls Runner.Resume, not through the scheduler's Starter seam),
+			// so FailureStage/Code/Message need no extra mirroring. The
+			// infra-error branch is deliberately untouched: a genuine Go
+			// error from Resume already carries its own full detail.
+			ev := journal.Event{Type: journal.EventRunFinished, Gaggle: gaggle, Workflow: wfName, RunID: runID, Status: string(result.Phase)}
+			switch {
+			case err != nil:
+				ev.Status = "error: " + err.Error()
+			case result.FailureCode != "":
+				ev.Stage = result.FailureStage
+				ev.Error = &journal.ErrorDetail{Code: result.FailureCode, Message: result.FailureMessage}
+				if result.FailureStage != "" {
+					ev.Status = fmt.Sprintf("%s (%s: %s)", ev.Status, result.FailureStage, result.FailureCode)
+				} else {
+					ev.Status = fmt.Sprintf("%s (%s)", ev.Status, result.FailureCode)
+				}
+			}
+			if log != nil {
+				log.AppendBestEffort(ev)
+			}
+		}(id.RunID, id.Gaggle, id.Workflow, gooberDigest, rn, runLayout, untrack)
 	}
 	return resumed, warned, reattached, nil
 }
