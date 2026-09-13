@@ -42,6 +42,21 @@ func TestRunStartupPhaseLogsStartDoneAndFailure(t *testing.T) {
 	}
 }
 
+func TestLogGateFlipEmitsGateAndElapsed(t *testing.T) {
+	var buf bytes.Buffer
+	start := time.Now().Add(-250 * time.Millisecond)
+
+	logGateFlip(&buf, start, "resumeComplete")
+
+	out := buf.String()
+	if !strings.Contains(out, "gate=resumeComplete status=flipped") {
+		t.Fatalf("output = %q, want a flipped line naming the gate", out)
+	}
+	if !strings.Contains(out, "elapsed=") {
+		t.Fatalf("output = %q, want an elapsed duration", out)
+	}
+}
+
 func TestWatchStartupReadinessEmitsDiagnosticNamingCurrentPhase(t *testing.T) {
 	var buf syncBuffer
 	tracker := &startupPhaseTracker{}

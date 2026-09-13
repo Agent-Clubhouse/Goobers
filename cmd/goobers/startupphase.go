@@ -61,6 +61,19 @@ func runStartupPhase(w io.Writer, tracker *startupPhaseTracker, phase, target st
 	return nil
 }
 
+// logGateFlip logs a startup readiness gate (configLoaded, stateOpen,
+// resumeComplete, sweepsStarted, planeReady, ready) flipping true, with
+// elapsed time since processStart (#4252). Before this, each of those gates
+// was set with a bare atomic.Bool.Store(true) and no log line at all, so a
+// crash-resume that legitimately takes minutes (resumeComplete is unbounded,
+// scaling with interrupted-run count) was indistinguishable in the container
+// log from an earlier phase silently hanging — nothing recorded WHICH gate
+// had flipped, or when, so an operator watching the log during the gap could
+// not tell "still resuming, on track" from "stuck".
+func logGateFlip(w io.Writer, processStart time.Time, gate string) {
+	pf(w, "%s startup gate=%s status=flipped elapsed=%s\n", startupTimestamp(), gate, time.Since(processStart))
+}
+
 // watchStartupReadiness emits one diagnostic log line naming the startup
 // phase runUpContext is currently in if the daemon is still alive but has
 // not reached readiness within threshold (#4368's acceptance criteria: "if
