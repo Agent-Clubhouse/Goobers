@@ -839,7 +839,7 @@
     "harnessName": {
       "description": "An agent harness whose launcher may be overridden.",
       "type": "string",
-      "enum": ["copilot", "claude-code"]
+      "enum": ["copilot", "claude-code", "codex"]
     },
     "githubId": {
       "description": "A GitHub identifier that may be written as a number (appId: 123456) or a quoted string; both parse to the same value.",

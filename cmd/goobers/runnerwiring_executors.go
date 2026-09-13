@@ -67,6 +67,7 @@ const credentialGrantEnv = "GH_TOKEN"
 const copilotModelEnv = "COPILOT_GITHUB_TOKEN"
 
 const claudeModelEnv = "ANTHROPIC_API_KEY"
+const codexModelEnv = "CODEX_API_KEY"
 
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
@@ -298,6 +299,23 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessClaudeCode), claudeAdapter); err != nil {
 		return nil, fmt.Errorf("register Claude Code harness: %w", err)
+	}
+	codexEnvCaps := make(map[string]string, len(envCaps)+1)
+	for capability, envVar := range envCaps {
+		codexEnvCaps[capability] = envVar
+	}
+	codexEnvCaps[string(capability.AgentModel)] = codexModelEnv
+	codexAdapter := &harness.CodexAdapter{
+		Command:           harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCodex), []string{"codex"}),
+		EnvCapabilities:   codexEnvCaps,
+		ExtraEnvAllowlist: envPassthrough,
+		InstanceRoot:      instanceRoot,
+		SelfBin:           selfBin,
+		EphemeralTmp:      ephemeralTmp,
+		ModelCredential:   modelCredential,
+	}
+	if err := registry.RegisterAs(string(apiv1.HarnessCodex), codexAdapter); err != nil {
+		return nil, fmt.Errorf("register Codex harness: %w", err)
 	}
 	return registry, nil
 }

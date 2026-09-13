@@ -1820,7 +1820,7 @@ func (c RunnerConfig) DefaultStageTimeoutDuration() (time.Duration, error) {
 // knownHarnessNames lists the harness names an adopter may key a launcher
 // override under, sorted for a stable admission-error message.
 func knownHarnessNames() []string {
-	return []string{string(apiv1.HarnessClaudeCode), string(apiv1.HarnessCopilot)}
+	return []string{string(apiv1.HarnessClaudeCode), string(apiv1.HarnessCodex), string(apiv1.HarnessCopilot)}
 }
 
 // knownHarnessName reports whether name is a harness a launcher override may
@@ -1828,7 +1828,7 @@ func knownHarnessNames() []string {
 // instead of silently doing nothing.
 func knownHarnessName(name string) bool {
 	switch apiv1.Harness(name) {
-	case apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
+	case apiv1.HarnessCopilot, apiv1.HarnessClaudeCode, apiv1.HarnessCodex:
 		return true
 	default:
 		return false

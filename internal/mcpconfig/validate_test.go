@@ -255,7 +255,7 @@ func TestBYOCredentialKeys(t *testing.T) {
 // declaring them is no longer rejected for claude-code, matching Copilot.
 func TestValidateForHarness(t *testing.T) {
 	servers := []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
-	for _, harness := range []apiv1.Harness{"", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode} {
+	for _, harness := range []apiv1.Harness{"", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode, apiv1.HarnessCodex} {
 		if err := ValidateForHarness(harness, servers, nil, []string{"read-context"}); err != nil {
 			t.Fatalf("ValidateForHarness(%q): %v", harness, err)
 		}
@@ -264,11 +264,9 @@ func TestValidateForHarness(t *testing.T) {
 
 // TestValidateForHarnessRejectsCredentialExposureToLocalSibling pins #1492's
 // AC3: the shared-process-environment credential-isolation rejection applies
-// identically to every harness — confirmed live that claude-code's stdio MCP
-// servers inherit the full parent process environment exactly like
-// Copilot's, so the same risk (and the same rejection) applies there too.
+// to harnesses whose stdio MCP servers inherit one parent environment.
 func TestValidateForHarnessRejectsCredentialExposureToLocalSibling(t *testing.T) {
-	for _, harness := range []apiv1.Harness{apiv1.HarnessCopilot, apiv1.HarnessClaudeCode} {
+	for _, harness := range []apiv1.Harness{apiv1.HarnessCopilot, apiv1.HarnessClaudeCode, apiv1.HarnessCodex} {
 		t.Run(string(harness), func(t *testing.T) {
 			credential := apiv1.MCPCredentialRef{
 				Kind:   apiv1.MCPCredentialKindBYO,
@@ -296,4 +294,5 @@ func TestValidateForHarnessRejectsCredentialExposureToLocalSibling(t *testing.T)
 			}
 		})
 	}
+
 }

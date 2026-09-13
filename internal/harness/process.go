@@ -159,6 +159,9 @@ func (b *syncBuffer) Dropped() int64 {
 type ProcessRequest struct {
 	// Command is argv: Command[0] is the executable, the rest are arguments.
 	Command []string
+	// Stdin is the optional byte stream supplied to the subprocess. Nil means
+	// an immediate EOF, never inheritance from the daemon's own stdin.
+	Stdin []byte
 	// Dir is the working directory (the stage workspace).
 	Dir string
 	// Env is the full child environment. Nil or empty means NO environment at
@@ -260,6 +263,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 
 	cmd := exec.Command(req.Command[0], req.Command[1:]...)
 	cmd.Dir = req.Dir
+	cmd.Stdin = bytes.NewReader(req.Stdin)
 	// A launcher can exit successfully after spawning helpers that inherited
 	// its stdout/stderr handles. Without WaitDelay, cmd.Wait blocks until every
 	// helper closes those pipes, turning a completed launcher session into a

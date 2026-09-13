@@ -77,6 +77,7 @@ goober.spec.conditionalPolicyActions               2.0          ga              
 goober.spec.displayName                            2.0          ga               supported        dev
 goober.spec.gaggle                                 2.0          ga               supported        dev
 goober.spec.harness.claude-code                    2.0          ga               supported        dev
+goober.spec.harness.codex                          2.0          ga               supported        dev
 goober.spec.harness.copilot                        2.0          ga               supported        dev
 goober.spec.harnessOptions                         2.0          ga               supported        dev
 goober.spec.instructions                           2.0          ga               supported        dev
@@ -184,4 +185,4 @@ workflow.terminal.abort                            2.0          ga              
 workflow.terminal.complete                         2.0          ga               supported        dev
 workflow.terminal.escalate                         2.0          ga               supported        dev
 
-184 feature/version row(s)
+185 feature/version row(s)

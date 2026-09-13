@@ -14,10 +14,10 @@ import (
 
 // ValidateForHarness checks that the selected harness can isolate and
 // materialize the declared servers before validating their contents. Both
-// supported harnesses (Copilot, claude-code — #1492) share the same
+// Supported harnesses share the same
 // materialization shape: a workspace/config-scoped file plus one shared
 // process environment for every locally-spawned stdio server, so the same
-// validation applies to both.
+// conservative credential-isolation validation applies to all of them.
 func ValidateForHarness(harness apiv1.Harness, servers []apiv1.MCPServer, declaredCapabilities, tools []string) error {
 	if harness == "" {
 		harness = apiv1.HarnessCopilot

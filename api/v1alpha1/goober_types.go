@@ -13,6 +13,8 @@ const (
 	HarnessCopilot Harness = "copilot"
 	// HarnessClaudeCode is the Anthropic Claude Code agent harness.
 	HarnessClaudeCode Harness = "claude-code"
+	// HarnessCodex is the OpenAI Codex CLI agent harness.
+	HarnessCodex Harness = "codex"
 )
 
 // MCPHeaderScheme controls how a resolved credential is formatted in a remote
@@ -117,7 +119,7 @@ type GooberSpec struct {
 	// +kubebuilder:validation:Required
 	Instructions string `json:"instructions" yaml:"instructions"`
 	// Harness is the agent harness this goober runs on.
-	// +kubebuilder:validation:Enum=copilot;claude-code
+	// +kubebuilder:validation:Enum=copilot;claude-code;codex
 	// +kubebuilder:default=copilot
 	// +optional
 	Harness Harness `json:"harness,omitempty" yaml:"harness,omitempty"`
