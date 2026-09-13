@@ -923,9 +923,23 @@ func TestDashboardBindsWhileAttachingAndStopsCleanly(t *testing.T) {
 		cancel()
 		t.Fatal(errors.Join(readErr, closeErr))
 	}
-	if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "Goobers is starting") {
+	startupPage := string(body)
+	if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(startupPage, "Goobers is starting") {
 		cancel()
 		t.Fatalf("startup response = %d %q", response.StatusCode, body)
+	}
+	for _, token := range []string{
+		"--bg:#f4f3ef",
+		"--panel:#fff",
+		"--ink:#202026",
+		"--accent:#6847d9",
+		"--accent-soft:#eee9ff",
+		"--accent-ink:#4c2db8",
+	} {
+		if !strings.Contains(startupPage, token) {
+			cancel()
+			t.Fatalf("startup response is missing portal theme token %q", token)
+		}
 	}
 
 	select {
