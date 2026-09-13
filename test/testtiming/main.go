@@ -1,4 +1,5 @@
-// Command testtiming captures Go test durations and reports soft timing budgets.
+// Command testtiming captures Go test durations, reports soft timing budgets,
+// and regenerates the unit-shard weight table from a verified CI artifact.
 package main
 
 import (
@@ -87,6 +88,8 @@ func run(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 		return runCapture(args[1:], stdout, stderr, now)
 	case "report":
 		return runReport(args[1:], stdout, stderr)
+	case "weights":
+		return runWeights(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "testtiming: unknown command %q\n", args[0])
 		printUsage(stderr)
@@ -98,6 +101,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage:")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming capture -job JOB -out FILE -- [go test flags and packages]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming report -budget FILE -current FILE [-previous FILE] [-summary FILE]")
+	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming weights -timing FILE -artifact-metadata FILE -job-metadata FILE -out FILE [-minimum-seconds N]")
 }
 
 func runCapture(args []string, stdout, stderr io.Writer, now func() time.Time) int {
