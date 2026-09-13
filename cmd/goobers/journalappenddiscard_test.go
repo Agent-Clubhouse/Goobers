@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -188,6 +189,11 @@ import "github.com/goobers/goobers/internal/journal"
 func returnInstanceMethod(parameter *journal.InstanceLog) func(journal.Event) error { return parameter.Append }
 func returnOtherMethod(other arbitrary) func(journal.Event) error { return other.Append }
 `)
+	writeFixtureFile(t, repo, "function_forwarding.go", `package fixture
+import "github.com/goobers/goobers/internal/journal"
+func discardVariadic(functions ...func(journal.Event) error) { functions[0](journal.Event{}) }
+func identityMethod(fn func(journal.Event) error) func(journal.Event) error { return fn }
+`)
 	writeFixtureFile(t, repo, "interprocedural_calls.go", `package fixture
 import "github.com/goobers/goobers/internal/journal"
 func interprocedural(parameter *journal.InstanceLog, other arbitrary) {
@@ -197,19 +203,63 @@ func interprocedural(parameter *journal.InstanceLog, other arbitrary) {
 	returned(journal.Event{})
 	otherReturned := returnOtherMethod(other)
 	otherReturned(journal.Event{})
+	discardVariadic(parameter.Append)
+	handledIdentity := identityMethod(parameter.Append)
+	if err := handledIdentity(journal.Event{}); err != nil { panic(err) }
+	discardedIdentity := identityMethod(other.Append)
+	discardedIdentity(journal.Event{})
+	var boxed any = parameter.Append
+	boxedMethod := boxed.(func(journal.Event) error)
+	boxedMethod(journal.Event{})
+	var boxedOther any = other.Append
+	boxedOtherMethod := boxedOther.(func(journal.Event) error)
+	boxedOtherMethod(journal.Event{})
 }
 `)
 	runTestGit(t, repo, "add", "go.mod", "internal/journal/journal.go", "internal/livejournal/livejournal.go", "fixture.go",
 		"platform.go", "platform_darwin.go", "platform_windows.go", "platform_other.go",
-		"function_parameter.go", "function_return.go", "interprocedural_calls.go")
+		"function_parameter.go", "function_return.go", "function_forwarding.go", "interprocedural_calls.go")
 
 	findings := discardedInstanceAppends(t, repo, trackedProductionGoFiles(t, repo))
 	// The original nine shapes plus copied and branch-merged method values, a
 	// nested method value, an embedded/promoted method, the common file whose
 	// receiver is an InstanceLog only on Windows, and a package-scope closure.
 	// Arbitrary/misleading Append types and all propagated results remain legal.
-	if len(findings) != 20 {
-		t.Fatalf("findings = %d, want 20:\n%s", len(findings), strings.Join(findings, "\n"))
+	if len(findings) != 22 {
+		t.Fatalf("findings = %d, want 22:\n%s", len(findings), strings.Join(findings, "\n"))
+	}
+	assertSourceFinding(t, repo, findings, "function_forwarding.go", "functions[0](journal.Event{})", true)
+	assertSourceFinding(t, repo, findings, "interprocedural_calls.go", "discardedIdentity(journal.Event{})", false)
+	assertSourceFinding(t, repo, findings, "interprocedural_calls.go", "boxedMethod(journal.Event{})", true)
+	assertSourceFinding(t, repo, findings, "interprocedural_calls.go", "boxedOtherMethod(journal.Event{})", false)
+}
+
+func assertSourceFinding(t *testing.T, repo string, findings []string, relative, sourceLine string, want bool) {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join(repo, relative))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := 0
+	for index, text := range strings.Split(string(source), "\n") {
+		if strings.Contains(text, sourceLine) {
+			line = index + 1
+			break
+		}
+	}
+	if line == 0 {
+		t.Fatalf("source line %q not found in %s", sourceLine, relative)
+	}
+	prefix := filepath.Join(repo, relative) + ":" + strconv.Itoa(line) + ":"
+	got := false
+	for _, finding := range findings {
+		if strings.HasPrefix(finding, prefix) {
+			got = true
+			break
+		}
+	}
+	if got != want {
+		t.Fatalf("finding for %s:%d = %t, want %t:\n%s", relative, line, got, want, strings.Join(findings, "\n"))
 	}
 }
 
@@ -339,6 +389,52 @@ type ssaAppendAnalysis struct {
 	callSites    map[*ssa.Function][]ssa.CallInstruction
 }
 
+type provenanceFrame struct {
+	callee *ssa.Function
+	site   ssa.CallInstruction
+}
+
+type provenanceContext struct {
+	frames []provenanceFrame
+}
+
+func (c provenanceContext) siteFor(function *ssa.Function) (ssa.CallInstruction, bool) {
+	for i := len(c.frames) - 1; i >= 0; i-- {
+		if c.frames[i].callee == function {
+			return c.frames[i].site, true
+		}
+	}
+	return nil, false
+}
+
+func (c provenanceContext) withCall(function *ssa.Function, site ssa.CallInstruction) provenanceContext {
+	// Reusing an active edge bounds recursive call graphs. The existing frame is
+	// already the conservative static approximation for that recursive cycle.
+	for _, frame := range c.frames {
+		if frame.callee == function && frame.site == site {
+			return c
+		}
+	}
+	frames := append([]provenanceFrame(nil), c.frames...)
+	return provenanceContext{frames: append(frames, provenanceFrame{callee: function, site: site})}
+}
+
+type provenanceKey struct {
+	value   ssa.Value
+	context string
+}
+
+func (c provenanceContext) key() string {
+	var result strings.Builder
+	for _, frame := range c.frames {
+		result.WriteString(frame.callee.String())
+		result.WriteByte('@')
+		result.WriteString(strconv.FormatInt(int64(frame.site.Pos()), 10))
+		result.WriteByte(';')
+	}
+	return result.String()
+}
+
 func discardedInstanceAppendsSSA(program *ssa.Program, repo string, candidates map[string]struct{}) []string {
 	functions := ssautil.AllFunctions(program)
 	analysis := &ssaAppendAnalysis{
@@ -389,7 +485,7 @@ func discardedInstanceAppendsSSA(program *ssa.Program, repo string, candidates m
 		for _, block := range function.Blocks {
 			for _, instruction := range block.Instrs {
 				call, ok := instruction.(ssa.CallInstruction)
-				if !ok || !analysis.callMayAppendInstance(call.Common(), make(map[ssa.Value]bool)) || !discardedCallResult(call) {
+				if !ok || !analysis.callMayAppendInstance(call.Common(), provenanceContext{}, make(map[provenanceKey]bool)) || !discardedCallResult(call) {
 					continue
 				}
 				position := program.Fset.PositionFor(call.Common().Pos(), false)
@@ -428,18 +524,20 @@ func discardedCallResult(call ssa.CallInstruction) bool {
 	return true
 }
 
-func (a *ssaAppendAnalysis) callMayAppendInstance(call *ssa.CallCommon, seen map[ssa.Value]bool) bool {
+func (a *ssaAppendAnalysis) callMayAppendInstance(call *ssa.CallCommon, context provenanceContext, seen map[provenanceKey]bool) bool {
 	if call.IsInvoke() {
 		return call.Method.Name() == "Append" && (isInstanceAppenderType(call.Value.Type()) || isInstanceAppendFunction(call.Method))
 	}
-	return a.valueMayBeInstanceAppend(call.Value, seen)
+	return a.valueMayBeInstanceAppend(call.Value, context, seen)
 }
 
-func (a *ssaAppendAnalysis) valueMayBeInstanceAppend(value ssa.Value, seen map[ssa.Value]bool) bool {
-	if value == nil || seen[value] {
+func (a *ssaAppendAnalysis) valueMayBeInstanceAppend(value ssa.Value, context provenanceContext, seen map[provenanceKey]bool) bool {
+	key := provenanceKey{value: value, context: context.key()}
+	if value == nil || seen[key] {
 		return false
 	}
-	seen[value] = true
+	seen[key] = true
+	defer delete(seen, key)
 	switch typed := value.(type) {
 	case *ssa.Function:
 		if object, ok := typed.Object().(*types.Func); ok && isInstanceAppendFunction(object) {
@@ -450,71 +548,79 @@ func (a *ssaAppendAnalysis) valueMayBeInstanceAppend(value ssa.Value, seen map[s
 		}
 		for _, block := range typed.Blocks {
 			for _, instruction := range block.Instrs {
-				if call, ok := instruction.(ssa.CallInstruction); ok && a.callMayAppendInstance(call.Common(), seen) {
+				if call, ok := instruction.(ssa.CallInstruction); ok && a.callMayAppendInstance(call.Common(), context, seen) {
 					return true
 				}
 			}
 		}
 	case *ssa.MakeClosure:
-		return a.valueMayBeInstanceAppend(typed.Fn, seen)
+		return a.valueMayBeInstanceAppend(typed.Fn, context, seen)
 	case *ssa.Phi:
 		for _, edge := range typed.Edges {
-			if a.valueMayBeInstanceAppend(edge, seen) {
+			if a.valueMayBeInstanceAppend(edge, context, seen) {
 				return true
 			}
 		}
 	case *ssa.UnOp:
 		if typed.Op == token.MUL {
-			for _, stored := range a.storedValues(typed.X, make(map[ssa.Value]bool)) {
-				if a.valueMayBeInstanceAppend(stored, seen) {
+			for _, stored := range a.storedValues(typed.X, context, make(map[provenanceKey]bool)) {
+				if a.valueMayBeInstanceAppend(stored, context, seen) {
 					return true
 				}
 			}
 		}
 	case *ssa.ChangeType:
-		return a.valueMayBeInstanceAppend(typed.X, seen)
+		return a.valueMayBeInstanceAppend(typed.X, context, seen)
 	case *ssa.Convert:
-		return a.valueMayBeInstanceAppend(typed.X, seen)
+		return a.valueMayBeInstanceAppend(typed.X, context, seen)
 	case *ssa.ChangeInterface:
-		return a.valueMayBeInstanceAppend(typed.X, seen)
+		return a.valueMayBeInstanceAppend(typed.X, context, seen)
 	case *ssa.MakeInterface:
-		return a.valueMayBeInstanceAppend(typed.X, seen)
+		return a.valueMayBeInstanceAppend(typed.X, context, seen)
+	case *ssa.TypeAssert:
+		return a.valueMayBeInstanceAppend(typed.X, context, seen)
 	case *ssa.Extract:
 		if call, ok := typed.Tuple.(*ssa.Call); ok {
-			return a.callResultMayBeInstanceAppend(call, typed.Index, seen)
+			return a.callResultMayBeInstanceAppend(call, typed.Index, context, seen)
 		}
-		return a.valueMayBeInstanceAppend(typed.Tuple, seen)
+		return a.valueMayBeInstanceAppend(typed.Tuple, context, seen)
 	case *ssa.Parameter:
 		parent := typed.Parent()
 		for index, parameter := range parent.Params {
 			if parameter != typed {
 				continue
 			}
-			for _, site := range a.callSites[parent] {
-				if index < len(site.Common().Args) && a.valueMayBeInstanceAppend(site.Common().Args[index], seen) {
+			sites := a.callSites[parent]
+			if site, ok := context.siteFor(parent); ok {
+				sites = []ssa.CallInstruction{site}
+			}
+			for _, site := range sites {
+				if index < len(site.Common().Args) && a.valueMayBeInstanceAppend(site.Common().Args[index], context.withCall(parent, site), seen) {
 					return true
 				}
 			}
 			break
 		}
 	case *ssa.Call:
-		return a.callResultMayBeInstanceAppend(typed, 0, seen)
+		return a.callResultMayBeInstanceAppend(typed, 0, context, seen)
 	}
 	return false
 }
 
-func (a *ssaAppendAnalysis) storedValues(pointer ssa.Value, seen map[ssa.Value]bool) []ssa.Value {
-	if pointer == nil || seen[pointer] {
+func (a *ssaAppendAnalysis) storedValues(pointer ssa.Value, context provenanceContext, seen map[provenanceKey]bool) []ssa.Value {
+	key := provenanceKey{value: pointer, context: context.key()}
+	if pointer == nil || seen[key] {
 		return nil
 	}
-	seen[pointer] = true
+	seen[key] = true
+	defer delete(seen, key)
 	values := append([]ssa.Value(nil), a.stores[pointer]...)
 	switch typed := pointer.(type) {
 	case *ssa.FreeVar:
 		for _, binding := range a.bindings[typed] {
 			calls := a.closureCalls[typed.Parent()]
 			if len(calls) == 0 {
-				values = append(values, a.storedValues(binding, seen)...)
+				values = append(values, a.storedValues(binding, context, seen)...)
 				continue
 			}
 			for _, call := range calls {
@@ -523,12 +629,79 @@ func (a *ssaAppendAnalysis) storedValues(pointer ssa.Value, seen map[ssa.Value]b
 		}
 	case *ssa.Phi:
 		for _, edge := range typed.Edges {
-			values = append(values, a.storedValues(edge, seen)...)
+			values = append(values, a.storedValues(edge, context, seen)...)
 		}
 	case *ssa.ChangeType:
-		values = append(values, a.storedValues(typed.X, seen)...)
+		values = append(values, a.storedValues(typed.X, context, seen)...)
 	case *ssa.Convert:
-		values = append(values, a.storedValues(typed.X, seen)...)
+		values = append(values, a.storedValues(typed.X, context, seen)...)
+	case *ssa.IndexAddr:
+		values = append(values, a.indexedStoredValues(typed, context, seen)...)
+	}
+	return values
+}
+
+func (a *ssaAppendAnalysis) indexedStoredValues(index *ssa.IndexAddr, context provenanceContext, seen map[provenanceKey]bool) []ssa.Value {
+	var containers []ssa.Value
+	if parameter, ok := index.X.(*ssa.Parameter); ok {
+		containers = append(containers, a.parameterArguments(parameter, context)...)
+	} else {
+		containers = append(containers, index.X)
+	}
+	var values []ssa.Value
+	for _, container := range containers {
+		for {
+			slice, ok := container.(*ssa.Slice)
+			if !ok {
+				break
+			}
+			container = slice.X
+		}
+		referrers := container.Referrers()
+		if referrers == nil {
+			continue
+		}
+		for _, instruction := range *referrers {
+			candidate, ok := instruction.(*ssa.IndexAddr)
+			if !ok || !sameConstantIndex(index.Index, candidate.Index) {
+				continue
+			}
+			values = append(values, a.storedValues(candidate, context, seen)...)
+		}
+	}
+	return values
+}
+
+func sameConstantIndex(left, right ssa.Value) bool {
+	leftConstant, leftOK := left.(*ssa.Const)
+	rightConstant, rightOK := right.(*ssa.Const)
+	if !leftOK || !rightOK {
+		return true
+	}
+	return leftConstant.Value.ExactString() == rightConstant.Value.ExactString()
+}
+
+func (a *ssaAppendAnalysis) parameterArguments(parameter *ssa.Parameter, context provenanceContext) []ssa.Value {
+	parent := parameter.Parent()
+	index := -1
+	for candidate, current := range parent.Params {
+		if current == parameter {
+			index = candidate
+			break
+		}
+	}
+	if index < 0 {
+		return nil
+	}
+	sites := a.callSites[parent]
+	if site, ok := context.siteFor(parent); ok {
+		sites = []ssa.CallInstruction{site}
+	}
+	var values []ssa.Value
+	for _, site := range sites {
+		if index < len(site.Common().Args) {
+			values = append(values, site.Common().Args[index])
+		}
 	}
 	return values
 }
@@ -552,7 +725,7 @@ func (a *ssaAppendAnalysis) possibleFunctions(value ssa.Value, seen map[ssa.Valu
 		}
 	case *ssa.UnOp:
 		if typed.Op == token.MUL {
-			for _, stored := range a.storedValues(typed.X, make(map[ssa.Value]bool)) {
+			for _, stored := range a.storedValues(typed.X, provenanceContext{}, make(map[provenanceKey]bool)) {
 				mergeFunctions(result, a.possibleFunctions(stored, seen))
 			}
 		}
@@ -564,12 +737,13 @@ func (a *ssaAppendAnalysis) possibleFunctions(value ssa.Value, seen map[ssa.Valu
 	return result
 }
 
-func (a *ssaAppendAnalysis) callResultMayBeInstanceAppend(call *ssa.Call, index int, seen map[ssa.Value]bool) bool {
+func (a *ssaAppendAnalysis) callResultMayBeInstanceAppend(call *ssa.Call, index int, context provenanceContext, seen map[provenanceKey]bool) bool {
 	for function := range a.possibleFunctions(call.Common().Value, make(map[ssa.Value]bool)) {
+		callContext := context.withCall(function, call)
 		for _, block := range function.Blocks {
 			for _, instruction := range block.Instrs {
 				returned, ok := instruction.(*ssa.Return)
-				if ok && index < len(returned.Results) && a.valueMayBeInstanceAppend(returned.Results[index], seen) {
+				if ok && index < len(returned.Results) && a.valueMayBeInstanceAppend(returned.Results[index], callContext, seen) {
 					return true
 				}
 			}
