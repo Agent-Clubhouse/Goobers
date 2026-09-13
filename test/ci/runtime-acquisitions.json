@@ -30,6 +30,7 @@
       ".github/workflows/ci.yml#deadcode/Download modules:go-modules",
       ".github/workflows/ci.yml#integration/Download modules:go-modules",
       ".github/workflows/ci.yml#lint/Download modules:go-modules",
+      ".github/workflows/ci.yml#lint/Validate lint timeout margin:go-modules",
       ".github/workflows/ci.yml#lint/golangci-lint (GOOS=${{ matrix.goos }}):go-modules",
       ".github/workflows/ci.yml#preflight/Download modules:go-modules",
       ".github/workflows/ci.yml#preflight/Run preflight:go-modules",
