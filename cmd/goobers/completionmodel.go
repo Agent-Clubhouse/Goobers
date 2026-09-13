@@ -190,7 +190,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "check-dispatch-namespaces", desc: "Verify each gaggle's isolation.namespace is dispatch-ready"},
 		{name: "source-tree", desc: "Validate a checked-in config source tree"},
 		{name: "instance", takesArg: true, desc: "Real instance document for source-tree placement and capability solving"},
-		{name: "strict", desc: "Treat config warnings as validation errors"},
+		{name: "strict", desc: strictFlagDescription()},
 	},
 	"lint": {
 		{name: "json", desc: "Emit a versioned findings envelope"},
@@ -200,7 +200,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "check-dispatch-namespaces", desc: "Verify each gaggle's isolation.namespace is dispatch-ready"},
 		{name: "source-tree", desc: "Lint a checked-in config source tree"},
 		{name: "instance", takesArg: true, desc: "Real instance document for source-tree placement and capability solving"},
-		{name: "strict", desc: "Treat config warnings as validation errors"},
+		{name: "strict", desc: strictFlagDescription()},
 	},
 	"up": {
 		{name: "quiet", desc: "Suppress liveness heartbeats"},

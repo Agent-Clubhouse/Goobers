@@ -9,10 +9,11 @@ import (
 
 func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 	tests := []struct {
-		name    string
-		def     Definition
-		goobers map[string]apiv1.GooberSpec
-		want    bool
+		name     string
+		def      Definition
+		goobers  map[string]apiv1.GooberSpec
+		want     bool
+		wantText []string
 	}{
 		{
 			name: "read-only deterministic command",
@@ -21,6 +22,12 @@ func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 				Run: &apiv1.DeterministicRun{Command: []string{"go", "test", "./..."}},
 			}}}},
 			want: true,
+			wantText: []string{
+				"deterministic task",
+				"run.workspace (preferred and authoritative when both locations are present)",
+				`run: {command: ["go", "test", "./..."], workspace: repo-readonly}`,
+				"Task-level workspace is also supported as a fallback",
+			},
 		},
 		{
 			name: "agentic task",
@@ -28,6 +35,11 @@ func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 				Name: "review-code", Type: apiv1.TaskAgentic,
 			}}}},
 			want: true,
+			wantText: []string{
+				"agentic task",
+				"task-level workspace",
+				"workspace: repo-readonly",
+			},
 		},
 		{
 			name: "agentic gate",
@@ -36,6 +48,11 @@ func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 				Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
 			}}}},
 			want: true,
+			wantText: []string{
+				"agentic gate",
+				"agentic.workspace",
+				"agentic: {goober: reviewer, workspace: repo-readonly}",
+			},
 		},
 		{
 			name: "agentic gate with mutating reviewer",
@@ -143,13 +160,20 @@ func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 			var found bool
 			warnings := CheckImplicitWritableWorkspaceWarnings(test.def, test.goobers)
 			for _, warning := range warnings {
-				if strings.Contains(warning, "omits workspace") {
+				if strings.Contains(warning, "omits ") {
 					found = true
-					if !strings.Contains(warning, `workflow "`+test.def.Name+`"`) ||
-						!strings.Contains(warning, "workspace: scratch") ||
-						!strings.Contains(warning, "workspace: repo-readonly") ||
-						!strings.Contains(warning, "workspace: repo") {
-						t.Fatalf("warning = %q, missing workflow/stage/default/recommendations", warning)
+					if !strings.Contains(warning, `workflow "`+test.def.Name+`"`) {
+						t.Fatalf("warning = %q, missing workflow name", warning)
+					}
+					for _, want := range test.wantText {
+						if !strings.Contains(warning, want) {
+							t.Fatalf("warning = %q, missing stage-specific guidance %q", warning, want)
+						}
+					}
+					for _, want := range []string{"Choose scratch", "repo-readonly", "repo when writable"} {
+						if !strings.Contains(warning, want) {
+							t.Fatalf("warning = %q, missing workspace choice %q", warning, want)
+						}
 					}
 				}
 			}

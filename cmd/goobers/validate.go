@@ -64,7 +64,7 @@ const sourceTreeAdvisoryMessage = "--instance was not supplied; placement and ca
 
 var templateMarkers = []string{"your-org", "your-repo"}
 
-const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--strict] [path]\n\n" +
+var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
 	"path \".\"). Placement findings (RNR001/RNR003) are errors when\n" +
 	"instance.yaml declares a runners: inventory that cannot satisfy some\n" +
@@ -73,7 +73,7 @@ const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [-
 	"placement and capability solve uses that real instance document. Without\n" +
 	"--instance, the solve uses instance.yaml.example, is advisory-only\n" +
 	"(warnings, never errors), and the output states that limitation. " +
-	"--strict treats config warnings as validation errors. " +
+	strictHelpText() + " " +
 	"--json emits a versioned findings envelope instead of human-readable output. " +
 	"--github-annotations additionally writes each finding to stderr as a\n" +
 	"GitHub Actions ::error/::warning file annotation (#687), so a\n" +
@@ -158,7 +158,7 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 	checkDispatchNamespaces := fs.Bool("check-dispatch-namespaces", false, "also verify each gaggle's isolation.namespace exists and this kubeconfig's credentials can dispatch into it (#4897); silently skipped with no cluster credentials")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
 	instancePath := fs.String("instance", "", "with --source-tree, solve placement and capabilities against this real instance.yaml")
-	strict := fs.Bool("strict", false, "treat config warnings as validation errors")
+	strict := fs.Bool("strict", false, strictFlagDescription())
 	fs.Usage = helpUsage(stderr, name)
 	if !parseFlagsBeforePath(fs, args, stderr) {
 		return 2
@@ -480,23 +480,14 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	checkGaggleDispatchNamespacesIfRequested(options, root, configDir, set, stdout, diagnostics)
 	printDSLVersionSummary(stdout, set.Workflows)
-	// Three codes are strict-neutral by ruling: they print and land in
+	// Four codes are strict-neutral by ruling: they print and land in
 	// diagnostics but are excluded from --strict's promotion. Each is a
-	// nudge about something the author cannot fix by editing their config
-	// alone, and each would otherwise turn an existing green pipeline red
-	// purely on upgrade. See each code's own doc comment in api/validate for
-	// the full reasoning — RNR006's second reason (only `true` silences it,
-	// so promotion would coerce an unearned trusted claim) is the
-	// load-bearing one.
-	strictNeutral := 0
-	for _, w := range report.Warnings() {
-		if isStrictNeutralWarning(w.Code) {
-			strictNeutral++
-		}
-	}
-	warningCount := len(report.Warnings()) - strictNeutral + len(placeholderFindings)
+	// compatibility or advisory nudge that must not turn an existing green
+	// pipeline red purely on upgrade. See each code's declaration for the
+	// specific rationale.
+	warningCount := strictPromotedWarningCount(report, len(placeholderFindings))
 	if options.strict && warningCount > 0 {
-		pf(stdout, "\nconfiguration has %d warning(s); --strict treats warnings as errors\n", warningCount)
+		pf(stdout, "\nconfiguration has %d strict-promoted warning(s); --strict exits 1\n", warningCount)
 		return 1
 	}
 	printResolvedLargeRepoPresets(stdout, cfg.Repos)
@@ -541,19 +532,54 @@ func emitStaticRealityFindings(
 	return placementErrors, capabilityErrors
 }
 
+var strictNeutralWarningCodes = []validate.WarningCode{
+	validate.WarningDeprecatedDSLVersion,
+	validate.WarningConnectionRefUnhonored,
+	validate.RunnerAVExclusionsUnverified,
+	validate.WarningImplicitWritableWorkspace,
+}
+
+func strictNeutralWarningCodeText() string {
+	codes := make([]string, 0, len(strictNeutralWarningCodes))
+	for _, code := range strictNeutralWarningCodes {
+		codes = append(codes, string(code))
+	}
+	return strings.Join(codes, ", ")
+}
+
+func strictFlagDescription() string {
+	return "promote config warnings except strict-neutral " + strictNeutralWarningCodeText() + " to validation errors"
+}
+
+func strictHelpText() string {
+	return "--strict promotes config warnings to validation errors except " +
+		strictNeutralWarningCodeText() +
+		". Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, " +
+		"but never change the exit code; automation may rely on this stable code set."
+}
+
 // isStrictNeutralWarning reports whether code is one of the warnings
 // `--strict` deliberately does not promote to an error. Keep this list
 // short and each entry justified at its own declaration: the default for a
 // config-shape finding is to count (DI-10), and a code that opts out is
 // saying its nudge must never be able to break a green pipeline.
 func isStrictNeutralWarning(code validate.WarningCode) bool {
-	switch code {
-	case validate.WarningDeprecatedDSLVersion, validate.RunnerAVExclusionsUnverified,
-		validate.WarningConnectionRefUnhonored, validate.WarningImplicitWritableWorkspace:
-		return true
-	default:
-		return false
+	for _, neutral := range strictNeutralWarningCodes {
+		if code == neutral {
+			return true
+		}
 	}
+	return false
+}
+
+func strictPromotedWarningCount(report *validate.Report, additionalWarnings int) int {
+	count := additionalWarnings
+	for _, warning := range report.Warnings() {
+		if !isStrictNeutralWarning(warning.Code) {
+			count++
+		}
+	}
+	return count
 }
 
 type placeholderFinding struct {
