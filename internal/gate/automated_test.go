@@ -754,6 +754,10 @@ func TestCIStatusCheck(t *testing.T) {
 	if err != nil || out != OutcomeFail {
 		t.Fatalf("got %q, %v; want fail", out, err)
 	}
+	out, err = evalCheck(t, "ci-status", nil, map[string]interface{}{"ciStatus": executor.CIStatusMerged})
+	if err != nil || out != OutcomePass {
+		t.Fatalf("got %q, %v; want pass for merged PR", out, err)
+	}
 }
 
 // TestCIStatusCheckTimeoutIsADistinctOutcome is the routing regression test
