@@ -329,18 +329,7 @@ func DefaultChecks() map[string]CheckFunc {
 		// ci-gate must be free to route it to escalation instead of the
 		// "fail" branch's implement repass.
 		"ci-status": func(inputs map[string]interface{}, params map[string]string) (string, error) {
-			want := params["equals"]
-			if want == "" {
-				want = "passing"
-			}
-			got := stringField(inputs, "ciStatus")
-			if got == executor.CIStatusTimeout {
-				return OutcomeTimeout, nil
-			}
-			if got == executor.CIStatusMerged {
-				return OutcomePass, nil
-			}
-			return boolOutcome(got == want), nil
+			return ciStatusOutcome(inputs, params), nil
 		},
 		// "land-outcome": reports merge-pr's Outputs["landOutcome"] (issue
 		// #758) — "merged" or "enqueued" when merge-pr actually attempted a
@@ -446,6 +435,22 @@ func boolOutcome(pass bool) string {
 		return OutcomePass
 	}
 	return OutcomeFail
+}
+
+func ciStatusOutcome(inputs map[string]interface{}, params map[string]string) string {
+	want := params["equals"]
+	if want == "" {
+		want = "passing"
+	}
+	got := stringField(inputs, "ciStatus")
+	switch got {
+	case executor.CIStatusTimeout:
+		return OutcomeTimeout
+	case executor.CIStatusMerged:
+		return OutcomePass
+	default:
+		return boolOutcome(got == want)
+	}
 }
 
 func stringField(inputs map[string]interface{}, key string) string {
