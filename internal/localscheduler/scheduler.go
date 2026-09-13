@@ -2739,7 +2739,9 @@ func (s *Scheduler) journalPlacementRefusals(entries []WorkflowEntry) {
 // same rationale as ClaimLedger.journal — a journal write failure doesn't roll
 // back a scheduling decision already made.
 func (s *Scheduler) journalEvent(ev journal.Event) {
-	_ = s.appendJournalEvent(ev)
+	if s.log != nil {
+		s.log.AppendBestEffort(ev)
+	}
 }
 
 // appendJournalEvent appends to the instance journal if one is wired,

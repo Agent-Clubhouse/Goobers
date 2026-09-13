@@ -146,6 +146,7 @@ func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt ti
 			ActiveRuns: 1,
 		},
 		Warnings:           []validate.CodedWarning{warning},
+		JournalHealth:      &readservice.JournalHealthStatus{AppendsDropped: 2},
 		TelemetryRetention: telemetryRetentionWireFixture(startedAt, finishedAt),
 	}
 }

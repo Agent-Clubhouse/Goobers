@@ -334,7 +334,7 @@ func (h *engineTerminalHooks) annotator(out engineTerminalOutcome) terminalAnnot
 }
 
 func (h *engineTerminalHooks) annotate(out engineTerminalOutcome, ev journal.Event) {
-	_ = h.annotator(out).Append(ev)
+	(&engineInstanceAnnotator{log: h.log, out: out}).AppendBestEffort(ev)
 }
 
 // recordHookFailure journals one terminal-hook failure to the instance log.
@@ -372,6 +372,10 @@ func (a *engineInstanceAnnotator) Append(ev journal.Event) error {
 	if a == nil || a.log == nil {
 		return nil
 	}
+	return a.log.Append(a.stamp(ev))
+}
+
+func (a *engineInstanceAnnotator) stamp(ev journal.Event) journal.Event {
 	ev.RunID = a.out.RunID
 	ev.Gaggle = a.out.Gaggle
 	ev.Workflow = a.out.Workflow
@@ -381,7 +385,16 @@ func (a *engineInstanceAnnotator) Append(ev journal.Event) error {
 	if _, ok := ev.Runner["driver"]; !ok {
 		ev.Runner["driver"] = string(journal.DriverEngine)
 	}
-	return a.log.Append(ev)
+	return ev
+}
+
+// AppendBestEffort preserves the annotator's identity stamping while routing
+// the intentional discard through InstanceLog's one observable drop path.
+func (a *engineInstanceAnnotator) AppendBestEffort(ev journal.Event) {
+	if a == nil || a.log == nil {
+		return
+	}
+	a.log.AppendBestEffort(a.stamp(ev))
 }
 
 // engineTerminalPhase maps a finished engine run to its journal phase.

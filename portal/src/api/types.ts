@@ -387,10 +387,15 @@ export interface Instance extends ContractVersion {
   warnings: ValidationWarning[];
   maintenance?: MaintenanceStatus;
   telemetryRetention?: TelemetryRetentionStatus;
+  journalHealth?: JournalHealthStatus;
   memoryHighWater?: number;
   memoryGateEnabled: boolean;
   fsyncDisabled: boolean;
   fleetEnrolled: boolean;
+}
+
+export interface JournalHealthStatus {
+  appendsDropped: number;
 }
 
 export interface TelemetryRetentionStatus {

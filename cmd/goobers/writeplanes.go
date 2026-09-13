@@ -427,7 +427,7 @@ func (s *daemonClaimService) release(ctx context.Context, operation string, requ
 			// only the settle that actually surrendered the lease records it
 			// — a retried settle is a silent no-op, which is the exactly-once
 			// contract.
-			_ = s.log.Append(journal.Event{
+			s.log.AppendBestEffort(journal.Event{
 				Type:     journal.EventClaimReleased,
 				Name:     request.ItemID,
 				Gaggle:   request.Gaggle,
@@ -448,7 +448,7 @@ func (s *daemonClaimService) journalRefusal(request httpapi.ClaimRequest, holder
 	if s.log == nil {
 		return
 	}
-	_ = s.log.Append(journal.Event{
+	s.log.AppendBestEffort(journal.Event{
 		Type:     journal.EventClaimRefused,
 		Name:     request.ItemID,
 		Gaggle:   request.Gaggle,

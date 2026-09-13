@@ -43,6 +43,9 @@ const (
 	// MetricRedactionsTotal counts scrub operations that removed secret
 	// material, separated by registry and pattern layer.
 	MetricRedactionsTotal = journal.MetricRedactionsTotal
+	// MetricJournalAppendsDropped counts explicitly best-effort instance-log
+	// appends that failed and therefore left no authoritative journal record.
+	MetricJournalAppendsDropped = "goobers.journal.appends_dropped"
 )
 
 const (
@@ -103,6 +106,7 @@ type instruments struct {
 	gateDecisions apimetric.Int64Counter
 	escalations   apimetric.Int64Counter
 	redactions    apimetric.Int64Counter
+	journalDrops  apimetric.Int64Counter
 	activeWork    apimetric.Int64UpDownCounter
 	stageMetrics  apimetric.Float64Histogram
 	worktreeBytes apimetric.Int64Gauge
@@ -144,6 +148,9 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	record(err)
 	inst.redactions, err = meter.Int64Counter(MetricRedactionsTotal,
 		apimetric.WithUnit("{event}"), apimetric.WithDescription("Scrub events that removed secret material, separated by layer."))
+	record(err)
+	inst.journalDrops, err = meter.Int64Counter(MetricJournalAppendsDropped,
+		apimetric.WithUnit("{event}"), apimetric.WithDescription("Explicitly best-effort instance-journal appends that failed."))
 	record(err)
 	inst.activeWork, err = meter.Int64UpDownCounter(MetricWorkActive,
 		apimetric.WithUnit("{span}"), apimetric.WithDescription("In-flight runs and stages."))

@@ -201,6 +201,9 @@ export const goWireFixtures = {
       "lastPassMode": "dry-run",
       "candidateCount": 7
     },
+    "journalHealth": {
+      "appendsDropped": 2
+    },
     "memoryGateEnabled": false,
     "fsyncDisabled": false,
     "fleetEnrolled": false

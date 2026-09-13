@@ -155,6 +155,9 @@ func TestInstanceReportsMemoryGateFsyncAndFleetState(t *testing.T) {
 		Config:        &instance.Config{RunConditions: instance.RunConditions{MemoryHighWater: 0.8}},
 		Definitions:   testDefinitions(),
 		FleetEnrolled: func(string) bool { return true },
+		InstanceLogStats: func() journal.InstanceLogStats {
+			return journal.InstanceLogStats{AppendsDropped: 3}
+		},
 	}, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +175,9 @@ func TestInstanceReportsMemoryGateFsyncAndFleetState(t *testing.T) {
 	}
 	if got.FsyncDisabled {
 		t.Fatal("FsyncDisabled = true, want false with GOOBERS_DISABLE_FSYNC=0")
+	}
+	if got.JournalHealth == nil || got.JournalHealth.AppendsDropped != 3 {
+		t.Fatalf("journal health = %+v, want 3 process-lifetime drops", got.JournalHealth)
 	}
 
 	t.Setenv("GOOBERS_MEMORY_HIGH_WATER", "off")

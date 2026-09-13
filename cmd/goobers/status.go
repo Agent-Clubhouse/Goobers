@@ -99,6 +99,14 @@ func telemetryRetentionStatusLine(status readservice.SchedulerStatus) string {
 	return line + "; instance.yaml changes require daemon restart\n"
 }
 
+func journalHealthStatusLine(status readservice.SchedulerStatus) string {
+	if status.JournalHealth == nil || status.JournalHealth.AppendsDropped == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Warning: instance journal dropped %d best-effort append(s) in this daemon process\n",
+		status.JournalHealth.AppendsDropped)
+}
+
 func renderSchedulerStatus(
 	text *strings.Builder,
 	summary statusFleetSummary,
@@ -110,6 +118,7 @@ func renderSchedulerStatus(
 	text.WriteString(providerQuotaStatusLine(status, now))
 	text.WriteString(maintenanceStatusLine(status))
 	text.WriteString(telemetryRetentionStatusLine(status))
+	text.WriteString(journalHealthStatusLine(status))
 	text.WriteString(workerConfigDivergenceStatusLines(status, now))
 	text.WriteString(refusedWorkflowStatusLines(status))
 	text.WriteString(isolationMandateStatusLines(status))
@@ -315,6 +324,7 @@ type statusJSONOutput struct {
 	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
 	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
 	TelemetryRetention     *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
+	JournalHealth          *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -856,6 +866,8 @@ const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--all]
 	"goobers:ready, which backlog selection can no longer see and no workflow re-readies.\n" +
 	"Shared baseline failures are listed with the subjects waiting on them: runs parked\n" +
 	"because the target branch itself fails CI, all released by one repair to that branch.\n" +
+	"goobers status --daemon and the live Instance API warn when best-effort instance-journal appends were dropped;\n" +
+	"the process-lifetime count resets on restart because a failed journal cannot persist itself.\n" +
 	"With --daemon, report daemon health, identity, and effective behavior settings instead.\n" +
 	"With --agents, list only the agentic stages in flight right now, by role and run id.\n" +
 	"The --agents answer comes from the runner's own journals, never from a process table,\n" +
@@ -1225,6 +1237,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var daemonRestart *readservice.DaemonRestartStatus
 		var maintenance *readservice.MaintenanceStatus
 		var telemetryRetention *readservice.TelemetryRetentionStatus
+		var journalHealth *readservice.JournalHealthStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
 		var engineFallbacks []readmodel.EngineFallback
@@ -1239,6 +1252,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				daemonRestart = status.DaemonRestart
 				maintenance = status.Maintenance
 				telemetryRetention = status.TelemetryRetention
+				journalHealth = status.JournalHealth
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
 				engineFallbacks = status.EngineFallbacks
@@ -1259,6 +1273,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			DaemonRestart:          daemonRestart,
 			Maintenance:            maintenance,
 			TelemetryRetention:     telemetryRetention,
+			JournalHealth:          journalHealth,
 			RefusedWorkflows:       refusedWorkflows,
 			IsolationMandates:      isolationMandates,
 			Summary:                fleetSummary,
@@ -1561,6 +1576,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 				identity.PID, uptime.Truncate(time.Second), identity.Version,
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
 			reportDaemonBehavior(stdout, identity.Behavior)
+			reportLiveDaemonJournalHealth(l, stdout)
 			reportFleetEnrollment(l.Root, stdout)
 			reportUpdateCheck(l.Root, stdout)
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
@@ -1573,6 +1589,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			identity.PID, uptime.Truncate(time.Second), identity.Version,
 			liveness.Age.Truncate(time.Second), liveRuns)
 		reportDaemonBehavior(stdout, identity.Behavior)
+		reportLiveDaemonJournalHealth(l, stdout)
 		reportFleetEnrollment(l.Root, stdout)
 		reportUpdateCheck(l.Root, stdout)
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)

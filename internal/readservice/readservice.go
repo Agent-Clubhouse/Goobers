@@ -150,8 +150,12 @@ type LocalSources struct {
 	// is the whole point of the interface split — reconcileIndex writing to
 	// disk from the HTTP list path is how all 40,665 run directories on the
 	// live instance came to hold a .lock file.
-	ReadModel          readmodel.Reader
-	RetentionStats     func() readmodel.RetentionStats
+	ReadModel      readmodel.Reader
+	RetentionStats func() readmodel.RetentionStats
+	// InstanceLogStats is present only in the live daemon. Dropped appends are
+	// process-lifetime state because the failing journal cannot persist its own
+	// write failure; offline readers therefore report no journal-health value.
+	InstanceLogStats   func() journal.InstanceLogStats
 	WorkItemLookup     WorkItemLookup
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration

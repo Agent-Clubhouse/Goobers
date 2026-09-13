@@ -197,7 +197,7 @@ func reportPendingTriggerDepth(log *journal.InstanceLog, depth int) {
 		message = fmt.Sprintf("%d pending trigger requests outstanding, at or above the safety cap of %d; "+
 			"further submissions through the supported path are being refused", depth, maxPendingTriggerRequests)
 	}
-	_ = log.Append(journal.Event{
+	log.AppendBestEffort(journal.Event{
 		Type: journal.EventError,
 		Name: "pending-triggers",
 		Error: &journal.ErrorDetail{

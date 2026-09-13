@@ -1383,6 +1383,9 @@ func TestSchedulerStatusProjectsRetentionLoopDiagnostics(t *testing.T) {
 				LastPassAt: lastPassAt,
 			}
 		},
+		InstanceLogStats: func() journal.InstanceLogStats {
+			return journal.InstanceLogStats{AppendsDropped: 5}
+		},
 	}, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)
@@ -1397,6 +1400,9 @@ func TestSchedulerStatusProjectsRetentionLoopDiagnostics(t *testing.T) {
 		status.Retention.LastPassAt == nil ||
 		!status.Retention.LastPassAt.Equal(lastPassAt) {
 		t.Fatalf("retention diagnostics = %+v, want passes/agedOut/lastPassAt projected", status.Retention)
+	}
+	if status.JournalHealth == nil || status.JournalHealth.AppendsDropped != 5 {
+		t.Fatalf("journal health = %+v, want 5 process-lifetime drops", status.JournalHealth)
 	}
 }
 
