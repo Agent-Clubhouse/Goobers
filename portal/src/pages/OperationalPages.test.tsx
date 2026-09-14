@@ -52,7 +52,7 @@ describe("operational overview", () => {
     expect(screen.getByText(/The guided walkthrough builds a working instance/)).toBeInTheDocument();
     expect(screen.getByText("goobers init --guided")).toBeInTheDocument();
     expect(screen.getByText("goobers init --guided")).toBeInTheDocument();
-    expect(screen.getByText("Daemon ready")).toBeInTheDocument();
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
     expect(screen.queryByText("Static fixture data")).not.toBeInTheDocument();
   });
 
@@ -73,7 +73,8 @@ describe("operational overview", () => {
       await screen.findByRole("heading", { name: "Daemon is unhealthy." }),
     ).toBeInTheDocument();
     expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
-    expect(screen.getByText(/last scheduler tick 3m 0s ago/)).toBeInTheDocument();
+    expect(screen.getByText("Last checked")).toBeInTheDocument();
+    expect(screen.getByText("3m 0s ago")).toBeInTheDocument();
   });
 
   it("reports a restarting daemon as starting even while health is degraded", async () => {
@@ -112,8 +113,9 @@ describe("operational overview", () => {
 
       expect(screen.getByRole("heading", { name: "Daemon is unhealthy." })).toBeInTheDocument();
       expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
-      expect(screen.getByText(/last scheduler tick 3m 0s ago/)).toBeInTheDocument();
-      expect(client.healthRequests).toBe(2);
+      expect(screen.getByText("Last checked")).toBeInTheDocument();
+      expect(screen.getByText("3m 0s ago")).toBeInTheDocument();
+      expect(client.healthRequests).toBe(3);
     } finally {
       rendered.unmount();
       vi.useRealTimers();
