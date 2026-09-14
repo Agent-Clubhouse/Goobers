@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { BuildMetadata, DaemonClient, Instance } from "../api/types";
 import { useCobrand } from "../cobrand";
 import { UpdateNotice } from "../components/UpdateNotice";
+import { dataCacheKey } from "../dataCache";
 import {
   useLiveData,
   type DataFreshness,
   type LiveDataSSEFailure,
   type LiveFreshness,
 } from "../liveData";
+import { useLiveQuery } from "../liveQuery";
 import { useGaggleList } from "../operationalData";
 import { routeHash, type Navigate, type PrimaryArea } from "../routing";
 import { hasScopeIdentity, type ScopeFilters } from "../scope";
@@ -15,6 +17,14 @@ import type { Theme } from "../theme";
 import { useUpdateNotice } from "../updateNotice";
 import { Icon } from "../ui/Icon";
 import { SupportFooter } from "./SupportFooter";
+
+interface HeaderIdentity {
+  build?: BuildMetadata;
+  instance: Pick<
+    Instance,
+    "computerName" | "environment" | "instanceRoot" | "name" | "rootIdentity"
+  >;
+}
 
 interface PortalShellProps {
   activeArea: PrimaryArea;
@@ -58,30 +68,30 @@ export function PortalShell({
   const updateNotice = useUpdateNotice();
   const mainContent = useRef<HTMLElement>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [instanceIdentity, setInstanceIdentity] = useState<
-    Pick<Instance, "computerName" | "environment" | "instanceRoot" | "name" | "rootIdentity">
-  >();
-  const [build, setBuild] = useState<BuildMetadata>();
+  const headerIdentity = useLiveQuery<HeaderIdentity>({
+    cacheKey: dataCacheKey("portal-header-identity"),
+    dependencies: [{ model: "instance" }],
+    models: ["instance"],
+    load: async (signal) => {
+      const [instance, health] = await Promise.all([
+        client.getInstance({ signal }),
+        client.getHealth({ signal }),
+      ]);
+      const { computerName, environment, instanceRoot, name, rootIdentity } = instance;
+      return {
+        build: health.build,
+        instance: { computerName, environment, instanceRoot, name, rootIdentity },
+      };
+    },
+    errorMessage: "Unable to load compact header instance identity.",
+  });
+  const headerData =
+    headerIdentity.state.status === "ready" || headerIdentity.state.status === "stale"
+      ? headerIdentity.state.data
+      : undefined;
+  const instanceIdentity = headerData?.instance;
+  const build = headerData?.build;
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void Promise.all([
-      client.getInstance({ signal: controller.signal }),
-      client.getHealth({ signal: controller.signal }),
-    ])
-      .then(([instance, health]) => {
-        const { computerName, environment, instanceRoot, name, rootIdentity } = instance;
-        setInstanceIdentity({ computerName, environment, instanceRoot, name, rootIdentity });
-        setBuild(health.build);
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          console.warn("Unable to load compact header instance identity.", error);
-        }
-      });
-    return () => controller.abort();
-  }, [client]);
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
