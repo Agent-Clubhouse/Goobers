@@ -88,6 +88,7 @@ function Overview({
     groups.attention.length === 0 &&
     groups.recent.length === 0;
   const healthy = standalone || overview.health.healthy;
+  const starting = !overview.health.ready && overview.instance.status === "starting";
   const activeConfigurationWarningCount =
     configurationWarnings.state.status === "ready" ||
     configurationWarnings.state.status === "stale"
@@ -187,12 +188,16 @@ function Overview({
                 ? overview.health.ready
                   ? "Instance is ready — Healthy."
                   : "Instance is starting."
-                : !healthy
+                : starting
+                  ? "Daemon is starting."
+                  : !healthy
                   ? "Daemon is unhealthy."
                   : overview.health.ready
                     ? "Daemon is running — Healthy."
                     : "Daemon is starting."
-              : !healthy
+              : starting
+                ? "Daemon is starting."
+                : !healthy
                 ? "Daemon is unhealthy."
                 : activeAttention.length === 0
                   ? standalone
@@ -646,6 +651,7 @@ function InstanceStrip({
   standalone: boolean;
 }) {
   const healthy = standalone || overview.health.healthy;
+  const starting = !overview.health.ready && overview.instance.status === "starting";
   const tickAge = overview.health.freshness.lastTickAgeMillis;
   const lastTickAt = overview.health.freshness.lastSchedulerTickAt;
   const maintenance = overview.instance.maintenance;
@@ -666,7 +672,9 @@ function InstanceStrip({
             ? overview.health.ready
               ? "Local instance loaded"
               : "Local instance not ready"
-            : !healthy
+            : starting
+              ? "Daemon starting"
+              : !healthy
               ? "Daemon unhealthy"
               : overview.health.ready
                 ? "Daemon ready"

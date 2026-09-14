@@ -76,6 +76,27 @@ describe("operational overview", () => {
     expect(screen.getByText(/last scheduler tick 3m 0s ago/)).toBeInTheDocument();
   });
 
+  it("reports a restarting daemon as starting even while health is degraded", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.health = {
+      ...fixtures.health,
+      healthy: false,
+      ready: false,
+    };
+    fixtures.instance = {
+      ...fixtures.instance,
+      ready: false,
+      status: "starting",
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Daemon is starting." }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Daemon starting")).toBeInTheDocument();
+    expect(screen.queryByText("Daemon unhealthy")).not.toBeInTheDocument();
+  });
+
   it("refreshes health while events stay connected and reports a newly stale heartbeat", async () => {
     vi.useFakeTimers();
     const client = new StallingSchedulerClient();
