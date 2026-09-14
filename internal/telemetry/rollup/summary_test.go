@@ -24,6 +24,17 @@ func seedSummaryRun(
 	agenticDuration time.Duration,
 	mutations ...summaryMutation,
 ) {
+	seedSummaryRunWithStages(t, runsDir, runID, workflow, status, startedAt, "agent", "agent", agenticDuration, mutations...)
+}
+
+func seedSummaryRunWithStages(
+	t *testing.T,
+	runsDir, runID, workflow, status string,
+	startedAt time.Time,
+	stage, transcriptStage string,
+	agenticDuration time.Duration,
+	mutations ...summaryMutation,
+) {
 	t.Helper()
 	dir := filepath.Join(runsDir, runID)
 	mustMkdirAll(t, dir)
@@ -35,9 +46,9 @@ func seedSummaryRun(
 	offset := time.Second
 	if agenticDuration > 0 {
 		lines = append(lines,
-			eventLine(seq, startedAt.Add(offset), `"type":"stage.started","stage":"agent","attempt":1`),
-			eventLine(seq+1, startedAt.Add(offset+time.Millisecond), `"type":"span.recorded","stage":"agent","name":"copilot.transcript","ref":{"digest":"sha256:abc","size":1}`),
-			eventLine(seq+2, startedAt.Add(offset+agenticDuration), `"type":"stage.finished","stage":"agent","attempt":1,"status":"success"`),
+			eventLine(seq, startedAt.Add(offset), `"type":"stage.started","stage":"`+stage+`","attempt":1`),
+			eventLine(seq+1, startedAt.Add(offset+time.Millisecond), `"type":"span.recorded","stage":"`+transcriptStage+`","name":"copilot.transcript","ref":{"digest":"sha256:abc","size":1}`),
+			eventLine(seq+2, startedAt.Add(offset+agenticDuration), `"type":"stage.finished","stage":"`+stage+`","attempt":1,"status":"success"`),
 		)
 		seq += 3
 		offset += agenticDuration + time.Second
@@ -55,6 +66,33 @@ func seedSummaryRun(
 	}
 	lines = append(lines, eventLine(seq, startedAt.Add(offset), `"type":"run.finished","status":"`+status+`"`))
 	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
+}
+
+func TestInstanceSummaryStatsIncludesRunQualifiedTranscriptStage(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runID := "2c01945a401799a0f0d45d51889eccec"
+	startedAt := time.Date(2026, time.September, 14, 12, 0, 0, 0, time.UTC)
+	seedSummaryRunWithStages(
+		t, runsDir, runID, "implementation", "completed", startedAt,
+		"implement", runID+":implement", 3*time.Second,
+	)
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	got, err := db.InstanceSummaryStats(context.Background(), time.Time{})
+	if err != nil {
+		t.Fatalf("InstanceSummaryStats: %v", err)
+	}
+	if got.AgenticStageAttempts != 1 ||
+		got.AvgAgenticStageDurationMs != 3000 ||
+		got.LongestAgenticStageMs != 3000 ||
+		got.LongestAgenticStage != "implement" ||
+		got.LongestAgenticWorkflow != "implementation" ||
+		got.LongestAgenticRunID != runID {
+		t.Fatalf("agentic stage summary = %#v", got)
+	}
 }
 
 func writeInitCompletedLog(t *testing.T, schedulerDir string, at time.Time) {
