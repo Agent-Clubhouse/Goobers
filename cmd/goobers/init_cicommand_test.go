@@ -106,6 +106,19 @@ func TestDetectCICommandDefault(t *testing.T) {
 		}
 	})
 
+	t.Run("Makefile takes precedence over explicit Python unittest CI", func(t *testing.T) {
+		dir := t.TempDir()
+		writeCIFile(t, dir, "Makefile", "ci:\n\t@true\n")
+		writeCIFile(t, dir, "pyproject.toml", "[project]\nrequires-python = \">=3.9\"\n")
+		writeCIFile(t, dir, ".github/workflows/ci.yml", "steps:\n  - run: python -m unittest discover -s tests -t . -v\n")
+
+		stack, command, capability := detectCICommandDefault(dir)
+		wantCommand := []string{"make", "ci"}
+		if stack != "Makefile" || !slices.Equal(command, wantCommand) || capability != "make" {
+			t.Fatalf("detectCICommandDefault() = (%q, %v, %q), want (%q, %v, %q)", stack, command, capability, "Makefile", wantCommand, "make")
+		}
+	})
+
 	t.Run("pytest fallback remains unchanged without explicit unittest CI", func(t *testing.T) {
 		dir := t.TempDir()
 		writeCIFile(t, dir, "pyproject.toml", "[project]\nrequires-python = \">=3.9\"\n")

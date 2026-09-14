@@ -65,24 +65,31 @@ func detectCICommandDefault(dir string) (stack string, command []string, require
 		names[entry.Name()] = true
 		suffixes = append(suffixes, entry.Name())
 	}
-	if names["pyproject.toml"] || names["setup.py"] || names["requirements.txt"] {
-		if command, ok := detectPythonUnittestCommand(dir); ok {
-			return "Python", command, "python"
-		}
-	}
 	for _, signal := range ciStackSignals {
+		matched := false
 		for _, name := range signal.names {
 			if names[name] {
-				return signal.stack, signal.command, signal.capability
+				matched = true
+				break
 			}
 		}
-		if signal.suffix != "" {
+		if !matched && signal.suffix != "" {
 			for _, name := range suffixes {
 				if strings.HasSuffix(name, signal.suffix) {
-					return signal.stack, signal.command, signal.capability
+					matched = true
+					break
 				}
 			}
 		}
+		if !matched {
+			continue
+		}
+		if signal.stack == "Python" {
+			if command, ok := detectPythonUnittestCommand(dir); ok {
+				return "Python", command, "python"
+			}
+		}
+		return signal.stack, signal.command, signal.capability
 	}
 	for _, guidance := range []string{"AGENTS.md", "README.md", "CONTRIBUTING.md"} {
 		data, err := os.ReadFile(filepath.Join(dir, guidance))
