@@ -32,9 +32,40 @@ func main() {
 func TestFeatureRegistryAgainstLatestRelease(t *testing.T) {
 	root := strings.TrimSpace(runCommand(t, "", "git", "rev-parse", "--show-toplevel"))
 	released, tag := loadLatestReleasedFeatureRegistry(t, root)
+	released = withoutBinaryLayerFeatures(t, released)
 
 	if _, err := newFeatureRegistryAgainstReleased(released, AllFeatures()); err != nil {
 		t.Fatalf("current feature registry violates compatibility with %s: %v", tag, err)
+	}
+}
+
+// binaryLayerFeatureIDs are registered only by internal/workflow's merged
+// registry, which the release snapshot reads, not by this interpreter. The
+// baseline must drop them or every release that ships one breaks this gate.
+var binaryLayerFeatureIDs = map[FeatureID]struct{}{
+	"gaggle.spec.cost.enabled": {},
+}
+
+func withoutBinaryLayerFeatures(t *testing.T, released FeatureRegistry) FeatureRegistry {
+	t.Helper()
+	kept := make([]Feature, 0, len(released.All()))
+	for _, feature := range released.All() {
+		if _, ok := binaryLayerFeatureIDs[feature.ID]; !ok {
+			kept = append(kept, feature)
+		}
+	}
+	filtered, err := NewFeatureRegistry(kept)
+	if err != nil {
+		t.Fatalf("filter binary-layer features from release baseline: %v", err)
+	}
+	return filtered
+}
+
+func TestBinaryLayerFeatureIDsAreNotInterpreterFeatures(t *testing.T) {
+	for id := range binaryLayerFeatureIDs {
+		if _, ok := currentFeatureRegistry.Lookup(id); ok {
+			t.Errorf("%q is registered by this interpreter; remove it from binaryLayerFeatureIDs so the release gate guards it", id)
+		}
 	}
 }
 

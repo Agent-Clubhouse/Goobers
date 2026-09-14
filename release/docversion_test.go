@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func writeGuide(t *testing.T, guidesDir, name, body string) {
@@ -21,7 +23,7 @@ func TestCheckShippedGuideVersionPinsRejectsStaleLiteral(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The exact #4831 repro: a stable, checksummable release four minors
-	// behind supportmatrix.NextPlannedRelease (v0.4.0), hardcoded rather than
+	// behind supportmatrix.NextPlannedRelease, hardcoded rather than
 	// resolved dynamically.
 	writeGuide(t, guidesDir, "quickstart-macos.md", "```sh\nVERSION=v0.1.0\n...\n```\n")
 
@@ -56,7 +58,7 @@ func TestCheckShippedGuideVersionPinsAllowsCurrentOrNewerLiteral(t *testing.T) {
 	// A literal naming the current planned release line (or newer) is not a
 	// staleness bug — e.g. a guide intentionally pinned to a specific tag for
 	// reproducibility.
-	writeGuide(t, guidesDir, "pinned-example.md", "```sh\nVERSION=v0.4.0\n```\n")
+	writeGuide(t, guidesDir, "pinned-example.md", "```sh\nVERSION="+supportmatrix.NextPlannedRelease+"\n```\n")
 	writeGuide(t, guidesDir, "no-version.md", "Nothing to see here.\n")
 
 	if err := checkShippedGuideVersionPins(repoRoot); err != nil {
