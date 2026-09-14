@@ -136,7 +136,8 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 		if err != nil {
 			return err
 		}
-		if !validSnapshotMode(info.Mode()) {
+		mode := normalizeDirMode(info.Mode())
+		if !validSnapshotMode(mode) {
 			return fmt.Errorf("config mirror refuses non-regular file %q", path)
 		}
 		count++
@@ -144,7 +145,7 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 			return errors.New("config mirror snapshot exceeds safety limits")
 		}
 		if entry.IsDir() {
-			_, err := archive.CreateHeader(snapshotHeader(name+"/", info.Mode()))
+			_, err := archive.CreateHeader(snapshotHeader(name+"/", mode))
 			return err
 		}
 		if info.Size() > MaxFileBytes || total+info.Size() > MaxSnapshotBytes {
@@ -161,10 +162,10 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 		if err != nil {
 			return err
 		}
-		if !opened.Mode().IsRegular() || !validSnapshotMode(opened.Mode()) {
+		if !opened.Mode().IsRegular() || !validSnapshotMode(normalizeDirMode(opened.Mode())) {
 			return fmt.Errorf("config mirror opened a non-regular file %q", path)
 		}
-		writer, err := archive.CreateHeader(snapshotHeader(name, opened.Mode()))
+		writer, err := archive.CreateHeader(snapshotHeader(name, normalizeDirMode(opened.Mode())))
 		if err != nil {
 			return err
 		}
@@ -198,4 +199,18 @@ func snapshotHeader(name string, mode fs.FileMode) *zip.FileHeader {
 
 func validSnapshotMode(mode fs.FileMode) bool {
 	return mode & ^(fs.ModePerm|fs.ModeDir) == 0
+}
+
+// normalizeDirMode strips directory placement bits (setgid, sticky) that a
+// host's filesystem or volume manager attaches for its own bookkeeping, such
+// as Kubernetes setting setgid on an fsGroup-managed volume so descendants
+// inherit its group. Those bits describe where a directory sits, not what it
+// contains, so they are cleared before a mode is validated, recorded, or
+// archived: the same config tree yields an identical snapshot whether or not
+// it is captured from beneath such a directory.
+func normalizeDirMode(mode fs.FileMode) fs.FileMode {
+	if mode.IsDir() {
+		return mode &^ (fs.ModeSetgid | fs.ModeSticky)
+	}
+	return mode
 }
