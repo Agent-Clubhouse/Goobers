@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/api/schemas"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/learning"
@@ -29,15 +30,16 @@ import (
 const candidateFindingsSchemaVersion = "goobers.dev/candidate-findings/v1"
 
 type candidateFindingsArtifact struct {
-	Schema              string                        `json:"schema"`
-	Window              string                        `json:"window"`
-	Since               time.Time                     `json:"since"`
-	Findings            []rollup.Finding              `json:"findings"`
-	CausalCredit        []readmodel.CausalNodeCredit  `json:"causalCredit,omitempty"`
-	PromotionSignals    []readservice.PromotionSignal `json:"promotionSignals,omitempty"`
-	PromotionCandidates []readservice.PromotionSignal `json:"promotionCandidates"`
-	NoWork              bool                          `json:"noWork,omitempty"`
-	Note                string                        `json:"note,omitempty"`
+	Schema              string                          `json:"schema"`
+	Window              string                          `json:"window"`
+	Since               time.Time                       `json:"since"`
+	Findings            []rollup.Finding                `json:"findings"`
+	CausalCredit        []readmodel.CausalNodeCredit    `json:"causalCredit,omitempty"`
+	AttributionCohorts  []creditgraph.CohortAggregation `json:"attributionCohorts,omitempty"`
+	PromotionSignals    []readservice.PromotionSignal   `json:"promotionSignals,omitempty"`
+	PromotionCandidates []readservice.PromotionSignal   `json:"promotionCandidates"`
+	NoWork              bool                            `json:"noWork,omitempty"`
+	Note                string                          `json:"note,omitempty"`
 }
 
 const (
@@ -723,6 +725,15 @@ func detectCandidateFindingsWithCausalCredit(
 		})
 	}
 	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
+	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
+		cohorts, err := readservice.StoredAttributionCohorts(context.Background(), root, creditStore, db, readservice.StoredAttributionQuery{
+			Gaggle: gaggle, Workflow: workflowName, Since: since,
+		})
+		if err != nil {
+			return candidateFindingsArtifact{}, fmt.Errorf("query attribution cohorts: %w", err)
+		}
+		result.AttributionCohorts = cohorts
+	}
 	return result, nil
 }
 
@@ -984,6 +995,15 @@ func candidateFindingsFromPlane(
 			PromotionSource:   estimate.PromotionSource,
 		})
 	}
+	for _, cohort := range response.AttributionCohorts {
+		artifact.AttributionCohorts = append(artifact.AttributionCohorts, creditgraph.CohortAggregation{
+			EffectiveVersion:     cohort.EffectiveVersion,
+			Workload:             cohort.Workload,
+			RunCount:             cohort.RunCount,
+			TopContributingPaths: planeContributingPaths(cohort.TopContributingPaths),
+			CounterEvidence:      planeEvidenceLinks(cohort.CounterEvidence),
+		})
+	}
 	for _, signal := range response.PromotionSignals {
 		artifact.PromotionSignals = append(artifact.PromotionSignals, readservicePromotionSignal(signal))
 	}
@@ -999,6 +1019,38 @@ func candidateFindingsFromPlane(
 		artifact.Note = strings.TrimSpace(artifact.Note + " (answer truncated at the plane's cardinality ceiling)")
 	}
 	return artifact
+}
+
+func planeContributingPaths(paths []telemetryclient.ContributingPath) []creditgraph.ContributingPath {
+	projected := make([]creditgraph.ContributingPath, 0, len(paths))
+	for _, path := range paths {
+		projected = append(projected, creditgraph.ContributingPath{
+			Nodes:      append([]string(nil), path.Nodes...),
+			Share:      path.Share,
+			Confidence: path.Confidence,
+			Evidence:   planeEvidenceLinks(path.Evidence),
+		})
+	}
+	return projected
+}
+
+func planeEvidenceLinks(links []telemetryclient.AttributionEvidenceLink) []creditgraph.AttributionEvidenceLink {
+	projected := make([]creditgraph.AttributionEvidenceLink, 0, len(links))
+	for _, link := range links {
+		projected = append(projected, creditgraph.AttributionEvidenceLink{
+			RunID:             link.RunID,
+			NodeID:            link.NodeID,
+			Stage:             link.Stage,
+			Detail:            link.Detail,
+			Source:            link.Source,
+			JournalSequence:   link.JournalSequence,
+			JournalPath:       link.JournalPath,
+			ArtifactPath:      link.ArtifactPath,
+			ArtifactDigest:    link.ArtifactDigest,
+			ArtifactMediaType: link.ArtifactMediaType,
+		})
+	}
+	return projected
 }
 
 // requireTelemetryQueryInstanceRoot refuses a local read whose root is not an

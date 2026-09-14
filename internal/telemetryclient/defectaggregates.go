@@ -211,23 +211,55 @@ type PromotionSignal struct {
 	PromotionEligible bool    `json:"promotionEligible"`
 }
 
+// AttributionEvidenceLink is one exact journal-backed attribution pointer.
+type AttributionEvidenceLink struct {
+	RunID             string `json:"runId,omitempty"`
+	NodeID            string `json:"nodeId,omitempty"`
+	Stage             string `json:"stage,omitempty"`
+	Detail            string `json:"detail,omitempty"`
+	Source            string `json:"source,omitempty"`
+	JournalSequence   int64  `json:"journalSequence,omitempty"`
+	JournalPath       string `json:"journalPath,omitempty"`
+	ArtifactPath      string `json:"artifactPath,omitempty"`
+	ArtifactDigest    string `json:"artifactDigest,omitempty"`
+	ArtifactMediaType string `json:"artifactMediaType,omitempty"`
+}
+
+// ContributingPath is one aggregated path inside an attribution cohort.
+type ContributingPath struct {
+	Nodes      []string                  `json:"nodes,omitempty"`
+	Share      float64                   `json:"share"`
+	Confidence float64                   `json:"confidence"`
+	Evidence   []AttributionEvidenceLink `json:"evidence,omitempty"`
+}
+
+// AttributionCohort is a version/workload aggregate of repeated attribution evidence.
+type AttributionCohort struct {
+	EffectiveVersion     string                    `json:"effectiveVersion,omitempty"`
+	Workload             string                    `json:"workload,omitempty"`
+	RunCount             int                       `json:"runCount"`
+	TopContributingPaths []ContributingPath        `json:"topContributingPaths,omitempty"`
+	CounterEvidence      []AttributionEvidenceLink `json:"counterEvidence,omitempty"`
+}
+
 // DefectAggregateResponse is the plane's answer.
 //
 // Truncated is loud on purpose: a bounded answer that silently dropped
 // findings would make a nomination lane quietly under-report, which is the
 // same silent-wrong-result class the dispatch refusals exist to prevent.
 type DefectAggregateResponse struct {
-	Gaggle              string             `json:"gaggle"`
-	Workflow            string             `json:"workflow,omitempty"`
-	Since               time.Time          `json:"since"`
-	Aggregates          []string           `json:"aggregates"`
-	Findings            []Finding          `json:"findings"`
-	CausalCredit        []CausalNodeCredit `json:"causalCredit,omitempty"`
-	PromotionSignals    []PromotionSignal  `json:"promotionSignals,omitempty"`
-	PromotionCandidates []PromotionSignal  `json:"promotionCandidates"`
-	NoWork              bool               `json:"noWork,omitempty"`
-	Truncated           bool               `json:"truncated,omitempty"`
-	Note                string             `json:"note,omitempty"`
+	Gaggle              string              `json:"gaggle"`
+	Workflow            string              `json:"workflow,omitempty"`
+	Since               time.Time           `json:"since"`
+	Aggregates          []string            `json:"aggregates"`
+	Findings            []Finding           `json:"findings"`
+	CausalCredit        []CausalNodeCredit  `json:"causalCredit,omitempty"`
+	AttributionCohorts  []AttributionCohort `json:"attributionCohorts,omitempty"`
+	PromotionSignals    []PromotionSignal   `json:"promotionSignals,omitempty"`
+	PromotionCandidates []PromotionSignal   `json:"promotionCandidates"`
+	NoWork              bool                `json:"noWork,omitempty"`
+	Truncated           bool                `json:"truncated,omitempty"`
+	Note                string              `json:"note,omitempty"`
 }
 
 // safeSignatureToken is what an error code must already look like to survive

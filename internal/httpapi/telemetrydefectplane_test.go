@@ -433,6 +433,14 @@ func TestDefectAggregateResponseIsBounded(t *testing.T) {
 	}
 	for i := 0; i < telemetryclient.MaxCausalEstimates+10; i++ {
 		oversized.CausalCredit = append(oversized.CausalCredit, telemetryclient.CausalNodeCredit{Node: fmt.Sprintf("node-%d", i)})
+		oversized.AttributionCohorts = append(oversized.AttributionCohorts, telemetryclient.AttributionCohort{
+			EffectiveVersion: fmt.Sprintf("cohort-%d", i),
+			RunCount:         1,
+			TopContributingPaths: []telemetryclient.ContributingPath{{
+				Evidence: make([]telemetryclient.AttributionEvidenceLink, telemetryclient.MaxFlaggedRuns+5),
+			}},
+			CounterEvidence: make([]telemetryclient.AttributionEvidenceLink, telemetryclient.MaxFlaggedRuns+5),
+		})
 		oversized.PromotionCandidates = append(oversized.PromotionCandidates, telemetryclient.PromotionSignal{Node: fmt.Sprintf("node-%d", i)})
 	}
 	handler := defectHandler(t, &fakeDefectService{response: oversized},
@@ -455,9 +463,14 @@ func TestDefectAggregateResponseIsBounded(t *testing.T) {
 		t.Fatalf("flagged runs = %d, want %d", len(decoded.Findings[0].FlaggedRuns), telemetryclient.MaxFlaggedRuns)
 	}
 	if len(decoded.CausalCredit) != telemetryclient.MaxCausalEstimates ||
+		len(decoded.AttributionCohorts) != telemetryclient.MaxCausalEstimates ||
 		len(decoded.PromotionCandidates) != telemetryclient.MaxCausalEstimates {
-		t.Fatalf("causal credit = %d, promotion candidates = %d",
-			len(decoded.CausalCredit), len(decoded.PromotionCandidates))
+		t.Fatalf("causal credit = %d, attribution cohorts = %d, promotion candidates = %d",
+			len(decoded.CausalCredit), len(decoded.AttributionCohorts), len(decoded.PromotionCandidates))
+	}
+	if len(decoded.AttributionCohorts[0].CounterEvidence) != telemetryclient.MaxFlaggedRuns ||
+		len(decoded.AttributionCohorts[0].TopContributingPaths[0].Evidence) != telemetryclient.MaxFlaggedRuns {
+		t.Fatalf("attribution evidence was not bounded: %+v", decoded.AttributionCohorts[0])
 	}
 	if !decoded.Truncated || decoded.Note == "" {
 		t.Fatalf("truncation was silent: %+v", decoded)

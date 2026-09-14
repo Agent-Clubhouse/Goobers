@@ -43,6 +43,9 @@ func (stubReadService) TelemetryCosts(context.Context, readservice.TelemetryCost
 func (stubReadService) TelemetryStats(context.Context, readservice.TelemetryStatsRequest) (readservice.TelemetryStatsResult, error) {
 	return readservice.TelemetryStatsResult{}, nil
 }
+func (stubReadService) TelemetryAttribution(context.Context, readservice.TelemetryAttributionRequest) (readservice.TelemetryAttributionResult, error) {
+	return readservice.TelemetryAttributionResult{}, nil
+}
 func (stubReadService) TelemetryErrorSignatures(context.Context, readservice.TelemetryErrorSignaturesRequest) (readservice.TelemetryErrorSignaturesResult, error) {
 	return readservice.TelemetryErrorSignaturesResult{}, nil
 }
