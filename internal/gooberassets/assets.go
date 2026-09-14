@@ -106,7 +106,7 @@ func scan(source string, readContents bool) (*Bundle, error) {
 		return nil, fmt.Errorf("asset path %q must be a directory", source)
 	}
 
-	bundle := &Bundle{rootMode: info.Mode()}
+	bundle := &Bundle{rootMode: normalizeDirMode(info.Mode())}
 	if err := scanDirectory(root, source, "", bundle, readContents); err != nil {
 		return nil, fmt.Errorf("load assets from %q: %w", source, err)
 	}
@@ -141,7 +141,7 @@ func scanEntry(parent *os.File, source, relative string, bundle *Bundle, readCon
 	}
 	switch {
 	case info.IsDir():
-		bundle.entries = append(bundle.entries, entry{path: relative, mode: info.Mode(), dir: true})
+		bundle.entries = append(bundle.entries, entry{path: relative, mode: normalizeDirMode(info.Mode()), dir: true})
 		return scanDirectory(file, source, relative, bundle, readContents)
 	case info.Mode().IsRegular():
 		var data []byte
@@ -185,6 +185,20 @@ func openAssetAt(parent *os.File, name string) (*os.File, error) {
 		return nil, err
 	}
 	return file, nil
+}
+
+// normalizeDirMode strips directory placement bits (setgid, sticky) that a
+// host's filesystem or volume manager attaches for its own bookkeeping, such
+// as Kubernetes setting setgid on an fsGroup-managed volume so descendants
+// inherit its group. Those bits describe where a directory sits, not what it
+// contains, so they are cleared before a mode is recorded, fingerprinted, or
+// archived: the same asset tree yields the same bundle whether or not its
+// source happens to live under such a directory.
+func normalizeDirMode(mode fs.FileMode) fs.FileMode {
+	if mode.IsDir() {
+		return mode &^ (fs.ModeSetgid | fs.ModeSticky)
+	}
+	return mode
 }
 
 // Fingerprint returns a stable digest of the bundle's paths, modes, and bytes.
