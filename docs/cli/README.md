@@ -3352,7 +3352,10 @@ requested workflow state, not the workflow start, and reclaims the source
 run's retained claim set before any continuation stage can execute. It also
 revalidates retained claimed work before creating the continuation and keeps
 later `open-pr` stages on the source branch instead of inventing a second PR
-head for the continuation run.
+head for the continuation run. If a crash lands after the continuation
+journal is written but before its retained claims are durably transferred, a
+retry repairs and reuses that exact continuation instead of minting a second
+run.
 With --api (or $GOOBERS_DAEMON_API) the trigger is submitted to that
 daemon's authenticated HTTP API instead of the local pending-triggers
 drop, so a caller that does not share the daemon's filesystem — CI, a

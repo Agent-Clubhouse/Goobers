@@ -374,3 +374,236 @@ func TestRunRunContinueRejectsClosedRetainedClaimBeforeCreatingContinuation(t *t
 		t.Fatalf("runs directory entries = %+v, want only %s", entries, sourceID)
 	}
 }
+
+func TestRunRunContinueRepairsExistingContinuationBeforeReclaimRetry(t *testing.T) {
+	root := initDeterministicDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.setBranchTip("goobers/continuation-repair", "abc9999")
+	server.addIssue(7, "Continuation claim", "goobers", "goobers:ready")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "continuation-repair")
+
+	const sourceID = "historical-source-repair"
+	const continuationID = "1af7651916cd43dd8448eb211c80319c"
+	machine := seedContinuationSourceRun(t, root, sourceID, "goobers/continuation-repair", "abc9999")
+	seedReleasedContinuationClaim(t, root, sourceID, machine.Def.Name, "7")
+
+	runsDir := instance.NewLayout(root).RunsDir()
+	continuation, err := journal.CreateContinuation(runsDir, journal.ContinuationRequest{
+		RunID: continuationID, SourceRunID: sourceID,
+		ExpectedTerminalSeq: 2, Operator: "operator@example.test", Target: "local-ci",
+		SourceBranch:      "goobers/continuation-repair",
+		ExpectedSourceSHA: "abc9999",
+		SourceRepository: &apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "your-org", Name: "your-repo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed continuation: %v", err)
+	}
+	if err := continuation.Close(); err != nil {
+		t.Fatalf("close seeded continuation: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := runRunContinue([]string{
+		"--from", sourceID, "--terminal-seq", "2", "--target", "local-ci",
+		"--operator", "operator@example.test", root,
+	}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("run continue failed: code=%d stderr=%s", exitCode, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != continuationID {
+		t.Fatalf("stdout = %q, want repaired continuation %q", got, continuationID)
+	}
+
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(root).SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := reopened.ForRunAll(continuationID)
+	if len(claims) != 1 || claims[0].ExternalID != "7" {
+		t.Fatalf("continuation claims = %+v", claims)
+	}
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("runs directory entries = %d, want source plus repaired continuation", len(entries))
+	}
+}
+
+func TestRunRunContinueRejectsClaimThatLostWorkflowRoutingEligibility(t *testing.T) {
+	root := initDeterministicDemo(t)
+	writeContinuationEligibilityWorkflow(t, root)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.setBranchTip("goobers/continuation-routing", "fff1111")
+	server.addIssue(7, "Routing drift", "goobers:approved")
+	setFakeIssueAssignee(server, 7, "goobersbot")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "continuation-routing")
+
+	const sourceID = "historical-source-routing"
+	machine := seedContinuationSourceRun(t, root, sourceID, "goobers/continuation-routing", "fff1111")
+	seedReleasedContinuationClaim(t, root, sourceID, machine.Def.Name, "7")
+
+	var stdout, stderr bytes.Buffer
+	exitCode := runRunContinue([]string{
+		"--from", sourceID, "--terminal-seq", "2", "--target", "local-ci",
+		"--operator", "operator@example.test", root,
+	}, &stdout, &stderr)
+	if exitCode == 0 {
+		t.Fatalf("run continue unexpectedly succeeded: stdout=%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `source claim "7" no longer matches workflow label eligibility (missing required label "goobers:ready")`) {
+		t.Fatalf("stderr = %s", stderr.String())
+	}
+}
+
+func TestRunRunContinueRejectsClaimThatLostAssigneeOwnership(t *testing.T) {
+	root := initDeterministicDemo(t)
+	writeContinuationEligibilityWorkflow(t, root)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.setBranchTip("goobers/continuation-assignee", "fff2222")
+	server.addIssue(7, "Assignee drift", "goobers:approved", "goobers:ready")
+	setFakeIssueAssignee(server, 7, "someone-else")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "continuation-assignee")
+
+	const sourceID = "historical-source-assignee"
+	machine := seedContinuationSourceRun(t, root, sourceID, "goobers/continuation-assignee", "fff2222")
+	seedReleasedContinuationClaim(t, root, sourceID, machine.Def.Name, "7")
+
+	var stdout, stderr bytes.Buffer
+	exitCode := runRunContinue([]string{
+		"--from", sourceID, "--terminal-seq", "2", "--target", "local-ci",
+		"--operator", "operator@example.test", root,
+	}, &stdout, &stderr)
+	if exitCode == 0 {
+		t.Fatalf("run continue unexpectedly succeeded: stdout=%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `source claim "7" is assigned to "someone-else", need "goobersbot"`) {
+		t.Fatalf("stderr = %s", stderr.String())
+	}
+}
+
+func TestRunRunContinueRejectsClosedRetainedPullRequestClaimBeforeCreatingContinuation(t *testing.T) {
+	root := initDeterministicDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.setBranchTip("goobers/continuation-pr", "999aaaa")
+	server.addIssue(9, "Existing PR")
+	server.addOpenPR(9, "goobers/continuation-pr", "main", "999aaaa", "base999", false, nil, nil)
+	server.setPRClosed(9)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "continuation-pr")
+
+	const sourceID = "historical-source-pr"
+	machine := seedContinuationSourceRun(t, root, sourceID, "goobers/continuation-pr", "999aaaa")
+	seedReleasedContinuationClaim(t, root, sourceID, machine.Def.Name, pullRequestClaimKey(9))
+
+	var stdout, stderr bytes.Buffer
+	exitCode := runRunContinue([]string{
+		"--from", sourceID, "--terminal-seq", "2", "--target", "local-ci",
+		"--operator", "operator@example.test", root,
+	}, &stdout, &stderr)
+	if exitCode == 0 {
+		t.Fatalf("run continue unexpectedly succeeded: stdout=%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `source claim "pr/9" is no longer open (state "closed")`) {
+		t.Fatalf("stderr = %s", stderr.String())
+	}
+}
+
+func writeContinuationEligibilityWorkflow(t *testing.T, root string) {
+	t.Helper()
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SelfIdentity = "goobersbot"
+	if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	const workflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: re-read one eligible backlog item
+      run:
+        command: ["goobers", "backlog-query"]
+      capabilities: ["github:issues:write"]
+      inputs:
+        trustLabel: goobers:approved
+        requireLabels: goobers:ready
+        respectAssignee: "true"
+      next: local-ci
+    - name: local-ci
+      type: deterministic
+      goal: run a no-op local command
+      run:
+        command: ["true"]
+`
+	if err := os.WriteFile(filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"), []byte(workflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedContinuationSourceRun(t *testing.T, root, sourceID, branch, sha string) *workflow.Machine {
+	t.Helper()
+	runsDir := instance.NewLayout(root).RunsDir()
+	machine, err := currentWorkflowMachine(root, journal.RunIdentity{
+		Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "example",
+	})
+	if err != nil {
+		t.Fatalf("currentWorkflowMachine: %v", err)
+	}
+	definition, err := json.Marshal(machine.Def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: sourceID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "example",
+		WorkspaceBranch:    branch,
+		WorkspaceBranchSHA: sha,
+		WorkspaceRepository: &apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "your-org", Name: "your-repo",
+		},
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition},
+		journal.WithInputIntegrity(map[string]apiv1.Integrity{
+			journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return machine
+}
+
+func seedReleasedContinuationClaim(t *testing.T, root, sourceID, workflowName, externalID string) {
+	t.Helper()
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(root).SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: externalID}
+	if ok, _, err := ledger.ClaimScoped(key, sourceID, workflowName, time.Hour); err != nil || !ok {
+		t.Fatalf("seed source claim: ok=%v err=%v", ok, err)
+	}
+	if err := ledger.ReleaseScoped(key, sourceID); err != nil {
+		t.Fatalf("release source claim: %v", err)
+	}
+}
