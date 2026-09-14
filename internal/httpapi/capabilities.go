@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"io"
+	"log"
 	"net/http"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -13,6 +15,9 @@ func SurfaceActions() []apicontract.SurfaceAction {
 		mux:           http.NewServeMux(),
 		authenticator: NullAuthenticator{},
 		authorizer:    AllowAll,
+	}
+	if err := registerDiscoveryRoutes(router, nil, log.New(io.Discard, "", 0), handlerConfig{}); err != nil {
+		panic(err)
 	}
 	registerV1Routes(router, nil, nil, handlerConfig{})
 	// The events route is part of the versioned surface even though its stream

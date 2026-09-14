@@ -28,6 +28,8 @@ import (
 )
 
 const (
+	// DiscoveryPath is the version-independent daemon discovery endpoint.
+	DiscoveryPath = apicontract.DiscoveryPath
 	// Prefix is the versioned root for all HTTP API routes.
 	Prefix = apicontract.V1Prefix
 	// HealthPath is the daemon health endpoint.
@@ -943,6 +945,9 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, err
 	}
 	router.recoveryGate = config.recoveryGate
+	if err := registerDiscoveryRoutes(router, reader, errorLog, config); err != nil {
+		return nil, fmt.Errorf("register API discovery routes: %w", err)
+	}
 	registerV1Routes(router, reader, errorLog, config)
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.

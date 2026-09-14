@@ -894,7 +894,7 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode, ins
 	// with a 3xx before dispatching, which both leaks routing behavior and
 	// prevents the asset handlers' own containment checks from returning 404.
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if strings.HasPrefix(request.URL.Path, "/api/") {
+		if strings.HasPrefix(request.URL.Path, "/api/") || request.URL.Path == httpapi.DiscoveryPath {
 			api.ServeHTTP(response, request)
 			return
 		}
