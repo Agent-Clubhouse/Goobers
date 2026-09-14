@@ -206,43 +206,53 @@
       "properties": {
         "runId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The run whose journal or artifacts carry the attribution evidence."
         },
         "nodeId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The attributed workflow node."
         },
         "stage": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The stage that emitted the linked evidence."
         },
         "detail": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "A short explanation of how this evidence supports or rebuts the path attribution."
         },
         "source": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The evidence source family, such as journal span or produced artifact."
         },
         "journalSequence": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "description": "The exact journal event sequence number containing the evidence."
         },
         "journalPath": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The repository-relative path to the journal file containing the referenced event."
         },
         "artifactPath": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The repository-relative path to the referenced artifact, when the evidence comes from artifact output."
         },
         "artifactDigest": {
           "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "The artifact content digest used to pin the linked evidence exactly."
         },
         "artifactMediaType": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The media type of the referenced artifact payload."
         }
       }
     },
@@ -253,19 +263,23 @@
       "properties": {
         "nodes": {
           "type": "array",
+          "description": "The ordered workflow-node path that contributed to the adverse outcome.",
           "items": {
             "type": "string",
             "minLength": 1
           }
         },
         "share": {
-          "type": "number"
+          "type": "number",
+          "description": "The cohort-normalized share of total adverse attribution assigned to this path."
         },
         "confidence": {
-          "type": "number"
+          "type": "number",
+          "description": "The aggregated attribution confidence for this path across the cohort."
         },
         "evidence": {
           "type": "array",
+          "description": "Concrete journal or artifact links that justify this path's contribution.",
           "items": {
             "$ref": "#/$defs/attributionEvidenceLink"
           }
@@ -279,24 +293,29 @@
       "properties": {
         "effectiveVersion": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The EffectiveVersion hash segment defining this cohort."
         },
         "workload": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The workload identity aggregated within this EffectiveVersion cohort."
         },
         "runCount": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "The number of runs contributing attribution evidence to this cohort."
         },
         "topContributingPaths": {
           "type": "array",
+          "description": "The highest-share attributed paths observed for this cohort.",
           "items": {
             "$ref": "#/$defs/contributingPath"
           }
         },
         "counterEvidence": {
           "type": "array",
+          "description": "Concrete evidence that weakens or rebuts the leading attribution paths for this cohort.",
           "items": {
             "$ref": "#/$defs/attributionEvidenceLink"
           }
