@@ -877,6 +877,56 @@ func TestDashboardHandlerServesInstanceAssets(t *testing.T) {
 	}
 }
 
+func TestDaemonInstanceAssetHandlerBoundsCoBrandReads(t *testing.T) {
+	root := t.TempDir()
+	assetsDir := filepath.Join(root, "assets", "brand")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logo := []byte("<svg>brand</svg>")
+	if err := os.WriteFile(filepath.Join(assetsDir, "logo.svg"), logo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsDir, "notes.txt"), []byte("not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "outside.svg"), []byte("<svg>outside</svg>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		serveDaemonInstanceAsset(response, request, root)
+	})
+
+	t.Run("serves nested image with inferred content type", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/brand/logo.svg", nil))
+
+		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), logo) {
+			t.Fatalf("asset response = %d %q", response.Code, response.Body.String())
+		}
+		if got := response.Header().Get("Content-Type"); got != "image/svg+xml" {
+			t.Fatalf("content type = %q, want image/svg+xml", got)
+		}
+	})
+
+	for name, target := range map[string]string{
+		"missing":               "/assets/missing.png",
+		"directory":             "/assets/brand",
+		"traversal":             "/assets/../outside.svg",
+		"encoded traversal":     "/assets/%2e%2e/outside.svg",
+		"unsupported extension": "/assets/brand/notes.txt",
+		"query string":          "/assets/brand/logo.svg?download=true",
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", response.Code)
+			}
+		})
+	}
+}
+
 func TestDashboardBindsWhileAttachingAndStopsCleanly(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)

@@ -358,6 +358,72 @@ func TestAuthenticatorAcceptsAndRejectsBeforeAuthorization(t *testing.T) {
 	})
 }
 
+func TestPortalAssetRouteUsesSharedSecurityPipeline(t *testing.T) {
+	t.Run("serves after authentication and authorization", func(t *testing.T) {
+		authenticator := &fakeAuthenticator{principal: &Principal{Subject: "user-1"}}
+		assetCalled := false
+		handler, err := NewHandler(
+			&fakeReader{},
+			authorizerFunc(func(request *http.Request) error {
+				principal, ok := PrincipalFromRequest(request)
+				if !ok || principal.Subject != "user-1" {
+					t.Fatalf("principal = %+v, present = %t", principal, ok)
+				}
+				return nil
+			}),
+			discardLogger(),
+			WithAuthenticator(authenticator),
+			WithPortalAssetHandler(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				assetCalled = true
+				if got := request.PathValue("path"); got != "brand/logo.svg" {
+					t.Fatalf("path = %q, want brand/logo.svg", got)
+				}
+				response.Header().Set("Content-Type", "image/svg+xml")
+				_, _ = response.Write([]byte("<svg/>"))
+			})),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/brand/logo.svg", nil))
+
+		if response.Code != http.StatusOK || response.Body.String() != "<svg/>" {
+			t.Fatalf("asset response = %d %q", response.Code, response.Body.String())
+		}
+		if authenticator.called != 1 || !assetCalled {
+			t.Fatalf("authenticator called %d times, asset called = %t", authenticator.called, assetCalled)
+		}
+	})
+
+	t.Run("rejects before filesystem handler", func(t *testing.T) {
+		assetCalled := false
+		handler, err := NewHandler(
+			&fakeReader{},
+			AllowAll,
+			discardLogger(),
+			WithAuthenticator(&fakeAuthenticator{err: errors.New("invalid token")}),
+			WithPortalAssetHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				assetCalled = true
+			})),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/logo.svg", nil))
+
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+		}
+		if assetCalled {
+			t.Fatal("portal asset handler was called before authentication succeeded")
+		}
+	})
+}
+
 func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 	reader := &fakeReader{
 		runs: readservice.RunList{Runs: []readservice.RunSummary{{ID: "run-1"}}},

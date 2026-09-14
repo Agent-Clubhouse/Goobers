@@ -63,6 +63,16 @@
       "recoverySafe": false
     },
     {
+      "id": "portalAsset",
+      "method": "GET",
+      "path": "/assets/{path...}",
+      "actionClass": "read-only-navigation",
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": true
+    },
+    {
       "id": "gaggles",
       "method": "GET",
       "path": "/api/v1/gaggles",
