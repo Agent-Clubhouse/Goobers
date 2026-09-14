@@ -157,7 +157,8 @@ test("keeps Overview status and recent outcomes compact at desktop and narrow wi
     const status = page.getByRole("region", {
       name: "Daemon connection and instance counts",
     });
-    await expect(status).toContainText("Retention sweep running");
+    await expect(status).toContainText("Retention sweep");
+    await expect(status).toContainText("Running");
     await expect(status).toContainText("Active runs1");
     await expect(status).toContainText("Gaggles1");
 
