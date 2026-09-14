@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -16,6 +17,10 @@ type ciStackSignal struct {
 	command    []string // suggested ciCommand
 	capability string   // suggested runner capability
 }
+
+var (
+	pythonUnittestCommandPattern = regexp.MustCompile(`\bpython(?:3)?\s+-m\s+unittest(?:\s+(?:--?[[:alnum:]][[:alnum:]-]*|[[:alnum:]_./]+))*`)
+)
 
 // ciStackSignals is checked in order; the first match wins. Makefile comes
 // first because its presence means the repo already names its own CI
@@ -60,6 +65,11 @@ func detectCICommandDefault(dir string) (stack string, command []string, require
 		names[entry.Name()] = true
 		suffixes = append(suffixes, entry.Name())
 	}
+	if names["pyproject.toml"] || names["setup.py"] || names["requirements.txt"] {
+		if command, ok := detectPythonUnittestCommand(dir); ok {
+			return "Python", command, "python"
+		}
+	}
 	for _, signal := range ciStackSignals {
 		for _, name := range signal.names {
 			if names[name] {
@@ -88,4 +98,54 @@ func detectCICommandDefault(dir string) (stack string, command []string, require
 		}
 	}
 	return "", nil, ""
+}
+
+// detectPythonUnittestCommand prefers an explicit repository CI command over
+// the generic pytest default, which is not safe for projects without pytest.
+// Its caller uses an unversioned Python capability because a >= metadata range
+// cannot be represented by the exact-version capability token format.
+func detectPythonUnittestCommand(dir string) ([]string, bool) {
+	paths := []string{
+		filepath.Join(dir, ".github", "workflows"),
+		filepath.Join(dir, "AGENTS.md"),
+		filepath.Join(dir, "README.md"),
+		filepath.Join(dir, "CONTRIBUTING.md"),
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if entry.IsDir() || (filepath.Ext(entry.Name()) != ".yml" && filepath.Ext(entry.Name()) != ".yaml") {
+					continue
+				}
+				if command, ok := pythonUnittestCommand(filepath.Join(path, entry.Name())); ok {
+					return command, true
+				}
+			}
+			continue
+		}
+		if command, ok := pythonUnittestCommand(path); ok {
+			return command, true
+		}
+	}
+	return nil, false
+}
+
+func pythonUnittestCommand(path string) ([]string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	match := pythonUnittestCommandPattern.FindString(string(data))
+	if match == "" {
+		return nil, false
+	}
+	return strings.Fields(match), true
 }
