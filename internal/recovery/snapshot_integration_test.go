@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,8 +65,18 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := recoveryTestGit(t, repository, "show", "-s", "--format=%aI%n%cI", snapshot); got != identityTime.Format(time.RFC3339)+"\n"+identityTime.Format(time.RFC3339) {
-		t.Fatalf("capture timestamp was not pinned: %s", got)
+	// Compare instants, not strings: git renders a UTC strict-ISO date as
+	// "+00:00" in some versions, while time.RFC3339 renders "Z".
+	got := recoveryTestGit(t, repository, "show", "-s", "--format=%aI%n%cI", snapshot)
+	stamps := strings.Split(strings.TrimSpace(got), "\n")
+	if len(stamps) != 2 {
+		t.Fatalf("capture timestamp output = %q, want author and committer dates", got)
+	}
+	for _, stamp := range stamps {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(stamp))
+		if err != nil || !parsed.Equal(identityTime) {
+			t.Fatalf("capture timestamp was not pinned: %s (want %s): %v", got, identityTime.Format(time.RFC3339), err)
+		}
 	}
 	if again, err := CaptureSnapshot(context.Background(), subdirectory, "run-1", identityTime); err != nil || again != snapshot {
 		t.Fatalf("identical capture retry changed identity: %s -> %s: %v", snapshot, again, err)
