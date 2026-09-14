@@ -1495,7 +1495,7 @@ describe("live page integration", () => {
   it("meets the local p95 update target and stays stale on disconnect", async () => {
     vi.useRealTimers();
     const client = new MutableFixtureClient();
-    render(<App client={client} />);
+    const { container } = render(<App client={client} />);
 
     expect(
       await screen.findByRole("heading", { name: "2 runs need attention." }),
@@ -1508,7 +1508,10 @@ describe("live page integration", () => {
       const started = performance.now();
       client.stream.push(update(`fixture:${sequence}`, ["instance"]));
       await waitFor(
-        () => expect(screen.getByText(client.instanceName)).toBeInTheDocument(),
+        () =>
+          expect(container.querySelector(".topbar-instance-name")).toHaveTextContent(
+            client.instanceName,
+          ),
         { timeout: 900 },
       );
       latencies.push(performance.now() - started);
@@ -1519,7 +1522,9 @@ describe("live page integration", () => {
 
     client.stream.end();
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Reconnecting"));
-    expect(screen.getByText("refreshed-instance-20")).toBeInTheDocument();
+    expect(container.querySelector(".topbar-instance-name")).toHaveTextContent(
+      "refreshed-instance-20",
+    );
     expect(screen.getByRole("status")).not.toHaveTextContent("Live updates connected");
   }, 25_000);
 });

@@ -1,13 +1,15 @@
 import { useRef, useState } from "react";
-import type { DaemonClient } from "../api/types";
+import type { BuildMetadata, DaemonClient, Instance } from "../api/types";
 import { useCobrand } from "../cobrand";
 import { UpdateNotice } from "../components/UpdateNotice";
+import { dataCacheKey } from "../dataCache";
 import {
   useLiveData,
   type DataFreshness,
   type LiveDataSSEFailure,
   type LiveFreshness,
 } from "../liveData";
+import { useLiveQuery } from "../liveQuery";
 import { useGaggleList } from "../operationalData";
 import { routeHash, type Navigate, type PrimaryArea } from "../routing";
 import { hasScopeIdentity, type ScopeFilters } from "../scope";
@@ -15,6 +17,14 @@ import type { Theme } from "../theme";
 import { useUpdateNotice } from "../updateNotice";
 import { Icon } from "../ui/Icon";
 import { SupportFooter } from "./SupportFooter";
+
+interface HeaderIdentity {
+  build?: BuildMetadata;
+  instance: Pick<
+    Instance,
+    "computerName" | "environment" | "instanceRoot" | "name" | "rootIdentity"
+  >;
+}
 
 interface PortalShellProps {
   activeArea: PrimaryArea;
@@ -25,6 +35,7 @@ interface PortalShellProps {
     ScopeFilters,
     "gaggle" | "workflow" | "stage" | "since" | "until" | "window"
   >;
+  hostContext: "daemon" | "fleet" | "standalone";
   navigate: Navigate;
   standalone: boolean;
   theme: Theme;
@@ -37,6 +48,7 @@ export function PortalShell({
   children,
   client,
   currentScope,
+  hostContext,
   navigate,
   standalone,
   theme,
@@ -56,6 +68,29 @@ export function PortalShell({
   const updateNotice = useUpdateNotice();
   const mainContent = useRef<HTMLElement>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const headerIdentity = useLiveQuery<HeaderIdentity>({
+    cacheKey: dataCacheKey("portal-header-identity"),
+    dependencies: [{ model: "instance" }],
+    models: ["instance"],
+    load: async (signal) => {
+      const [instance, health] = await Promise.all([
+        client.getInstance({ signal }),
+        client.getHealth({ signal }),
+      ]);
+      const { computerName, environment, instanceRoot, name, rootIdentity } = instance;
+      return {
+        build: health.build,
+        instance: { computerName, environment, instanceRoot, name, rootIdentity },
+      };
+    },
+    errorMessage: "Unable to load compact header instance identity.",
+  });
+  const headerData =
+    headerIdentity.state.status === "ready" || headerIdentity.state.status === "stale"
+      ? headerIdentity.state.data
+      : undefined;
+  const instanceIdentity = headerData?.instance;
+  const build = headerData?.build;
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
@@ -64,23 +99,70 @@ export function PortalShell({
   };
 
   return (
-    <div className="portal-frame">
+    <div className="portal-frame" data-host={hostContext}>
       <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
         Skip to main content
       </a>
       <header className="topbar">
-        <button
-          aria-label="Go to overview"
-          className="topbar-brand"
-          onClick={() => navigate({ page: "overview" })}
-          type="button"
-        >
-          <img alt="" src={config.brand.logoUrl ?? "/goober-mascot.png"} />
-          <span>
+        <div className="topbar-primary">
+          <button
+            aria-label="Go to overview"
+            className="topbar-brand"
+            onClick={() => navigate({ page: "overview" })}
+            title={config.brand.tagline}
+            type="button"
+          >
+            <img alt="" src={config.brand.logoUrl ?? "/goober-mascot.png"} />
             <strong>{config.brand.name}</strong>
-            <small>{config.brand.tagline}</small>
-          </span>
-        </button>
+          </button>
+          <span aria-hidden="true" className="topbar-divider" />
+          <div className="topbar-instance-context" aria-label="Instance context">
+            <span className="topbar-instance-name">
+              {instanceIdentity?.name ?? "Loading instance"}
+            </span>
+            {instanceIdentity?.computerName && (
+              <>
+                <span aria-hidden="true" className="topbar-context-separator">•</span>
+                <span className="topbar-computer-name">{instanceIdentity.computerName}</span>
+              </>
+            )}
+            {instanceIdentity?.environment && (
+              <>
+                <span aria-hidden="true" className="topbar-context-separator">•</span>
+                <span className="topbar-environment">{instanceIdentity.environment}</span>
+              </>
+            )}
+            <span className="topbar-info-wrap">
+              <button
+                aria-describedby="portal-context-tooltip"
+                aria-label="Show portal details"
+                className="topbar-info"
+                type="button"
+              >
+                <Icon name="info" size={17} />
+              </button>
+              <span className="topbar-info-tooltip" id="portal-context-tooltip" role="tooltip">
+                <strong>{config.brand.tagline}</strong>
+                <span className="topbar-tooltip-grid">
+                  <span>Host</span>
+                  <span>{hostContextLabel(hostContext)}</span>
+                  <span>Instance</span>
+                  <span>{instanceIdentity?.name ?? "Loading"}</span>
+                  <span>Version</span>
+                  <span>{build ? `${build.version} · ${build.commit || "none"}` : "Unavailable"}</span>
+                  <span>Computer</span>
+                  <span>{instanceIdentity?.computerName ?? "Unavailable"}</span>
+                  <span>Environment</span>
+                  <span>{instanceIdentity?.environment ?? "Unavailable"}</span>
+                  <span>Instance root</span>
+                  <span>{instanceIdentity?.instanceRoot ?? "Unavailable"}</span>
+                  <span>Instance ID</span>
+                  <span>{instanceIdentity?.rootIdentity?.id ?? "Unavailable"}</span>
+                </span>
+              </span>
+            </span>
+          </div>
+        </div>
         <div className="topbar-actions">
           {freshness === "polling-fallback" ? (
             <PollingFallbackIndicator failure={lastSSEFailure} state={dataFreshness} />
@@ -281,6 +363,17 @@ const freshnessLabel: Record<LiveFreshness, string> = {
   offline: "Offline",
   "polling-fallback": "Polling fallback",
 };
+
+function hostContextLabel(hostContext: PortalShellProps["hostContext"]): string {
+  switch (hostContext) {
+    case "fleet":
+      return "Goobers Fleet";
+    case "standalone":
+      return "Standalone dashboard";
+    default:
+      return "Daemon dashboard";
+  }
+}
 
 function describeConnectionStatus(
   freshness: LiveFreshness,

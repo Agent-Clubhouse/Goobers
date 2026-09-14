@@ -8,7 +8,7 @@ describe("PortalWorkbench", () => {
   it("renders the existing workbench with an explicit injected client", async () => {
     window.location.hash = "#/overview";
     render(<PortalWorkbench client={new FixtureDaemonClient(emptyDaemonFixtures())} scope="user:instance" />);
-    expect(await screen.findByText("Daemon ready")).toBeInTheDocument();
+    expect(await screen.findByText("Healthy")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
   });
 
@@ -16,5 +16,18 @@ describe("PortalWorkbench", () => {
     expect(() => PortalWorkbench({
       client: new FixtureDaemonClient(emptyDaemonFixtures()), scope: " ",
     })).toThrow("nonempty cursor scope");
+  });
+
+  it("passes explicit Fleet host context to the workbench", async () => {
+    const { container } = render(
+      <PortalWorkbench
+        client={new FixtureDaemonClient(emptyDaemonFixtures())}
+        mode="fleet"
+        scope="user:instance"
+      />,
+    );
+
+    expect(await screen.findByText("Goobers Fleet")).toBeInTheDocument();
+    expect(container.querySelector(".portal-frame")).toHaveAttribute("data-host", "fleet");
   });
 });
