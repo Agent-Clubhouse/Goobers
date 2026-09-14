@@ -59,7 +59,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	if len(apiActions) != len(apicontract.V1Routes()) {
 		t.Fatalf("API actions = %d, want one for each of %d registered routes", len(apiActions), len(apicontract.V1Routes()))
 	}
-	// Every route is read-only except the tier-2 intervention mutations
+	// Every route is read-only except API metadata, the tier-2 intervention mutations
 	// (approve/override/rerun, HITL-7/#469), the maintenance actions (the
 	// local-only run reveal, HITL escalation resolution, and the live-run
 	// cancel — operator recovery of a run, kept outside the parity contract
@@ -77,6 +77,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// swapping its gaggle's scheduler state, and gaggleStateGet is the
 	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
+	apiMetadataRoutes := map[apicontract.ActionID]bool{"discovery": true, "openapi": true, "capabilities": true}
 	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true, "claimVerify": true,
@@ -102,6 +103,12 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		"journalEscalationCandidates": true, "journalBranchOwnership": true,
 	}
 	for _, action := range apiActions {
+		if apiMetadataRoutes[action.ID] {
+			if action.Class != apicontract.ActionAPIMetadata {
+				t.Fatalf("API action %q class = %q, want api-metadata", action.ID, action.Class)
+			}
+			continue
+		}
 		if runtimeMutationRoutes[action.ID] {
 			if action.Class != apicontract.ActionRuntimeMutation {
 				t.Fatalf("API action %q class = %q, want runtime-mutation", action.ID, action.Class)

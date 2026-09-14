@@ -196,7 +196,6 @@ github.com/goobers/goobers/internal/readmodel.ParseSourceApplied # If-Source-App
 # the mutation routes become real.
 github.com/goobers/goobers/internal/httpapi.requireSourceApplied # If-Source-Applied enforcement, wired when reads take the header (#1934).
 github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit detection for definition edits (#1934).
-github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
 
