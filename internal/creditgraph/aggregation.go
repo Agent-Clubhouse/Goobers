@@ -223,21 +223,6 @@ func lastNode(path []string) string {
 	return path[len(path)-1]
 }
 
-// AggregateAttributions is a compatibility alias for cohort-level aggregation.
-func AggregateAttributions(observations []AttributionObservation) []CohortAggregation {
-	return AggregateAttributionEvidence(observations)
-}
-
-// AggregateByCohort is a compatibility alias for cohort-level aggregation.
-func AggregateByCohort(observations []AttributionObservation) []CohortAggregation {
-	return AggregateAttributionEvidence(observations)
-}
-
-// AggregateByEffectiveVersionAndWorkload is a compatibility alias.
-func AggregateByEffectiveVersionAndWorkload(observations []AttributionObservation) []CohortAggregation {
-	return AggregateAttributionEvidence(observations)
-}
-
 func formatFloat(value float64) string {
 	return fmt.Sprintf("%.6f", round(value))
 }
