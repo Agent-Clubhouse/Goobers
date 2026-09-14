@@ -86,7 +86,7 @@ func detectCICommandDefault(dir string) (stack string, command []string, require
 		}
 		if signal.stack == "Python" {
 			if command, ok := detectPythonUnittestCommand(dir); ok {
-				return "Python", command, "python"
+				return "Python", command, signal.capability
 			}
 		}
 		return signal.stack, signal.command, signal.capability
@@ -109,8 +109,8 @@ func detectCICommandDefault(dir string) (stack string, command []string, require
 
 // detectPythonUnittestCommand prefers an explicit repository CI command over
 // the generic pytest default, which is not safe for projects without pytest.
-// Its caller uses an unversioned Python capability because a >= metadata range
-// cannot be represented by the exact-version capability token format.
+// Its caller preserves the Python default's versioned capability because
+// runner capabilities are exact-match tokens.
 func detectPythonUnittestCommand(dir string) ([]string, bool) {
 	paths := []string{
 		filepath.Join(dir, ".github", "workflows"),

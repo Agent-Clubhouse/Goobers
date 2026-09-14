@@ -93,7 +93,7 @@ func TestDetectCICommandDefault(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit unittest CI and Python floor override pytest fallback", func(t *testing.T) {
+	t.Run("explicit unittest CI overrides pytest fallback with a schedulable Python capability", func(t *testing.T) {
 		dir := t.TempDir()
 		writeCIFile(t, dir, "pyproject.toml", "[project]\nrequires-python = \">=3.9\"\n")
 		writeCIFile(t, dir, ".github/workflows/ci.yml", "steps:\n  - run: python -m unittest discover -s tests -t . -v\n")
@@ -101,8 +101,8 @@ func TestDetectCICommandDefault(t *testing.T) {
 
 		stack, command, capability := detectCICommandDefault(dir)
 		wantCommand := []string{"python", "-m", "unittest", "discover", "-s", "tests", "-t", ".", "-v"}
-		if stack != "Python" || !slices.Equal(command, wantCommand) || capability != "python" {
-			t.Fatalf("detectCICommandDefault() = (%q, %v, %q), want (%q, %v, %q)", stack, command, capability, "Python", wantCommand, "python")
+		if stack != "Python" || !slices.Equal(command, wantCommand) || capability != "python@3.12" {
+			t.Fatalf("detectCICommandDefault() = (%q, %v, %q), want (%q, %v, %q)", stack, command, capability, "Python", wantCommand, "python@3.12")
 		}
 	})
 
