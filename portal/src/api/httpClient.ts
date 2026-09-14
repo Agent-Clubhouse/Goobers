@@ -62,6 +62,12 @@ type QueryValue = string | number | undefined;
 type PathParameters = Readonly<Record<string, string>>;
 
 const clientRoutes = {
+  // Fleet and embedding hosts consume these transport-discovery routes
+  // directly. The Portal does not need client methods for them, but keeping
+  // them in the exhaustive registry prevents generated contract drift.
+  discovery: apiRoutes.discovery,
+  openapi: apiRoutes.openapi,
+  capabilities: apiRoutes.capabilities,
   health: apiRoutes.health,
   // The readiness-gate endpoint (#5019): the one route reachable while
   // crash-orphan recovery is still running. No portal UI consumes it yet —
