@@ -152,6 +152,37 @@ func TestAttributeSharesFlowTowardTheFailingStage(t *testing.T) {
 	}
 }
 
+func TestAttributeRecordsContributionPaths(t *testing.T) {
+	attribution := attributeGraph(t, Input{
+		RunID: "run-1", Workflow: "implementation", Events: []journal.Event{
+			{Seq: 1, Type: journal.EventRunStarted},
+			{Seq: 2, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+			agentEvent("root", "", "implement", "gpt-5", journal.AgentFailed),
+			spanEvent("implement", "copilot-cli.transcript", "sha256:path"),
+			spanProvenance("implement", "sha256:path", "root"),
+			{Seq: 3, Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: "failure"},
+			{Seq: 4, Type: journal.EventRunFinished, Status: "failed"},
+		},
+		SpanData: map[string][]byte{"sha256:path": transcript(
+			`{"role":"assistant","model":"gpt-5","tool_call":{"id":"call-1","name":"bash"}}`,
+			`{"role":"tool","tool_call":{"id":"call-1","success":false}}`,
+		)},
+	})
+
+	toolResult := contributionOf(t, attribution, "toolresult:subagent:root@sha256:path#2")
+	want := []string{
+		attribution.RootID,
+		"run:run-1",
+		"stage:implement#1",
+		"subagent:root",
+		"toolcall:subagent:root@sha256:path#1",
+		"toolresult:subagent:root@sha256:path#2",
+	}
+	if !reflect.DeepEqual(toolResult.Path, want) {
+		t.Fatalf("tool result path = %v, want %v", toolResult.Path, want)
+	}
+}
+
 // TestAttributeIsReproducibleForAFixedGraph pins the acceptance criterion that
 // scores and uncertainty are reproducible: two builds of the same journal
 // attribute identically, and attributing the same graph twice is stable.

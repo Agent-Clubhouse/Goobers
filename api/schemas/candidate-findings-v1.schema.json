@@ -33,6 +33,13 @@
         "$ref": "#/$defs/causalCredit"
       }
     },
+    "attributionCohorts": {
+      "type": "array",
+      "description": "Stored run attribution evidence aggregated by effective version and workload cohort.",
+      "items": {
+        "$ref": "#/$defs/attributionCohort"
+      }
+    },
     "promotionSignals": {
       "type": "array",
       "description": "All bounded promotion evidence, including ineligible correlational fallbacks.",
@@ -190,6 +197,109 @@
         "governing_target_treatment": {
           "const": "label-goobers:needs-human-and-preserve-evaluator",
           "description": "If the target governs its evaluator, require human review and prohibit removing, weakening, or bypassing that evaluator."
+        }
+      }
+    },
+    "attributionEvidenceLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nodeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "journalSequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "journalPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "artifactMediaType": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "contributingPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["share", "confidence"],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "share": {
+          "type": "number"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attributionEvidenceLink"
+          }
+        }
+      }
+    },
+    "attributionCohort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runCount"],
+      "properties": {
+        "effectiveVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workload": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "topContributingPaths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/contributingPath"
+          }
+        },
+        "counterEvidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attributionEvidenceLink"
+          }
         }
       }
     },

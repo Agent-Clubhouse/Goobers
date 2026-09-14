@@ -6,15 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 
@@ -40,6 +45,7 @@ type fakeTelemetryStore struct {
 	outcomes       []rollup.ImplementationOutcome
 	outcomeGaggle  string
 	outcomeSince   time.Time
+	invocations    map[string][]rollup.AgentInvocation
 }
 
 func (f *fakeTelemetryStore) CostAggregates(_ context.Context, req rollup.CostQuery) (rollup.CostResult, error) {
@@ -52,6 +58,13 @@ func (f *fakeTelemetryStore) ImplementationOutcomes(_ context.Context, gaggle st
 	f.outcomeGaggle = gaggle
 	f.outcomeSince = since
 	return f.outcomes, f.err
+}
+
+func (f *fakeTelemetryStore) AgentInvocations(_ context.Context, runID string) ([]rollup.AgentInvocation, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]rollup.AgentInvocation(nil), f.invocations[runID]...), nil
 }
 
 type analyticsReadModel struct {
@@ -107,6 +120,286 @@ func (f *fakeTelemetryStore) Errors(_ context.Context, req rollup.ErrorsRequest)
 		end = len(f.errors)
 	}
 	return f.errors[start:end], nil
+}
+
+func TestTelemetryAttributionAggregatesByEffectiveVersionAndWorkload(t *testing.T) {
+	service := &Telemetry{}
+	obs := []creditgraph.AttributionObservation{
+		{RunID: "run-1", EffectiveVersion: "v1", Workload: "main", Attribution: creditgraph.Attribution{Contributions: []creditgraph.Contribution{{NodeID: "node-a", Path: []string{"root", "node-a"}, Share: 0.8, Confidence: 0.9}}}},
+		{RunID: "run-2", EffectiveVersion: "v1", Workload: "worker", Attribution: creditgraph.Attribution{Contributions: []creditgraph.Contribution{{NodeID: "node-b", Path: []string{"root", "node-b"}, Share: 0.7, Confidence: 0.8}}}},
+		{RunID: "run-3", EffectiveVersion: "v2", Workload: "main", Attribution: creditgraph.Attribution{Contributions: []creditgraph.Contribution{{NodeID: "node-c", Path: []string{"root", "node-c"}, Share: 0.6, Confidence: 0.7}}}},
+	}
+	got, err := service.TelemetryAttribution(context.Background(), TelemetryAttributionRequest{Observations: obs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cohorts) != 3 {
+		t.Fatalf("cohorts = %d, want 3", len(got.Cohorts))
+	}
+	if got.Cohorts[0].EffectiveVersion != "v1" || got.Cohorts[0].Workload != "main" {
+		t.Fatalf("first cohort = %+v, want v1/main", got.Cohorts[0])
+	}
+	if got.Cohorts[1].EffectiveVersion != "v1" || got.Cohorts[1].Workload != "worker" {
+		t.Fatalf("second cohort = %+v, want v1/worker", got.Cohorts[1])
+	}
+	if len(got.Cohorts[0].TopContributingPaths) != 1 || got.Cohorts[0].TopContributingPaths[0].Nodes[0] != "root" {
+		t.Fatalf("main cohort paths = %+v, want root-prefixed path", got.Cohorts[0].TopContributingPaths)
+	}
+}
+
+func TestTelemetryStatsProjectsAttributionCohortsFromRequest(t *testing.T) {
+	obs := []creditgraph.AttributionObservation{{
+		RunID:            "run-1",
+		EffectiveVersion: "v1",
+		Workload:         "main",
+		Attribution:      creditgraph.Attribution{Contributions: []creditgraph.Contribution{{NodeID: "node-a", Path: []string{"root", "node-a"}, Share: 0.8, Confidence: 0.9}}},
+	}}
+	service := &Telemetry{store: &fakeTelemetryStore{}}
+	result, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{AttributionObservations: obs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.AttributionCohorts) != 1 || result.AttributionCohorts[0].Workload != "main" {
+		t.Fatalf("attribution cohorts = %+v, want one v1/main cohort", result.AttributionCohorts)
+	}
+	if len(result.AttributionCohorts[0].TopContributingPaths) != 1 {
+		t.Fatalf("top paths = %+v, want one aggregated path", result.AttributionCohorts[0].TopContributingPaths)
+	}
+	if result.AttributionCohorts[0].TopContributingPaths[0].Evidence != nil {
+		t.Fatalf("status attribution evidence = %+v, want no fabricated concrete links", result.AttributionCohorts[0].TopContributingPaths[0].Evidence)
+	}
+}
+
+func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
+	root, store, runID := seedStoredAttributionRun(t)
+	service := &Local{
+		sources: LocalSources{
+			Layout:    instance.NewLayout(root),
+			ReadModel: store,
+		},
+		telemetry: &Telemetry{store: &fakeTelemetryStore{
+			invocations: map[string][]rollup.AgentInvocation{
+				runID: {{
+					SpanID: "span-1", Kind: "task", Stage: "implement",
+					Model: "gpt-5.4", HarnessVersion: "copilot-cli/1.0.0",
+				}},
+			},
+		}},
+	}
+	result, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
+		Gaggle: "core", Workflow: "implementation", Since: time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 8, 22, 13, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.AttributionCohorts) != 1 {
+		t.Fatalf("attribution cohorts = %+v, want one stored cohort", result.AttributionCohorts)
+	}
+	cohort := result.AttributionCohorts[0]
+	if cohort.Workload != string(journal.TriggerManual) {
+		t.Fatalf("workload = %q, want %q", cohort.Workload, journal.TriggerManual)
+	}
+	if cohort.EffectiveVersion == "" || len(cohort.TopContributingPaths) == 0 || len(cohort.CounterEvidence) == 0 {
+		t.Fatalf("stored attribution cohort missing real evidence: %+v", cohort)
+	}
+	if len(cohort.TopContributingPaths[0].Nodes) < 2 {
+		t.Fatalf("stored top path = %+v, want a root-prefixed contribution path", cohort.TopContributingPaths[0])
+	}
+	foundExactPathEvidence := false
+	for _, path := range cohort.TopContributingPaths {
+		for _, got := range path.Evidence {
+			if got.JournalSequence == 0 || got.JournalPath == "" {
+				t.Fatalf("stored contribution evidence = %+v, want exact journal link", got)
+			}
+			if got.ArtifactDigest != "" {
+				foundExactPathEvidence = true
+			}
+		}
+	}
+	if !foundExactPathEvidence {
+		t.Fatalf("top paths = %+v, want at least one exact artifact-backed span link", cohort.TopContributingPaths)
+	}
+	if got := cohort.CounterEvidence[0]; got.JournalSequence == 0 || got.JournalPath == "" {
+		t.Fatalf("stored counter evidence = %+v, want exact journal link", got)
+	}
+}
+
+func TestEffectiveVersionHashPreservesSingleObservedBlankProvenanceField(t *testing.T) {
+	t.Parallel()
+
+	row := readmodel.RunRow{
+		WorkflowDigest: "sha256:workflow",
+		GooberDigest:   "sha256:goober",
+	}
+	invocations := []rollup.AgentInvocation{{
+		Model:          "gpt-5.4",
+		HarnessVersion: "",
+	}}
+
+	got := effectiveVersionHash(row, invocations)
+	want := rollup.EffectiveVersion{
+		WorkflowDigest: row.WorkflowDigest,
+		GooberDigest:   row.GooberDigest,
+		Model:          "gpt-5.4",
+		HarnessVersion: "",
+	}.Hash()
+	if got != want {
+		t.Fatalf("effectiveVersionHash() = %q, want %q", got, want)
+	}
+	if got == learning.EffectiveVersion(row.WorkflowDigest, row.GooberDigest) {
+		t.Fatalf("effectiveVersionHash() = %q, unexpectedly collapsed to workflow/goober-only hash", got)
+	}
+}
+
+func TestBuildAttributionEvidenceUsesExactSpanForSpanScopedNodes(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runID := "stored-attribution-multi-span"
+	startedAt := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		WorkflowDigest:  "sha256:workflow",
+		GooberDigest:    "sha256:goober",
+		Gaggle:          "core",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		StartedAt:       startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	now := startedAt.Add(time.Minute)
+	if err := run.Append(journal.Event{
+		Type:  journal.EventStageStarted,
+		Stage: "implement", Attempt: 1,
+		Time: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventAgentLifecycle,
+		Stage: "implement",
+		Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1",
+			ID:     "root", RunID: runID, Stage: "implement", Attempt: 1,
+			ResolvedModel: "gpt-5.4", Lifecycle: journal.AgentFailed,
+			StartedAt: now, UpdatedAt: now,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstSpan := []byte(strings.Join([]string{
+		`{"role":"assistant","model":"gpt-5.4","tool_call":{"id":"call-1","name":"bash"}}`,
+		`{"role":"tool","tool_call":{"id":"call-1","success":false}}`,
+	}, "\n"))
+	firstRef, err := run.RecordSpanWithSchema("implement", "copilot.transcript", telemetry.GenAIEventSchema, firstSpan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: "implement",
+		Runner: map[string]any{
+			creditgraph.SpanProvenanceKeyKind:    creditgraph.SpanProvenanceAnnotation,
+			creditgraph.SpanProvenanceKeyAgentID: "root",
+			creditgraph.SpanProvenanceKeyDigest:  firstRef.Digest,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondSpan := []byte(strings.Join([]string{
+		`{"role":"assistant","model":"gpt-5.4","tool_call":{"id":"call-2","name":"edit"}}`,
+		`{"role":"tool","tool_call":{"id":"call-2","success":false}}`,
+	}, "\n"))
+	secondRef, err := run.RecordSpanWithSchema("implement", "copilot.transcript", telemetry.GenAIEventSchema, secondSpan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: "implement",
+		Runner: map[string]any{
+			creditgraph.SpanProvenanceKeyKind:    creditgraph.SpanProvenanceAnnotation,
+			creditgraph.SpanProvenanceKeyAgentID: "root",
+			creditgraph.SpanProvenanceKeyDigest:  secondRef.Digest,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status: string(apiv1.ResultFailure), Time: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), Verdict: "fail", Target: "@abort",
+		Time: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir, records, graph, _, err := storedAttributionGraph(root, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := buildAttributionEventIndex(root, runDir, records)
+
+	var secondSpanSeq int64
+	for _, record := range records {
+		if record.Event.Type == journal.EventSpanRecorded && record.Event.Ref != nil && record.Event.Ref.Digest == secondRef.Digest {
+			secondSpanSeq = int64(record.Event.Seq)
+			break
+		}
+	}
+	if secondSpanSeq == 0 {
+		t.Fatalf("missing recorded span event for digest %q", secondRef.Digest)
+	}
+
+	var secondResult creditgraph.Node
+	found := false
+	for _, node := range graph.NodesOfKind(creditgraph.KindToolResult) {
+		if nodeSpanDigest(node.ID) == secondRef.Digest {
+			secondResult = node
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing tool result node for span %q", secondRef.Digest)
+	}
+
+	link, ok := evidenceLinkForNode(index, secondResult, "implement", "tool result failed", string(creditgraph.ClassBadToolResult))
+	if !ok {
+		t.Fatalf("missing exact evidence for node %+v", secondResult)
+	}
+	if link.JournalSequence != secondSpanSeq || link.ArtifactDigest != secondRef.Digest {
+		t.Fatalf("evidence link = %+v, want exact second span seq %d digest %q", link, secondSpanSeq, secondRef.Digest)
+	}
+}
+
+func TestBuildAttributionEvidenceSkipsNodesWithoutExactRecordedEvidence(t *testing.T) {
+	root, _, runID := seedStoredAttributionRun(t)
+	runDir, records, graph, attribution, err := storedAttributionGraph(root, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := buildAttributionEvidence(root, runDir, records, graph, attribution)
+	for _, link := range evidence {
+		if link.NodeID == "tool:bash" {
+			t.Fatalf("tool node evidence = %+v, want shared tool nodes omitted without exact evidence", link)
+		}
+		if link.JournalSequence == 0 {
+			t.Fatalf("evidence link = %+v, want exact journal sequence only", link)
+		}
+	}
 }
 
 func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
@@ -302,6 +595,8 @@ func TestTelemetryStatsTrendUsesOneBatchedQueryAndPreservesWindows(t *testing.T)
 	until := since.Add(10 * time.Hour)
 	previousSince := since.Add(-24 * time.Hour)
 	previousUntil := since
+	statsSince := since.Add(-48 * time.Hour)
+	statsUntil := until.Add(48 * time.Hour)
 	branch := 3
 	store := &fakeTelemetryStore{
 		trendResults: []rollup.TrendResult{
@@ -314,15 +609,22 @@ func TestTelemetryStatsTrendUsesOneBatchedQueryAndPreservesWindows(t *testing.T)
 	service := &Telemetry{store: store}
 	got, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
 		Gaggle: "core", Workflow: "implement", Branch: &branch,
+		Since: statsSince, Until: statsUntil,
 		GroupByBranch: true, TrendSince: since, TrendUntil: until,
 		TrendBuckets: 3, TrendPreviousSince: previousSince, TrendPreviousUntil: previousUntil,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !store.statsReq.Since.Equal(statsSince) || !store.statsReq.Until.Equal(statsUntil) {
+		t.Fatalf("base stats window = %+v, want %s..%s", store.statsReq, statsSince, statsUntil)
+	}
 	if store.statsCalled != 1 || len(store.trendReq.Windows) != 4 {
 		t.Fatalf("stats calls = %d, trend windows = %d; want one base query and four windows",
 			store.statsCalled, len(store.trendReq.Windows))
+	}
+	if !store.trendReq.Stats.Since.IsZero() || !store.trendReq.Stats.Until.IsZero() {
+		t.Fatalf("trend filters inherited top-level window: %+v", store.trendReq.Stats)
 	}
 	if !store.trendReq.Windows[0].Since.Equal(since) ||
 		!store.trendReq.Windows[0].Until.Equal(since.Add(10*time.Hour/3)) ||
@@ -344,6 +646,156 @@ func TestTelemetryStatsTrendUsesOneBatchedQueryAndPreservesWindows(t *testing.T)
 		*got.TrendPrevious.Usage[0].CostUSD != 4 {
 		t.Fatalf("trend projection = %+v, previous = %+v", got.Trend, got.TrendPrevious)
 	}
+}
+
+func seedStoredAttributionRun(t *testing.T) (string, *readmodel.Store, string) {
+	t.Helper()
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := readmodel.Open(filepath.Join(root, readmodel.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	startedAt := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	runID := "stored-attribution-run"
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		WorkflowDigest:  "sha256:workflow",
+		GooberDigest:    "sha256:goober",
+		Gaggle:          "core",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		StartedAt:       startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+	now := startedAt.Add(time.Minute)
+	if err := run.Append(journal.Event{
+		Type:  journal.EventStageStarted,
+		Stage: "implement", Attempt: 1,
+		Time: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := journal.Event{
+		Type:  journal.EventAgentLifecycle,
+		Stage: "implement",
+		Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1",
+			ID:     "root", RunID: runID, Stage: "implement", Attempt: 1,
+			ResolvedModel: "gpt-5.4", Lifecycle: journal.AgentFailed,
+			StartedAt: now, UpdatedAt: now,
+		},
+	}
+	if err := run.Append(agent); err != nil {
+		t.Fatal(err)
+	}
+	artifactRef, err := run.RecordStageArtifact("implement", 1, "", "diff.json", []byte(`{"changed":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript := []byte(strings.Join([]string{
+		`{"role":"assistant","model":"gpt-5.4","tool_call":{"id":"call-1","name":"bash"}}`,
+		`{"role":"tool","tool_call":{"id":"call-1","success":false}}`,
+	}, "\n"))
+	spanRef, err := run.RecordSpanWithSchema("implement", "copilot.transcript", telemetry.GenAIEventSchema, transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: "implement",
+		Runner: map[string]any{
+			creditgraph.SpanProvenanceKeyKind:    creditgraph.SpanProvenanceAnnotation,
+			creditgraph.SpanProvenanceKeyAgentID: "root",
+			creditgraph.SpanProvenanceKeyDigest:  spanRef.Digest,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status: string(apiv1.ResultFailure), Time: now.Add(time.Second),
+		Artifacts: []journal.Ref{{
+			Path: artifactRef.Path, Digest: artifactRef.Digest, Size: artifactRef.Size,
+			MediaType: artifactRef.MediaType, Integrity: artifactRef.Integrity,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), Verdict: "fail", Target: "@abort",
+		Time: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishedAt := now.Add(2 * time.Second)
+	if err := store.UpsertRun(context.Background(), readmodel.Projection{
+		Run: readmodel.RunRow{
+			RunID: runID, Gaggle: "core", Workflow: "implementation",
+			WorkflowDigest: "sha256:workflow", GooberDigest: "sha256:goober",
+			TriggerKind: string(journal.TriggerManual),
+			Phase:       journal.PhaseFailed, Terminal: true,
+			StartedAt: startedAt, FinishedAt: &finishedAt, LastActivity: finishedAt,
+			LastSeq: 8, OutcomeVerdict: "fail", OutcomeTarget: "@abort",
+		},
+		Nodes: []readmodel.NodeRow{{
+			RunID: runID, Kind: "stage", Name: "implement", Attempts: 1,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return root, store, runID
+}
+
+func storedAttributionGraph(root, runID string) (string, []journal.EventRecord, *creditgraph.Graph, creditgraph.Attribution, error) {
+	layout := instance.NewLayout(root)
+	runDir, err := layout.FindRunDir(runID)
+	if err != nil {
+		return "", nil, nil, creditgraph.Attribution{}, err
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return "", nil, nil, creditgraph.Attribution{}, err
+	}
+	records, err := reader.EventRecords()
+	if err != nil {
+		return "", nil, nil, creditgraph.Attribution{}, err
+	}
+	events := make([]journal.Event, len(records))
+	for i := range records {
+		events[i] = records[i].Event
+	}
+	spanData := map[string][]byte{}
+	for _, event := range events {
+		if event.Type != journal.EventSpanRecorded || event.Ref == nil || event.DataSchema != telemetry.GenAIEventSchema {
+			continue
+		}
+		data, err := reader.SpanBytes(*event.Ref)
+		if err != nil {
+			return "", nil, nil, creditgraph.Attribution{}, err
+		}
+		spanData[event.Ref.Digest] = data
+	}
+	graph, err := creditgraph.Build(creditgraph.Input{
+		RunID:    runID,
+		Gaggle:   "core",
+		Workflow: "implementation",
+		Events:   events,
+		SpanData: spanData,
+	})
+	if err != nil {
+		return "", nil, nil, creditgraph.Attribution{}, err
+	}
+	return runDir, records, graph, creditgraph.Attribute(graph), nil
 }
 
 func TestTelemetryStatsTrendEmptyUsageSerializesAsArrays(t *testing.T) {
