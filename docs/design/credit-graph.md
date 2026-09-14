@@ -1,6 +1,6 @@
 # Credit graph contract
 
-> Status: **integrated for per-run attribution and cohort evidence.** The graph
+> Status: **implemented for per-run attribution and cohort evidence.** The graph
 > contract and provenance capture landed for #4077, credit propagation and
 > failure-cause classification for #4078, and the read service now calls
 > `creditgraph.Build` and `creditgraph.Attribute` while constructing stored
