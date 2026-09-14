@@ -30,6 +30,40 @@ function escapeAssociationHtml(value) {
     })[character]);
 }
 
+function updateFleetPanel(data) {
+  const fleet = data.fleet || {};
+  const href = safeExternalUrl(fleet.canonicalUri);
+  fleetPanelEl.replaceChildren();
+  if (fleet.associated && href) {
+    fleetPanelEl.hidden = false;
+    const label = document.createElement("strong");
+    label.textContent = "Fleet";
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = fleet.displayName || fleet.fleetId || "Associated";
+    const link = document.createElement("a");
+    link.id = "fleet-portal-link";
+    link.className = "actions-run-link";
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "Open Fleet portal" + (fleet.connectionState ? " (" + fleet.connectionState + ")" : "") + " \u2197";
+    fleetPanelEl.append(label, meta, link);
+    return;
+  }
+  if (data.instance?.fleetEnrolled || fleet.associated) {
+    fleetPanelEl.hidden = false;
+    const label = document.createElement("strong");
+    label.textContent = "Fleet";
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = "This instance is enrolled, but its Fleet portal URL is not available from the selected source.";
+    fleetPanelEl.append(label, meta);
+    return;
+  }
+  fleetPanelEl.hidden = true;
+}
+
 function safeAssociationUrl(value) {
     try {
         const url = new URL(value);
@@ -39,23 +73,112 @@ function safeAssociationUrl(value) {
     }
 }
 
+export function gooberAvatar(value) {
+    const text = String(value || "").toLowerCase();
+    if (/review|verify|judge/.test(text)) return "🧐";
+    if (/open-pr|opener|pr/.test(text)) return "🚪";
+    if (/implement|build|fix|code/.test(text)) return "🛠";
+    if (/curate|triage|plan|proposal/.test(text)) return "🧭";
+    if (/merge|land|ship/.test(text)) return "🚀";
+    if (/test|validate/.test(text)) return "🧪";
+    if (/docs|document/.test(text)) return "📚";
+    if (/gate|approval|approve|blocked|lock/.test(text)) return "🔒";
+    return "✨";
+}
+
+export function renderGooberChip(value, options = {}) {
+    const label = String(value || "").trim();
+    if (!label) return "";
+    const kind = options.kind ? ' data-kind="' + escapeAssociationHtml(options.kind) + '"' : "";
+    return '<span class="goober-chip"' + kind + ' title="' + escapeAssociationHtml(label) + '">' +
+        '<span class="goober-avatar" aria-hidden="true">' + escapeAssociationHtml(gooberAvatar(label)) + "</span>" +
+        '<span class="goober-label">' + escapeAssociationHtml(label) + "</span></span>";
+}
+
 export function renderRunAssociations(operator) {
+    const root = operator && operator.operator ? operator.operator : operator;
     const links = [];
-    const issueURL = safeAssociationUrl(operator?.issue?.url);
-    if (issueURL) {
-        const title = String(operator.issue.title || "").trim();
-        const label = "Issue #" + operator.issue.number + (title ? ": " + title : "");
-        links.push('<a class="run-association-link" href="' + escapeAssociationHtml(issueURL) +
-            '" target="_blank" rel="noopener noreferrer">' + escapeAssociationHtml(label) + "</a>");
+    const seen = new Set();
+    function addLink(kind, item, title) {
+        if (!item) return;
+        const href = safeAssociationUrl(item?.url || item?.htmlUrl || item?.webUrl);
+        const identity = item.number ?? item.id ?? item.externalId ?? "";
+        if (!href || seen.has(kind + ":" + identity)) return;
+        seen.add(kind + ":" + identity);
+        const status = String(item.state || item.status || item.phase || "").trim();
+        const statusAttr = status ? ' data-status="' + escapeAssociationHtml(status.toLowerCase()) + '"' : "";
+        const shortLabel = (identity ? "#" + identity : "") + (title ? ": " + String(title).trim() : "");
+        const label = kind + (shortLabel ? " " + shortLabel : "");
+        links.push('<a class="run-association-link work-chip" data-kind="' + escapeAssociationHtml(kind.toLowerCase()) +
+            '"' + statusAttr + ' href="' + escapeAssociationHtml(href) +
+            '" target="_blank" rel="noopener noreferrer" title="' + escapeAssociationHtml(label) + '">' +
+            '<span class="work-chip-kind">' + escapeAssociationHtml(kind) + "</span> " +
+            '<span class="work-chip-label">' + escapeAssociationHtml(shortLabel || kind) + "</span>" +
+            (status ? ' <span class="work-chip-status">' + escapeAssociationHtml(status) + "</span>" : "") +
+            "</a>");
     }
-    const pullURL = safeAssociationUrl(operator?.pullRequest?.url);
-    if (pullURL) {
-        const title = String(operator.pullRequestTitle || "").trim();
-        const label = "PR #" + operator.pullRequest.id + (title ? ": " + title : "");
-        links.push('<a class="run-association-link" href="' + escapeAssociationHtml(pullURL) +
-            '" target="_blank" rel="noopener noreferrer">' + escapeAssociationHtml(label) + "</a>");
+    function addRef(ref) {
+        const kind = String(ref?.kind || ref?.type || "").toLowerCase();
+        const identity = ref?.number ?? ref?.id ?? ref?.externalId ?? "";
+        if (["issue", "work-item", "workitem"].includes(kind)) {
+            const issueTitle = [
+                root?.issue,
+                operator?.issue,
+                root?.workItem,
+                operator?.workItem,
+            ].find((item) => String(item?.number ?? item?.id ?? item?.externalId ?? "") === String(identity))?.title;
+            addLink("Issue", ref, ref?.title || issueTitle);
+        }
+        if (["pr", "pull-request", "pullrequest"].includes(kind)) {
+            const prTitle = [
+                [root?.pullRequest, root?.pullRequestTitle || root?.pullRequest?.title],
+                [operator?.pullRequest, operator?.pullRequestTitle || operator?.pullRequest?.title],
+            ].find(([item]) => String(item?.number ?? item?.id ?? item?.externalId ?? "") === String(identity))?.[1];
+            addLink("PR", ref, ref?.title || prTitle);
+        }
     }
+    [
+        root?.issue,
+        operator?.issue,
+        root?.workItem,
+        operator?.workItem,
+    ].forEach((issue) => addLink("Issue", issue, issue?.title));
+    [
+        [root?.pullRequest, root?.pullRequestTitle || root?.pullRequest?.title],
+        [operator?.pullRequest, operator?.pullRequestTitle || operator?.pullRequest?.title],
+    ].forEach(([pullRequest, title]) => addLink("PR", pullRequest, title));
+    [
+        ...(Array.isArray(root?.refs) ? root.refs : []),
+        ...(Array.isArray(operator?.refs) ? operator.refs : []),
+        ...(Array.isArray(root?.externalRefs) ? root.externalRefs : []),
+        ...(Array.isArray(operator?.externalRefs) ? operator.externalRefs : []),
+    ].forEach(addRef);
     return links.length ? '<div class="run-associations">' + links.join("") + "</div>" : "\u2014";
+}
+
+export function renderFleetPortalLink(fleet) {
+    const href = safeAssociationUrl(fleet?.canonicalUri);
+    if (!fleet?.associated || !href) return "";
+    const status = fleet.connectionState ? " (" + fleet.connectionState + ")" : "";
+    return '<a id="fleet-portal-link" class="actions-run-link" href="' + escapeAssociationHtml(href) +
+        '" target="_blank" rel="noopener noreferrer">Open Fleet portal' +
+        escapeAssociationHtml(status) + " &#8599;</a>";
+}
+
+function renderFullRunId(value) {
+    const runId = String(value || "");
+    return runId ? ' data-full-run-id="' + escapeAssociationHtml(runId) + '" title="' + escapeAssociationHtml(runId) + '"' : "";
+}
+
+export function renderRunIdControl(runId, options = {}) {
+    const fullId = renderFullRunId(runId);
+    const label = options.label || "Run id";
+    return '<span class="run-id-control">' +
+        '<button type="button" class="table-link" data-open-run="' + escapeAssociationHtml(runId || "") + '"' +
+        fullId + ' aria-label="Open ' + escapeAssociationHtml(label) + '">' + escapeAssociationHtml(label) + "</button>" +
+        '<button type="button" class="copy-run-id" data-copy-run-id="' + escapeAssociationHtml(runId || "") + '"' +
+        fullId + ' aria-label="Copy run id" title="Copy run id">&#128203;</button>' +
+        "</span>";
 }
 
 // The snapshot cards and the run table interpolate values the portal does not
@@ -79,11 +202,11 @@ export function renderRunRowCells(run, parts) {
     const runId = (run && (run.runId || run.id)) || "";
     const extra = (parts && parts.actionsLink) || "";
     const associations = (parts && parts.associations) || "\u2014";
-    return "<td><code>" + escapeAssociationHtml(runId) + "</code>" + extra + "</td>" +
+    return "<td>" + renderRunIdControl(runId) + extra + "</td>" +
         cell((run && run.workflow) || "") +
         cell((run && run.gaggle) || "") +
         cell((run && run.trigger && run.trigger.kind) || "\u2014") +
-        '<td><span class="phase">' + escapeAssociationHtml((run && run.phase) || "") + "</span></td>" +
+        '<td><span class="phase" data-phase="' + escapeAssociationHtml((run && run.phase) || "") + '">' + escapeAssociationHtml((run && run.phase) || "") + "</span></td>" +
         "<td>" + associations + "</td>" +
         cell((parts && parts.startedAt) || "") +
         cell((parts && parts.lastActivityAt) || "");
@@ -113,10 +236,20 @@ export function renderRunDetailSummary(run = {}, parts = {}) {
     const duration = Number.isFinite(Number(run.durationMillis)) && Number(run.durationMillis) > 0
         ? Math.round(Number(run.durationMillis) / 1000) + "s"
         : "\u2014";
+    const activeStages = Array.isArray(run.activeStages) ? run.activeStages : [];
+    const activeStageChips = activeStages
+        .map((stage) => [
+            renderGooberChip(stage?.goober, { kind: "goober" }),
+            renderGooberChip(stage?.name || stage?.stage, { kind: "stage" }),
+        ].filter(Boolean).join(" "))
+        .filter(Boolean)
+        .join(" ");
     const values = [
         ["Workflow", workflow + workflowVersion],
         ["Gaggle", escapeAssociationHtml(run.gaggle || "")],
-        ["Phase", '<span class="phase">' + escapeAssociationHtml(run.phase || "") + "</span>"],
+        ["Phase", '<span class="phase" data-phase="' + escapeAssociationHtml(run.phase || "") + '">' + escapeAssociationHtml(run.phase || "") + "</span>"],
+        ...(run.currentStage ? [["Current stage", renderGooberChip(run.currentStage, { kind: "stage" })]] : []),
+        ...(activeStageChips ? [["Active goobers", activeStageChips]] : []),
         ["Final state", escapeAssociationHtml((finalTransition && (finalTransition.status || finalTransition.verdict)) || (run.terminal ? run.phase : "in progress"))],
         ["Completed stages", escapeAssociationHtml(finishedStages.size)],
         ["Started", formatRunDetailTime(run.startedAt)],
@@ -128,8 +261,8 @@ export function renderRunDetailSummary(run = {}, parts = {}) {
     ];
     const grid = values.map(([label, value]) => '<div class="kv"><div class="label">' +
         escapeAssociationHtml(label) + '</div><div class="value">' + value + "</div></div>").join("");
-    return '<div class="run-header"><h2>' + workflow + "</h2><code>" +
-        escapeAssociationHtml(run.id || run.runId || "") + "</code>" + (parts.actionsLink || "") + "</div>" +
+    return '<div class="run-header"><h2>' + workflow + "</h2>" +
+        renderRunIdControl(run.id || run.runId || "") + (parts.actionsLink || "") + "</div>" +
         '<div class="internal-tabs" role="tablist" aria-label="Run detail sections">' +
         '<button id="run-tab-summary" role="tab" data-tab="summary" aria-controls="run-panel-summary">Summary</button>' +
         '<button id="run-tab-execution" role="tab" data-tab="execution" aria-controls="run-panel-execution">Execution</button>' +
@@ -144,7 +277,7 @@ export function renderRunEventItems(displayedEvents = [], sourceId = "", runId =
     const safeUrl = options.safeUrl || safeAssociationUrl;
     return displayedEvents.map((event = {}) => {
         const status = event.status || event.verdict || event.decision || "";
-        const stage = event.stage ? " \u00b7 " + escapeAssociationHtml(event.stage) : "";
+        const stage = event.stage ? ' \u00b7 ' + renderGooberChip(event.stage, { kind: event.type && String(event.type).startsWith("gate.") ? "gate" : "stage" }) : "";
         const summary = '<summary><span class="event-seq">#' + escapeAssociationHtml(event.seq ?? "") +
             "</span><code>" + escapeAssociationHtml(event.type || "") + "</code><span>" + stage +
             (status ? " \u00b7 " + escapeAssociationHtml(status) : "") +
@@ -201,10 +334,10 @@ export function renderTransitions(transitions = []) {
               (transition.repass ? ", repass" : "") + "]</span>"
             : "";
         const target = transition.target
-            ? " " + arrow + " <code>" + escapeAssociationHtml(transition.target) + "</code>"
+            ? " " + arrow + " " + renderGooberChip(transition.target, { kind: "stage" })
             : (transition.status ? " (" + escapeAssociationHtml(transition.status) + ")" : "");
         return '<li><span class="seq">#' + escapeAssociationHtml(transition.seq ?? "") +
-            "</span><code>" + escapeAssociationHtml(transition.source || "") + "</code>" +
+            "</span>" + renderGooberChip(transition.source || "", { kind: "stage" }) +
             target + verdictText + "</li>";
     });
     return '<ul class="transitions-list">' + items.join("") + "</ul>";
@@ -282,7 +415,9 @@ export function renderCausalDiagnosis(run = {}) {
     const breadcrumbs = deriveFailureBreadcrumbs(run);
     const attempts = diagnosis.attempts || [];
     const trace = attempts.length
-        ? attempts.map((entry) => '<li><strong>' + escapeAssociationHtml(entry.stage) + '</strong> · attempt ' + entry.attempt + ' · ' + escapeAssociationHtml(entry.status || 'pending') + '</li>').join("")
+        ? attempts.map((entry) => '<li>' + renderGooberChip(entry.stage, { kind: entry.kind || "stage" }) +
+            ' · ' + (entry.attempt > 1 ? 'take ' + entry.attempt : 'attempt ' + entry.attempt) +
+            ' · ' + escapeAssociationHtml(entry.status || 'pending') + '</li>').join("")
         : '<li class="muted">No stage attempt lineage is recorded yet.</li>';
     const breadcrumbHtml = breadcrumbs.length
         ? breadcrumbs.map((entry) => '<li><strong>' + escapeAssociationHtml(entry.label) + ':</strong> ' + escapeAssociationHtml(entry.detail || '') + (entry.attempt ? ' (attempt ' + entry.attempt + ')' : '') + '</li>').join("")
@@ -316,10 +451,18 @@ export function renderExecutionWaterfall(run = {}) {
         const width = knownTiming && timelineAvailable ? Math.max(2, ((itemEnd - itemStart) / duration) * 100) : 0;
         const kind = entry.kind || "stage";
         const retry = entry.attempt > 1 ? " retry" : "";
+        const blocked = String(entry.status || "").toLowerCase() === "blocked";
+        const attemptLabel = entry.attempt > 1 ? "take " + entry.attempt : "attempt " + entry.attempt;
+        const kindLabel = blocked && kind === "gate" ? "🔒 gate" : kind;
         const timing = knownTiming
             ? Math.round((itemEnd - itemStart) / 1000) + "s"
             : "timing unavailable";
-        return '<div class="waterfall-row ' + (knownTiming ? "" : "unknown-timing") + '"><div class="waterfall-stage"><strong>' + escapeAssociationHtml(entry.stage) + '</strong> · ' + escapeAssociationHtml(kind) + ' · attempt ' + entry.attempt + (retry ? ' · retry' : '') + '</div><div class="waterfall-bar-wrap"><span class="waterfall-bar ' + escapeAssociationHtml(entry.status || 'pending') + retry + '" style="left:' + left + '%; width:' + width + '%"></span></div><div class="waterfall-status">' + escapeAssociationHtml(entry.status || 'pending') + ' · ' + timing + '</div></div>';
+        return '<div class="waterfall-row ' + (knownTiming ? "" : "unknown-timing") + '"><div class="waterfall-stage">' +
+            renderGooberChip(entry.stage, { kind }) + ' · ' + escapeAssociationHtml(kindLabel) + ' · ' +
+            escapeAssociationHtml(attemptLabel) + (retry ? ' · retry' : '') +
+            '</div><div class="waterfall-bar-wrap"><span class="waterfall-bar ' +
+            escapeAssociationHtml(entry.status || 'pending') + retry + '" style="left:' + left + '%; width:' + width + '%"></span></div><div class="waterfall-status">' +
+            escapeAssociationHtml(entry.status || 'pending') + ' · ' + timing + '</div></div>';
     }).join("");
     const intervals = entries.map((entry) => [new Date(entry.start || "").getTime(), new Date(entry.end || "").getTime()])
         .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end >= start)
@@ -377,6 +520,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 <html data-theme-preference="${themePreference}">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Goobers Portal</title>
 <script>
   (function () {
@@ -446,11 +590,33 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     margin: 0;
   }
   .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  main { padding: 16px; }
+  main { padding: 16px; min-width: 0; }
+  .skip-link { position: absolute; top: -100px; left: 12px; z-index: 10; }
+  .skip-link:focus { top: 12px; padding: 8px; background: var(--background-color-default, #fff); }
+  .source-context { display: flex; gap: 8px 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  #source-context { font-weight: 600; overflow-wrap: anywhere; }
+  .section-description { margin: 0 0 12px; color: var(--text-color-muted, #656d76); }
+  .table-link { padding: 0; border: 0; background: transparent; color: var(--true-color-blue, #0969da); text-align: left; }
+  .table-link:hover { background: transparent; text-decoration: underline; }
+  .sort-button { border: 0; padding: 0; background: transparent; color: inherit; }
+  .table-scroll { max-width: 100%; overflow-x: auto; }
+  .table-scroll table { white-space: nowrap; }
+  .toolbar > *, .add-form > * { max-width: 100%; }
+  .fleet-panel {
+    display: flex;
+    gap: 8px 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    margin-bottom: 12px;
+  }
+  #source-select { max-width: min(100%, 360px); }
   .muted { color: var(--text-color-muted, #656d76); }
   .cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 12px;
     margin-bottom: 20px;
   }
@@ -486,7 +652,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   }
   button { cursor: pointer; }
   button:hover { background: var(--border-color-default, #d0d7de33); }
-  button:focus-visible, select:focus-visible, input:focus-visible, #graph-svg:focus-visible {
+  :focus-visible {
     outline: 2px solid var(--color-focus-outline, #0969da);
     outline-offset: 2px;
   }
@@ -497,7 +663,13 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     font-size: 12px;
     background: var(--border-color-default, #d0d7de33);
   }
-  #error { color: var(--true-color-red, #cf222e); margin-bottom: 12px; white-space: pre-wrap; }
+  .phase[data-phase="running"] { color: var(--true-color-blue, #0969da); background: var(--true-color-blue-muted, #ddf4ff); }
+  .phase[data-phase="completed"], .phase[data-phase="succeeded"] { color: var(--true-color-green, #1a7f37); background: var(--true-color-green-muted, #dafbe1); }
+  .phase[data-phase="failed"], .phase[data-phase="escalated"] { color: var(--true-color-red, #cf222e); background: var(--true-color-red-muted, #ffebe9); }
+  .phase[data-phase="blocked"], .phase[data-phase="awaiting-human"] { color: var(--true-color-yellow, #9a6700); }
+  #error { color: var(--true-color-red, #cf222e); margin-bottom: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #workflow-run-status { color: var(--true-color-green, #1a7f37); margin-bottom: 12px; }
+  #workflow-run-status:empty { display: none; }
   #empty-state { padding: 32px 0; }
   #empty-state ol { padding-left: 20px; }
   #needs-you { margin-bottom: 20px; }
@@ -508,8 +680,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     gap: 8px 12px;
     align-items: start;
     box-sizing: border-box;
-    height: 84px;
-    overflow: hidden;
+    min-height: 84px;
     border: 1px solid var(--true-color-red-muted, #cf222e66);
     border-left: 4px solid var(--true-color-red, #cf222e);
     border-radius: 6px;
@@ -535,13 +706,61 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     gap: 6px;
     color: var(--text-color-muted, #656d76);
     font-size: 12px;
+    flex-wrap: wrap;
   }
-  .freshness { color: var(--text-color-muted, #656d76); font-size: 12px; }
+  .freshness {
+    color: var(--text-color-muted, #656d76);
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .freshness::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--text-color-muted, #656d76);
+    opacity: 0.55;
+  }
+  .freshness[data-freshness="live"]::before {
+    background: var(--true-color-green, #1a7f37);
+    opacity: 1;
+    animation: freshness-pulse 1.8s ease-in-out infinite;
+  }
+  .freshness[data-freshness="stale"]::before {
+    background: var(--true-color-yellow, #9a6700);
+    opacity: 0.65;
+  }
+  .freshness[data-freshness="offline"]::before {
+    background: var(--text-color-muted, #656d76);
+    opacity: 0.35;
+  }
+  @keyframes freshness-pulse {
+    0%, 100% { transform: scale(0.86); box-shadow: 0 0 0 0 rgba(26,127,55,0.35); }
+    50% { transform: scale(1.12); box-shadow: 0 0 0 5px rgba(26,127,55,0); }
+  }
+  @keyframes copy-pop {
+    0% { transform: scale(0.9); }
+    60% { transform: scale(1.16); }
+    100% { transform: scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .freshness[data-freshness="live"]::before,
+    .copy-run-id.copied {
+      animation: none;
+    }
+  }
   @media (max-width: 640px) {
-    .attention-item { grid-template-columns: 1fr; gap: 3px; height: 118px; }
+    .attention-item { grid-template-columns: 1fr; gap: 6px; min-height: 118px; }
     .attention-item.is-expanded { min-height: 118px; }
     main { padding: 10px; }
     table { display: block; overflow-x: auto; white-space: nowrap; }
+    .toolbar { width: 100%; }
+    #source-select { flex: 1; min-width: 0; }
+    .waterfall-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .graph-toolbar { flex-wrap: wrap; }
+    .graph-help { width: 100%; }
   }
   #start-daemon-bar {
     display: flex;
@@ -619,15 +838,80 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     text-decoration: none;
   }
   .actions-run-link:hover { background: var(--background-color-hover, #f6f8fa); }
-  .run-associations { display: flex; flex-direction: column; gap: 3px; min-width: 180px; }
+  .run-id-control { display: inline-flex; align-items: center; gap: 6px; }
+  .copy-run-id {
+    padding: 2px 7px;
+    font-size: 12px;
+    color: var(--text-color-muted, #656d76);
+  }
+  .copy-run-id.copied {
+    color: var(--true-color-green, #1a7f37);
+    border-color: var(--true-color-green-muted, #1a7f3766);
+    animation: copy-pop 240ms ease-out;
+  }
+  [data-full-run-id]::after {
+    content: "";
+  }
+  .goober-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 999px;
+    padding: 2px 7px;
+    background: var(--border-color-default, #d0d7de22);
+    font-size: 12px;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .goober-avatar { line-height: 1; }
+  .goober-label { overflow: hidden; text-overflow: ellipsis; }
+  .run-associations { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 180px; }
   .run-association-link {
-    color: var(--true-color-blue, #0969da);
+    color: inherit;
     max-width: 320px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    text-decoration: none;
   }
   .run-association-link:hover { text-decoration: underline; }
+  .work-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 320px;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 999px;
+    padding: 3px 8px;
+    background: var(--background-color-default, #fff);
+  }
+  .work-chip-kind {
+    color: var(--true-color-blue, #0969da);
+    font-size: 10px;
+    font-weight: var(--font-weight-semibold, 600);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .work-chip-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .work-chip-status {
+    color: var(--text-color-muted, #656d76);
+    font-size: 10px;
+    border-left: 1px solid var(--border-color-default, #d0d7de);
+    padding-left: 5px;
+    text-transform: lowercase;
+  }
+  .work-chip[data-status="open"], .work-chip[data-status="running"] {
+    border-color: var(--true-color-green-muted, #1a7f3766);
+  }
+  .work-chip[data-status="closed"], .work-chip[data-status="merged"], .work-chip[data-status="completed"] {
+    border-color: var(--true-color-purple-muted, #8250df66);
+  }
   .kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 12px 0 20px; }
   .kv { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px; padding: 10px 12px; }
   .kv-wide { grid-column: 1 / -1; }
@@ -735,7 +1019,54 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .artifact-links a { color: inherit; }
   .filters-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .filters-bar select, .filters-bar input { font-size: 12px; padding: 4px 8px; }
-  .filters-bar select[multiple] { height: 38px; min-width: 132px; }
+  .native-multi-filter { display: none; }
+  .multi-filter { position: relative; min-width: 154px; }
+  .multi-filter-button {
+    width: 100%;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    background: var(--background-color-default, #ffffff);
+    color: var(--text-color-default, #1f2328);
+    font-size: 12px;
+    padding: 5px 9px;
+    cursor: pointer;
+  }
+  .multi-filter-button::after { content: "▾"; color: var(--text-color-muted, #656d76); }
+  .multi-filter-button:disabled { cursor: not-allowed; opacity: 0.62; }
+  .multi-filter-menu {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 100%;
+    max-width: min(320px, calc(100vw - 32px));
+    max-height: 260px;
+    overflow: auto;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    background: var(--background-color-default, #ffffff);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+    padding: 6px;
+  }
+  .multi-filter-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .multi-filter-option:hover { background: var(--background-color-hover, rgba(130,130,130,0.12)); }
+  .multi-filter-empty { padding: 6px 8px; font-size: 12px; color: var(--text-color-muted, #656d76); }
+  .advanced-filters { flex-basis: 100%; margin: 0; }
+  .advanced-filters summary { padding: 8px 0; }
   th[data-sort] { cursor: pointer; user-select: none; }
   th[data-sort]:hover { color: var(--text-color-default, #1f2328); }
   th[data-sort] .sort-arrow { font-size: 10px; margin-left: 4px; color: var(--text-color-muted, #656d76); }
@@ -793,6 +1124,23 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .workflow-toggle[disabled] {
     opacity: 0.55;
   }
+  .workflow-run-now {
+    /* Reuse the toggle's square icon-button box so the two controls align. */
+    box-sizing: border-box;
+    width: 26px;
+    height: 22px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    line-height: 1;
+    border-radius: 6px;
+    border: 1px solid var(--true-color-blue-muted, #0969da66);
+  }
+  .workflow-run-now[disabled] {
+    opacity: 0.6;
+  }
   .run-actions { border: 1px solid var(--border-color-default, #d0d7de); padding: 12px; border-radius: 6px; }
   .run-actions-grid { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
   .run-actions label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
@@ -822,6 +1170,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 <header>
   <h1>Goobers Portal</h1>
   <div class="toolbar">
@@ -830,30 +1179,35 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <option value="light">Light theme</option>
       <option value="dark">Dark theme</option>
     </select>
-    <select id="source-select"><option value="">No sources yet</option></select>
+    <select id="source-select" aria-label="Goobers source"><option value="">No sources yet</option></select>
     <input id="run-jump" type="text" placeholder="Run ID" aria-label="Jump to a run" style="max-width: 180px;" />
     <button id="run-jump-button" type="button">Jump</button>
     <button id="refresh">Refresh</button>
   </div>
 </header>
-<main>
+<main id="main-content" tabindex="-1">
+  <div class="source-context">
+    <span id="source-context">Choose a source to get started</span>
+    <span class="freshness" id="freshness" role="status"></span>
+  </div>
   <details id="add-source-details">
     <summary>Connect a source&hellip;</summary>
     <div class="add-form">
-      <input id="local-root" placeholder="Local instance root path (e.g. C:\\\\path\\\\to\\\\instance)" />
+      <input id="local-root" aria-label="Local instance root" placeholder="Local instance root path (e.g. C:\\\\path\\\\to\\\\instance)" />
       <button id="browse-local" title="Browse folders">&#128193; Browse</button>
       <button id="add-local">Add local</button>
     </div>
     <div class="add-form">
-      <input id="remote-url" placeholder="Remote control-plane URL (e.g. http://10.0.0.5:8080)" />
+      <input id="remote-url" aria-label="Remote control-plane URL" placeholder="Remote control-plane URL (e.g. http://10.0.0.5:8080)" />
       <input id="remote-token" placeholder="Bearer token (optional)" style="flex: 0 0 200px" />
       <button id="add-remote">Add remote</button>
     </div>
     <div class="add-form">
-      <input id="github-workflow-url" placeholder="GitHub Actions workflow URL (https://github.com/owner/repo/actions/workflows/file.yml)" />
+      <input id="github-workflow-url" aria-label="GitHub Actions workflow URL" placeholder="GitHub Actions workflow URL (https://github.com/owner/repo/actions/workflows/file.yml)" />
       <button id="add-github">Connect to GitHub</button>
     </div>
   </details>
+  <div id="fleet-panel" class="fleet-panel" hidden></div>
   <dialog id="directory-dialog">
     <div class="directory-dialog-header">
       <button id="directory-parent" title="Parent directory">&larr;</button>
@@ -866,7 +1220,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <button id="directory-choose">Choose this folder</button>
     </div>
   </dialog>
-  <div id="error"></div>
+  <div id="error" role="alert"></div>
+  <div id="workflow-run-status" role="status"></div>
   <div id="start-daemon-bar" style="display:none">
     <span id="start-daemon-msg"></span>
     <button id="start-daemon">Start daemon</button>
@@ -881,53 +1236,63 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   </div>
   <div id="dashboard" style="display:none">
     <div class="internal-tabs" role="tablist" aria-label="Dashboard sections">
-      <button id="dashboard-tab-attention" role="tab" data-tab="attention" aria-controls="dashboard-panel-attention">Attention</button>
+      <button id="dashboard-tab-attention" role="tab" data-tab="attention" aria-controls="dashboard-panel-attention">Overview</button>
       <button id="dashboard-tab-workflows" role="tab" data-tab="workflows" aria-controls="dashboard-panel-workflows">Workflows</button>
       <button id="dashboard-tab-runs" role="tab" data-tab="runs" aria-controls="dashboard-panel-runs">Runs</button>
     </div>
     <section id="dashboard-panel-attention" role="tabpanel" aria-labelledby="dashboard-tab-attention">
-      <div class="cards" id="cards"></div>
       <div id="needs-you" aria-labelledby="needs-you-heading">
-        <h2 id="needs-you-heading">Needs you <span class="freshness" id="freshness" aria-live="polite"></span></h2>
+        <h2 id="needs-you-heading">Needs attention</h2>
+        <p class="section-description">Review blockers and decisions before exploring workflow activity.</p>
         <div id="attention-list"></div>
       </div>
+      <h2>Activity at a glance</h2>
+      <div class="cards" id="cards"></div>
     </section>
     <section id="dashboard-panel-workflows" role="tabpanel" aria-labelledby="dashboard-tab-workflows" hidden>
       <h2>Workflows</h2>
+      <p class="section-description">Select a workflow to explore its runs. Trigger controls affect future automatic runs only.</p>
+      <div class="table-scroll" role="region" aria-label="Workflows" tabindex="0">
       <table id="workflows-table">
         <thead>
-          <tr><th>Workflow</th><th>Gaggle</th><th>Trigger</th><th>In flight</th><th>Max</th><th>Enabled</th></tr>
+          <tr><th>Workflow</th><th>Gaggle</th><th>Trigger</th><th>In flight</th><th>Max</th><th>Run</th><th>Enabled</th></tr>
         </thead>
         <tbody></tbody>
       </table>
+      </div>
     </section>
     <section id="dashboard-panel-runs" role="tabpanel" aria-labelledby="dashboard-tab-runs" hidden>
       <h2>Runs</h2>
       <div class="filters-bar" id="runs-filters">
-        <select id="filter-gaggle" multiple title="Select one or more gaggles"><option value="">All gaggles</option></select>
-        <select id="filter-workflow" multiple title="Select one or more workflows"><option value="">All workflows</option></select>
-        <select id="filter-phase" multiple title="Select one or more phases">
+        <select id="filter-gaggle" class="native-multi-filter" multiple data-all-label="All gaggles" aria-label="Gaggles" title="Select one or more gaggles"><option value="">All gaggles</option></select>
+        <select id="filter-workflow" class="native-multi-filter" multiple data-all-label="All workflows" aria-label="Workflows" title="Select one or more workflows"><option value="">All workflows</option></select>
+        <select id="filter-phase" class="native-multi-filter" multiple data-all-label="All phases" aria-label="Phases" title="Select one or more phases">
           <option value="running">running</option>
           <option value="completed">completed</option>
           <option value="failed">failed</option>
           <option value="aborted">aborted</option>
           <option value="escalated">escalated</option>
         </select>
-        <select id="filter-trigger" multiple title="Select one or more triggers">
+        <select id="filter-trigger" class="native-multi-filter" multiple data-all-label="All triggers" aria-label="Triggers" title="Select one or more triggers">
           <option value="manual">manual</option>
           <option value="schedule">schedule</option>
           <option value="item">item</option>
           <option value="webhook">webhook</option>
         </select>
+        <label class="filter-toggle"><input id="filter-show-no-work" type="checkbox" /> Show no-work</label>
+        <button id="filters-clear" type="button">Reset</button>
+        <details class="advanced-filters">
+          <summary>More filters and saved views</summary>
+          <div class="filters-bar">
         <input id="filter-stage" type="text" placeholder="Stage" title="Stage name (daemon sources)" />
-        <select id="filter-outcome" multiple title="Select one or more outcomes">
+        <select id="filter-outcome" class="native-multi-filter" multiple data-all-label="All outcomes" aria-label="Outcomes" title="Select one or more outcomes">
           <option value="finished">finished</option>
           <option value="terminal">terminal</option>
           <option value="success">success</option>
           <option value="failure">failure</option>
           <option value="other">other</option>
         </select>
-        <select id="filter-population" multiple title="Select one or more populations">
+        <select id="filter-population" class="native-multi-filter" multiple data-all-label="All populations" aria-label="Populations" title="Select one or more populations">
           <option value="attempts">attempts</option>
           <option value="measured">measured</option>
           <option value="token-measured">token measured</option>
@@ -935,15 +1300,16 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
           <option value="cost-measured">cost measured</option>
           <option value="retry-waste">retry waste</option>
         </select>
-        <label class="filter-toggle"><input id="filter-show-no-work" type="checkbox" /> Show no-work</label>
         <select id="saved-filter-presets" aria-label="Saved filters">
           <option value="">Saved filters</option>
         </select>
         <button id="save-filter-preset" type="button">Save</button>
         <input id="filter-since" type="datetime-local" title="Since" />
         <input id="filter-until" type="datetime-local" title="Until" />
-        <button id="filters-clear" type="button">Reset</button>
+          </div>
+        </details>
       </div>
+      <div class="table-scroll" role="region" aria-label="Runs" tabindex="0">
       <table id="runs-table">
         <thead>
           <tr>
@@ -959,6 +1325,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         </thead>
         <tbody></tbody>
       </table>
+      </div>
       <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
         <button id="runs-load-more" type="button" style="display:none">Load more</button>
       </div>
@@ -966,18 +1333,66 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   </div>
   <div id="run-view">
     <button class="back" id="run-back">&larr; Back to runs</button>
-    <div id="run-error" style="color: var(--true-color-red, #cf222e);"></div>
+    <div id="run-error" role="alert" style="color: var(--true-color-red, #cf222e);"></div>
     <div id="run-status" aria-live="polite"></div>
     <div id="run-content"></div>
   </div>
 </main>
 <script>
 (function () {
-  const errorEl = document.getElementById("error");
+  const errorElRaw = document.getElementById("error");
+  // Wrap #error so transient failure messages (e.g. "run now" rejections)
+  // survive for a minimum window even though the live SSE stream can trigger
+  // loadSnapshot()/renderSnapshot() at any moment, which otherwise blanks the
+  // element out from under the user before they can read it. Stickiness is
+  // scoped to the source it was raised for: switching sources always clears
+  // it immediately rather than leaving a stale error visible for instance A
+  // while instance B is now selected.
+  let errorStickyUntil = 0;
+  let errorStickySourceId = null;
+  const ERROR_STICKY_MS = 8000;
+  const errorEl = {
+    get textContent() {
+      return errorElRaw.textContent;
+    },
+    set textContent(value) {
+      if (value === "") {
+        const sourceChanged = errorStickySourceId !== null && errorStickySourceId !== sourceSelect.value;
+        if (sourceChanged || Date.now() >= errorStickyUntil) {
+          errorElRaw.textContent = "";
+          errorStickySourceId = null;
+        }
+        return;
+      }
+      errorElRaw.textContent = value;
+      errorStickyUntil = Date.now() + ERROR_STICKY_MS;
+      errorStickySourceId = sourceSelect.value;
+    },
+  };
+  // Distinct ID from the run-detail drilldown's #run-status live region
+  // (used for approve/reject/retry action feedback) to avoid getElementById
+  // colliding with that pre-existing element.
+  const workflowRunStatusElRaw = document.getElementById("workflow-run-status");
+  let runStatusClearTimer = null;
+  const RUN_STATUS_DISPLAY_MS = 8000;
+  function setRunStatus(message) {
+    if (runStatusClearTimer) {
+      clearTimeout(runStatusClearTimer);
+      runStatusClearTimer = null;
+    }
+    workflowRunStatusElRaw.textContent = message;
+    if (message) {
+      runStatusClearTimer = window.setTimeout(() => {
+        workflowRunStatusElRaw.textContent = "";
+        runStatusClearTimer = null;
+      }, RUN_STATUS_DISPLAY_MS);
+    }
+  }
   const emptyEl = document.getElementById("empty-state");
   const dashboardEl = document.getElementById("dashboard");
   const cardsEl = document.getElementById("cards");
   const attentionListEl = document.getElementById("attention-list");
+  const fleetPanelEl = document.getElementById("fleet-panel");
   const freshnessEl = document.getElementById("freshness");
   const workflowsBody = document.querySelector("#workflows-table tbody");
   const runsBody = document.querySelector("#runs-table tbody");
@@ -1002,11 +1417,40 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const expandedAttention = new Set();
   let activeDashboardTab = "attention";
   let activeRunTab = "summary";
+  let selectedRunId = "";
+  let runRequestSequence = 0;
+  let snapshotRequestSequence = 0;
+  // The live SSE stream can emit events far faster than a snapshot fetch
+  // round-trips. Calling loadSnapshot() directly per-event means each new
+  // event bumps snapshotRequestSequence and invalidates the previous
+  // in-flight fetch before it can render - under sustained event bursts no
+  // fetch ever wins, and the dashboard goes stale indefinitely. Coalesce:
+  // at most one live-triggered snapshot fetch runs at a time, and events
+  // that arrive while one is in flight schedule a single trailing refresh
+  // instead of starting their own.
+  let liveRefreshInFlight = false;
+  let liveRefreshPending = false;
+  async function requestLiveSnapshotRefresh() {
+    if (liveRefreshInFlight) {
+      liveRefreshPending = true;
+      return;
+    }
+    liveRefreshInFlight = true;
+    try {
+      do {
+        liveRefreshPending = false;
+        await loadSnapshot();
+      } while (liveRefreshPending);
+    } finally {
+      liveRefreshInFlight = false;
+    }
+  }
   let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
   // background-poll re-renders.
   const pendingToggles = new Map();
+  const pendingWorkflowRuns = new Set();
   const workflowUndo = new Map();
   const pendingRunActions = new Map();
 
@@ -1053,6 +1497,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   }
 
   initInternalTabs(dashboardEl, activeDashboardTab);
+  document.getElementById("remote-token").type = "password";
+  document.getElementById("remote-token").setAttribute("aria-label", "Remote API bearer token");
+  document.querySelectorAll("#runs-filters select[title], #runs-filters input[title]").forEach((input) =>
+    input.setAttribute("aria-label", input.title));
 
   function applyThemePreference(preference) {
     const normalized = ["system", "light", "dark"].includes(preference) ? preference : "system";
@@ -1098,6 +1546,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   // config reload that makes it visible is asynchronous, so returning early
   // would flash a stale label and let the next poll appear to revert it.
   async function toggleWorkflow(gaggle, name, desired) {
+    const sourceId = sourceSelect.value;
     const key = gaggle + "/" + name;
     // renderSnapshot() clears #error, so failures must be re-applied after the
     // final re-render rather than set before it.
@@ -1105,10 +1554,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     pendingToggles.set(key, desired);
     await loadSnapshot();
     try {
+      if (sourceId !== sourceSelect.value) return;
       const res = await fetch("/api/set-workflow-enabled", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: sourceSelect.value, gaggle, workflow: name, enabled: desired }),
+        body: JSON.stringify({ source: sourceId, gaggle, workflow: name, enabled: desired }),
       });
       const data = await res.json();
       if (!data.ok) {
@@ -1117,6 +1567,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         const deadline = Date.now() + 30000;
         let confirmed = false;
         while (Date.now() < deadline) {
+          if (sourceId !== sourceSelect.value) return;
           const snap = await fetchSnapshot();
           if (snap && snap.connected && workflowEnabledState(snap, gaggle, name) === desired) {
             confirmed = true;
@@ -1134,9 +1585,60 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     } catch (err) {
       failure = "Failed to update " + name + ": " + (err.message || err);
     } finally {
-      pendingToggles.delete(key);
-      await loadSnapshot();
-      if (failure) errorEl.textContent = failure;
+      if (sourceId === sourceSelect.value) {
+        pendingToggles.delete(key);
+        await loadSnapshot();
+        if (failure) errorEl.textContent = failure;
+      }
+    }
+  }
+
+  function runNowNeedsForce(data) {
+    const code = String(data?.code || "").toLowerCase();
+    const reason = String(data?.reason || "").toLowerCase();
+    return code === "trigger_rejected" &&
+      (reason.includes("conditions: budget") || reason.includes("conditions: daily-budget"));
+  }
+
+  async function runWorkflowNow(gaggle, name, force = false, sourceId = sourceSelect.value) {
+    const key = gaggle + "/" + name;
+    let failure = "";
+    pendingWorkflowRuns.add(key);
+    await loadSnapshot();
+    try {
+      if (sourceId !== sourceSelect.value) return;
+      const res = await fetch("/api/run-workflow-now", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: sourceId, gaggle, workflow: name, force }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        if (!force && runNowNeedsForce(data)) {
+          const proceed = window.confirm(
+            name + " has already spent its cadence budget. Run it now anyway with --force?",
+          );
+          // Re-check after the (synchronous, but still risky to assume) confirm
+          // dialog: if the user switched sources while it was open, don't
+          // force-run the same-named workflow against a different instance.
+          if (proceed && sourceId === sourceSelect.value) return await runWorkflowNow(gaggle, name, true, sourceId);
+          if (proceed) return;
+        }
+        failure = "Failed to run " + name + ": " + (data.reason || "unknown error");
+      } else {
+        const runId = data.result?.runId || data.result?.acceptanceId || data.result?.requestId;
+        setRunStatus(runId
+          ? "Triggered " + name + " (" + runId + ")"
+          : "Triggered " + name);
+      }
+    } catch (err) {
+      failure = "Failed to run " + name + ": " + (err.message || err);
+    } finally {
+      if (sourceId === sourceSelect.value) {
+        pendingWorkflowRuns.delete(key);
+        await loadSnapshot();
+        if (failure) errorEl.textContent = failure;
+      }
     }
   }
   const startBarEl = document.getElementById("start-daemon-bar");
@@ -1223,7 +1725,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     const markup = '<div class="attention-list">' + visible.map((item, index) => {
       const run = (runs || []).find((candidate) => (candidate.runId || candidate.id) === item.id);
       const runLabel = escapeHtml(item.id || "unknown run");
-      const stage = item.stage ? " · stage " + escapeHtml(item.stage) : "";
+      const stage = item.stage ? " · " + renderGooberChip(item.stage, { kind: "stage" }) : "";
       const elapsed = item.elapsedMillis == null ? "" : " · " + Math.round(item.elapsedMillis / 60000) + "m";
       const expanded = expandedAttention.has(item.id);
       const detailsId = "attention-details-" + index;
@@ -1232,7 +1734,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         '<strong>' + escapeHtml(item.phase) + '</strong>' +
         '<span class="attention-reason" id="' + detailsId + '">' +
         (run ? '<a href="#run=' + encodeURIComponent(item.id) + '" data-attention-run="' + escapeHtml(item.id) + '">' : "") +
-        '<code>' + runLabel + '</code> ' + escapeHtml(item.workflow) + stage + elapsed +
+        '<code>' + runLabel + '</code> ' + escapeHtml(item.workflow) + stage + escapeHtml(elapsed) +
         (run ? "</a>" : "") + '<br />' + escapeHtml(item.reason) + '</span>' +
         '<span class="attention-action">' + escapeHtml(item.nextAction) +
         ' <button type="button" data-expand-attention="' + escapeHtml(item.id) +
@@ -1302,9 +1804,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   function renderSnapshot(data) {
     errorEl.textContent = "";
+    document.getElementById("source-context").textContent = data.source?.label || data.instance?.name || data.source?.value || "Goobers";
+    updateFleetPanel(data);
     updateStartBar(data);
     if (!data.connected) {
-      emptyEl.style.display = data.reason ? "block" : "none";
+      emptyEl.style.display = "none";
       dashboardEl.style.display = "none";
       setFreshnessState("Offline");
       if (data.reason) {
@@ -1315,7 +1819,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       return;
     }
     emptyEl.style.display = "none";
-    dashboardEl.style.display = "block";
+    dashboardEl.style.display = selectedRunId ? "none" : "block";
 
     lastCapabilities = data.capabilities || {};
     const workflows = data.workflows || [];
@@ -1333,10 +1837,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
     cardsEl.innerHTML = "";
     const cards = [
-      ["Instance", data.instance?.name || "\u2014"],
       ["Workflows", workflows.length],
       ["In flight", inFlight],
-      ["Recent runs", runs.length],
+      ["Loaded runs", runs.length],
       ["Warnings", (data.instance?.warnings || []).length],
     ];
     for (const [label, value] of cards) {
@@ -1363,19 +1866,51 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const nameTip = purpose || (displayName && displayName !== name ? displayName : "");
       const nameTitleAttr = nameTip ? ' title="' + escapeHtml(nameTip) + '"' : "";
       tr.innerHTML =
-        "<td" + nameTitleAttr + "><code>" + escapeHtml(name) + "</code></td>" +
+        "<td" + nameTitleAttr + '><button type="button" class="table-link"><code>' + escapeHtml(name) + "</code></button></td>" +
         "<td>" + escapeHtml(gaggle) + "</td>" +
         "<td>" + escapeHtml(triggerLabel) + "</td>" +
         "<td>" + escapeHtml(w.concurrency?.activeRuns ?? "\u2014") + "</td>" +
         "<td>" + escapeHtml(w.concurrency?.maxConcurrentRuns ?? "\u2014") + "</td>" +
+        '<td class="run-now-cell"></td>' +
         '<td class="enabled-cell"></td>';
       tr.classList.add("clickable-row");
       tr.title = "Filter runs to this workflow";
       tr.addEventListener("click", (ev) => {
-        if (ev.target.closest(".enabled-cell")) return;
+        if (ev.target.closest(".enabled-cell, .run-now-cell")) return;
         filterToWorkflow(gaggle, name);
       });
       workflowsBody.appendChild(tr);
+
+      const runCell = tr.querySelector(".run-now-cell");
+      const runKey = gaggle + "/" + name;
+      const runPending = pendingWorkflowRuns.has(runKey);
+      // Manual triggers only work against a live daemon (client.mjs's
+      // triggerWorkflowNow() throws outside daemon mode) - don't offer a
+      // control guaranteed to fail for standalone/remote-polling sources.
+      const runSupported = data.mode === "daemon";
+      const runBtn = document.createElement("button");
+      runBtn.type = "button";
+      runBtn.className = "workflow-run-now";
+      // Icon-only control, matching the enable/disable toggle: the accessible
+      // name comes from aria-label rather than the glyph.
+      runBtn.textContent = runPending ? "\u23F3" : "\u25B6\uFE0F";
+      runBtn.disabled = runPending || !runSupported;
+      const runActionLabel = "Run " + name + " now";
+      runBtn.title = !runSupported
+        ? "Manually triggering a workflow requires a live daemon connection"
+        : runPending
+          ? "Triggering\u2026"
+          : runActionLabel;
+      runBtn.setAttribute(
+        "aria-label",
+        !runSupported ? runActionLabel + " (requires a live daemon)" : runPending ? "Triggering " + name : runActionLabel,
+      );
+      runBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (!runSupported || pendingWorkflowRuns.has(runKey)) return;
+        runWorkflowNow(gaggle, name);
+      });
+      runCell.appendChild(runBtn);
 
       const enabledCell = tr.querySelector(".enabled-cell");
       if (nonManualTriggers.length === 0) {
@@ -1441,7 +1976,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       }
     }
     if (workflows.length === 0) {
-      workflowsBody.innerHTML = '<tr><td colspan="6" class="muted">No workflows configured.</td></tr>';
+      workflowsBody.innerHTML = '<tr><td colspan="7" class="muted">No workflows configured.</td></tr>';
     }
 
     populateFilterOptions(data.gaggles || [], workflows);
@@ -1495,6 +2030,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   let invalidCursorRecoveryInProgress = false;
   let filterPersistenceTimer = null;
   const persistedFilterState = ${initialFilters};
+  const multiFilters = new Map();
+
+  function selectedOptionLabels(element) {
+    return [...element.selectedOptions].map((option) => option.textContent.trim()).filter(Boolean);
+  }
 
   function selectedValues(element) {
     return [...element.selectedOptions].map((option) => option.value).filter(Boolean);
@@ -1503,7 +2043,109 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   function setSelectedValues(element, values) {
     const selected = new Set(Array.isArray(values) ? values : values ? [values] : []);
     for (const option of element.options) option.selected = selected.has(option.value);
+    syncMultiFilter(element);
   }
+
+  function syncMultiFilter(select) {
+    const state = multiFilters.get(select);
+    if (!state) return;
+    const options = [...select.options].filter((option) => option.value);
+    const selected = selectedValues(select);
+    const labels = selectedOptionLabels(select);
+    state.button.disabled = select.disabled;
+    state.button.title = select.title || "";
+    state.button.setAttribute("aria-expanded", String(!state.menu.hidden));
+    const buttonLabel = labels.length === 0
+      ? (select.dataset.allLabel || "All")
+      : labels.length <= 2 ? labels.join(", ") : labels.length + " selected";
+    state.button.textContent = buttonLabel;
+    state.button.setAttribute("aria-label", buttonLabel);
+    state.menu.innerHTML = "";
+    if (options.length === 0) {
+      state.menu.innerHTML = '<div class="multi-filter-empty">No options available</div>';
+      return;
+    }
+    for (const option of options) {
+      const id = select.id + "-option-" + option.value.replace(/[^A-Za-z0-9_-]/g, "-");
+      const label = document.createElement("label");
+      label.className = "multi-filter-option";
+      label.setAttribute("for", id);
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.id = id;
+      checkbox.value = option.value;
+      checkbox.checked = selected.includes(option.value);
+      checkbox.disabled = select.disabled;
+      checkbox.addEventListener("change", () => {
+        option.selected = checkbox.checked;
+        syncMultiFilter(select);
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      const text = document.createElement("span");
+      text.textContent = option.textContent;
+      label.append(checkbox, text);
+      state.menu.appendChild(label);
+    }
+  }
+
+  function closeMultiFilters(except) {
+    for (const state of multiFilters.values()) {
+      if (state === except) continue;
+      state.menu.hidden = true;
+      state.button.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function initMultiFilter(select) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "multi-filter";
+    wrapper.dataset.filterControl = select.id;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "multi-filter-button";
+    button.setAttribute("aria-haspopup", "true");
+    button.setAttribute("aria-expanded", "false");
+    const menu = document.createElement("div");
+    menu.className = "multi-filter-menu";
+    menu.hidden = true;
+    menu.setAttribute("role", "group");
+    menu.setAttribute("aria-label", select.getAttribute("aria-label") || select.title || "Filter options");
+    select.before(wrapper);
+    wrapper.append(button, menu, select);
+    const state = { wrapper, button, menu };
+    multiFilters.set(select, state);
+    button.addEventListener("click", () => {
+      if (select.disabled) return;
+      const shouldOpen = menu.hidden;
+      closeMultiFilters(state);
+      menu.hidden = !shouldOpen;
+      syncMultiFilter(select);
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" && menu.hidden) {
+        event.preventDefault();
+        button.click();
+        menu.querySelector("input")?.focus();
+      }
+      if (event.key === "Escape") {
+        menu.hidden = true;
+        syncMultiFilter(select);
+      }
+    });
+    menu.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        menu.hidden = true;
+        syncMultiFilter(select);
+        button.focus();
+      }
+    });
+    syncMultiFilter(select);
+  }
+
+  [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterOutcome, filterPopulation].forEach(initMultiFilter);
+  document.addEventListener("click", (event) => {
+    if (![...multiFilters.values()].some((state) => state.wrapper.contains(event.target))) closeMultiFilters();
+  });
 
   function populateFilterOptions(gaggles, workflows) {
     const prevGaggle = selectedValues(filterGaggle);
@@ -1589,7 +2231,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       el.title = !supported
         ? "Requires a running Goobers daemon"
         : hasStage ? "" : "Choose a stage first";
-      if (!hasStage) el.value = "";
+      if (!hasStage) setSelectedValues(el, []);
+      else syncMultiFilter(el);
     }
     filterNoWork.disabled = !supported;
     filterNoWork.title = supported ? "Include no-work runs" : "Requires a running Goobers daemon";
@@ -1613,13 +2256,15 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   function updateSortIndicators() {
     document.querySelectorAll("#runs-table th[data-sort]").forEach((th) => {
-      const label = th.textContent.replace(/\s*[\u25b2\u25bc]$/, "");
-      th.textContent = label;
+      const button = th.querySelector("button");
+      const label = button.textContent.replace(/\s*[\u25b2\u25bc]$/, "");
+      button.textContent = label;
+      th.setAttribute("aria-sort", th.dataset.sort === sortKey ? (sortDir === "asc" ? "ascending" : "descending") : "none");
       if (th.dataset.sort === sortKey) {
         const arrow = document.createElement("span");
         arrow.className = "sort-arrow";
         arrow.textContent = sortDir === "asc" ? "\u25b2" : "\u25bc";
-        th.appendChild(arrow);
+        button.appendChild(arrow);
       }
     });
   }
@@ -1635,7 +2280,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         ? ' <a class="actions-run-link" href="' + escapeHtml(actionsUrl) +
           '" target="_blank" rel="noopener noreferrer" title="Open GitHub Actions run">Action &#8599;</a>'
         : "";
-      const associations = renderRunAssociations(r.operator);
+      const associations = renderRunAssociations(r);
       tr.className = "clickable-row";
       tr.dataset.runId = runId;
       tr.innerHTML = renderRunRowCells(r, {
@@ -1644,6 +2289,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         startedAt: fmtTime(r.startedAt),
         lastActivityAt: fmtTime(r.lastActivityAt),
       });
+      attachRunIdControls(tr);
       tr.querySelectorAll(".actions-run-link, .run-association-link").forEach((link) =>
         link.addEventListener("click", (event) => event.stopPropagation()));
       tr.addEventListener("click", () => openRun(runId));
@@ -1653,6 +2299,29 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       runsBody.innerHTML = '<tr><td colspan="8" class="muted">No runs match the current filters.</td></tr>';
     }
     updateSortIndicators();
+  }
+
+  function attachRunIdControls(root) {
+    root.querySelectorAll("[data-open-run]").forEach((button) =>
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          openRun(button.dataset.openRun);
+        }));
+    root.querySelectorAll("[data-copy-run-id]").forEach((button) =>
+        button.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(button.dataset.copyRunId || "");
+            button.classList.add("copied");
+            button.textContent = "✅";
+            setTimeout(() => {
+              button.classList.remove("copied");
+              button.textContent = "\uD83D\uDCCB";
+            }, 1200);
+          } catch {
+            errorEl.textContent = "Could not copy the run id.";
+          }
+        }));
   }
 
   function loadSavedFilters() {
@@ -1807,7 +2476,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     document.getElementById("runs-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   document.querySelectorAll("#runs-table th[data-sort]").forEach((th) => {
-    th.addEventListener("click", () => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "sort-button";
+    button.textContent = th.textContent;
+    th.replaceChildren(button);
+    button.addEventListener("click", () => {
       const key = th.dataset.sort;
       if (sortKey === key) {
         sortDir = sortDir === "asc" ? "desc" : "asc";
@@ -2148,10 +2822,22 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
   }
 
+  const gooberAvatar = ${gooberAvatar.toString()};
+  const renderGooberChip = ${renderGooberChip.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunAssociations = ${renderRunAssociations.toString()
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderFleetPortalLink = ${renderFleetPortalLink.toString()
+        .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const updateFleetPanel = ${updateFleetPanel.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderSnapshotCard = ${renderSnapshotCard.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderFullRunId = ${renderFullRunId.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderRunIdControl = ${renderRunIdControl.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunRowCells = ${renderRunRowCells.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
@@ -2351,6 +3037,15 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   async function openRun(runId) {
     const sourceId = sourceSelect.value;
+    if (!sourceId) {
+      errorEl.textContent = "Choose a source before opening a run.";
+      sourceSelect.focus();
+      return;
+    }
+    const requestSequence = ++runRequestSequence;
+    const isNewRun = selectedRunId !== runId;
+    selectedRunId = runId;
+    if (isNewRun) activeRunTab = "summary";
     const activeFilter = document.activeElement?.closest("[data-transcript-filter]");
     const savedFilters = [...runContentEl.querySelectorAll("[data-transcript-filter]")].map((input) => ({
       name: input.dataset.transcriptFilter,
@@ -2366,6 +3061,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     try {
       const res = await fetch("/api/run?source=" + encodeURIComponent(sourceId) + "&id=" + encodeURIComponent(runId));
       const data = await res.json();
+      if (sourceId !== sourceSelect.value || requestSequence !== runRequestSequence) return;
       if (!data.connected) {
         runErrorEl.textContent = data.reason || "Run unavailable.";
         runContentEl.innerHTML = "";
@@ -2400,6 +3096,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         "</section>";
       runContentEl.innerHTML = html;
       initInternalTabs(runContentEl, activeRunTab);
+      attachRunIdControls(runContentEl);
+      if (isNewRun) document.getElementById("run-back").focus();
       savedFilters.forEach((saved) => {
         const input = runContentEl.querySelector('[data-transcript-filter="' + saved.name + '"]');
         if (!input) return;
@@ -2427,19 +3125,27 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       }
       initGraphInteractions(r.graph, r.transitions, events, r);
     } catch (err) {
+      if (sourceId !== sourceSelect.value || requestSequence !== runRequestSequence) return;
       runErrorEl.textContent = String(err);
       runContentEl.innerHTML = "";
     }
   }
 
   document.getElementById("run-back").addEventListener("click", () => {
+    const previousRunId = selectedRunId;
+    selectedRunId = "";
+    ++runRequestSequence;
     runViewEl.style.display = "none";
     dashboardEl.style.display = "block";
+    activateInternalTab(dashboardEl, "runs", true);
+    const row = [...runsBody.querySelectorAll("[data-run-id]")].find((row) => row.dataset.runId === previousRunId);
+    row?.querySelector(".table-link")?.focus();
     syncViewUrl();
   });
 
   async function loadSnapshot() {
     const sourceId = sourceSelect.value;
+    const requestSequence = ++snapshotRequestSequence;
     if (!sourceId) {
       emptyEl.style.display = "block";
       dashboardEl.style.display = "none";
@@ -2449,8 +3155,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     try {
       const data = await fetchSnapshot();
+      if (sourceId !== sourceSelect.value || requestSequence !== snapshotRequestSequence) return;
       if (data) renderSnapshot(data);
     } catch (err) {
+      if (sourceId !== sourceSelect.value || requestSequence !== snapshotRequestSequence) return;
       errorEl.textContent = portalRequestError(err);
     }
   }
@@ -2466,6 +3174,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   function setFreshnessState(state, freshAt = null) {
     const timestamp = freshAt || lastUpdatedAt;
     const timeStr = timestamp ? fmtTime(timestamp) : "never";
+    freshnessEl.dataset.freshness = String(state || "").toLowerCase();
     freshnessEl.textContent = state + " · Updated " + timeStr;
   }
 
@@ -2538,7 +3247,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       });
       setFreshnessState(freshness, lastUpdatedAt);
       startFreshnessTimer();
-      if (wasReconnect) void loadSnapshot();
+      if (wasReconnect) void requestLiveSnapshotRefresh();
     };
     eventSource.onmessage = (event) => {
       if (!decodeStreamEvent(event.data)) return;
@@ -2550,7 +3259,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         now: Date.now(),
       });
       setFreshnessState(freshness, lastUpdatedAt);
-      void loadSnapshot();
+      void requestLiveSnapshotRefresh();
     };
     eventSource.onerror = () => {
       if (eventSource) {
@@ -2563,12 +3272,29 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   }
 
   document.getElementById("refresh").addEventListener("click", refreshAll);
-  sourceSelect.addEventListener("change", () => {
+  async function changeSource() {
+    selectedRunId = "";
+    restoredRunId = "";
+    ++runRequestSequence;
+    ++filterRequestSequence;
+    lastCapabilities = {};
+    lastUpdatedAt = null;
+    pendingToggles.clear();
+    pendingWorkflowRuns.clear();
+    workflowUndo.clear();
+    dismissedAttention.clear();
+    runViewEl.style.display = "none";
+    runContentEl.replaceChildren();
+    dashboardEl.style.display = "none";
+    syncViewUrl();
+    setFreshnessState("Loading");
     liveConnectionEstablished = false;
     reconnectAttemptCount = 0;
     if (eventSource) eventSource.close();
-    void loadSnapshot().then(connectLiveEvents);
-  });
+    await loadSnapshot();
+    connectLiveEvents();
+  }
+  sourceSelect.addEventListener("change", () => void changeSource());
   function jumpToRun() {
     const runId = runJumpInput.value.trim();
     if (!runId) return;
@@ -2595,7 +3321,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     if (!response.ok || result.error) throw new Error(result.error || "Could not add source.");
     await loadSources();
     sourceSelect.value = result.id;
-    await loadSnapshot();
+    await changeSource();
+    document.getElementById("add-source-details").open = false;
   }
 
   async function openDirectory(directory) {

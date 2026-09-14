@@ -281,6 +281,19 @@ async function runGoobersJSON(root, args) {
     return JSON.parse(stdout);
 }
 
+export async function loadFleetStatus(source) {
+    if (!source || source.kind !== "local") return { available: false };
+    try {
+        const { stdout } = await execFileAsync(GOOBERS_BIN, ["fleet", "status", "--json", source.value], {
+            timeout: 15000,
+            maxBuffer: 1024 * 1024,
+        });
+        return { available: true, source: "local-association", ...JSON.parse(stdout) };
+    } catch (err) {
+        return { available: false, reason: cliErrorMessage(err) };
+    }
+}
+
 /** Standalone (no-daemon) snapshot, read directly off disk via the CLI's own --json reader. */
 async function loadStandaloneSnapshot(root) {
     const [status, runsList] = await Promise.all([
@@ -333,6 +346,145 @@ export function filterRunSummaries(runs, filters = {}) {
     });
 }
 
+function refIdentity(ref) {
+    const value = ref?.number ?? ref?.id ?? ref?.externalId;
+    return value === undefined || value === null ? "" : String(value);
+}
+
+function refUrl(ref) {
+    return ref?.url || ref?.htmlUrl || ref?.webUrl || "";
+}
+
+function associationRefKind(ref) {
+    const kind = String(ref?.kind || ref?.type || "").toLowerCase();
+    if (["issue", "work-item", "workitem"].includes(kind)) return "issue";
+    if (["pr", "pull-request", "pullrequest"].includes(kind)) return "pr";
+    return "";
+}
+
+function associationItems(run) {
+    const operator = run?.operator || {};
+    return [
+        { kind: "issue", item: run?.issue },
+        { kind: "issue", item: operator.issue },
+        { kind: "issue", item: run?.workItem },
+        { kind: "issue", item: operator.workItem },
+        { kind: "pr", item: run?.pullRequest },
+        { kind: "pr", item: operator.pullRequest },
+    ].filter(({ item }) => item && refIdentity(item));
+}
+
+function needsAssociationRefHydration(run) {
+    return associationItems(run).some(({ item }) => !refUrl(item));
+}
+
+function preferCanonicalRef(a, b) {
+    const hashA = String(refUrl(a)).includes("#") ? 1 : 0;
+    const hashB = String(refUrl(b)).includes("#") ? 1 : 0;
+    return hashA - hashB;
+}
+
+function mergeExternalRefs(run, refs) {
+    const existing = [
+        ...(Array.isArray(run.refs) ? run.refs : []),
+        ...(Array.isArray(run.externalRefs) ? run.externalRefs : []),
+    ];
+    const merged = [];
+    const seen = new Set();
+    for (const ref of [...existing, ...refs].sort(preferCanonicalRef)) {
+        const key = [associationRefKind(ref), refIdentity(ref), refUrl(ref)].join("|");
+        if (!associationRefKind(ref) || !refIdentity(ref) || !refUrl(ref) || seen.has(key)) continue;
+        seen.add(key);
+        merged.push(ref);
+    }
+    return merged;
+}
+
+// The daemon admits at most CostSingleRun=8 concurrent single-run reads
+// (internal/localscheduler/conditions.go). Snapshot refreshes fire on every
+// SSE event, so an unbounded Promise.all over every hydration candidate can
+// burst well past that budget and start getting requests rejected. Keep
+// well under the limit and cache outcomes per source+run so repeat refreshes
+// don't re-request runs we already resolved (or very recently failed on).
+const ASSOCIATION_HYDRATION_CONCURRENCY = 4;
+const ASSOCIATION_HYDRATION_FAILURE_TTL_MS = 30_000;
+const associationHydrationCache = new Map();
+
+async function mapWithConcurrency(items, limit, fn) {
+    let cursor = 0;
+    async function worker() {
+        while (cursor < items.length) {
+            const index = cursor++;
+            await fn(items[index], index);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+async function hydrateRunAssociationRefs(resolved, runs) {
+    if (resolved.mode !== "daemon" || !Array.isArray(runs) || runs.length === 0) return runs;
+    const candidates = runs.filter(needsAssociationRefHydration);
+    if (!candidates.length) return runs;
+
+    const now = Date.now();
+    const hydrated = new Map();
+    const toFetch = [];
+    for (const run of candidates) {
+        const runId = run.runId || run.id;
+        if (!runId) continue;
+        const cacheKey = `${resolved.baseUrl}|${runId}`;
+        const cached = associationHydrationCache.get(cacheKey);
+        if (cached && (cached.status === "ok" || cached.expiresAt > now)) {
+            if (cached.patch) hydrated.set(runId, cached.patch);
+            continue;
+        }
+        toFetch.push({ run, runId, cacheKey });
+    }
+
+    await mapWithConcurrency(toFetch, ASSOCIATION_HYDRATION_CONCURRENCY, async ({ run, runId, cacheKey }) => {
+        try {
+            const events = await fetchJSON(
+                `${resolved.baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/events`,
+                { token: resolved.token },
+            );
+            const eventItems = events.events || events.items || events;
+            const refs = (Array.isArray(eventItems) ? eventItems : [])
+                .map((event) => event?.externalRef)
+                .filter((ref) => associationRefKind(ref) && refIdentity(ref) && refUrl(ref));
+            if (refs.length) {
+                const patch = { externalRefs: mergeExternalRefs(run, refs) };
+                hydrated.set(runId, patch);
+                // Once resolved, a run's associated work doesn't change - cache
+                // this success permanently (per source) so later snapshot
+                // refreshes skip re-fetching this run's event ledger.
+                associationHydrationCache.set(cacheKey, { status: "ok", patch });
+            } else {
+                // No refs yet (e.g. run just started) - don't cache a "success"
+                // with nothing found, but do record a short-lived entry so a
+                // burst of SSE-triggered refreshes doesn't repeat the request.
+                associationHydrationCache.set(cacheKey, { status: "empty", expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
+            }
+        } catch (err) {
+            const operator = {
+                ...(run.operator || {}),
+                diagnosticsLimitations: [
+                    ...(run.operator?.diagnosticsLimitations || []),
+                    `associated work links unavailable: ${err.message || err}`,
+                ],
+            };
+            const patch = { operator };
+            hydrated.set(runId, patch);
+            associationHydrationCache.set(cacheKey, { status: "failed", patch, expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
+        }
+    });
+
+    return runs.map((run) => {
+        const runId = run.runId || run.id;
+        if (!hydrated.has(runId)) return run;
+        return { ...run, ...hydrated.get(runId) };
+    });
+}
+
 /** Fetch just the runs list for a resolved connection, with optional filters. */
 export async function loadRuns(resolved, filters = {}) {
     const multiEntries = Object.entries(filters).filter(([, value]) => Array.isArray(value));
@@ -380,7 +532,10 @@ export async function loadRuns(resolved, filters = {}) {
     const { baseUrl, token } = resolved;
     try {
         const runs = await fetchJSON(`${baseUrl}/api/v1/runs?${buildRunsQuery(filters)}`, { token });
-        return { runs: runs.runs || [], cursor: runs.nextCursor || "" };
+        return {
+            runs: await hydrateRunAssociationRefs(resolved, runs.runs || []),
+            cursor: runs.nextCursor || "",
+        };
     } catch (err) {
         return { runs: [], error: err.message || String(err) };
     }
@@ -444,7 +599,7 @@ export async function loadSnapshot(resolved, runFilters = {}) {
         runs = { runs: [], error: err.message || String(err) };
     }
 
-    const runItems = runs.runs || [];
+    const runItems = await hydrateRunAssociationRefs(resolved, runs.runs || []);
     return {
         baseUrl,
         health,
@@ -473,6 +628,22 @@ export async function setWorkflowEnabled(resolved, gaggle, workflow, enabled) {
     // synchronously re-materializes + reloads the whole config set before
     // answering, which routinely takes longer than the default read timeout.
     return await sendJSON("PUT", `${baseUrl}${path}`, { enabled }, { token, timeoutMs: 60000 });
+}
+
+export async function triggerWorkflowNow(resolved, gaggle, workflow, { force = false } = {}) {
+    if (resolved.mode !== "daemon") {
+        throw new Error("Running workflows now requires a running Goobers daemon.");
+    }
+    const requestId = crypto.randomUUID();
+    const body = { workflow, requestId };
+    if (gaggle) body.gaggle = gaggle;
+    if (force) body.force = true;
+    const result = await sendJSON("POST", `${resolved.baseUrl}/api/v1/triggers`, body, {
+        token: resolved.token,
+        timeoutMs: 60000,
+        headers: { "Idempotency-Key": requestId },
+    });
+    return { ...result, requestId };
 }
 
 const interventionCapabilities = { approve: "approve", override: "override", rerun: "rerun" };

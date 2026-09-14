@@ -47,7 +47,9 @@ test("rendered browser script is valid JavaScript", () => {
     assert.match(browserScript, /aria-label="Run detail sections"/);
     assert.match(browserScript, /function initInternalTabs/);
     assert.match(browserScript, /const persistedFilterState =/);
-    assert.match(html, /id="filter-phase" multiple/);
+    assert.match(html, /id="filter-phase" class="native-multi-filter" multiple/);
+    assert.match(html, /\.multi-filter-menu/);
+    assert.match(browserScript, /function initMultiFilter/);
     assert.match(html, />Reset<\/button>/);
     assert.match(html, /\[role="tabpanel"\]\[hidden\] \{ display: none !important; \}/);
     assert.doesNotMatch(
@@ -80,9 +82,9 @@ test("runs filters include the stage required by outcome and population", () => 
     assert.match(html, /\.kv-wide \{ grid-column: 1 \/ -1; \}/);
     assert.match(html, /label === "Latest error" \? " kv-wide"/);
     assert.match(html, /<th>Associated work<\/th>/);
-    assert.match(html, /Issue #" \+ operator\.issue\.number/);
+    assert.match(html, /addLink\("Issue"/);
     assert.match(html, /operator\.pullRequestTitle/);
-    assert.match(html, /class="run-association-link"/);
+    assert.match(html, /class="run-association-link work-chip"/);
     const legend = renderGraphLegend();
     assert.equal((legend.match(/<span class="legend-chip /g) || []).length, 6);
     assert.match(html, /const renderGraphLegend = function renderGraphLegend/);
@@ -133,14 +135,60 @@ test("run associations render safe issue and PR title links", () => {
         pullRequest: {
             id: "42",
             url: "https://github.com/octo/app/pull/42",
+            state: "open",
         },
         pullRequestTitle: 'Ship "the fix"',
     });
     assert.match(html, /Issue #7: Fix &lt;unsafe&gt;/);
     assert.match(html, /PR #42: Ship &quot;the fix&quot;/);
+    assert.match(html, /class="run-association-link work-chip"/);
+    assert.match(html, /data-status="open"/);
     assert.equal(renderRunAssociations({
         issue: { number: 8, title: "Unsafe", url: "javascript:alert(1)" },
     }), "\u2014");
+});
+
+test("run associations include issue and PR links from run-level refs", () => {
+    const html = renderRunAssociations({
+        operator: {
+            issue: {
+                number: 7,
+                title: "Implement thing",
+                url: "https://github.com/octo/app/issues/7",
+            },
+        },
+        externalRefs: [
+            {
+                kind: "pr",
+                id: 42,
+                title: "Ship thing",
+                url: "https://github.com/octo/app/pull/42",
+            },
+        ],
+    });
+    assert.match(html, /Issue #7: Implement thing/);
+    assert.match(html, /PR #42: Ship thing/);
+});
+
+test("run associations link event refs with summary titles", () => {
+    const html = renderRunAssociations({
+        operator: {
+            issue: {
+                number: "159",
+                title: "Classifier proposal",
+            },
+        },
+        externalRefs: [
+            {
+                provider: "github",
+                kind: "issue",
+                id: "159",
+                url: "https://github.com/odsp-microsoft/ai-intentsity/issues/159",
+            },
+        ],
+    });
+    assert.match(html, /href="https:\/\/github\.com\/odsp-microsoft\/ai-intentsity\/issues\/159"/);
+    assert.match(html, /Issue #159: Classifier proposal/);
 });
 
 test("GitHub Actions rejects unsupported telemetry filters", async () => {

@@ -23,8 +23,10 @@ import {
     loadRunArtifact,
     loadRunTranscript,
     loadRuns,
+    loadFleetStatus,
     openEventStream,
     setWorkflowEnabled,
+    triggerWorkflowNow,
     runStageIntervention,
     startDaemon,
 } from "./client.mjs";
@@ -112,11 +114,11 @@ async function snapshotFor(sourceId) {
             kind: source.kind,
             error: resolved.reason,
         });
-        return { sourceId, connected: false, reason: resolved.reason, source };
+        return { sourceId, connected: false, reason: resolved.reason, source, fleet: await loadFleetStatus(source) };
     }
     try {
         const data = await loadSnapshot(resolved);
-        return { sourceId, connected: true, source, ...data };
+        return { sourceId, connected: true, source, ...data, fleet: await loadFleetStatus(source) };
     } catch (err) {
         logEvent("snapshot_load_failed", {
             sourceId,
@@ -124,7 +126,7 @@ async function snapshotFor(sourceId) {
             mode: resolved.mode,
             error: err.message || String(err),
         });
-        return { sourceId, connected: false, reason: err.message || String(err), source };
+        return { sourceId, connected: false, reason: err.message || String(err), source, fleet: await loadFleetStatus(source) };
     }
 }
 
@@ -226,6 +228,18 @@ async function setWorkflowEnabledFor(sourceId, gaggle, workflow, enabled) {
     }
 
     return await setWorkflowEnabled(resolved, gaggle, workflow, enabled);
+}
+
+async function triggerWorkflowNowFor(sourceId, gaggle, workflow, force) {
+    const known = await listKnownSources();
+    const source = known.find((s) => s.id === sourceId);
+    if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
+    const resolved = await resolveSource(source);
+    if (!resolved.ok) {
+        throw new CanvasError("not_connected", resolved.reason || "source is not connected");
+    }
+
+    return await triggerWorkflowNow(resolved, gaggle, workflow, { force: !!force });
 }
 
 async function runStageInterventionFor(sourceId, action, runId, stage, input) {
@@ -436,6 +450,24 @@ async function startServer(instanceId) {
                 }
                 return;
             }
+            if (url.pathname === "/api/run-workflow-now" && req.method === "POST") {
+                const chunks = [];
+                for await (const chunk of req) chunks.push(chunk);
+                const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+                try {
+                    const result = await triggerWorkflowNowFor(body.source, body.gaggle, body.workflow, !!body.force);
+                    res.setHeader("Content-Type", "application/json; charset=utf-8");
+                    res.end(JSON.stringify({ ok: true, result }));
+                } catch (err) {
+                    res.setHeader("Content-Type", "application/json; charset=utf-8");
+                    res.end(JSON.stringify({
+                        ok: false,
+                        code: err.code || err.body?.code,
+                        reason: err.message || String(err),
+                    }));
+                }
+                return;
+            }
             if (url.pathname === "/api/run-action" && req.method === "POST") {
                 const chunks = [];
                 for await (const chunk of req) chunks.push(chunk);
@@ -525,7 +557,7 @@ export const canvases = [
         createCanvas({
             id: "goobers-portal",
             displayName: "Goobers Portal",
-            description: "Dashboard for live Goobers instances and persisted GitHub Actions run journals, with source selection and deep run diagnostics.",
+            description: "Dashboard for Goobers instances and Actions journals, with run diagnostics and derived Fleet portal links.",
             inputSchema,
             actions: [
                 {
@@ -634,6 +666,22 @@ export const canvases = [
                     },
                     handler: async (ctx) =>
                         await setWorkflowEnabledFor(ctx.input.source, ctx.input.gaggle, ctx.input.workflow, !!ctx.input.enabled),
+                },
+                {
+                    name: "run_workflow_now",
+                    description: "Manually trigger a workflow through the selected Goobers daemon. Set force only after a cadence-budget refusal.",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            source: { type: "string", description: "Source id (from list_sources)." },
+                            gaggle: { type: "string" },
+                            workflow: { type: "string" },
+                            force: { type: "boolean", description: "Bypass hourly/daily cadence budgets for this manual run." },
+                        },
+                        required: ["source", "gaggle", "workflow"],
+                    },
+                    handler: async (ctx) =>
+                        await triggerWorkflowNowFor(ctx.input.source, ctx.input.gaggle, ctx.input.workflow, !!ctx.input.force),
                 },
                 {
                     name: "start_daemon",
