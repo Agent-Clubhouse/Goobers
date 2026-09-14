@@ -263,7 +263,7 @@ func TestHeartbeatCarriesUpdateClause(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			stdout := newDaemonOutput()
 			done := make(chan struct{})
-			go emitHeartbeats(ctx, stdout, dir, 1, tail, nil, 10*time.Millisecond, test.pending, done)
+			go emitHeartbeats(ctx, stdout, dir, func() int { return 1 }, tail, nil, 10*time.Millisecond, test.pending, done)
 			select {
 			case <-stdout.heartbeat:
 			case <-time.After(10 * time.Second):

@@ -1207,6 +1207,16 @@ func (s *Scheduler) recordGaggleDispatch(gaggle string) {
 // dispatch, while subsequent ticks and triggers resolve the replacement entry.
 // The accepted change is journaled before it becomes active; a journal failure
 // leaves the current configuration untouched.
+// WorkflowCount reports how many workflow definitions the scheduler currently
+// serves. It reads the same map Reload replaces, under the same mutex, so a
+// caller polling it observes applied hot reloads rather than a value captured
+// at startup (#5075).
+func (s *Scheduler) WorkflowCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.workflows)
+}
+
 func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now time.Time, oldDigest, newDigest string) error {
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
