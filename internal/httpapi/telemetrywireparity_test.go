@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -236,5 +237,73 @@ func TestDefectAggregateCausalCreditWireShapeMatches(t *testing.T) {
 	}
 	if string(estimateJSON) != string(wireJSON) {
 		t.Fatalf("causal credit restatement drifted\nread model: %s\nwire:       %s", estimateJSON, wireJSON)
+	}
+}
+
+func TestDefectAggregateAttributionCohortWireShapeMatches(t *testing.T) {
+	cohort := creditgraph.CohortAggregation{
+		EffectiveVersion: "sha256:cohort",
+		Workload:         "manual",
+		RunCount:         2,
+		TopContributingPaths: []creditgraph.ContributingPath{{
+			Nodes:      []string{"outcome", "stage:implement#1", "toolresult:call-1"},
+			Share:      0.6,
+			Confidence: 0.8,
+			Evidence: []creditgraph.AttributionEvidenceLink{{
+				RunID:           "run-1",
+				NodeID:          "toolresult:call-1",
+				Stage:           "implement",
+				Detail:          "share=0.600000, confidence=0.800000",
+				Source:          "contribution",
+				JournalSequence: 7,
+				JournalPath:     "gaggles/example/runs/run-1/events.jsonl",
+				ArtifactPath:    "spans/sha256/aa/bb",
+				ArtifactDigest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			}},
+		}},
+		CounterEvidence: []creditgraph.AttributionEvidenceLink{{
+			RunID:           "run-1",
+			NodeID:          "toolresult:call-1",
+			Stage:           "implement",
+			Detail:          "toolresult:call-1",
+			Source:          "bad-tool-result",
+			JournalSequence: 7,
+			JournalPath:     "gaggles/example/runs/run-1/events.jsonl",
+		}},
+	}
+	wire := telemetryclient.AttributionCohort{
+		EffectiveVersion: cohort.EffectiveVersion,
+		Workload:         cohort.Workload,
+		RunCount:         cohort.RunCount,
+		TopContributingPaths: []telemetryclient.ContributingPath{{
+			Nodes:      append([]string(nil), cohort.TopContributingPaths[0].Nodes...),
+			Share:      cohort.TopContributingPaths[0].Share,
+			Confidence: cohort.TopContributingPaths[0].Confidence,
+			Evidence: []telemetryclient.AttributionEvidenceLink{{
+				RunID:           cohort.TopContributingPaths[0].Evidence[0].RunID,
+				NodeID:          cohort.TopContributingPaths[0].Evidence[0].NodeID,
+				Stage:           cohort.TopContributingPaths[0].Evidence[0].Stage,
+				Detail:          cohort.TopContributingPaths[0].Evidence[0].Detail,
+				Source:          cohort.TopContributingPaths[0].Evidence[0].Source,
+				JournalSequence: cohort.TopContributingPaths[0].Evidence[0].JournalSequence,
+				JournalPath:     cohort.TopContributingPaths[0].Evidence[0].JournalPath,
+				ArtifactPath:    cohort.TopContributingPaths[0].Evidence[0].ArtifactPath,
+				ArtifactDigest:  cohort.TopContributingPaths[0].Evidence[0].ArtifactDigest,
+			}},
+		}},
+		CounterEvidence: []telemetryclient.AttributionEvidenceLink{{
+			RunID:           cohort.CounterEvidence[0].RunID,
+			NodeID:          cohort.CounterEvidence[0].NodeID,
+			Stage:           cohort.CounterEvidence[0].Stage,
+			Detail:          cohort.CounterEvidence[0].Detail,
+			Source:          cohort.CounterEvidence[0].Source,
+			JournalSequence: cohort.CounterEvidence[0].JournalSequence,
+			JournalPath:     cohort.CounterEvidence[0].JournalPath,
+		}},
+	}
+	cohortJSON := mustMarshal(t, cohort)
+	wireJSON := mustMarshal(t, wire)
+	if cohortJSON != wireJSON {
+		t.Fatalf("attribution cohort restatement drifted\ncredit graph: %s\nwire:         %s", cohortJSON, wireJSON)
 	}
 }

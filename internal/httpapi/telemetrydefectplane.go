@@ -154,6 +154,22 @@ func boundDefectAggregateResponse(result telemetryclient.DefectAggregateResponse
 		result.CausalCredit = result.CausalCredit[:telemetryclient.MaxCausalEstimates]
 		truncated = true
 	}
+	if len(result.AttributionCohorts) > telemetryclient.MaxCausalEstimates {
+		result.AttributionCohorts = result.AttributionCohorts[:telemetryclient.MaxCausalEstimates]
+		truncated = true
+	}
+	for i := range result.AttributionCohorts {
+		if len(result.AttributionCohorts[i].CounterEvidence) > telemetryclient.MaxFlaggedRuns {
+			result.AttributionCohorts[i].CounterEvidence = result.AttributionCohorts[i].CounterEvidence[:telemetryclient.MaxFlaggedRuns]
+			truncated = true
+		}
+		for j := range result.AttributionCohorts[i].TopContributingPaths {
+			if len(result.AttributionCohorts[i].TopContributingPaths[j].Evidence) > telemetryclient.MaxFlaggedRuns {
+				result.AttributionCohorts[i].TopContributingPaths[j].Evidence = result.AttributionCohorts[i].TopContributingPaths[j].Evidence[:telemetryclient.MaxFlaggedRuns]
+				truncated = true
+			}
+		}
+	}
 	if len(result.PromotionSignals) > telemetryclient.MaxCausalEstimates {
 		result.PromotionSignals = result.PromotionSignals[:telemetryclient.MaxCausalEstimates]
 		truncated = true

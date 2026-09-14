@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -217,6 +218,15 @@ func defectAggregateResponse(artifact candidateFindingsArtifact) telemetryclient
 			HasCohortData:     estimate.HasCohortData,
 		})
 	}
+	for _, cohort := range artifact.AttributionCohorts {
+		response.AttributionCohorts = append(response.AttributionCohorts, telemetryclient.AttributionCohort{
+			EffectiveVersion:     cohort.EffectiveVersion,
+			Workload:             cohort.Workload,
+			RunCount:             cohort.RunCount,
+			TopContributingPaths: wireContributingPaths(cohort.TopContributingPaths),
+			CounterEvidence:      wireAttributionEvidence(cohort.CounterEvidence),
+		})
+	}
 	for _, signal := range artifact.PromotionSignals {
 		response.PromotionSignals = append(response.PromotionSignals, wirePromotionSignal(signal))
 	}
@@ -269,6 +279,38 @@ func wireFinding(finding rollup.Finding) telemetryclient.Finding {
 			RequiresHumanReview:        finding.NominationGuardrails.RequiresHumanReview,
 			GoverningTargetTreatment:   finding.NominationGuardrails.GoverningTargetTreatment,
 		}
+	}
+	return wire
+}
+
+func wireContributingPaths(paths []creditgraph.ContributingPath) []telemetryclient.ContributingPath {
+	wire := make([]telemetryclient.ContributingPath, 0, len(paths))
+	for _, path := range paths {
+		wire = append(wire, telemetryclient.ContributingPath{
+			Nodes:      append([]string(nil), path.Nodes...),
+			Share:      path.Share,
+			Confidence: path.Confidence,
+			Evidence:   wireAttributionEvidence(path.Evidence),
+		})
+	}
+	return wire
+}
+
+func wireAttributionEvidence(links []creditgraph.AttributionEvidenceLink) []telemetryclient.AttributionEvidenceLink {
+	wire := make([]telemetryclient.AttributionEvidenceLink, 0, len(links))
+	for _, link := range links {
+		wire = append(wire, telemetryclient.AttributionEvidenceLink{
+			RunID:             link.RunID,
+			NodeID:            link.NodeID,
+			Stage:             link.Stage,
+			Detail:            link.Detail,
+			Source:            link.Source,
+			JournalSequence:   link.JournalSequence,
+			JournalPath:       link.JournalPath,
+			ArtifactPath:      link.ArtifactPath,
+			ArtifactDigest:    link.ArtifactDigest,
+			ArtifactMediaType: link.ArtifactMediaType,
+		})
 	}
 	return wire
 }

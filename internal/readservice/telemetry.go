@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -32,6 +33,7 @@ var (
 type TelemetryReader interface {
 	TelemetryCosts(context.Context, TelemetryCostRequest) (TelemetryCostResult, error)
 	TelemetryStats(context.Context, TelemetryStatsRequest) (TelemetryStatsResult, error)
+	TelemetryAttribution(context.Context, TelemetryAttributionRequest) (TelemetryAttributionResult, error)
 	TelemetryErrorSignatures(context.Context, TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error)
 	TelemetryErrors(context.Context, TelemetryErrorsRequest) (TelemetryErrorsPage, error)
 	TelemetryImplementationOutcomes(context.Context, TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error)
@@ -78,34 +80,36 @@ type TelemetryImplementationOutcome struct {
 // TelemetryStatsRequest filters workflow/stage aggregates and selects optional
 // branch, model, and harness-version cohort dimensions.
 type TelemetryStatsRequest struct {
-	Workflow              string
-	Gaggle                string
-	Branch                *int
-	Model                 string
-	HarnessVersion        string
-	GroupByBranch         bool
-	GroupByModel          bool
-	GroupByHarnessVersion bool
-	Since                 time.Time
-	Until                 time.Time
-	TrendSince            time.Time
-	TrendUntil            time.Time
-	TrendBuckets          int
-	TrendPreviousSince    time.Time
-	TrendPreviousUntil    time.Time
+	Workflow                string
+	Gaggle                  string
+	Branch                  *int
+	Model                   string
+	HarnessVersion          string
+	GroupByBranch           bool
+	GroupByModel            bool
+	GroupByHarnessVersion   bool
+	AttributionObservations []creditgraph.AttributionObservation `json:"attributionObservations,omitempty"`
+	Since                   time.Time
+	Until                   time.Time
+	TrendSince              time.Time
+	TrendUntil              time.Time
+	TrendBuckets            int
+	TrendPreviousSince      time.Time
+	TrendPreviousUntil      time.Time
 }
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
-	Gaggles          []TelemetryGaggleStats       `json:"gaggles"`
-	Runs             []TelemetryRunStats          `json:"runs"`
-	Stages           []TelemetryStageStats        `json:"stages"`
-	Usage            []TelemetryUsageStats        `json:"usage"`
-	Models           []TelemetryModelStats        `json:"models"`
-	CreditAssignment []NodeCredit                 `json:"creditAssignment"`
-	CausalCredit     []readmodel.CausalNodeCredit `json:"causalCredit"`
-	GraphAnalytics   *readmodel.GraphAnalytics    `json:"graphAnalytics,omitempty"`
-	PromotionSignals []PromotionSignal            `json:"promotionSignals,omitempty"`
+	Gaggles            []TelemetryGaggleStats          `json:"gaggles"`
+	Runs               []TelemetryRunStats             `json:"runs"`
+	Stages             []TelemetryStageStats           `json:"stages"`
+	Usage              []TelemetryUsageStats           `json:"usage"`
+	Models             []TelemetryModelStats           `json:"models"`
+	CreditAssignment   []NodeCredit                    `json:"creditAssignment"`
+	AttributionCohorts []creditgraph.CohortAggregation `json:"attributionCohorts,omitempty"`
+	CausalCredit       []readmodel.CausalNodeCredit    `json:"causalCredit"`
+	GraphAnalytics     *readmodel.GraphAnalytics       `json:"graphAnalytics,omitempty"`
+	PromotionSignals   []PromotionSignal               `json:"promotionSignals,omitempty"`
 	// PromotionCandidates is the machine-filtered input for automated
 	// promotion. Correlational fallbacks remain visible in PromotionSignals
 	// but never cross this boundary.
@@ -121,6 +125,57 @@ type TelemetryTrendBucket struct {
 	Since string                `json:"since"`
 	Until string                `json:"until"`
 	Usage []TelemetryUsageStats `json:"usage"`
+}
+
+// TelemetryAttributionRequest describes a bounded set of attribution
+// observations to aggregate by EffectiveVersion and workload cohort.
+type TelemetryAttributionRequest struct {
+	Gaggle       string                               `json:"gaggle,omitempty"`
+	Workflow     string                               `json:"workflow,omitempty"`
+	Since        time.Time                            `json:"since,omitempty"`
+	Until        time.Time                            `json:"until,omitempty"`
+	Observations []creditgraph.AttributionObservation `json:"observations,omitempty"`
+}
+
+// TelemetryAttributionResult is the cohorted, path-preserving view over one
+// attribution evidence set.
+type TelemetryAttributionResult struct {
+	Cohorts []creditgraph.CohortAggregation `json:"cohorts,omitempty"`
+}
+
+// AggregateAttributionObservations exposes the cohort aggregation to status and
+// connector consumers without forcing them to import the internal graph package.
+func AggregateAttributionObservations(observations []creditgraph.AttributionObservation) []creditgraph.CohortAggregation {
+	return creditgraph.AggregateAttributionEvidence(observations)
+}
+
+// TelemetryAttribution aggregates attribution observations into the cohorted
+// view the operators and Tutor connectors need.
+func (s *Telemetry) TelemetryAttribution(ctx context.Context, req TelemetryAttributionRequest) (TelemetryAttributionResult, error) {
+	if err := ctx.Err(); err != nil {
+		return TelemetryAttributionResult{}, err
+	}
+	return TelemetryAttributionResult{Cohorts: AggregateAttributionObservations(req.Observations)}, nil
+}
+
+// TelemetryAttribution aggregates attribution observations into the cohorted
+// view for local read-service callers.
+func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributionRequest) (TelemetryAttributionResult, error) {
+	if s == nil || s.telemetry == nil {
+		return TelemetryAttributionResult{}, ErrTelemetryUnavailable
+	}
+	if len(req.Observations) == 0 && s.sources.ReadModel != nil {
+		if invocations, ok := s.telemetry.store.(AgentInvocationReader); ok {
+			cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
+				Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
+			})
+			if err != nil {
+				return TelemetryAttributionResult{}, err
+			}
+			return TelemetryAttributionResult{Cohorts: cohorts}, nil
+		}
+	}
+	return s.telemetry.TelemetryAttribution(ctx, req)
 }
 
 // PromotionSignal is the bounded evidence interface for automated promotion.
@@ -452,6 +507,28 @@ func projectTelemetryUsage(stat rollup.UsageStats) TelemetryUsageStats {
 	return item
 }
 
+func rollupStatsRequest(req TelemetryStatsRequest) rollup.StatsRequest {
+	return rollup.StatsRequest{
+		Workflow:              req.Workflow,
+		Gaggle:                req.Gaggle,
+		Branch:                req.Branch,
+		Model:                 req.Model,
+		HarnessVersion:        req.HarnessVersion,
+		GroupByBranch:         req.GroupByBranch,
+		GroupByModel:          req.GroupByModel,
+		GroupByHarnessVersion: req.GroupByHarnessVersion,
+		Since:                 req.Since,
+		Until:                 req.Until,
+	}
+}
+
+func trendStatsRequest(req TelemetryStatsRequest) rollup.StatsRequest {
+	stats := rollupStatsRequest(req)
+	stats.Since = time.Time{}
+	stats.Until = time.Time{}
+	return stats
+}
+
 // TelemetryStats returns workflow and stage aggregates in stable name order.
 func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (TelemetryStatsResult, error) {
 	if err := validateWindow(req.Since, req.Until); err != nil {
@@ -469,18 +546,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	if err := ctx.Err(); err != nil {
 		return TelemetryStatsResult{}, err
 	}
-	stats, err := s.store.Stats(ctx, rollup.StatsRequest{
-		Workflow:              req.Workflow,
-		Gaggle:                req.Gaggle,
-		Branch:                req.Branch,
-		Model:                 req.Model,
-		HarnessVersion:        req.HarnessVersion,
-		GroupByBranch:         req.GroupByBranch,
-		GroupByModel:          req.GroupByModel,
-		GroupByHarnessVersion: req.GroupByHarnessVersion,
-		Since:                 req.Since,
-		Until:                 req.Until,
-	})
+	stats, err := s.store.Stats(ctx, rollupStatsRequest(req))
 	if err != nil {
 		return TelemetryStatsResult{}, err
 	}
@@ -489,12 +555,13 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 
 	result := TelemetryStatsResult{
-		Gaggles:          make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
-		Runs:             make([]TelemetryRunStats, 0, len(stats.Runs)),
-		Stages:           make([]TelemetryStageStats, 0, len(stats.Stages)),
-		Usage:            make([]TelemetryUsageStats, 0, len(stats.Usage)),
-		Models:           make([]TelemetryModelStats, 0, len(stats.Models)),
-		CreditAssignment: []NodeCredit{},
+		Gaggles:            make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
+		Runs:               make([]TelemetryRunStats, 0, len(stats.Runs)),
+		Stages:             make([]TelemetryStageStats, 0, len(stats.Stages)),
+		Usage:              make([]TelemetryUsageStats, 0, len(stats.Usage)),
+		Models:             make([]TelemetryModelStats, 0, len(stats.Models)),
+		CreditAssignment:   []NodeCredit{},
+		AttributionCohorts: AggregateAttributionObservations(req.AttributionObservations),
 		Curation: TelemetryCurationStats{
 			EverRecorded: stats.Curation.EverRecorded,
 			Runs:         stats.Curation.Runs,
@@ -683,12 +750,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		}
 		var err error
 		trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
-			Stats: rollup.StatsRequest{
-				Gaggle: req.Gaggle, Workflow: req.Workflow, Branch: req.Branch,
-				Model: req.Model, HarnessVersion: req.HarnessVersion,
-				GroupByBranch: req.GroupByBranch, GroupByModel: req.GroupByModel,
-				GroupByHarnessVersion: req.GroupByHarnessVersion,
-			},
+			Stats:   trendStatsRequest(req),
 			Windows: windows,
 		})
 		if err != nil {
@@ -707,16 +769,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		if len(trends) == 0 {
 			var err error
 			trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
-				Stats: rollup.StatsRequest{
-					Gaggle:                req.Gaggle,
-					Workflow:              req.Workflow,
-					Branch:                req.Branch,
-					Model:                 req.Model,
-					HarnessVersion:        req.HarnessVersion,
-					GroupByBranch:         req.GroupByBranch,
-					GroupByModel:          req.GroupByModel,
-					GroupByHarnessVersion: req.GroupByHarnessVersion,
-				},
+				Stats:   trendStatsRequest(req),
 				Windows: []rollup.TrendWindow{{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil}},
 			})
 			if err != nil {
@@ -968,55 +1021,82 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 		}
 	}
 	result.PromotionCandidates = EligiblePromotionSignals(result.PromotionSignals)
-	if graph := getWorkflowGraphForQuery(s.definitionsForQuery(), req.Gaggle, req.Workflow); graph != nil {
-		runtimeGraph, err := s.runtimeAnalyticsGraph(ctx, req, graph)
-		if err != nil {
-			return TelemetryStatsResult{}, err
-		}
-		analyticsGraph := readmodel.AnalyticsGraph{
-			Nodes: make([]readmodel.AnalyticsNode, 0, len(runtimeGraph.Nodes)),
-			Edges: make([]readmodel.AnalyticsEdge, 0, len(runtimeGraph.Edges)),
-		}
-		failureByNode, trustedFailure, creditNodes := normalizedPromotionFailure(
-			result.CreditAssignment, result.PromotionCandidates,
-		)
-		latencyByNode := make(map[string]float64, len(result.Stages))
-		for _, stage := range result.Stages {
-			if stage.Workflow == req.Workflow && stage.AvgDurationMs != nil {
-				latencyByNode[stage.Stage] = *stage.AvgDurationMs
-			}
-		}
-		for _, node := range runtimeGraph.Nodes {
-			analyticsGraph.Nodes = append(analyticsGraph.Nodes, readmodel.AnalyticsNode{
-				ID: node.ID, Failure: failureByNode[node.ID], Latency: latencyByNode[node.ID],
-			})
-		}
-		for _, edge := range runtimeGraph.Edges {
-			analyticsGraph.Edges = append(analyticsGraph.Edges, readmodel.AnalyticsEdge{
-				Source: edge.Source, Target: edge.Target,
-			})
-		}
-		analytics, err := readmodel.AnalyzeGraph(analyticsGraph)
-		if err != nil {
-			return TelemetryStatsResult{}, err
-		}
-		if len(trustedFailure) == 0 {
-			// Withheld, not absent (#4825): keep Centrality/CriticalPath.Nodes
-			// as empty slices, not nil, so they marshal as JSON [] rather than
-			// null against the client contract's non-nullable fields.
-			analytics.Centrality = []readmodel.CentralityScore{}
-			analytics.CriticalPath = readmodel.CriticalPath{Nodes: []string{}}
-			analytics.Confidence = "untrusted"
-			analytics.Caveat = "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available"
-		} else if !sameAnalyticsNodes(trustedFailure, creditNodes) {
-			analytics.Confidence = "partial"
-			analytics.Caveat = "centrality uses only promotion-eligible causal weights; correlational fallbacks are excluded"
-		} else {
-			analytics.Confidence = "bounded"
-		}
-		result.GraphAnalytics = &analytics
+	if err := s.attachStoredAttributionCohorts(ctx, req, &result); err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	if err := s.attachGraphAnalytics(ctx, req, &result); err != nil {
+		return TelemetryStatsResult{}, err
 	}
 	return result, nil
+}
+
+func (s *Local) attachStoredAttributionCohorts(ctx context.Context, req TelemetryStatsRequest, result *TelemetryStatsResult) error {
+	invocations, ok := s.telemetry.store.(AgentInvocationReader)
+	if !ok {
+		return nil
+	}
+	cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
+		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
+	})
+	if err != nil {
+		return err
+	}
+	result.AttributionCohorts = cohorts
+	return nil
+}
+
+func (s *Local) attachGraphAnalytics(ctx context.Context, req TelemetryStatsRequest, result *TelemetryStatsResult) error {
+	graph := getWorkflowGraphForQuery(s.definitionsForQuery(), req.Gaggle, req.Workflow)
+	if graph == nil {
+		return nil
+	}
+	runtimeGraph, err := s.runtimeAnalyticsGraph(ctx, req, graph)
+	if err != nil {
+		return err
+	}
+	analyticsGraph := readmodel.AnalyticsGraph{
+		Nodes: make([]readmodel.AnalyticsNode, 0, len(runtimeGraph.Nodes)),
+		Edges: make([]readmodel.AnalyticsEdge, 0, len(runtimeGraph.Edges)),
+	}
+	failureByNode, trustedFailure, creditNodes := normalizedPromotionFailure(
+		result.CreditAssignment, result.PromotionCandidates,
+	)
+	latencyByNode := make(map[string]float64, len(result.Stages))
+	for _, stage := range result.Stages {
+		if stage.Workflow == req.Workflow && stage.AvgDurationMs != nil {
+			latencyByNode[stage.Stage] = *stage.AvgDurationMs
+		}
+	}
+	for _, node := range runtimeGraph.Nodes {
+		analyticsGraph.Nodes = append(analyticsGraph.Nodes, readmodel.AnalyticsNode{
+			ID: node.ID, Failure: failureByNode[node.ID], Latency: latencyByNode[node.ID],
+		})
+	}
+	for _, edge := range runtimeGraph.Edges {
+		analyticsGraph.Edges = append(analyticsGraph.Edges, readmodel.AnalyticsEdge{
+			Source: edge.Source, Target: edge.Target,
+		})
+	}
+	analytics, err := readmodel.AnalyzeGraph(analyticsGraph)
+	if err != nil {
+		return err
+	}
+	if len(trustedFailure) == 0 {
+		// Withheld, not absent (#4825): keep Centrality/CriticalPath.Nodes
+		// as empty slices, not nil, so they marshal as JSON [] rather than
+		// null against the client contract's non-nullable fields.
+		analytics.Centrality = []readmodel.CentralityScore{}
+		analytics.CriticalPath = readmodel.CriticalPath{Nodes: []string{}}
+		analytics.Confidence = "untrusted"
+		analytics.Caveat = "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available"
+	} else if !sameAnalyticsNodes(trustedFailure, creditNodes) {
+		analytics.Confidence = "partial"
+		analytics.Caveat = "centrality uses only promotion-eligible causal weights; correlational fallbacks are excluded"
+	} else {
+		analytics.Confidence = "bounded"
+	}
+	result.GraphAnalytics = &analytics
+	return nil
 }
 
 // normalizedPromotionFailure reconciles identity-level credits with the

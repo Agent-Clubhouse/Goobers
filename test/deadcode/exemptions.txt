@@ -278,77 +278,10 @@ github.com/goobers/goobers/internal/e2e.ScanTextForKubectlExec # S7's transcript
 github.com/goobers/goobers/internal/e2e.ScanGoStringLiteralsForKubectlExec # §5 rule 1 guard over this package's own Go source; not wired into any lint/CI entrypoint yet, only its own tests.
 github.com/goobers/goobers/internal/e2e.ReadBundle # Bundle.Encode's round-trip counterpart; no consumer reads a written evidence bundle back yet (a future re-run/comparison feature), only its own tests.
 
-# Credit-graph contract and read model (#4077). The package defines the
-# hierarchical execution/credit graph and materializes it from a run's journal
-# and telemetry provenance; the executor records the provenance the builder
-# reads, but no CLI or portal surface calls Build yet — that consumer wiring is
-# explicit follow-up. Every builder helper below is reachable only through the
-# retained Build entry point, and the traversal API below is the contract the
-# eventual consumer traverses. All are unit-tested by build_test.go.
-github.com/goobers/goobers/internal/creditgraph.Build # Credit-graph read-model entry point retained as the run-graph contract surface; consumer wiring is follow-up (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.collectSpanProvenance # Span provenance collector reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addOutcomeAndRun # Outcome/run root construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addStages # Stage node construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.ensureStage # Stage node deduplication reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addAgents # Subagent node construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addAgent # Single-subagent node construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.linkAgent # Subagent parent linking reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addAgentModelNode # Aggregate model-invocation node for uninstrumented agents, reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.hasSpan # Span-presence check reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addSpans # Transcript span construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.spanOwner # Span owner resolution reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addTranscript # Transcript record fan-out reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addModelInvocation # Model-invocation node construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addToolCall # Tool-call node construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addToolResult # Tool-result node construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.spanScopedID # Per-span node id namespacing reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.spanCallKey # Per-span tool-call key namespacing reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.ensureTool # Shared tool-identity deduplication reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.reportUnresolvedToolCalls # Unresolved tool-call gap reporting reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addEvidence # Evidence node construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addEvaluators # Evaluator node construction reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addNode # Node insertion primitive reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.addEdge # Edge insertion primitive reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.builder.gap # Missing-provenance gap recorder reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.runNodeID # Run node id helper reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.provenanceOf # Recorded/unknown provenance classifier reachable through the retained credit-graph builder (#4077).
-github.com/goobers/goobers/internal/creditgraph.Graph.Node # Credit-graph node lookup, part of the traversal contract retained for run-graph consumers (#4077).
-github.com/goobers/goobers/internal/creditgraph.Graph.Root # Credit-graph root (final outcome) accessor, part of the traversal contract retained for run-graph consumers (#4077).
-github.com/goobers/goobers/internal/creditgraph.Graph.OutEdges # Credit-graph out-edge accessor, part of the traversal contract retained for run-graph consumers (#4077).
+# Credit-graph traversal helpers retained for future graph consumers (#4077).
 github.com/goobers/goobers/internal/creditgraph.Graph.Children # Credit-graph child accessor, part of the traversal contract retained for run-graph consumers (#4077).
-github.com/goobers/goobers/internal/creditgraph.Graph.Walk # Credit-graph depth-first traversal, part of the traversal contract retained for run-graph consumers (#4077).
-github.com/goobers/goobers/internal/creditgraph.Graph.walk # Depth-first recursion reachable through the retained credit-graph Walk API (#4077).
 github.com/goobers/goobers/internal/creditgraph.Graph.Descendants # Credit-graph descendant enumeration, part of the traversal contract retained for run-graph consumers (#4077).
-github.com/goobers/goobers/internal/creditgraph.Graph.NodesOfKind # Credit-graph kind filter, part of the traversal contract retained for run-graph consumers (#4077).
-
-# Credit propagation (#4078) computes signed contribution estimates with
-# uncertainty over the graph above and classifies failure causes. Attribute is
-# the entry point the eventual consumer calls; every helper below is reachable
-# only through it, and all are unit-tested by credit_test.go.
-github.com/goobers/goobers/internal/creditgraph.Attribute # Credit-propagation entry point retained as the attribution contract surface; consumer wiring is follow-up (#4078).
-github.com/goobers/goobers/internal/creditgraph.Attribution.Contribution # Per-node contribution lookup, part of the attribution contract retained for consumers (#4078).
-github.com/goobers/goobers/internal/creditgraph.Attribution.CausesOfClass # Per-class cause lookup, part of the attribution contract retained for consumers (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.propagate # Responsibility propagation reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.subtreeUncertainty # Subtree provenance uncertainty reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.edgeWeight # Edge weighting reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.localUncertainty # Per-node uncertainty reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.signOf # Contribution sign selection reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.localSign # Recorded per-node signal classifier reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.statusSign # Run/stage status sign classifier reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.verdictSign # Evaluator verdict sign classifier reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.combine # Uncertainty combination helper reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.clamp # Unit-interval clamp reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.round # Score rounding for reproducibility reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.roundConfidence # Confidence rounding for reproducibility reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.classify # Failure-cause classification reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.collect # Per-stage fact collection reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.classifyStage # Per-stage cause rules reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.stageFacts.provenanceMissing # Missing-provenance guard reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.stageFacts.badChoice # Bad-tool-choice detection reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.adjust # Contradiction and intervention adjustment reachable through the retained attribution entry point (#4078).
-github.com/goobers/goobers/internal/creditgraph.attributor.intervention # Repeated-attempt intervention evidence reachable through the retained attribution entry point (#4078).
 github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # Simplest concrete TargetLeaser, retained as the generic exercise double for Publisher/Primitives contract tests; its one production caller (publish-batch) moved to cmd/goobers's claims-plane-backed leaser for pod execution support (#4340).
-github.com/goobers/goobers/internal/creditgraph.attributor.finding # Cause finding construction reachable through the retained attribution entry point (#4078).
 github.com/goobers/goobers/internal/workflow.WithKnownExternalTelemetryConnectors # Public compile Option threaded through v_2_0/v_3_0 admission (#4341 PR 2); no production caller yet — the daemon-side wiring (compiledMachinesWithWarnings/compiledMachinesWithGooberDigests) is tracked separately as #4475 to keep this PR's blast radius to the pod-execution fix.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.stageCgroup.exceeded # Per-stage memory-bound cgroup reader (#4070): constructed only by the linux startBounded, dead on targets with no cgroups.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.rlimitBound.exceeded # Per-stage memory-bound RLIMIT_AS arm (#4070): constructed only by the linux startBounded, dead on targets with no prlimit fallback.
