@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import type { DaemonClient } from "../api/types";
+import { useEffect, useRef, useState } from "react";
+import type { BuildMetadata, DaemonClient, Instance } from "../api/types";
 import { useCobrand } from "../cobrand";
 import { UpdateNotice } from "../components/UpdateNotice";
 import {
@@ -25,6 +25,7 @@ interface PortalShellProps {
     ScopeFilters,
     "gaggle" | "workflow" | "stage" | "since" | "until" | "window"
   >;
+  hostContext: "daemon" | "fleet" | "standalone";
   navigate: Navigate;
   standalone: boolean;
   theme: Theme;
@@ -37,6 +38,7 @@ export function PortalShell({
   children,
   client,
   currentScope,
+  hostContext,
   navigate,
   standalone,
   theme,
@@ -56,7 +58,30 @@ export function PortalShell({
   const updateNotice = useUpdateNotice();
   const mainContent = useRef<HTMLElement>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [instanceIdentity, setInstanceIdentity] = useState<
+    Pick<Instance, "computerName" | "environment" | "instanceRoot" | "name" | "rootIdentity">
+  >();
+  const [build, setBuild] = useState<BuildMetadata>();
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void Promise.all([
+      client.getInstance({ signal: controller.signal }),
+      client.getHealth({ signal: controller.signal }),
+    ])
+      .then(([instance, health]) => {
+        const { computerName, environment, instanceRoot, name, rootIdentity } = instance;
+        setInstanceIdentity({ computerName, environment, instanceRoot, name, rootIdentity });
+        setBuild(health.build);
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          console.warn("Unable to load compact header instance identity.", error);
+        }
+      });
+    return () => controller.abort();
+  }, [client]);
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -64,23 +89,70 @@ export function PortalShell({
   };
 
   return (
-    <div className="portal-frame">
+    <div className="portal-frame" data-host={hostContext}>
       <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
         Skip to main content
       </a>
       <header className="topbar">
-        <button
-          aria-label="Go to overview"
-          className="topbar-brand"
-          onClick={() => navigate({ page: "overview" })}
-          type="button"
-        >
-          <img alt="" src={config.brand.logoUrl ?? "/goober-mascot.png"} />
-          <span>
+        <div className="topbar-primary">
+          <button
+            aria-label="Go to overview"
+            className="topbar-brand"
+            onClick={() => navigate({ page: "overview" })}
+            title={config.brand.tagline}
+            type="button"
+          >
+            <img alt="" src={config.brand.logoUrl ?? "/goober-mascot.png"} />
             <strong>{config.brand.name}</strong>
-            <small>{config.brand.tagline}</small>
-          </span>
-        </button>
+          </button>
+          <span aria-hidden="true" className="topbar-divider" />
+          <div className="topbar-instance-context" aria-label="Instance context">
+            <span className="topbar-instance-name">
+              {instanceIdentity?.name ?? "Loading instance"}
+            </span>
+            {instanceIdentity?.computerName && (
+              <>
+                <span aria-hidden="true" className="topbar-context-separator">•</span>
+                <span className="topbar-computer-name">{instanceIdentity.computerName}</span>
+              </>
+            )}
+            {instanceIdentity?.environment && (
+              <>
+                <span aria-hidden="true" className="topbar-context-separator">•</span>
+                <span className="topbar-environment">{instanceIdentity.environment}</span>
+              </>
+            )}
+            <span className="topbar-info-wrap">
+              <button
+                aria-describedby="portal-context-tooltip"
+                aria-label="Show portal details"
+                className="topbar-info"
+                type="button"
+              >
+                <Icon name="info" size={17} />
+              </button>
+              <span className="topbar-info-tooltip" id="portal-context-tooltip" role="tooltip">
+                <strong>{config.brand.tagline}</strong>
+                <span className="topbar-tooltip-grid">
+                  <span>Host</span>
+                  <span>{hostContextLabel(hostContext)}</span>
+                  <span>Instance</span>
+                  <span>{instanceIdentity?.name ?? "Loading"}</span>
+                  <span>Version</span>
+                  <span>{build ? `${build.version} · ${build.commit || "none"}` : "Unavailable"}</span>
+                  <span>Computer</span>
+                  <span>{instanceIdentity?.computerName ?? "Unavailable"}</span>
+                  <span>Environment</span>
+                  <span>{instanceIdentity?.environment ?? "Unavailable"}</span>
+                  <span>Instance root</span>
+                  <span>{instanceIdentity?.instanceRoot ?? "Unavailable"}</span>
+                  <span>Instance ID</span>
+                  <span>{instanceIdentity?.rootIdentity?.id ?? "Unavailable"}</span>
+                </span>
+              </span>
+            </span>
+          </div>
+        </div>
         <div className="topbar-actions">
           {freshness === "polling-fallback" ? (
             <PollingFallbackIndicator failure={lastSSEFailure} state={dataFreshness} />
@@ -281,6 +353,17 @@ const freshnessLabel: Record<LiveFreshness, string> = {
   offline: "Offline",
   "polling-fallback": "Polling fallback",
 };
+
+function hostContextLabel(hostContext: PortalShellProps["hostContext"]): string {
+  switch (hostContext) {
+    case "fleet":
+      return "Goobers Fleet";
+    case "standalone":
+      return "Standalone dashboard";
+    default:
+      return "Daemon dashboard";
+  }
+}
 
 function describeConnectionStatus(
   freshness: LiveFreshness,
