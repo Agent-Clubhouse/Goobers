@@ -86,6 +86,49 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	}
 }
 
+func TestOpenPRUsesRecordedRunBranchForContinuation(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	const runID = "run-continuation"
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), runID)
+
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers", ContinuedFromRunID: "source-run",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{
+			Provider: "github",
+			Kind:     "branch",
+			ID:       "goobers/implementation/source-run",
+		},
+	}); err != nil {
+		t.Fatalf("record continuation branch: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	t.Chdir(t.TempDir())
+	if code, stdout, stderr := runArgs(t, "open-pr", root); code != 0 {
+		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	server.mu.Lock()
+	pr := server.prs[1]
+	server.mu.Unlock()
+	if pr == nil {
+		t.Fatal("no PR opened")
+	}
+	if pr.head != "goobers/implementation/source-run" {
+		t.Fatalf("pull request head = %q, want continuation branch", pr.head)
+	}
+}
+
 func TestOpenPRRoutesADOThroughExecutorInjectedAuthentication(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("helper process wrapper uses a POSIX shell")

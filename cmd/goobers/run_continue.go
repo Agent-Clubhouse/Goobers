@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
@@ -142,6 +144,10 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: resolve continuation provider: %v\n", err)
 		return 1
 	}
+	if err := validateContinuationClaims(root, sourceID, sourceIdentity, provider, repo); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	branchProvider, ok := provider.(providers.BranchReconciliationProvider)
 	if !ok {
 		pf(stderr, "error: provider %q cannot verify branches\n", repo.Provider)
@@ -215,8 +221,105 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: close continuation journal: %v\n", err)
 		return 2
 	}
+	if err := reclaimContinuationClaims(root, sourceID, sourceIdentity.Workflow, runID, repo); err != nil {
+		rollbackErr := deleteContinuationRun(filepath.Join(filepath.Dir(sourceDir), runID))
+		if rollbackErr != nil {
+			err = errors.Join(err, rollbackErr)
+		}
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	pf(stdout, "%s\n", runID)
 	return 0
+}
+
+type continuationEligibilityProvider interface {
+	GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error)
+}
+
+func validateContinuationClaims(root, sourceRunID string, sourceIdentity journal.RunIdentity, provider providers.Provider, repo providers.RepositoryRef) error {
+	claims, err := claimHistoryForRun(layoutFor(root), sourceRunID, apiv1.Provider(repo.Provider))
+	if err != nil {
+		return fmt.Errorf("revalidate continuation claims: %w", err)
+	}
+	if len(claims) == 0 {
+		return nil
+	}
+	workItemProvider, ok := provider.(continuationEligibilityProvider)
+	if !ok {
+		return fmt.Errorf("revalidate continuation claims: provider %q cannot read claimed work items", repo.Provider)
+	}
+	workItemRepo, err := continuationWorkItemRepository(root, sourceIdentity.Gaggle, repo)
+	if err != nil {
+		return fmt.Errorf("revalidate continuation claims: %w", err)
+	}
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	for _, claim := range claims {
+		if claim.Provider != "" && !strings.EqualFold(claim.Provider, string(repo.Provider)) {
+			return fmt.Errorf("revalidate continuation claims: source claim %q uses provider %q, configured repository uses %q", claim.ExternalID, claim.Provider, repo.Provider)
+		}
+		item, err := workItemProvider.GetWorkItem(ctx, workItemRepo, claim.ExternalID)
+		switch {
+		case providers.IsNotFoundError(err):
+			return fmt.Errorf("revalidate continuation claims: source claim %q no longer resolves in %s", claim.ExternalID, repositoryDisplayName(workItemRepo))
+		case err != nil:
+			return fmt.Errorf("revalidate continuation claims: read claimed item %q: %w", claim.ExternalID, err)
+		case item.State != "" && !strings.EqualFold(item.State, "open"):
+			return fmt.Errorf("revalidate continuation claims: source claim %q is no longer open (state %q)", claim.ExternalID, item.State)
+		}
+	}
+	return nil
+}
+
+func reclaimContinuationClaims(root, sourceRunID, workflow, continuationRunID string, repo providers.RepositoryRef) error {
+	layout := layoutFor(root)
+	claims, err := claimHistoryForRun(layout, sourceRunID, apiv1.Provider(repo.Provider))
+	if err != nil {
+		return fmt.Errorf("reclaim continuation claims: %w", err)
+	}
+	if len(claims) == 0 {
+		return nil
+	}
+	lockPath := filepath.Join(layout.SchedulerDir(), claimLockFileName)
+	var acquired bool
+	var holder string
+	if err := withClaimLockForRun(lockPath, claimLockOperationContinuationReacquire, layout.Gaggle(), continuationRunID, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			return err
+		}
+		acquired, holder, err = ledger.ReclaimAll(claims, continuationRunID, workflow, DefaultClaimLease)
+		return err
+	}); err != nil {
+		return fmt.Errorf("reclaim continuation claims: %w", err)
+	}
+	if !acquired {
+		return fmt.Errorf("reclaim continuation claims: source claims are now held by run %q", holder)
+	}
+	return nil
+}
+
+func continuationWorkItemRepository(root, gaggle string, routed providers.RepositoryRef) (providers.RepositoryRef, error) {
+	if routed.Provider != providers.ProviderADO {
+		return routed, nil
+	}
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	if err != nil {
+		return providers.RepositoryRef{}, err
+	}
+	if set == nil || report == nil {
+		return routed, nil
+	}
+	return applyBacklogProject(set, gaggle, routed), nil
+}
+
+func deleteContinuationRun(dir string) error {
+	err := journal.ClearRunActive(dir)
+	if removeErr := os.RemoveAll(dir); removeErr != nil {
+		err = errors.Join(err, fmt.Errorf("remove continuation run: %w", removeErr))
+	}
+	return err
 }
 
 func sameContinuationRepository(source apiv1.RepoRef, configured providers.RepositoryRef) bool {

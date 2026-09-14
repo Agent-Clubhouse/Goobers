@@ -3347,6 +3347,12 @@ either way. `run cancel` instead asks a live daemon to stop a run it is
 actively executing (active-stage cancel + worktree/claim teardown +
 aborted) — the live counterpart to `run abort`'s daemon-down journal
 repair.
+`run continue` creates a fresh continuation journal that resumes from the
+requested workflow state, not the workflow start, and reclaims the source
+run's retained claim set before any continuation stage can execute. It also
+revalidates retained claimed work before creating the continuation and keeps
+later `open-pr` stages on the source branch instead of inventing a second PR
+head for the continuation run.
 With --api (or $GOOBERS_DAEMON_API) the trigger is submitted to that
 daemon's authenticated HTTP API instead of the local pending-triggers
 drop, so a caller that does not share the daemon's filesystem — CI, a

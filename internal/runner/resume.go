@@ -702,6 +702,8 @@ func (f *resumeFrame) resolveStartState(rd *journal.Reader, machine *workflow.Ma
 			startState = f.segmentLastStage
 		case f.resumeTarget != "":
 			startState = f.resumeTarget
+		case f.id.ContinuedFromRunID != "" && f.id.RequestedTarget != "":
+			startState = f.id.RequestedTarget
 		case f.hasLast:
 			startState = f.lastStage
 		default:

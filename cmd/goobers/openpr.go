@@ -14,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
@@ -68,7 +69,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	head := providerInput("head", providers.BranchNameIn(providerBranchNamespace(), workflow, runID))
+	head := providerInput("head", preferredOpenPRHead(root, runID, workflow))
 	base := providerInput("base", providerBaseBranch())
 
 	// Issue linkage (#241): derive the PR title from the claimed issue and add a
@@ -312,6 +313,35 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "pr #%d: %s\n", result.Number, result.URL)
 	return 0
+}
+
+func preferredOpenPRHead(root, runID, workflow string) string {
+	if branch, ok := runBranchFromJournal(root, runID); ok {
+		return branch
+	}
+	return providers.BranchNameIn(providerBranchNamespace(), workflow, runID)
+}
+
+func runBranchFromJournal(root, runID string) (string, bool) {
+	reader, err := stageRunJournal(root, runID)
+	if err != nil {
+		return "", false
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return "", false
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventRefTouched || event.ExternalRef == nil || event.ExternalRef.Kind != "branch" {
+			continue
+		}
+		branch := strings.TrimSpace(event.ExternalRef.ID)
+		if branch != "" {
+			return branch, true
+		}
+	}
+	return "", false
 }
 
 // writeOpenPRResult writes open-pr's declared result file. It always emits the
