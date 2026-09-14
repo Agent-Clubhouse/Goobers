@@ -32,7 +32,7 @@ func TestHasIntegrationTag(t *testing.T) {
 	}
 }
 
-func TestIntegrationTestArgsSetPackageTimeout(t *testing.T) {
+func TestIntegrationTestArgsSetExecutionPolicy(t *testing.T) {
 	got := integrationTestArgs([]string{"./cmd/goobers", "./internal/recovery"})
 	want := []string{
 		"test",
@@ -40,6 +40,7 @@ func TestIntegrationTestArgsSetPackageTimeout(t *testing.T) {
 		"-tags=integration",
 		"-run=^TestIntegration",
 		"-timeout=30m",
+		"-count=1",
 		"./cmd/goobers",
 		"./internal/recovery",
 	}

@@ -80,6 +80,7 @@ func integrationTestArgs(packages []string) []string {
 		"-tags=integration",
 		"-run=^TestIntegration",
 		"-timeout=" + integrationTestTimeout,
+		"-count=1",
 	}
 	return append(args, packages...)
 }
