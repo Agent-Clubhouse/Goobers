@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -101,6 +102,132 @@ func writeFixtureRunWithErrorForGaggle(t *testing.T, l instance.Layout, runID, g
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(spanDir, "spans.jsonl"), append(spanData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeAttributedCreditRun(t *testing.T, root, runID string) {
+	t.Helper()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "default-implement",
+		WorkflowVersion: 1,
+		WorkflowDigest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		GooberDigest:    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Gaggle:          "example",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		StartedAt:       time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	now := time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC)
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1, Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventAgentLifecycle,
+		Stage: "implement",
+		Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1",
+			ID:     "root", RunID: runID, Stage: "implement", Attempt: 1,
+			ResolvedModel: "gpt-5.4", Lifecycle: journal.AgentFailed,
+			StartedAt: now, UpdatedAt: now,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.RecordStageArtifact("implement", 1, "", "diff.json", []byte(`{"changed":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	transcript := []byte(strings.Join([]string{
+		`{"role":"assistant","model":"gpt-5.4","tool_call":{"id":"call-1","name":"bash"}}`,
+		`{"role":"tool","tool_call":{"id":"call-1","success":false}}`,
+	}, "\n"))
+	spanRef, err := run.RecordSpanWithSchema("implement", "copilot.transcript", telemetry.GenAIEventSchema, transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: "implement",
+		Runner: map[string]any{
+			"kind":    "credit-span-provenance",
+			"agentId": "root",
+			"digest":  spanRef.Digest,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultFailure),
+		Time: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), Verdict: "fail", Target: "@abort",
+		Time: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	span := telemetry.SpanRecord{
+		Schema:    telemetry.SpanSchema,
+		TraceID:   runID,
+		SpanID:    "span-task-1",
+		Name:      "task/implement",
+		Kind:      telemetry.SpanKindTask,
+		StartTime: now,
+		EndTime:   now.Add(time.Second),
+		Status:    "error",
+		Attributes: map[string]string{
+			telemetry.AttrStage:          "implement",
+			telemetry.AttrAttemptNumber:  "1",
+			telemetry.AttrModel:          "gpt-5.4",
+			telemetry.AttrHarnessVersion: "copilot-cli/1.0.0",
+		},
+	}
+	spanData, err := json.Marshal(span)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanDir := filepath.Join(layout.RunsDir(), runID, "spans")
+	if err := os.MkdirAll(spanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spanDir, "spans.jsonl"), append(spanData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	finishedAt := now.Add(2 * time.Second)
+	if err := store.UpsertRun(context.Background(), readmodel.Projection{
+		Run: readmodel.RunRow{
+			RunID: runID, Gaggle: "example", Workflow: "default-implement",
+			WorkflowDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			GooberDigest:   "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			TriggerKind:    string(journal.TriggerManual),
+			Phase:          journal.PhaseFailed,
+			Terminal:       true,
+			StartedAt:      now.Add(-time.Minute),
+			FinishedAt:     &finishedAt,
+			LastActivity:   finishedAt,
+			LastSeq:        8,
+			OutcomeVerdict: "fail",
+			OutcomeTarget:  "@abort",
+		},
+		Nodes: []readmodel.NodeRow{{
+			RunID: runID, Kind: "stage", Name: "implement", Attempts: 1,
+		}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

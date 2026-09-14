@@ -62,6 +62,7 @@ func decodeCandidateFindings(t *testing.T, stdout string) candidateFindingsArtif
 func TestTelemetryQueryPlaneMatchesTheLocalResult(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)
+	writeAttributedCreditRun(t, root, "attribution-run-1")
 	rebuildTelemetryQueryRollup(t, root)
 
 	code, localOut, stderr := runArgs(t, nominationArgs(root)...)
@@ -109,6 +110,17 @@ func TestTelemetryQueryPlaneMatchesTheLocalResult(t *testing.T) {
 	}
 	if string(planeJSON) != string(expectedJSON) {
 		t.Fatalf("findings drifted from the local derivation\nplane:    %s\nexpected: %s", planeJSON, expectedJSON)
+	}
+	localCohorts, err := json.Marshal(local.AttributionCohorts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planeCohorts, err := json.Marshal(planeArtifact.AttributionCohorts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(planeCohorts) != string(localCohorts) {
+		t.Fatalf("attribution cohorts drifted from the local derivation\nplane:    %s\nlocal:    %s", planeCohorts, localCohorts)
 	}
 	// The fixture's error code (`fixture_error`) is identifier-shaped, so
 	// normalization is the identity for it. That is the common case for real
