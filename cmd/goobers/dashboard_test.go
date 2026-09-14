@@ -84,6 +84,12 @@ func TestDashboardHandlerServesStandalonePortalAndAPI(t *testing.T) {
 	if apiResponse.Code != http.StatusOK || apiResponse.Body.String() != "api" {
 		t.Fatalf("API response = %d %q", apiResponse.Code, apiResponse.Body.String())
 	}
+
+	discoveryResponse := httptest.NewRecorder()
+	handler.ServeHTTP(discoveryResponse, httptest.NewRequest(http.MethodGet, httpapi.DiscoveryPath, nil))
+	if discoveryResponse.Code != http.StatusOK || discoveryResponse.Body.String() != "api" {
+		t.Fatalf("discovery response = %d %q", discoveryResponse.Code, discoveryResponse.Body.String())
+	}
 }
 
 func TestListenDashboardReportsConflictAndCanIncrement(t *testing.T) {

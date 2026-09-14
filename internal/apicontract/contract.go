@@ -20,8 +20,13 @@ const (
 	// V1Prefix is the versioned root for daemon API routes.
 	V1Prefix = "/api/v1"
 
-	HealthPath   = V1Prefix + "/health"
-	InstancePath = V1Prefix + "/instance"
+	// DiscoveryPath is the version-independent bootstrap endpoint a remote
+	// client uses before it knows which API versions this daemon supports.
+	DiscoveryPath    = "/.well-known/goobers"
+	OpenAPIPath      = V1Prefix + "/openapi.json"
+	CapabilitiesPath = V1Prefix + "/capabilities"
+	HealthPath       = V1Prefix + "/health"
+	InstancePath     = V1Prefix + "/instance"
 	// InstanceReadinessPath is the crash-recovery-safe identity/readiness
 	// endpoint (#5019): the one versioned route the recovery gate never
 	// blocks, so an operator or probe can tell "still recovering" from
@@ -246,6 +251,9 @@ type RouteID string
 
 // Stable V1 route IDs.
 const (
+	RouteDiscovery                RouteID = "discovery"
+	RouteOpenAPI                  RouteID = "openapi"
+	RouteCapabilities             RouteID = "capabilities"
 	RouteConfigDigest             RouteID = "configDigest"
 	RouteWorkerConfigDivergence   RouteID = "workerConfigDivergence"
 	RouteHealth                   RouteID = "health"
@@ -351,9 +359,10 @@ type Route struct {
 	Budget time.Duration
 	// RecoverySafe marks a route reachable while the daemon is still
 	// completing crash-orphan recovery, before every other versioned route
-	// opens (#5019). True only for RouteHealth and RouteInstanceReadiness:
-	// the recovery gate in httpapi.Router.serve refuses everything else,
-	// including RouteInstance, until recovery completes.
+	// opens (#5019). This is limited to health/readiness and the API discovery
+	// documents, none of which touches mutable scheduler state. The recovery
+	// gate in httpapi.Router.serve refuses everything else, including
+	// RouteInstance, until recovery completes.
 	RecoverySafe bool
 }
 
@@ -414,6 +423,12 @@ const (
 )
 
 var v1Routes = []Route{
+	// Discovery is deliberately reachable before crash recovery completes:
+	// it describes the API transport itself and only reads the same safe
+	// identity/build projection as RouteHealth.
+	{ID: RouteDiscovery, Method: http.MethodGet, Path: DiscoveryPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
+	{ID: RouteOpenAPI, Method: http.MethodGet, Path: OpenAPIPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
+	{ID: RouteCapabilities, Method: http.MethodGet, Path: CapabilitiesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
 	// RouteHealth is RecoverySafe (#5019): #4999 landed readservice.Health's
 	// Startup field (phase/target/since) specifically so an authenticated
 	// caller can see startup progress, and every source healthUnannotated
