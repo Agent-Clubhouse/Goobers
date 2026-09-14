@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -22,6 +23,17 @@ const ErrorCodeRequiredMCPRejected = "HARNESS_REQUIRED_MCP_REJECTED"
 // that one is a setting to change, and telling an operator the wrong one costs
 // the whole diagnosis.
 const ErrorCodeRequiredMCPUnavailable = "HARNESS_REQUIRED_MCP_UNAVAILABLE"
+
+var errRequiredMCPUnavailable = errors.New("required MCP server unavailable")
+
+func requiredMCPInfrastructureFailure(failures []MCPServerFailure) error {
+	for _, failure := range failures {
+		if failure.Server == goobersIOServerName && failure.Status == copilotMCPStatusRemovedAfterConnect {
+			return fmt.Errorf("%w: %s status %q", errRequiredMCPUnavailable, failure.Server, failure.Status)
+		}
+	}
+	return nil
+}
 
 // refuseWhenRequiredMCPUnavailable fails a stage whose required artifact and
 // context tools were never reachable, whatever the agent reported (#2955).

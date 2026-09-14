@@ -58,6 +58,12 @@ const (
 	// while this is an administrative setting, and the operator actions have
 	// nothing in common.
 	copilotMCPStatusPolicyRejected = "policy-rejected"
+	// copilotMCPStatusRemovedAfterConnect means the server completed its MCP
+	// handshake, but a later root reconciliation replaced the effective
+	// configuration without it. Copilot then removes the server before the
+	// model turn, so remembering only that it connected once is a false
+	// positive for availability.
+	copilotMCPStatusRemovedAfterConnect = "removed-after-connect"
 )
 
 // copilotMCPPolicyRejectionMarkers are the CLI's own phrases for declining an
@@ -101,6 +107,13 @@ func copilotMCPServerFailures(req RunRequest, logDir string) []MCPServerFailure 
 	}
 	var failures []MCPServerFailure
 	for _, name := range registered {
+		if _, ok := scan.removed[name]; ok {
+			failures = append(failures, MCPServerFailure{
+				Server: name,
+				Status: copilotMCPStatusRemovedAfterConnect,
+			})
+			continue
+		}
 		if _, ok := scan.connected[name]; ok {
 			continue
 		}
@@ -128,6 +141,7 @@ type copilotMCPScan struct {
 	connected      map[string]struct{}
 	launched       map[string]struct{}
 	policyRejected map[string]struct{}
+	removed        map[string]struct{}
 	reported       bool
 }
 
@@ -163,6 +177,7 @@ func scanCopilotMCPLog(logDir string) copilotMCPScan {
 		connected:      make(map[string]struct{}),
 		launched:       make(map[string]struct{}),
 		policyRejected: make(map[string]struct{}),
+		removed:        make(map[string]struct{}),
 	}
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
@@ -211,6 +226,18 @@ func scanCopilotMCPLogFile(path string, scan *copilotMCPScan) bool {
 		if match := copilotMCPImplementationRe.FindStringSubmatch(line); match != nil {
 			scan.connected[match[1]] = struct{}{}
 			scan.launched[match[1]] = struct{}{}
+			delete(scan.removed, match[1])
+			continue
+		}
+		if configured, ok := copilotMCPConfiguredServers(line); ok {
+			for name := range scan.connected {
+				if _, present := configured[name]; !present {
+					scan.removed[name] = struct{}{}
+				} else {
+					delete(scan.removed, name)
+				}
+			}
+			sawMCP = true
 			continue
 		}
 		if name, ok := copilotMCPPolicyRejectedServerName(line); ok {
@@ -218,6 +245,7 @@ func scanCopilotMCPLogFile(path string, scan *copilotMCPScan) bool {
 			sawMCP = true
 			continue
 		}
+
 		if name, ok := copilotMCPStderrServerName(line); ok {
 			scan.launched[name] = struct{}{}
 		}
@@ -225,6 +253,47 @@ func scanCopilotMCPLogFile(path string, scan *copilotMCPScan) bool {
 	// A line longer than the buffer stops the scan; treat whatever was seen
 	// before it as valid rather than discarding the file.
 	return sawMCP
+}
+
+const copilotMCPRootDiscoveryMarker = "mcp discover_and_start_root "
+
+// copilotMCPConfiguredServers reads the effective server names from one root
+// reconciliation diagnostic. The CLI serializes the signature as JSON inside
+// the log record's JSON, so this deliberately decodes both layers instead of
+// matching an escaped server name in free text.
+func copilotMCPConfiguredServers(line string) (map[string]struct{}, bool) {
+	idx := strings.Index(line, copilotMCPRootDiscoveryMarker)
+	if idx < 0 {
+		return nil, false
+	}
+	payload := strings.TrimSpace(line[idx+len(copilotMCPRootDiscoveryMarker):])
+	if !strings.HasPrefix(payload, "{") {
+		return nil, false
+	}
+	var record struct {
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal([]byte(payload), &record); err != nil || record.Signature == "" {
+		return nil, false
+	}
+	var signature struct {
+		Servers []json.RawMessage `json:"servers"`
+	}
+	if err := json.Unmarshal([]byte(record.Signature), &signature); err != nil {
+		return nil, false
+	}
+	servers := make(map[string]struct{}, len(signature.Servers))
+	for _, raw := range signature.Servers {
+		var pair []json.RawMessage
+		if json.Unmarshal(raw, &pair) != nil || len(pair) < 1 {
+			continue
+		}
+		var name string
+		if json.Unmarshal(pair[0], &name) == nil && name != "" {
+			servers[name] = struct{}{}
+		}
+	}
+	return servers, true
 }
 
 // maxCopilotMCPLogLineBytes bounds a single log line. The handshake line

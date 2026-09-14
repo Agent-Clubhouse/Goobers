@@ -938,7 +938,6 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		}
 		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
 		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
-		argv = append(argv, "--log-dir", confinement.logDir)
 	}
 	if len(req.MCPServers) > 0 {
 		env, err = prepareCopilotMCP(ctx, req, env)
@@ -949,7 +948,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			argv = append(argv, "--disable-builtin-mcps")
 		}
 	}
-	captures, err := c.prepareCopilotCaptures(ctx, req, argv, env)
+	captures, err := c.prepareCopilotCaptures(ctx, req, argv, env, confinement)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
@@ -1103,13 +1102,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// #3456: name a registered-but-unusable MCP server instead of letting its
 	// tools go silently missing. The claude adapter reads this from a
 	// structured system/init event; Copilot has no transcript equivalent, so
-	// this reads the CLI's own run log — available because the confinement
-	// already pins --log-dir into the workspace. Unconfined runs have no
-	// run-scoped log directory, so the diagnostic stays nil rather than
-	// guessing from a shared one.
-	if confinement != nil {
-		out.MCPServerFailures = copilotMCPServerFailures(req, confinement.logDir)
-	}
+	// this reads the CLI's private run log rather than guessing from shared
+	// user-level logs.
+	out.MCPServerFailures = copilotMCPServerFailures(req, captures.mcpLogPath)
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
