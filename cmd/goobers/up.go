@@ -1811,7 +1811,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
 		done := make(chan struct{})
 		heartbeatDone = done
-		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), tail, tailErr, heartbeatInterval, updatePendingState, done)
+		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), sched.WorkflowCount, tail, tailErr, heartbeatInterval, updatePendingState, done)
 	}
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
@@ -2356,7 +2356,7 @@ func emitHeartbeats(
 	ctx context.Context,
 	stdout io.Writer,
 	schedulerDir string,
-	workflowCount int,
+	workflowCount func() int,
 	tail *journal.InstanceLogTail,
 	err error,
 	interval time.Duration,
@@ -2388,7 +2388,7 @@ func emitHeartbeats(
 				if err == nil {
 					activity, _ := summarizeHeartbeat(events, 0)
 					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped; %s; %s%s\n",
-						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped, memstat.Read(), cpustat.Read(),
+						now.Format("15:04:05"), workflowCount(), activity.triggers, activity.started, activity.finished, activity.skipped, memstat.Read(), cpustat.Read(),
 						updateClause(pending))
 					continue
 				}

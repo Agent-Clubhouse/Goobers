@@ -1202,6 +1202,16 @@ func (s *Scheduler) recordGaggleDispatch(gaggle string) {
 	s.mu.Unlock()
 }
 
+// WorkflowCount reports how many workflow definitions the scheduler currently
+// serves. It reads the same map Reload replaces, under the same mutex, so a
+// caller polling it observes applied hot reloads rather than a value captured
+// at startup (#5075).
+func (s *Scheduler) WorkflowCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.workflows)
+}
+
 // Reload atomically replaces the configured workflows between scheduler ticks.
 // Already-dispatched runs retain the WorkflowEntry (and Starter) captured by
 // dispatch, while subsequent ticks and triggers resolve the replacement entry.
