@@ -580,6 +580,7 @@ type handlerConfig struct {
 	workerConfigDivergence func(journal.Event) error
 	instanceReadiness      InstanceReadinessService
 	recoveryGate           func() bool
+	discoveryIdentity      DiscoveryIdentity
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -683,6 +684,18 @@ func WithRecoveryGate(ready func() bool) HandlerOption {
 			return errors.New("http API recovery gate predicate is required")
 		}
 		c.recoveryGate = ready
+		return nil
+	}
+}
+
+// WithDiscoveryIdentity supplies the durable daemon identity and immutable
+// build metadata published by the version-independent discovery contract.
+func WithDiscoveryIdentity(identity DiscoveryIdentity) HandlerOption {
+	return func(c *handlerConfig) error {
+		if err := validateDiscoveryIdentity(identity); err != nil {
+			return err
+		}
+		c.discoveryIdentity = identity
 		return nil
 	}
 }
@@ -945,10 +958,11 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, err
 	}
 	router.recoveryGate = config.recoveryGate
-	if err := registerDiscoveryRoutes(router, reader, errorLog, config); err != nil {
+	discovery, err := registerDiscoveryRoutes(router, config)
+	if err != nil {
 		return nil, fmt.Errorf("register API discovery routes: %w", err)
 	}
-	registerV1Routes(router, reader, errorLog, config)
+	registerV1Routes(router, reader, errorLog, config, discovery)
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
 	expected := apicontract.V1Routes()
@@ -970,8 +984,8 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 
-func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig) {
-	registerInstanceReadinessRoute(router, config.instanceReadiness, errorLog)
+func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig, discovery *discoveryState) {
+	registerInstanceReadinessRoute(router, config.instanceReadiness, errorLog, discovery)
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
@@ -979,7 +993,19 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 			writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
 			return
 		}
-		writeJSON(w, http.StatusOK, health)
+		protocol, err := discovery.protocolSummary()
+		if err != nil {
+			errorLog.Printf("health protocol summary failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "encode_error", "protocol summary could not be encoded")
+			return
+		}
+		writeJSON(w, http.StatusOK, struct {
+			readservice.Health
+			Protocol apicontract.ProtocolSummary `json:"protocol"`
+		}{
+			Health:   health,
+			Protocol: protocol,
+		})
 	})
 	router.Handle(apicontract.RouteConfigDigest, func(w http.ResponseWriter, request *http.Request) {
 		if config.configDigest == nil {

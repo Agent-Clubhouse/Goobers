@@ -15,14 +15,15 @@ func OpenAPIDocument(authenticated bool) ([]byte, error) {
 	paths := map[string]any{}
 	for _, route := range V1Routes() {
 		operation := map[string]any{
-			"operationId":             route.ID,
-			"summary":                 humanizeRouteID(route.ID),
-			"tags":                    []string{string(route.ActionClass)},
-			"x-goobers-action-class":  route.ActionClass,
-			"x-goobers-cost":          route.Cost,
-			"x-goobers-budget-ms":     route.Budget.Milliseconds(),
-			"x-goobers-recovery-safe": route.RecoverySafe,
-			"responses":               openAPIResponses(route),
+			"operationId":                route.ID,
+			"summary":                    humanizeRouteID(route.ID),
+			"tags":                       []string{string(route.ActionClass)},
+			"x-goobers-action-class":     route.ActionClass,
+			"x-goobers-cost":             route.Cost,
+			"x-goobers-budget-ms":        route.Budget.Milliseconds(),
+			"x-goobers-recovery-safe":    route.RecoverySafe,
+			"x-goobers-remote-invocable": InitiallyRemoteInvocable(route.ID),
+			"responses":                  openAPIResponses(route),
 		}
 		if authenticated {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
@@ -53,7 +54,7 @@ func OpenAPIDocument(authenticated bool) ([]byte, error) {
 			"version":     "v1",
 			"description": "Versioned daemon control and observation API. Use /.well-known/goobers for instance discovery.",
 		},
-		"servers": []map[string]any{{"url": "."}},
+		"servers": []map[string]any{{"url": "/"}},
 		"paths":   paths,
 		"components": map[string]any{
 			"securitySchemes": map[string]any{
@@ -94,6 +95,12 @@ func openAPIParameters(route Route) []map[string]any {
 		for _, name := range []string{"gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger"} {
 			parameters = append(parameters, map[string]any{
 				"name": name, "in": "query", "schema": map[string]any{"type": "string"},
+			})
+		}
+		if route.ID == RouteEvents {
+			parameters = append(parameters, map[string]any{
+				"name": "Last-Event-ID", "in": "header",
+				"schema": map[string]any{"type": "string", "maxLength": 512},
 			})
 		}
 		for _, name := range []string{"since", "until"} {
@@ -177,12 +184,17 @@ func openAPIResponses(route Route) map[string]any {
 	switch route.ID {
 	case RouteOpenAPI:
 		return map[string]any{
-			"200":     mediaResponse("OpenAPI 3.1 document", "application/vnd.oai.openapi+json", map[string]any{"type": "object"}),
+			"200":     metadataResponse("OpenAPI 3.1 document", "application/vnd.oai.openapi+json;version=3.1", map[string]any{"type": "object"}),
 			"default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope")),
 		}
 	case RouteEvents:
 		return map[string]any{
-			"200":     mediaResponse("Server-sent event stream", "text/event-stream", map[string]any{"type": "string"}),
+			"200": mediaResponseWithHeaders(
+				"Server-sent event stream",
+				"text/event-stream",
+				map[string]any{"type": "string"},
+				responseHeaders("Cache-Control", "X-Accel-Buffering"),
+			),
 			"default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope")),
 		}
 	case RouteBlobGet, RouteRunRecovery, RouteRunArtifact:
@@ -202,6 +214,14 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("DiscoveryDocument")
 	case RouteCapabilities:
 		successSchema = schemaRef("CapabilityDocument")
+	case RouteHealth:
+		successSchema = schemaRef("HealthDocument")
+	case RouteInstance:
+		successSchema = schemaRef("InstanceDocument")
+	case RouteRuns:
+		successSchema = schemaRef("RunListDocument")
+	case RouteInstanceReadiness:
+		successSchema = schemaRef("InstanceReadiness")
 	case RouteTriggerIngest:
 		successSchema = schemaRef("TriggerResponse")
 	case RouteTriggerStatus:
@@ -213,8 +233,12 @@ func openAPIResponses(route Route) map[string]any {
 	case RouteWorkflowEnabled:
 		successSchema = schemaRef("WorkflowEnabledResult")
 	}
+	successResponse := jsonResponse("Successful response", successSchema)
+	if route.ID == RouteDiscovery || route.ID == RouteCapabilities {
+		successResponse = metadataResponse("Successful response", "application/json", successSchema)
+	}
 	responses := map[string]any{
-		"200":     jsonResponse("Successful response", successSchema),
+		"200":     successResponse,
 		"default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope")),
 	}
 	if route.Method != http.MethodGet && route.Method != http.MethodHead {
@@ -229,11 +253,37 @@ func jsonResponse(description string, schema map[string]any) map[string]any {
 }
 
 func mediaResponse(description, contentType string, schema map[string]any) map[string]any {
+	return mediaResponseWithHeaders(description, contentType, schema, nil)
+}
+
+func mediaResponseWithHeaders(description, contentType string, schema, headers map[string]any) map[string]any {
+	response := map[string]any{
+		"description": description,
+		"content": map[string]any{
+			contentType: map[string]any{"schema": schema},
+		},
+	}
+	if len(headers) != 0 {
+		response["headers"] = headers
+	}
+	return response
+}
+
+func responseHeaders(names ...string) map[string]any {
+	headers := make(map[string]any, len(names))
+	for _, name := range names {
+		headers[name] = map[string]any{"schema": map[string]any{"type": "string"}}
+	}
+	return headers
+}
+
+func metadataResponse(description, contentType string, schema map[string]any) map[string]any {
 	return map[string]any{
 		"description": description,
 		"content": map[string]any{
 			contentType: map[string]any{"schema": schema},
 		},
+		"headers": responseHeaders("Cache-Control", "Content-Encoding", "ETag", "Vary"),
 	}
 }
 
@@ -241,51 +291,160 @@ func schemaRef(name string) map[string]any {
 	return map[string]any{"$ref": "#/components/schemas/" + name}
 }
 
+func cloneSchemaProperties(source map[string]any) map[string]any {
+	return mergeSchemaProperties(source, nil)
+}
+
+func mergeSchemaProperties(left, right map[string]any) map[string]any {
+	merged := make(map[string]any, len(left)+len(right))
+	for key, value := range left {
+		merged[key] = value
+	}
+	for key, value := range right {
+		merged[key] = value
+	}
+	return merged
+}
+
 func openAPISchemas() map[string]any {
+	return mergeSchemaProperties(
+		mergeSchemaProperties(openAPIDiscoverySchemas(), openAPIRemoteReadSchemas()),
+		openAPIOperationSchemas(),
+	)
+}
+
+func openAPIDiscoverySchemas() map[string]any {
 	routeCapability := map[string]any{
 		"type":     "object",
-		"required": []string{"id", "method", "path", "actionClass", "requiredRole", "available", "streaming", "recoverySafe"},
+		"required": []string{"id", "method", "path", "actionClass", "requiredRole", "remoteInvocable", "available", "streaming", "recoverySafe"},
 		"properties": map[string]any{
-			"id":           map[string]any{"type": "string"},
-			"method":       map[string]any{"type": "string"},
-			"path":         map[string]any{"type": "string"},
-			"actionClass":  map[string]any{"type": "string"},
-			"capability":   map[string]any{"type": "string"},
-			"requiredRole": map[string]any{"type": "string", "enum": []string{"view", "operate"}},
-			"available":    map[string]any{"type": "boolean"},
-			"reason":       map[string]any{"type": "string"},
-			"streaming":    map[string]any{"type": "boolean"},
-			"recoverySafe": map[string]any{"type": "boolean"},
+			"id":              map[string]any{"type": "string"},
+			"method":          map[string]any{"type": "string"},
+			"path":            map[string]any{"type": "string"},
+			"actionClass":     map[string]any{"type": "string"},
+			"capability":      map[string]any{"type": "string"},
+			"requiredRole":    map[string]any{"type": "string", "enum": []string{"view", "operate"}},
+			"remoteInvocable": map[string]any{"type": "boolean"},
+			"available":       map[string]any{"type": "boolean"},
+			"code":            map[string]any{"type": "string"},
+			"reason":          map[string]any{"type": "string"},
+			"streaming":       map[string]any{"type": "boolean"},
+			"recoverySafe":    map[string]any{"type": "boolean"},
 		},
+	}
+	protocolIdentityProperties := map[string]any{
+		"daemonProtocolVersion": map[string]any{"type": "integer", "const": DaemonProtocolVersion},
+		"daemonInstanceId":      map[string]any{"type": "string", "minLength": 1},
+		"daemonBootId":          map[string]any{"type": "string", "format": "uuid"},
+		"preferredApiVersion":   map[string]any{"type": "string", "const": PreferredAPIVersion},
+	}
+	protocolSummaryProperties := cloneSchemaProperties(protocolIdentityProperties)
+	protocolSummaryProperties["openapiSha256"] = map[string]any{"type": "string", "pattern": "^[a-f0-9]{64}$"}
+	protocolSummaryProperties["capabilitiesEtag"] = map[string]any{"type": "string", "minLength": 2}
+	discoveryLink := map[string]any{
+		"type":     "object",
+		"required": []string{"href"},
+		"properties": map[string]any{
+			"href":   map[string]any{"type": "string", "pattern": "^/"},
+			"sha256": map[string]any{"type": "string", "pattern": "^[a-f0-9]{64}$"},
+			"etag":   map[string]any{"type": "string"},
+		},
+		"additionalProperties": false,
 	}
 	return map[string]any{
 		"DiscoveryDocument": map[string]any{
 			"type":     "object",
-			"required": []string{"product", "daemonVersion", "authentication", "preferredApiVersion", "apiVersions", "openapi", "capabilities", "instance", "health", "openapiSha256"},
-			"properties": map[string]any{
-				"product":             map[string]any{"type": "string", "const": "goobers"},
-				"daemonVersion":       map[string]any{"type": "string"},
-				"daemonCommit":        map[string]any{"type": "string"},
-				"authentication":      map[string]any{"type": "string", "enum": []string{"none", "bearer", "disabled"}},
-				"preferredApiVersion": map[string]any{"type": "string", "const": "v1"},
-				"apiVersions":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				"openapi":             map[string]any{"type": "string"},
-				"capabilities":        map[string]any{"type": "string"},
-				"instance":            map[string]any{"type": "string"},
-				"health":              map[string]any{"type": "string"},
-				"openapiSha256":       map[string]any{"type": "string", "pattern": "^[a-f0-9]{64}$"},
-			},
+			"required": []string{"product", "daemonProtocolVersion", "daemonInstanceId", "daemonBootId", "daemonVersion", "authentication", "preferredApiVersion", "apiVersions", "openapiSha256", "capabilitiesEtag", "links", "apis"},
+			"properties": mergeSchemaProperties(protocolSummaryProperties, map[string]any{
+				"product":        map[string]any{"type": "string", "const": "goobers"},
+				"daemonVersion":  map[string]any{"type": "string"},
+				"daemonCommit":   map[string]any{"type": "string"},
+				"authentication": map[string]any{"type": "string", "enum": []string{"none", "bearer", "disabled"}},
+				"apiVersions":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "uniqueItems": true},
+				"links": map[string]any{
+					"type":     "object",
+					"required": []string{"instance"},
+					"properties": map[string]any{
+						"instance": discoveryLink,
+					},
+					"additionalProperties": false,
+				},
+				"apis": map[string]any{
+					"type":     "object",
+					"required": []string{PreferredAPIVersion},
+					"properties": map[string]any{
+						PreferredAPIVersion: map[string]any{
+							"type":     "object",
+							"required": []string{"openapi", "capabilities", "health", "readiness"},
+							"properties": map[string]any{
+								"openapi":      discoveryLink,
+								"capabilities": discoveryLink,
+								"health":       discoveryLink,
+								"readiness":    discoveryLink,
+							},
+							"additionalProperties": false,
+						},
+					},
+				},
+			}),
+			"additionalProperties": true,
 		},
 		"CapabilityDocument": map[string]any{
 			"type":     "object",
-			"required": []string{"apiVersion", "schemaVersion", "openapiSha256", "routes"},
-			"properties": map[string]any{
-				"apiVersion":    map[string]any{"type": "string", "const": "v1"},
+			"required": []string{"daemonProtocolVersion", "daemonInstanceId", "daemonBootId", "preferredApiVersion", "apiVersion", "schemaVersion", "openapiSha256", "routes"},
+			"properties": mergeSchemaProperties(protocolIdentityProperties, map[string]any{
+				"apiVersion":    map[string]any{"type": "string", "const": PreferredAPIVersion},
 				"schemaVersion": map[string]any{"type": "integer", "const": 1},
 				"openapiSha256": map[string]any{"type": "string", "pattern": "^[a-f0-9]{64}$"},
 				"routes":        map[string]any{"type": "array", "items": routeCapability},
-			},
+			}),
+			"additionalProperties": true,
 		},
+		"ProtocolSummary": map[string]any{
+			"type":                 "object",
+			"required":             []string{"daemonProtocolVersion", "daemonInstanceId", "daemonBootId", "preferredApiVersion", "openapiSha256", "capabilitiesEtag"},
+			"properties":           protocolSummaryProperties,
+			"additionalProperties": false,
+		},
+		"HealthDocument": map[string]any{
+			"type":     "object",
+			"required": []string{"apiVersion", "schemaVersion", "build", "ready", "healthy", "instance", "freshness", "protocol"},
+			"properties": map[string]any{
+				"apiVersion":       map[string]any{"type": "string", "const": PreferredAPIVersion},
+				"schemaVersion":    map[string]any{"type": "string"},
+				"build":            schemaRef("BuildMetadata"),
+				"ready":            map[string]any{"type": "boolean"},
+				"healthy":          map[string]any{"type": "boolean"},
+				"instance":         schemaRef("InstanceIdentity"),
+				"freshness":        schemaRef("Freshness"),
+				"definitionReload": map[string]any{"type": "object", "additionalProperties": true},
+				"startup":          map[string]any{"type": "object", "additionalProperties": true},
+				"update":           map[string]any{"type": "object", "additionalProperties": true},
+				"readState":        map[string]any{"type": "object", "additionalProperties": true},
+				"protocol":         schemaRef("ProtocolSummary"),
+			},
+			"additionalProperties": true,
+		},
+		"InstanceReadiness": map[string]any{
+			"type":     "object",
+			"required": []string{"apiVersion", "schemaVersion", "instanceRoot", "ready", "recovery", "protocol"},
+			"properties": map[string]any{
+				"apiVersion":    map[string]any{"type": "string", "const": PreferredAPIVersion},
+				"schemaVersion": map[string]any{"type": "string"},
+				"computerName":  map[string]any{"type": "string"},
+				"instanceRoot":  map[string]any{"type": "string"},
+				"rootIdentity":  map[string]any{"type": "object", "additionalProperties": true},
+				"ready":         map[string]any{"type": "boolean"},
+				"recovery":      map[string]any{"type": "object", "additionalProperties": true},
+				"protocol":      schemaRef("ProtocolSummary"),
+			},
+			"additionalProperties": true,
+		},
+	}
+}
+
+func openAPIOperationSchemas() map[string]any {
+	return map[string]any{
 		"TriggerRequest": map[string]any{
 			"type": "object", "required": []string{"workflow"}, "additionalProperties": false,
 			"properties": map[string]any{

@@ -37,6 +37,7 @@ import (
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/retention"
+	"github.com/goobers/goobers/internal/version"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/winsvc"
 	"github.com/goobers/goobers/internal/worktree"
@@ -94,6 +95,18 @@ const sweepErrorReportEvery = 12
 var httpShutdownGrace = 5 * time.Second
 
 const daemonAPIAddressFileName = "api.address"
+
+func daemonDiscoveryIdentity(root string) httpapi.DiscoveryIdentity {
+	build := version.Get()
+	return httpapi.DiscoveryIdentity{
+		DaemonInstanceID: readservice.InspectRootIdentity(root).ID,
+		Build: readservice.BuildMetadata{
+			Version: build.Version,
+			Commit:  build.Commit,
+			Date:    build.Date,
+		},
+	}
+}
 
 func daemonChangeFeedHandlerOptions(setup *schedulerSetup) []httpapi.HandlerOption {
 	if setup.ReadModel == nil {
@@ -911,6 +924,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	claimPlane := newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)
 	claimPlane.shared = daemonSharedClaimResolver(l, setup.Config, setup.SharedRegistry, setup.SecretStores)
 	apiHandlerOpts = append(apiHandlerOpts,
+		httpapi.WithDiscoveryIdentity(daemonDiscoveryIdentity(l.Root)),
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(claimPlane),

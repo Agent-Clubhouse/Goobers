@@ -1,9 +1,25 @@
 package apicontract
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func TestOpenAPIDocumentIsDeterministic(t *testing.T) {
+	first, err := OpenAPIDocument(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := OpenAPIDocument(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("OpenAPI generation changed bytes without a contract change")
+	}
+}
 
 func TestOpenAPIDocumentDescribesEveryDaemonRoute(t *testing.T) {
 	document, err := OpenAPIDocument(true)
@@ -11,8 +27,11 @@ func TestOpenAPIDocumentDescribesEveryDaemonRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	var decoded struct {
-		OpenAPI string                          `json:"openapi"`
-		Paths   map[string]map[string]operation `json:"paths"`
+		OpenAPI string `json:"openapi"`
+		Servers []struct {
+			URL string `json:"url"`
+		} `json:"servers"`
+		Paths map[string]map[string]operation `json:"paths"`
 	}
 	if err := json.Unmarshal(document, &decoded); err != nil {
 		t.Fatal(err)
@@ -20,12 +39,23 @@ func TestOpenAPIDocumentDescribesEveryDaemonRoute(t *testing.T) {
 	if decoded.OpenAPI != "3.1.0" {
 		t.Fatalf("openapi = %q, want 3.1.0", decoded.OpenAPI)
 	}
+	if len(decoded.Servers) != 1 || decoded.Servers[0].URL != "/" {
+		t.Fatalf("servers = %+v, want origin root", decoded.Servers)
+	}
+	operationCount := 0
+	for _, methods := range decoded.Paths {
+		operationCount += len(methods)
+	}
+	if operationCount != len(V1Routes()) {
+		t.Fatalf("OpenAPI operations = %d, registered routes = %d", operationCount, len(V1Routes()))
+	}
 	for _, route := range V1Routes() {
 		methods, ok := decoded.Paths[route.Path]
 		if !ok {
 			t.Errorf("path %q is missing", route.Path)
 			continue
 		}
+
 		operation, ok := methods[lowerMethod(route.Method)]
 		if !ok {
 			t.Errorf("%s %s is missing", route.Method, route.Path)
@@ -38,6 +68,94 @@ func TestOpenAPIDocumentDescribesEveryDaemonRoute(t *testing.T) {
 			t.Errorf("%s %s security = %+v, want bearer requirement", route.Method, route.Path, operation.Security)
 		}
 	}
+}
+
+func TestOpenAPIInitialRemoteProfileHasConcreteSchemasAndHeaders(t *testing.T) {
+	document, err := OpenAPIDocument(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Paths map[string]map[string]struct {
+			Parameters []openAPIParameterTest `json:"parameters"`
+			Responses  map[string]struct {
+				Content map[string]struct {
+					Schema map[string]any `json:"schema"`
+				} `json:"content"`
+				Headers map[string]any `json:"headers"`
+			} `json:"responses"`
+			Remote bool `json:"x-goobers-remote-invocable"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(document, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range V1Routes() {
+		operation := decoded.Paths[route.Path][lowerMethod(route.Method)]
+		if operation.Remote != InitiallyRemoteInvocable(route.ID) {
+			t.Errorf("%s remote profile = %t", route.ID, operation.Remote)
+		}
+		if !InitiallyRemoteInvocable(route.ID) {
+			continue
+		}
+		response := operation.Responses["200"]
+		mediaType := "application/json"
+		if route.ID == RouteEvents {
+			mediaType = "text/event-stream"
+		}
+		schema := response.Content[mediaType].Schema
+		if route.ID != RouteEvents {
+			reference, ok := schema["$ref"].(string)
+			if !ok || reference == "" {
+				t.Errorf("%s response schema = %#v, want concrete component reference", route.ID, schema)
+			}
+			if route.ID == RouteEvents {
+				if response.Headers["Cache-Control"] == nil || response.Headers["X-Accel-Buffering"] == nil {
+					t.Errorf("events response headers = %#v", response.Headers)
+				}
+				foundCursor := false
+				for _, parameter := range operation.Parameters {
+					if parameter.Name == "Last-Event-ID" && parameter.In == "header" {
+						foundCursor = true
+					}
+				}
+				if !foundCursor {
+					t.Error("events operation is missing Last-Event-ID")
+				}
+			}
+		}
+	}
+}
+
+func TestOpenAPIDocumentUsesOnlyInternalSchemaReferences(t *testing.T) {
+	document, err := OpenAPIDocument(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if key == "$ref" {
+					reference, ok := child.(string)
+					if !ok || !strings.HasPrefix(reference, "#/components/schemas/") {
+						t.Errorf("unsafe schema reference = %#v", child)
+					}
+				}
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	var decoded any
+	if err := json.Unmarshal(document, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	walk(decoded)
 }
 
 func TestOpenAPIDocumentDescribesTriggerAdmission(t *testing.T) {
