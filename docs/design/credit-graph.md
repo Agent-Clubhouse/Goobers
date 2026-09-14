@@ -1,20 +1,17 @@
 # Credit graph contract
 
-> Status: **implemented as a forward contract — not on the production
-> attribution path.** The graph contract and provenance capture landed for
-> #4077, and credit propagation and failure-cause classification for #4078.
-> Both issues are closed and their code is tested and shipped in the binary,
-> but `creditgraph.Build` and `creditgraph.Attribute` have **no production
-> caller**: every symbol in the package except the span-provenance key
-> constants is carried in `test/deadcode/exemptions.txt` with the note
-> "consumer wiring is follow-up".
+> Status: **integrated for per-run attribution and cohort evidence.** The graph
+> contract and provenance capture landed for #4077, credit propagation and
+> failure-cause classification for #4078, and the read service now calls
+> `creditgraph.Build` and `creditgraph.Attribute` while constructing stored
+> attribution observations for EffectiveVersion/workload cohorts.
 > Delivered-by: #4077, #4078
 >
-> Production credit attribution is a **different, older implementation**:
-> `internal/readmodel/credit.go`. See
+> The older `internal/readmodel/credit.go` implementation remains a separate
+> cross-run operational ranking. See
 > [Relationship to `internal/readmodel`](#relationship-to-internalreadmodel)
-> below before treating anything on this page as describing live behavior.
-> Reconciling the two is tracked by
+> for the boundary between these paths. Their remaining reconciliation is
+> tracked by
 > [#4523](https://github.com/Agent-Clubhouse/Goobers/issues/4523).
 
 ## Why
@@ -132,43 +129,29 @@ on whichever stage is present.
 
 ## Relationship to `internal/readmodel`
 
-Two packages compute "which node contributed to bad outcomes", and only one of
-them runs in production.
+Two packages compute "which node contributed to bad outcomes", with distinct
+production responsibilities.
 
 | | `internal/creditgraph` | `internal/readmodel` (`credit.go`, `causal.go`) |
 |---|---|---|
 | Landed | #4077 (2026-08-31), #4078 (2026-09-02) | #2957 (2026-08-15), extended by #3545 |
 | Scope | One run: a typed DAG projected from that run's journal, plus signed contribution, uncertainty, and a failure-cause taxonomy | Cross-run: a SQLite rollup over `run_node`/`run`, ranking nodes by routed/failure/escalation/retry-waste counts in a time window |
 | Provenance model | Explicit `ProvenanceRecorded`/`ProvenanceUnknown` plus `Gap` records; refuses to infer a missing link | Counts what the projection recorded; no per-edge provenance concept |
-| Production callers | **None.** Only the `SpanProvenanceKey*` constants are used, by `internal/harness/executor.go`, to *emit* the annotation the graph would consume | `goobers telemetry query --aggregate credit-assignment` (`cmd/goobers/telemetryquery.go`), the read API (`internal/readservice/telemetry.go`), and the portal through it |
+| Production callers | `internal/readservice/telemetry_attribution.go` reconstructs stored runs with `Build`, computes `Attribute`, and feeds cohort aggregation and evidence surfaces | `goobers telemetry query --aggregate credit-assignment` (`cmd/goobers/telemetryquery.go`), the read API (`internal/readservice/telemetry.go`), and the portal through it |
 
 So today:
 
-- **The production attribution path is `internal/readmodel`.** Anything an
-  operator, the portal, the CLI, or the gated self-remediation loop (#3545)
-  sees as "credit assignment" comes from there.
-- **`internal/creditgraph` is a forward contract.** It is real, tested code
-  with a designed provenance discipline the rollup does not have, and the
-  harness already emits the `credit-span-provenance` annotation it needs — but
-  nothing calls `Build` or `Attribute`, so none of its output reaches a
-  consumer.
+- **`internal/readmodel` remains the aggregate operational ranking path.**
+  Existing credit-assignment queries and portal summaries continue to use its
+  SQLite rollup.
+- **`internal/creditgraph` is the per-run evidence path.** The read service
+  reconstructs selected stored runs, computes provenance-aware attribution,
+  and aggregates those observations into the cohort and contributing-path
+  surfaces.
 
 ### What remains
 
-This document's job is to stop overstating integration. It deliberately does
-**not** decide the architecture. #4523 owns that decision, which is one of:
-
-1. **Wire `creditgraph` into the production path** — project per-run graphs and
-   feed `Attribute`'s output into the rollup, so the cross-run ranking inherits
-   the provenance discipline. Requires a migration story for existing
-   `run_node` data and parity coverage so present behavior is not lost.
-2. **Keep both, with defined responsibilities** — `readmodel` for the cross-run
-   rollup, `creditgraph` for per-run explanation. Requires conformance tests
-   that the two do not disagree about the same run, and a consumer for
-   `creditgraph` so it is not carried unreachable.
-3. **Retire `creditgraph`** — fold whatever the rollup lacks into
-   `internal/readmodel` and delete the package rather than carry 58 exempted
-   symbols.
-
-Until one of those is chosen, treat the sections above as the specification of
-a contract the tree implements but does not yet execute.
+#4523 remains open for the remaining architectural work: define compatibility
+and migration between the operational rollup and provenance-aware per-run
+attribution, and add conformance coverage for overlapping answers. It no longer
+tracks missing production wiring for `Build` or `Attribute`.
