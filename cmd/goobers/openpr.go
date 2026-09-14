@@ -316,10 +316,37 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 }
 
 func preferredOpenPRHead(root, runID, workflow string) string {
+	if branch, ok := runIdentityBranch(root, runID); ok {
+		return branch
+	}
 	if branch, ok := runBranchFromJournal(root, runID); ok {
 		return branch
 	}
 	return providers.BranchNameIn(providerBranchNamespace(), workflow, runID)
+}
+
+func runIdentityBranch(root, runID string) (string, bool) {
+	selection, err := stageJournalSelection()
+	if err == nil && selection.OnPlane() {
+		if branch := strings.TrimSpace(os.Getenv("GOOBERS_WORKSPACE_BRANCH")); branch != "" {
+			return branch, true
+		}
+		return "", false
+	}
+	dir, err := layoutFor(root).FindRunDir(runID)
+	if err != nil {
+		return "", false
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		return "", false
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return "", false
+	}
+	branch := strings.TrimSpace(identity.WorkspaceBranch)
+	return branch, branch != ""
 }
 
 func runBranchFromJournal(root, runID string) (string, bool) {

@@ -86,31 +86,55 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	}
 }
 
-func TestOpenPRUsesRecordedRunBranchForContinuation(t *testing.T) {
+func TestOpenPRUsesContinuationIdentityWorkspaceBranch(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	const runID = "run-continuation"
-	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), runID)
+	const (
+		sourceRunID       = "source-run"
+		continuationRunID = "run-continuation"
+		sourceBranch      = "goobers/implementation/source-run"
+	)
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), continuationRunID)
 
-	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
-		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
-		Gaggle: "goobers", ContinuedFromRunID: "source-run",
+	source, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: sourceRunID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
 	}, nil)
 	if err != nil {
-		t.Fatalf("create journal: %v", err)
+		t.Fatalf("create source journal: %v", err)
 	}
-	if err := run.Append(journal.Event{
+	if err := source.Append(journal.Event{
 		Type: journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{
 			Provider: "github",
 			Kind:     "branch",
-			ID:       "goobers/implementation/source-run",
+			ID:       sourceBranch,
 		},
 	}); err != nil {
-		t.Fatalf("record continuation branch: %v", err)
+		t.Fatalf("record source branch: %v", err)
 	}
-	if err := run.Close(); err != nil {
-		t.Fatalf("close journal: %v", err)
+	if err := source.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted),
+	}); err != nil {
+		t.Fatalf("finish source run: %v", err)
+	}
+	terminalSeq := source.Seq()
+	if err := source.Close(); err != nil {
+		t.Fatalf("close source journal: %v", err)
+	}
+
+	continuation, err := journal.CreateContinuation(layoutFor(root).RunsDir(), journal.ContinuationRequest{
+		RunID:               continuationRunID,
+		SourceRunID:         sourceRunID,
+		ExpectedTerminalSeq: terminalSeq,
+		Operator:            "operator@example.test",
+		Target:              "open-pr",
+	})
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+	if err := continuation.Close(); err != nil {
+		t.Fatalf("close continuation journal: %v", err)
 	}
 
 	t.Chdir(t.TempDir())
@@ -124,7 +148,7 @@ func TestOpenPRUsesRecordedRunBranchForContinuation(t *testing.T) {
 	if pr == nil {
 		t.Fatal("no PR opened")
 	}
-	if pr.head != "goobers/implementation/source-run" {
+	if pr.head != sourceBranch {
 		t.Fatalf("pull request head = %q, want continuation branch", pr.head)
 	}
 }
