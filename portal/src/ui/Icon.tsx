@@ -5,13 +5,16 @@ export type IconName =
   | "check"
   | "chevron"
   | "clock"
+  | "chart"
   | "cost"
   | "close"
   | "code"
   | "copy"
+  | "database"
   | "gaggle"
   | "gate"
   | "goober"
+  | "info"
   | "insight"
   | "menu"
   | "moon"
@@ -20,6 +23,7 @@ export type IconName =
   | "pause"
   | "play"
   | "previous"
+  | "refresh"
   | "run"
   | "sun"
   | "workflow"
@@ -59,6 +63,15 @@ export function Icon({ name, size = 18 }: IconProps) {
       <>
         <circle cx="12" cy="12" r="9" />
         <path d="M12 7v5l3 2" />
+      </>
+    ),
+    chart: (
+      <>
+        <path d="M5 20V10" />
+        <path d="M10 20V5" />
+        <path d="M15 20v-7" />
+        <path d="M20 20V3" />
+        <path d="M3 20h19" />
       </>
     ),
     close: (
@@ -101,6 +114,13 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7" />
       </>
     ),
+    info: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 11v6" />
+        <path d="M12 7h.01" />
+      </>
+    ),
     insight: (
       <>
         <path d="M5 19V11" />
@@ -120,6 +140,13 @@ export function Icon({ name, size = 18 }: IconProps) {
         <circle cx="12" cy="12" r="9" />
         <path d="M15.5 8.5c-.8-.7-1.8-1-3-1-1.7 0-3 .8-3 2s1.1 1.8 3 2.2 3 1 3 2.3-1.3 2.5-3.2 2.5c-1.3 0-2.5-.4-3.3-1.2" />
         <path d="M12 5.5v13" />
+      </>
+    ),
+    database: (
+      <>
+        <ellipse cx="12" cy="5" rx="8" ry="3" />
+        <path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+        <path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
       </>
     ),
     moon: <path d="M20 15.4A8.5 8.5 0 0 1 8.6 4 8.5 8.5 0 1 0 20 15.4Z" />,
@@ -148,6 +175,12 @@ export function Icon({ name, size = 18 }: IconProps) {
       <>
         <path d="M6 5v14" />
         <path d="m18 6-8 6 8 6Z" />
+      </>
+    ),
+    refresh: (
+      <>
+        <path d="M20 7v5h-5" />
+        <path d="M19 12a7 7 0 1 0-2 5" />
       </>
     ),
     run: (
