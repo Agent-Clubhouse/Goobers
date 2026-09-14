@@ -971,6 +971,22 @@ func serveInstanceAsset(w http.ResponseWriter, r *http.Request, instanceRoot str
 	return true
 }
 
+func serveDaemonInstanceAsset(w http.ResponseWriter, r *http.Request, instanceRoot string) {
+	if r.URL.RawQuery != "" || !supportedPortalAssetExtension(r.URL.Path) ||
+		!serveInstanceAsset(w, r, instanceRoot) {
+		http.NotFound(w, r)
+	}
+}
+
+func supportedPortalAssetExtension(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".gif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".webp":
+		return true
+	default:
+		return false
+	}
+}
+
 func dashboardIndex(index []byte, mode dashboardMode) ([]byte, error) {
 	start := bytes.Index(index, []byte(dashboardModeMeta))
 	if start < 0 {

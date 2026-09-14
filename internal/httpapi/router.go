@@ -579,6 +579,7 @@ type handlerConfig struct {
 	configDigest            func() string
 	workerConfigDivergence  func(journal.Event) error
 	instanceReadiness       InstanceReadinessService
+	portalAssets            http.Handler
 	recoveryGate            func() bool
 	discoveryIdentity       DiscoveryIdentity
 	telemetryReadsAvailable bool
@@ -670,6 +671,19 @@ func WithInstanceReadinessService(svc InstanceReadinessService) HandlerOption {
 			return errors.New("http API instance readiness service is required")
 		}
 		c.instanceReadiness = svc
+		return nil
+	}
+}
+
+// WithPortalAssetHandler registers the bounded instance co-brand asset
+// handler. Requests still pass through the router's authentication,
+// authorization, admission, recovery, and budget controls.
+func WithPortalAssetHandler(handler http.Handler) HandlerOption {
+	return func(c *handlerConfig) error {
+		if handler == nil {
+			return errors.New("http API portal asset handler is required")
+		}
+		c.portalAssets = handler
 		return nil
 	}
 }
@@ -1085,6 +1099,13 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		portalConfig.Capabilities.WorkflowEnable = config.workflowMutations != nil
 		w.Header().Set("Cache-Control", "no-cache")
 		writeJSON(w, http.StatusOK, portalConfig)
+	})
+	router.Handle(apicontract.RoutePortalAsset, func(w http.ResponseWriter, request *http.Request) {
+		if config.portalAssets == nil {
+			writeError(w, http.StatusNotFound, "not_found", "portal asset not found")
+			return
+		}
+		config.portalAssets.ServeHTTP(w, request)
 	})
 	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)

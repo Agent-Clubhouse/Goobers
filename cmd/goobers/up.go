@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -946,6 +947,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// can always answer them. An instance with no rollup answers "no
 		// telemetry rollup yet", exactly as the local path does.
 		httpapi.WithTelemetryDefectAggregateService(newDaemonTelemetryDefectAggregateService(l)),
+		httpapi.WithPortalAssetHandler(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			serveDaemonInstanceAsset(response, request, l.Root)
+		})),
 		// The readiness-gate endpoint and the recovery gate it is exempt from
 		// (#5019): wired unconditionally, like the containment above,
 		// because every daemon build has a Layout and a startup phase
