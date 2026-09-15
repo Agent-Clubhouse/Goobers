@@ -35,13 +35,7 @@ func TestWithAutoGoobersIOClaudeNoOpsWithoutRunIdentity(t *testing.T) {
 	}
 }
 
-// TestWithAutoGoobersIOClaudeNeverTouchesToolsOrMCPServers pins the finding
-// behind claude_mcp_io.go's design: confirmed live that claude-code's
-// --tools/--allowedTools don't gate MCP-server tools at all, so unlike
-// Copilot's withAutoGoobersIO, the claude-code equivalent must never mutate
-// req.Tools — doing so would flip every eligible run into claudeExtraArgs's
-// tool-constrained path even for goobers that declare no Spec.Tools.
-func TestWithAutoGoobersIOClaudeNeverTouchesToolsOrMCPServers(t *testing.T) {
+func TestWithAutoGoobersIOClaudeAddsOnlyItsExactToolNames(t *testing.T) {
 	workspace := t.TempDir()
 	req := RunRequest{
 		Envelope:  testEnvelope(workspace),
@@ -54,20 +48,21 @@ func TestWithAutoGoobersIOClaudeNeverTouchesToolsOrMCPServers(t *testing.T) {
 	if !got.GoobersIORegistered {
 		t.Fatal("expected GoobersIORegistered once eligible with a known self-binary path")
 	}
-	if len(got.Tools) != 1 || got.Tools[0] != "shell" {
-		t.Fatalf("Tools must be untouched, got %v", got.Tools)
+	wantTools := append([]string{"shell"}, goobersIOClaudeToolNames()...)
+	if !slices.Equal(got.Tools, wantTools) {
+		t.Fatalf("Tools = %v, want %v", got.Tools, wantTools)
 	}
 	if len(got.MCPServers) != 0 {
 		t.Fatalf("must never populate MCPServers, got %v", got.MCPServers)
 	}
 
-	// Also confirm the empty-declared-tools case: registering goobers-io must
-	// not manufacture a non-empty Tools list out of nothing.
+	// An otherwise tool-less stage still needs the explicitly preapproved
+	// Goobers I/O names to use its registered server.
 	bare := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace}
 	bare.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}
 	got = withAutoGoobersIOClaude(bare, "/usr/local/bin/goobers")
-	if len(got.Tools) != 0 {
-		t.Fatalf("Tools must stay empty, got %v", got.Tools)
+	if !slices.Equal(got.Tools, goobersIOClaudeToolNames()) {
+		t.Fatalf("Tools = %v, want goobers-io names %v", got.Tools, goobersIOClaudeToolNames())
 	}
 }
 
@@ -205,11 +200,9 @@ func TestGoobersIOClaudeMCPConfigArgRefusesToTraverseAWorkspaceSymlink(t *testin
 }
 
 // TestClaudeAdapterRunWiresGoobersIO is the Run()-level integration test:
-// confirms --mcp-config/--strict-mcp-config land in the actual argv, the
-// prompt carries the goobers-io section, and req.Tools stays exactly what
-// the goober declared (here, nothing) — no --tools/--allowedTools flags
-// appear, matching TestClaudeAdapterEmptyToolAllowlistPreservesCommand's
-// no-Spec.Tools baseline plus goobers-io layered on top.
+// confirms --mcp-config/--strict-mcp-config and the exact preapproved MCP
+// tool names land in the actual argv, and the prompt carries the goobers-io
+// section.
 func TestClaudeAdapterRunWiresGoobersIO(t *testing.T) {
 	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
@@ -236,12 +229,16 @@ func TestClaudeAdapterRunWiresGoobersIO(t *testing.T) {
 	}
 	command := runner.lastReq.Command
 
-	if slices.Contains(command, "--tools") || slices.Contains(command, "--allowedTools") {
-		t.Fatalf("goobers-io registration must not flip on tool-constrained mode: %v", command)
-	}
-	for _, want := range []string{"--permission-mode", "bypassPermissions"} {
-		if !slices.Contains(command, want) {
-			t.Errorf("command missing %q: %v", want, command)
+	for _, flag := range []string{"--tools", "--allowedTools"} {
+		idx := slices.Index(command, flag)
+		if idx == -1 || idx+1 >= len(command) {
+			t.Fatalf("command missing %q value: %v", flag, command)
+		}
+		got := strings.Split(command[idx+1], ",")
+		for _, want := range goobersIOClaudeToolNames() {
+			if !slices.Contains(got, want) {
+				t.Errorf("%s=%q missing %q", flag, command[idx+1], want)
+			}
 		}
 	}
 
@@ -280,6 +277,45 @@ func TestClaudeAdapterRunOmitsGoobersIOWithoutSelfBin(t *testing.T) {
 	command := runClaudeAdapterForCommand(t, nil)
 	if slices.Contains(command, "--mcp-config") || slices.Contains(command, "--strict-mcp-config") {
 		t.Fatalf("must not wire goobers-io without a known self-binary path: %v", command)
+	}
+}
+
+func TestClaudeAdapterRunKeepsShellBoundaryWithGoobersIO(t *testing.T) {
+	stubClaudeCredentialsHome(t)
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &ClaudeAdapter{
+		Command: []string{"claude"},
+		Runner:  runner,
+		SelfBin: "/usr/local/bin/goobers",
+	}
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Tools:          []string{"shell"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, flag := range []string{"--tools", "--allowedTools"} {
+		value := commandOptionValue(runner.lastReq.Command, flag)
+		got := strings.Split(value, ",")
+		for _, want := range append([]string{"Bash", "Read", "Edit", "Write", "Glob", "Grep"}, goobersIOClaudeToolNames()...) {
+			if !slices.Contains(got, want) {
+				t.Errorf("%s=%q missing %q", flag, value, want)
+			}
+		}
+		for _, unwanted := range []string{"WebFetch", "WebSearch", "mcp__other__tool"} {
+			if slices.Contains(got, unwanted) {
+				t.Errorf("%s=%q unexpectedly includes %q", flag, value, unwanted)
+			}
+		}
 	}
 }
 
