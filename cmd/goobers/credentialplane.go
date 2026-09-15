@@ -388,6 +388,7 @@ func (s *daemonCredentialService) locateRun(defs credentialPlaneDefinitions, run
 // capabilities, and the goober's invocation-internal credential keys.
 type stageProfile struct {
 	goober       string
+	harness      string
 	capabilities []string
 	implicitKeys []string
 	// externalTelemetryConnector is the pinned task's inputs.connector value
@@ -466,6 +467,7 @@ func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefin
 					fmt.Sprintf("goober %q for stage %q is no longer configured", task.Goober, stage))
 			}
 			profile.implicitKeys = mcpconfig.BYOCredentialKeys(spec.MCPServers)
+			profile.harness = string(spec.Harness)
 		}
 		// A repo-backed workspace has to be CLONED, and the dispatcher names a
 		// capability for exactly that (#3770/#3773). It is IMPLICIT here rather
@@ -512,6 +514,7 @@ func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefin
 		// runner's gate envelope takes on an unmapped goober (#294).
 		profile := stageProfile{
 			goober:       reviewer,
+			harness:      string(spec.Harness),
 			capabilities: append([]string(nil), pinnedCapabilities[reviewer]...),
 			implicitKeys: mcpconfig.BYOCredentialKeys(spec.MCPServers),
 		}
@@ -555,6 +558,10 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 	}
 	credentialKeys := append([]string(nil), profile.capabilities...)
 	credentialKeys = append(credentialKeys, profile.implicitKeys...)
-	gooberGrants := buildGooberCredentialGrants(profile.goober, credentialKeys, grants)
+	harnessName := profile.harness
+	if harnessName == "" {
+		harnessName = string(apiv1.HarnessCopilot)
+	}
+	gooberGrants := buildGooberCredentialGrants(profile.goober, harnessName, credentialKeys, grants)
 	return credentials.NewGooberInjectorWithCredentialKeys(resolver, profile.goober, gooberGrants, profile.implicitKeys, s.shared)
 }

@@ -21,7 +21,7 @@ spec:
   readiness:
     maxConcurrentRuns: 1
     maxRunsPerHour: 1
-  start: gather-signals
+  start: collect-sources
   tasks:
     # Deterministic: applies typed thresholds to the telemetry rollup and
     # materializes the versioned candidate-findings connector artifact. The
@@ -29,6 +29,7 @@ spec:
     # rather than live rollup access (ARCHITECTURE.md §5).
     - name: gather-signals
       type: deterministic
+      workspace: scratch
       goal: Materialize threshold-crossing telemetry and credit-assignment findings with journal evidence for the nominator.
       run:
         command: ["goobers", "telemetry-query", "--window", "24h", "--workflow", "work-nomination", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--aggregate", "credit-assignment", "--format", "candidate-findings"]
@@ -42,7 +43,7 @@ spec:
         - telemetry:read
       expectedOutputs:
         - candidate-findings
-      next: gather-code-scanning-alerts
+      next: "@join"
     # #2984: read-only intake of the repository's own CodeQL findings on the
     # DEFAULT BRANCH. This is deliberately narrow in three ways. The credential
     # is `github:code-scanning:read` alone — the stage can see alerts and
@@ -54,6 +55,7 @@ spec:
     # unbounded prompt.
     - name: gather-code-scanning-alerts
       type: deterministic
+      workspace: scratch
       goal: Materialize open default-branch code-scanning alerts as bounded, untrusted nomination evidence.
       run:
         command: ["goobers", "security-alerts-query", "--source", "code-scanning", "--ref", "refs/heads/main", "--severity", "critical,high,medium", "--max-results", "50"]
@@ -67,7 +69,7 @@ spec:
       continueOnError: true
       expectedOutputs:
         - noWork
-      next: gather-dependabot-alerts
+      next: "@join"
     # #2987: the second feed, behind its OWN permission. GitHub exposes
     # Dependabot alerts through a separate API and a separate fine-grained
     # grant, so this is a separate capability and a separate stage: a gaggle
@@ -75,6 +77,7 @@ spec:
     # the other stage, and neither credential is ever released to the other.
     - name: gather-dependabot-alerts
       type: deterministic
+      workspace: scratch
       goal: Materialize open Dependabot alerts as bounded, untrusted nomination evidence.
       run:
         command: ["goobers", "security-alerts-query", "--source", "dependabot", "--severity", "critical,high", "--max-results", "50"]
@@ -85,7 +88,7 @@ spec:
       continueOnError: true
       expectedOutputs:
         - noWork
-      next: nominate
+      next: "@join"
     # Agentic: reads the candidate-findings artifact plus a read-only checkout,
     # dedupes against already-open goobers:nominated issues (query first —
     # issue #26 scope), and files well-formed issues up to the configured
@@ -98,10 +101,6 @@ spec:
       # The alert artifacts are unapproved provider-derived content, so this
       # consumer declares no minimumIntegrity: it is the stage that reads
       # untrusted evidence and produces a nomination a maintainer then approves.
-      contextFrom:
-        - gather-signals
-        - gather-code-scanning-alerts
-        - gather-dependabot-alerts
       goal: >-
         Analyze the candidate-findings artifact and a read-only checkout for
         genuine coverage gaps, recurring failure or gate-noise patterns, and
@@ -154,3 +153,15 @@ spec:
       # issue, and a result's `outputs` are scalar-only (#302). The scalar
       # `summary` in the result envelope carries the run's counts.
       # Terminal: no `next`.
+
+  # Each independent source settles as a branch. A quiet source reports
+  # no-work for itself without preventing the remaining sources or repository
+  # inspection from reaching the nominator.
+  parallels:
+    - name: collect-sources
+      failurePolicy: continue_on_error
+      join: nominate
+      branches:
+        - { name: telemetry, start: gather-signals }
+        - { name: code-scanning, start: gather-code-scanning-alerts }
+        - { name: dependabot, start: gather-dependabot-alerts }

@@ -266,7 +266,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if err != nil {
 		return nil, fmt.Errorf("worker: secret stores: %w", err)
 	}
-	modelCredential, err := agentModelCredentialResolver(cfg, stores)
+	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		return nil, fmt.Errorf("worker: agent:model credential: %w", err)
 	}

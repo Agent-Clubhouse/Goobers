@@ -88,6 +88,7 @@ function Overview({
     groups.attention.length === 0 &&
     groups.recent.length === 0;
   const healthy = standalone || overview.health.healthy;
+  const starting = !overview.health.ready && overview.instance.status === "starting";
   const activeConfigurationWarningCount =
     configurationWarnings.state.status === "ready" ||
     configurationWarnings.state.status === "stale"
@@ -168,80 +169,47 @@ function Overview({
   return (
     <>
       <header className="page-heading">
-        {overview.instance.rootIdentity?.decommissionedAt && (
-          <p role="alert">Historical root; do not use. Decommissioned {overview.instance.rootIdentity.decommissionedAt}: {overview.instance.rootIdentity.decommissionReason}</p>
-        )}
-        {overview.instance.rootIdentity?.identityProblem && <p role="status">{overview.instance.rootIdentity.identityProblem}</p>}
-        {overview.instance.rootIdentity?.lifecycleProblem && <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>}
-        <h1>
-          {overview.loadingSections?.inventory || overview.loadingSections?.runs
-            ? (
-              <span aria-label="Loading overview" className="overview-loading-title" role="status">
-                <span aria-hidden="true">.</span>
-                <span aria-hidden="true">.</span>
-                <span aria-hidden="true">.</span>
-              </span>
-            )
-            : emptyInstance
-              ? standalone
-                ? overview.health.ready
-                  ? "Instance is ready — Healthy."
-                  : "Instance is starting."
-                : !healthy
-                  ? "Daemon is unhealthy."
-                  : overview.health.ready
-                    ? "Daemon is running — Healthy."
-                    : "Daemon is starting."
-              : !healthy
-                ? "Daemon is unhealthy."
-                : activeAttention.length === 0
-                  ? standalone
+        <div className="overview-heading-copy">
+          {overview.instance.rootIdentity?.decommissionedAt && (
+            <p role="alert">Historical root; do not use. Decommissioned {overview.instance.rootIdentity.decommissionedAt}: {overview.instance.rootIdentity.decommissionReason}</p>
+          )}
+          {overview.instance.rootIdentity?.identityProblem && <p role="status">{overview.instance.rootIdentity.identityProblem}</p>}
+          {overview.instance.rootIdentity?.lifecycleProblem && <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>}
+          <h1>
+            {overview.loadingSections?.inventory || overview.loadingSections?.runs
+              ? (
+                <span aria-label="Loading overview" className="overview-loading-title" role="status">
+                  <span aria-hidden="true">.</span>
+                  <span aria-hidden="true">.</span>
+                  <span aria-hidden="true">.</span>
+                </span>
+              )
+              : emptyInstance
+                ? standalone
+                  ? overview.health.ready
                     ? "Instance is ready — Healthy."
-                    : "Daemon is running — Healthy."
-                  : attentionHeading(activeAttention.length)}
-        </h1>
-        {emptyInstance && (
-          <p>No gaggles are configured. Add gaggle definitions to begin observing workflows and runs.</p>
-        )}
-        <dl className="instance-identity">
-          <div>
-            <dt>Instance name</dt>
-            <dd>{overview.instance.name}</dd>
-          </div>
-          <div>
-            <dt>Version</dt>
-            <dd>
-              {overview.health.build ? (
-                <span title={`Commit ${overview.health.build.commit} · Built ${overview.health.build.date}`}>
-                  {overview.health.build.version}
-                  {overview.health.build.commit
-                    ? ` · ${overview.health.build.commit.slice(0, 7)}`
-                    : ""}
-                </span>
-              ) : (
-                "Unavailable"
-              )}
-              {overview.health.update?.available ? (
-                <span className="version-update-available">
-                  {" "}
-                  · {overview.health.update.latestVersion} available
-                </span>
-              ) : null}
-            </dd>
-          </div>
-          <div>
-            <dt>Computer name</dt>
-            <dd><code>{overview.instance.computerName || "unavailable"}</code></dd>
-          </div>
-          <div>
-            <dt>Instance root</dt>
-            <dd><code>{overview.instance.instanceRoot}</code></dd>
-          </div>
-          <div>
-            <dt>Instance ID</dt>
-            <dd><code>{overview.instance.rootIdentity?.id || "unavailable"}</code></dd>
-          </div>
-        </dl>
+                    : "Instance is starting."
+                  : starting
+                    ? "Daemon is starting."
+                    : !healthy
+                    ? "Daemon is unhealthy."
+                    : overview.health.ready
+                      ? "Daemon is running — Healthy."
+                      : "Daemon is starting."
+                : starting
+                  ? "Daemon is starting."
+                  : !healthy
+                  ? "Daemon is unhealthy."
+                  : activeAttention.length === 0
+                    ? standalone
+                      ? "Instance is ready — Healthy."
+                      : "Daemon is running — Healthy."
+                    : attentionHeading(activeAttention.length)}
+          </h1>
+          {emptyInstance && (
+            <p>No gaggles are configured. Add gaggle definitions to begin observing workflows and runs.</p>
+          )}
+        </div>
       </header>
 
       {/* A section that failed to load must say so. Without this the page would
@@ -293,9 +261,10 @@ function Overview({
         </p>
       )}
 
-      <InstanceStrip
+      <InstanceSummaryPanel
         configurationWarningCount={activeConfigurationWarningCount}
         overview={overview}
+        retry={retry}
         standalone={standalone}
       />
 
@@ -552,186 +521,208 @@ function Overview({
   );
 }
 
-function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
-  const hasLastCompletedSweep = Boolean(maintenance.lastCompletedAt || maintenance.lastResult);
-  const phase = maintenance.currentPhase;
-  const triggerLabel = maintenance.trigger ? `${maintenance.trigger} trigger` : "";
-  const lastProgressLabel = maintenance.lastProgressAt
-    ? `last progress ${formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago`
-    : "";
-
-  switch (maintenance.state) {
-    case "running":
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>Retention sweep running</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.startedAt && (
-            <span>running for {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.startedAt)))}</span>
-          )}
-          {lastProgressLabel && <span>{lastProgressLabel}</span>}
-          {phase && <span>{phase}</span>}
-          <span>{maintenance.removed} removed, {maintenance.candidates} candidates</span>
-        </div>
-      );
-    case "failed":
-      return (
-        <div className="maintenance-indicator maintenance-indicator-error" role="alert">
-          <strong>Retention sweep failed</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.errorSummary && <span>{maintenance.errorSummary}</span>}
-          {maintenance.lastProgressAt && (
-            <span>last progress {formatTimestamp(maintenance.lastProgressAt)}</span>
-          )}
-        </div>
-      );
-    case "completed":
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>Retention sweep completed</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.lastCompletedAt && (
-            <span>latest at {formatTimestamp(maintenance.lastCompletedAt)}</span>
-          )}
-          {lastProgressLabel && <span>{lastProgressLabel}</span>}
-          {phase && <span>{phase}</span>}
-          <span>{maintenance.removed} removed, {maintenance.candidates} candidates</span>
-        </div>
-      );
-    case "cancelled":
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>Retention sweep cancelled</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.lastCompletedAt && (
-            <span>latest at {formatTimestamp(maintenance.lastCompletedAt)}</span>
-          )}
-        </div>
-      );
-    case "queued":
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>Retention sweep queued</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.lastCompletedAt && (
-            <span>last completed at {formatTimestamp(maintenance.lastCompletedAt)}</span>
-          )}
-        </div>
-      );
-    case "none":
-      if (!hasLastCompletedSweep) {
-        return null;
-      }
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>No retention sweep running</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.lastCompletedAt && (
-            <span>last completed at {formatTimestamp(maintenance.lastCompletedAt)}</span>
-          )}
-        </div>
-      );
-    default:
-      return null;
-  }
-}
-
-function InstanceStrip({
+function InstanceSummaryPanel({
   configurationWarningCount,
   overview,
+  retry,
   standalone,
 }: {
   configurationWarningCount: number;
   overview: OperationalOverview;
+  retry: () => void;
   standalone: boolean;
 }) {
   const healthy = standalone || overview.health.healthy;
+  const starting = !overview.health.ready && overview.instance.status === "starting";
   const tickAge = overview.health.freshness.lastTickAgeMillis;
   const lastTickAt = overview.health.freshness.lastSchedulerTickAt;
   const maintenance = overview.instance.maintenance;
   const telemetryRetention = overview.instance.telemetryRetention;
+  const daemonTitle = standalone
+    ? overview.health.ready
+      ? "Healthy"
+      : "Instance not ready"
+    : starting
+      ? "Daemon starting"
+      : !healthy
+      ? "Daemon unhealthy"
+      : overview.health.ready
+        ? "Healthy"
+        : "Daemon starting";
 
   return (
     <section
       aria-label={standalone ? "Local instance status and counts" : "Daemon connection and instance counts"}
-      className="instance-strip"
+      className="instance-summary-card"
     >
-      <div className="instance-status">
-        <span
-          aria-hidden="true"
-          className={healthy && overview.health.ready ? "live-mark" : "live-mark pending"}
-        />
-        <strong>
-          {standalone
-            ? overview.health.ready
-              ? "Local instance loaded"
-              : "Local instance not ready"
-            : !healthy
-              ? "Daemon unhealthy"
-              : overview.health.ready
-                ? "Daemon ready"
-                : "Daemon starting"}
-        </strong>
-        {configurationWarningCount > 0 && (
-          <button
-            className="instance-warning-link"
-            onClick={() =>
-              document.getElementById("instance-configuration-warnings")?.scrollIntoView({
-                behavior: "smooth",
-                block: "start",
-              })
+      <div className="instance-summary-row daemon-summary-row">
+        <div className="instance-summary-kind">
+          <span
+            aria-hidden="true"
+            className={
+              healthy && overview.health.ready
+                ? "instance-summary-icon instance-summary-icon-healthy"
+                : "instance-summary-icon instance-summary-icon-warning"
             }
-            type="button"
           >
-            {configurationWarningCount} configuration{" "}
-            {configurationWarningCount === 1 ? "warning" : "warnings"}
-          </button>
-        )}
-        {!standalone && tickAge !== null && lastTickAt !== null ? (
+            <Icon name={healthy && overview.health.ready ? "check" : "clock"} size={23} />
+          </span>
+          <span className="instance-summary-copy">
+            <strong>{daemonTitle}</strong>
+            <span>
+              {healthy && overview.health.ready ? "Running normally" : "Operator attention required"}
+            </span>
+            {configurationWarningCount > 0 && (
+              <span className="daemon-summary-notices">
+                <button
+                  className="instance-warning-link"
+                  onClick={() =>
+                    document.getElementById("instance-configuration-warnings")?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "start",
+                    })
+                  }
+                  type="button"
+                >
+                  {configurationWarningCount} configuration{" "}
+                  {configurationWarningCount === 1 ? "warning" : "warnings"}
+                </button>
+              </span>
+            )}
+          </span>
+        </div>
+        <dl className="daemon-summary-metrics">
+          <div>
+            <dt>Gaggles</dt>
+            <dd>{overview.instance.counts.gaggles}</dd>
+            <span>Configured</span>
+          </div>
+          <div>
+            <dt>Active runs</dt>
+            <dd>{overview.instance.counts.activeRuns}</dd>
+            <span>
+              {overview.instance.counts.activeRuns === 0 ? "None executing" : "Currently executing"}
+            </span>
+          </div>
+        </dl>
+        <div className="daemon-last-checked">
+          <Icon name="clock" size={20} />
           <span>
-            last scheduler tick {formatDuration(tickAge)} ago at{" "}
-            <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>
+            <span>Last checked</span>
+            <strong>{tickAge === null ? "Unavailable" : `${formatDuration(tickAge)} ago`}</strong>
+            {lastTickAt && <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>}
+          </span>
+          <button aria-label="Refresh instance status" onClick={retry} type="button">
+            <Icon name="refresh" size={22} />
+          </button>
+        </div>
+      </div>
+
+      {maintenance && <MaintenanceSummary maintenance={maintenance} />}
+
+      {telemetryRetention && (
+        <div
+          aria-label={`Telemetry retention ${telemetryRetention.enabled ? "enabled" : "disabled"}`}
+          className="instance-summary-row"
+          role="status"
+        >
+          <div className="instance-summary-kind">
+            <span aria-hidden="true" className="instance-summary-icon">
+              <Icon name="chart" size={24} />
+            </span>
+            <span className="instance-summary-copy">
+              <strong>Telemetry retention</strong>
+              <span>Run history and diagnostics</span>
+            </span>
+          </div>
+          <div className="instance-summary-result">
+            <strong>
+              <span aria-hidden="true" className="result-check"><Icon name="check" size={16} /></span>
+              {telemetryRetention.enabled ? "Enabled" : "Disabled"}
+            </strong>
+            <span>
+              {formatRetentionWindow(telemetryRetention.window)} · Max {telemetryRetention.maxRuns} runs
+            </span>
+            {telemetryRetention.enabled && telemetryRetention.enforceAt && (
+              <span>Enforcement begins {formatTimestamp(telemetryRetention.enforceAt)}</span>
+            )}
+            {telemetryRetention.lastPassAt && (
+              <span>
+                Last pass {telemetryRetention.lastPassMode ?? "completed"} ·{" "}
+                {telemetryRetention.candidateCount} candidates ·{" "}
+                {formatTimestamp(telemetryRetention.lastPassAt)}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+    </section>
+  );
+}
+
+function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus }) {
+  const completedAt = maintenance.lastCompletedAt;
+  const state = maintenance.state;
+  const stateLabel = state === "none"
+    ? "Idle"
+    : `${state.slice(0, 1).toUpperCase()}${state.slice(1)}`;
+  const statusLabel = state === "none"
+    ? "No retention sweep running"
+    : `Retention sweep ${state}`;
+  const age = completedAt
+    ? `${formatDuration(Math.max(0, Date.now() - Date.parse(completedAt)))} ago`
+    : undefined;
+
+  return (
+    <div
+      aria-label={statusLabel}
+      className={`instance-summary-row${state === "failed" ? " instance-summary-row-error" : ""}`}
+      role={state === "failed" ? "alert" : "status"}
+    >
+      <div className="instance-summary-kind">
+        <span aria-hidden="true" className="instance-summary-icon">
+          <Icon name="database" size={25} />
+        </span>
+        <span className="instance-summary-copy">
+          <strong>Retention sweep</strong>
+          <span>Periodic cleanup of run data</span>
+        </span>
+      </div>
+      <div className="instance-summary-result">
+        <strong>
+          <span aria-hidden="true" className="result-check">
+            <Icon name={state === "failed" ? "alert" : "check"} size={16} />
+          </span>
+          {stateLabel}
+          {age && <span> · {age}</span>}
+        </strong>
+        {maintenance.errorSummary ? (
+          <span>
+            {`${maintenance.trigger.slice(0, 1).toUpperCase()}${maintenance.trigger.slice(1)}`} trigger ·{" "}
+            {maintenance.errorSummary}
           </span>
         ) : (
           <span>
-            observed{" "}
-            <time dateTime={overview.health.freshness.observedAt}>
-              {formatTimestamp(overview.health.freshness.observedAt)}
-            </time>
+            {`${maintenance.trigger.slice(0, 1).toUpperCase()}${maintenance.trigger.slice(1)}`} trigger ·{" "}
+            {maintenance.removed} removed · {maintenance.candidates} candidates
           </span>
         )}
+        {state === "none" && completedAt && (
+          <span>Last completed at {formatTimestamp(completedAt)}</span>
+        )}
+        {maintenance.currentPhase && state === "running" && <span>{maintenance.currentPhase}</span>}
+        {maintenance.lastProgressAt && state === "running" && (
+          <span>Last progress {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago</span>
+        )}
       </div>
-      {maintenance && renderMaintenanceStatus(maintenance)}
-      {telemetryRetention && (
-        <div className="maintenance-indicator" role="status">
-          <strong>Telemetry retention {telemetryRetention.enabled ? "enabled" : "disabled"}</strong>
-          <span>{telemetryRetention.window} window, maximum {telemetryRetention.maxRuns} runs</span>
-          <span>first enable: {telemetryRetention.firstEnable}</span>
-          <span>instance.yaml retention changes require a daemon restart; watch-config only reloads the materialized config directory</span>
-          {telemetryRetention.lastPassAt ? (
-            <span>
-              last pass {telemetryRetention.lastPassMode} at {formatTimestamp(telemetryRetention.lastPassAt)}, {telemetryRetention.candidateCount} candidates
-            </span>
-          ) : (
-            <span>no retention pass recorded</span>
-          )}
-          {telemetryRetention.enabled && telemetryRetention.enforceAt && (
-            <span>enforcement begins {formatTimestamp(telemetryRetention.enforceAt)}</span>
-          )}
-        </div>
-      )}
-      <dl>
-        <div>
-          <dt>Gaggles</dt>
-          <dd>{overview.instance.counts.gaggles}</dd>
-        </div>
-        <div>
-          <dt>Active runs</dt>
-          <dd>{overview.instance.counts.activeRuns}</dd>
-        </div>
-      </dl>
-    </section>
+    </div>
   );
+}
+
+function formatRetentionWindow(window: string): string {
+  const match = /^(\d+)d$/.exec(window);
+  return match ? `${match[1]} days` : window;
 }
 
 function RunSection({

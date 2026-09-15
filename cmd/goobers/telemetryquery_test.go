@@ -225,6 +225,55 @@ func TestDetectCandidateFindingsWithCreditAppliesThresholdsAndGuardrails(t *test
 	validateCandidateFindings(t, data)
 }
 
+func TestDetectCandidateFindingsLoadsStoredAttributionCohorts(t *testing.T) {
+	root := initDemo(t)
+	runID := "attribution-run-1"
+	writeAttributedCreditRun(t, root, runID)
+	rebuildTelemetryQueryRollup(t, root)
+
+	db, err := rollup.Open(instance.NewLayout(root).TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	store, err := readmodel.Open(instance.NewLayout(root).ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	thresholds := rollup.DefaultThresholds()
+	thresholds.MinCreditRuns = 1
+	thresholds.MinCreditFailureShare = 0
+	result, err := detectCandidateFindingsWithCausalCredit(
+		db,
+		store,
+		24*time.Hour,
+		time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC),
+		root,
+		"example",
+		"default-implement",
+		telemetryAggregateValues{telemetryAggregateCreditAssignment},
+		nil,
+		thresholds,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.AttributionCohorts) != 1 {
+		t.Fatalf("attribution cohorts = %+v, want one stored cohort", result.AttributionCohorts)
+	}
+	cohort := result.AttributionCohorts[0]
+	if cohort.RunCount != 1 || cohort.Workload != string(journal.TriggerManual) || len(cohort.TopContributingPaths) == 0 {
+		t.Fatalf("stored cohort = %+v", cohort)
+	}
+	link := cohort.TopContributingPaths[0].Evidence[0]
+	if link.RunID != runID || link.JournalSequence == 0 || link.JournalPath == "" || link.ArtifactDigest == "" {
+		t.Fatalf("stored contribution evidence = %+v", link)
+	}
+	validateCandidateFindings(t, mustCandidateJSON(t, result))
+}
+
 func TestTelemetryQueryLearningActionFilterIsExplicitAndRepeatable(t *testing.T) {
 	var actions telemetryLearningActionValues
 	if err := actions.Set("code-issue"); err != nil {
@@ -528,6 +577,15 @@ func validateCandidateFindings(t *testing.T, data []byte) {
 	if err := validator.ValidateJSON(schemas.CandidateFindings, data); err != nil {
 		t.Fatalf("candidate findings schema validation: %v\n%s", err, data)
 	}
+}
+
+func mustCandidateJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func seedCreditFindingRuns(

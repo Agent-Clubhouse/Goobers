@@ -405,7 +405,8 @@ func (db *DB) InstanceSummaryStats(ctx context.Context, since time.Time) (Instan
 		sa.duration_ms IS NOT NULL
 		AND EXISTS (
 			SELECT 1 FROM harness_transcripts h
-			WHERE h.run_id = sa.run_id AND h.stage = sa.stage
+			WHERE h.run_id = sa.run_id
+				AND (h.stage = sa.stage OR h.stage = sa.run_id || ':' || sa.stage)
 		)`
 	var stageArgs []any
 	if !since.IsZero() {

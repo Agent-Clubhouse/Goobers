@@ -738,7 +738,7 @@ func buildSchedulerDefinitions(
 	// Built once and threaded into both admission (#4292 — model discovery at
 	// config-load time previously saw no resolver at all) and the preflight
 	// sign-in probe below, so both consult the exact same credential source.
-	modelCredential, err := agentModelCredentialResolver(cfg, stores)
+	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		return nil, err
 	}

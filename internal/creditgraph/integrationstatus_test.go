@@ -7,9 +7,7 @@ import (
 	"testing"
 )
 
-// entryPoints are the package's two consumer-facing entry points. While both
-// sit in the deadcode exemption ledger, nothing in production builds or
-// attributes a credit graph, and docs/design/credit-graph.md must say so.
+// entryPoints are the package's two consumer-facing entry points.
 var entryPoints = []string{
 	"github.com/goobers/goobers/internal/creditgraph.Build",
 	"github.com/goobers/goobers/internal/creditgraph.Attribute",
@@ -32,11 +30,8 @@ func normalizeProse(markdown string) string {
 	return strings.Join(strings.Fields(strings.ReplaceAll(b.String(), "**", "")), " ")
 }
 
-// The design page claimed a landed read model for months while production
-// attribution ran entirely through internal/readmodel (#4523). Tie the claim to
-// the mechanical evidence: an exempted entry point means unreachable, so the
-// design must say so; wiring one up must force the design to be rewritten in
-// the same change rather than left overstating or understating integration.
+// Tie the design status to mechanical reachability evidence: an exempted entry
+// point means unreachable, while wiring both must remove the old unwired claim.
 func TestDesignStatusMatchesDeadcodeReachability(t *testing.T) {
 	t.Parallel()
 

@@ -34,7 +34,7 @@ func TestAgentModelCredentialResolverResolvesFileRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolve, err := agentModelCredentialResolver(cfg, stores)
+	resolve, _, err := agentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		t.Fatalf("agentModelCredentialResolver: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestAgentModelCredentialResolverNilWithoutGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolve, err := agentModelCredentialResolver(cfg, stores)
+	resolve, _, err := agentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		t.Fatalf("agentModelCredentialResolver: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestCopilotPreflightSatisfiedByFileRefOnlyCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolve, err := agentModelCredentialResolver(cfg, stores)
+	resolve, _, err := agentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		t.Fatalf("agentModelCredentialResolver: %v", err)
 	}

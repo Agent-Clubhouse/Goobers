@@ -130,7 +130,11 @@ func upstreamProductionFromJournal(jr executionJournal, stage string, sources []
 			if !named && event.Branch == 0 {
 				continue
 			}
-			record(event.Stage, len(event.Artifacts) > 0 || len(event.Outputs) > 0)
+			// A no-work branch explicitly evaluated its source and found it
+			// empty. At a fan-in, that is sufficient evidence for the join to
+			// truthfully report that every source was empty.
+			record(event.Stage, len(event.Artifacts) > 0 || len(event.Outputs) > 0 ||
+				(branchOnly && event.Status == string(apiv1.ResultNoWork)))
 		case journal.EventGateEvaluated:
 			if !named || event.Gate == "" || !slices.Contains(sources, event.Gate) {
 				continue

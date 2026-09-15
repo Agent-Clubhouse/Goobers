@@ -292,6 +292,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
 	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
+	mux.HandleFunc(prefix+"/activity", s.handleActivity)
 	mux.HandleFunc(prefix+"/labels", s.handleRepoLabels)
 	mux.HandleFunc(prefix+"/code-scanning/alerts", s.handleSecurityAlerts("code-scanning"))
 	mux.HandleFunc(prefix+"/dependabot/alerts", s.handleSecurityAlerts("dependabot"))
@@ -644,6 +645,26 @@ func (s *fakeGitHubServer) handleGitRef(w http.ResponseWriter, r *http.Request) 
 		"ref":    "refs/" + ref,
 		"object": map[string]string{"sha": sha, "type": "commit"},
 	})
+}
+
+func (s *fakeGitHubServer) handleActivity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		return
+	}
+	ref := r.URL.Query().Get("ref")
+	branch := strings.TrimPrefix(ref, "refs/heads/")
+	s.mu.Lock()
+	_, ok := s.branchTips[branch]
+	s.mu.Unlock()
+	if !ok {
+		http.Error(w, "no branch activity registered for "+branch, http.StatusNotFound)
+		return
+	}
+	writeFakeJSON(w, []map[string]any{{
+		"ref":       "refs/heads/" + branch,
+		"timestamp": time.Now().UTC(),
+	}})
 }
 
 func (s *fakeGitHubServer) newGitHubProvider(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {

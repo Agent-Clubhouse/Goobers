@@ -108,11 +108,15 @@ func daemonDiscoveryIdentity(root string) httpapi.DiscoveryIdentity {
 	}
 }
 
-func daemonChangeFeedHandlerOptions(setup *schedulerSetup) []httpapi.HandlerOption {
-	if setup.ReadModel == nil {
-		return nil
+func daemonReadHandlerOptions(root string, setup *schedulerSetup) []httpapi.HandlerOption {
+	options := []httpapi.HandlerOption{
+		httpapi.WithDiscoveryIdentity(daemonDiscoveryIdentity(root)),
+		httpapi.WithTelemetryReadAvailability(setup.RollupDB != nil),
 	}
-	return []httpapi.HandlerOption{httpapi.WithChangeFeedStream(setup.ReadModel)}
+	if setup.ReadModel != nil {
+		options = append(options, httpapi.WithChangeFeedStream(setup.ReadModel))
+	}
+	return options
 }
 
 func appendWorkerDivergenceHandlerOption(options []httpapi.HandlerOption, setup *schedulerSetup) ([]httpapi.HandlerOption, error) {
@@ -839,7 +843,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	//
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
-	apiHandlerOpts := append(daemonChangeFeedHandlerOptions(setup), httpapi.WithTelemetryReadAvailability(setup.RollupDB != nil))
+	apiHandlerOpts := daemonReadHandlerOptions(l.Root, setup)
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
 	// #3883 (decision 005 R8): give the intervention surface a second
 	// destination. Runner-driven runs keep the in-process path untouched;
@@ -924,7 +928,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	claimPlane := newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)
 	claimPlane.shared = daemonSharedClaimResolver(l, setup.Config, setup.SharedRegistry, setup.SecretStores)
 	apiHandlerOpts = append(apiHandlerOpts,
-		httpapi.WithDiscoveryIdentity(daemonDiscoveryIdentity(l.Root)),
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(claimPlane),
