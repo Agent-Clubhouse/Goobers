@@ -552,6 +552,23 @@ summary:focus-visible {
   flex: 1 1 300px;
 }
 
+.topbar-hosted .topbar-brand,
+.topbar-hosted .topbar-instance-context {
+  flex: 1 1 auto;
+}
+
+.topbar-hosted .topbar-instance-name,
+.topbar-hosted .topbar-computer-name,
+.topbar-hosted .topbar-environment {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-hosted .topbar-info-wrap {
+  flex: none;
+}
+
 .topbar-hosted .topbar-actions,
 .topbar-host-actions {
   display: flex;
