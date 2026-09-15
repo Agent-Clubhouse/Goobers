@@ -4,6 +4,7 @@ import test from "node:test";
 import {
     interventionCapability,
     interventionIdempotencyKey,
+    loadInsightStats,
     loadRuns,
     loadWorkflowDetail,
     requireDurableInterventionResult,
@@ -69,6 +70,63 @@ test("workflow detail requires daemon mode", async () => {
         loadWorkflowDetail({ mode: "actions" }, "core", "implementation"),
         /running Goobers daemon/,
     );
+});
+
+test("insight stats build a query from only the defined option keys", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push({ url, options });
+        return Response.json({ gaggles: [], runs: [], stages: [], usage: [], curation: {}, readyPool: {} });
+    };
+    try {
+        const stats = await loadInsightStats(
+            { mode: "daemon", baseUrl: "http://daemon", token: "test-token" },
+            {
+                gaggle: "core",
+                workflow: "implementation",
+                since: "2026-01-01T00:00:00Z",
+                until: "2026-01-02T00:00:00Z",
+                trendBuckets: 8,
+                trendSince: undefined,
+                trendUntil: null,
+                trendPreviousSince: "",
+            },
+        );
+        const url = new URL(requests[0].url);
+        assert.equal(url.origin + url.pathname, "http://daemon/api/v1/telemetry/stats");
+        assert.deepEqual([...url.searchParams.entries()].sort(), [
+            ["gaggle", "core"],
+            ["since", "2026-01-01T00:00:00Z"],
+            ["trendBuckets", "8"],
+            ["until", "2026-01-02T00:00:00Z"],
+            ["workflow", "implementation"],
+        ]);
+        assert.equal(requests[0].options.headers.Authorization, "Bearer test-token");
+        assert.deepEqual(stats.gaggles, []);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("insight stats omit the query string entirely when no options are given", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url) => {
+        requests.push(url);
+        return Response.json({});
+    };
+    try {
+        await loadInsightStats({ mode: "daemon", baseUrl: "http://daemon" });
+        assert.equal(requests[0], "http://daemon/api/v1/telemetry/stats");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("insight stats require daemon mode", async () => {
+    await assert.rejects(loadInsightStats({ mode: "standalone" }, {}), /running Goobers daemon/);
+    await assert.rejects(loadInsightStats({ mode: "actions" }, {}), /running Goobers daemon/);
 });
 
 test("daemon run summaries hydrate associated issue refs from run events", async () => {

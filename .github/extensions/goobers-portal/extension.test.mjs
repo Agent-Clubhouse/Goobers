@@ -56,16 +56,29 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                 identity: { gaggle: "core", name: "implementation" },
                 stages: [{ name: "implement", kind: "agentic", rawYaml: "name: implement\n" }],
             };
+            const insightStats = {
+                gaggles: [{ gaggle: "core", totalRuns: 5, completedRuns: 4, failedRuns: 1, otherRuns: 0, infraFailedRuns: 0, successRate: 0.8 }],
+                runs: [], stages: [], usage: [], models: [], creditAssignment: [], causalCredit: [],
+                graphAnalytics: {}, promotionSignals: [], promotionCandidates: [],
+                curation: { runs: 0, ready: 0, needsHuman: 0, closed: 0, everRecorded: false },
+                readyPool: {},
+            };
+            const insightRequests = [];
             const daemon = createServer((req, res) => {
                 if (fail) {
                     res.writeHead(503).end();
                     return;
                 }
-                const pathname = new URL(req.url, "http://localhost").pathname;
+                const parsedUrl = new URL(req.url, "http://localhost");
+                const pathname = parsedUrl.pathname;
+                if (pathname === "/api/v1/telemetry/stats") {
+                    insightRequests.push(Object.fromEntries(parsedUrl.searchParams.entries()));
+                }
                 const body = pathname === "/api/v1/instance" ? { name: "remote-instance", fleet, warnings }
                     : pathname === "/api/v1/health" ? { ready: true }
                     : pathname === "/api/v1/gaggles" ? { items: [] }
                     : pathname === "/api/v1/gaggles/core/workflows/implementation" ? workflowDetail
+                    : pathname === "/api/v1/telemetry/stats" ? insightStats
                     : pathname === "/api/v1/runs" ? { runs: [] }
                     : {};
                 res.setHeader("Content-Type", "application/json");
@@ -111,6 +124,35 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
             assert.deepEqual(await unsupportedResponse.json(), {
                 connected: false,
                 reason: "Workflow detail requires a running Goobers daemon.",
+            });
+
+            const insightResponse = await fetch(
+                `${opened.url}api/insight-stats?source=${encodeURIComponent(source.id)}&gaggle=core&since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z`,
+            );
+            assert.equal(insightResponse.status, 200);
+            const insightBody = await insightResponse.json();
+            assert.equal(insightBody.connected, true);
+            assert.deepEqual(insightBody.stats, insightStats);
+            assert.deepEqual(insightRequests.at(-1), {
+                gaggle: "core",
+                since: "2026-01-01T00:00:00Z",
+                until: "2026-01-02T00:00:00Z",
+            });
+
+            const missingInsightSource = await fetch(`${opened.url}api/insight-stats`);
+            assert.equal(missingInsightSource.status, 200);
+            assert.deepEqual(await missingInsightSource.json(), {
+                connected: false,
+                reason: "no source selected",
+            });
+
+            const unsupportedInsight = await fetch(
+                `${opened.url}api/insight-stats?source=${encodeURIComponent(actionsSource.id)}`,
+            );
+            assert.equal(unsupportedInsight.status, 200);
+            assert.deepEqual(await unsupportedInsight.json(), {
+                connected: false,
+                reason: "Telemetry insights require a running Goobers daemon.",
             });
 
             fleet = { associated: false };
