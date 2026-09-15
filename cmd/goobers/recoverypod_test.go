@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/testgit"
+	"github.com/goobers/goobers/providers"
 )
 
 // recoveryPodTestGit runs one git command with a deterministic identity, for
@@ -79,7 +81,9 @@ func TestPodRecoveryNonWritableWorkspaceNeedsNoCustody(t *testing.T) {
 }
 
 func TestPodRecoveryMissingClaimPreservesSource(t *testing.T) {
+	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		if r.URL.Path != "/api/v1/claims/list" || r.Header.Get("Authorization") != "Bearer parent-token" {
 			t.Error("recovery did not use the parent claim credential")
 		}
@@ -96,10 +100,44 @@ func TestPodRecoveryMissingClaimPreservesSource(t *testing.T) {
 	if err := os.WriteFile(path, []byte("retain me"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := publishPodRecovery(t.Context(), root); err == nil {
-		t.Fatal("missing claim acknowledged recovery")
+	if err := publishPodRecovery(t.Context(), root); err != nil {
+		t.Fatalf("missing claim recovery: %v", err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "retain me" {
-		t.Fatalf("unacknowledged source changed: %q %v", data, err)
+		t.Fatalf("unclaimed source changed: %q %v", data, err)
+	}
+	if requests != 1 {
+		t.Fatalf("recovery made %d requests without a claim, want only the claim lookup", requests)
+	}
+}
+
+func TestPodRecoveryEmptyDiffNeedsNoCustody(t *testing.T) {
+	root := t.TempDir()
+	recoveryPodTestGit(t, root, "init", "--quiet", "-b", "main")
+	recoveryPodTestGit(t, root, "commit", "--quiet", "--allow-empty", "-m", "base")
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/api/v1/claims/list" {
+			t.Errorf("recovery request = %s, want only a claim lookup", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"entries":[{"runId":"pod-recovery","gaggle":"web","itemId":"42","expiresAt":"2030-01-01T00:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv(dispatcher.EnvStageWorkspace, "repo")
+	t.Setenv(dispatcher.EnvRunID, "pod-recovery")
+	t.Setenv(dispatcher.EnvGaggle, "web")
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvPodToken, "parent-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv(executor.BaseBranchEnvVar, "main")
+
+	if err := publishPodRecovery(t.Context(), root); err != nil {
+		t.Fatalf("empty workspace recovery: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("recovery made %d requests for an empty diff, want only the claim lookup", requests)
 	}
 }
