@@ -9,6 +9,8 @@ import {
     renderCausalDiagnosis,
     renderExecutionWaterfall,
     renderHtml,
+    renderFleetPortalLink,
+    renderGooberChip,
     renderRunDetailSummary,
     renderRunEventItems,
     renderOperatorPanel,
@@ -51,6 +53,51 @@ test("execution waterfall renders retry timing, gaps, and unavailable timing", (
 // inlining test below covers the browser actually getting the escaped copy.
 
 const HOSTILE = '<img src=x onerror=alert(1)>';
+
+test("compact portal puts attention before activity and keeps source status outside tabs", () => {
+    const html = renderHtml("compact");
+    assert.match(html, /data-tab="attention"[^>]*>Overview<\/button>/);
+    assert.ok(html.indexOf('id="needs-you"') < html.indexOf('id="cards"'));
+    assert.ok(html.indexOf('id="freshness"') < html.indexOf('id="dashboard"'));
+    assert.match(html, /aria-label="Goobers source"/);
+    assert.match(html, /Skip to content/);
+    assert.match(html, /More filters and saved views/);
+    assert.match(html, /class="table-scroll" role="region" aria-label="Runs" tabindex="0"/);
+    assert.match(html, /class="table-scroll" role="region" aria-label="Workflows" tabindex="0"/);
+});
+
+test("attention controls can grow instead of clipping at narrow widths", () => {
+    const html = renderHtml("compact");
+    const rule = html.match(/\.attention-item \{([^}]+)\}/)[1];
+    assert.match(rule, /min-height: 84px/);
+    assert.doesNotMatch(rule, /(?:^|[;\s])height:|overflow: hidden/);
+});
+
+test("Fleet portal link is rendered from selected instance status", () => {
+    assert.match(
+        renderFleetPortalLink({ associated: true, canonicalUri: "https://fleet.example.com/", connectionState: "connected" }),
+        /id="fleet-portal-link"[^>]*href="https:\/\/fleet\.example\.com\/"[^>]*target="_blank"[^>]*rel="noopener noreferrer"[^>]*>Open Fleet portal \(connected\)/,
+    );
+    assert.equal(renderFleetPortalLink({ associated: false, canonicalUri: "https://fleet.example.com/" }), "");
+    assert.equal(renderFleetPortalLink({ associated: true, canonicalUri: "javascript:alert(1)" }), "");
+    assert.doesNotMatch(renderHtml("fleet"), /Save link|fleetPortalUrl/);
+});
+
+test("goober chips add compact stage identity without losing escaping", () => {
+    const html = renderGooberChip('implement <unsafe>', { kind: "stage" });
+    assert.match(html, /class="goober-chip"/);
+    assert.match(html, /data-kind="stage"/);
+    assert.match(html, /🛠/);
+    assert.match(html, /implement &lt;unsafe&gt;/);
+    assert.doesNotMatch(html, /<unsafe>/);
+});
+
+test("run status badges preserve visible text and escape phase attributes", () => {
+    const html = renderRunRowCells({ phase: '" onmouseover="alert(1)', runId: "run" });
+    assert.match(html, /data-phase="&quot; onmouseover=&quot;alert\(1\)"/);
+    assert.doesNotMatch(html, /data-phase="" onmouseover/);
+    assert.match(renderRunRowCells({ phase: "failed" }), /data-phase="failed">failed<\/span>/);
+});
 
 test("snapshot cards escape an untrusted instance name", () => {
     const html = renderSnapshotCard("Instance", HOSTILE);
@@ -97,7 +144,8 @@ test("run rows keep pre-escaped association and actions markup as markup", () =>
 
 test("run rows fall back without throwing on an empty run", () => {
     const html = renderRunRowCells(undefined, undefined);
-    assert.match(html, /<td><code><\/code><\/td>/);
+    assert.match(html, /data-open-run=""/);
+    assert.match(html, /aria-label="Copy run id" title="Copy run id">&#128203;<\/button>/);
     assert.ok(!html.includes("undefined"), html);
 });
 
@@ -116,6 +164,19 @@ test("run detail summary escapes every metadata field", () => {
         finishedAt: HOSTILE,
         events: [{ type: "stage.finished", stage: HOSTILE }],
         transitions: [{ terminal: true, status: HOSTILE }],
+    });
+
+    test("run detail summary renders current and active goober chips", () => {
+        const html = renderRunDetailSummary({
+            id: "run",
+            workflow: "implementation",
+            currentStage: "implement",
+            activeStages: [{ name: "implement", goober: "implementer" }],
+        });
+        assert.match(html, /Current stage/);
+        assert.match(html, /Active goobers/);
+        assert.match(html, /class="goober-chip"/);
+        assert.match(html, /implementer/);
     });
     assert.doesNotMatch(html, /<img|<script>/);
     assert.match(html, /&lt;img/);
@@ -297,6 +358,20 @@ test("operator panel renders an escaped pull request description", () => {
 test("execution waterfall reports absence rather than rendering an empty chart", () => {
     assert.match(renderExecutionWaterfall({}), /No execution waterfall is available yet/);
     assert.match(renderExecutionWaterfall({ attempts: [] }), /No execution waterfall is available yet/);
+});
+
+test("execution waterfall adds retry take labels and blocked gate cues", () => {
+    const html = renderExecutionWaterfall({
+        events: [
+            { type: "stage.started", stage: "implement", attempt: 2, time: "2026-08-27T00:00:00Z" },
+            { type: "stage.finished", stage: "implement", attempt: 2, status: "failed", time: "2026-08-27T00:00:01Z" },
+            { type: "gate.started", stage: "review-gate", attempt: 1, time: "2026-08-27T00:00:02Z" },
+            { type: "gate.finished", stage: "review-gate", attempt: 1, status: "blocked", time: "2026-08-27T00:00:03Z" },
+        ],
+    });
+    assert.match(html, /take 2/);
+    assert.match(html, /🔒 gate/);
+    assert.match(html, /class="goober-chip"/);
 });
 
 test("run event items add a transcript link only for transcript events", () => {

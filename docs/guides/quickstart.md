@@ -431,6 +431,30 @@ goobers validate ./my-instance
 canonical schemas. Exit codes are `0` for valid configuration, `1` for
 validation errors, and `2` for usage or I/O errors.
 
+### Goobers Portal canvas
+
+The canvas opens with an attention-first **Overview**, with **Workflows** and
+**Runs** available as separate tabs. Run details stay open during background
+refreshes; returning to Runs preserves filters and restores keyboard focus.
+Advanced run filters and saved views are under **More filters and saved views**.
+
+On a live daemon, **Run now** triggers a workflow from the Workflows tab. If its
+hourly or daily cadence budget is exhausted, the canvas asks before retrying with
+`--force`; declining does not retry, and unrelated rejections do not prompt.
+Switching sources while a request is pending keeps its late result out of the
+new source's status and error messages, even if you switch back and start another
+run. A source change during force confirmation cancels that retry.
+
+For a Fleet-enrolled instance, the canvas reads the non-secret Fleet association
+from the daemon's `/api/v1/instance` response and shows **Open Fleet portal** using
+that Fleet's canonical URI. Local sources fall back to `goobers fleet status
+--json` when the daemon does not provide this metadata. Older remote daemons
+that report enrollment without a URI show an explanatory message instead of a
+guessed link. Switching sources updates or hides the Fleet panel.
+The link opens the web app in a separate browser tab
+for Microsoft Entra sign-in, inventory, and instance portals. The canvas does
+not ask for a Fleet URL, embed Fleet inventory, or store Fleet credentials.
+
 ### Prerequisites for regular workflows
 
 - `golangci-lint` must be on the **daemon's** `PATH` — a workflow's `local-ci`

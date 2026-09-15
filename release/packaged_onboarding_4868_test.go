@@ -84,6 +84,19 @@ func TestPackagedOnboardingUsesInstallRouteCommand(t *testing.T) {
 			if !strings.Contains(string(quickstart), tc.confirmation) {
 				t.Errorf("quickstart missing confirmation %q", tc.confirmation)
 			}
+			for _, guidance := range []string{
+				"### Goobers Portal canvas",
+				"**More filters and saved views**",
+				"**Run now**",
+				"A source change during force confirmation cancels that retry.",
+				"`/api/v1/instance`",
+				"**Open Fleet portal**",
+				"Switching sources updates or hides the Fleet panel.",
+			} {
+				if !strings.Contains(string(quickstart), guidance) {
+					t.Errorf("packaged quickstart lost portal guidance %q", guidance)
+				}
+			}
 
 			readme, err := os.ReadFile(filepath.Join(payloadDir, "README.md"))
 			if err != nil {

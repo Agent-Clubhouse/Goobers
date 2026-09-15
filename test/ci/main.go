@@ -521,38 +521,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			windowsBatch: true,
 			group:        groupChecks,
 		},
-		// extension-test runs the canvas extension's Node --test suites for
-		// .github/extensions/goobers-portal. Files are enumerated explicitly
-		// so the Go executor (which does not expand shell globs — the
-		// Makefile's `extension-test` target relies on POSIX shell for the
-		// `*.test.mjs` pattern) still runs every suite, and the
-		// `TestExtensionTestCheckUsesNodeAndCoversAllTestFiles` guard fails
-		// fast when a newly added *.test.mjs file is not wired here. Coverage
-		// includes every production module, excludes the tests themselves, and
-		// ratchets the line/branch/function values measured when #4841 landed.
-		check{
-			label:   "extension-test",
-			command: tools.nodeCommand,
-			args: []string{
-				"--test",
-				"--experimental-test-coverage",
-				"--test-coverage-include=.github/extensions/goobers-portal/*.mjs",
-				"--test-coverage-exclude=.github/extensions/goobers-portal/*.test.mjs",
-				"--test-coverage-lines=68",
-				"--test-coverage-branches=73",
-				"--test-coverage-functions=64",
-				".github/extensions/goobers-portal/actions-source.test.mjs",
-				".github/extensions/goobers-portal/client.test.mjs",
-				".github/extensions/goobers-portal/extension.test.mjs",
-				".github/extensions/goobers-portal/filters.test.mjs",
-				".github/extensions/goobers-portal/preferences.test.mjs",
-				".github/extensions/goobers-portal/registry.test.mjs",
-				".github/extensions/goobers-portal/render.test.mjs",
-				".github/extensions/goobers-portal/storage.test.mjs",
-				".github/extensions/goobers-portal/ux.test.mjs",
-			},
-			group: groupChecks,
-		},
+		extensionTestCheck(tools),
 		check{
 			label:        "portal-deadcode",
 			command:      tools.npmCommand,
@@ -626,6 +595,36 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		}
 	}
 	return result
+}
+
+// Files are enumerated explicitly because the Go executor does not expand
+// shell globs. TestExtensionTestCheckUsesNodeAndCoversAllTestFiles guards this
+// list and the production-module coverage thresholds introduced in #4841.
+func extensionTestCheck(tools toolchain) check {
+	return check{
+		label:   "extension-test",
+		command: tools.nodeCommand,
+		args: []string{
+			"--test",
+			"--experimental-test-coverage",
+			"--test-coverage-include=.github/extensions/goobers-portal/*.mjs",
+			"--test-coverage-exclude=.github/extensions/goobers-portal/*.test.mjs",
+			"--test-coverage-lines=68",
+			"--test-coverage-branches=73",
+			"--test-coverage-functions=64",
+			".github/extensions/goobers-portal/actions-source.test.mjs",
+			".github/extensions/goobers-portal/client.test.mjs",
+			".github/extensions/goobers-portal/extension.test.mjs",
+			".github/extensions/goobers-portal/filters.test.mjs",
+			".github/extensions/goobers-portal/preferences.test.mjs",
+			".github/extensions/goobers-portal/registry.test.mjs",
+			".github/extensions/goobers-portal/render.test.mjs",
+			".github/extensions/goobers-portal/run-now.test.mjs",
+			".github/extensions/goobers-portal/storage.test.mjs",
+			".github/extensions/goobers-portal/ux.test.mjs",
+		},
+		group: groupChecks,
+	}
 }
 
 func fullChecks(makeCommand string) []check {

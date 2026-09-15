@@ -155,6 +155,20 @@ export function decodeViewState(search = "") {
     return { filters, selectedRun };
 }
 
+export function createSnapshotFetcher(fetch) {
+    const inFlight = new Map();
+    return function fetchSourceSnapshot(sourceId) {
+        if (!inFlight.has(sourceId)) {
+            const request = Promise.resolve()
+                .then(() => fetch("/api/snapshot?source=" + encodeURIComponent(sourceId)))
+                .then((response) => response.json())
+                .finally(() => inFlight.delete(sourceId));
+            inFlight.set(sourceId, request);
+        }
+        return inFlight.get(sourceId);
+    };
+}
+
 export function decodeStreamEvent(data) {
     if (data && typeof data === "object") return data;
     if (typeof data !== "string" || !data.trim()) return null;
