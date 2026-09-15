@@ -1,15 +1,17 @@
 # Guide: Reviewed cross-repository coordination
 
 `goobers coordinate` reconciles one approved work plan owned by a named gaggle.
-Separate repository-owning gaggles implement its children through their ordinary
+Repository-owning gaggles implement its children through their ordinary
 one-issue/one-PR workflows. The coordinator creates and links issues, controls
 their eligibility, observes PRs and releases, and closes the parent only after
 exact reviewed integration evidence. It cannot merge, push code, create a
 release, or deploy.
 
-**Delivery boundary:** this is a local, manually invoked operator command for
-GitHub.com, not an autonomous planning agent, scheduled workflow stage, daemon,
-or tier-3 service. It refuses workflow-stage and pod execution. Use one owning
+**Delivery boundary:** local GitHub.com coordination is available through the
+operator CLI and an explicitly approved, in-process manual workflow executor.
+It is not an autonomous planning agent, scheduled controller, or tier-3 service.
+The CLI still refuses shell-stage execution; the native executor refuses pods.
+Use one owning
 instance on one host; concurrent invocations must share that instance root and
 its `coordination-locks` directory. Independent hosts/instances are not supported
 as concurrent coordinators for the same parent. No CLI invocation here installs
@@ -23,7 +25,7 @@ This distinction addresses [Agent-Clubhouse/Goobers#5172](https://github.com/Age
 
 ## Dormant provisioning and explicit authority
 
-Add this optional block to the operator-owned `instance.yaml`. Leaving both
+Add this optional block to the operator-owned `instance.yaml`. Leaving all
 approval maps empty is a valid dormant configuration; loading it starts nothing.
 Existing binaries without this feature reject the new field rather than silently
 enabling it.
@@ -40,6 +42,7 @@ coordination:
           approval: reviewed-plan
       approvedPlans: {}
       approvedEvidence: {}
+      approvedWorkflows: {}
 ```
 
 The schema is `api/schemas/instance.schema.json`. All three repositories must
@@ -48,8 +51,11 @@ credential references. Omit `baseUrl`: enterprise endpoints and even alternate
 explicit spellings of GitHub's default endpoint are rejected in this version,
 preventing two identity spellings from addressing the same publication target.
 The named coordinator must be a loaded gaggle whose project is the parent
-repository. Each target must have exactly one *separate* loaded gaggle with that
-project identity. A read-only `additionalRepos` entry does not satisfy this rule.
+repository. Each target must have exactly one loaded gaggle with that
+project identity. The coordinator itself may own children in its primary
+repository, but that repository must still appear explicitly in `targets`.
+The parent issue cannot also be a child, and dependency cycles/self-dependencies
+are rejected. A read-only `additionalRepos` entry does not satisfy this rule.
 The command loads the materialized local `config` tree, not a remote workflow
 source; materialize and validate that tree through the existing config workflow
 before activation.
@@ -78,8 +84,8 @@ wait label, and clears it only when the child's dependency/ownership conditions
 permit progress. It restores waiting when those conditions fail.
 
 The runner-only `coordination:write` capability is deliberately **not**
-stage-declarable or configurable under `credentials`. Only this deterministic
-operator command materializes it, under a repository-qualified key, using the
+stage-declarable or configurable under `credentials`. Only the deterministic
+coordinator (operator command or native manual executor) materializes it, under a repository-qualified key, using the
 exact target repository's configured token and the existing credential injector
 and secret scrubber. It ignores instance `credentials` and `daemonIdentity`
 overrides. No cross-repo token is passed to an agent, subprocess, shell, JSON
@@ -95,6 +101,76 @@ Provider permission breadth is not reduced by a capability name: keep actual
 token material appropriately scoped. See [GitHub token scopes](github-token-scopes.md).
 Protect the operator's instance config and token sources from implementer OS
 identities; a same-user unrestricted shell is not a security sandbox.
+
+## Native manual workflow
+
+The tested definition is
+[`examples/coordination/workflow.yaml`](../../examples/coordination/workflow.yaml).
+Install the definition only in a staged candidate until activation is authorized:
+
+```yaml
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: coordinate
+spec:
+  gaggle: coordinator
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: reconcile
+  tasks:
+    - name: reconcile
+      type: deterministic
+      goal: Reconcile the operator-approved coordination plan.
+      run:
+        command: ["goobers", "coordinate"]
+        workspace: scratch
+      inputs:
+        kind: coordination
+        planFile: coordination/plan.json
+      capabilities: []
+      expectedOutputs: [state, complete, planDigest]
+```
+
+`run.command` is a dispatch identifier: the native kind never spawns that command
+or injects credential environment variables. No stage capabilities are required
+or permitted, including `coordination:write`. That authority remains runner-owned.
+The workflow must have exactly one deterministic task, one manual trigger, no
+gates/parallel branches, no agentic task, and no `inputsFrom` or experiment.
+Both supported DSL interpreters reject other shapes. Pod placement fails closed.
+
+Paths are static, relative to the **instance root**, or explicit absolute paths;
+they never resolve against an agent worktree. Optional static inputs
+`evidenceFile` and `artifactFile` select the reviewed evidence JSON and actual
+integration log. Do not configure those inputs until their files exist.
+Only these file selectors and `kind` are accepted. Dynamic request overrides,
+extra capabilities, wrong gaggle/project/workflow identities, and nested agentic
+invocations are refused before credential resolution.
+
+Review the full workflow, then compute its typed workflow-spec digest offline:
+
+```powershell
+goobers coordinate --gaggle coordinator --plan .\instance\coordination\plan.json --workflow coordinate --check .\instance
+```
+
+Record `workflowDigest` under the owning authority's
+`approvedWorkflows.coordinate`, in addition to the separate `approvedPlans` and
+`approvedEvidence` approvals. The digest covers the full workflow spec, including
+file selectors and the manual trigger. Changing paths or adding evidence/artifact
+inputs requires another workflow approval; changing evidence content requires
+another evidence approval. Empty approval maps remain dormant.
+
+Only after explicit activation approval, the existing manual-run interface is
+`goobers run --gaggle coordinator coordinate .\instance`. Each invocation performs
+one reconciliation pass; it creates no polling loop, schedule, or auto-start.
+Rerun manually after an owner advances a child or reviewed evidence changes.
+The stage returns the normal coordination result in its journaled outputs plus
+`complete: true` only for verified parent completion. A successful workflow pass
+with `state: waiting`, `blocked`, or `integration-required` is **not** delivery
+completion.
 
 ## Author, review, approve, then publish
 

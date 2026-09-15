@@ -53,11 +53,12 @@ type Target struct {
 
 // Authority lives in trusted instance configuration, never in a work plan.
 type Authority struct {
-	Name             string            `json:"name" yaml:"name"`
-	ParentRepo       Repository        `json:"parentRepo" yaml:"parentRepo"`
-	Targets          []Target          `json:"targets" yaml:"targets"`
-	ApprovedPlans    map[string]string `json:"approvedPlans,omitempty" yaml:"approvedPlans,omitempty"`
-	ApprovedEvidence map[string]string `json:"approvedEvidence,omitempty" yaml:"approvedEvidence,omitempty"`
+	Name              string            `json:"name" yaml:"name"`
+	ParentRepo        Repository        `json:"parentRepo" yaml:"parentRepo"`
+	Targets           []Target          `json:"targets" yaml:"targets"`
+	ApprovedPlans     map[string]string `json:"approvedPlans,omitempty" yaml:"approvedPlans,omitempty"`
+	ApprovedEvidence  map[string]string `json:"approvedEvidence,omitempty" yaml:"approvedEvidence,omitempty"`
+	ApprovedWorkflows map[string]string `json:"approvedWorkflows,omitempty" yaml:"approvedWorkflows,omitempty"`
 }
 
 type Configuration struct {
@@ -87,7 +88,7 @@ func (a Authority) Validate() error {
 		}
 		seen[target.Repository.Key()] = true
 	}
-	for _, approvals := range []map[string]string{a.ApprovedPlans, a.ApprovedEvidence} {
+	for _, approvals := range []map[string]string{a.ApprovedPlans, a.ApprovedEvidence, a.ApprovedWorkflows} {
 		for id, digest := range approvals {
 			if !namePattern.MatchString(id) || !digestPattern.MatchString(digest) {
 				return fmt.Errorf("coordination approvals require a plan id and lowercase SHA-256 digest")

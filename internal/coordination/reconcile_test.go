@@ -148,7 +148,19 @@ func mergedEvidence(p coordination.Plan, f []*fakeProvider) *coordination.Eviden
 }
 
 func TestCoordinationExampleEndToEnd(t *testing.T) {
+	t.Run("separate-owner", func(t *testing.T) { coordinationEndToEnd(t, false) })
+	t.Run("coordinator-primary-child", func(t *testing.T) { coordinationEndToEnd(t, true) })
+}
+
+func coordinationEndToEnd(t *testing.T, primaryChild bool) {
+	t.Helper()
 	p, r, f := fixture(t)
+	if primaryChild {
+		p.Children[1].Repository = p.Parent.Repository
+		r.Authority.Targets = append(r.Authority.Targets, coordination.Target{Repository: p.Parent.Repository, Approval: "reviewed-plan"})
+		r.Authority.ApprovedPlans[p.ID], _ = coordination.Digest(p)
+		f[2] = f[0]
+	}
 	out := reconcile(t, r, p, nil)
 	if out.Children[0].State != "ready" || out.Children[1].State != "blocked" {
 		t.Fatalf("%+v", out)
@@ -513,6 +525,7 @@ func TestCoordinationReviewedAssigneeRoutesChild(t *testing.T) {
 	if err := p.Validate(r.Authority, true); err == nil {
 		t.Fatal("assignee changed without new plan approval")
 	}
+
 	r.Authority.ApprovedPlans[p.ID], _ = coordination.Digest(p)
 	reconcile(t, r, p, nil)
 	if f[1].items["7"].Assignee != "implementer" || coordination.Publications(p)[0].Assignee != "implementer" {
@@ -523,5 +536,23 @@ func TestCoordinationReviewedAssigneeRoutesChild(t *testing.T) {
 	f[1].items["7"] = item
 	if _, err := r.Reconcile(t.Context(), p, nil); err == nil {
 		t.Fatal("unreviewed reassignment accepted")
+	}
+}
+
+func TestCoordinationRejectsParentAsPublishedChild(t *testing.T) {
+	p, r, f := fixture(t)
+	p.Children = p.Children[:1]
+	p.Children[0].Repository = p.Parent.Repository
+	r.Authority.Targets = []coordination.Target{{Repository: p.Parent.Repository, Approval: "reviewed-plan"}}
+	r.Authority.ApprovedPlans[p.ID], _ = coordination.Digest(p)
+	draft := coordination.Publications(p)[0]
+	parent := f[0].items[p.Parent.ID]
+	parent.Body = draft.Body
+	f[0].items[parent.ID] = parent
+	if _, err := r.Reconcile(t.Context(), p, nil); err == nil || !strings.Contains(err.Error(), "parent issue cannot") {
+		t.Fatalf("parent adopted as child: %v", err)
+	}
+	if f[0].creates != 0 {
+		t.Fatal("parent collision created work")
 	}
 }

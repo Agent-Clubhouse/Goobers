@@ -23,11 +23,12 @@ import (
 )
 
 const coordinateHelp = "Usage: goobers coordinate --gaggle NAME --plan FILE [--check]\n" +
-	"       [--evidence FILE] [--artifact FILE] [--result FILE] [instance-root]\n\n" +
-	"Reconcile one explicitly approved cross-repository plan. Local operator-only;\n" +
+	"       [--workflow NAME] [--evidence FILE] [--artifact FILE] [--result FILE] [instance-root]\n\n" +
+	"Reconcile one explicitly approved cross-repository plan. This CLI is operator-only;\n" +
 	"never starts a run/daemon, implements code, merges, or deploys. Requires\n" +
 	"instance.yaml coordination authority. --check validates and prints canonical\n" +
 	"plan/evidence digests without resolving credentials or contacting providers.\n" +
+	"--workflow NAME with --check also prints the native manual workflow digest.\n" +
 	"Exit codes: 0 = checked or reconciled, 1 = refusal/provider failure, 2 = usage.\n" +
 	"A successful pass may still report waiting, blocked, or integration-required.\n"
 
@@ -41,10 +42,11 @@ func runCoordinate(args []string, stdout, stderr io.Writer) int {
 	artifactPath := fs.String("artifact", "", "local integration log whose SHA-256 is attested")
 	resultPath := fs.String("result", "", "JSON result file (also printed to stdout)")
 	check := fs.Bool("check", false, "offline validation and canonical approval digests only")
+	workflowName := fs.String("workflow", "", "include a manual workflow approval digest (requires --check)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *gaggle == "" || *planPath == "" || fs.NArg() > 1 {
+	if *gaggle == "" || *planPath == "" || fs.NArg() > 1 || (*workflowName != "" && !*check) {
 		fs.Usage()
 		return 2
 	}
@@ -95,15 +97,11 @@ func runCoordinate(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	planDigest, _ := coordination.Digest(plan)
 	if *check {
-		out := map[string]any{"planDigest": planDigest, "publications": coordination.Publications(plan)}
-		if evidence != nil {
-			if evidence.PlanDigest != planDigest {
-				pln(stderr, "error: evidence planDigest does not match plan")
-				return 1
-			}
-			out["evidenceDigest"], _ = coordination.Digest(evidence)
+		out, err := coordinateCheckOutput(layout, *gaggle, *workflowName, plan, evidence)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
 		}
 		if err := json.NewEncoder(stdout).Encode(out); err != nil {
 			pf(stderr, "error: %v\n", err)
@@ -114,64 +112,38 @@ func runCoordinate(args []string, stdout, stderr io.Writer) int {
 	return executeCoordinate(cfg, layout, *authority, plan, evidence, *artifactPath, *resultPath, stdout, stderr)
 }
 
+func coordinateCheckOutput(layout instance.Layout, gaggle, workflowName string, plan coordination.Plan, evidence *coordination.Evidence) (map[string]any, error) {
+	planDigest, _ := coordination.Digest(plan)
+	out := map[string]any{"planDigest": planDigest, "publications": coordination.Publications(plan)}
+	if workflowName != "" {
+		workflow, err := coordinateWorkflow(layout, gaggle, workflowName)
+		if err != nil {
+			return nil, err
+		}
+		var configuredPlan coordination.Plan
+		if err := readCoordinateJSON(coordinateInputPath(layout, workflow.Spec.Tasks[0].Inputs["planFile"]), &configuredPlan); err != nil {
+			return nil, err
+		}
+		configuredDigest, _ := coordination.Digest(configuredPlan)
+		if configuredDigest != planDigest {
+			return nil, fmt.Errorf("workflow planFile differs from the plan supplied to --check")
+		}
+		out["workflowDigest"], _ = coordination.Digest(workflow.Spec)
+	}
+	if evidence != nil {
+		if evidence.PlanDigest != planDigest {
+			return nil, fmt.Errorf("evidence planDigest does not match plan")
+		}
+		out["evidenceDigest"], _ = coordination.Digest(evidence)
+	}
+	return out, nil
+}
+
 func executeCoordinate(cfg *instance.Config, layout instance.Layout, authority coordination.Authority, plan coordination.Plan, evidence *coordination.Evidence, artifactPath, resultPath string, stdout, stderr io.Writer) int {
-	// Resolve the existing config tree without starting its scheduler.
-	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
-	if err != nil {
-		pf(stderr, "error: load gaggle definitions: %v\n", err)
-		return 1
-	}
-	if report.HasErrors() {
-		pln(stderr, "error: gaggle definitions failed validation")
-		return 1
-	}
-	if err := coordinateGaggles(set, authority); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
 	registry, _ := journal.DefaultScrubber()
-	stores, err := secretstore.NewRegistry(cfg.SecretStores)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	reconciler := coordination.Reconciler{
-		Authority: authority, Providers: map[string]coordination.Provider{},
-		Leaser: decomposition.FileTargetLeaser{Directory: filepath.Join(layout.Root, "coordination-locks")},
-	}
-	repos := []coordination.Repository{authority.ParentRepo}
-	for _, child := range plan.Children {
-		repos = append(repos, child.Repository)
-	}
-	for _, repo := range repos {
-		if reconciler.Providers[repo.Key()] != nil {
-			continue
-		}
-		provider, err := coordinateProvider(ctx, cfg, repo.Ref(), stores, registry)
-		if err != nil {
-			pf(stderr, "error: %v\n", scrubTerminalError(registry, err))
-			return 1
-		}
-		reconciler.Providers[repo.Key()] = provider
-	}
-	if artifactPath != "" {
-		f, err := os.Open(artifactPath)
-		if err != nil {
-			pf(stderr, "error: open integration artifact: %v\n", err)
-			return 1
-		}
-		h := sha256.New()
-		_, copyErr := io.Copy(h, f)
-		closeErr := f.Close()
-		if copyErr != nil || closeErr != nil {
-			pf(stderr, "error: hash artifact: %v; close: %v\n", copyErr, closeErr)
-			return 1
-		}
-		reconciler.ArtifactDigest = hex.EncodeToString(h.Sum(nil))
-	}
-	out, reconcileErr := reconciler.Reconcile(ctx, plan, evidence)
+	out, reconcileErr := reconcileCoordinate(ctx, cfg, layout, authority, plan, evidence, artifactPath, registry)
 	if reconcileErr != nil {
 		out.State, out.Reason = "error", scrubTerminalError(registry, reconcileErr).Error()
 	}
@@ -197,6 +169,64 @@ func executeCoordinate(cfg *instance.Config, layout instance.Layout, authority c
 	return 0
 }
 
+func reconcileCoordinate(ctx context.Context, cfg *instance.Config, layout instance.Layout, authority coordination.Authority, plan coordination.Plan, evidence *coordination.Evidence, artifactPath string, registry terminalSecretRegistry) (coordination.Result, error) {
+	empty := coordination.Result{PlanID: plan.ID}
+	// Admission precedes credential construction for both CLI and native dispatch.
+	if err := plan.Validate(authority, true); err != nil {
+		return empty, err
+	}
+	if err := coordination.ValidateEvidence(plan, evidence, authority, true); err != nil {
+		return empty, err
+	}
+	// Resolve the existing config tree without starting its scheduler.
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		return empty, fmt.Errorf("load gaggle definitions: %w", err)
+	}
+	if report.HasErrors() {
+		return empty, fmt.Errorf("gaggle definitions failed validation")
+	}
+	if err := coordinateGaggles(set, authority); err != nil {
+		return empty, err
+	}
+	stores, err := secretstore.NewRegistry(cfg.SecretStores)
+	if err != nil {
+		return empty, err
+	}
+	reconciler := coordination.Reconciler{
+		Authority: authority, Providers: map[string]coordination.Provider{},
+		Leaser: decomposition.FileTargetLeaser{Directory: filepath.Join(layout.Root, "coordination-locks")},
+	}
+	repos := []coordination.Repository{authority.ParentRepo}
+	for _, child := range plan.Children {
+		repos = append(repos, child.Repository)
+	}
+	for _, repo := range repos {
+		if reconciler.Providers[repo.Key()] != nil {
+			continue
+		}
+		provider, err := coordinateProvider(ctx, cfg, repo.Ref(), stores, registry)
+		if err != nil {
+			return empty, err
+		}
+		reconciler.Providers[repo.Key()] = provider
+	}
+	if artifactPath != "" {
+		f, err := os.Open(artifactPath)
+		if err != nil {
+			return empty, fmt.Errorf("open integration artifact: %w", err)
+		}
+		h := sha256.New()
+		_, copyErr := io.Copy(h, f)
+		closeErr := f.Close()
+		if copyErr != nil || closeErr != nil {
+			return empty, fmt.Errorf("hash artifact: %v; close: %v", copyErr, closeErr)
+		}
+		reconciler.ArtifactDigest = hex.EncodeToString(h.Sum(nil))
+	}
+	return reconciler.Reconcile(ctx, plan, evidence)
+}
+
 func coordinateGaggles(set *instance.ConfigSet, authority coordination.Authority) error {
 	found := false
 	owners := map[string][]string{}
@@ -212,8 +242,8 @@ func coordinateGaggles(set *instance.ConfigSet, authority coordination.Authority
 	}
 	for _, target := range authority.Targets {
 		names := owners[target.Repository.Key()]
-		if len(names) != 1 || names[0] == authority.Name {
-			return fmt.Errorf("target %s/%s requires exactly one separate repo-owning gaggle", target.Repository.Owner, target.Repository.Name)
+		if len(names) != 1 {
+			return fmt.Errorf("target %s/%s requires exactly one repo-owning gaggle", target.Repository.Owner, target.Repository.Name)
 		}
 	}
 	return nil

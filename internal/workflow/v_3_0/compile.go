@@ -8,6 +8,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/builtincmd"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/coordination"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
@@ -210,6 +211,9 @@ func blockingFeatureProblems(diagnostics []FeatureDiagnostic) []string {
 // Errors are aggregated so one compile reports every problem, each message
 // actionable on its own.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
+	if err := coordination.ValidateWorkflow(def.Spec); err != nil {
+		return nil, fmt.Errorf("workflow %q: %w", def.Name, err)
+	}
 	o := &options{}
 	for _, opt := range opts {
 		opt(o)

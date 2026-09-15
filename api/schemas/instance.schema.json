@@ -21,7 +21,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["gaggles"],
-      "description": "Opt-in authority for the local operator-only coordinate command. Does not start runs, grant agents credentials, or make additionalRepos writable. GitHub.com only; all repositories must match exact configured repos. Maintainers approve canonical plan/evidence SHA-256 digests.",
+      "description": "Opt-in authority for the local coordinate command and operator-approved native manual workflows. Configuration starts nothing, grants no agent credentials, and leaves additionalRepos read-only. GitHub.com only; all repositories match exact configured repos. Maintainers approve canonical plan, evidence and workflow-spec SHA-256 digests.",
       "properties": {
         "gaggles": {
           "type": "array",
@@ -46,7 +46,8 @@
                 }
               },
               "approvedPlans": { "$ref": "#/$defs/coordinationApprovals" },
-              "approvedEvidence": { "$ref": "#/$defs/coordinationApprovals" }
+              "approvedEvidence": { "$ref": "#/$defs/coordinationApprovals" },
+              "approvedWorkflows": { "$ref": "#/$defs/coordinationApprovals" }
             }
           }
         }

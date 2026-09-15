@@ -197,6 +197,9 @@ func (r Reconciler) publishBatch(ctx context.Context, p Plan, digest string) (ma
 		if err != nil {
 			return nil, fmt.Errorf("publish %s: %w", child.Key(), err)
 		}
+		if child.Repository.Key() == p.Parent.Repository.Key() && item.ID == p.Parent.ID {
+			return nil, fmt.Errorf("parent issue cannot also be a coordinated child")
+		}
 		items[child.Key()] = item
 	}
 	for _, child := range p.Children {
@@ -448,6 +451,9 @@ func (r Reconciler) publish(ctx context.Context, p Plan, c Child, digest string)
 	}
 	if len(items) > 1 {
 		return providers.WorkItem{}, fmt.Errorf("duplicate durable child marker; human reconciliation required")
+	}
+	if len(items) == 1 && (NodeRef{Repository: c.Repository, ID: items[0].ID}).Key() == p.Parent.Key() {
+		return providers.WorkItem{}, fmt.Errorf("parent issue cannot also be a coordinated child")
 	}
 	if len(items) == 0 {
 		parentProvider := r.Providers[p.Parent.Repository.Key()]

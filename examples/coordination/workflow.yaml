@@ -1,0 +1,27 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: coordinate
+spec:
+  gaggle: coordinator
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: reconcile
+  tasks:
+    - name: reconcile
+      type: deterministic
+      goal: Reconcile exactly the operator-approved plan and report its actual state.
+      run:
+        command: ["goobers", "coordinate"]
+        workspace: scratch
+      inputs:
+        kind: coordination
+        planFile: coordination/plan.json
+      capabilities: []
+      expectedOutputs:
+        - state
+        - complete
+        - planDigest

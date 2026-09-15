@@ -975,12 +975,13 @@ reconcile an explicitly approved cross-repository plan (local operator only)
 
 ~~~text
 Usage: goobers coordinate --gaggle NAME --plan FILE [--check]
-       [--evidence FILE] [--artifact FILE] [--result FILE] [instance-root]
+       [--workflow NAME] [--evidence FILE] [--artifact FILE] [--result FILE] [instance-root]
 
-Reconcile one explicitly approved cross-repository plan. Local operator-only;
+Reconcile one explicitly approved cross-repository plan. This CLI is operator-only;
 never starts a run/daemon, implements code, merges, or deploys. Requires
 instance.yaml coordination authority. --check validates and prints canonical
 plan/evidence digests without resolving credentials or contacting providers.
+--workflow NAME with --check also prints the native manual workflow digest.
 Exit codes: 0 = checked or reconciled, 1 = refusal/provider failure, 2 = usage.
 A successful pass may still report waiting, blocked, or integration-required.
 ~~~

@@ -39,7 +39,7 @@ const (
 	// declare it, and its credential never comes from a target repository.
 	ConfigRepoRead Capability = "configrepo:read"
 	// CoordinationWrite is runner-only authority for the local coordinate
-	// command. It cannot be declared by workflows or agentic goobers.
+	// command and native manual executor. Stages and agents cannot declare it.
 	CoordinationWrite Capability = "coordination:write"
 	// GitHubIssuesRead grants read-only GitHub issue queries.
 	GitHubIssuesRead Capability = "github:issues:read"
