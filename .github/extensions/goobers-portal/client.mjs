@@ -644,6 +644,22 @@ export async function setWorkflowEnabled(resolved, gaggle, workflow, enabled) {
     return await sendJSON("PUT", `${baseUrl}${path}`, { enabled }, { token, timeoutMs: 60000 });
 }
 
+export async function triggerWorkflowNow(resolved, gaggle, workflow, { force = false } = {}) {
+    if (resolved.mode !== "daemon") {
+        throw new Error("Running workflows now requires a running Goobers daemon.");
+    }
+    const requestId = crypto.randomUUID();
+    const body = { workflow, requestId };
+    if (gaggle) body.gaggle = gaggle;
+    if (force) body.force = true;
+    const result = await sendJSON("POST", `${resolved.baseUrl}/api/v1/triggers`, body, {
+        token: resolved.token,
+        timeoutMs: 60000,
+        headers: { "Idempotency-Key": requestId },
+    });
+    return { ...result, requestId };
+}
+
 const interventionCapabilities = { approve: "approve", override: "override", rerun: "rerun" };
 
 export function validateIntervention(action, input = {}) {
