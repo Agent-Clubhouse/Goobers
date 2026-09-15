@@ -52,6 +52,10 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
             }];
             let fleet = { associated: true, canonicalUri: "https://fleet.example.test/", fleetId: "test-fleet" };
             let fail = false;
+            const workflowDetail = {
+                identity: { gaggle: "core", name: "implementation" },
+                stages: [{ name: "implement", kind: "agentic", rawYaml: "name: implement\n" }],
+            };
             const daemon = createServer((req, res) => {
                 if (fail) {
                     res.writeHead(503).end();
@@ -61,6 +65,7 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                 const body = pathname === "/api/v1/instance" ? { name: "remote-instance", fleet, warnings }
                     : pathname === "/api/v1/health" ? { ready: true }
                     : pathname === "/api/v1/gaggles" ? { items: [] }
+                    : pathname === "/api/v1/gaggles/core/workflows/implementation" ? workflowDetail
                     : pathname === "/api/v1/runs" ? { runs: [] }
                     : {};
                 res.setHeader("Content-Type", "application/json");
@@ -81,6 +86,32 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
             assert.deepEqual(associated.fleet, fleet);
             assert.deepEqual(associated.instance.warnings, warnings);
             assert.match(renderFleetPortalLink(associated.fleet), /href="https:\/\/fleet\.example\.test\/"/);
+
+            const detailResponse = await fetch(
+                `${opened.url}api/workflow-detail?source=${encodeURIComponent(source.id)}&gaggle=core&workflow=implementation`,
+            );
+            assert.equal(detailResponse.status, 200);
+            assert.deepEqual(await detailResponse.json(), { connected: true, workflow: workflowDetail });
+
+            const missingDetail = await fetch(`${opened.url}api/workflow-detail?source=${encodeURIComponent(source.id)}`);
+            assert.equal(missingDetail.status, 400);
+            assert.deepEqual(await missingDetail.json(), {
+                connected: false,
+                reason: "source, gaggle, and workflow are required",
+            });
+
+            const actionsSource = await addSource({
+                kind: "github-actions",
+                value: "https://github.com/owner/repo/actions/workflows/goobers.yml",
+            });
+            const unsupportedResponse = await fetch(
+                `${opened.url}api/workflow-detail?source=${encodeURIComponent(actionsSource.id)}&gaggle=core&workflow=implementation`,
+            );
+            assert.equal(unsupportedResponse.status, 200);
+            assert.deepEqual(await unsupportedResponse.json(), {
+                connected: false,
+                reason: "Workflow detail requires a running Goobers daemon.",
+            });
 
             fleet = { associated: false };
             assert.deepEqual((await snapshot()).fleet, fleet);
