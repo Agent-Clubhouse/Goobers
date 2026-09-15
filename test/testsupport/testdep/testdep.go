@@ -23,6 +23,10 @@ var declared = map[string]Dependency{
 		Name:        "bash",
 		InstallHint: "install Bash (Debian/Ubuntu: apt-get install bash)",
 	},
+	"claude": {
+		Name:        "claude",
+		InstallHint: "install and sign in to Claude Code",
+	},
 	"bwrap": {
 		Name:        "bwrap",
 		InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)",

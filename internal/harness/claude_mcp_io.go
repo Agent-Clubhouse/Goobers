@@ -9,23 +9,23 @@ import (
 )
 
 // withAutoGoobersIOClaude marks req eligible for the goobers-io MCP server
-// when a self-binary path is known to launch it, without touching req.Tools.
-// This differs from Copilot's withAutoGoobersIO: confirmed live against the
-// installed claude CLI (2.1.227) that --tools/--allowedTools do not gate
-// MCP-server-provided tools at all — once a server is registered via
-// --mcp-config, every tool it reports is reachable regardless of the
-// built-in tool allowlist's content, or even its absence. Threading
-// mcp__goobers-io__* names into --tools/--allowedTools (Copilot's approach)
-// would be a no-op here, and worse, would flip every eligible run into
-// claude-code's tool-constrained --tools path (see claudeExtraArgs) even for
-// goobers that declare no Spec.Tools — that's not this issue's concern to
-// change. Sets GoobersIORegistered so the shared prompt renderer only
-// mentions goobers-io tools once this adapter has actually registered them
-// (#2774).
+// when a self-binary path is known to launch it, adding only its exact MCP
+// tool names to req.Tools so Claude admits and preapproves them.
+// Sets GoobersIORegistered so the shared prompt renderer only mentions
+// goobers-io tools once this adapter has actually registered them (#2774).
+func goobersIOClaudeToolNames() []string {
+	out := make([]string, len(goobersIOTools))
+	for i, name := range goobersIOTools {
+		out[i] = "mcp__" + goobersIOServerName + "__" + name
+	}
+	return out
+}
+
 func withAutoGoobersIOClaude(req RunRequest, selfBin string) RunRequest {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return req
 	}
+	req.Tools = appendMissing(req.Tools, goobersIOClaudeToolNames()...)
 	req.GoobersIORegistered = true
 	return req
 }
@@ -42,8 +42,8 @@ func withAutoGoobersIOClaude(req RunRequest, selfBin string) RunRequest {
 // Copilot's "local"/"http" — confirmed live via `claude mcp add-json --help`
 // and a real --mcp-config run. Unlike Copilot's registration, no "tools"
 // field is included: Claude's MCP config schema doesn't have a per-server
-// tool sub-allowlist, and none is needed — the live check above confirmed
-// registering the server exposes all of goobers-io's tools already.
+// tool sub-allowlist; its process-wide --tools/--allowedTools flags admit
+// the exact names instead.
 func goobersIOClaudeMCPConfigArg(req RunRequest, selfBin string) (string, error) {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return "", nil
