@@ -80,6 +80,22 @@ func TestManagerCreateReconcilesReleasedPRBranchBeforeReacquisition(t *testing.T
 	if _, err := os.Stat(m.branchAcquisitionRunDir(first.key, owner)); !os.IsNotExist(err) {
 		t.Fatalf("branch acquisition record survived terminal cleanup: %v", err)
 	}
+	for _, wt := range []*Worktree{second, third} {
+		for _, record := range []string{
+			m.markerPath(wt.key, wt.RunID),
+			m.ownershipPath(wt.key, filepath.Base(wt.Path)),
+		} {
+			if _, err := os.Stat(record); !os.IsNotExist(err) {
+				t.Fatalf("terminal cleanup left registration %s: %v", record, err)
+			}
+		}
+	}
+	list := runTestGit(t, m.repoDirForKey(first.key), "worktree", "list", "--porcelain")
+	for _, wt := range []*Worktree{second, third} {
+		if strings.Contains(list, wt.Path) {
+			t.Fatalf("git worktree list still shows terminal stage %s: %s", wt.RunID, list)
+		}
+	}
 }
 
 func TestManagerCreateRefusesLiveSameRunBranchOccupant(t *testing.T) {
