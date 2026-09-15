@@ -1,11 +1,15 @@
 package runner
 
 import (
+	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -149,5 +153,116 @@ func TestValidateContinuationTargetUsesHistoricalSourceDigest(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, value)
 			}
 		}
+	}
+}
+
+func TestResumeFreshContinuationStartsAtRequestedTarget(t *testing.T) {
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "continuation", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web", Start: "prepare",
+			Tasks: []apiv1.Task{
+				{
+					Name: "prepare", Type: apiv1.TaskDeterministic,
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "finish",
+				},
+				{
+					Name: "finish", Type: apiv1.TaskDeterministic,
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+				},
+			},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	definition, err := json.Marshal(machine.Def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "source-run", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, map[string][]byte{
+		journal.PinnedWorkflowDefinitionInputName: definition,
+	}, journal.WithInputIntegrity(map[string]apiv1.Integrity{
+		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+	}))
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	if err := source.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sourceReader, err := journal.OpenRead(filepath.Join(runsDir, "source-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceEvents, err := sourceReader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := journal.CreateContinuation(runsDir, journal.ContinuationRequest{
+		RunID: "continued-run", SourceRunID: "source-run",
+		ExpectedTerminalSeq: sourceEvents[len(sourceEvents)-1].Seq,
+		Operator:            "operator@example.test",
+		Target:              "finish",
+	})
+	if err != nil {
+		t.Fatalf("CreateContinuation: %v", err)
+	}
+	if err := continuation.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	counting := &countingDeterministic{}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return counting, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: "continued-run", Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("result = %+v, want completed", result)
+	}
+	if counting.calls != 1 {
+		t.Fatalf("deterministic calls = %d, want only the requested target stage", counting.calls)
+	}
+	reader, err := journal.OpenRead(filepath.Join(runsDir, "continued-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := 0
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted {
+			started++
+			if event.Stage != "finish" {
+				t.Fatalf("stage.started = %+v, want only finish", event)
+			}
+		}
+	}
+	if started != 1 {
+		t.Fatalf("stage.started count = %d, want 1", started)
 	}
 }
