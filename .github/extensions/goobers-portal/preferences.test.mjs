@@ -28,6 +28,11 @@ test("preferences preserve theme and normalized multi-value filters", async () =
         });
         await setFilterPreferences({});
         assert.deepEqual(await readPreferences(), { theme: "dark", filters: {} });
+        await setThemePreference("light");
+        await setFilterPreferences({ phase: ["running"] });
+        assert.deepEqual(await readPreferences(), {
+            theme: "light", filters: { phase: ["running"] },
+        });
     } finally {
         if (previous === undefined) delete process.env.COPILOT_HOME;
         else process.env.COPILOT_HOME = previous;

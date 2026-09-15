@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
     attentionKey,
+    createSnapshotFetcher,
     decodeStreamEvent,
     decodeViewState,
     deriveAttemptLineage,
@@ -16,6 +17,64 @@ import {
     mergeRunPage,
     shouldApplyRestoredFilters,
 } from "./ux.mjs";
+
+test("SSE bursts share one snapshot request until its JSON body resolves", async () => {
+    const requests = [];
+    let resolveBody;
+    const body = new Promise((resolve) => { resolveBody = resolve; });
+    const fetchSnapshot = createSnapshotFetcher(async (url) => {
+        requests.push(url);
+        return { json: () => body };
+    });
+    const onMessage = (data) => decodeStreamEvent(data) && fetchSnapshot("remote:one");
+    const first = onMessage('{"type":"snapshot.changed"}');
+    await Promise.resolve();
+    const burst = Array.from({ length: 10 }, () => onMessage('{"type":"snapshot.changed"}'));
+    await Promise.resolve();
+    assert.deepEqual(requests, ["/api/snapshot?source=remote%3Aone"]);
+    for (const pending of burst) assert.equal(pending, first);
+    resolveBody({ connected: true });
+    assert.deepEqual(await first, { connected: true });
+    await Promise.all(burst);
+    await onMessage('{"type":"snapshot.changed"}');
+    assert.equal(requests.length, 2, "a later event must refresh rather than reuse settled data");
+});
+
+test("snapshot coalescing is isolated by source", async () => {
+    const requests = [];
+    let resolveOne;
+    const one = new Promise((resolve) => { resolveOne = resolve; });
+    const fetchSnapshot = createSnapshotFetcher(async (url) => {
+        requests.push(url);
+        return { json: () => url.endsWith("one") ? one : { source: "two" } };
+    });
+    const pending = fetchSnapshot("one");
+    assert.deepEqual(await fetchSnapshot("two"), { source: "two" });
+    assert.deepEqual(requests, ["/api/snapshot?source=one", "/api/snapshot?source=two"]);
+    assert.equal(fetchSnapshot("one"), pending);
+    resolveOne({ source: "one" });
+    await pending;
+});
+
+test("snapshot failures propagate to all waiters and allow a retry", async () => {
+    for (const failureStage of ["fetch", "json"]) {
+        let attempts = 0;
+        const failure = new Error(failureStage + " failed");
+        const fetchSnapshot = createSnapshotFetcher(async () => {
+            if (++attempts === 1) {
+                if (failureStage === "fetch") throw failure;
+                return { json: async () => { throw failure; } };
+            }
+            return { json: async () => ({ connected: true }) };
+        });
+        const first = fetchSnapshot("one");
+        const second = fetchSnapshot("one");
+        assert.equal(first, second);
+        await Promise.all([assert.rejects(first, failure), assert.rejects(second, failure)]);
+        assert.deepEqual(await fetchSnapshot("one"), { connected: true });
+        assert.equal(attempts, 2);
+    }
+});
 
 test("deriveAttention returns bounded actionable states with causal details", () => {
     const runs = [
