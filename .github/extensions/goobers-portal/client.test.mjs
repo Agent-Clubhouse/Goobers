@@ -147,6 +147,115 @@ for (const scenario of ["terminal advances", "terminal resumes", "empty run adva
     });
 }
 
+test("terminal hydration invalidates when only the structural lastSeq advances", async () => {
+    const originalFetch = globalThis.fetch;
+    const issue = { kind: "issue", id: "159", url: "https://github.com/octo/app/issues/159" };
+    const pr = { kind: "pr", id: "42", url: "https://github.com/octo/app/pull/42" };
+    let refreshes = 0;
+    let eventReads = 0;
+    globalThis.fetch = async (url) => {
+        if (String(url).includes("/api/v1/runs?")) {
+            return Response.json({ runs: [{
+                id: "unstamped-event",
+                terminal: true,
+                phase: "completed",
+                lastSeq: ++refreshes,
+                finishedAt: "2026-09-15T03:00:00Z",
+                lastActivityAt: "2026-09-15T03:00:00Z",
+                operator: { issue: { number: "159" } },
+            }] });
+        }
+        eventReads++;
+        return Response.json({ events: (refreshes === 1 ? [issue] : [issue, pr])
+            .map((externalRef) => ({ externalRef })) });
+    };
+    try {
+        const resolved = { mode: "daemon", baseUrl: "http://association-sequence" };
+        await loadRuns(resolved);
+        const second = await loadRuns(resolved);
+        assert.equal(eventReads, 2);
+        assert.deepEqual(second.runs[0].externalRefs, [issue, pr]);
+        assert.ok(renderRunAssociations(second.runs[0]).includes(`href="${pr.url}"`));
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+for (const outcome of ["empty", "failed"]) {
+    test(`live hydration retries ${outcome} events with an unchanged summary and revision`, async () => {
+        const originalFetch = globalThis.fetch;
+        const issue = { kind: "issue", id: "159", url: "https://github.com/octo/app/issues/159" };
+        let eventReads = 0;
+        globalThis.fetch = async (url) => {
+            if (String(url).includes("/api/v1/runs?")) {
+                return Response.json({ runs: [{
+                    id: outcome,
+                    terminal: false,
+                    phase: "running",
+                    lastSeq: 1,
+                    lastActivityAt: "2026-09-15T03:00:00Z",
+                    operator: { issue: { number: "159" } },
+                }] });
+            }
+            eventReads++;
+            if (eventReads === 1) {
+                return outcome === "empty"
+                    ? Response.json({ events: [] })
+                    : Response.json({ error: "temporarily unavailable" }, { status: 503 });
+            }
+            return Response.json({ events: [{ externalRef: issue }] });
+        };
+        try {
+            const resolved = { mode: "daemon", baseUrl: "http://association-live-retry" };
+            const first = await loadRuns(resolved);
+            if (outcome === "failed") {
+                assert.match(first.runs[0].operator.diagnosticsLimitations[0], /temporarily unavailable/);
+            }
+            const second = await loadRuns(resolved);
+            assert.equal(eventReads, 2);
+            assert.deepEqual(second.runs[0].externalRefs, [issue]);
+            assert.equal(second.runs[0].operator.diagnosticsLimitations, undefined);
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+}
+
+test("terminal hydration caches are isolated by credential including anonymous access", async () => {
+    const originalFetch = globalThis.fetch;
+    const tokens = ["test-credential-a", "test-credential-b", undefined];
+    const refs = tokens.map((_, index) => ({
+        kind: "issue", id: "159", url: `https://github.com/octo/repo-${index}/issues/159`,
+    }));
+    const eventReads = [0, 0, 0];
+    globalThis.fetch = async (url, options) => {
+        const index = tokens.findIndex((token) => options.headers?.Authorization ===
+            (token ? `Bearer ${token}` : undefined));
+        assert.notEqual(index, -1);
+        if (String(url).includes("/api/v1/runs?")) {
+            return Response.json({ runs: [{
+                id: "same-run",
+                terminal: true,
+                lastSeq: 1,
+                operator: { issue: { number: "159" } },
+            }] });
+        }
+        eventReads[index]++;
+        return Response.json({ events: [{ externalRef: refs[index] }] });
+    };
+    try {
+        for (let refresh = 0; refresh < 2; refresh++) {
+            for (const [index, token] of tokens.entries()) {
+                const result = await loadRuns({ mode: "daemon", baseUrl: "http://shared-daemon", token });
+                assert.deepEqual(result.runs[0].externalRefs, [refs[index]]);
+            }
+        }
+        assert.deepEqual(eventReads, [1, 1, 1], "reuse only the matching credential's cache");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
 test("run interventions validate actor and action-specific fields", () => {
     assert.throws(() => validateIntervention("approve", { decision: "pass" }), /actor is required/);
     assert.throws(() => validateIntervention("approve", { actor: "operator" }), /decision=pass/);

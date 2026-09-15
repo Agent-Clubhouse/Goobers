@@ -394,8 +394,8 @@ function mergeExternalRefs(run, refs) {
 // (internal/localscheduler/conditions.go). Snapshot refreshes fire on every
 // SSE event, so an unbounded Promise.all over every hydration candidate can
 // burst well past that budget and start getting requests rejected. Keep
-// well under the limit and cache resolved terminal runs plus recent failures.
-// Live runs must re-read events because later stages can add associated work.
+// well under the limit and cache only terminal-run outcomes. Live candidates
+// always re-read events, including after an empty response or failed read.
 const ASSOCIATION_HYDRATION_CONCURRENCY = 4;
 const ASSOCIATION_HYDRATION_FAILURE_TTL_MS = 30_000;
 const associationHydrationCache = new Map();
@@ -416,17 +416,19 @@ async function hydrateRunAssociationRefs(resolved, runs) {
     const candidates = runs.filter(needsAssociationRefHydration);
     if (!candidates.length) return runs;
 
+    const { baseUrl, token } = resolved;
+    const credentialId = crypto.createHash("sha256").update(token || "").digest("hex");
     const now = Date.now();
     const hydrated = new Map();
     const toFetch = [];
     for (const run of candidates) {
         const runId = run.runId || run.id;
         if (!runId) continue;
-        const cacheKey = `${resolved.baseUrl}|${runId}`;
-        const revision = JSON.stringify([run.terminal, run.phase, run.finishedAt, run.lastActivityAt]);
+        const cacheKey = JSON.stringify([baseUrl, credentialId, runId]);
+        const revision = JSON.stringify([run.terminal, run.phase, run.finishedAt, run.lastActivityAt, run.lastSeq]);
         const cached = associationHydrationCache.get(cacheKey);
-        if (cached && cached.revision === revision &&
-            (cached.status === "ok" ? run.terminal === true : cached.expiresAt > now)) {
+        if (run.terminal === true && cached && cached.revision === revision &&
+            (cached.status === "ok" || cached.expiresAt > now)) {
             if (cached.patch) hydrated.set(runId, cached.patch);
             continue;
         }
@@ -434,10 +436,17 @@ async function hydrateRunAssociationRefs(resolved, runs) {
     }
 
     await mapWithConcurrency(toFetch, ASSOCIATION_HYDRATION_CONCURRENCY, async ({ run, runId, cacheKey, revision }) => {
+        const cacheOutcome = (outcome) => {
+            if (run.terminal === true) {
+                associationHydrationCache.set(cacheKey, { ...outcome, revision });
+            } else {
+                associationHydrationCache.delete(cacheKey);
+            }
+        };
         try {
             const events = await fetchJSON(
-                `${resolved.baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/events`,
-                { token: resolved.token },
+                `${baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/events`,
+                { token },
             );
             const eventItems = events.events || events.items || events;
             const refs = (Array.isArray(eventItems) ? eventItems : [])
@@ -446,16 +455,9 @@ async function hydrateRunAssociationRefs(resolved, runs) {
             if (refs.length) {
                 const patch = { externalRefs: refs };
                 hydrated.set(runId, patch);
-                if (run.terminal === true) {
-                    associationHydrationCache.set(cacheKey, { status: "ok", patch, revision });
-                } else {
-                    associationHydrationCache.delete(cacheKey);
-                }
+                cacheOutcome({ status: "ok", patch });
             } else {
-                // No refs yet (e.g. run just started) - don't cache a "success"
-                // with nothing found, but do record a short-lived entry so a
-                // burst of SSE-triggered refreshes doesn't repeat the request.
-                associationHydrationCache.set(cacheKey, { status: "empty", revision, expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
+                cacheOutcome({ status: "empty", expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
             }
         } catch (err) {
             const operator = {
@@ -467,7 +469,7 @@ async function hydrateRunAssociationRefs(resolved, runs) {
             };
             const patch = { operator };
             hydrated.set(runId, patch);
-            associationHydrationCache.set(cacheKey, { status: "failed", patch, revision, expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
+            cacheOutcome({ status: "failed", patch, expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
         }
     });
 
