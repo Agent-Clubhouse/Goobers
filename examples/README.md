@@ -1,5 +1,11 @@
 # Examples
 
+The [`coordination/plan.json`](coordination/plan.json) fixture demonstrates an
+explicitly reviewed core-release/consumer dependency across two repositories.
+Read the [coordination operator guide](../docs/guides/cross-repository-coordination.md)
+before using it. It is plan data, not an enabled workflow or real integration
+evidence; the end-to-end coordination unit test executes it with fake providers.
+
 For Azure DevOps, start with the [`ado-onboarding`](ado-onboarding/) scaffold
 instructions and copyable gaggle. The GitHub-specific walkthrough below is not
 required for ADO setup.

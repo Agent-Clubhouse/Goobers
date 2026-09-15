@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS COORDINATE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers coordinate \- reconcile an explicitly approved cross-repository plan (local operator only)
+.SH SYNOPSIS
+\fBgoobers coordinate\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers coordinate --gaggle NAME --plan FILE [--check]
+       [--evidence FILE] [--artifact FILE] [--result FILE] [instance-root]
+
+Reconcile one explicitly approved cross-repository plan. Local operator-only;
+never starts a run/daemon, implements code, merges, or deploys. Requires
+instance.yaml coordination authority. --check validates and prints canonical
+plan/evidence digests without resolving credentials or contacting providers.
+Exit codes: 0 = checked or reconciled, 1 = refusal/provider failure, 2 = usage.
+A successful pass may still report waiting, blocked, or integration-required.
+.fi
+.SH EXAMPLES
+.nf
+goobers coordinate --gaggle coordinator --plan plan.json --check
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -38,6 +38,9 @@ const (
 	// its repository. It is runner-only: workflow stages and goobers cannot
 	// declare it, and its credential never comes from a target repository.
 	ConfigRepoRead Capability = "configrepo:read"
+	// CoordinationWrite is runner-only authority for the local coordinate
+	// command. It cannot be declared by workflows or agentic goobers.
+	CoordinationWrite Capability = "coordination:write"
 	// GitHubIssuesRead grants read-only GitHub issue queries.
 	GitHubIssuesRead Capability = "github:issues:read"
 	// GitHubIssuesWrite grants GitHub issue query/create/ordinary-label/close/
@@ -157,7 +160,7 @@ const (
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
 	return []Capability{
-		RepoRead, RepoPush, ConfigRepoRead,
+		RepoRead, RepoPush, ConfigRepoRead, CoordinationWrite,
 		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRRead, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		GitHubCodeScanningRead, GitHubDependabotAlertsRead,
 		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,
@@ -179,7 +182,7 @@ func Known(s string) bool {
 // tasks and goobers may declare. Runner-owned capabilities stay in the same
 // canonical registry but are admitted only by their dedicated runner consumer.
 func StageDeclarable(s string) bool {
-	return Known(s) && s != string(ConfigRepoRead)
+	return Known(s) && s != string(ConfigRepoRead) && s != string(CoordinationWrite)
 }
 
 // Suggest returns the closest canonical capability for a likely typo.
