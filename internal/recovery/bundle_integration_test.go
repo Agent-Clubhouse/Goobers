@@ -168,3 +168,95 @@ func TestIntegrationRecoveryDeltaBundleScalesWithChangeNotBaseHistory(t *testing
 	}
 	recoveryTestGit(t, withBase, "cat-file", "-e", record.SnapshotSHA+":small.txt")
 }
+
+// TestIntegrationRecoveryDeltaBundleWithMultiplePrerequisitesRestores pins
+// #5103: a branch merged from its repeatedly-advancing base more than once —
+// ordinary history for a PR branch carried across sequential pr-remediation
+// stages — makes "bundle create ref --not baseSHA" declare more than one
+// prerequisite line, not just baseSHA. verifyBundleHeaderBytes must accept
+// that shape (rather than reject it as "does not contain the expected delta
+// snapshot"), and restore must still work from nothing but baseSHA, proving
+// the extra prerequisites — themselves ancestors of baseSHA by construction
+// of "--not baseSHA" — need no separate fetch.
+func TestIntegrationRecoveryDeltaBundleWithMultiplePrerequisitesRestores(t *testing.T) {
+	testdep.Require(t, "git")
+	repository := t.TempDir()
+	recoveryTestGit(t, repository, "init", "--initial-branch=main")
+	recoveryTestGit(t, repository, "commit", "--allow-empty", "-m", "root")
+	recoveryTestGit(t, repository, "checkout", "-b", "feature")
+	writeAndCommit := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(repository, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		recoveryTestGit(t, repository, "add", name)
+		recoveryTestGit(t, repository, "commit", "-m", name)
+	}
+	writeAndCommit("feat1.txt", "feat1")
+	recoveryTestGit(t, repository, "checkout", "main")
+	writeAndCommit("main1.txt", "main1")
+	recoveryTestGit(t, repository, "checkout", "feature")
+	recoveryTestGit(t, repository, "merge", "--no-edit", "main")
+	recoveryTestGit(t, repository, "checkout", "main")
+	writeAndCommit("main2.txt", "main2")
+	recoveryTestGit(t, repository, "checkout", "feature")
+	recoveryTestGit(t, repository, "merge", "--no-edit", "main")
+	baseSHA := recoveryTestGit(t, repository, "rev-parse", "main")
+
+	record := storageTestRecord()
+	record.BaseRef = "refs/heads/main"
+	record.BaseSHA = baseSHA
+	writeAndCommit("feat2.txt", "feat2")
+	record.SnapshotSHA = recoveryTestGit(t, repository, "rev-parse", "HEAD")
+	record.PatchDigest = recoveryTestPatchDigest(t, repository, record)
+
+	var archive bytes.Buffer
+	digest, format, err := WriteSnapshotBundle(context.Background(), repository, record, &archive, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != archiveFormatDelta {
+		t.Fatalf("expected a delta bundle when base is reachable from its tracked ref, got %q", format)
+	}
+	record.ArchiveDigest, record.ArchiveBytes, record.ArchiveFormat = digest, int64(archive.Len()), format
+	archiveDirectory := t.TempDir()
+	bundlePath := filepath.Join(archiveDirectory, BundleFileName)
+	if err := os.WriteFile(bundlePath, archive.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	header, err := readBundleHeader(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prerequisites := strings.Count(string(header), "\n-")
+	if prerequisites < 2 {
+		t.Fatalf("test fixture did not exercise the multi-prerequisite shape: header %q", header)
+	}
+	if err := verifyBundleHeaderBytes(header, record, archiveFormatDelta); err != nil {
+		t.Fatalf("multi-prerequisite delta header rejected: %v", err)
+	}
+	if got, err := inspectBundleFormat(bundlePath); err != nil || got != archiveFormatDelta {
+		t.Fatalf("inspectBundleFormat(multi-prerequisite delta) = %q, %v, want %q", got, err, archiveFormatDelta)
+	}
+
+	// A repository lacking the base must still fail explicitly rather than
+	// import a truncated, unrestorable history.
+	missingBase := t.TempDir()
+	recoveryTestGit(t, missingBase, "init", "--initial-branch=main")
+	if err := ImportSnapshotBundle(context.Background(), missingBase, bundlePath, record, 1<<20); err == nil {
+		t.Fatal("multi-prerequisite delta bundle imported into a repository missing its required base commit")
+	}
+
+	// Fetching baseSHA alone (never the intermediate main1/main2 commits
+	// individually) already carries their full ancestry, so it satisfies
+	// every prerequisite line the bundle declared.
+	withBase := t.TempDir()
+	recoveryTestGit(t, withBase, "init", "--initial-branch=main")
+	recoveryTestGit(t, withBase, "fetch", repository, baseSHA+":refs/heads/mirrored-base")
+	if err := ImportSnapshotBundle(context.Background(), withBase, bundlePath, record, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestoreSnapshot(context.Background(), withBase, record, record.BaseSHA, "recovered", 1<<20); err != nil {
+		t.Fatalf("restore from multi-prerequisite delta bundle: %v", err)
+	}
+	recoveryTestGit(t, withBase, "cat-file", "-e", record.SnapshotSHA+":feat2.txt")
+}

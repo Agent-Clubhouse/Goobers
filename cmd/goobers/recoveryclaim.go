@@ -6,9 +6,12 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// recoveryClaimMatches binds a candidate run to exactly one issue using its
+// recoveryClaimMatches binds a candidate run to exactly one claimed item —
+// an issue or a pull request (#5103: a PR-scoped run, such as a
+// pr-remediation gather-pr-context stage, holds a pull_request claim, never
+// an issue one, and custody must authorize it the same way) — using its
 // durable selection-time annotations. Never infer a forge host from current
-// configuration or infer an issue from stage output. Legacy annotations lacking
+// configuration or infer an item from stage output. Legacy annotations lacking
 // the provider-complete key cannot authorize automatic restoration.
 func recoveryClaimMatches(events []journal.Event, runID, repositoryKey, issueID string) (bool, error) {
 	if runID == "" || repositoryKey == "" || issueID == "" {
@@ -33,5 +36,14 @@ func recoveryClaimMatches(events []journal.Event, runID, repositoryKey, issueID 
 		}
 		selectedKey, selectedID, selectedKind = key, id, kind
 	}
-	return selectedKey == repositoryKey && selectedID == issueID && selectedKind == itemKindIssue, nil
+	return selectedKey == repositoryKey && selectedID == issueID && recoveryItemKindAuthorizesCustody(selectedKind), nil
+}
+
+// recoveryItemKindAuthorizesCustody reports whether a claimed item's kind may
+// authorize pod recovery custody: an issue or a pull request (#5103). A
+// PR-scoped run — pr-remediation's gather-pr-context stage, for instance —
+// holds a pull_request claim, never an issue one, and custody must authorize
+// it the same way an issue claim already was.
+func recoveryItemKindAuthorizesCustody(kind string) bool {
+	return kind == itemKindIssue || kind == itemKindPullRequest
 }
