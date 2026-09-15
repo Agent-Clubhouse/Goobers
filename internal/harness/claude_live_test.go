@@ -52,12 +52,12 @@ func TestIntegrationClaudeGoobersIOListInputsReceipt(t *testing.T) {
 	if completion.Status != apiv1.ResultSuccess {
 		t.Fatalf("completion status = %q, want %q", completion.Status, apiv1.ResultSuccess)
 	}
+	if len(out.MCPServerFailures) != 0 {
+		t.Fatalf("goobers-io MCP transport failure: %+v", out.MCPServerFailures)
+	}
 	if !slices.ContainsFunc(out.InputInspectionReceipts, func(receipt mcpio.InputInspectionReceipt) bool {
 		return receipt.Tool == "list_inputs" && receipt.Success
 	}) {
 		t.Fatalf("list_inputs receipt missing: %+v", out.InputInspectionReceipts)
-	}
-	if len(out.MCPServerFailures) != 0 {
-		t.Fatalf("goobers-io MCP transport failure: %+v", out.MCPServerFailures)
 	}
 }
