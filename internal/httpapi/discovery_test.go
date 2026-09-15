@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,7 @@ import (
 
 func TestAuthenticatedOpenAPIRequiresPrivateCacheRevalidation(t *testing.T) {
 	authenticator := &fakeAuthenticator{principal: &Principal{Subject: "viewer", Roles: []Role{RoleView}}}
-	handler, err := NewHandler(&fakeReader{}, RequireRoles(), discardLogger(), WithAuthenticator(authenticator))
+	handler, err := NewHandler(&fakeReader{}, RequireRoles(), discardLogger(), WithAuthenticator(authenticator), WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestAuthenticatedOpenAPIRequiresPrivateCacheRevalidation(t *testing.T) {
 
 func TestOpenAPIDrivesEventsResumeHeader(t *testing.T) {
 	store := feedTestStoreAt(t, t.TempDir())
-	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithChangeFeedStream(store))
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithChangeFeedStream(store), WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +200,7 @@ func TestCapabilitiesReportDeploymentAvailabilityAndRecovery(t *testing.T) {
 		AllowAll,
 		discardLogger(),
 		WithRecoveryGate(func() bool { return ready }),
+		WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1"}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +265,7 @@ func TestCapabilitiesReportDeploymentAvailabilityAndRecovery(t *testing.T) {
 func TestDiscoveryBootIDChangesAcrossDaemonHandlers(t *testing.T) {
 	bootIDs := make([]string, 0, 2)
 	for range 2 {
-		handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger())
+		handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1"}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -282,7 +284,7 @@ func TestDiscoveryBootIDChangesAcrossDaemonHandlers(t *testing.T) {
 
 func TestOpenAPIDrivesInitialRemoteRunsInvocation(t *testing.T) {
 	reader := &fakeReader{runs: readservice.RunList{Runs: []readservice.RunSummary{{ID: "run-1"}}}}
-	handler, err := NewHandler(reader, AllowAll, discardLogger())
+	handler, err := NewHandler(reader, AllowAll, discardLogger(), WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,6 +381,109 @@ func TestHealthAndReadinessIncludeProtocolSummary(t *testing.T) {
 }
 
 type staticReadinessService struct{}
+
+func TestDiscoveryWithoutDurableIdentityFailsClosed(t *testing.T) {
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithInstanceReadinessService(staticReadinessService{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{apicontract.DiscoveryPath, apicontract.OpenAPIPath, apicontract.CapabilitiesPath} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "discovery_identity_unavailable") {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body)
+		}
+	}
+	for _, path := range []string{apicontract.HealthPath, apicontract.InstanceReadinessPath} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		var document map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK || document["protocol"] != nil {
+			t.Fatalf("legacy %s status=%d protocol=%s", path, response.Code, document["protocol"])
+		}
+	}
+}
+
+func TestCapabilitiesMatchOptionalServiceExtensions(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       apicontract.RouteID
+		base     HandlerOption
+		extended HandlerOption
+	}{
+		{"trigger status", apicontract.RouteTriggerStatus, WithTriggerService(&fakeTriggerService{}), WithTriggerService(&fakeTriggerStatusService{})},
+		{"claim verification", apicontract.RouteClaimVerify, WithClaimService(&fakeClaimService{}), WithClaimService(&verificationServiceFixture{})},
+		{"recovery publication", apicontract.RouteRunRecoveryPublish,
+			WithRecoveryService(recoveryServiceFunc(func(context.Context, string, string, string, io.Writer) error { return nil })),
+			WithRecoveryService(recoveryPublisherFunc(func(context.Context, string, string, string, io.Reader) error { return nil }))},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var previousETag string
+			for index, option := range []HandlerOption{test.base, test.extended} {
+				handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), option,
+					WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1", DaemonBootID: "b7fc610d-3c79-4fd4-9bb3-da569b6d14d5"}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.CapabilitiesPath, nil))
+				var document apicontract.CapabilityDocument
+				if err := json.NewDecoder(response.Body).Decode(&document); err != nil {
+					t.Fatal(err)
+				}
+				capability := capabilityByID(t, document, test.id)
+				if response.Code != http.StatusOK || capability.Available != (index == 1) {
+					t.Fatalf("extension=%t status=%d capability=%+v", index == 1, response.Code, capability)
+				}
+				if index == 0 && (capability.Code != "service_unconfigured" || capability.Reason == "") {
+					t.Fatalf("unavailable extension lacks explanation: %+v", capability)
+				}
+				etag := response.Header().Get("ETag")
+				if etag == "" || etag == previousETag {
+					t.Fatal("capability validator did not change with extension support")
+				}
+				previousETag = etag
+			}
+		})
+	}
+}
+
+func TestCapabilitiesReportTelemetryConfigurationWithoutReadingStore(t *testing.T) {
+	var previousETag string
+	for _, available := range []bool{false, true} {
+		reader := &fakeReader{err: errors.New("must not read telemetry for discovery")}
+		handler, err := NewHandler(reader, AllowAll, discardLogger(), WithTelemetryReadAvailability(available),
+			WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1", DaemonBootID: "b7fc610d-3c79-4fd4-9bb3-da569b6d14d5"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.CapabilitiesPath, nil))
+		var document apicontract.CapabilityDocument
+		if err := json.NewDecoder(response.Body).Decode(&document); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []apicontract.RouteID{
+			apicontract.RouteTelemetryCosts, apicontract.RouteTelemetryStats, apicontract.RouteTelemetryErrors,
+			apicontract.RouteTelemetryErrorSignatures, apicontract.RouteTelemetryImplementationOutcomes,
+			apicontract.RouteWorkItems, apicontract.RouteWorkItemDetail,
+		} {
+			capability := capabilityByID(t, document, id)
+			if capability.Available != available || (!available && (capability.Code == "" || capability.Reason == "")) {
+				t.Fatalf("telemetry=%t capability=%+v", available, capability)
+			}
+		}
+		etag := response.Header().Get("ETag")
+		if response.Code != http.StatusOK || reader.called != 0 || etag == "" || etag == previousETag {
+			t.Fatalf("status=%d reads=%d etag=%q previous=%q", response.Code, reader.called, etag, previousETag)
+		}
+		previousETag = etag
+	}
+}
 
 func (staticReadinessService) InstanceReadiness(context.Context) (InstanceReadiness, error) {
 	return InstanceReadiness{APIVersion: "v1", SchemaVersion: "v1"}, nil

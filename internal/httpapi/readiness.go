@@ -26,12 +26,12 @@ type InstanceReadinessService interface {
 // inventory RouteInstance exposes — so that route's response contract stays
 // unchanged (#5019) while this one stays servable during recovery.
 type InstanceReadiness struct {
-	APIVersion    string                      `json:"apiVersion"`
-	SchemaVersion string                      `json:"schemaVersion"`
-	Protocol      apicontract.ProtocolSummary `json:"protocol"`
-	ComputerName  string                      `json:"computerName,omitempty"`
-	InstanceRoot  string                      `json:"instanceRoot"`
-	RootIdentity  *readservice.RootIdentity   `json:"rootIdentity,omitempty"`
+	APIVersion    string                       `json:"apiVersion"`
+	SchemaVersion string                       `json:"schemaVersion"`
+	Protocol      *apicontract.ProtocolSummary `json:"protocol,omitempty"`
+	ComputerName  string                       `json:"computerName,omitempty"`
+	InstanceRoot  string                       `json:"instanceRoot"`
+	RootIdentity  *readservice.RootIdentity    `json:"rootIdentity,omitempty"`
 	// Ready is the same overall gate /readyz and /api/v1/health.Ready read,
 	// so no surface can ever disagree about whether recovery has completed.
 	Ready    bool                  `json:"ready"`

@@ -21,6 +21,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -29,6 +30,84 @@ import (
 )
 
 const dashboardTestIndex = `<!doctype html><html><head><meta name="goobers-dashboard-mode" content="daemon" /></head><body>portal</body></html>`
+
+func TestStandaloneDashboardDiscoveryUsesDurableRootIdentity(t *testing.T) {
+	var previousInstanceID string
+	for range 2 {
+		root := initDemo(t)
+		layout := instance.NewLayout(root)
+		config, err := instance.LoadConfig(layout.ConfigFile())
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedID, err := instance.ReadRootIdentity(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if expectedID == previousInstanceID {
+			t.Fatal("distinct roots have the same identity")
+		}
+		previousInstanceID = expectedID
+		var previousBootID string
+		for range 2 {
+			api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			api.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.DiscoveryPath, nil))
+			if err := api.close(); err != nil {
+				t.Fatal(err)
+			}
+			var document apicontract.DiscoveryDocument
+			if err := json.NewDecoder(response.Body).Decode(&document); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || document.DaemonInstanceID != expectedID ||
+				document.DaemonBootID == "" || document.DaemonBootID == previousBootID {
+				t.Fatalf("standalone identity: status=%d document=%+v", response.Code, document)
+			}
+			previousBootID = document.DaemonBootID
+		}
+	}
+}
+
+func TestStandaloneDashboardDiscoveryWithoutIdentityRemainsReadOnly(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		root := initDemo(t)
+		path := filepath.Join(root, instance.RootIdentityFileName)
+		if corrupt {
+			if err := os.WriteFile(path, []byte("invalid\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		layout := instance.NewLayout(root)
+		config, err := instance.LoadConfig(layout.ConfigFile())
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := snapshotDashboardInstance(t, root)
+		api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{httpapi.DiscoveryPath, apicontract.OpenAPIPath, apicontract.CapabilitiesPath} {
+			response := httptest.NewRecorder()
+			api.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "discovery_identity_unavailable") {
+				t.Errorf("%s status=%d body=%s", path, response.Code, response.Body)
+			}
+		}
+		if err := api.close(); err != nil {
+			t.Fatal(err)
+		}
+		if after := snapshotDashboardInstance(t, root); !reflect.DeepEqual(before, after) {
+			t.Fatalf("discovery adopted or changed an unidentified root: before=%v after=%v", before, after)
+		}
+	}
+}
 
 type dashboardURLWriter struct {
 	once sync.Once

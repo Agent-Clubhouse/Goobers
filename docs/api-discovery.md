@@ -58,3 +58,15 @@ derive the actor from the principal instead. The events operation declares
 Discovery is generated from immutable build/boot identity and
 the canonical route contract; it does not read journals, projections, or
 scheduler health.
+
+Standalone dashboards use the same provisioned root identity as the daemon,
+with a fresh boot ID for each serving process. Legacy or unreadable root
+identities are not adopted by inspection: metadata endpoints return
+`503 discovery_identity_unavailable`, while existing health/readiness
+inspection remains available without a protocol summary.
+
+Capabilities distinguish optional extension interfaces (trigger status, claim
+verification, and recovery publication) from their base services. Telemetry
+and work-item availability reflect the configured telemetry store rather than
+querying its health. Embedders supply this immutable fact with
+`WithTelemetryReadAvailability`; absent configuration is unavailable.

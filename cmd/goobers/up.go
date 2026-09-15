@@ -839,7 +839,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	//
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
-	apiHandlerOpts := daemonChangeFeedHandlerOptions(setup)
+	apiHandlerOpts := append(daemonChangeFeedHandlerOptions(setup), httpapi.WithTelemetryReadAvailability(setup.RollupDB != nil))
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
 	// #3883 (decision 005 R8): give the intervention surface a second
 	// destination. Runner-driven runs keep the in-process path untouched;

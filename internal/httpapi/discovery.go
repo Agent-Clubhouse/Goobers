@@ -47,10 +47,7 @@ func registerDiscoveryRoutes(router *Router, config handlerConfig) (*discoverySt
 	}
 
 	identity := config.discoveryIdentity
-	if identity.DaemonInstanceID == "" {
-		identity.DaemonInstanceID = "unconfigured"
-	}
-	if identity.DaemonBootID == "" {
+	if identity.DaemonInstanceID != "" && identity.DaemonBootID == "" {
 		var err error
 		identity.DaemonBootID, err = newBootID()
 		if err != nil {
@@ -88,6 +85,9 @@ func registerDiscoveryRoutes(router *Router, config handlerConfig) (*discoverySt
 }
 
 func (s *discoveryState) serveDiscovery(w http.ResponseWriter, request *http.Request) {
+	if !s.requireIdentity(w) {
+		return
+	}
 	capabilityETag, err := s.capabilitiesETag()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encode_error", "capability document could not be encoded")
@@ -128,6 +128,9 @@ func (s *discoveryState) serveDiscovery(w http.ResponseWriter, request *http.Req
 }
 
 func (s *discoveryState) serveOpenAPI(w http.ResponseWriter, request *http.Request) {
+	if !s.requireIdentity(w) {
+		return
+	}
 	serveConditionalDocument(
 		w,
 		request,
@@ -138,6 +141,9 @@ func (s *discoveryState) serveOpenAPI(w http.ResponseWriter, request *http.Reque
 }
 
 func (s *discoveryState) serveCapabilities(w http.ResponseWriter, request *http.Request) {
+	if !s.requireIdentity(w) {
+		return
+	}
 	raw, err := marshalDocument(s.capabilityDocument())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encode_error", "capability document could not be encoded")
@@ -155,12 +161,24 @@ func (s *discoveryState) protocolIdentity() apicontract.ProtocolIdentity {
 	}
 }
 
-func (s *discoveryState) protocolSummary() (apicontract.ProtocolSummary, error) {
+func (s *discoveryState) requireIdentity(w http.ResponseWriter) bool {
+	if s.identity.DaemonInstanceID == "" {
+		writeError(w, http.StatusServiceUnavailable, "discovery_identity_unavailable", "API discovery requires a readable durable instance identity")
+		return false
+	}
+	return true
+}
+
+func (s *discoveryState) protocolSummary() (*apicontract.ProtocolSummary, error) {
+	if s.identity.DaemonInstanceID == "" {
+		return nil, nil
+	}
 	capabilityETag, err := s.capabilitiesETag()
 	if err != nil {
-		return apicontract.ProtocolSummary{}, err
+		return nil, err
 	}
-	return s.protocolSummaryWithCapabilities(capabilityETag), nil
+	summary := s.protocolSummaryWithCapabilities(capabilityETag)
+	return &summary, nil
 }
 
 func (s *discoveryState) protocolSummaryWithCapabilities(capabilityETag string) apicontract.ProtocolSummary {
@@ -231,10 +249,12 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 	case apicontract.RouteWorkflowEnabled:
 		available = config.workflowMutations != nil
 	case apicontract.RouteClaimAcquire, apicontract.RouteClaimRenew, apicontract.RouteClaimRelease,
-		apicontract.RouteClaimSettle, apicontract.RouteClaimList, apicontract.RouteClaimVerify,
+		apicontract.RouteClaimSettle, apicontract.RouteClaimList,
 		apicontract.RouteClaimRecover:
 		available = config.claims != nil
-	case apicontract.RouteTriggerIngest, apicontract.RouteTriggerStatus:
+	case apicontract.RouteClaimVerify, apicontract.RouteTriggerStatus, apicontract.RouteRunRecoveryPublish:
+		available = routeExtensionAvailable(id, config)
+	case apicontract.RouteTriggerIngest:
 		available = config.triggers != nil
 	case apicontract.RouteResolveEscalation:
 		available = config.escalations != nil
@@ -250,7 +270,7 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.credentials != nil
 	case apicontract.RouteBlobGet, apicontract.RouteBlobPut:
 		available = config.blobs != nil
-	case apicontract.RouteRunRecovery, apicontract.RouteRunRecoveryPublish:
+	case apicontract.RouteRunRecovery:
 		available = config.recovery != nil
 	case apicontract.RouteStageSurrender:
 		available = config.surrenders != nil
@@ -258,6 +278,11 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.state != nil
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
+	case apicontract.RouteTelemetryCosts, apicontract.RouteTelemetryStats,
+		apicontract.RouteTelemetryErrorSignatures, apicontract.RouteTelemetryErrors,
+		apicontract.RouteTelemetryImplementationOutcomes, apicontract.RouteWorkItems,
+		apicontract.RouteWorkItemDetail:
+		available = config.telemetryReadsAvailable
 	default:
 		return true, "", ""
 	}
@@ -265,6 +290,19 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		return true, "", ""
 	}
 	return false, "service_unconfigured", "service is not configured on this daemon"
+}
+
+func routeExtensionAvailable(id apicontract.RouteID, config handlerConfig) bool {
+	var available bool
+	switch id {
+	case apicontract.RouteClaimVerify:
+		_, available = config.claims.(ClaimVerificationService)
+	case apicontract.RouteTriggerStatus:
+		_, available = config.triggers.(TriggerStatusService)
+	case apicontract.RouteRunRecoveryPublish:
+		_, available = config.recovery.(RecoveryPublisher)
+	}
+	return available
 }
 
 func requiredRole(route apicontract.Route) string {

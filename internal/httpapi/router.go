@@ -557,30 +557,31 @@ func (r *Router) ensureAdmission() {
 }
 
 type handlerConfig struct {
-	events                 eventSource
-	authenticator          Authenticator
-	interventions          InterventionService
-	interventionContext    context.Context
-	runRevealer            func(context.Context, string) error
-	workflowMutations      WorkflowMutationService
-	claims                 ClaimService
-	triggers               TriggerService
-	escalations            EscalationService
-	cancels                CancelService
-	journal                JournalService
-	runJournal             RunJournalService
-	credentials            CredentialService
-	blobs                  blobstore.Store
-	recovery               RecoveryService
-	surrenders             SurrenderService
-	state                  StateService
-	telemetryDefects       TelemetryDefectAggregateService
-	podRunGaggle           func(context.Context, string) (string, error)
-	configDigest           func() string
-	workerConfigDivergence func(journal.Event) error
-	instanceReadiness      InstanceReadinessService
-	recoveryGate           func() bool
-	discoveryIdentity      DiscoveryIdentity
+	events                  eventSource
+	authenticator           Authenticator
+	interventions           InterventionService
+	interventionContext     context.Context
+	runRevealer             func(context.Context, string) error
+	workflowMutations       WorkflowMutationService
+	claims                  ClaimService
+	triggers                TriggerService
+	escalations             EscalationService
+	cancels                 CancelService
+	journal                 JournalService
+	runJournal              RunJournalService
+	credentials             CredentialService
+	blobs                   blobstore.Store
+	recovery                RecoveryService
+	surrenders              SurrenderService
+	state                   StateService
+	telemetryDefects        TelemetryDefectAggregateService
+	podRunGaggle            func(context.Context, string) (string, error)
+	configDigest            func() string
+	workerConfigDivergence  func(journal.Event) error
+	instanceReadiness       InstanceReadinessService
+	recoveryGate            func() bool
+	discoveryIdentity       DiscoveryIdentity
+	telemetryReadsAvailable bool
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -695,7 +696,17 @@ func WithDiscoveryIdentity(identity DiscoveryIdentity) HandlerOption {
 		if err := validateDiscoveryIdentity(identity); err != nil {
 			return err
 		}
+
 		c.discoveryIdentity = identity
+		return nil
+	}
+}
+
+// WithTelemetryReadAvailability records whether the reader has a configured
+// telemetry store, without querying that store during discovery.
+func WithTelemetryReadAvailability(available bool) HandlerOption {
+	return func(c *handlerConfig) error {
+		c.telemetryReadsAvailable = available
 		return nil
 	}
 }
@@ -1001,7 +1012,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		}
 		writeJSON(w, http.StatusOK, struct {
 			readservice.Health
-			Protocol apicontract.ProtocolSummary `json:"protocol"`
+			Protocol *apicontract.ProtocolSummary `json:"protocol,omitempty"`
 		}{
 			Health:   health,
 			Protocol: protocol,
