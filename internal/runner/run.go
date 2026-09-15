@@ -3847,13 +3847,7 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 			}
 		}
 
-		// A no-work join after every source branch explicitly settled empty is
-		// an idle poll too: all configured sources were evaluated without
-		// producing work. Other multi-stage runs remain productive even when
-		// their final stage finds nothing.
-		noWork := steps == 1 || fanInAllBranchesNoOutput(ws, t.Name)
-		res, err = r.finishWithDisposition(runID, jr, journal.PhaseCompleted, t.Name, steps, terminalDisposition(noWork))
-		res.NoWork = noWork
+		res, err = r.finishNoWork(runID, jr, ws, t.Name)
 		return "", res, false, err
 	}
 
@@ -3877,6 +3871,16 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		return "", res, false, err
 	}
 	return t.Next, Result{}, true, nil
+}
+
+func (r *Runner) finishNoWork(runID string, jr *journal.Run, ws *walkState, task string) (Result, error) {
+	// A no-work join after every source branch explicitly settled empty is an
+	// idle poll too. Other multi-stage runs remain productive even when their
+	// final stage finds nothing.
+	noWork := ws.steps == 1 || fanInAllBranchesNoOutput(ws, task)
+	result, err := r.finishWithDisposition(runID, jr, journal.PhaseCompleted, task, ws.steps, terminalDisposition(noWork))
+	result.NoWork = noWork
+	return result, err
 }
 
 func fanInAllBranchesNoOutput(ws *walkState, task string) bool {
