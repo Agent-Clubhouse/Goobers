@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -62,7 +63,7 @@ func TestExternalTelemetryFakeFixtureWorkflowRunsThroughLocalRunner(t *testing.T
 	if err != nil {
 		t.Fatalf("load fixture workflow: %v (report: %+v)", err, report)
 	}
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false, nil)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false, nil)
 	if err != nil {
 		t.Fatalf("compile fixture workflow: %v", err)
 	}

@@ -244,10 +244,17 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef) (ma
 
 var copilotModelLister harness.CopilotModelLister
 
+func harnessEnvironmentPolicy(cfg instance.RunnerConfig) harness.EnvironmentConfig {
+	return harness.EnvironmentConfig{
+		ExtraAllowlist: cfg.EnvPassthrough,
+		Unset:          cfg.HarnessEnvUnset,
+	}
+}
+
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
-func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), ephemeralTmp bool) (*harness.Registry, error) {
+func buildHarnessRegistry(envCaps map[string]string, environment harness.EnvironmentConfig, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), ephemeralTmp bool) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	copilotCommand := harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"})
 	customLauncher := requiresCopilotLauncherContract(harnessCommand)
@@ -267,7 +274,8 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 		OptionalCredentialCapabilities: map[string]bool{
 			string(capability.AgentModel): true,
 		},
-		ExtraEnvAllowlist: envPassthrough,
+		ExtraEnvAllowlist: environment.ExtraAllowlist,
+		EnvUnset:          environment.Unset,
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
 		DeferDiscovery:    deferModelDiscovery,
@@ -292,7 +300,8 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 		OptionalCredentialCapabilities: map[string]bool{
 			string(capability.AgentModel): true,
 		},
-		ExtraEnvAllowlist: envPassthrough,
+		ExtraEnvAllowlist: environment.ExtraAllowlist,
+		EnvUnset:          environment.Unset,
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
 		EphemeralTmp:      ephemeralTmp,
@@ -308,7 +317,8 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 	codexAdapter := &harness.CodexAdapter{
 		Command:           harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCodex), []string{"codex"}),
 		EnvCapabilities:   codexEnvCaps,
-		ExtraEnvAllowlist: envPassthrough,
+		ExtraEnvAllowlist: environment.ExtraAllowlist,
+		EnvUnset:          environment.Unset,
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
 		EphemeralTmp:      ephemeralTmp,

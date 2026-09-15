@@ -126,7 +126,7 @@ func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherC
 	command := append(append([]string(nil), resolveHarnessCommand(c.Command)...), launcherContractFlag)
 	stdout := newTranscriptBuffer(16 * 1024)
 	result, err := c.runner().Run(probeCtx, ProcessRequest{
-		Command: command, Env: baseEnv(nil), Timeout: 10 * time.Second,
+		Command: command, Env: baseEnv(nil, nil), Timeout: 10 * time.Second,
 		MaxTranscriptBytes: 16 * 1024,
 		StdoutCapture:      stdout,
 	})

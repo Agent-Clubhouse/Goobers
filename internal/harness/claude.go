@@ -179,6 +179,7 @@ type ClaudeAdapter struct {
 	OptionalCredentialCapabilities map[string]bool
 	Runner                         ProcessRunner
 	ExtraEnvAllowlist              []string
+	EnvUnset                       []string
 	InstanceRoot                   string
 	SelfBin                        string
 	// EphemeralTmp binds `tmp:ephemeral` on the self runner for this
@@ -260,7 +261,7 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if _, err := exec.LookPath(bin); err != nil {
 		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q not found on PATH — install Claude Code and sign in before running agentic stages", bin)
 	}
-	env := baseEnv(c.ExtraEnvAllowlist)
+	env := baseEnv(c.ExtraEnvAllowlist, c.EnvUnset)
 	baseCommand := resolveHarnessCommand(c.Command)
 	versionCommand := append(append([]string(nil), baseCommand...), "--version")
 	versionProbe := fmt.Sprintf("harness: claude-code: %q --version", bin)
@@ -401,10 +402,10 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		adapterName:                    c.Name(),
 		envCapabilities:                c.EnvCapabilities,
 		optionalCredentialCapabilities: c.OptionalCredentialCapabilities,
-		extraEnvAllowlist:              c.ExtraEnvAllowlist,
-		instanceRoot:                   c.InstanceRoot,
-		selfBin:                        c.SelfBin,
-		ephemeralTmp:                   ephemeralTmp,
+		extraEnvAllowlist:              c.ExtraEnvAllowlist, envUnset: c.EnvUnset,
+		instanceRoot: c.InstanceRoot,
+		selfBin:      c.SelfBin,
+		ephemeralTmp: ephemeralTmp,
 	}, req)
 	if err != nil {
 		return Outcome{}, err

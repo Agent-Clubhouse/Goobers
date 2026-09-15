@@ -102,7 +102,7 @@ type harnessPreflightInfo map[apiv1.Harness]harness.PreflightInfo
 // environment as a dispatched run and the operator's harnessCommand override
 // (#2483); each preflight is bounded by harnessPreflightTimeout so a hung CLI
 // or network can't hang startup.
-func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, envPassthrough []string, harnessCommand map[string][]string, modelCredential func(ctx context.Context) (string, error)) (harnessPreflightInfo, error) {
+func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, environment harness.EnvironmentConfig, harnessCommand map[string][]string, modelCredential func(ctx context.Context) (string, error)) (harnessPreflightInfo, error) {
 	seen := map[apiv1.Harness]bool{}
 	info := make(harnessPreflightInfo)
 	preflight := func(wfName, stageName, gooberName string) error {
@@ -118,7 +118,7 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 			return nil
 		}
 		seen[h] = true
-		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand, modelCredential)
+		adapter, err := harnessAdapterFor(h, environment, harnessCommand, modelCredential)
 		if err != nil {
 			return fmt.Errorf("workflow %q stage %q: %w", wfName, stageName, err)
 		}

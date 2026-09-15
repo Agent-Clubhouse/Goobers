@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/workflow"
@@ -53,7 +54,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, firstDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, firstInstructions, nil, nil,
+		configDir, set, goobers, firstInstructions, harness.EnvironmentConfig{}, nil,
 		false,
 		nil,
 	)
@@ -69,7 +70,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, secondDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, secondInstructions, nil, nil,
+		configDir, set, goobers, secondInstructions, harness.EnvironmentConfig{}, nil,
 		false,
 		nil,
 	)
@@ -129,7 +130,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, before, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, nil, nil,
+		configDir, set, goobers, instructions, harness.EnvironmentConfig{}, nil,
 		false,
 		nil,
 	)
@@ -140,7 +141,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, after, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, nil, nil,
+		configDir, set, goobers, instructions, harness.EnvironmentConfig{}, nil,
 		false,
 		nil,
 	)
@@ -241,7 +242,7 @@ func TestCompiledMachinesDigestUsesAdmittedHarnessConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	machines, digests, resolvedGoobers, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, nil, nil,
+		configDir, set, goobers, instructions, harness.EnvironmentConfig{}, nil,
 		false,
 		nil,
 	)

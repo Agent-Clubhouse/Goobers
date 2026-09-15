@@ -2155,7 +2155,7 @@ func TestBaseEnvMatchesProcenv(t *testing.T) {
 	t.Setenv("GOMODCACHE", "/custom/gomodcache")
 	t.Setenv("LC_ALL", "C")
 
-	got := append([]string(nil), baseEnv(nil)...)
+	got := append([]string(nil), baseEnv(nil, nil)...)
 	want := append([]string(nil), procenv.BaseEnv()...)
 	sort.Strings(got)
 	sort.Strings(want)
@@ -2171,7 +2171,7 @@ func TestBaseEnvAppliesExtraAllowlist(t *testing.T) {
 	t.Setenv("MY_HARNESS_TOOLCHAIN", "/opt/harness-tool")
 	t.Setenv("MY_HARNESS_UNDECLARED", "should-not-pass")
 
-	env := baseEnv([]string{"MY_HARNESS_TOOLCHAIN"})
+	env := baseEnv([]string{"MY_HARNESS_TOOLCHAIN"}, nil)
 	found := false
 	for _, kv := range env {
 		if kv == "MY_HARNESS_TOOLCHAIN=/opt/harness-tool" {
@@ -2183,6 +2183,17 @@ func TestBaseEnvAppliesExtraAllowlist(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("extra-allowlisted var missing from harness baseEnv: %v", env)
+	}
+}
+
+func TestBaseEnvAppliesHarnessUnsetsAfterAllowlist(t *testing.T) {
+	const name = "OUTER_LAUNCHER_SESSION_ID"
+	t.Setenv(name, "parent-session")
+
+	for _, kv := range baseEnv([]string{name}, []string{name}) {
+		if strings.HasPrefix(kv, name+"=") {
+			t.Fatalf("configured harness-only unset remained in environment: %v", kv)
+		}
 	}
 }
 

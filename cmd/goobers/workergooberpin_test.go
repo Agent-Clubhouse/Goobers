@@ -98,7 +98,7 @@ func TestWorkerGooberDigestsAgreeWithTheDaemonForTheSameTree(t *testing.T) {
 		snapshot.set,
 		goobersByName(snapshot.set),
 		snapshot.instructions,
-		snapshot.cfg.Runner.EnvPassthrough,
+		harnessEnvironmentPolicy(snapshot.cfg.Runner),
 		snapshot.cfg.Runner.HarnessCommand,
 		true,
 		nil,

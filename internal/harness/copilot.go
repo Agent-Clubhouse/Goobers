@@ -202,6 +202,9 @@ type CopilotAdapter struct {
 	// toolchain env var a `dotnet`/`cargo` agentic stage needs is visible to the
 	// harness too. Empty by default: the built-in allowlist, unchanged.
 	ExtraEnvAllowlist []string
+	// EnvUnset removes ambient variables after the default allowlist and
+	// ExtraEnvAllowlist are applied.
+	EnvUnset []string
 	// ModelCredential resolves the instance's configured agent:model tokenRef
 	// (file/keychain/store — env is already covered by ambientCopilotToken)
 	// for the two config-time paths that have no RunRequest and so cannot go
@@ -422,7 +425,7 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	// var just so discovery could authenticate. It now takes the same token
 	// the auth-check probe below does, on the same resolver-first order (see
 	// copilotModelToken).
-	discoveryEnv := baseEnv(c.ExtraEnvAllowlist)
+	discoveryEnv := baseEnv(c.ExtraEnvAllowlist, c.EnvUnset)
 	tok, credErr := c.copilotModelToken(discoveryCtx)
 	if credErr != nil {
 		c.modelsErr = fmt.Errorf("resolve agent:model credential for model discovery: %w", credErr)
@@ -580,7 +583,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	versionStdout := newTranscriptBuffer(maxPreflightDiagnosticBytes)
 	res, err := c.runner().Run(ctx, ProcessRequest{
 		Command:            versionCommand,
-		Env:                baseEnv(c.ExtraEnvAllowlist),
+		Env:                baseEnv(c.ExtraEnvAllowlist, c.EnvUnset),
 		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		StdoutCapture:      versionStdout,
 	})
@@ -607,7 +610,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		// instance's configured credential into the probe instead, falling back
 		// to an ambient env var when the instance declares no grant; see
 		// copilotModelToken for why that order and not the reverse (#4292).
-		authEnv := baseEnv(c.ExtraEnvAllowlist)
+		authEnv := baseEnv(c.ExtraEnvAllowlist, c.EnvUnset)
 		tok, err := c.copilotModelToken(ctx)
 		if err != nil {
 			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: resolve agent:model credential: %w", err)
@@ -1511,6 +1514,7 @@ func (c *CopilotAdapter) credentialEnv(ctx context.Context, ephemeralTmp *epheme
 		envCapabilities:                c.EnvCapabilities,
 		optionalCredentialCapabilities: c.OptionalCredentialCapabilities,
 		extraEnvAllowlist:              c.ExtraEnvAllowlist,
+		envUnset:                       c.EnvUnset,
 		instanceRoot:                   c.InstanceRoot,
 		selfBin:                        c.SelfBin,
 		ephemeralTmp:                   ephemeralTmp,
