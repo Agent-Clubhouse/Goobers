@@ -564,6 +564,24 @@ func pollClaimAdminResponse(ctx context.Context, schedulerDir, requestID string,
 	}
 }
 
+// startClaimAdminSweep keeps delegated claim operations available through the
+// daemon's run-drain phase, after its admission lifecycle has stopped.
+func startClaimAdminSweep(
+	l instance.Layout,
+	log *journal.InstanceLog,
+	recover daemonStaleClaimSweep,
+	reporter *sweepErrorReporter,
+) func() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := startPeriodicSweep(ctx, delegationSweepInterval, func() {
+		reporter.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), log, time.Now, recover))
+	})
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
 func sweepPendingClaimAdminRequests(
 	schedulerDir string,
 	log *journal.InstanceLog,
