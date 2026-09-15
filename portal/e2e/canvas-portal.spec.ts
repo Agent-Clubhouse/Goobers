@@ -163,6 +163,9 @@ test("workflow run now prompts only when force is required", async ({ page }) =>
   expect(requests.map((request) => request.force ?? false)).toEqual([false, true]);
   await expect(page.locator("#workflow-run-status")).toHaveText("Triggered implementation (forced-run)");
   await expect(page.getByRole("tab", { name: "Workflows", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+  await expect(page.locator("#source-context")).toHaveText("Instance two");
+  await expect(page.locator("#workflow-run-status")).toBeEmpty();
   expect(errors).toEqual([]);
 });
 

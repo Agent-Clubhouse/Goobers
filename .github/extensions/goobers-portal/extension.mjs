@@ -24,7 +24,6 @@ import {
     loadRunArtifact,
     loadRunTranscript,
     loadRuns,
-    loadFleetStatus,
     openEventStream,
     setWorkflowEnabled,
     triggerWorkflowNow,
