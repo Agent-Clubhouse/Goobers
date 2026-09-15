@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/testgit"
+	"github.com/goobers/goobers/providers"
 )
 
 // recoveryPodTestGit runs one git command with a deterministic identity, for
@@ -127,7 +129,10 @@ func TestPodRecoveryEmptyDiffNeedsNoCustody(t *testing.T) {
 	t.Setenv(dispatcher.EnvGaggle, "web")
 	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
 	t.Setenv(dispatcher.EnvPodToken, "parent-token")
-	t.Setenv("GOOBERS_BASE_BRANCH", "main")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv(executor.BaseBranchEnvVar, "main")
 
 	if err := publishPodRecovery(t.Context(), root); err != nil {
 		t.Fatalf("empty workspace recovery: %v", err)
