@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/claimsclient"
@@ -61,7 +62,7 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if base == "" {
 		base = "main"
 	}
-	base, err = resolveRecoveryBaseRef(ctx, repository, base)
+	base, err = resolveRecoveryBaseRefWithFetch(ctx, repository, base)
 	if err != nil {
 		return err
 	}
@@ -153,4 +154,56 @@ func resolveRecoveryBaseRef(ctx context.Context, repository, base string) (strin
 		}
 	}
 	return "", fmt.Errorf("recovery base branch %q is not resolvable in this checkout", base)
+}
+
+// resolveRecoveryBaseRefWithFetch is resolveRecoveryBaseRef plus one retry: a
+// checkout-time step (checkoutRepoWorkspace's ensureRecoveryBaseRemoteRef, on
+// every writable arm as of #5103) is supposed to guarantee base resolves
+// before the stage ever runs, but a narrower recurrence of #5103 showed a
+// pr-remediation gather-pr-context pod reaching custody with base
+// unresolvable anyway — the stage's OWN git operations run between checkout
+// and here and are outside checkout's control (gather-pr-context checks out
+// its selected PR's head directly, replacing whatever branch checkout left
+// HEAD on). internal/recovery deliberately runs no git transport of its own
+// (recoveryGitIO's doc comment), so custody has to be able to re-fetch base
+// itself, with the same credential the checkout was minted, rather than fail
+// closed on a gap checkout can no longer be trusted to have closed for good.
+func resolveRecoveryBaseRefWithFetch(ctx context.Context, repository, base string) (string, error) {
+	resolved, err := resolveRecoveryBaseRef(ctx, repository, base)
+	if err == nil {
+		return resolved, nil
+	}
+	if fetchErr := fetchRecoveryBaseRef(ctx, repository, base); fetchErr != nil {
+		return "", fmt.Errorf("%w (re-fetching %s from origin for recovery custody also failed: %w)", err, base, fetchErr)
+	}
+	return resolveRecoveryBaseRef(ctx, repository, base)
+}
+
+// fetchRecoveryBaseRef fetches base from the checkout's own "origin" remote
+// into a persistent refs/remotes/origin/<base>, authenticated with whatever
+// credential this stage's checkout was minted (anonymous when it was none —
+// correct for a public repository, and the same failure mode a credentialed
+// fetch would have against a private one).
+func fetchRecoveryBaseRef(ctx context.Context, dir, base string) error {
+	url, err := originURL(dir)
+	if err != nil {
+		return err
+	}
+	var authEnv []string
+	if creds, credErr := resolveCheckoutCredential(ctx); credErr == nil {
+		if token := gitToken(creds); token != "" {
+			authEnv = gitAuthEnv(token)
+		}
+	}
+	var cmd *exec.Cmd
+	if authEnv != nil {
+		cmd = workspaceGitAuthEnvCommand(dir, authEnv, "fetch", "--quiet", url, base+":refs/remotes/origin/"+base)
+	} else {
+		cmd = workspaceGitCommand(dir, "fetch", "--quiet", url, base+":refs/remotes/origin/"+base)
+	}
+	out, err := workspaceGitCombinedOutput(cmd)
+	if err != nil {
+		return fmt.Errorf("fetch base %s: %w: %s", base, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
