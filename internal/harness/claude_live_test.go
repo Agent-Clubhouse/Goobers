@@ -4,12 +4,14 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
@@ -42,6 +44,13 @@ func TestIntegrationClaudeGoobersIOListInputsReceipt(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v (transcript: %s)", err, out.Transcript)
+	}
+	var completion apiv1.ResultEnvelope
+	if err := json.Unmarshal(out.Payload, &completion); err != nil {
+		t.Fatalf("decode completion: %v", err)
+	}
+	if completion.Status != apiv1.ResultSuccess {
+		t.Fatalf("completion status = %q, want %q", completion.Status, apiv1.ResultSuccess)
 	}
 	if !slices.ContainsFunc(out.InputInspectionReceipts, func(receipt mcpio.InputInspectionReceipt) bool {
 		return receipt.Tool == "list_inputs" && receipt.Success
