@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,11 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if err != nil {
 		return err
 	}
+	// A review run can legitimately have no claimed issue, and has no item
+	// whose recovery namespace could receive an archive.
+	if len(claims) == 0 {
+		return nil
+	}
 	if len(claims) != 1 || claims[0].RunID != runID || claims[0].Gaggle != gaggle ||
 		claims[0].ItemID == "" || claims[0].ReleasedAt != nil || !claims[0].ExpiresAt.After(time.Now()) {
 		return fmt.Errorf("pod recovery requires exactly one current issue claim")
@@ -58,6 +64,13 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	base, err = resolveRecoveryBaseRef(ctx, repository, base)
 	if err != nil {
 		return err
+	}
+	needed, err := podWorkspaceNeedsRecovery(ctx, repository, base)
+	if err != nil {
+		return err
+	}
+	if !needed {
+		return nil
 	}
 	// The temporary inventory is only upload staging. Do not remove it on a
 	// failed transfer; only the acknowledged host archive is durable custody.
@@ -90,6 +103,29 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	}
 	_, _, err = recovery.Retain(ctx, request, publication)
 	return err
+}
+
+// podWorkspaceNeedsRecovery reports whether a writable workspace has either
+// uncommitted changes or commits beyond its recovery base. A clean reviewer
+// checkout has neither, so no archive is required to dispose its pod.
+func podWorkspaceNeedsRecovery(ctx context.Context, repository, baseRef string) (bool, error) {
+	output, err := (podGit{}).Output(ctx, repository, "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("inspect workspace changes for recovery custody: %w", err)
+	}
+	if len(output) != 0 {
+		return true, nil
+	}
+	diff := exec.CommandContext(ctx, "git", "diff", "--quiet", baseRef+"...HEAD")
+	diff.Dir = repository
+	diff.Env = composeGitEnv(repository, nil)
+	if err := diff.Run(); err == nil {
+		return false, nil
+	} else if exitErr := new(exec.ExitError); errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return true, nil
+	} else {
+		return false, fmt.Errorf("inspect committed workspace changes for recovery custody: %w", err)
+	}
 }
 
 // resolveRecoveryBaseRef picks the git revision recovery custody's merge-base
