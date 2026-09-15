@@ -134,7 +134,7 @@ test("canvas fits a narrow panel and supports keyboard workflow drilldown", asyn
 });
 
 test("workflow run now prompts only when force is required", async ({ page }) => {
-  await openCanvas(page);
+  const errors = await openCanvas(page);
   const requests: Array<{ force?: boolean }> = [];
   await page.route("http://canvas.test/api/run-workflow-now", async (route) => {
     const body = route.request().postDataJSON() as { force?: boolean };
@@ -161,8 +161,93 @@ test("workflow run now prompts only when force is required", async ({ page }) =>
   await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
   await expect.poll(() => requests.length).toBe(2);
   expect(requests.map((request) => request.force ?? false)).toEqual([false, true]);
+  await expect(page.locator("#workflow-run-status")).toHaveText("Triggered implementation (forced-run)");
   await expect(page.getByRole("tab", { name: "Workflows", exact: true })).toHaveAttribute("aria-selected", "true");
+  expect(errors).toEqual([]);
 });
+
+for (const reason of ["budget", "daily-budget", "concurrency"]) {
+  test(`workflow run now does not retry ${reason} without approval`, async ({ page }) => {
+    const errors = await openCanvas(page);
+    const requests: Array<{ force: boolean }> = [];
+    const dialogs: string[] = [];
+    await page.route("http://canvas.test/api/run-workflow-now", async (route) => {
+      requests.push(route.request().postDataJSON());
+      await route.fulfill({ json: { ok: false, code: "trigger_rejected", reason: `conditions: ${reason}` } });
+    });
+    page.on("dialog", async (dialog) => {
+      dialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+    await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
+    await expect(page.locator("#error")).toHaveText(`Failed to run implementation: conditions: ${reason}`);
+    await expect(page.getByRole("button", { name: "Run implementation now", exact: true })).toBeEnabled();
+    expect(requests.map((request) => request.force)).toEqual([false]);
+    expect(dialogs).toHaveLength(reason === "concurrency" ? 0 : 1);
+    if (dialogs.length) expect(dialogs[0]).toContain("--force");
+    await expect(page.locator("#workflow-run-status")).toBeEmpty();
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const outcome of ["success", "rejected", "budget", "json-error"]) {
+  test(`workflow run now ignores late ${outcome} after switching sources`, async ({ page }) => {
+    const errors = await openCanvas(page);
+    const requests: Array<{ source: string; force: boolean }> = [];
+    const dialogs: string[] = [];
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("http://canvas.test/api/run-workflow-now", async (route) => {
+      requests.push(route.request().postDataJSON());
+      await blocked;
+      if (outcome === "json-error") {
+        await route.fulfill({ contentType: "application/json", body: "invalid json" });
+      } else {
+        await route.fulfill({
+          json: outcome === "success"
+            ? { ok: true, result: { runId: "late-run" } }
+            : { ok: false, code: "trigger_rejected", reason: `conditions: ${outcome === "budget" ? "budget" : "concurrency"}` },
+        });
+      }
+    });
+    page.on("dialog", async (dialog) => {
+      dialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    await page.evaluate(() => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (new URL(response.url).pathname === "/api/run-workflow-now") {
+          const originalJson = response.json.bind(response);
+          response.json = async () => {
+            try {
+              return await originalJson();
+            } finally {
+              // Wait for the handler's promise continuations, not just the network response.
+              window.setTimeout(() => { document.documentElement.dataset.runNowSettled = "true"; }, 0);
+            }
+          };
+        }
+        return response;
+      };
+    });
+    await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+    await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
+    await expect.poll(() => requests.length).toBe(1);
+    await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+    await expect(page.locator("#source-context")).toHaveText("Instance two");
+    release();
+    await expect(page.locator("html")).toHaveAttribute("data-run-now-settled", "true");
+    await expect(page.locator("#workflow-run-status")).toBeEmpty();
+    await expect(page.locator("#error")).toBeEmpty();
+    await expect(page.getByRole("button", { name: "Run implementation now", exact: true })).toBeEnabled();
+    expect(requests.map(({ source, force }) => ({ source, force }))).toEqual([{ source: sources[0].id, force: false }]);
+    expect(dialogs).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
 
 test("run filters use checkbox dropdowns instead of multi-select lists", async ({ page }) => {
   const errors = await openCanvas(page);

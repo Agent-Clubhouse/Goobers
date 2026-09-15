@@ -438,6 +438,12 @@ The canvas opens with an attention-first **Overview**, with **Workflows** and
 refreshes; returning to Runs preserves filters and restores keyboard focus.
 Advanced run filters and saved views are under **More filters and saved views**.
 
+On a live daemon, **Run now** triggers a workflow from the Workflows tab. If its
+hourly or daily cadence budget is exhausted, the canvas asks before retrying with
+`--force`; declining does not retry, and unrelated rejections do not prompt.
+Switching sources while a request is pending keeps its late result out of the
+new source's status and error messages.
+
 For a Fleet-enrolled instance, the canvas reads the non-secret Fleet association
 from the daemon's `/api/v1/instance` response and shows **Open Fleet portal** using
 that Fleet's canonical URI. Local sources fall back to `goobers fleet status

@@ -1605,6 +1605,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         body: JSON.stringify({ source: sourceId, gaggle, workflow: name, force }),
       });
       const data = await res.json();
+      if (sourceId !== sourceSelect.value) return;
       if (!data.ok) {
         if (!force && runNowNeedsForce(data)) {
           const proceed = window.confirm(
@@ -1629,7 +1630,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       if (sourceId === sourceSelect.value) {
         pendingWorkflowRuns.delete(key);
         await loadSnapshot();
-        if (failure) errorEl.textContent = failure;
+        if (sourceId === sourceSelect.value && failure) errorEl.textContent = failure;
       }
     }
   }
