@@ -20,8 +20,13 @@ const (
 	// V1Prefix is the versioned root for daemon API routes.
 	V1Prefix = "/api/v1"
 
-	HealthPath   = V1Prefix + "/health"
-	InstancePath = V1Prefix + "/instance"
+	// DiscoveryPath is the version-independent bootstrap endpoint a remote
+	// client uses before it knows which API versions this daemon supports.
+	DiscoveryPath    = "/.well-known/goobers"
+	OpenAPIPath      = V1Prefix + "/openapi.json"
+	CapabilitiesPath = V1Prefix + "/capabilities"
+	HealthPath       = V1Prefix + "/health"
+	InstancePath     = V1Prefix + "/instance"
 	// InstanceReadinessPath is the crash-recovery-safe identity/readiness
 	// endpoint (#5019): the one versioned route the recovery gate never
 	// blocks, so an operator or probe can tell "still recovering" from
@@ -246,6 +251,9 @@ type RouteID string
 
 // Stable V1 route IDs.
 const (
+	RouteDiscovery                RouteID = "discovery"
+	RouteOpenAPI                  RouteID = "openapi"
+	RouteCapabilities             RouteID = "capabilities"
 	RouteConfigDigest             RouteID = "configDigest"
 	RouteWorkerConfigDivergence   RouteID = "workerConfigDivergence"
 	RouteHealth                   RouteID = "health"
@@ -351,9 +359,10 @@ type Route struct {
 	Budget time.Duration
 	// RecoverySafe marks a route reachable while the daemon is still
 	// completing crash-orphan recovery, before every other versioned route
-	// opens (#5019). True only for RouteHealth and RouteInstanceReadiness:
-	// the recovery gate in httpapi.Router.serve refuses everything else,
-	// including RouteInstance, until recovery completes.
+	// opens (#5019). This is limited to health/readiness and the API discovery
+	// documents, none of which touches mutable scheduler state. The recovery
+	// gate in httpapi.Router.serve refuses everything else, including
+	// RouteInstance, until recovery completes.
 	RecoverySafe bool
 }
 
@@ -414,6 +423,12 @@ const (
 )
 
 var v1Routes = []Route{
+	// Discovery is deliberately reachable before crash recovery completes:
+	// it describes the API transport from immutable build/boot metadata and
+	// the canonical route registry without reading runtime health.
+	{ID: RouteDiscovery, Method: http.MethodGet, Path: DiscoveryPath, ActionClass: ActionAPIMetadata, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
+	{ID: RouteOpenAPI, Method: http.MethodGet, Path: OpenAPIPath, ActionClass: ActionAPIMetadata, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
+	{ID: RouteCapabilities, Method: http.MethodGet, Path: CapabilitiesPath, ActionClass: ActionAPIMetadata, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
 	// RouteHealth is RecoverySafe (#5019): #4999 landed readservice.Health's
 	// Startup field (phase/target/since) specifically so an authenticated
 	// caller can see startup progress, and every source healthUnannotated
@@ -559,6 +574,19 @@ var v1Routes = []Route{
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
+var initialRemoteReadRouteIDs = map[RouteID]struct{}{
+	RouteHealth:   {},
+	RouteInstance: {},
+	RouteRuns:     {},
+	RouteEvents:   {},
+}
+
+// InitiallyRemoteInvocable identifies the bounded first remote-read profile.
+func InitiallyRemoteInvocable(id RouteID) bool {
+	_, ok := initialRemoteReadRouteIDs[id]
+	return ok
+}
+
 // V1Routes returns an isolated copy of the versioned route contract.
 func V1Routes() []Route {
 	return slices.Clone(v1Routes)
@@ -623,7 +651,7 @@ func indexRoutes(name string, routes []Route) (map[RouteID]Route, error) {
 			return nil, fmt.Errorf("%s route %q: %w", name, route.ID, err)
 		}
 		switch route.ActionClass {
-		case ActionReadOnlyNavigation:
+		case ActionReadOnlyNavigation, ActionAPIMetadata:
 			if route.Method == http.MethodGet || route.Method == http.MethodHead {
 				break
 			}
@@ -705,8 +733,11 @@ const (
 	// through every product surface.
 	ActionRuntimeMutation    ActionClass = "runtime-mutation"
 	ActionReadOnlyNavigation ActionClass = "read-only-navigation"
-	ActionConfigTime         ActionClass = "config-time"
-	ActionDaemonLifecycle    ActionClass = "daemon-lifecycle"
+	// ActionAPIMetadata is machine-readable contract metadata. It is readable
+	// locally but must not be admitted by generic remote-navigation allowlists.
+	ActionAPIMetadata     ActionClass = "api-metadata"
+	ActionConfigTime      ActionClass = "config-time"
+	ActionDaemonLifecycle ActionClass = "daemon-lifecycle"
 	// ActionWorkflowExecution starts or advances the workflow machinery; it is
 	// not an operator intervention in an existing run.
 	ActionWorkflowExecution ActionClass = "workflow-execution"
@@ -904,6 +935,7 @@ func validActionClass(class ActionClass) bool {
 	switch class {
 	case ActionRuntimeMutation,
 		ActionReadOnlyNavigation,
+		ActionAPIMetadata,
 		ActionConfigTime,
 		ActionDaemonLifecycle,
 		ActionWorkflowExecution,
@@ -928,7 +960,8 @@ func TypeScriptContract() ([]byte, error) {
 	if err := ValidateRoutes(v1Routes, v1Routes); err != nil {
 		return nil, fmt.Errorf("validate route contract: %w", err)
 	}
-	if err := ValidateRoutes(v1ConfigAuthoringRoutes, v1ConfigAuthoringRoutes); err != nil {
+	authoringRoutes := V1ConfigAuthoringRoutes()
+	if err := ValidateRoutes(authoringRoutes, authoringRoutes); err != nil {
 		return nil, fmt.Errorf("validate configuration authoring route contract: %w", err)
 	}
 	runtimeCapabilities := V1RuntimeCapabilities()
@@ -940,7 +973,7 @@ func TypeScriptContract() ([]byte, error) {
 	output.WriteString("// Code generated by go generate ./internal/apicontract; DO NOT EDIT.\n\n")
 	writeTypeScriptRoutes(&output, "apiRoutes", v1Routes)
 	output.WriteString("export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];\n\n")
-	writeTypeScriptRoutes(&output, "configAuthoringRoutes", v1ConfigAuthoringRoutes)
+	writeTypeScriptRoutes(&output, "configAuthoringRoutes", authoringRoutes)
 	output.WriteString("export type ConfigAuthoringRoute =\n")
 	output.WriteString("  (typeof configAuthoringRoutes)[keyof typeof configAuthoringRoutes];\n\n")
 	output.WriteString("export const configAuthoringErrorCodes = [")
@@ -971,6 +1004,7 @@ func TypeScriptContract() ([]byte, error) {
 	output.WriteString("\nexport const actionClasses = {\n")
 	output.WriteString("  runtimeMutation: \"runtime-mutation\",\n")
 	output.WriteString("  readOnlyNavigation: \"read-only-navigation\",\n")
+	output.WriteString("  apiMetadata: \"api-metadata\",\n")
 	output.WriteString("  configTime: \"config-time\",\n")
 	output.WriteString("  daemonLifecycle: \"daemon-lifecycle\",\n")
 	output.WriteString("  workflowExecution: \"workflow-execution\",\n")
@@ -996,6 +1030,7 @@ type compatibilityManifestRoute struct {
 	Path         string       `json:"path"`
 	ActionClass  ActionClass  `json:"actionClass"`
 	Capability   CapabilityID `json:"capability,omitempty"`
+	Remote       bool         `json:"remoteInvocable"`
 	Cost         CostClass    `json:"cost"`
 	BudgetMS     int64        `json:"budgetMs,omitempty"`
 	Streaming    bool         `json:"streaming"`
@@ -1008,18 +1043,15 @@ func CompatibilityManifest() ([]byte, error) {
 	if err := ValidateRoutes(v1Routes, v1Routes); err != nil {
 		return nil, fmt.Errorf("validate route contract: %w", err)
 	}
-	if err := ValidateRoutes(v1ConfigAuthoringRoutes, v1ConfigAuthoringRoutes); err != nil {
-		return nil, fmt.Errorf("validate configuration authoring route contract: %w", err)
-	}
-
-	routes := make([]compatibilityManifestRoute, 0, len(v1Routes)+len(v1ConfigAuthoringRoutes))
-	for _, route := range append(V1Routes(), V1ConfigAuthoringRoutes()...) {
+	routes := make([]compatibilityManifestRoute, 0, len(v1Routes))
+	for _, route := range V1Routes() {
 		routes = append(routes, compatibilityManifestRoute{
 			ID:           route.ID,
 			Method:       route.Method,
 			Path:         route.Path,
 			ActionClass:  route.ActionClass,
 			Capability:   route.Capability,
+			Remote:       InitiallyRemoteInvocable(route.ID),
 			Cost:         route.Cost,
 			BudgetMS:     route.Budget.Milliseconds(),
 			Streaming:    route.Cost == CostStream,

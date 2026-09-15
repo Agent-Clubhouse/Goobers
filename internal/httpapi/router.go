@@ -28,6 +28,8 @@ import (
 )
 
 const (
+	// DiscoveryPath is the version-independent daemon discovery endpoint.
+	DiscoveryPath = apicontract.DiscoveryPath
 	// Prefix is the versioned root for all HTTP API routes.
 	Prefix = apicontract.V1Prefix
 	// HealthPath is the daemon health endpoint.
@@ -555,29 +557,32 @@ func (r *Router) ensureAdmission() {
 }
 
 type handlerConfig struct {
-	events                 eventSource
-	authenticator          Authenticator
-	interventions          InterventionService
-	interventionContext    context.Context
-	runRevealer            func(context.Context, string) error
-	workflowMutations      WorkflowMutationService
-	claims                 ClaimService
-	triggers               TriggerService
-	escalations            EscalationService
-	cancels                CancelService
-	journal                JournalService
-	runJournal             RunJournalService
-	credentials            CredentialService
-	blobs                  blobstore.Store
-	recovery               RecoveryService
-	surrenders             SurrenderService
-	state                  StateService
-	telemetryDefects       TelemetryDefectAggregateService
-	podRunGaggle           func(context.Context, string) (string, error)
-	configDigest           func() string
-	workerConfigDivergence func(journal.Event) error
-	instanceReadiness      InstanceReadinessService
-	recoveryGate           func() bool
+	events                  eventSource
+	authenticator           Authenticator
+	interventions           InterventionService
+	interventionContext     context.Context
+	runRevealer             func(context.Context, string) error
+	workflowMutations       WorkflowMutationService
+	claims                  ClaimService
+	triggers                TriggerService
+	escalations             EscalationService
+	cancels                 CancelService
+	journal                 JournalService
+	runJournal              RunJournalService
+	credentials             CredentialService
+	blobs                   blobstore.Store
+	recovery                RecoveryService
+	surrenders              SurrenderService
+	state                   StateService
+	telemetryDefects        TelemetryDefectAggregateService
+	podRunGaggle            func(context.Context, string) (string, error)
+	configDigest            func() string
+	workerConfigDivergence  func(journal.Event) error
+	instanceReadiness       InstanceReadinessService
+	recoveryGate            func() bool
+	discoveryIdentity       DiscoveryIdentity
+	telemetryReadsAvailable bool
+	workItemsAvailable      bool
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -681,6 +686,28 @@ func WithRecoveryGate(ready func() bool) HandlerOption {
 			return errors.New("http API recovery gate predicate is required")
 		}
 		c.recoveryGate = ready
+		return nil
+	}
+}
+
+// WithDiscoveryIdentity supplies the durable daemon identity and immutable
+// build metadata published by the version-independent discovery contract.
+func WithDiscoveryIdentity(identity DiscoveryIdentity) HandlerOption {
+	return func(c *handlerConfig) error {
+		if err := validateDiscoveryIdentity(identity); err != nil {
+			return err
+		}
+
+		c.discoveryIdentity = identity
+		return nil
+	}
+}
+
+// WithTelemetryReadAvailability records whether the reader has a configured
+// telemetry store, without querying that store during discovery.
+func WithTelemetryReadAvailability(available bool) HandlerOption {
+	return func(c *handlerConfig) error {
+		c.telemetryReadsAvailable = available
 		return nil
 	}
 }
@@ -929,9 +956,11 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if errorLog == nil {
 		return nil, errors.New("http API error logger is required")
 	}
+	_, workItemsAvailable := reader.(readservice.WorkItemReader)
 	config := handlerConfig{
 		authenticator:       NullAuthenticator{},
 		interventionContext: context.Background(),
+		workItemsAvailable:  workItemsAvailable,
 	}
 	for _, opt := range opts {
 		if err := opt(&config); err != nil {
@@ -943,7 +972,11 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, err
 	}
 	router.recoveryGate = config.recoveryGate
-	registerV1Routes(router, reader, errorLog, config)
+	discovery, err := registerDiscoveryRoutes(router, config)
+	if err != nil {
+		return nil, fmt.Errorf("register API discovery routes: %w", err)
+	}
+	registerV1Routes(router, reader, errorLog, config, discovery)
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
 	expected := apicontract.V1Routes()
@@ -965,8 +998,8 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 
-func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig) {
-	registerInstanceReadinessRoute(router, config.instanceReadiness, errorLog)
+func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig, discovery *discoveryState) {
+	registerInstanceReadinessRoute(router, config.instanceReadiness, errorLog, discovery)
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
@@ -974,7 +1007,19 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 			writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
 			return
 		}
-		writeJSON(w, http.StatusOK, health)
+		protocol, err := discovery.protocolSummary()
+		if err != nil {
+			errorLog.Printf("health protocol summary failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "encode_error", "protocol summary could not be encoded")
+			return
+		}
+		writeJSON(w, http.StatusOK, struct {
+			readservice.Health
+			Protocol *apicontract.ProtocolSummary `json:"protocol,omitempty"`
+		}{
+			Health:   health,
+			Protocol: protocol,
+		})
 	})
 	router.Handle(apicontract.RouteConfigDigest, func(w http.ResponseWriter, request *http.Request) {
 		if config.configDigest == nil {

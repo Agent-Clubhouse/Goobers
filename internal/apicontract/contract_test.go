@@ -2,6 +2,7 @@ package apicontract
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -212,6 +213,7 @@ func TestValidateRuntimeParityRejectsIncompleteAndDuplicateCapabilities(t *testi
 func TestRuntimeParityExplicitlyExcludesNonMutationActions(t *testing.T) {
 	for _, class := range []ActionClass{
 		ActionReadOnlyNavigation,
+		ActionAPIMetadata,
 		ActionConfigTime,
 		ActionDaemonLifecycle,
 		ActionWorkflowExecution,
@@ -329,6 +331,38 @@ func TestGeneratedCompatibilityManifestIsCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertGeneratedFileCurrent(t, "contract.generated.json", want)
+}
+
+func TestCompatibilityManifestUsesDaemonRouteUniverse(t *testing.T) {
+	raw, err := CompatibilityManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Routes []struct {
+			ID     RouteID `json:"id"`
+			Remote bool    `json:"remoteInvocable"`
+		} `json:"routes"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Routes) != len(V1Routes()) {
+		t.Fatalf("manifest routes = %d, daemon routes = %d", len(manifest.Routes), len(V1Routes()))
+	}
+	for index, route := range V1Routes() {
+		got := manifest.Routes[index]
+		if got.ID != route.ID || got.Remote != InitiallyRemoteInvocable(route.ID) {
+			t.Fatalf("manifest route %d = %+v, want %s remote=%t", index, got, route.ID, InitiallyRemoteInvocable(route.ID))
+		}
+	}
+	for _, route := range V1ConfigAuthoringRoutes() {
+		for _, got := range manifest.Routes {
+			if got.ID == route.ID {
+				t.Fatalf("separately mounted authoring route %s leaked into daemon compatibility manifest", route.ID)
+			}
+		}
+	}
 }
 
 func assertGeneratedFileCurrent(t *testing.T, name string, want []byte) {

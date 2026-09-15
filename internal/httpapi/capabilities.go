@@ -14,7 +14,11 @@ func SurfaceActions() []apicontract.SurfaceAction {
 		authenticator: NullAuthenticator{},
 		authorizer:    AllowAll,
 	}
-	registerV1Routes(router, nil, nil, handlerConfig{})
+	discovery, err := registerDiscoveryRoutes(router, handlerConfig{})
+	if err != nil {
+		panic(err)
+	}
+	registerV1Routes(router, nil, nil, handlerConfig{}, discovery)
 	// The events route is part of the versioned surface even though its stream
 	// is optional wiring. Only the registration is probed here — the handler
 	// closure is never invoked — so a nil stream is safe.
