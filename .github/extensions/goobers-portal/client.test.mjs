@@ -5,6 +5,7 @@ import {
     interventionCapability,
     interventionIdempotencyKey,
     loadRuns,
+    loadWorkflowDetail,
     requireDurableInterventionResult,
     runStageIntervention,
     triggerWorkflowNow,
@@ -33,6 +34,41 @@ test("multi-value filters fan out daemon queries and merge unique runs", async (
     } finally {
         globalThis.fetch = originalFetch;
     }
+});
+
+test("workflow detail uses the encoded daemon endpoint and bearer token", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push({ url, options });
+        return Response.json({ identity: { gaggle: "core/team", name: "implementation v2" }, stages: [] });
+    };
+    try {
+        const detail = await loadWorkflowDetail(
+            { mode: "daemon", baseUrl: "http://daemon", token: "test-token" },
+            "core/team",
+            "implementation v2",
+        );
+        assert.equal(
+            requests[0].url,
+            "http://daemon/api/v1/gaggles/core%2Fteam/workflows/implementation%20v2",
+        );
+        assert.equal(requests[0].options.headers.Authorization, "Bearer test-token");
+        assert.equal(detail.identity.name, "implementation v2");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("workflow detail requires daemon mode", async () => {
+    await assert.rejects(
+        loadWorkflowDetail({ mode: "standalone" }, "core", "implementation"),
+        /running Goobers daemon/,
+    );
+    await assert.rejects(
+        loadWorkflowDetail({ mode: "actions" }, "core", "implementation"),
+        /running Goobers daemon/,
+    );
 });
 
 test("daemon run summaries hydrate associated issue refs from run events", async () => {

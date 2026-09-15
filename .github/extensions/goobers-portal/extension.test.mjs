@@ -44,6 +44,12 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                 else process.env.COPILOT_HOME = previousHome;
                 await fs.rm(home, { recursive: true, force: true });
             });
+            const warnings = [{
+                code: "MODEL002",
+                severity: "warning",
+                scope: "Goober/coder",
+                explanation: "requested model is unavailable",
+            }];
             let fleet = { associated: true, canonicalUri: "https://fleet.example.test/", fleetId: "test-fleet" };
             let fail = false;
             const daemon = createServer((req, res) => {
@@ -52,7 +58,7 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                     return;
                 }
                 const pathname = new URL(req.url, "http://localhost").pathname;
-                const body = pathname === "/api/v1/instance" ? { name: "remote-instance", fleet }
+                const body = pathname === "/api/v1/instance" ? { name: "remote-instance", fleet, warnings }
                     : pathname === "/api/v1/health" ? { ready: true }
                     : pathname === "/api/v1/gaggles" ? { items: [] }
                     : pathname === "/api/v1/runs" ? { runs: [] }
@@ -73,6 +79,7 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
             const associated = await snapshot();
             assert.equal(associated.connected, true);
             assert.deepEqual(associated.fleet, fleet);
+            assert.deepEqual(associated.instance.warnings, warnings);
             assert.match(renderFleetPortalLink(associated.fleet), /href="https:\/\/fleet\.example\.test\/"/);
 
             fleet = { associated: false };
