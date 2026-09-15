@@ -14,32 +14,32 @@ describe("goobers roster page", () => {
 
     expect(await screen.findByRole("heading", { name: "Goobers" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#/goobers");
-    expect(screen.getByText("Core implementer")).toBeInTheDocument();
-    expect(screen.getByText("Tools implementer")).toBeInTheDocument();
+    expect(screen.queryByText("Core implementer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Tools implementer")).not.toBeInTheDocument();
     expect(screen.queryByText("2 goobers")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("region", { name: "Core product goober personas" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("region", { name: "Developer tools goober personas" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Core product/ }))
+      .toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /Developer tools/ }))
+      .toHaveAttribute("aria-expanded", "false");
   });
 
   it("filters by owning gaggle and keeps the group disclosure keyboard accessible", async () => {
     window.location.hash = "#/goobers?gaggle=core";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    const roster = await screen.findByRole("region", { name: "Core product goober personas" });
-    const disclosure = roster.closest("section");
-    const summary = within(disclosure!).getByRole("button", { name: /Core product/ });
-    expect(summary).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Core implementer")).toBeInTheDocument();
+    const summary = await screen.findByRole("button", { name: /Core product/ });
+    expect(summary).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Core implementer")).not.toBeInTheDocument();
     expect(screen.queryByText("Tools implementer")).not.toBeInTheDocument();
-    expect(screen.getByText("core/implementer")).toBeInTheDocument();
 
     summary.focus();
     await userEvent.keyboard("{Enter}");
-    expect(summary).toHaveAttribute("aria-expanded", "false");
+    expect(summary).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("region", { name: "Core product goober personas" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Core implementer")).toBeInTheDocument();
+    expect(screen.getByText("core/implementer")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View all gaggles" })).toHaveAttribute(
       "href",
       "#/goobers",
@@ -50,6 +50,7 @@ describe("goobers roster page", () => {
     window.location.hash = "#/goobers";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
+    await userEvent.click(await screen.findByRole("button", { name: /Core product/ }));
     const toggle = await screen.findByRole("button", { name: /Core implementer/ });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
 
