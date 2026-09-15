@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { BuildMetadata, DaemonClient, Instance } from "../api/types";
 import { useCobrand } from "../cobrand";
 import { UpdateNotice } from "../components/UpdateNotice";
@@ -26,6 +27,13 @@ interface HeaderIdentity {
   >;
 }
 
+export interface PortalHeaderHost {
+  /** Stable, same-document container owned by the embedding application. */
+  target: HTMLElement;
+  /** Additional host controls; Portal branding, freshness and theme controls remain intact. */
+  actions?: React.ReactNode;
+}
+
 interface PortalShellProps {
   activeArea: PrimaryArea;
   activeGaggle?: string;
@@ -36,6 +44,7 @@ interface PortalShellProps {
     "gaggle" | "workflow" | "stage" | "since" | "until" | "window"
   >;
   hostContext: "daemon" | "fleet" | "standalone";
+  headerHost?: PortalHeaderHost;
   navigate: Navigate;
   standalone: boolean;
   theme: Theme;
@@ -49,6 +58,7 @@ export function PortalShell({
   client,
   currentScope,
   hostContext,
+  headerHost,
   navigate,
   standalone,
   theme,
@@ -98,12 +108,8 @@ export function PortalShell({
     mainContent.current?.focus();
   };
 
-  return (
-    <div className="portal-frame" data-host={hostContext}>
-      <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
-        Skip to main content
-      </a>
-      <header className="topbar">
+  const header = (
+      <header className={headerHost ? "topbar topbar-hosted" : "topbar"}>
         <div className="topbar-primary">
           <button
             aria-label="Go to overview"
@@ -113,7 +119,12 @@ export function PortalShell({
             type="button"
           >
             <img alt="" src={config.brand.logoUrl ?? "/goober-mascot.png"} />
-            <strong>{config.brand.name}</strong>
+            {headerHost ? (
+              <span className="topbar-hosted-brand-copy">
+                <strong>{config.brand.name}</strong>
+                <small>{config.brand.tagline}</small>
+              </span>
+            ) : <strong>{config.brand.name}</strong>}
           </button>
           <span aria-hidden="true" className="topbar-divider" />
           <div className="topbar-instance-context" aria-label="Instance context">
@@ -189,8 +200,22 @@ export function PortalShell({
           >
             <Icon name={theme === "light" ? "moon" : "sun"} size={17} />
           </button>
+          {headerHost?.actions && (
+            <div className="topbar-host-actions">{headerHost.actions}</div>
+          )}
         </div>
       </header>
+  );
+
+  return (
+    <div
+      className={headerHost ? "portal-frame portal-frame-hosted-header" : "portal-frame"}
+      data-host={hostContext}
+    >
+      <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
+        Skip to main content
+      </a>
+      {headerHost ? createPortal(header, headerHost.target) : header}
       <aside className="sidebar">
         <button
           aria-controls="portal-secondary-navigation"

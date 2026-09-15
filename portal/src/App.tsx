@@ -37,7 +37,7 @@ import { instanceWarnings } from "./prototypeFixtures";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { scopeIdentity } from "./scope";
 import { GettingStartedShell } from "./shell/GettingStartedShell";
-import { PortalShell } from "./shell/PortalShell";
+import { PortalShell, type PortalHeaderHost } from "./shell/PortalShell";
 import { useTheme } from "./theme";
 
 const portalDiagnostics = createPortalDiagnostics();
@@ -59,6 +59,7 @@ export function App({
   mode = dashboardMode(),
   cursorScope,
   liveDataConfig,
+  headerHost,
 }: {
   client?: DaemonClient;
   warningClient?: ConfigurationWarningClient;
@@ -66,6 +67,7 @@ export function App({
   mode?: DashboardMode;
   cursorScope?: string;
   liveDataConfig?: Partial<LiveDataConfig>;
+  headerHost?: PortalHeaderHost;
 } = {}) {
   const effectiveLiveDataConfig = import.meta.env.DEV
     ? { ...liveDataConfig, crossTabEnabled: false }
@@ -83,7 +85,7 @@ export function App({
       config={effectiveLiveDataConfig}
       standalone={mode === "standalone"}
     >
-      <Portal client={client} mode={mode} warningClient={warningClient} />
+      <Portal client={client} mode={mode} warningClient={warningClient} headerHost={headerHost} />
     </LiveDataProvider>
   );
 }
@@ -157,10 +159,12 @@ function Portal({
   client,
   mode,
   warningClient,
+  headerHost,
 }: {
   client: DaemonClient;
   mode: DashboardMode;
   warningClient: ConfigurationWarningClient;
+  headerHost?: PortalHeaderHost;
 }) {
   const standalone = mode === "standalone";
   const { theme, toggleTheme } = useTheme();
@@ -307,6 +311,7 @@ function Portal({
         client={client}
         currentScope={currentScope}
         hostContext={mode === "fleet" ? "fleet" : standalone ? "standalone" : "daemon"}
+        headerHost={headerHost}
         navigate={navigate}
         standalone={standalone}
         theme={theme}
