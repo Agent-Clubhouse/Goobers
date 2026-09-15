@@ -146,6 +146,41 @@ test("canvas refreshes snapshots on live events after switching sources", async 
   expect(errors).toEqual([]);
 });
 
+test("canvas coalesces SSE bursts into one in-flight snapshot fetch", async ({ page }) => {
+  await page.addInitScript(() => {
+    class TestEventSource {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      listener = () => this.onmessage?.(new MessageEvent("message", {
+        data: '{"type":"snapshot.changed"}',
+      }));
+      constructor() { window.addEventListener("test-sse-message", this.listener); }
+      close() { window.removeEventListener("test-sse-message", this.listener); }
+    }
+    Object.defineProperty(window, "EventSource", { value: TestEventSource });
+  });
+  const errors = await openCanvas(page);
+  let snapshots = 0;
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("http://canvas.test/api/snapshot?**", async (route) => {
+    ++snapshots;
+    await blocked;
+    await route.fulfill({ json: snapshot({ ...sources[0], label: "Burst refreshed" }) });
+  });
+  const first = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/snapshot");
+  await page.evaluate(() => window.dispatchEvent(new Event("test-sse-message")));
+  await first;
+  await page.evaluate(() => {
+    for (let index = 0; index < 10; ++index) window.dispatchEvent(new Event("test-sse-message"));
+  });
+  expect(snapshots).toBe(1);
+  release();
+  await expect(page.locator("#source-context")).toHaveText("Burst refreshed");
+  expect(snapshots).toBe(1);
+  await expect(page.locator("#error")).toBeEmpty();
+  expect(errors).toEqual([]);
+});
+
 test("connecting a source clears the previous run and closes the source form", async ({ page }) => {
   const errors = await openCanvas(page);
   await page.getByRole("tab", { name: "Runs", exact: true }).click();

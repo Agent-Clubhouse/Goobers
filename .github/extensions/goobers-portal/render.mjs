@@ -2,6 +2,7 @@
 // wiring file stays focused on SDK plumbing.
 
 import {
+  createSnapshotFetcher,
   decodeStreamEvent,
   decodeViewState,
   encodeViewState,
@@ -2497,6 +2498,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const normalizeViewFilters = ${normalizeViewFilters.toString()};
   const encodeViewState = ${encodeViewState.toString()};
   const decodeViewState = ${decodeViewState.toString()};
+  const createSnapshotFetcher = ${createSnapshotFetcher.toString()};
+  const fetchSourceSnapshot = createSnapshotFetcher(fetch);
   const decodeStreamEvent = ${decodeStreamEvent.toString()};
   const mergeRunPage = ${mergeRunPage.toString()};
   const isInvalidCursorError = ${isInvalidCursorError.toString()};
@@ -2826,8 +2829,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   async function fetchSnapshot() {
     const sourceId = sourceSelect.value;
     if (!sourceId) return null;
-    const res = await fetch("/api/snapshot?source=" + encodeURIComponent(sourceId));
-    return await res.json();
+    return await fetchSourceSnapshot(sourceId);
   }
 
   function setFreshnessState(state, freshAt = null) {
