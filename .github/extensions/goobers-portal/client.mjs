@@ -358,7 +358,10 @@ function associationItems(run) {
         { kind: "issue", item: operator.workItem },
         { kind: "pr", item: run?.pullRequest },
         { kind: "pr", item: operator.pullRequest },
-    ].filter(({ item }) => item && refIdentity(item));
+        ...[run?.refs, run?.externalRefs, operator.refs, operator.externalRefs]
+            .flatMap((refs) => Array.isArray(refs) ? refs : [])
+            .map((item) => ({ kind: associationRefKind(item), item })),
+    ].filter(({ kind, item }) => kind && item && refIdentity(item));
 }
 
 function needsAssociationRefHydration(run) {

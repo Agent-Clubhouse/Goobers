@@ -70,8 +70,9 @@ export function renderRunAssociations(operator) {
         if (!item) return;
         const href = safeAssociationUrl(item?.url || item?.htmlUrl || item?.webUrl);
         const identity = item.number ?? item.id ?? item.externalId ?? "";
-        if (!href || seen.has(kind + ":" + identity)) return;
-        seen.add(kind + ":" + identity);
+        const key = kind + ":" + href.split("#")[0];
+        if (!href || seen.has(key)) return;
+        seen.add(key);
         const status = String(item.state || item.status || item.phase || "").trim();
         const statusAttr = status ? ' data-status="' + escapeAssociationHtml(status.toLowerCase()) + '"' : "";
         const shortLabel = (identity ? "#" + identity : "") + (title ? ": " + String(title).trim() : "");
@@ -794,35 +795,6 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     text-decoration: none;
   }
   .actions-run-link:hover { background: var(--background-color-hover, #f6f8fa); }
-  .run-id-control { display: inline-flex; align-items: center; gap: 6px; }
-  .copy-run-id {
-    padding: 2px 7px;
-    font-size: 12px;
-    color: var(--text-color-muted, #656d76);
-  }
-  .copy-run-id.copied {
-    color: var(--true-color-green, #1a7f37);
-    border-color: var(--true-color-green-muted, #1a7f3766);
-    animation: copy-pop 240ms ease-out;
-  }
-  [data-full-run-id]::after {
-    content: "";
-  }
-  .goober-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    max-width: 100%;
-    border: 1px solid var(--border-color-default, #d0d7de);
-    border-radius: 999px;
-    padding: 2px 7px;
-    background: var(--border-color-default, #d0d7de22);
-    font-size: 12px;
-    white-space: nowrap;
-    vertical-align: middle;
-  }
-  .goober-avatar { line-height: 1; }
-  .goober-label { overflow: hidden; text-overflow: ellipsis; }
   .run-associations { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 180px; }
   .run-association-link {
     color: inherit;
@@ -2059,7 +2031,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         ? ' <a class="actions-run-link" href="' + escapeHtml(actionsUrl) +
           '" target="_blank" rel="noopener noreferrer" title="Open GitHub Actions run">Action &#8599;</a>'
         : "";
-      const associations = renderRunAssociations(r.operator);
+      const associations = renderRunAssociations(r);
       tr.className = "clickable-row";
       tr.dataset.runId = runId;
       tr.innerHTML = renderRunRowCells(r, {

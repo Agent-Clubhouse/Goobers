@@ -3,7 +3,7 @@ import test from "node:test";
 import { Script } from "node:vm";
 
 import { filterRunSummaries, loadRuns } from "./client.mjs";
-import { renderGraphLegend, renderHtml, renderRunAssociations, renderTelemetryInsights } from "./render.mjs";
+import { renderGraphLegend, renderHtml, renderRunAssociations, renderRunRowCells, renderTelemetryInsights } from "./render.mjs";
 
 const runs = [
     {
@@ -190,6 +190,77 @@ test("run associations link event refs with summary titles", () => {
     assert.match(html, /href="https:\/\/github\.com\/odsp-microsoft\/ai-intentsity\/issues\/159"/);
     assert.match(html, /Issue #159: Classifier proposal/);
 });
+
+for (const field of ["refs", "externalRefs"]) {
+    for (const kind of ["issue", "pr"]) {
+        test(`runs table hydrates a URL-less ${kind} found only in run.${field}`, async () => {
+            const originalFetch = globalThis.fetch;
+            const runId = `${field}-${kind}`;
+            const baseUrl = "http://run-level-refs";
+            const ref = { kind, id: "159" };
+            const url = `https://github.com/octo/app/${kind === "issue" ? "issues" : "pull"}/159`;
+            const requests = [];
+            globalThis.fetch = async (request) => {
+                requests.push(request);
+                if (String(request).includes("/api/v1/runs?")) {
+                    return Response.json({ runs: [{ id: runId, [field]: [ref] }] });
+                }
+                assert.equal(request, `${baseUrl}/api/v1/runs/${runId}/events`);
+                return Response.json({ events: [{ externalRef: { ...ref, url } }] });
+            };
+            try {
+                const result = await loadRuns({ mode: "daemon", baseUrl });
+                assert.equal(requests.length, 2, "run-level reference must trigger event hydration");
+                const html = renderHtml("run-level-refs");
+                const browserScript = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].at(-1)[1];
+                const renderRuns = browserScript.match(/  function renderRuns\(runs\) \{[\s\S]*?(?=\n  function )/)[0];
+                const rows = [];
+                new Script(`${renderRuns}\nrenderRuns(runs);`).runInNewContext({
+                    runs: result.runs,
+                    sortRuns: (items) => items,
+                    runsBody: { innerHTML: "", appendChild: (row) => rows.push(row) },
+                    document: {
+                        createElement: () => ({
+                            dataset: {},
+                            querySelectorAll: () => [],
+                            addEventListener() {},
+                        }),
+                    },
+                    safeExternalUrl: () => "",
+                    renderRunAssociations,
+                    renderRunRowCells,
+                    fmtTime: () => "",
+                    attachRunIdControls() {},
+                    updateSortIndicators() {},
+                });
+                assert.equal(rows.length, 1);
+                assert.ok(rows[0].innerHTML.includes(`href="${url}"`), "associated-work cell must contain hydrated link");
+                assert.match(rows[0].innerHTML, /class="run-association-link work-chip"/);
+            } finally {
+                globalThis.fetch = originalFetch;
+            }
+        });
+    }
+}
+
+for (const kind of ["issue", "pr"]) {
+    test(`run associations preserve same-number ${kind} links across repositories and dedupe canonical URLs`, () => {
+        const segment = kind === "issue" ? "issues" : "pull";
+        const firstUrl = `https://github.com/octo/a/${segment}/42`;
+        const secondUrl = `https://github.com/octo/b/${segment}/42`;
+        const html = renderRunAssociations({
+            refs: [
+                { kind, id: "42", url: firstUrl },
+                { kind, id: "42", url: secondUrl },
+                { kind, number: 42, url: firstUrl + "#issuecomment-123" },
+            ],
+            externalRefs: [{ kind, externalId: "42", url: firstUrl }],
+        });
+        assert.ok(html.includes(`href="${firstUrl}"`));
+        assert.ok(html.includes(`href="${secondUrl}"`));
+        assert.equal((html.match(/class="run-association-link work-chip"/g) || []).length, 2);
+    });
+}
 
 test("GitHub Actions rejects unsupported telemetry filters", async () => {
     const result = await loadRuns({ mode: "actions" }, { outcome: "success" });
