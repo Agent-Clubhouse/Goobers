@@ -394,6 +394,12 @@ export interface Instance extends ContractVersion {
   memoryGateEnabled: boolean;
   fsyncDisabled: boolean;
   fleetEnrolled: boolean;
+  fleet?: {
+    associated: boolean;
+    canonicalUri?: string;
+    fleetId?: string;
+    reason?: string;
+  };
 }
 
 export interface JournalHealthStatus {

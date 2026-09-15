@@ -23,16 +23,12 @@ import (
 	"github.com/goobers/goobers/internal/version"
 )
 
-// defaultFleetEnrolled checks the real Fleet file storage. Errors other than
-// "not associated" are treated as not-enrolled — a read-only status field
-// must never fail the whole Instance() response over a Fleet storage hiccup.
-func defaultFleetEnrolled(instanceRoot string) bool {
+func defaultFleetAssociation(instanceRoot string) (fleet.Association, error) {
 	storage, err := fleet.NewFileStorage("")
 	if err != nil {
-		return false
+		return fleet.Association{}, err
 	}
-	_, err = storage.LoadAssociation(instanceRoot)
-	return err == nil
+	return storage.LoadAssociation(instanceRoot)
 }
 
 const (
@@ -166,10 +162,12 @@ type LocalSources struct {
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration
 	// FleetEnrolled reports whether the instance at the given root is
-	// associated with a Fleet service (#4218). Optional: NewLocal defaults
-	// it to a check against the real Fleet file storage; tests substitute a
-	// stub to avoid touching the platform's Fleet storage directory.
+	// associated with a Fleet service (#4218). Optional override; by default
+	// enrollment is derived from FleetAssociation.
 	FleetEnrolled func(instanceRoot string) bool
+	// FleetAssociation reads only nonsecret metadata, never keys or credentials.
+	// NewLocal defaults it to the real Fleet file storage.
+	FleetAssociation func(instanceRoot string) (fleet.Association, error)
 }
 
 // Local reads a tier 1-2 instance's provisioned definitions, journals, and
@@ -243,8 +241,8 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 	if store, ok := sources.ReadModel.(*readmodel.Store); ok && store == nil {
 		sources.ReadModel = nil
 	}
-	if sources.FleetEnrolled == nil {
-		sources.FleetEnrolled = defaultFleetEnrolled
+	if sources.FleetAssociation == nil {
+		sources.FleetAssociation = defaultFleetAssociation
 	}
 	now := time.Now
 	snapshot, err := newDefinitionSnapshot(sources.Definitions, sources.Validation, now())
