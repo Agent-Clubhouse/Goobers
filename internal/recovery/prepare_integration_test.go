@@ -63,6 +63,46 @@ func TestIntegrationPreparationPreservesEarlierStageCommitsAndDirtyWork(t *testi
 	}
 }
 
+// TestIntegrationPreparationResolvesRemoteTrackingOriginBase pins #5103: a
+// mode-3 pod clones with a plain "origin" remote (dispatch-checkout.go never
+// names it "mirror"), and a pod dispatched directly onto an already-existing
+// run branch never gets a local base branch at all — only the remote-tracking
+// one. PrepareRecord must resolve that ref exactly as it resolves a local
+// branch or the worker mirror's "mirror"-named equivalent, and record a
+// restorable refs/heads/<base> either way.
+func TestIntegrationPreparationResolvesRemoteTrackingOriginBase(t *testing.T) {
+	testdep.Require(t, "git")
+	ctx := context.Background()
+	origin := t.TempDir()
+	recoveryTestGit(t, origin, "init", "--initial-branch=main")
+	recoveryTestGit(t, origin, "commit", "--allow-empty", "-m", "base")
+	base := recoveryTestGit(t, origin, "rev-parse", "HEAD")
+	recoveryTestGit(t, origin, "checkout", "-b", "run-branch")
+	recoveryTestGit(t, origin, "commit", "--allow-empty", "-m", "run branch work")
+
+	// A single-branch clone of the run branch, as dispatch-checkout.go's
+	// "already exists" arm produces: no local "main" branch at all.
+	parent := t.TempDir()
+	recoveryTestGit(t, parent, "clone", "--quiet", "--branch", "run-branch", origin, "pod")
+	pod := filepath.Join(parent, "pod")
+	if got := recoveryTestGit(t, pod, "branch", "--list", "main"); got != "" {
+		t.Fatalf("test fixture unexpectedly carries a local main branch: %q", got)
+	}
+	recoveryTestGit(t, pod, "fetch", "--quiet", "origin", "main:refs/remotes/origin/main")
+
+	template := storageTestRecord()
+	record, err := PrepareRecord(ctx, pod, template.RepositoryKey, template.RunID, "refs/remotes/origin/main", template.CreatedAt, template.RetainUntil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.BaseSHA != base {
+		t.Fatalf("preparation base = %q, want %q", record.BaseSHA, base)
+	}
+	if record.BaseRef != "refs/heads/main" {
+		t.Fatalf("preparation base ref = %q, want refs/heads/main (restore re-fetches by branch name)", record.BaseRef)
+	}
+}
+
 func TestIntegrationPreparationReportsMissingAttemptedBaseRef(t *testing.T) {
 	testdep.Require(t, "git")
 	repository := t.TempDir()

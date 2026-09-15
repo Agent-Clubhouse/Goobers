@@ -13,6 +13,8 @@ func TestRemoteRecoveryBaseRef(t *testing.T) {
 		{local: "refs/heads/master", want: "refs/heads/master"},
 		{local: "refs/remotes/mirror/master", want: "refs/heads/master"},
 		{local: "refs/remotes/mirror/release/2026.09", want: "refs/heads/release/2026.09"},
+		{local: "refs/remotes/origin/main", want: "refs/heads/main"},
+		{local: "refs/remotes/origin/release/2026.09", want: "refs/heads/release/2026.09"},
 		{local: "refs/tags/v1.0.0", want: "refs/tags/v1.0.0"},
 		{local: "0123456789012345678901234567890123456789", want: "0123456789012345678901234567890123456789"},
 	} {

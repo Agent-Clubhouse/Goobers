@@ -88,10 +88,22 @@ func expectedBundleHeader(record Record) string {
 }
 
 // verifyBundleHeaderBytes confirms a captured bundle header, including its
-// trailing blank line, matches exactly the declared format: a full bundle
-// names only record.Ref, a delta bundle also declares record.BaseSHA as its
-// sole prerequisite (the object it requires the unbundling repository to
-// already hold).
+// trailing blank line, matches the declared format: a full bundle names only
+// record.Ref, a delta bundle also declares one or more prerequisites (the
+// objects it requires the unbundling repository to already hold).
+//
+// A delta bundle can declare MORE THAN ONE prerequisite line: "bundle create
+// ref --not BaseSHA" excludes everything reachable from BaseSHA, and git
+// lists every boundary commit of that exclusion — not just BaseSHA itself —
+// whenever the walk from ref reaches the excluded set by more than one path.
+// That is ordinary history for a long-lived branch merged from its
+// repeatedly-advancing base (a PR branch across sequential pr-remediation
+// stages, #5103), not a corrupt or substituted bundle: every prerequisite
+// git names this way is, by construction of "--not BaseSHA", an ancestor of
+// BaseSHA (or BaseSHA itself), so a repository that already holds BaseSHA's
+// commit object already holds all of them — exactly the precondition
+// ImportSnapshotBundle already checks before unbundling. Requiring exactly
+// one prerequisite line here rejected every such bundle as corrupt.
 func verifyBundleHeaderBytes(header []byte, record Record, format string) error {
 	switch format {
 	case archiveFormatFull:
@@ -105,14 +117,38 @@ func verifyBundleHeaderBytes(header []byte, record Record, format string) error 
 		if len(record.SnapshotSHA) == 64 {
 			objectFormat = "sha256"
 		}
-		if !ok || len(lines) != 4 || lines[0] != "# v3 git bundle" || lines[1] != "@object-format="+objectFormat ||
-			!strings.HasPrefix(lines[2], "-"+record.BaseSHA) || lines[3] != record.SnapshotSHA+" "+record.Ref {
+		if !ok || len(lines) < 4 || lines[0] != "# v3 git bundle" || lines[1] != "@object-format="+objectFormat ||
+			lines[len(lines)-1] != record.SnapshotSHA+" "+record.Ref || !deltaBundleDeclaresBase(lines[2:len(lines)-1], record.BaseSHA) {
 			return fmt.Errorf("recovery bundle does not contain the expected delta snapshot")
 		}
 	default:
 		return fmt.Errorf("unknown recovery bundle format %q", format)
 	}
 	return nil
+}
+
+// deltaBundleDeclaresBase confirms every prerequisite line is a well-formed
+// "-<object id>" (git may append a one-line log subject after the id, which
+// this ignores) and that record.BaseSHA is among them — proving this bundle
+// really was cut against the recorded base, not some other exclusion.
+func deltaBundleDeclaresBase(prerequisites []string, baseSHA string) bool {
+	sawBase := false
+	for _, line := range prerequisites {
+		id, ok := strings.CutPrefix(line, "-")
+		if !ok {
+			return false
+		}
+		if space := strings.IndexByte(id, ' '); space >= 0 {
+			id = id[:space]
+		}
+		if !gitObjectID.MatchString(id) {
+			return false
+		}
+		if id == baseSHA {
+			sawBase = true
+		}
+	}
+	return sawBase
 }
 
 type boundedBundleWriter struct {
