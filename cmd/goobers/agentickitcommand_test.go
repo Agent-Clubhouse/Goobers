@@ -53,6 +53,11 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 				}
 				if len(declared) > 0 {
 					cfg.Runner.HarnessCommand[string(selected)] = slices.Clone(declared)
+					if selected == apiv1.HarnessCopilot {
+						cfg.Runner.HarnessSessionArgs = map[string][]string{
+							string(selected): {"--session-file", "{sessionId}.jsonl"},
+						}
+					}
 				}
 				if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
 					t.Fatal(err)
@@ -104,6 +109,9 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 					}
 					if !slices.Equal(kit.HarnessEnvUnset, cfg.Runner.HarnessEnvUnset) {
 						t.Fatalf("kit harness env unset = %v, want %v", kit.HarnessEnvUnset, cfg.Runner.HarnessEnvUnset)
+					}
+					if !slices.Equal(kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)]) {
+						t.Fatalf("kit harness session args = %v, want %v", kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)])
 					}
 					assertPodLauncher(t, kit, selected, declared, cfg.Runner.HarnessEnvUnset)
 				}

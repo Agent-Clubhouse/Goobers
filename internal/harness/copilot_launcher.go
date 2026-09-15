@@ -33,7 +33,7 @@ func (c *CopilotAdapter) prepareLauncherSession(ctx context.Context, workspace s
 	if err != nil {
 		return nil, nil, "", cleanup, err
 	}
-	if c.RequireLauncherContract && !c.isLauncherContractVerified() {
+	if c.RequireLauncherContract && len(c.LauncherSessionArgs) == 0 && !c.isLauncherContractVerified() {
 		return nil, nil, "", cleanup, fmt.Errorf("harness: copilot launcher adapter-managed fallback was not verified by preflight")
 	}
 	if copilotCommandSelectsSession(argv) {
@@ -80,6 +80,10 @@ func parseLauncherContract(data []byte) (launcherContract, error) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return contract, fmt.Errorf("launcher contract must be exactly one JSON object")
 	}
+	return validateLauncherContract(contract)
+}
+
+func validateLauncherContract(contract launcherContract) (launcherContract, error) {
 	if contract.Version != 1 {
 		return contract, fmt.Errorf("unsupported launcher contract version %d", contract.Version)
 	}
@@ -113,6 +117,13 @@ func parseLauncherContract(data []byte) (launcherContract, error) {
 }
 
 func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherContract, error) {
+	if len(c.LauncherSessionArgs) > 0 {
+		return validateLauncherContract(launcherContract{
+			Version:     1,
+			SessionMode: "templated",
+			SessionArgs: c.LauncherSessionArgs,
+		})
+	}
 	if !c.RequireLauncherContract {
 		return launcherContract{Version: 1, SessionMode: "adapter-managed"}, nil
 	}

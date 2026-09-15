@@ -248,6 +248,7 @@ func harnessEnvironmentPolicy(cfg instance.RunnerConfig) harness.EnvironmentConf
 	return harness.EnvironmentConfig{
 		ExtraAllowlist: cfg.EnvPassthrough,
 		Unset:          cfg.HarnessEnvUnset,
+		SessionArgs:    cfg.HarnessSessionArgs,
 	}
 }
 
@@ -258,6 +259,7 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 	registry := harness.NewRegistry()
 	copilotCommand := harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"})
 	customLauncher := requiresCopilotLauncherContract(harnessCommand)
+	sessionArgs := environment.SessionArgs[string(apiv1.HarnessCopilot)]
 	authCheckArgs := copilotAuthCheckArgs
 	if customLauncher {
 		authCheckArgs = forwardingLauncherAuthCheckArgs()
@@ -274,13 +276,14 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 		OptionalCredentialCapabilities: map[string]bool{
 			string(capability.AgentModel): true,
 		},
-		ExtraEnvAllowlist: environment.ExtraAllowlist,
-		EnvUnset:          environment.Unset,
-		InstanceRoot:      instanceRoot,
-		SelfBin:           selfBin,
-		DeferDiscovery:    deferModelDiscovery,
-		ModelCredential:   modelCredential,
-		EphemeralTmp:      ephemeralTmp,
+		ExtraEnvAllowlist:   environment.ExtraAllowlist,
+		EnvUnset:            environment.Unset,
+		LauncherSessionArgs: slices.Clone(sessionArgs),
+		InstanceRoot:        instanceRoot,
+		SelfBin:             selfBin,
+		DeferDiscovery:      deferModelDiscovery,
+		ModelCredential:     modelCredential,
+		EphemeralTmp:        ephemeralTmp,
 	}
 	if customLauncher {
 		copilotAdapter.RequiredTools = []string{"task_complete"}

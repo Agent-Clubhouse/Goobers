@@ -2840,6 +2840,36 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "runner.harnessEnvUnset[0]",
 		},
 		{
+			name: "runner harness session args valid",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"forwarding-launcher", "copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": {"--session-file", "{sessionId}.jsonl"}},
+			}},
+		},
+		{
+			name: "runner harness session args require command",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessSessionArgs: map[string][]string{"copilot": {"--session-file", "{sessionId}.jsonl"}},
+			}},
+			wantErr: `requires runner.harnessCommand["copilot"]`,
+		},
+		{
+			name: "runner harness session args require placeholder",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"forwarding-launcher", "copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": {"--session-file", "fixed.jsonl"}},
+			}},
+			wantErr: "at least one argument must contain {sessionId}",
+		},
+		{
+			name: "runner harness session args reject unsupported harness",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessCommand:     map[string][]string{"claude-code": {"forwarding-launcher", "claude"}},
+				HarnessSessionArgs: map[string][]string{"claude-code": {"--session", "{sessionId}"}},
+			}},
+			wantErr: "only the copilot harness supports",
+		},
+		{
 			name: "runner harness command override valid",
 			cfg: Config{Runner: RunnerConfig{HarnessCommand: map[string][]string{
 				"copilot":     {"agency", "copilot"},

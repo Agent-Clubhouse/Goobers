@@ -205,6 +205,9 @@ type CopilotAdapter struct {
 	// EnvUnset removes ambient variables after the default allowlist and
 	// ExtraEnvAllowlist are applied.
 	EnvUnset []string
+	// LauncherSessionArgs is an operator-declared templated session contract for
+	// a custom launcher. At least one argument contains {sessionId}.
+	LauncherSessionArgs []string
 	// ModelCredential resolves the instance's configured agent:model tokenRef
 	// (file/keychain/store — env is already covered by ambientCopilotToken)
 	// for the two config-time paths that have no RunRequest and so cannot go

@@ -92,6 +92,8 @@ type Kit struct {
 	// HarnessEnvUnset is the instance's harness-only ambient environment deny
 	// list. Stage pods apply it to execution and preflight just like the daemon.
 	HarnessEnvUnset []string `json:"harnessEnvUnset,omitempty"`
+	// HarnessSessionArgs is the selected launcher's configured session template.
+	HarnessSessionArgs []string `json:"harnessSessionArgs,omitempty"`
 }
 
 // Marshal renders the kit and returns it with its content address.
