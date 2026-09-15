@@ -624,6 +624,423 @@ export function renderTelemetryInsights(run = {}) {
         "<h3>Stage and retry hotspots</h3><ul class=\"causal-list\">" + hotspotRows + "</ul></div>";
 }
 
+// ---------------------------------------------------------------------------
+// Insights tab: aggregate telemetry (GET /api/v1/telemetry/stats), ported
+// from the web portal's InsightPage.tsx/insightScope.ts/insightData.ts —
+// behavior and data shape, not the React implementation. Scoped by
+// instance/gaggle/workflow (no stage-level scope, unlike the web portal) and
+// a bounded time window matching INSIGHT_WINDOWS exactly.
+// ---------------------------------------------------------------------------
+
+export const INSIGHT_WINDOWS = [
+    { value: "24h", label: "Last 24 hours" },
+    { value: "7d", label: "Last 7 days" },
+    { value: "30d", label: "Last 30 days" },
+    { value: "all", label: "All time" },
+];
+
+const INSIGHT_WINDOW_MS = {
+    "24h": 24 * 60 * 60 * 1000,
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+};
+
+// One network round trip per bucket (there is no bucketed telemetry
+// endpoint), so bucket counts are fixed per window rather than
+// one-bucket-per-hour/day — matches the portal's TREND_BUCKET_COUNTS.
+const INSIGHT_TREND_BUCKET_COUNTS = { "24h": 8, "7d": 7, "30d": 10 };
+
+export function insightWindowRange(windowValue, now = new Date()) {
+    const until = now.toISOString();
+    const durationMs = INSIGHT_WINDOW_MS[windowValue];
+    return durationMs ? { since: new Date(now.getTime() - durationMs).toISOString(), until } : { until };
+}
+
+/** The window of the same length immediately preceding the selected one. Undefined for "all". */
+export function insightPreviousWindowRange(windowValue, now = new Date()) {
+    const durationMs = INSIGHT_WINDOW_MS[windowValue];
+    if (!durationMs) return undefined;
+    const currentSince = now.getTime() - durationMs;
+    return {
+        since: new Date(currentSince - durationMs).toISOString(),
+        until: new Date(currentSince).toISOString(),
+    };
+}
+
+export function parseInsightScope(value) {
+    if (!value || value === "instance") return { kind: "instance" };
+    if (value.startsWith("gaggle:")) {
+        return { kind: "gaggle", gaggle: value.slice("gaggle:".length) };
+    }
+    if (value.startsWith("workflow:")) {
+        const rest = value.slice("workflow:".length);
+        const separator = rest.indexOf("|");
+        if (separator === -1) return { kind: "instance" };
+        return { kind: "workflow", gaggle: rest.slice(0, separator), workflow: rest.slice(separator + 1) };
+    }
+    return { kind: "instance" };
+}
+
+export function insightScopeValue(scope) {
+    if (scope.kind === "gaggle") return "gaggle:" + scope.gaggle;
+    if (scope.kind === "workflow") return "workflow:" + scope.gaggle + "|" + scope.workflow;
+    return "instance";
+}
+
+export function insightScopeLabel(scope) {
+    if (scope.kind === "gaggle") return "Gaggle \u00b7 " + scope.gaggle;
+    if (scope.kind === "workflow") return "Workflow \u00b7 " + scope.gaggle + " / " + scope.workflow;
+    return "Instance";
+}
+
+export function insightScopeApiParams(scope) {
+    if (scope.kind === "gaggle") return { gaggle: scope.gaggle };
+    if (scope.kind === "workflow") return { gaggle: scope.gaggle, workflow: scope.workflow };
+    return {};
+}
+
+/** Builds the scope <select> option list from the most recently loaded stats. */
+export function insightScopeOptionsFromStats(stats = {}) {
+    const options = [{ value: "instance", label: "Instance" }];
+    for (const item of stats.gaggles || []) {
+        const scope = { kind: "gaggle", gaggle: item.gaggle };
+        options.push({ value: insightScopeValue(scope), label: insightScopeLabel(scope) });
+    }
+    for (const item of stats.runs || []) {
+        const scope = { kind: "workflow", gaggle: item.gaggle, workflow: item.workflow };
+        options.push({ value: insightScopeValue(scope), label: insightScopeLabel(scope) });
+    }
+    return options;
+}
+
+/** The full options object to pass to loadInsightStats for a (scope, window) pair. */
+export function insightRequestParams(scope, windowValue, now = new Date()) {
+    const range = insightWindowRange(windowValue, now);
+    const params = { ...insightScopeApiParams(scope), until: range.until };
+    if (range.since !== undefined) params.since = range.since;
+    if (windowValue === "all") return params;
+    const previous = insightPreviousWindowRange(windowValue, now);
+    const bucketCount = INSIGHT_TREND_BUCKET_COUNTS[windowValue] || 1;
+    return {
+        ...params,
+        trendSince: previous.since,
+        trendUntil: range.until,
+        trendBuckets: bucketCount * 2,
+        trendPreviousSince: previous.since,
+        trendPreviousUntil: previous.until,
+    };
+}
+
+export function isInInsightScope(scope, identity) {
+    if (scope.kind === "instance") return true;
+    if (identity.gaggle !== scope.gaggle) return false;
+    if (scope.kind === "gaggle") return true;
+    return identity.workflow === scope.workflow;
+}
+
+export function insightUsageForScope(stats, scope) {
+    return (stats.usage || []).find((item) => item.scope === scope.kind && isInInsightScope(scope, item));
+}
+
+function insightFormatRate(value) {
+    return value === undefined ? "Unmeasured" : (value * 100).toFixed(1) + "%";
+}
+
+function insightFormatDuration(ms) {
+    if (ms === undefined || ms === null) return "Unmeasured";
+    return ms < 1000 ? Math.round(ms) + "ms" : (ms / 1000).toFixed(1) + "s";
+}
+
+function insightFormatTokens(value) {
+    return value === undefined ? "Unmeasured" : value.toLocaleString("en-US") + " tokens";
+}
+
+function insightFormatCost(value) {
+    return value === undefined ? "Unmeasured" : "$" + value.toFixed(2);
+}
+
+function insightFormatSamples(samples) {
+    return !samples ? "Unmeasured" : samples + (samples === 1 ? " sample" : " samples");
+}
+
+function insightFormatBucketLabel(since, until) {
+    const start = new Date(since);
+    const end = new Date(until);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return since + " \u2013 " + until;
+    return start.toLocaleString() + " \u2013 " + end.toLocaleString();
+}
+
+function insightGaggleMetric(item) {
+    return {
+        label: item.gaggle,
+        successRate: item.successRate,
+        succeeded: item.completedRuns,
+        failed: item.failedRuns,
+        other: item.otherRuns,
+        total: item.totalRuns,
+    };
+}
+
+function insightRunMetric(item) {
+    return {
+        label: item.gaggle + " / " + item.workflow,
+        successRate: item.successRate,
+        succeeded: item.completedRuns,
+        failed: item.failedRuns,
+        other: item.otherRuns,
+        total: item.totalRuns,
+    };
+}
+
+function insightStageOutcomeMetric(item) {
+    return {
+        label: item.gaggle + " / " + item.workflow + " / " + item.stage,
+        successRate: item.successRate,
+        succeeded: item.succeededAttempts,
+        failed: item.failedAttempts,
+        other: item.totalAttempts - item.succeededAttempts - item.failedAttempts,
+        total: item.totalAttempts,
+    };
+}
+
+// Recomputes the instance-wide success rate client-side rather than reading
+// any single server field, so it must apply the same denominator rule the
+// daemon uses per-gaggle: an infra-fault terminal is not a verdict about the
+// work and is excluded from both the numerator and denominator.
+function insightSumGaggles(gaggles) {
+    if (!gaggles || !gaggles.length) return null;
+    const total = gaggles.reduce((sum, item) => ({
+        completed: sum.completed + item.completedRuns,
+        failed: sum.failed + item.failedRuns,
+        infraFailed: sum.infraFailed + item.infraFailedRuns,
+        other: sum.other + item.otherRuns,
+        runs: sum.runs + item.totalRuns,
+    }), { completed: 0, failed: 0, infraFailed: 0, other: 0, runs: 0 });
+    const terminal = total.completed + total.failed - total.infraFailed;
+    return {
+        label: "Instance",
+        successRate: terminal > 0 ? total.completed / terminal : undefined,
+        succeeded: total.completed,
+        failed: total.failed,
+        other: total.other,
+        total: total.runs,
+    };
+}
+
+function insightOutcomeSummary(stats, scope) {
+    if (scope.kind === "instance") return insightSumGaggles(stats.gaggles || []);
+    if (scope.kind === "gaggle") {
+        const item = (stats.gaggles || []).find((g) => g.gaggle === scope.gaggle);
+        return item ? insightGaggleMetric(item) : null;
+    }
+    const item = (stats.runs || []).find((r) => r.gaggle === scope.gaggle && r.workflow === scope.workflow);
+    return item ? insightRunMetric(item) : null;
+}
+
+function insightOutcomeBreakdown(stats, scope) {
+    if (scope.kind === "instance") return (stats.gaggles || []).map(insightGaggleMetric);
+    if (scope.kind === "gaggle") {
+        return (stats.runs || []).filter((r) => r.gaggle === scope.gaggle).map(insightRunMetric);
+    }
+    return (stats.stages || [])
+        .filter((s) => s.gaggle === scope.gaggle && s.workflow === scope.workflow)
+        .map(insightStageOutcomeMetric);
+}
+
+function renderInsightOutcomeRow(metric, emphasis) {
+    return '<tr' + (emphasis ? ' class="insight-outcome-summary"' : "") + '>' +
+        "<td>" + escapeAssociationHtml(metric.label) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatRate(metric.successRate)) + "</td>" +
+        "<td>" + escapeAssociationHtml(metric.succeeded) + "</td>" +
+        "<td>" + escapeAssociationHtml(metric.failed) + "</td>" +
+        "<td>" + escapeAssociationHtml(metric.other) + "</td>" +
+        "<td>" + escapeAssociationHtml(metric.total) + "</td></tr>";
+}
+
+function renderInsightOutcomeSection(stats, scope) {
+    const summary = insightOutcomeSummary(stats, scope);
+    const breakdown = insightOutcomeBreakdown(stats, scope);
+    if (!summary && !breakdown.length) return "";
+    const rows = (summary ? renderInsightOutcomeRow(summary, true) : "") +
+        breakdown.map((metric) => renderInsightOutcomeRow(metric, false)).join("");
+    return '<section class="content-section"><h3>Success and failure</h3>' +
+        '<div class="table-scroll"><table><thead><tr>' +
+        "<th>Scope</th><th>Success rate</th><th>Succeeded</th><th>Failed</th><th>Other</th><th>Total</th>" +
+        "</tr></thead><tbody>" + rows + "</tbody></table></div></section>";
+}
+
+function insightUnmeasuredLabel(everRecorded) {
+    return everRecorded ? "No data in window" : "Never recorded";
+}
+
+function insightFormatSeconds(value, everRecorded) {
+    return value === undefined ? insightUnmeasuredLabel(everRecorded) : insightFormatDuration(value * 1000);
+}
+
+function insightHasCurationHealth(stats, scope) {
+    if (scope.kind !== "instance") return false;
+    const curation = stats.curation || {};
+    const readyPool = stats.readyPool || {};
+    return Boolean(
+        curation.runs > 0 ||
+        readyPool.depth !== undefined ||
+        curation.everRecorded ||
+        readyPool.sampleEverRecorded ||
+        readyPool.bounceEverRecorded,
+    );
+}
+
+function renderInsightCurationSection(stats, scope) {
+    if (!insightHasCurationHealth(stats, scope)) return "";
+    const curation = stats.curation || {};
+    const readyPool = stats.readyPool || {};
+    const depthLabel = readyPool.depth === undefined
+        ? insightUnmeasuredLabel(readyPool.sampleEverRecorded)
+        : readyPool.starved ? "0 \u00b7 Starved" : String(readyPool.depth);
+    const bounceLabel = readyPool.bounceRate === undefined
+        ? insightUnmeasuredLabel(readyPool.bounceEverRecorded)
+        : (readyPool.bounceRate * 100).toFixed(1) + "%";
+    const inFlightLabel = !readyPool.inFlightClaimSamples
+        ? "0"
+        : insightFormatDuration(readyPool.averageInFlightClaimAgeSeconds * 1000) +
+            " average \u00b7 " + readyPool.inFlightClaimSamples + " claimed";
+    const throughputLabel = (curation.everRecorded ? readyPool.forwardCurationThroughput : insightUnmeasuredLabel(false)) +
+        " / " + readyPool.implementationDemand;
+    const actionsLabel = curation.everRecorded
+        ? curation.ready + " ready \u00b7 " + curation.needsHuman + " needs human \u00b7 " + curation.closed + " closed"
+        : insightUnmeasuredLabel(false);
+    const rows = [
+        ["Ready depth", depthLabel],
+        ["Oldest ready", insightFormatSeconds(readyPool.oldestAgeSeconds, readyPool.sampleEverRecorded)],
+        ["Age before claim", insightFormatSeconds(readyPool.averageClaimAgeSeconds, true)],
+        ["In flight now", inFlightLabel],
+        ["Bounce rate", bounceLabel],
+        ["Throughput / demand", throughputLabel],
+        ["Curation actions", actionsLabel],
+    ];
+    const items = rows.map(([label, value]) =>
+        '<div class="kv"><div class="label">' + escapeAssociationHtml(label) +
+            '</div><div class="value">' + escapeAssociationHtml(value) + "</div></div>",
+    ).join("");
+    return '<section class="content-section"><h3>Ready-pool health</h3><div class="kv-grid">' + items + "</div></section>";
+}
+
+function renderInsightCreditSection(stats, scope) {
+    const credits = (stats.creditAssignment || []).filter((credit) => isInInsightScope(scope, credit));
+    if (!credits.length) return "";
+    const visible = credits.slice(0, 10);
+    const rows = visible.map((credit) =>
+        "<tr><td>" + escapeAssociationHtml(credit.gaggle + " / " + credit.workflow + " / " + credit.stage) + "</td>" +
+        "<td>" + escapeAssociationHtml(credit.kind) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatRate(credit.failureShare)) + "</td>" +
+        "<td>" + escapeAssociationHtml(credit.failureRuns) + "</td>" +
+        "<td>" + escapeAssociationHtml(credit.escalationRuns) + "</td>" +
+        "<td>" + escapeAssociationHtml(credit.retryWasteAttempts) + "</td></tr>",
+    ).join("");
+    const overflow = credits.length > visible.length
+        ? '<p class="muted">+' + (credits.length - visible.length) + " more contributors.</p>"
+        : "";
+    return '<section class="content-section"><h3>Highest-contributing nodes</h3>' +
+        '<div class="table-scroll"><table><thead><tr>' +
+        "<th>Node</th><th>Kind</th><th>Failure share</th><th>Failures</th><th>Escalations</th><th>Retry waste</th>" +
+        "</tr></thead><tbody>" + rows + "</tbody></table></div>" + overflow + "</section>";
+}
+
+function renderInsightUsageSection(stats, scope) {
+    const usage = insightUsageForScope(stats, scope);
+    if (!usage) return "";
+    const rows = [
+        ["Attempts", String(usage.totalAttempts)],
+        ["Tokens (P50 / P95)", insightFormatTokens(usage.p50Tokens) + " / " + insightFormatTokens(usage.p95Tokens)],
+        ["Cost total", insightFormatCost(usage.costUSD)],
+        ["Cost (P50 / P95)", insightFormatCost(usage.p50CostUSD) + " / " + insightFormatCost(usage.p95CostUSD)],
+        ["Samples", insightFormatSamples(usage.costSamples)],
+        ["Retry waste", usage.retryWasteAttempts === 0
+            ? "No retry waste"
+            : usage.retryWasteAttempts + " attempts \u00b7 " + insightFormatTokens(usage.retryWasteTokens) +
+                " \u00b7 " + insightFormatCost(usage.retryWasteCostUSD)],
+    ];
+    const items = rows.map(([label, value]) =>
+        '<div class="kv"><div class="label">' + escapeAssociationHtml(label) +
+            '</div><div class="value">' + escapeAssociationHtml(value) + "</div></div>",
+    ).join("");
+    return '<section class="content-section"><h3>Tokens and retry waste</h3><div class="kv-grid">' + items + "</div></section>";
+}
+
+/** The most recent `bucketCount` buckets in an ascending trend array — the current window's half. */
+function insightCurrentTrendBuckets(stats, windowValue) {
+    const bucketCount = INSIGHT_TREND_BUCKET_COUNTS[windowValue];
+    if (!bucketCount || !Array.isArray(stats.trend) || !stats.trend.length) return [];
+    return stats.trend.slice(Math.max(0, stats.trend.length - bucketCount));
+}
+
+function renderInsightTrendSection(stats, scope, windowValue) {
+    if (windowValue === "all") {
+        return '<p class="usage-trend-note">Trend and period comparison need a bounded time window \u2014 choose 24h, 7d, or 30d.</p>';
+    }
+    const buckets = insightCurrentTrendBuckets(stats, windowValue);
+    if (!buckets.length) {
+        return '<p class="inline-empty">No cost trend data is available for this window.</p>';
+    }
+    const rows = buckets.map((bucket) => {
+        const usage = (bucket.usage || []).find((item) => item.scope === scope.kind && isInInsightScope(scope, item));
+        return "<tr><td>" + escapeAssociationHtml(insightFormatBucketLabel(bucket.since, bucket.until)) + "</td>" +
+            "<td>" + escapeAssociationHtml(insightFormatCost(usage && usage.costUSD)) + "</td>" +
+            "<td>" + escapeAssociationHtml(insightFormatTokens(usage && usage.p50Tokens)) + "</td>" +
+            "<td>" + escapeAssociationHtml(insightFormatSamples(usage ? usage.costSamples : 0)) + "</td></tr>";
+    }).join("");
+    const previousUsage = stats.trendPrevious &&
+        (stats.trendPrevious.usage || []).find((item) => item.scope === scope.kind && isInInsightScope(scope, item));
+    const currentUsage = insightUsageForScope(stats, scope);
+    const comparison = previousUsage || currentUsage
+        ? '<p class="usage-trend-note">Previous window: ' + escapeAssociationHtml(insightFormatCost(previousUsage && previousUsage.costUSD)) +
+            " \u00b7 Current window: " + escapeAssociationHtml(insightFormatCost(currentUsage && currentUsage.costUSD)) + "</p>"
+        : "";
+    return '<div class="table-scroll"><table><thead><tr><th>Bucket</th><th>Cost</th><th>P50 tokens</th><th>Samples</th></tr></thead>' +
+        "<tbody>" + rows + "</tbody></table></div>" + comparison;
+}
+
+function renderInsightStageSection(stats, scope) {
+    const stages = (stats.stages || [])
+        .filter((stage) => isInInsightScope(scope, stage) && stage.durationSamples > 0)
+        .sort((a, b) => (b.p95DurationMs ?? -1) - (a.p95DurationMs ?? -1));
+    if (!stages.length) return "";
+    const visible = stages.slice(0, 10);
+    const rows = visible.map((stage) =>
+        "<tr><td>" + escapeAssociationHtml(stage.gaggle + " / " + stage.workflow + " / " + stage.stage) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatDuration(stage.p50DurationMs)) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatDuration(stage.p95DurationMs)) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatDuration(stage.avgDurationMs)) + "</td>" +
+        "<td>" + escapeAssociationHtml(stage.durationSamples) + "</td></tr>",
+    ).join("");
+    const overflow = stages.length > visible.length
+        ? '<p class="muted">+' + (stages.length - visible.length) + " more stages.</p>"
+        : "";
+    return '<section class="content-section"><h3>Slowest stages</h3>' +
+        '<div class="table-scroll"><table><thead><tr>' +
+        "<th>Stage</th><th>P50</th><th>P95</th><th>Average</th><th>Samples</th>" +
+        "</tr></thead><tbody>" + rows + "</tbody></table></div>" + overflow + "</section>";
+}
+
+/** Renders the full Insights tab content for a loaded TelemetryStatsResult. */
+export function renderInsightPanel(stats, scope, windowValue) {
+    if (!stats) {
+        return '<p class="inline-empty">No telemetry loaded yet.</p>';
+    }
+    const outcomeHtml = renderInsightOutcomeSection(stats, scope);
+    const curationHtml = renderInsightCurationSection(stats, scope);
+    const creditHtml = renderInsightCreditSection(stats, scope);
+    const usageHtml = renderInsightUsageSection(stats, scope);
+    const stagesHtml = renderInsightStageSection(stats, scope);
+    if (!outcomeHtml && !curationHtml && !creditHtml && !usageHtml && !stagesHtml) {
+        return '<div class="empty-state insight-empty"><h3>No telemetry in this window</h3>' +
+            "<p>Choose a wider time window or another scope to inspect recorded runs.</p></div>";
+    }
+    const trendHtml = '<section class="content-section"><h3>Cost over time</h3>' +
+        renderInsightTrendSection(stats, scope, windowValue) + "</section>";
+    return outcomeHtml + curationHtml + creditHtml + usageHtml + trendHtml + stagesHtml;
+}
+
 export function renderHtml(instanceId, themePreference = "system", persistedFilters = {}) {
   const initialFilters = JSON.stringify(persistedFilters).replaceAll("<", "\\u003c");
     return `<!doctype html>
@@ -1486,6 +1903,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <button id="dashboard-tab-attention" role="tab" data-tab="attention" aria-controls="dashboard-panel-attention">Overview</button>
       <button id="dashboard-tab-workflows" role="tab" data-tab="workflows" aria-controls="dashboard-panel-workflows">Workflows</button>
       <button id="dashboard-tab-runs" role="tab" data-tab="runs" aria-controls="dashboard-panel-runs">Runs</button>
+      <button id="dashboard-tab-insights" role="tab" data-tab="insights" aria-controls="dashboard-panel-insights">Insights</button>
     </div>
     <section id="dashboard-panel-attention" role="tabpanel" aria-labelledby="dashboard-tab-attention">
       <div id="needs-you" aria-labelledby="needs-you-heading">
@@ -1577,6 +1995,18 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
         <button id="runs-load-more" type="button" style="display:none">Load more</button>
       </div>
+    </section>
+    <section id="dashboard-panel-insights" role="tabpanel" aria-labelledby="dashboard-tab-insights" hidden>
+      <h2>Insights</h2>
+      <p class="section-description">Aggregate telemetry across runs: success/failure, cost and usage, curation health, and cost trend.</p>
+      <div class="filters-bar" id="insights-filters">
+        <select id="insight-scope" aria-label="Insight scope" title="Select instance, gaggle, or workflow scope">
+          <option value="instance">Instance</option>
+        </select>
+        <select id="insight-window" aria-label="Time window" title="Select time window"></select>
+      </div>
+      <div id="insight-status" class="muted" role="status"></div>
+      <div id="insight-content"></div>
     </section>
   </div>
   <div id="run-view">
@@ -2457,6 +2887,31 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     const workflowNames = [...new Set(workflows.map((w) => (w.identity ? w.identity.name : w.name)))].filter(Boolean);
     filterWorkflow.innerHTML = workflowNames.map((n) => '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + "</option>").join("");
     setSelectedValues(filterWorkflow, prevWorkflow);
+
+    populateInsightScopeOptions(gaggles, workflows);
+  }
+
+  function populateInsightScopeOptions(gaggles, workflows) {
+    const prevValue = insightScopeSelect.value;
+    const gaggleNames = gaggles.length ? gaggles.map((g) => g.name) : [...new Set(workflows.map((w) => (w.identity ? w.identity.gaggle : w.gaggle)))];
+    const options = ['<option value="instance">Instance</option>'];
+    for (const name of gaggleNames.filter(Boolean)) {
+      const scope = { kind: "gaggle", gaggle: name };
+      options.push('<option value="' + escapeHtml(insightScopeValue(scope)) + '">' + escapeHtml(insightScopeLabel(scope)) + "</option>");
+    }
+    const seenWorkflows = new Set();
+    for (const w of workflows) {
+      const gaggle = w.identity ? w.identity.gaggle : w.gaggle;
+      const name = w.identity ? w.identity.name : w.name;
+      if (!gaggle || !name) continue;
+      const key = gaggle + "|" + name;
+      if (seenWorkflows.has(key)) continue;
+      seenWorkflows.add(key);
+      const scope = { kind: "workflow", gaggle, workflow: name };
+      options.push('<option value="' + escapeHtml(insightScopeValue(scope)) + '">' + escapeHtml(insightScopeLabel(scope)) + "</option>");
+    }
+    insightScopeSelect.innerHTML = options.join("");
+    if ([...insightScopeSelect.options].some((o) => o.value === prevValue)) insightScopeSelect.value = prevValue;
   }
 
   function currentFilters() {
@@ -2792,6 +3247,57 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       renderRuns(lastRuns);
     });
   });
+
+  // ---- Insights tab: aggregate telemetry ----
+  const INSIGHT_WINDOWS = ${JSON.stringify(INSIGHT_WINDOWS)};
+  const INSIGHT_WINDOW_MS = ${JSON.stringify(INSIGHT_WINDOW_MS)};
+  const INSIGHT_TREND_BUCKET_COUNTS = ${JSON.stringify(INSIGHT_TREND_BUCKET_COUNTS)};
+  const insightScopeSelect = document.getElementById("insight-scope");
+  const insightWindowSelect = document.getElementById("insight-window");
+  const insightStatusEl = document.getElementById("insight-status");
+  const insightContentEl = document.getElementById("insight-content");
+  let insightRequestSequence = 0;
+
+  insightWindowSelect.innerHTML = INSIGHT_WINDOWS.map((w) => '<option value="' + escapeHtml(w.value) + '">' + escapeHtml(w.label) + "</option>").join("");
+  insightWindowSelect.value = "24h";
+
+  function resetInsightsForNewSource() {
+    ++insightRequestSequence;
+    insightScopeSelect.value = "instance";
+    insightWindowSelect.value = "24h";
+    insightStatusEl.textContent = "";
+    insightContentEl.innerHTML = "";
+  }
+
+  async function loadInsights() {
+    const sourceId = sourceSelect.value;
+    if (!sourceId) return;
+    const scope = parseInsightScope(insightScopeSelect.value);
+    const windowValue = insightWindowSelect.value;
+    const requestSequence = ++insightRequestSequence;
+    insightStatusEl.textContent = "Loading…";
+    try {
+      const params = new URLSearchParams({ source: sourceId, ...insightRequestParams(scope, windowValue) });
+      const res = await fetch("/api/insight-stats?" + params.toString());
+      const data = await res.json();
+      if (requestSequence !== insightRequestSequence || sourceId !== sourceSelect.value) return;
+      if (!data.connected) {
+        insightStatusEl.textContent = data.reason || "Could not load insights.";
+        insightContentEl.innerHTML = "";
+        return;
+      }
+      insightStatusEl.textContent = "";
+      insightContentEl.innerHTML = renderInsightPanel(data.stats, scope, windowValue);
+    } catch (err) {
+      if (requestSequence !== insightRequestSequence || sourceId !== sourceSelect.value) return;
+      insightStatusEl.textContent = portalRequestError(err);
+      insightContentEl.innerHTML = "";
+    }
+  }
+
+  document.getElementById("dashboard-tab-insights").addEventListener("click", () => void loadInsights());
+  insightScopeSelect.addEventListener("change", () => void loadInsights());
+  insightWindowSelect.addEventListener("change", () => void loadInsights());
 
   // ---- Run detail view ----
   const runViewEl = document.getElementById("run-view");
@@ -3293,6 +3799,45 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderTelemetryInsights = ${renderTelemetryInsights.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const insightWindowRange = ${insightWindowRange.toString()};
+  const insightPreviousWindowRange = ${insightPreviousWindowRange.toString()};
+  const parseInsightScope = ${parseInsightScope.toString()};
+  const insightScopeValue = ${insightScopeValue.toString()};
+  const insightScopeLabel = ${insightScopeLabel.toString()};
+  const insightScopeApiParams = ${insightScopeApiParams.toString()};
+  const insightRequestParams = ${insightRequestParams.toString()};
+  const isInInsightScope = ${isInInsightScope.toString()};
+  const insightUsageForScope = ${insightUsageForScope.toString()};
+  const insightFormatRate = ${insightFormatRate.toString()};
+  const insightFormatDuration = ${insightFormatDuration.toString()};
+  const insightFormatTokens = ${insightFormatTokens.toString()};
+  const insightFormatCost = ${insightFormatCost.toString()};
+  const insightFormatSamples = ${insightFormatSamples.toString()};
+  const insightFormatBucketLabel = ${insightFormatBucketLabel.toString()};
+  const insightGaggleMetric = ${insightGaggleMetric.toString()};
+  const insightRunMetric = ${insightRunMetric.toString()};
+  const insightStageOutcomeMetric = ${insightStageOutcomeMetric.toString()};
+  const insightSumGaggles = ${insightSumGaggles.toString()};
+  const insightOutcomeSummary = ${insightOutcomeSummary.toString()};
+  const insightOutcomeBreakdown = ${insightOutcomeBreakdown.toString()};
+  const renderInsightOutcomeRow = ${renderInsightOutcomeRow.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderInsightOutcomeSection = ${renderInsightOutcomeSection.toString()};
+  const insightUnmeasuredLabel = ${insightUnmeasuredLabel.toString()};
+  const insightFormatSeconds = ${insightFormatSeconds.toString()};
+  const insightHasCurationHealth = ${insightHasCurationHealth.toString()};
+  const renderInsightCurationSection = ${renderInsightCurationSection.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderInsightCreditSection = ${renderInsightCreditSection.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderInsightUsageSection = ${renderInsightUsageSection.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const insightCurrentTrendBuckets = ${insightCurrentTrendBuckets.toString()};
+  const renderInsightTrendSection = ${renderInsightTrendSection.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderInsightStageSection = ${renderInsightStageSection.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderInsightPanel = ${renderInsightPanel.toString()};
 
   function externalRefsFrom(events) {
     const refs = [];
@@ -3601,6 +4146,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         dismissedAttention.clear();
         syncViewUrl();
         setFreshnessState("Loading");
+        resetInsightsForNewSource();
       }
       snapshotSourceId = sourceId;
     }
