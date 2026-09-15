@@ -216,6 +216,18 @@ summary:focus-visible {
   overflow: hidden;
 }
 
+.portal-frame-hosted-header {
+  grid-template-areas: "sidebar main";
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+}
+
+.portal-frame-hosted-header > .sidebar {
+  height: 100%;
+  min-height: 0;
+  top: 0;
+}
+
 .getting-started-frame {
   background:
     radial-gradient(circle at 15% 5%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 30rem),
@@ -526,6 +538,66 @@ summary:focus-visible {
 
 .topbar-primary {
   min-width: 0;
+}
+
+.topbar-hosted {
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  height: auto;
+  min-height: 52px;
+  padding-block: 6px;
+}
+
+.topbar-hosted .topbar-primary {
+  flex: 1 1 300px;
+}
+
+.topbar-hosted .topbar-brand,
+.topbar-hosted .topbar-instance-context {
+  flex: 1 1 auto;
+}
+
+.topbar-hosted .topbar-instance-name,
+.topbar-hosted .topbar-computer-name,
+.topbar-hosted .topbar-environment {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-hosted .topbar-info-wrap {
+  flex: none;
+}
+
+.topbar-hosted .topbar-actions,
+.topbar-host-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.topbar-hosted .topbar-brand img {
+  flex: none;
+}
+
+.topbar-hosted-brand-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.topbar-hosted-brand-copy strong,
+.topbar-hosted-brand-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-hosted-brand-copy small {
+  color: var(--muted);
+  font-size: var(--font-meta);
 }
 
 .topbar-divider {
@@ -7532,6 +7604,20 @@ code,
     grid-template-rows: auto auto minmax(0, 1fr);
   }
 
+  .portal-frame.portal-frame-hosted-header {
+    grid-template-areas: "sidebar" "main";
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .portal-frame-hosted-header > .sidebar {
+    height: auto;
+  }
+
+  .topbar-hosted .topbar-primary,
+  .topbar-hosted .topbar-actions {
+    flex: 1 1 100%;
+  }
+
   .sidebar {
     border-bottom: 1px solid var(--line);
     border-right: 0;
@@ -7631,6 +7717,10 @@ code,
     min-height: 54px;
     padding: 0 18px;
     position: static;
+  }
+
+  .topbar.topbar-hosted {
+    padding-block: 6px;
   }
 
   .topbar-actions {
