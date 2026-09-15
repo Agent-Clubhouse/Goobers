@@ -31,6 +31,46 @@ function escapeAssociationHtml(value) {
     })[character]);
 }
 
+function updateFleetPanel(data) {
+  const fleet = data.fleet || {};
+  const fleetPanelEl = document.getElementById("fleet-panel");
+  const href = safeExternalUrl(fleet.canonicalUri);
+  fleetPanelEl.replaceChildren();
+  if (fleet.associated && href) {
+    fleetPanelEl.hidden = false;
+    const label = document.createElement("strong");
+    label.textContent = "Fleet";
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = fleet.displayName || fleet.fleetId || "Associated";
+    const link = document.createElement("a");
+    link.id = "fleet-portal-link";
+    link.className = "actions-run-link";
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "Open Fleet portal" + (fleet.connectionState ? " (" + fleet.connectionState + ")" : "") + " \u2197";
+    fleetPanelEl.append(label, meta, link);
+    return;
+  }
+  if (data.instance?.fleetEnrolled || fleet.associated) {
+    fleetPanelEl.hidden = false;
+    const label = document.createElement("strong");
+    label.textContent = "Fleet";
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = "This instance is enrolled, but its Fleet portal URL is not available from the selected source.";
+    fleetPanelEl.append(label, meta);
+    return;
+  }
+  if (fleet.reason) {
+    fleetPanelEl.hidden = false;
+    fleetPanelEl.textContent = "Fleet status unavailable: " + fleet.reason;
+    return;
+  }
+  fleetPanelEl.hidden = true;
+}
+
 function safeAssociationUrl(value) {
     try {
         const url = new URL(value);
@@ -150,6 +190,15 @@ export function renderRunIdControl(runId, options = {}) {
         '<button type="button" class="copy-run-id" data-copy-run-id="' + escapeAssociationHtml(runId || "") + '"' +
         fullId + ' aria-label="Copy run id" title="Copy run id">&#128203;</button>' +
         "</span>";
+}
+
+export function renderFleetPortalLink(fleet) {
+    const href = safeAssociationUrl(fleet?.canonicalUri);
+    if (!fleet?.associated || !href) return "";
+    const status = fleet.connectionState ? " (" + fleet.connectionState + ")" : "";
+    return '<a id="fleet-portal-link" class="actions-run-link" href="' + escapeAssociationHtml(href) +
+        '" target="_blank" rel="noopener noreferrer">Open Fleet portal' +
+        escapeAssociationHtml(status) + " &#8599;</a>";
 }
 
 // The snapshot cards and the run table interpolate values the portal does not
@@ -561,11 +610,34 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     margin: 0;
   }
   .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  main { padding: 16px; }
+  main { padding: 16px; min-width: 0; }
+  .skip-link { position: absolute; top: -100px; left: 12px; z-index: 10; }
+  .skip-link:focus { top: 12px; padding: 8px; background: var(--background-color-default, #fff); }
+  .source-context { display: flex; gap: 8px 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  #source-context { font-weight: 600; overflow-wrap: anywhere; }
+  .section-description { margin: 0 0 12px; color: var(--text-color-muted, #656d76); }
+  .table-link { padding: 0; border: 0; background: transparent; color: var(--true-color-blue, #0969da); text-align: left; }
+  .table-link:hover { background: transparent; text-decoration: underline; }
+  .sort-button { border: 0; padding: 0; background: transparent; color: inherit; }
+  .table-scroll { max-width: 100%; overflow-x: auto; }
+  .table-scroll table { white-space: nowrap; }
+  .toolbar > *, .add-form > * { max-width: 100%; }
+  .fleet-panel {
+    display: flex;
+    gap: 8px 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    margin-bottom: 12px;
+  }
+  .fleet-panel[hidden] { display: none; }
+  #source-select { max-width: min(100%, 360px); }
   .muted { color: var(--text-color-muted, #656d76); }
   .cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 12px;
     margin-bottom: 20px;
   }
@@ -1114,20 +1186,21 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   <details id="add-source-details">
     <summary>Connect a source&hellip;</summary>
     <div class="add-form">
-      <input id="local-root" placeholder="Local instance root path (e.g. C:\\\\path\\\\to\\\\instance)" />
+      <input id="local-root" aria-label="Local instance root" placeholder="Local instance root path (e.g. C:\\\\path\\\\to\\\\instance)" />
       <button id="browse-local" title="Browse folders">&#128193; Browse</button>
       <button id="add-local">Add local</button>
     </div>
     <div class="add-form">
-      <input id="remote-url" placeholder="Remote control-plane URL (e.g. http://10.0.0.5:8080)" />
+      <input id="remote-url" aria-label="Remote control-plane URL" placeholder="Remote control-plane URL (e.g. http://10.0.0.5:8080)" />
       <input id="remote-token" placeholder="Bearer token (optional)" style="flex: 0 0 200px" />
       <button id="add-remote">Add remote</button>
     </div>
     <div class="add-form">
-      <input id="github-workflow-url" placeholder="GitHub Actions workflow URL (https://github.com/owner/repo/actions/workflows/file.yml)" />
+      <input id="github-workflow-url" aria-label="GitHub Actions workflow URL" placeholder="GitHub Actions workflow URL (https://github.com/owner/repo/actions/workflows/file.yml)" />
       <button id="add-github">Connect to GitHub</button>
     </div>
   </details>
+  <div id="fleet-panel" class="fleet-panel" hidden></div>
   <dialog id="directory-dialog">
     <div class="directory-dialog-header">
       <button id="directory-parent" title="Parent directory">&larr;</button>
@@ -1601,9 +1674,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     errorEl.textContent = "";
     document.getElementById("source-context").textContent =
       data.source?.label || data.instance?.name || data.source?.value || "";
+    updateFleetPanel(data);
     updateStartBar(data);
     if (!data.connected) {
-      emptyEl.style.display = data.reason ? "block" : "none";
+      emptyEl.style.display = "none";
       dashboardEl.style.display = "none";
       setFreshnessState("Offline");
       if (data.reason) {
@@ -2595,6 +2669,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const renderRunAssociations = ${renderRunAssociations.toString()
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderFleetPortalLink = ${renderFleetPortalLink.toString()
+        .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const updateFleetPanel = ${updateFleetPanel.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderSnapshotCard = ${renderSnapshotCard.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunRowCells = ${renderRunRowCells.toString()
@@ -2906,6 +2985,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   async function loadSnapshot() {
     const sourceId = sourceSelect.value;
     if (snapshotSourceId !== sourceId) {
+      updateFleetPanel({});
       if (snapshotSourceId !== null) {
         restoredRunId = "";
         selectedRunId = "";
@@ -2926,6 +3006,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     const requestSequence = ++snapshotRequestSequence;
     if (!sourceId) {
+      updateFleetPanel({});
       emptyEl.style.display = "block";
       dashboardEl.style.display = "none";
       startBarEl.style.display = "none";

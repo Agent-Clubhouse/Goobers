@@ -9,6 +9,8 @@ import {
     renderCausalDiagnosis,
     renderExecutionWaterfall,
     renderHtml,
+    renderFleetPortalLink,
+    renderGooberChip,
     renderRunDetailSummary,
     renderRunEventItems,
     renderOperatorPanel,
@@ -51,6 +53,51 @@ test("execution waterfall renders retry timing, gaps, and unavailable timing", (
 // inlining test below covers the browser actually getting the escaped copy.
 
 const HOSTILE = '<img src=x onerror=alert(1)>';
+
+test("compact portal puts attention before activity and keeps source status outside tabs", () => {
+    const html = renderHtml("compact");
+    assert.match(html, /data-tab="attention"[^>]*>Overview<\/button>/);
+    assert.ok(html.indexOf('id="needs-you"') < html.indexOf('id="cards"'));
+    assert.ok(html.indexOf('id="freshness"') < html.indexOf('id="dashboard"'));
+    assert.match(html, /aria-label="Goobers source"/);
+    assert.match(html, /Skip to content/);
+    assert.match(html, /More filters and saved views/);
+    assert.match(html, /class="table-scroll" role="region" aria-label="Runs" tabindex="0"/);
+    assert.match(html, /class="table-scroll" role="region" aria-label="Workflows" tabindex="0"/);
+});
+
+test("attention controls can grow instead of clipping at narrow widths", () => {
+    const html = renderHtml("compact");
+    const rule = html.match(/\.attention-item \{([^}]+)\}/)[1];
+    assert.match(rule, /min-height: 84px/);
+    assert.doesNotMatch(rule, /(?:^|[;\s])height:|overflow: hidden/);
+});
+
+test("Fleet portal link is rendered from selected instance status", () => {
+    assert.match(
+        renderFleetPortalLink({ associated: true, canonicalUri: "https://fleet.example.com/", connectionState: "connected" }),
+        /id="fleet-portal-link"[^>]*href="https:\/\/fleet\.example\.com\/"[^>]*target="_blank"[^>]*rel="noopener noreferrer"[^>]*>Open Fleet portal \(connected\)/,
+    );
+    assert.equal(renderFleetPortalLink({ associated: false, canonicalUri: "https://fleet.example.com/" }), "");
+    assert.equal(renderFleetPortalLink({ associated: true, canonicalUri: "javascript:alert(1)" }), "");
+    assert.doesNotMatch(renderHtml("fleet"), /Save link|fleetPortalUrl/);
+});
+
+test("goober chips add compact stage identity without losing escaping", () => {
+    const html = renderGooberChip('implement <unsafe>', { kind: "stage" });
+    assert.match(html, /class="goober-chip"/);
+    assert.match(html, /data-kind="stage"/);
+    assert.match(html, /🛠/);
+    assert.match(html, /implement &lt;unsafe&gt;/);
+    assert.doesNotMatch(html, /<unsafe>/);
+});
+
+test("run status badges preserve visible text and escape phase attributes", () => {
+    const html = renderRunRowCells({ phase: '" onmouseover="alert(1)', runId: "run" });
+    assert.match(html, /data-phase="&quot; onmouseover=&quot;alert\(1\)"/);
+    assert.doesNotMatch(html, /data-phase="" onmouseover/);
+    assert.match(renderRunRowCells({ phase: "failed" }), /data-phase="failed">failed<\/span>/);
+});
 
 test("snapshot cards escape an untrusted instance name", () => {
     const html = renderSnapshotCard("Instance", HOSTILE);
