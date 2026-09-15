@@ -77,6 +77,24 @@ test("canvas preserves run detail on refresh and returns keyboard focus to runs"
   expect(errors).toEqual([]);
 });
 
+test("run controls and goober chips own their styling and respect reduced motion", async ({ page }) => {
+  await openCanvas(page);
+  await page.getByRole("tab", { name: "Runs", exact: true }).click();
+  await expect(page.locator("#runs-table .run-id-control")).toHaveCSS("display", "inline-flex");
+  const copy = page.getByRole("button", { name: "Copy run id", exact: true });
+  await expect(copy).toHaveCSS("padding", "2px 7px");
+  await copy.evaluate((button) => button.classList.add("copied"));
+  await expect(copy).toHaveCSS("animation-name", "copy-pop");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(copy).toHaveCSS("animation-name", "none");
+  await page.getByRole("button", { name: "Open Run id", exact: true }).click();
+  const chip = page.locator("#run-content .goober-chip").filter({ hasText: "implementer" });
+  await expect(chip).toHaveCSS("display", "inline-flex");
+  await expect(chip).toHaveCSS("border-radius", "999px");
+  await expect(chip.locator(".goober-avatar")).toHaveCSS("line-height", "12px");
+  await expect(chip.locator(".goober-label")).toHaveCSS("text-overflow", "ellipsis");
+});
+
 test("canvas ignores late run responses after switching sources", async ({ page }) => {
   await openCanvas(page);
   let release!: () => void;

@@ -596,6 +596,32 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     font-size: 12px;
     flex-wrap: wrap;
   }
+  .run-id-control { display: inline-flex; align-items: center; gap: 6px; }
+  .copy-run-id {
+    padding: 2px 7px;
+    font-size: 12px;
+    color: var(--text-color-muted, #656d76);
+  }
+  .copy-run-id.copied {
+    color: var(--true-color-green, #1a7f37);
+    border-color: var(--true-color-green-muted, #1a7f3766);
+    animation: copy-pop 240ms ease-out;
+  }
+  .goober-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 999px;
+    padding: 2px 7px;
+    background: var(--border-color-default, #d0d7de22);
+    font-size: 12px;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .goober-avatar { line-height: 1; }
+  .goober-label { overflow: hidden; text-overflow: ellipsis; }
   .freshness {
     color: var(--text-color-muted, #656d76);
     font-size: 12px;
