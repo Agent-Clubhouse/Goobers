@@ -73,6 +73,11 @@ func (t StorageTier) String() string {
 // stop from resume.
 const hysteresisFraction = 0.10
 
+// derivedCriticalFloorVolumeFraction ensures an implicit recovery-inventory
+// bound can reserve useful headroom without permanently stopping admission on
+// a volume smaller than that worst-case inventory.
+const derivedCriticalFloorVolumeFraction = 0.25
+
 // StorageGate is the DiskGate backed by a periodic free-space sample of the
 // filesystem containing path. It is also the source of the StorageHealthStats
 // goobers status and the Instance API report — the gate and the report read
@@ -85,6 +90,7 @@ type StorageGate struct {
 	warningFloorPercent  float64
 	criticalFloorBytes   int64
 	criticalFloorPercent float64
+	criticalFloorDerived bool
 
 	read func(string) (diskstat.Footprint, error)
 	now  func() time.Time
@@ -102,13 +108,14 @@ type StorageGate struct {
 // StorageMeasurementUnavailable until Sample is called for the first time,
 // which the daemon does once at startup before wiring the gate in (#4873's
 // "measure ... at startup").
-func NewStorageGate(path string, warningFloorBytes int64, warningFloorPercent float64, criticalFloorBytes int64, criticalFloorPercent float64) *StorageGate {
+func NewStorageGate(path string, warningFloorBytes int64, warningFloorPercent float64, criticalFloorBytes int64, criticalFloorPercent float64, criticalFloorDerived bool) *StorageGate {
 	return &StorageGate{
 		path:                 path,
 		warningFloorBytes:    warningFloorBytes,
 		warningFloorPercent:  warningFloorPercent,
 		criticalFloorBytes:   criticalFloorBytes,
 		criticalFloorPercent: criticalFloorPercent,
+		criticalFloorDerived: criticalFloorDerived,
 		read:                 diskstat.Read,
 		now:                  time.Now,
 		tier:                 StorageMeasurementUnavailable,
@@ -145,7 +152,7 @@ func (g *StorageGate) Sample() (tier StorageTier, changed bool) {
 	}
 	g.lastErr = ""
 	g.footprint = footprint
-	g.tier = nextTier(g.tier, footprint, g.warningFloorBytes, g.warningFloorPercent, g.criticalFloorBytes, g.criticalFloorPercent)
+	g.tier = nextTier(g.tier, footprint, g.warningFloorBytes, g.warningFloorPercent, g.criticalFloorBytes, g.criticalFloorPercent, g.criticalFloorDerived)
 	return g.tier, g.tier != previous
 }
 
@@ -155,8 +162,8 @@ func (g *StorageGate) Sample() (tier StorageTier, changed bool) {
 // immediately: hysteresis exists only to stop the specific flap #4873 calls
 // out — repeatedly stopping and resuming admission right at the resume edge —
 // not to delay warning signals, which cost nothing to flap on.
-func nextTier(previous StorageTier, footprint diskstat.Footprint, warningFloorBytes int64, warningFloorPercent float64, criticalFloorBytes int64, criticalFloorPercent float64) StorageTier {
-	criticalFloor := effectiveFloor(criticalFloorBytes, criticalFloorPercent, footprint.TotalBytes)
+func nextTier(previous StorageTier, footprint diskstat.Footprint, warningFloorBytes int64, warningFloorPercent float64, criticalFloorBytes int64, criticalFloorPercent float64, criticalFloorDerived bool) StorageTier {
+	criticalFloor, _ := effectiveCriticalFloor(criticalFloorBytes, criticalFloorPercent, criticalFloorDerived, footprint.TotalBytes)
 	warningFloor := effectiveFloor(warningFloorBytes, warningFloorPercent, footprint.TotalBytes)
 	available := footprint.AvailableBytes
 
@@ -181,17 +188,39 @@ func nextTier(previous StorageTier, footprint diskstat.Footprint, warningFloorBy
 // operator opting into both wants the stricter enforced). Zero means "no
 // floor" for this tier.
 func effectiveFloor(floorBytes int64, floorPercent float64, totalBytes uint64) uint64 {
+	floor, _ := effectiveFloorWithSource(floorBytes, floorPercent, totalBytes, "bytes")
+	return floor
+}
+
+func effectiveFloorWithSource(floorBytes int64, floorPercent float64, totalBytes uint64, byteSource string) (uint64, string) {
 	var floor uint64
+	source := ""
 	if floorBytes > 0 {
 		floor = uint64(floorBytes)
+		source = byteSource
 	}
 	if floorPercent > 0 {
 		percentFloor := uint64(floorPercent / 100 * float64(totalBytes))
 		if percentFloor > floor {
 			floor = percentFloor
+			source = "percent"
 		}
 	}
-	return floor
+	return floor, source
+}
+
+func effectiveCriticalFloor(floorBytes int64, floorPercent float64, derived bool, totalBytes uint64) (uint64, string) {
+	source := "bytes"
+	if derived && floorBytes > 0 {
+		cap := uint64(float64(totalBytes) * derivedCriticalFloorVolumeFraction)
+		if uint64(floorBytes) > cap {
+			floorBytes = int64(cap)
+			source = "derived-clamped"
+		} else {
+			source = "derived"
+		}
+	}
+	return effectiveFloorWithSource(floorBytes, floorPercent, totalBytes, source)
 }
 
 // UnderPressure implements DiskGate. Only StorageCritical refuses admission —
@@ -211,10 +240,10 @@ func (g *StorageGate) UnderPressure() (bool, string) {
 	// percent floor is also configured (or is the only one set), the higher of
 	// the two is what actually decided this tier (see effectiveFloor), and
 	// reporting the raw byte value alone would understate it.
-	floor := effectiveFloor(g.criticalFloorBytes, g.criticalFloorPercent, g.footprint.TotalBytes)
-	return true, fmt.Sprintf("%s free of %s available on %s (floor %s)",
+	floor, source := effectiveCriticalFloor(g.criticalFloorBytes, g.criticalFloorPercent, g.criticalFloorDerived, g.footprint.TotalBytes)
+	return true, fmt.Sprintf("%s free of %s available on %s (floor %s from %s)",
 		diskstat.FormatBytes(g.footprint.AvailableBytes), diskstat.FormatBytes(g.footprint.TotalBytes), g.path,
-		diskstat.FormatBytes(floor))
+		diskstat.FormatBytes(floor), source)
 }
 
 // StorageHealthStats is a race-safe snapshot of the gate's current state, for
@@ -230,6 +259,8 @@ type StorageHealthStats struct {
 	WarningFloorPercent  float64
 	CriticalFloorBytes   int64
 	CriticalFloorPercent float64
+	WarningFloorSource   string
+	CriticalFloorSource  string
 	MeasuredAt           time.Time
 	Error                string
 }
@@ -241,6 +272,15 @@ func (g *StorageGate) Stats() StorageHealthStats {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	criticalFloorBytes := g.criticalFloorBytes
+	criticalFloorSource := ""
+	warningFloorSource := ""
+	if g.footprint.TotalBytes > 0 {
+		criticalFloor, source := effectiveCriticalFloor(g.criticalFloorBytes, g.criticalFloorPercent, g.criticalFloorDerived, g.footprint.TotalBytes)
+		criticalFloorBytes = int64(criticalFloor)
+		criticalFloorSource = source
+		_, warningFloorSource = effectiveFloorWithSource(g.warningFloorBytes, g.warningFloorPercent, g.footprint.TotalBytes, "bytes")
+	}
 	return StorageHealthStats{
 		Tier:                 g.tier,
 		Path:                 g.path,
@@ -248,8 +288,10 @@ func (g *StorageGate) Stats() StorageHealthStats {
 		TotalBytes:           g.footprint.TotalBytes,
 		WarningFloorBytes:    g.warningFloorBytes,
 		WarningFloorPercent:  g.warningFloorPercent,
-		CriticalFloorBytes:   g.criticalFloorBytes,
+		CriticalFloorBytes:   criticalFloorBytes,
 		CriticalFloorPercent: g.criticalFloorPercent,
+		WarningFloorSource:   warningFloorSource,
+		CriticalFloorSource:  criticalFloorSource,
 		MeasuredAt:           g.measuredAt,
 		Error:                g.lastErr,
 	}

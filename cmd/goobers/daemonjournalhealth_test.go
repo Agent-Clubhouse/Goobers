@@ -59,7 +59,7 @@ func TestStatusDaemonReportsLiveStorageHealth(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(readservice.Instance{
 			RootIdentity: &readservice.RootIdentity{ID: identity},
 			StorageHealth: &readservice.StorageHealthStatus{
-				Tier: "admission-stopped", FreeBytes: 1 << 30, TotalBytes: 100 << 30, Path: "/instances/fixture",
+				Tier: "admission-stopped", FreeBytes: 1 << 30, TotalBytes: 100 << 30, Path: "/instances/fixture", CriticalFloorSource: "derived-clamped",
 			},
 		})
 	})
@@ -77,6 +77,9 @@ func TestStatusDaemonReportsLiveStorageHealth(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "storage health admission stopped") {
 		t.Fatalf("status --daemon output = %q, want a storage health line", stdout)
+	}
+	if !strings.Contains(stdout, "critical floor from derived-clamped") {
+		t.Fatalf("status --daemon output = %q, want the binding floor source", stdout)
 	}
 }
 

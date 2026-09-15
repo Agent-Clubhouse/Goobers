@@ -1531,6 +1531,9 @@ type StorageThresholds struct {
 	WarningFloorPercent  float64
 	CriticalFloorBytes   int64
 	CriticalFloorPercent float64
+	// CriticalFloorDerived reports that CriticalFloorBytes came from the
+	// recovery archive bound rather than an explicit operator setting.
+	CriticalFloorDerived bool
 	CheckInterval        time.Duration
 }
 
@@ -1585,6 +1588,7 @@ func (c RunConditions) ResolveStorageThresholds(recovery RecoverySnapshotConfig)
 		WarningFloorPercent:  warningPercent,
 		CriticalFloorBytes:   criticalBytes,
 		CriticalFloorPercent: criticalPercent,
+		CriticalFloorDerived: cfg.CriticalFloorBytes <= 0,
 		CheckInterval:        interval,
 	}
 }

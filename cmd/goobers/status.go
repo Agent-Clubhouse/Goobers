@@ -143,8 +143,12 @@ func storageHealthStatusLine(status readservice.SchedulerStatus) string {
 	if health.Tier == "admission-stopped" {
 		verb = "admission stopped"
 	}
-	return fmt.Sprintf("Warning: storage health %s (%s free of %s total on %s)\n",
-		verb, memstat.FormatBytes(health.FreeBytes), memstat.FormatBytes(health.TotalBytes), health.Path)
+	floorSource := health.CriticalFloorSource
+	if floorSource == "" {
+		floorSource = "unknown"
+	}
+	return fmt.Sprintf("Warning: storage health %s (%s free of %s total on %s; critical floor from %s)\n",
+		verb, memstat.FormatBytes(health.FreeBytes), memstat.FormatBytes(health.TotalBytes), health.Path, floorSource)
 }
 
 func renderSchedulerStatus(
