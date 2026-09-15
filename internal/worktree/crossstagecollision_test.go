@@ -9,20 +9,21 @@ import (
 	"testing"
 )
 
-func TestManagerCreateReconcilesReleasedSameRunBranchOccupant(t *testing.T) {
+func TestManagerCreateReconcilesReleasedPRBranchBeforeReacquisition(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
 	m := newTestManager(t)
 	const (
 		owner  = "workflow-run"
-		branch = "goobers/implementation/workflow-run"
+		branch = "goobers/pr-remediation/workflow-run"
 	)
+	runTestGit(t, repo, "branch", branch)
 
 	guardCalls := 0
 	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
 		guardCalls++
 		if guardCalls == 1 {
-			return errors.New("temporary recovery outage")
+			return errors.New("recovery bundle does not contain the expected delta snapshot")
 		}
 		return nil
 	}); err != nil {
@@ -30,27 +31,26 @@ func TestManagerCreateReconcilesReleasedSameRunBranchOccupant(t *testing.T) {
 	}
 
 	first, err := m.Create(ctx, CreateOptions{
-		RepoURL: repo, RunID: owner + "-stage-a", OwnerRunID: owner, BaseRef: "main", Branch: branch,
+		RepoURL: repo, RunID: owner + "-gather-pr-context", OwnerRunID: owner, BaseRef: "main", Branch: branch,
+		RequireExistingBranch: true, AcquireRemoteBranch: true,
 	})
 	if err != nil {
 		t.Fatalf("create first stage: %v", err)
 	}
-	mustWriteFile(t, filepath.Join(first.Path, "stage-a.txt"), "branch continuity\n")
-	runTestGit(t, first.Path, "add", "stage-a.txt")
-	runTestGit(t, first.Path, "commit", "-m", "stage A")
 	if err := first.Remove(ctx, RemoveOptions{}); !errors.Is(err, ErrCleanupDeferred) {
 		t.Fatalf("first Remove error = %v, want deferred cleanup", err)
 	}
 	assertCleanupPendingRecords(t, m, first.key, first.RunID)
+	if err := os.Remove(m.branchAcquisitionPath(first.key, owner, branch)); err != nil {
+		t.Fatalf("remove interrupted branch acquisition record: %v", err)
+	}
 
 	second, err := m.Create(ctx, CreateOptions{
-		RepoURL: repo, RunID: owner + "-stage-b", OwnerRunID: owner, BaseRef: "main", Branch: branch,
+		RepoURL: repo, RunID: owner + "-gather-ci-failures", OwnerRunID: owner, BaseRef: "main", Branch: branch,
+		RequireExistingBranch: true, AcquireRemoteBranch: true,
 	})
 	if err != nil {
 		t.Fatalf("create next stage after deferred teardown: %v", err)
-	}
-	if got, err := os.ReadFile(filepath.Join(second.Path, "stage-a.txt")); err != nil || string(got) != "branch continuity\n" {
-		t.Fatalf("next stage lost prior branch commit: %q, %v", got, err)
 	}
 	if _, err := os.Stat(first.Path); !os.IsNotExist(err) {
 		t.Fatalf("released first-stage path survived reconciliation: %v", err)
@@ -63,6 +63,22 @@ func TestManagerCreateReconcilesReleasedSameRunBranchOccupant(t *testing.T) {
 	}
 	if err := second.Remove(ctx, RemoveOptions{}); err != nil {
 		t.Fatalf("remove second stage: %v", err)
+	}
+	third, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: owner + "-gather-sibling-context", OwnerRunID: owner, BaseRef: "main", Branch: branch,
+		RequireExistingBranch: true, AcquireRemoteBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("create third sequential context stage: %v", err)
+	}
+	if err := third.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove third stage: %v", err)
+	}
+	if _, err := m.FinalizeRun(ctx, owner); err != nil {
+		t.Fatalf("finalize sequential context stages: %v", err)
+	}
+	if _, err := os.Stat(m.branchAcquisitionRunDir(first.key, owner)); !os.IsNotExist(err) {
+		t.Fatalf("branch acquisition record survived terminal cleanup: %v", err)
 	}
 }
 
