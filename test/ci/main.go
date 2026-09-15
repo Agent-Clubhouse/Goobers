@@ -548,6 +548,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 				".github/extensions/goobers-portal/preferences.test.mjs",
 				".github/extensions/goobers-portal/registry.test.mjs",
 				".github/extensions/goobers-portal/render.test.mjs",
+				".github/extensions/goobers-portal/run-now.test.mjs",
 				".github/extensions/goobers-portal/storage.test.mjs",
 				".github/extensions/goobers-portal/ux.test.mjs",
 			},
