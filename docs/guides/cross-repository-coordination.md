@@ -61,6 +61,10 @@ merge/deploy workflows as part of coordination. The command releases at most one
 pending child per repository within a plan, but does not replace existing
 scheduler/run/PR ownership or serialize unrelated plans' implementation runs.
 Keep owner workflows' non-manual triggers disabled until separately approved.
+Provision the existing standard Goobers labels through the normal connection
+setup before activation. Coordination verifies provider-returned label, body and
+state mutations; a missing/ignored eligibility label is an error, not a ready
+child.
 
 The runner-only `coordination:write` capability is deliberately **not**
 stage-declarable or configurable under `credentials`. Only this deterministic

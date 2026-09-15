@@ -26,6 +26,8 @@ type fakeProvider struct {
 	failCreateAfterWrite  bool
 	failCreateBeforeWrite bool
 	readError             error
+	dropBody              bool
+	dropLabels            bool
 }
 
 func (f *fakeProvider) GetWorkItem(_ context.Context, _ providers.RepositoryRef, id string) (providers.WorkItem, error) {
@@ -69,7 +71,7 @@ func (f *fakeProvider) UpdateWorkItem(_ context.Context, req providers.UpdateWor
 		return item, errors.New("revision conflict")
 	}
 	item.Revision += "x"
-	if req.Body != nil {
+	if req.Body != nil && !f.dropBody {
 		item.Body = *req.Body
 	}
 	if req.State != "" {
@@ -79,7 +81,7 @@ func (f *fakeProvider) UpdateWorkItem(_ context.Context, req providers.UpdateWor
 		item.Labels = slices.DeleteFunc(item.Labels, func(s string) bool { return s == label })
 	}
 	for _, label := range req.AddLabels {
-		if !item.HasLabel(label) {
+		if !f.dropLabels && !item.HasLabel(label) {
 			item.Labels = append(item.Labels, label)
 		}
 	}
@@ -476,5 +478,28 @@ func TestCoordinationTaskClosureRequiresCompletedReason(t *testing.T) {
 	f[1].items["7"] = item
 	if out := reconcile(t, r, p, nil); out.Children[0].State != "complete" || out.Children[1].State != "ready" {
 		t.Fatalf("completed non-code task did not release consumer: %+v", out)
+	}
+}
+
+func TestCoordinationVerifiesProviderMutationResults(t *testing.T) {
+	for _, mode := range []string{"body", "labels"} {
+		t.Run(mode, func(t *testing.T) {
+			p, r, f := fixture(t)
+			if mode == "body" {
+				f[0].dropBody = true
+			} else {
+				f[1].dropLabels = true
+			}
+			out, err := r.Reconcile(t.Context(), p, nil)
+			if err == nil || out.State == "complete" {
+				t.Fatal("silently ignored mutation reported success")
+			}
+			if f[1].items["7"].HasLabel(providers.LabelReady) {
+				t.Fatal("ignored label update reported eligibility")
+			}
+			if mode == "body" && f[1].creates != 0 {
+				t.Fatal("publication started without persisted parent pin")
+			}
+		})
 	}
 }

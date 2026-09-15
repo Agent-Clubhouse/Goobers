@@ -174,7 +174,7 @@ func (r Reconciler) prepareParent(ctx context.Context, p Plan, pin string) error
 			return fmt.Errorf("cannot coordinate a closed parent")
 		}
 		body := parent.Body + "\n\n" + pin
-		_, err = parentProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		_, err = checkedUpdate(ctx, parentProvider, providers.UpdateWorkItemRequest{
 			Repository: p.Parent.Repository.Ref(), ID: parent.ID, ExpectedRevision: parent.Revision, Body: &body,
 		})
 		if err != nil {
@@ -195,6 +195,9 @@ func (r Reconciler) publishBatch(ctx context.Context, p Plan, digest string) (ma
 	}
 	for _, child := range p.Children {
 		item := items[child.Key()]
+		if !numberPattern.MatchString(item.ID) || item.Title != child.Title {
+			return nil, fmt.Errorf("provider returned an invalid child identity or changed its reviewed title")
+		}
 		base := child.Body + "\n\n" + childMarker(p, child, digest)
 		body := base
 		for _, dep := range child.DependsOn {
@@ -205,7 +208,7 @@ func (r Reconciler) publishBatch(ctx context.Context, p Plan, digest string) (ma
 			return nil, fmt.Errorf("child %s has unreviewed publication content", child.Key())
 		}
 		if item.Body != body {
-			updated, err := r.Providers[child.Repository.Key()].UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			updated, err := checkedUpdate(ctx, r.Providers[child.Repository.Key()], providers.UpdateWorkItemRequest{
 				Repository: child.Repository.Ref(), ID: item.ID, ExpectedRevision: item.Revision, Body: &body,
 			})
 			if err != nil {
@@ -361,7 +364,7 @@ func (r Reconciler) writeTracking(ctx context.Context, p Plan, out Result) error
 		state = "open"
 	}
 	if body != parent.Body || state != "" && state != parent.State {
-		_, err = parentProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		_, err = checkedUpdate(ctx, parentProvider, providers.UpdateWorkItemRequest{
 			Repository: p.Parent.Repository.Ref(), ID: parent.ID, ExpectedRevision: parent.Revision, Body: &body, State: state,
 		})
 	}
@@ -449,7 +452,7 @@ func (r Reconciler) publish(ctx context.Context, p Plan, c Child, digest string)
 			return providers.WorkItem{}, fmt.Errorf("prior create intent has no discoverable issue; restore the original marker or manually reconcile publication from --check; refusing a duplicate")
 		}
 		parentBody := parent.Body + "\n\n" + intent
-		if _, err := parentProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		if _, err := checkedUpdate(ctx, parentProvider, providers.UpdateWorkItemRequest{
 			Repository: p.Parent.Repository.Ref(), ID: parent.ID, ExpectedRevision: parent.Revision, Body: &parentBody,
 		}); err != nil {
 			return providers.WorkItem{}, err
@@ -558,10 +561,37 @@ func (r Reconciler) setEligibility(ctx context.Context, c Child, item providers.
 	if len(add)+len(remove) == 0 {
 		return nil
 	}
-	_, err := r.Providers[c.Repository.Key()].UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+	_, err := checkedUpdate(ctx, r.Providers[c.Repository.Key()], providers.UpdateWorkItemRequest{
 		Repository: c.Repository.Ref(), ID: item.ID, ExpectedRevision: item.Revision, AddLabels: add, RemoveLabels: remove,
 	})
 	return err
+}
+
+func checkedUpdate(ctx context.Context, provider Provider, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	item, err := provider.UpdateWorkItem(ctx, req)
+	if err != nil {
+		return item, err
+	}
+	if item.ID != req.ID || item.Revision == "" {
+		return item, fmt.Errorf("provider update returned an invalid work item identity/revision")
+	}
+	if req.Body != nil && item.Body != *req.Body {
+		return item, fmt.Errorf("provider did not persist the reviewed coordination body")
+	}
+	if req.State != "" && item.State != req.State {
+		return item, fmt.Errorf("provider did not persist the requested parent state")
+	}
+	for _, label := range req.AddLabels {
+		if !item.HasLabel(label) {
+			return item, fmt.Errorf("provider did not apply required label %s; check repository label provisioning", label)
+		}
+	}
+	for _, label := range req.RemoveLabels {
+		if item.HasLabel(label) {
+			return item, fmt.Errorf("provider did not withdraw eligibility label %s", label)
+		}
+	}
+	return item, nil
 }
 
 func (r Reconciler) integration(p Plan, e *Evidence, children []ChildResult) error {
