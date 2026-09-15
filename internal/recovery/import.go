@@ -154,6 +154,12 @@ func readBundleHeader(path string) ([]byte, error) {
 // record the format the earlier attempt actually chose (#4862). It infers
 // shape only; the caller still verifies the header against the trusted
 // record via verifyBundleHeader/ImportSnapshotBundle before relying on it.
+//
+// A delta bundle's header can carry more than one prerequisite line
+// (#5103's verifyBundleHeaderBytes explains why), so shape alone cannot
+// distinguish "delta with N>1 prerequisites" from "full" by a fixed line
+// count the way it once could — only "exactly 3 lines, no prerequisite at
+// all" is unambiguously full.
 func inspectBundleFormat(path string) (string, error) {
 	header, err := readBundleHeader(path)
 	if err != nil {
@@ -163,10 +169,10 @@ func inspectBundleFormat(path string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("recovery bundle header not found")
 	}
-	switch strings.Count(trimmed, "\n") {
-	case 2:
+	switch lines := strings.Count(trimmed, "\n") + 1; {
+	case lines == 3:
 		return archiveFormatFull, nil
-	case 3:
+	case lines >= 4:
 		return archiveFormatDelta, nil
 	default:
 		return "", fmt.Errorf("recovery bundle header has an unexpected shape")

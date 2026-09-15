@@ -337,6 +337,40 @@ func TestCheckoutHonoursTheReboundWorkspaceBranch(t *testing.T) {
 	}
 }
 
+// #5103: a writable checkout that clones directly onto an already-existing
+// run branch (the rebound arm exercises exactly that clone) never touches
+// base at all — `git clone --branch <branch>` is single-branch by
+// construction — so recovery custody's own merge-base resolution
+// (cmd/goobers/recoverypod.go, internal/recovery.PrepareRecord) had nothing
+// to resolve "main" against and failed with "unknown revision main" (exit
+// status 128). The checkout must leave base resolvable regardless.
+func TestCheckoutLeavesBaseResolvableForRecoveryCustodyOnAnExistingRunBranch(t *testing.T) {
+	const prBranch = "goobers/impl/remediation-364"
+	bare := newBareRepoWithPRBranch(t, "main", prBranch, "")
+	prev := checkoutCloneURL
+	t.Cleanup(func() { checkoutCloneURL = prev })
+	stageCheckoutEnv(t, bare, string(apiv1.WorkspaceRepo))
+	t.Setenv(dispatcher.EnvWorkspaceBranch, prBranch)
+
+	ws := t.TempDir()
+	var errOut strings.Builder
+	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
+	}
+	// No local "main" branch: single-branch clone of prBranch never created one.
+	if out, err := testgit.Command("-C", ws, "branch", "--list", "main").Output(); err != nil || len(strings.TrimSpace(string(out))) != 0 {
+		t.Fatalf("test fixture unexpectedly carries a local main branch: %q %v", out, err)
+	}
+	resolved, err := resolveRecoveryBaseRef(context.Background(), ws, "main")
+	if err != nil {
+		t.Fatalf("base left unresolvable after checkout: %v", err)
+	}
+	if resolved != "refs/remotes/origin/main" {
+		t.Fatalf("resolved base ref = %q, want the fetched remote-tracking ref", resolved)
+	}
+}
+
 // A rebound branch names work that ALREADY EXISTS. Creating it at base
 // instead would hand the stage a pristine checkout wearing the PR's branch
 // name, and push-remediated would force-push that over the PR head with a

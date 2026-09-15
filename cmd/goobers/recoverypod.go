@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -53,6 +55,10 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if base == "" {
 		base = "main"
 	}
+	base, err = resolveRecoveryBaseRef(ctx, repository, base)
+	if err != nil {
+		return err
+	}
 	// The temporary inventory is only upload staging. Do not remove it on a
 	// failed transfer; only the acknowledged host archive is durable custody.
 	root, err := os.MkdirTemp("", "goobers-pod-recovery-")
@@ -84,4 +90,31 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	}
 	_, _, err = recovery.Retain(ctx, request, publication)
 	return err
+}
+
+// resolveRecoveryBaseRef picks the git revision recovery custody's merge-base
+// resolution (internal/recovery.PrepareRecord) reads the configured base
+// branch through. dispatch-checkout.go clones only the branch this stage
+// actually needs (see checkoutRepoWorkspace's WRITABLE REPO comment): a
+// writable stage dispatched directly onto an already-existing run branch
+// clones with `--branch <run branch>` and never gets a local "<base>" branch
+// at all — only checkoutRepoWorkspace's now-guaranteed
+// refs/remotes/origin/<base> (#5103). A fresh run's fallback clone, by
+// contrast, checks out base directly first and so leaves a real
+// refs/heads/<base>. Try the local branch first — cheapest, and correct for
+// that fallback path and for repo-readonly's single-branch-at-base clone —
+// and fall back to the remote-tracking ref checkoutRepoWorkspace fetches for
+// exactly this purpose. internal/recovery deliberately runs no git transport
+// of its own (see recoveryGitIO's doc comment), so by the time this runs the
+// ref must already be resolvable locally; neither candidate resolving means
+// a checkout-time bug, not something recovery can repair after the fact.
+func resolveRecoveryBaseRef(ctx context.Context, repository, base string) (string, error) {
+	for _, candidate := range []string{"refs/heads/" + base, "refs/remotes/origin/" + base} {
+		probe := exec.CommandContext(ctx, "git", "-C", repository, "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
+		probe.Stdout, probe.Stderr = io.Discard, io.Discard
+		if probe.Run() == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("recovery base branch %q is not resolvable in this checkout", base)
 }
