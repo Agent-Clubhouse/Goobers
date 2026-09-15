@@ -88,7 +88,7 @@ for this page; see [`ado-authentication.md`](ado-authentication.md).
 | `telemetry:read` | *(no GitHub permission)* | Read the local telemetry rollup and named host-governed external connectors. Backed by connector configuration, not a GitHub PAT. |
 | `journal:read` | *(no GitHub permission)* | Read-only, digest-verified access to **another** run's journal. Local filesystem authority, not a GitHub PAT. |
 | `configrepo:read` | Contents: Read-only | Runner-only access to the workflow-config repo. Configure only through `workflowSource.token`; stages cannot declare or source it through `credentials`. |
-| `agent:model` | Stored Copilot CLI sign-in, or *(Account permissions)* Copilot Requests: Read-only for headless use; on claude-code, stored `claude` CLI sign-in (or a real `sk-ant-...` Anthropic API key for headless use) | Agent harness model authentication for agentic stages. An existing per-user CLI sign-in is the local default on either harness; a configured token is injected as `COPILOT_GITHUB_TOKEN` (copilot) or `ANTHROPIC_API_KEY` (claude-code) for services/CI. Only **one** `agent:model` grant exists per instance — see [Mixed-harness instances](#mixed-harness-instances-copilot--claude-code-sharing-agentmodel) below before configuring both harnesses. |
+| `agent:model` | Stored Copilot CLI sign-in, or *(Account permissions)* Copilot Requests: Read-only for headless use; on claude-code, stored `claude` CLI sign-in (or a real `sk-ant-...` Anthropic API key for headless use) | Agent harness model authentication for agentic stages. An existing per-user CLI sign-in is the local default on either harness; a configured token is injected as `COPILOT_GITHUB_TOKEN` (copilot) or `ANTHROPIC_API_KEY` (claude-code) for services/CI. Only **one** `agent:model` grant exists per instance — see [Mixed-harness instances](#mixed-harness-instances-scoping-agentmodel-per-harness) below before configuring both harnesses. |
 
 Repository access: select **Only select repositories** and list exactly the
 gaggle's target repo(s) — never "All repositories".
@@ -286,68 +286,76 @@ run with: stage environments are built from a default-deny allowlist that
 carries none of those three variables, so a probe that preferred the ambient one
 would validate an account no stage ever uses.
 
-### Mixed-harness instances (`copilot` + `claude-code` sharing `agent:model`)
+### Mixed-harness instances: scoping `agent:model` per harness
 
 `agent:model` is the one capability every agentic goober must declare,
-regardless of which harness it runs on — but `credentialGrant` allows only
-**one** grant per capability, instance-wide (no per-harness, per-gaggle, or
-per-goober scoping). If an instance runs goobers on *both* `copilot` and
-`claude-code`, that single grant gets resolved for every agentic stage on
-either harness, no matter which one actually needs it.
-
-This matters because each harness maps `agent:model` to a **different**
-token, and the two are never interchangeable:
+regardless of which harness it runs on. Each harness maps it to a
+**different**, non-interchangeable secret:
 
 - `copilot` injects it as `COPILOT_GITHUB_TOKEN` — a GitHub PAT with
   Copilot Requests: Read-only.
-- `claude-code` injects it as `ANTHROPIC_API_KEY` — a real Anthropic key,
-  shaped `sk-ant-...`.
+- `claude-code` injects it as `ANTHROPIC_API_KEY` (a real Anthropic API
+  key, shaped `sk-ant-api...`) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude Code
+  subscription token, shaped `sk-ant-oat...` — see below).
+- `codex` injects it as `CODEX_API_KEY` — an OpenAI API key.
 
-**If your only configured `agent:model` grant is a Copilot PAT** (the
-common case, since Copilot's headless CLI needs one and claude-code was
-assumed not to), that same PAT still gets resolved for claude-code goobers
-too. A GitHub PAT is never `sk-ant-...`-shaped, so `claude` immediately
-rejects it with a 401 "Invalid API key" — and the whole session fails
-before any model call happens (zero tokens used), with no diagnostic
-content anywhere an operator can see: the failure happens inside the
-`claude` subprocess before it writes any output, and `goobers up
---diagnostics` doesn't help either, since its scope is stages hung for
-minutes, not a fast agentic-stage failure.
+An instance that runs goobers on more than one of these harnesses gives
+each its own `agent:model` credential by adding `harness:` to the grant —
+mirroring `credentialGrant`'s existing `capability`/`mcp` selector shape:
 
-`internal/harness/claude.go`'s `ClaudeAdapter.Run` guards
-against exactly this: it strips an `ANTHROPIC_API_KEY` env entry that
-doesn't look like a real Anthropic key before spawning `claude`, so a
-wrong-harness credential is silently dropped rather than passed through. A
-dropped credential means claude-code falls back to your stored `claude` CLI
-sign-in — the same "no grant configured" fallback described above for
-copilot — instead of authenticating with a value that was guaranteed to
-fail. A genuine `sk-ant-...` key configured for `agent:model` still passes
-through unchanged.
+```yaml
+credentials:
+  - capability: agent:model
+    harness: copilot
+    token: { env: COPILOT_GITHUB_TOKEN }
+  - capability: agent:model
+    harness: claude-code
+    token: { env: ANTHROPIC_API_KEY }
+  - capability: agent:model
+    harness: codex
+    token: { env: CODEX_API_KEY }
+```
 
-**What this means for setup:**
+A goober resolves the grant scoped to its own harness; goobers on a
+harness with no scoped grant fall back to an unscoped `agent:model` grant
+(one with no `harness:` at all), which continues to back every harness —
+so a single-grant, single-harness config needs no changes. `harness` must
+be one of `copilot`, `claude-code`, or `codex`; two grants may not target
+the same `(capability, mcp, harness)` combination.
 
-- **Copilot-only instance**: configure `agent:model` normally with a
-  Copilot PAT. No special handling needed.
-- **claude-code-only instance**: omit the `agent:model` credentials entry
-  entirely (same as the copilot-only "local stored auth" case above).
-  Every claude-code goober falls back to whichever account is
-  interactively signed into `claude` on that machine — simplest, but ties
-  every goober's usage to one personal login, not a true headless setup.
-- **Both harnesses on one instance**: configure the Copilot PAT as usual.
-  claude-code goobers will still have it resolved and injected, but the
-  guard above drops it and correctly falls back to the stored `claude`
-  session instead. This is the only combination that currently works
-  without a config change on your part.
-- **claude-code fully headless too** (no dependency on an interactive
-  login surviving): the schema still can't cleanly support this alongside
-  a Copilot PAT for `agent:model` — a real `sk-ant-...` key configured for
-  that same grant would then get resolved for Copilot goobers too and
-  break `COPILOT_GITHUB_TOKEN` the same way in reverse. Per-harness
-  credential scoping on `credentialGrant` (a `harness:` field, matching
-  this design's existing `capability`/`mcp` selector shape) would remove
-  this constraint entirely — not yet implemented; track before wiring a
-  third harness or a mixed instance that needs *both* sides headless
-  simultaneously.
+As a fail-closed backstop for an instance that still relies on an unscoped
+grant across mixed harnesses, `internal/harness/claude.go`'s
+`ClaudeAdapter.Run` strips an `ANTHROPIC_API_KEY` env entry that doesn't
+look like a real Anthropic value before spawning `claude` — so, for
+example, a shared grant sourcing a Copilot PAT is silently dropped
+(falling back to your stored `claude` CLI sign-in) rather than passed
+through and guaranteed to fail with a 401.
+
+Verify per-harness resolution with `goobers validate --check-harness`,
+which reports which grant (never its value) each referenced harness would
+use, e.g. `HARNESS claude-code: OK (agent:model: credentials[] agent:model
+scoped to harness "claude-code")`.
+
+#### Claude Code subscription authentication (`claude setup-token`)
+
+Instead of an `ANTHROPIC_API_KEY`, a `claude-code` grant can source a
+**Claude Code subscription OAuth token** minted by running `claude
+setup-token` (shaped `sk-ant-oat...`). Point the grant's `token` ref at
+wherever you stored that token — the same `env`/`file`/`keychain`/`store`
+choices as any other grant:
+
+```yaml
+credentials:
+  - capability: agent:model
+    harness: claude-code
+    token: { file: /run/secrets/claude-oauth-token }
+```
+
+The resolved value's shape decides how it is injected: an OAuth token
+(`sk-ant-oat...`) is exported as `CLAUDE_CODE_OAUTH_TOKEN`; a regular API
+key (`sk-ant-api...`) is exported as `ANTHROPIC_API_KEY` as before. The two
+are not interchangeable — the API rejects an OAuth token sent as an API
+key — so never set both for the same goober.
 
 ## GitHub App installation tokens (`auth.kind: github-app`)
 

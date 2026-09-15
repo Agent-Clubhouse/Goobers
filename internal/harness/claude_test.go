@@ -201,6 +201,101 @@ func TestClaudeAdapterRunDropsForeignShapedAnthropicAPIKey(t *testing.T) {
 	}
 }
 
+// TestClaudeAdapterRunRoutesOAuthTokenToOAuthEnvVar pins #5148's Claude
+// subscription OAuth token support: a resolved agent:model credential shaped
+// like a `claude setup-token` OAuth token (sk-ant-oat...) must be injected as
+// CLAUDE_CODE_OAUTH_TOKEN, never as ANTHROPIC_API_KEY — the API rejects an
+// OAuth token sent as an API key.
+func TestClaudeAdapterRunRoutesOAuthTokenToOAuthEnvVar(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &ClaudeAdapter{
+		Command: []string{"claude"},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model": "ANTHROPIC_API_KEY",
+		},
+	}
+	credentials := twoTokenCredentials(t,
+		"agent:model", "sk-ant-oat01-test-oauth-token",
+		"repo:read", "unused",
+	)
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Model:          "claude-sonnet-4-6",
+		HarnessOptions: testHarnessOptions(t, map[string]interface{}{}),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    credentials,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Contains(runner.lastReq.Env, "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test-oauth-token") {
+		t.Fatalf("environment missing CLAUDE_CODE_OAUTH_TOKEN: %v", runner.lastReq.Env)
+	}
+	for _, entry := range runner.lastReq.Env {
+		if strings.HasPrefix(entry, "ANTHROPIC_API_KEY=") {
+			t.Fatalf("OAuth token must not also be injected as ANTHROPIC_API_KEY: %v", runner.lastReq.Env)
+		}
+	}
+}
+
+// TestRemapAnthropicOAuthToken unit-tests the env-rewrite in isolation: an
+// OAuth-shaped ANTHROPIC_API_KEY moves to CLAUDE_CODE_OAUTH_TOKEN; a regular
+// API key and any other entry pass through untouched.
+func TestRemapAnthropicOAuthToken(t *testing.T) {
+	in := []string{
+		"PATH=/usr/bin",
+		"ANTHROPIC_API_KEY=sk-ant-oat01-abc123",
+		"GH_TOKEN=unrelated",
+	}
+	got := remapAnthropicOAuthToken(in)
+	want := []string{
+		"PATH=/usr/bin",
+		"CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-abc123",
+		"GH_TOKEN=unrelated",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("remapAnthropicOAuthToken(%v) = %v, want %v", in, got, want)
+	}
+
+	apiKeyIn := []string{"ANTHROPIC_API_KEY=sk-ant-api03-realkey"}
+	apiKeyGot := remapAnthropicOAuthToken(apiKeyIn)
+	if !slices.Equal(apiKeyGot, apiKeyIn) {
+		t.Fatalf("remapAnthropicOAuthToken must not touch a non-OAuth-shaped API key: got %v, want %v", apiKeyGot, apiKeyIn)
+	}
+}
+
+// TestSeedClaudeCredentialsSkipsWhenOAuthTokenInjected pins that the
+// stored-credential seeding path (seedClaudeCredentialsForPlatform) treats an
+// injected CLAUDE_CODE_OAUTH_TOKEN the same as a non-empty ANTHROPIC_API_KEY:
+// "caller already handled auth", so it must not overwrite it by seeding the
+// operator's own stored Claude Code session.
+func TestSeedClaudeCredentialsSkipsWhenOAuthTokenInjected(t *testing.T) {
+	destination := t.TempDir()
+	env := []string{"CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test-oauth-token"}
+	called := false
+	readKeychain := func(context.Context, string) ([]byte, error) {
+		called = true
+		return nil, errors.New("must not be consulted when auth is already handled")
+	}
+	if err := seedClaudeCredentialsForPlatform(context.Background(), env, destination, "darwin", readKeychain); err != nil {
+		t.Fatalf("seedClaudeCredentialsForPlatform: %v", err)
+	}
+	if called {
+		t.Fatal("keychain was consulted despite an injected CLAUDE_CODE_OAUTH_TOKEN")
+	}
+	if entries, _ := os.ReadDir(destination); len(entries) != 0 {
+		t.Fatalf("destination should remain empty when auth was already handled, got %v", entries)
+	}
+}
+
 // TestBuildClaudeArgvPromptsLeadingWithDashesStayPositional pins the fix for
 // #2090: every shipped instructions.md opens with YAML frontmatter ("---"),
 // and claude's CLI parser scans all argv positions for option-shaped tokens,

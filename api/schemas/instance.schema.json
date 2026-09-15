@@ -396,7 +396,7 @@
       }
     },
     "credentialGrant": {
-      "description": "One credential source for exactly one capability OR one named BYO MCP credential. Set exactly one of capability and mcp; each may be sourced only once per instance.",
+      "description": "One credential source for exactly one capability OR one named BYO MCP credential. Set exactly one of capability and mcp; each may be sourced only once per instance per harness scope — a (capability, mcp, harness) triple may be granted at most once.",
       "type": "object",
       "additionalProperties": false,
       "required": ["token"],
@@ -436,6 +436,11 @@
           "type": "string",
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "description": "Name of a bring-your-own MCP credential. It is NOT a stage capability: it is reachable only by goobers whose MCP server declarations reference this name."
+        },
+        "harness": {
+          "type": "string",
+          "enum": ["copilot", "claude-code", "codex"],
+          "description": "Scopes this grant to one agent harness so an instance can run goobers on more than one harness with each getting its own non-interchangeable secret — e.g. copilot's COPILOT_GITHUB_TOKEN, claude-code's ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN, codex's CODEX_API_KEY. A goober running that harness resolves this grant over an unscoped one sourcing the same capability/mcp; a goober on any other harness never resolves it. Omitted, the grant backs every harness (the pre-existing, single-harness-instance behavior)."
         },
         "token": {
           "description": "Where this credential is read from — exactly one source, never an inline value.",

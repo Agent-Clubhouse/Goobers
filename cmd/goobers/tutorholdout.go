@@ -31,7 +31,8 @@ func tutorConfigVersionsModelCredential(cfg *instance.Config) (func(ctx context.
 	if err != nil {
 		return nil, fmt.Errorf("load secret stores for Tutor version resolution: %w", err)
 	}
-	return agentModelCredentialResolver(cfg, stores)
+	resolve, _, err := agentModelCredentialResolver(cfg, stores, "")
+	return resolve, err
 }
 
 const (

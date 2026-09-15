@@ -20,24 +20,34 @@ import (
 )
 
 // dropForeignAnthropicAPIKey strips an ANTHROPIC_API_KEY entry from env
-// whose value isn't shaped like a real Anthropic API key (which always
-// starts with "sk-ant-"). This instance's credentialGrant schema allows only
-// one agent:model grant per instance, with no per-harness scoping — so a
-// grant configured to back Copilot's headless model auth (a GitHub PAT,
-// injected as COPILOT_GITHUB_TOKEN for that adapter) is ALSO resolved and
-// injected here as ANTHROPIC_API_KEY purely because both adapters declare
-// the same capability name. A GitHub PAT is never a valid Anthropic key, so
-// without this guard every claude-code invocation on a mixed-harness
-// instance authenticates with a guaranteed-invalid key and fails instantly
-// with a 401 "Invalid API key" — surfaced nowhere but the process's own
-// (otherwise-uncaptured) transcript, since seedClaudeCredentials treats any
-// non-empty ANTHROPIC_API_KEY as "caller already handled auth" and skips
-// seeding the user's real stored Claude Code session as a fallback. Dropping
-// a foreign-shaped key here restores that fallback — the same behavior as
-// if no agent:model credential were configured for this capability at all,
+// whose value isn't shaped like a real Anthropic credential (which always
+// starts with "sk-ant-"). Per-harness credentialGrant scoping (#5148) lets an
+// operator give claude-code its own agent:model grant, and a scoped grant is
+// preferred over an unscoped one (buildGooberCredentialGrants) — so on a
+// correctly configured mixed-harness instance this guard never fires. It
+// stays as the fail-closed backstop for the case #5148 does not remove: an
+// UNSCOPED agent:model grant, which still backs every harness by design (a
+// single-harness instance's existing config is unchanged, and a capability
+// grant with no harness selector is deliberately shared). If that shared
+// grant sources Copilot's headless model auth (a GitHub PAT, injected as
+// COPILOT_GITHUB_TOKEN for that adapter), it is ALSO resolved and injected
+// here as ANTHROPIC_API_KEY purely because both adapters declare the same
+// capability name. A GitHub PAT is never a valid Anthropic value, so without
+// this guard every claude-code invocation authenticates with a
+// guaranteed-invalid key and fails instantly with a 401 "Invalid API key" —
+// surfaced nowhere but the process's own (otherwise-uncaptured) transcript,
+// since seedClaudeCredentials treats any non-empty ANTHROPIC_API_KEY (or
+// CLAUDE_CODE_OAUTH_TOKEN) as "caller already handled auth" and skips seeding
+// the user's real stored Claude Code session as a fallback. Dropping a
+// foreign-shaped key here restores that fallback — the same behavior as if
+// no agent:model credential were configured for this capability at all,
 // which is what Copilot-only credential configuration actually means for a
-// harness that isn't Copilot. A genuinely valid Anthropic key (sk-ant-...)
-// configured for this capability still passes through unchanged.
+// harness that isn't Copilot. A genuinely valid Anthropic API key
+// (sk-ant-api...) configured for this capability still passes through
+// unchanged; an Anthropic OAuth token (sk-ant-oat...) never reaches this
+// function under the ANTHROPIC_API_KEY name at all — see
+// remapAnthropicOAuthToken, which runs first and moves it to
+// CLAUDE_CODE_OAUTH_TOKEN.
 func dropForeignAnthropicAPIKey(env []string) []string {
 	filtered := env[:0:0]
 	for _, kv := range env {
@@ -48,6 +58,45 @@ func dropForeignAnthropicAPIKey(env []string) []string {
 		filtered = append(filtered, kv)
 	}
 	return filtered
+}
+
+// anthropicOAuthTokenPrefix identifies a Claude Code subscription OAuth
+// token minted by `claude setup-token` (shape "sk-ant-oat01-…"). It is
+// distinct from a regular Anthropic API key (shape "sk-ant-api03-…"): the
+// Claude Code CLI/API rejects an OAuth token sent as ANTHROPIC_API_KEY, so it
+// must travel as CLAUDE_CODE_OAUTH_TOKEN instead. Keyed on the "sk-ant-oat"
+// prefix — the assumption stated in #5148 rather than something independently
+// verified against Anthropic's docs or a live token in this change; if that
+// prefix ever changes, this is the one place to update.
+const anthropicOAuthTokenPrefix = "sk-ant-oat"
+
+// remapAnthropicOAuthToken moves a resolved agent:model credential shaped
+// like a Claude Code subscription OAuth token (anthropicOAuthTokenPrefix)
+// from ANTHROPIC_API_KEY to CLAUDE_CODE_OAUTH_TOKEN, so claude-code
+// authenticates with the subscription instead of sending the token as an API
+// key (which the API rejects). A regular API key (or anything else) passes
+// through untouched. Must run before dropForeignAnthropicAPIKey: once
+// remapped, the OAuth value is no longer under the ANTHROPIC_API_KEY name for
+// normalizeAnthropicCredentialEnv routes a subscription OAuth token to
+// CLAUDE_CODE_OAUTH_TOKEN, then drops any remaining foreign-shaped
+// ANTHROPIC_API_KEY. Order matters: remap first, so an OAuth token is never
+// mistaken for a foreign key.
+func normalizeAnthropicCredentialEnv(env []string) []string {
+	return dropForeignAnthropicAPIKey(remapAnthropicOAuthToken(env))
+}
+
+// that guard to inspect.
+func remapAnthropicOAuthToken(env []string) []string {
+	remapped := env[:0:0]
+	for _, kv := range env {
+		name, value, ok := strings.Cut(kv, "=")
+		if ok && name == "ANTHROPIC_API_KEY" && strings.HasPrefix(value, anthropicOAuthTokenPrefix) {
+			remapped = append(remapped, "CLAUDE_CODE_OAUTH_TOKEN="+value)
+			continue
+		}
+		remapped = append(remapped, kv)
+	}
+	return remapped
 }
 
 var defaultClaudeExtraArgs = []string{
@@ -361,7 +410,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		return Outcome{}, err
 	}
 	env = append(env, mcpEnvAdditions...)
-	env = dropForeignAnthropicAPIKey(env)
+	env = normalizeAnthropicCredentialEnv(env)
 
 	// Isolate this run from the invoking user's ambient ~/.claude: an
 	// unsandboxed run must not inherit the host's personal settings, hooks,

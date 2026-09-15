@@ -24,6 +24,14 @@ API keys. Stored `codex login` credentials are deliberately not copied because
 Codex's workspace-write sandbox permits commands to read files outside the
 workspace. The private per-run `CODEX_HOME` contains configuration only, and
 the runtime home and temporary directories are removed after the invocation.
+ChatGPT/subscription (`auth.json`-based) authentication is not supported —
+only an OpenAI API key.
+
+An instance that also runs `copilot` and/or `claude-code` goobers gives
+Codex its own `agent:model` grant with `harness: codex` on the
+`credentialGrant`, so its `CODEX_API_KEY` is never confused with another
+harness's secret; see "Mixed-harness instances" in
+`docs/guides/github-token-scopes.md`.
 
 The adapter runs `codex exec --json --ephemeral` with a workspace-write
 sandbox, disabled command network access and web search, disabled hooks,
