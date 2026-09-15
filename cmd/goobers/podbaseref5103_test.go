@@ -81,8 +81,8 @@ func TestRecoveryCustodyResolvesBaseAfterGatherPRContextStyleCheckout(t *testing
 	// way on the live cluster; asserted directly here since the whole point
 	// of the fix is that custody must not depend on checkout time being the
 	// only chance to make base resolvable).
-	testgit.Command("-C", ws, "update-ref", "-d", "refs/heads/main").Run()
-	testgit.Command("-C", ws, "update-ref", "-d", "refs/remotes/origin/main").Run()
+	_ = testgit.Command("-C", ws, "update-ref", "-d", "refs/heads/main").Run()
+	_ = testgit.Command("-C", ws, "update-ref", "-d", "refs/remotes/origin/main").Run()
 	if _, err := resolveRecoveryBaseRef(context.Background(), ws, "main"); err == nil {
 		t.Fatal("test fixture did not actually reproduce base being unresolvable")
 	}

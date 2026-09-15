@@ -138,7 +138,7 @@ func resolveRecoveryBaseRefWithFetch(ctx context.Context, repository, base strin
 		return resolved, nil
 	}
 	if fetchErr := fetchRecoveryBaseRef(ctx, repository, base); fetchErr != nil {
-		return "", fmt.Errorf("%w (re-fetching %s from origin for recovery custody also failed: %v)", err, base, fetchErr)
+		return "", fmt.Errorf("%w (re-fetching %s from origin for recovery custody also failed: %w)", err, base, fetchErr)
 	}
 	return resolveRecoveryBaseRef(ctx, repository, base)
 }
