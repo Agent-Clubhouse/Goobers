@@ -684,7 +684,13 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     font-size: 12px;
     background: var(--border-color-default, #d0d7de33);
   }
-  #error { color: var(--true-color-red, #cf222e); margin-bottom: 12px; white-space: pre-wrap; }
+  .phase[data-phase="running"] { color: var(--true-color-blue, #0969da); background: var(--true-color-blue-muted, #ddf4ff); }
+  .phase[data-phase="completed"], .phase[data-phase="succeeded"] { color: var(--true-color-green, #1a7f37); background: var(--true-color-green-muted, #dafbe1); }
+  .phase[data-phase="failed"], .phase[data-phase="escalated"] { color: var(--true-color-red, #cf222e); background: var(--true-color-red-muted, #ffebe9); }
+  .phase[data-phase="blocked"], .phase[data-phase="awaiting-human"] { color: var(--true-color-yellow, #9a6700); }
+  #error { color: var(--true-color-red, #cf222e); margin-bottom: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #workflow-run-status { color: var(--true-color-green, #1a7f37); margin-bottom: 12px; }
+  #workflow-run-status:empty { display: none; }
   #empty-state { padding: 32px 0; }
   #empty-state ol { padding-left: 20px; }
   #needs-you { margin-bottom: 20px; }
@@ -1136,6 +1142,23 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .workflow-toggle[disabled] {
     opacity: 0.55;
   }
+  .workflow-run-now {
+    /* Reuse the toggle's square icon-button box so the two controls align. */
+    box-sizing: border-box;
+    width: 26px;
+    height: 22px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    line-height: 1;
+    border-radius: 6px;
+    border: 1px solid var(--true-color-blue-muted, #0969da66);
+  }
+  .workflow-run-now[disabled] {
+    opacity: 0.6;
+  }
   .run-actions { border: 1px solid var(--border-color-default, #d0d7de); padding: 12px; border-radius: 6px; }
   .run-actions-grid { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
   .run-actions label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
@@ -1213,7 +1236,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <button id="directory-choose">Choose this folder</button>
     </div>
   </dialog>
-  <div id="error"></div>
+  <div id="error" role="alert"></div>
+  <div id="workflow-run-status" role="status"></div>
   <div id="start-daemon-bar" style="display:none">
     <span id="start-daemon-msg"></span>
     <button id="start-daemon">Start daemon</button>
@@ -1325,18 +1349,66 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   </div>
   <div id="run-view">
     <button class="back" id="run-back">&larr; Back to runs</button>
-    <div id="run-error" style="color: var(--true-color-red, #cf222e);"></div>
+    <div id="run-error" role="alert" style="color: var(--true-color-red, #cf222e);"></div>
     <div id="run-status" aria-live="polite"></div>
     <div id="run-content"></div>
   </div>
 </main>
 <script>
 (function () {
-  const errorEl = document.getElementById("error");
+  const errorElRaw = document.getElementById("error");
+  // Wrap #error so transient failure messages (e.g. "run now" rejections)
+  // survive for a minimum window even though the live SSE stream can trigger
+  // loadSnapshot()/renderSnapshot() at any moment, which otherwise blanks the
+  // element out from under the user before they can read it. Stickiness is
+  // scoped to the source it was raised for: switching sources always clears
+  // it immediately rather than leaving a stale error visible for instance A
+  // while instance B is now selected.
+  let errorStickyUntil = 0;
+  let errorStickySourceId = null;
+  const ERROR_STICKY_MS = 8000;
+  const errorEl = {
+    get textContent() {
+      return errorElRaw.textContent;
+    },
+    set textContent(value) {
+      if (value === "") {
+        const sourceChanged = errorStickySourceId !== null && errorStickySourceId !== sourceSelect.value;
+        if (sourceChanged || Date.now() >= errorStickyUntil) {
+          errorElRaw.textContent = "";
+          errorStickySourceId = null;
+        }
+        return;
+      }
+      errorElRaw.textContent = value;
+      errorStickyUntil = Date.now() + ERROR_STICKY_MS;
+      errorStickySourceId = sourceSelect.value;
+    },
+  };
+  // Distinct ID from the run-detail drilldown's #run-status live region
+  // (used for approve/reject/retry action feedback) to avoid getElementById
+  // colliding with that pre-existing element.
+  const workflowRunStatusElRaw = document.getElementById("workflow-run-status");
+  let runStatusClearTimer = null;
+  const RUN_STATUS_DISPLAY_MS = 8000;
+  function setRunStatus(message) {
+    if (runStatusClearTimer) {
+      clearTimeout(runStatusClearTimer);
+      runStatusClearTimer = null;
+    }
+    workflowRunStatusElRaw.textContent = message;
+    if (message) {
+      runStatusClearTimer = window.setTimeout(() => {
+        workflowRunStatusElRaw.textContent = "";
+        runStatusClearTimer = null;
+      }, RUN_STATUS_DISPLAY_MS);
+    }
+  }
   const emptyEl = document.getElementById("empty-state");
   const dashboardEl = document.getElementById("dashboard");
   const cardsEl = document.getElementById("cards");
   const attentionListEl = document.getElementById("attention-list");
+  const fleetPanelEl = document.getElementById("fleet-panel");
   const freshnessEl = document.getElementById("freshness");
   const workflowsBody = document.querySelector("#workflows-table tbody");
   const runsBody = document.querySelector("#runs-table tbody");
@@ -1370,6 +1442,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
   // background-poll re-renders.
   const pendingToggles = new Map();
+  const pendingWorkflowRuns = new Set();
   const workflowUndo = new Map();
   const pendingRunActions = new Map();
 
@@ -1504,9 +1577,60 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     } catch (err) {
       failure = "Failed to update " + name + ": " + (err.message || err);
     } finally {
-      pendingToggles.delete(key);
-      await loadSnapshot();
-      if (failure) errorEl.textContent = failure;
+      if (sourceId === sourceSelect.value) {
+        pendingToggles.delete(key);
+        await loadSnapshot();
+        if (failure) errorEl.textContent = failure;
+      }
+    }
+  }
+
+  function runNowNeedsForce(data) {
+    const code = String(data?.code || "").toLowerCase();
+    const reason = String(data?.reason || "").toLowerCase();
+    return code === "trigger_rejected" &&
+      (reason.includes("conditions: budget") || reason.includes("conditions: daily-budget"));
+  }
+
+  async function runWorkflowNow(gaggle, name, force = false, sourceId = sourceSelect.value) {
+    const key = gaggle + "/" + name;
+    let failure = "";
+    pendingWorkflowRuns.add(key);
+    await loadSnapshot();
+    try {
+      if (sourceId !== sourceSelect.value) return;
+      const res = await fetch("/api/run-workflow-now", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: sourceId, gaggle, workflow: name, force }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        if (!force && runNowNeedsForce(data)) {
+          const proceed = window.confirm(
+            name + " has already spent its cadence budget. Run it now anyway with --force?",
+          );
+          // Re-check after the (synchronous, but still risky to assume) confirm
+          // dialog: if the user switched sources while it was open, don't
+          // force-run the same-named workflow against a different instance.
+          if (proceed && sourceId === sourceSelect.value) return await runWorkflowNow(gaggle, name, true, sourceId);
+          if (proceed) return;
+        }
+        failure = "Failed to run " + name + ": " + (data.reason || "unknown error");
+      } else {
+        const runId = data.result?.runId || data.result?.acceptanceId || data.result?.requestId;
+        setRunStatus(runId
+          ? "Triggered " + name + " (" + runId + ")"
+          : "Triggered " + name);
+      }
+    } catch (err) {
+      failure = "Failed to run " + name + ": " + (err.message || err);
+    } finally {
+      if (sourceId === sourceSelect.value) {
+        pendingWorkflowRuns.delete(key);
+        await loadSnapshot();
+        if (failure) errorEl.textContent = failure;
+      }
     }
   }
   const startBarEl = document.getElementById("start-daemon-bar");
@@ -1740,14 +1864,46 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         "<td>" + escapeHtml(triggerLabel) + "</td>" +
         "<td>" + escapeHtml(w.concurrency?.activeRuns ?? "\u2014") + "</td>" +
         "<td>" + escapeHtml(w.concurrency?.maxConcurrentRuns ?? "\u2014") + "</td>" +
+        '<td class="run-now-cell"></td>' +
         '<td class="enabled-cell"></td>';
       tr.classList.add("clickable-row");
       tr.title = "Filter runs to this workflow";
       tr.addEventListener("click", (ev) => {
-        if (ev.target.closest(".enabled-cell")) return;
+        if (ev.target.closest(".enabled-cell, .run-now-cell")) return;
         filterToWorkflow(gaggle, name);
       });
       workflowsBody.appendChild(tr);
+
+      const runCell = tr.querySelector(".run-now-cell");
+      const runKey = gaggle + "/" + name;
+      const runPending = pendingWorkflowRuns.has(runKey);
+      // Manual triggers only work against a live daemon (client.mjs's
+      // triggerWorkflowNow() throws outside daemon mode) - don't offer a
+      // control guaranteed to fail for standalone/remote-polling sources.
+      const runSupported = data.mode === "daemon";
+      const runBtn = document.createElement("button");
+      runBtn.type = "button";
+      runBtn.className = "workflow-run-now";
+      // Icon-only control, matching the enable/disable toggle: the accessible
+      // name comes from aria-label rather than the glyph.
+      runBtn.textContent = runPending ? "\u23F3" : "\u25B6\uFE0F";
+      runBtn.disabled = runPending || !runSupported;
+      const runActionLabel = "Run " + name + " now";
+      runBtn.title = !runSupported
+        ? "Manually triggering a workflow requires a live daemon connection"
+        : runPending
+          ? "Triggering\u2026"
+          : runActionLabel;
+      runBtn.setAttribute(
+        "aria-label",
+        !runSupported ? runActionLabel + " (requires a live daemon)" : runPending ? "Triggering " + name : runActionLabel,
+      );
+      runBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (!runSupported || pendingWorkflowRuns.has(runKey)) return;
+        runWorkflowNow(gaggle, name);
+      });
+      runCell.appendChild(runBtn);
 
       const enabledCell = tr.querySelector(".enabled-cell");
       if (nonManualTriggers.length === 0) {
@@ -2995,12 +3151,18 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         runContentEl.innerHTML = "";
         runErrorEl.textContent = "";
         runStatusEl.textContent = "";
+        setRunStatus("");
         dashboardEl.style.display = "none";
         document.getElementById("source-context").textContent = "";
         lastRuns = [];
+        lastCapabilities = {};
+        lastUpdatedAt = null;
         pendingToggles.clear();
+        pendingWorkflowRuns.clear();
         workflowUndo.clear();
+        dismissedAttention.clear();
         syncViewUrl();
+        setFreshnessState("Loading");
       }
       snapshotSourceId = sourceId;
     }

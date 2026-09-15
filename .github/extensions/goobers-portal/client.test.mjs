@@ -7,6 +7,7 @@ import {
     loadRuns,
     requireDurableInterventionResult,
     runStageIntervention,
+    triggerWorkflowNow,
     validateIntervention,
 } from "./client.mjs";
 import { renderRunAssociations } from "./render.mjs";
@@ -262,6 +263,44 @@ test("run interventions validate actor and action-specific fields", () => {
     assert.throws(() => validateIntervention("override", { actor: "operator" }), /rationale/);
     assert.throws(() => validateIntervention("rerun", { actor: "operator" }), /addendum/);
     assert.doesNotThrow(() => validateIntervention("approve", { actor: "operator", decision: "pass" }));
+});
+
+test("trigger workflow now posts idempotent manual trigger requests", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push({ url, options, body: JSON.parse(options.body) });
+        return new Response(JSON.stringify({ runId: "run-123" }), { status: 200 });
+    };
+    try {
+        const result = await triggerWorkflowNow(
+            { mode: "daemon", baseUrl: "http://daemon", token: "token" },
+            "gaggle-one",
+            "implementation",
+            { force: true },
+        );
+        assert.equal(result.runId, "run-123");
+        assert.equal(result.requestId, requests[0].body.requestId);
+        assert.equal(requests[0].url, "http://daemon/api/v1/triggers");
+        assert.equal(requests[0].options.method, "POST");
+        assert.equal(requests[0].options.headers.Authorization, "Bearer token");
+        assert.equal(requests[0].options.headers["Idempotency-Key"], requests[0].body.requestId);
+        assert.deepEqual(requests[0].body, {
+            gaggle: "gaggle-one",
+            workflow: "implementation",
+            requestId: result.requestId,
+            force: true,
+        });
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("trigger workflow now requires daemon mode", async () => {
+    await assert.rejects(
+        triggerWorkflowNow({ mode: "standalone" }, "gaggle-one", "implementation"),
+        /running Goobers daemon/,
+    );
 });
 
 test("durable confirmation rejects missing or zero journal positions", () => {

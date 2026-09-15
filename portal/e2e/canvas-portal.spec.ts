@@ -133,6 +133,37 @@ test("canvas fits a narrow panel and supports keyboard workflow drilldown", asyn
   await expect(page.getByRole("textbox", { name: "Stage name (daemon sources)" })).toBeVisible();
 });
 
+test("workflow run now prompts only when force is required", async ({ page }) => {
+  await openCanvas(page);
+  const requests: Array<{ force?: boolean }> = [];
+  await page.route("http://canvas.test/api/run-workflow-now", async (route) => {
+    const body = route.request().postDataJSON() as { force?: boolean };
+    requests.push(body);
+    if (!body.force) {
+      await route.fulfill({
+        json: {
+          ok: false,
+          code: "trigger_rejected",
+          reason: 'localscheduler: run conditions rejected the trigger for "implementation": conditions: budget',
+        },
+      });
+      return;
+    }
+    await route.fulfill({ json: { ok: true, result: { runId: "forced-run" } } });
+  });
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("--force");
+    await dialog.accept();
+  });
+
+  await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+  await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests.map((request) => request.force ?? false)).toEqual([false, true]);
+  await expect(page.getByRole("tab", { name: "Workflows", exact: true })).toHaveAttribute("aria-selected", "true");
+});
+
 test("run filters use checkbox dropdowns instead of multi-select lists", async ({ page }) => {
   const errors = await openCanvas(page);
   await page.getByRole("tab", { name: "Runs", exact: true }).click();

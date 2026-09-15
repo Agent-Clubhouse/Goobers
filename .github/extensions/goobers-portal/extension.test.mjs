@@ -20,7 +20,7 @@ test("extension registers the Portal canvas and all supported actions", () => {
         [
             "list_sources", "add_local_instance", "add_remote_control_plane",
             "add_github_actions_workflow", "remove_source", "list_runs",
-            "view_run", "set_workflow_enabled", "start_daemon", "refresh",
+            "view_run", "set_workflow_enabled", "run_workflow_now", "start_daemon", "refresh",
         ],
     );
 });
