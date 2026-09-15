@@ -56,6 +56,28 @@ async function openCanvas(page: Page) {
   return errors;
 }
 
+async function observeRunNowResponses(page: Page) {
+  await page.evaluate(() => {
+    let settled = 0;
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      if (new URL(response.url).pathname === "/api/run-workflow-now") {
+        const originalJson = response.json.bind(response);
+        response.json = async () => {
+          try {
+            return await originalJson();
+          } finally {
+            // Wait for the handler's promise continuations, not just the network response.
+            window.setTimeout(() => { document.documentElement.dataset.runNowSettled = String(++settled); }, 0);
+          }
+        };
+      }
+      return response;
+    };
+  });
+}
+
 test("canvas preserves run detail on refresh and returns keyboard focus to runs", async ({ page }) => {
   const errors = await openCanvas(page);
   await page.getByRole("tab", { name: "Runs", exact: true }).click();
@@ -218,36 +240,105 @@ for (const outcome of ["success", "rejected", "budget", "json-error"]) {
       dialogs.push(dialog.message());
       await dialog.dismiss();
     });
-    await page.evaluate(() => {
-      const originalFetch = window.fetch.bind(window);
-      window.fetch = async (...args) => {
-        const response = await originalFetch(...args);
-        if (new URL(response.url).pathname === "/api/run-workflow-now") {
-          const originalJson = response.json.bind(response);
-          response.json = async () => {
-            try {
-              return await originalJson();
-            } finally {
-              // Wait for the handler's promise continuations, not just the network response.
-              window.setTimeout(() => { document.documentElement.dataset.runNowSettled = "true"; }, 0);
-            }
-          };
-        }
-        return response;
-      };
-    });
+    await observeRunNowResponses(page);
     await page.getByRole("tab", { name: "Workflows", exact: true }).click();
     await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
     await expect.poll(() => requests.length).toBe(1);
     await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
     await expect(page.locator("#source-context")).toHaveText("Instance two");
     release();
-    await expect(page.locator("html")).toHaveAttribute("data-run-now-settled", "true");
+    await expect(page.locator("html")).toHaveAttribute("data-run-now-settled", "1");
     await expect(page.locator("#workflow-run-status")).toBeEmpty();
     await expect(page.locator("#error")).toBeEmpty();
     await expect(page.getByRole("button", { name: "Run implementation now", exact: true })).toBeEnabled();
     expect(requests.map(({ source, force }) => ({ source, force }))).toEqual([{ source: sources[0].id, force: false }]);
     expect(dialogs).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const outcome of ["success", "rejected", "budget", "json-error"]) {
+  test(`workflow run now ignores an old ${outcome} after A-B-A with a newer run pending`, async ({ page }) => {
+    const errors = await openCanvas(page);
+    await observeRunNowResponses(page);
+    const releases: Array<() => void> = [];
+    const requests: Array<{ source: string; force: boolean }> = [];
+    const dialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      dialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    await page.route("http://canvas.test/api/run-workflow-now", async (route) => {
+      const index = requests.length;
+      requests.push(route.request().postDataJSON());
+      await new Promise<void>((resolve) => { releases[index] = resolve; });
+      if (index === 0 && outcome === "json-error") {
+        await route.fulfill({ contentType: "application/json", body: "invalid json" });
+      } else {
+        await route.fulfill({
+          json: index === 1 || outcome === "success"
+            ? { ok: true, result: { runId: index === 0 ? "old-run" : "new-run" } }
+            : { ok: false, code: "trigger_rejected", reason: `conditions: ${outcome === "budget" ? "budget" : "concurrency"}` },
+        });
+      }
+    });
+    await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+    await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
+    await expect.poll(() => releases.length).toBe(1);
+    await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+    await expect(page.locator("#source-context")).toHaveText("Instance two");
+    await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[0].id);
+    await expect(page.locator("#source-context")).toHaveText("Instance one");
+    await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
+    await expect.poll(() => releases.length).toBe(2);
+    releases[0]();
+    await expect(page.locator("html")).toHaveAttribute("data-run-now-settled", "1");
+    // Refresh from real renderer state: a stale pending-key deletion must not re-enable the button.
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Triggering implementation", exact: true })).toBeDisabled();
+    await expect(page.locator("#workflow-run-status")).toBeEmpty();
+    await expect(page.locator("#error")).toBeEmpty();
+    expect(dialogs).toEqual([]);
+    releases[1]();
+    await expect(page.locator("#workflow-run-status")).toHaveText("Triggered implementation (new-run)");
+    await expect(page.getByRole("button", { name: "Run implementation now", exact: true })).toBeEnabled();
+    expect(requests.map(({ source, force }) => ({ source, force }))).toEqual([
+      { source: sources[0].id, force: false }, { source: sources[0].id, force: false },
+    ]);
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const roundTrip of [false, true]) {
+  test(`source change during force confirmation${roundTrip ? " and back" : ""} cancels retry`, async ({ page }) => {
+    const errors = await openCanvas(page);
+    await observeRunNowResponses(page);
+    let requests = 0;
+    await page.route("http://canvas.test/api/run-workflow-now", async (route) => {
+      ++requests;
+      await route.fulfill({ json: { ok: false, code: "trigger_rejected", reason: "conditions: budget" } });
+    });
+    await page.evaluate(({ ids, roundTrip }) => {
+      window.confirm = () => {
+        const select = document.querySelector<HTMLSelectElement>("#source-select")!;
+        // Emulate a source transition before the synchronous dialog returns.
+        for (const id of roundTrip ? [ids[1], ids[0]] : [ids[1]]) {
+          select.value = id;
+          select.dispatchEvent(new Event("change"));
+        }
+        document.documentElement.dataset.forcePrompt = "true";
+        return true;
+      };
+    }, { ids: sources.map(({ id }) => id), roundTrip });
+    await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+    await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-force-prompt", "true");
+    await expect(page.locator("html")).toHaveAttribute("data-run-now-settled", "1");
+    await expect(page.locator("#source-context")).toHaveText(roundTrip ? "Instance one" : "Instance two");
+    await expect(page.locator("#workflow-run-status")).toBeEmpty();
+    await expect(page.locator("#error")).toBeEmpty();
+    await expect(page.getByRole("button", { name: "Run implementation now", exact: true })).toBeEnabled();
+    expect(requests).toBe(1);
     expect(errors).toEqual([]);
   });
 }

@@ -23,8 +23,10 @@ function harness({ response, confirm = () => false, loadSnapshot = async () => {
     const dialogs = [];
     const statuses = [];
     const errors = [];
-    const run = script.runInNewContext({
+    const context = {
         sourceSelect,
+        sourceSelectionEpoch: 0,
+        workflowRunRequests: new Map(),
         pendingWorkflowRuns,
         loadSnapshot,
         fetch: async (_url, init) => {
@@ -35,8 +37,15 @@ function harness({ response, confirm = () => false, loadSnapshot = async () => {
         window: { confirm: (message) => { dialogs.push(message); return confirm(); } },
         setRunStatus: (message) => statuses.push(message),
         errorEl: { set textContent(message) { errors.push(message); } },
-    });
-    return { run, sourceSelect, pendingWorkflowRuns, requests, dialogs, statuses, errors };
+    };
+    const run = script.runInNewContext(context);
+    const switchSource = (source) => {
+        sourceSelect.value = source;
+        ++context.sourceSelectionEpoch;
+        context.workflowRunRequests.clear();
+        pendingWorkflowRuns.clear();
+    };
+    return { run, sourceSelect, switchSource, pendingWorkflowRuns, requests, dialogs, statuses, errors };
 }
 
 function rejection(reason) {
@@ -92,9 +101,8 @@ for (const outcome of ["success", "rejected", "budget", "fetch-error", "json-err
         });
         const running = h.run("team", "implementation");
         await entered.promise;
-        h.sourceSelect.value = "source-b";
-        // changeSource clears old pending state; a run on B may now use the same key.
-        h.pendingWorkflowRuns.clear();
+        h.switchSource("source-b");
+        // A run on B may now use the same key.
         h.pendingWorkflowRuns.add("team/implementation");
         if (outcome.endsWith("-error")) result.reject(new Error("late failure"));
         else result.resolve(outcome === "success"
@@ -128,10 +136,123 @@ for (const outcome of ["rejected", "fetch-error"]) {
         });
         const running = h.run("team", "implementation");
         await entered.promise;
-        h.sourceSelect.value = "source-b";
+        h.switchSource("source-b");
         refreshed.resolve();
         await running;
         assert.deepEqual(h.statuses, []);
         assert.deepEqual(h.errors, []);
     });
 }
+
+for (const roundTrip of [false, true]) {
+    for (const outcome of ["success", "rejected", "budget", "fetch-error", "json-error"]) {
+        test(`old ${outcome} cannot overwrite a newer run ${roundTrip ? "after A-B-A" : "on the same source"}`, async () => {
+            const entered = [deferred(), deferred()];
+            const results = [deferred(), deferred()];
+            let index = 0;
+            const h = harness({
+                confirm: () => true,
+                response: () => {
+                    const current = index++;
+                    if (current === 0 && outcome === "fetch-error") {
+                        entered[current].resolve();
+                        return results[current].promise;
+                    }
+                    return { json: () => { entered[current].resolve(); return results[current].promise; } };
+                },
+            });
+            const oldRun = h.run("team", "implementation");
+            await entered[0].promise;
+            if (roundTrip) {
+                h.switchSource("source-b");
+                h.switchSource("source-a");
+            }
+            const newRun = h.run("team", "implementation");
+            await entered[1].promise;
+            if (outcome.endsWith("-error")) results[0].reject(new Error("stale failure"));
+            else results[0].resolve(outcome === "success"
+                ? { ok: true, result: { runId: "stale-run" } }
+                : rejection(outcome === "budget" ? "budget" : "concurrency"));
+            await oldRun;
+            assert.ok(h.pendingWorkflowRuns.has("team/implementation"), "new run remains pending");
+            assert.deepEqual(h.statuses, []);
+            assert.deepEqual(h.errors, []);
+            assert.deepEqual(h.dialogs, []);
+            assert.equal(h.requests.length, 2);
+            results[1].resolve({ ok: true, result: { runId: "new-run" } });
+            await newRun;
+            assert.deepEqual(h.statuses, ["Triggered implementation (new-run)"]);
+            assert.equal(h.pendingWorkflowRuns.size, 0);
+        });
+    }
+}
+
+for (const proceed of [false, true]) {
+    for (const roundTrip of [false, true]) {
+        test(`source change during ${proceed ? "accepted" : "declined"} force confirmation${roundTrip ? " and back" : ""} invalidates the run`, async () => {
+            const h = harness({
+                response: () => ({ json: async () => rejection("budget") }),
+                confirm: () => {
+                    h.switchSource("source-b");
+                    if (roundTrip) h.switchSource("source-a");
+                    return proceed;
+                },
+            });
+            await h.run("team", "implementation");
+            assert.equal(h.dialogs.length, 1);
+            assert.equal(h.requests.length, 1);
+            assert.deepEqual(h.statuses, []);
+            assert.deepEqual(h.errors, []);
+            assert.equal(h.pendingWorkflowRuns.size, 0);
+        });
+    }
+}
+
+test("an older final refresh cannot clear or report an error over a newer run", async () => {
+    const oldRefresh = deferred();
+    const refreshing = deferred();
+    const newResult = deferred();
+    const newEntered = deferred();
+    let snapshots = 0;
+    let requests = 0;
+    const h = harness({
+        loadSnapshot: async () => {
+            if (++snapshots === 2) {
+                refreshing.resolve();
+                await oldRefresh.promise;
+            }
+        },
+        response: () => ({
+            json: async () => {
+                if (++requests === 1) return rejection("concurrency");
+                newEntered.resolve();
+                return newResult.promise;
+            },
+        }),
+    });
+    const oldRun = h.run("team", "implementation");
+    await refreshing.promise;
+    const newRun = h.run("team", "implementation");
+    await newEntered.promise;
+    oldRefresh.resolve();
+    await oldRun;
+    assert.deepEqual(h.errors, []);
+    assert.deepEqual(h.statuses, []);
+    assert.ok(h.pendingWorkflowRuns.has("team/implementation"));
+    newResult.resolve({ ok: true, result: { runId: "new-run" } });
+    await newRun;
+    assert.deepEqual(h.statuses, ["Triggered implementation (new-run)"]);
+    assert.equal(h.pendingWorkflowRuns.size, 0);
+});
+
+test("force retry is bounded even if the budget is rejected again", async () => {
+    const h = harness({
+        confirm: () => true,
+        response: () => ({ json: async () => rejection("budget") }),
+    });
+    await h.run("team", "implementation");
+    assert.deepEqual(h.requests.map(({ force }) => force), [false, true]);
+    assert.equal(h.dialogs.length, 1);
+    assert.deepEqual(h.errors, ["Failed to run implementation: conditions: budget"]);
+    assert.equal(h.pendingWorkflowRuns.size, 0);
+});

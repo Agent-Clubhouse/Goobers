@@ -442,7 +442,8 @@ On a live daemon, **Run now** triggers a workflow from the Workflows tab. If its
 hourly or daily cadence budget is exhausted, the canvas asks before retrying with
 `--force`; declining does not retry, and unrelated rejections do not prompt.
 Switching sources while a request is pending keeps its late result out of the
-new source's status and error messages.
+new source's status and error messages, even if you switch back and start another
+run. A source change during force confirmation cancels that retry.
 
 For a Fleet-enrolled instance, the canvas reads the non-secret Fleet association
 from the daemon's `/api/v1/instance` response and shows **Open Fleet portal** using

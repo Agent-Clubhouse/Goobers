@@ -1437,12 +1437,14 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   let runRequestSequence = 0;
   let snapshotRequestSequence = 0;
   let snapshotSourceId = null;
+  let sourceSelectionEpoch = 0;
   let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
   // background-poll re-renders.
   const pendingToggles = new Map();
   const pendingWorkflowRuns = new Set();
+  const workflowRunRequests = new Map();
   const workflowUndo = new Map();
   const pendingRunActions = new Map();
 
@@ -1592,45 +1594,58 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       (reason.includes("conditions: budget") || reason.includes("conditions: daily-budget"));
   }
 
-  async function runWorkflowNow(gaggle, name, force = false, sourceId = sourceSelect.value) {
+  async function runWorkflowNow(gaggle, name) {
+    const sourceId = sourceSelect.value;
+    const sourceEpoch = sourceSelectionEpoch;
     const key = gaggle + "/" + name;
+    const requestToken = Symbol();
+    const isCurrent = () => sourceId === sourceSelect.value &&
+      sourceEpoch === sourceSelectionEpoch && workflowRunRequests.get(key) === requestToken;
+    workflowRunRequests.set(key, requestToken);
     let failure = "";
     pendingWorkflowRuns.add(key);
-    await loadSnapshot();
     try {
-      if (sourceId !== sourceSelect.value) return;
-      const res = await fetch("/api/run-workflow-now", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: sourceId, gaggle, workflow: name, force }),
-      });
-      const data = await res.json();
-      if (sourceId !== sourceSelect.value) return;
-      if (!data.ok) {
-        if (!force && runNowNeedsForce(data)) {
-          const proceed = window.confirm(
-            name + " has already spent its cadence budget. Run it now anyway with --force?",
-          );
-          // Re-check after the (synchronous, but still risky to assume) confirm
-          // dialog: if the user switched sources while it was open, don't
-          // force-run the same-named workflow against a different instance.
-          if (proceed && sourceId === sourceSelect.value) return await runWorkflowNow(gaggle, name, true, sourceId);
-          if (proceed) return;
+      await loadSnapshot();
+      let force = false;
+      while (isCurrent()) {
+        const res = await fetch("/api/run-workflow-now", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source: sourceId, gaggle, workflow: name, force }),
+        });
+        const data = await res.json();
+        if (!isCurrent()) return;
+        if (!data.ok) {
+          if (!force && runNowNeedsForce(data)) {
+            const proceed = window.confirm(
+              name + " has already spent its cadence budget. Run it now anyway with --force?",
+            );
+            if (!isCurrent()) return;
+            if (proceed) {
+              // The force retry belongs to the same operation, not a new request generation.
+              force = true;
+              continue;
+            }
+          }
+          failure = "Failed to run " + name + ": " + (data.reason || "unknown error");
+        } else {
+          const runId = data.result?.runId || data.result?.acceptanceId || data.result?.requestId;
+          setRunStatus(runId
+            ? "Triggered " + name + " (" + runId + ")"
+            : "Triggered " + name);
         }
-        failure = "Failed to run " + name + ": " + (data.reason || "unknown error");
-      } else {
-        const runId = data.result?.runId || data.result?.acceptanceId || data.result?.requestId;
-        setRunStatus(runId
-          ? "Triggered " + name + " (" + runId + ")"
-          : "Triggered " + name);
+        break;
       }
     } catch (err) {
       failure = "Failed to run " + name + ": " + (err.message || err);
     } finally {
-      if (sourceId === sourceSelect.value) {
+      if (isCurrent()) {
         pendingWorkflowRuns.delete(key);
         await loadSnapshot();
-        if (sourceId === sourceSelect.value && failure) errorEl.textContent = failure;
+        if (isCurrent()) {
+          if (failure) errorEl.textContent = failure;
+          workflowRunRequests.delete(key);
+        }
       }
     }
   }
@@ -3142,6 +3157,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   async function loadSnapshot() {
     const sourceId = sourceSelect.value;
     if (snapshotSourceId !== sourceId) {
+      ++sourceSelectionEpoch;
+      workflowRunRequests.clear();
       updateFleetPanel({});
       if (snapshotSourceId !== null) {
         restoredRunId = "";
