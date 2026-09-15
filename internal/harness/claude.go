@@ -402,11 +402,10 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		adapterName:                    c.Name(),
 		envCapabilities:                c.EnvCapabilities,
 		optionalCredentialCapabilities: c.OptionalCredentialCapabilities,
-		extraEnvAllowlist:              c.ExtraEnvAllowlist,
-		envUnset:                       c.EnvUnset,
-		instanceRoot:                   c.InstanceRoot,
-		selfBin:                        c.SelfBin,
-		ephemeralTmp:                   ephemeralTmp,
+		extraEnvAllowlist:              c.ExtraEnvAllowlist, envUnset: c.EnvUnset,
+		instanceRoot: c.InstanceRoot,
+		selfBin:      c.SelfBin,
+		ephemeralTmp: ephemeralTmp,
 	}, req)
 	if err != nil {
 		return Outcome{}, err
