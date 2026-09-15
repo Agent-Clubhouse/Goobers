@@ -97,7 +97,8 @@ test("run rows keep pre-escaped association and actions markup as markup", () =>
 
 test("run rows fall back without throwing on an empty run", () => {
     const html = renderRunRowCells(undefined, undefined);
-    assert.match(html, /<td><code><\/code><\/td>/);
+    assert.match(html, /data-open-run=""/);
+    assert.match(html, /aria-label="Copy run id" title="Copy run id">&#128203;<\/button>/);
     assert.ok(!html.includes("undefined"), html);
 });
 
@@ -116,6 +117,19 @@ test("run detail summary escapes every metadata field", () => {
         finishedAt: HOSTILE,
         events: [{ type: "stage.finished", stage: HOSTILE }],
         transitions: [{ terminal: true, status: HOSTILE }],
+    });
+
+    test("run detail summary renders current and active goober chips", () => {
+        const html = renderRunDetailSummary({
+            id: "run",
+            workflow: "implementation",
+            currentStage: "implement",
+            activeStages: [{ name: "implement", goober: "implementer" }],
+        });
+        assert.match(html, /Current stage/);
+        assert.match(html, /Active goobers/);
+        assert.match(html, /class="goober-chip"/);
+        assert.match(html, /implementer/);
     });
     assert.doesNotMatch(html, /<img|<script>/);
     assert.match(html, /&lt;img/);
@@ -297,6 +311,20 @@ test("operator panel renders an escaped pull request description", () => {
 test("execution waterfall reports absence rather than rendering an empty chart", () => {
     assert.match(renderExecutionWaterfall({}), /No execution waterfall is available yet/);
     assert.match(renderExecutionWaterfall({ attempts: [] }), /No execution waterfall is available yet/);
+});
+
+test("execution waterfall adds retry take labels and blocked gate cues", () => {
+    const html = renderExecutionWaterfall({
+        events: [
+            { type: "stage.started", stage: "implement", attempt: 2, time: "2026-08-27T00:00:00Z" },
+            { type: "stage.finished", stage: "implement", attempt: 2, status: "failed", time: "2026-08-27T00:00:01Z" },
+            { type: "gate.started", stage: "review-gate", attempt: 1, time: "2026-08-27T00:00:02Z" },
+            { type: "gate.finished", stage: "review-gate", attempt: 1, status: "blocked", time: "2026-08-27T00:00:03Z" },
+        ],
+    });
+    assert.match(html, /take 2/);
+    assert.match(html, /🔒 gate/);
+    assert.match(html, /class="goober-chip"/);
 });
 
 test("run event items add a transcript link only for transcript events", () => {

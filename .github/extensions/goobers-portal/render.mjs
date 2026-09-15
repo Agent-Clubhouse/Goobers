@@ -39,6 +39,28 @@ function safeAssociationUrl(value) {
     }
 }
 
+export function gooberAvatar(value) {
+    const text = String(value || "").toLowerCase();
+    if (/review|verify|judge/.test(text)) return "🧐";
+    if (/open-pr|opener|pr/.test(text)) return "🚪";
+    if (/implement|build|fix|code/.test(text)) return "🛠";
+    if (/curate|triage|plan|proposal/.test(text)) return "🧭";
+    if (/merge|land|ship/.test(text)) return "🚀";
+    if (/test|validate/.test(text)) return "🧪";
+    if (/docs|document/.test(text)) return "📚";
+    if (/gate|approval|approve|blocked|lock/.test(text)) return "🔒";
+    return "✨";
+}
+
+export function renderGooberChip(value, options = {}) {
+    const label = String(value || "").trim();
+    if (!label) return "";
+    const kind = options.kind ? ' data-kind="' + escapeAssociationHtml(options.kind) + '"' : "";
+    return '<span class="goober-chip"' + kind + ' title="' + escapeAssociationHtml(label) + '">' +
+        '<span class="goober-avatar" aria-hidden="true">' + escapeAssociationHtml(gooberAvatar(label)) + "</span>" +
+        '<span class="goober-label">' + escapeAssociationHtml(label) + "</span></span>";
+}
+
 export function renderRunAssociations(operator) {
     const links = [];
     const issueURL = safeAssociationUrl(operator?.issue?.url);
@@ -56,6 +78,22 @@ export function renderRunAssociations(operator) {
             '" target="_blank" rel="noopener noreferrer">' + escapeAssociationHtml(label) + "</a>");
     }
     return links.length ? '<div class="run-associations">' + links.join("") + "</div>" : "\u2014";
+}
+
+function renderFullRunId(value) {
+    const runId = String(value || "");
+    return runId ? ' data-full-run-id="' + escapeAssociationHtml(runId) + '" title="' + escapeAssociationHtml(runId) + '"' : "";
+}
+
+export function renderRunIdControl(runId, options = {}) {
+    const fullId = renderFullRunId(runId);
+    const label = options.label || "Run id";
+    return '<span class="run-id-control">' +
+        '<button type="button" class="table-link" data-open-run="' + escapeAssociationHtml(runId || "") + '"' +
+        fullId + ' aria-label="Open ' + escapeAssociationHtml(label) + '">' + escapeAssociationHtml(label) + "</button>" +
+        '<button type="button" class="copy-run-id" data-copy-run-id="' + escapeAssociationHtml(runId || "") + '"' +
+        fullId + ' aria-label="Copy run id" title="Copy run id">&#128203;</button>' +
+        "</span>";
 }
 
 // The snapshot cards and the run table interpolate values the portal does not
@@ -79,11 +117,11 @@ export function renderRunRowCells(run, parts) {
     const runId = (run && (run.runId || run.id)) || "";
     const extra = (parts && parts.actionsLink) || "";
     const associations = (parts && parts.associations) || "\u2014";
-    return "<td><code>" + escapeAssociationHtml(runId) + "</code>" + extra + "</td>" +
+    return "<td>" + renderRunIdControl(runId) + extra + "</td>" +
         cell((run && run.workflow) || "") +
         cell((run && run.gaggle) || "") +
         cell((run && run.trigger && run.trigger.kind) || "\u2014") +
-        '<td><span class="phase">' + escapeAssociationHtml((run && run.phase) || "") + "</span></td>" +
+        '<td><span class="phase" data-phase="' + escapeAssociationHtml((run && run.phase) || "") + '">' + escapeAssociationHtml((run && run.phase) || "") + "</span></td>" +
         "<td>" + associations + "</td>" +
         cell((parts && parts.startedAt) || "") +
         cell((parts && parts.lastActivityAt) || "");
@@ -113,10 +151,20 @@ export function renderRunDetailSummary(run = {}, parts = {}) {
     const duration = Number.isFinite(Number(run.durationMillis)) && Number(run.durationMillis) > 0
         ? Math.round(Number(run.durationMillis) / 1000) + "s"
         : "\u2014";
+    const activeStages = Array.isArray(run.activeStages) ? run.activeStages : [];
+    const activeStageChips = activeStages
+        .map((stage) => [
+            renderGooberChip(stage?.goober, { kind: "goober" }),
+            renderGooberChip(stage?.name || stage?.stage, { kind: "stage" }),
+        ].filter(Boolean).join(" "))
+        .filter(Boolean)
+        .join(" ");
     const values = [
         ["Workflow", workflow + workflowVersion],
         ["Gaggle", escapeAssociationHtml(run.gaggle || "")],
-        ["Phase", '<span class="phase">' + escapeAssociationHtml(run.phase || "") + "</span>"],
+        ["Phase", '<span class="phase" data-phase="' + escapeAssociationHtml(run.phase || "") + '">' + escapeAssociationHtml(run.phase || "") + "</span>"],
+        ...(run.currentStage ? [["Current stage", renderGooberChip(run.currentStage, { kind: "stage" })]] : []),
+        ...(activeStageChips ? [["Active goobers", activeStageChips]] : []),
         ["Final state", escapeAssociationHtml((finalTransition && (finalTransition.status || finalTransition.verdict)) || (run.terminal ? run.phase : "in progress"))],
         ["Completed stages", escapeAssociationHtml(finishedStages.size)],
         ["Started", formatRunDetailTime(run.startedAt)],
@@ -128,8 +176,8 @@ export function renderRunDetailSummary(run = {}, parts = {}) {
     ];
     const grid = values.map(([label, value]) => '<div class="kv"><div class="label">' +
         escapeAssociationHtml(label) + '</div><div class="value">' + value + "</div></div>").join("");
-    return '<div class="run-header"><h2>' + workflow + "</h2><code>" +
-        escapeAssociationHtml(run.id || run.runId || "") + "</code>" + (parts.actionsLink || "") + "</div>" +
+    return '<div class="run-header"><h2>' + workflow + "</h2>" +
+        renderRunIdControl(run.id || run.runId || "") + (parts.actionsLink || "") + "</div>" +
         '<div class="internal-tabs" role="tablist" aria-label="Run detail sections">' +
         '<button id="run-tab-summary" role="tab" data-tab="summary" aria-controls="run-panel-summary">Summary</button>' +
         '<button id="run-tab-execution" role="tab" data-tab="execution" aria-controls="run-panel-execution">Execution</button>' +
@@ -144,7 +192,7 @@ export function renderRunEventItems(displayedEvents = [], sourceId = "", runId =
     const safeUrl = options.safeUrl || safeAssociationUrl;
     return displayedEvents.map((event = {}) => {
         const status = event.status || event.verdict || event.decision || "";
-        const stage = event.stage ? " \u00b7 " + escapeAssociationHtml(event.stage) : "";
+        const stage = event.stage ? ' \u00b7 ' + renderGooberChip(event.stage, { kind: event.type && String(event.type).startsWith("gate.") ? "gate" : "stage" }) : "";
         const summary = '<summary><span class="event-seq">#' + escapeAssociationHtml(event.seq ?? "") +
             "</span><code>" + escapeAssociationHtml(event.type || "") + "</code><span>" + stage +
             (status ? " \u00b7 " + escapeAssociationHtml(status) : "") +
@@ -201,10 +249,10 @@ export function renderTransitions(transitions = []) {
               (transition.repass ? ", repass" : "") + "]</span>"
             : "";
         const target = transition.target
-            ? " " + arrow + " <code>" + escapeAssociationHtml(transition.target) + "</code>"
+            ? " " + arrow + " " + renderGooberChip(transition.target, { kind: "stage" })
             : (transition.status ? " (" + escapeAssociationHtml(transition.status) + ")" : "");
         return '<li><span class="seq">#' + escapeAssociationHtml(transition.seq ?? "") +
-            "</span><code>" + escapeAssociationHtml(transition.source || "") + "</code>" +
+            "</span>" + renderGooberChip(transition.source || "", { kind: "stage" }) +
             target + verdictText + "</li>";
     });
     return '<ul class="transitions-list">' + items.join("") + "</ul>";
@@ -282,7 +330,9 @@ export function renderCausalDiagnosis(run = {}) {
     const breadcrumbs = deriveFailureBreadcrumbs(run);
     const attempts = diagnosis.attempts || [];
     const trace = attempts.length
-        ? attempts.map((entry) => '<li><strong>' + escapeAssociationHtml(entry.stage) + '</strong> · attempt ' + entry.attempt + ' · ' + escapeAssociationHtml(entry.status || 'pending') + '</li>').join("")
+        ? attempts.map((entry) => '<li>' + renderGooberChip(entry.stage, { kind: entry.kind || "stage" }) +
+            ' · ' + (entry.attempt > 1 ? 'take ' + entry.attempt : 'attempt ' + entry.attempt) +
+            ' · ' + escapeAssociationHtml(entry.status || 'pending') + '</li>').join("")
         : '<li class="muted">No stage attempt lineage is recorded yet.</li>';
     const breadcrumbHtml = breadcrumbs.length
         ? breadcrumbs.map((entry) => '<li><strong>' + escapeAssociationHtml(entry.label) + ':</strong> ' + escapeAssociationHtml(entry.detail || '') + (entry.attempt ? ' (attempt ' + entry.attempt + ')' : '') + '</li>').join("")
@@ -316,10 +366,18 @@ export function renderExecutionWaterfall(run = {}) {
         const width = knownTiming && timelineAvailable ? Math.max(2, ((itemEnd - itemStart) / duration) * 100) : 0;
         const kind = entry.kind || "stage";
         const retry = entry.attempt > 1 ? " retry" : "";
+        const blocked = String(entry.status || "").toLowerCase() === "blocked";
+        const attemptLabel = entry.attempt > 1 ? "take " + entry.attempt : "attempt " + entry.attempt;
+        const kindLabel = blocked && kind === "gate" ? "🔒 gate" : kind;
         const timing = knownTiming
             ? Math.round((itemEnd - itemStart) / 1000) + "s"
             : "timing unavailable";
-        return '<div class="waterfall-row ' + (knownTiming ? "" : "unknown-timing") + '"><div class="waterfall-stage"><strong>' + escapeAssociationHtml(entry.stage) + '</strong> · ' + escapeAssociationHtml(kind) + ' · attempt ' + entry.attempt + (retry ? ' · retry' : '') + '</div><div class="waterfall-bar-wrap"><span class="waterfall-bar ' + escapeAssociationHtml(entry.status || 'pending') + retry + '" style="left:' + left + '%; width:' + width + '%"></span></div><div class="waterfall-status">' + escapeAssociationHtml(entry.status || 'pending') + ' · ' + timing + '</div></div>';
+        return '<div class="waterfall-row ' + (knownTiming ? "" : "unknown-timing") + '"><div class="waterfall-stage">' +
+            renderGooberChip(entry.stage, { kind }) + ' · ' + escapeAssociationHtml(kindLabel) + ' · ' +
+            escapeAssociationHtml(attemptLabel) + (retry ? ' · retry' : '') +
+            '</div><div class="waterfall-bar-wrap"><span class="waterfall-bar ' +
+            escapeAssociationHtml(entry.status || 'pending') + retry + '" style="left:' + left + '%; width:' + width + '%"></span></div><div class="waterfall-status">' +
+            escapeAssociationHtml(entry.status || 'pending') + ' · ' + timing + '</div></div>';
     }).join("");
     const intervals = entries.map((entry) => [new Date(entry.start || "").getTime(), new Date(entry.end || "").getTime()])
         .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end >= start)
@@ -377,6 +435,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 <html data-theme-preference="${themePreference}">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Goobers Portal</title>
 <script>
   (function () {
@@ -486,7 +545,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   }
   button { cursor: pointer; }
   button:hover { background: var(--border-color-default, #d0d7de33); }
-  button:focus-visible, select:focus-visible, input:focus-visible, #graph-svg:focus-visible {
+  :focus-visible {
     outline: 2px solid var(--color-focus-outline, #0969da);
     outline-offset: 2px;
   }
@@ -508,8 +567,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     gap: 8px 12px;
     align-items: start;
     box-sizing: border-box;
-    height: 84px;
-    overflow: hidden;
+    min-height: 84px;
     border: 1px solid var(--true-color-red-muted, #cf222e66);
     border-left: 4px solid var(--true-color-red, #cf222e);
     border-radius: 6px;
@@ -535,13 +593,61 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     gap: 6px;
     color: var(--text-color-muted, #656d76);
     font-size: 12px;
+    flex-wrap: wrap;
   }
-  .freshness { color: var(--text-color-muted, #656d76); font-size: 12px; }
+  .freshness {
+    color: var(--text-color-muted, #656d76);
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .freshness::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--text-color-muted, #656d76);
+    opacity: 0.55;
+  }
+  .freshness[data-freshness="live"]::before {
+    background: var(--true-color-green, #1a7f37);
+    opacity: 1;
+    animation: freshness-pulse 1.8s ease-in-out infinite;
+  }
+  .freshness[data-freshness="stale"]::before {
+    background: var(--true-color-yellow, #9a6700);
+    opacity: 0.65;
+  }
+  .freshness[data-freshness="offline"]::before {
+    background: var(--text-color-muted, #656d76);
+    opacity: 0.35;
+  }
+  @keyframes freshness-pulse {
+    0%, 100% { transform: scale(0.86); box-shadow: 0 0 0 0 rgba(26,127,55,0.35); }
+    50% { transform: scale(1.12); box-shadow: 0 0 0 5px rgba(26,127,55,0); }
+  }
+  @keyframes copy-pop {
+    0% { transform: scale(0.9); }
+    60% { transform: scale(1.16); }
+    100% { transform: scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .freshness[data-freshness="live"]::before,
+    .copy-run-id.copied {
+      animation: none;
+    }
+  }
   @media (max-width: 640px) {
-    .attention-item { grid-template-columns: 1fr; gap: 3px; height: 118px; }
+    .attention-item { grid-template-columns: 1fr; gap: 6px; min-height: 118px; }
     .attention-item.is-expanded { min-height: 118px; }
     main { padding: 10px; }
     table { display: block; overflow-x: auto; white-space: nowrap; }
+    .toolbar { width: 100%; }
+    #source-select { flex: 1; min-width: 0; }
+    .waterfall-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .graph-toolbar { flex-wrap: wrap; }
+    .graph-help { width: 100%; }
   }
   #start-daemon-bar {
     display: flex;
@@ -735,7 +841,54 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .artifact-links a { color: inherit; }
   .filters-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .filters-bar select, .filters-bar input { font-size: 12px; padding: 4px 8px; }
-  .filters-bar select[multiple] { height: 38px; min-width: 132px; }
+  .native-multi-filter { display: none; }
+  .multi-filter { position: relative; min-width: 154px; }
+  .multi-filter-button {
+    width: 100%;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    background: var(--background-color-default, #ffffff);
+    color: var(--text-color-default, #1f2328);
+    font-size: 12px;
+    padding: 5px 9px;
+    cursor: pointer;
+  }
+  .multi-filter-button::after { content: "▾"; color: var(--text-color-muted, #656d76); }
+  .multi-filter-button:disabled { cursor: not-allowed; opacity: 0.62; }
+  .multi-filter-menu {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 100%;
+    max-width: min(320px, calc(100vw - 32px));
+    max-height: 260px;
+    overflow: auto;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    background: var(--background-color-default, #ffffff);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+    padding: 6px;
+  }
+  .multi-filter-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .multi-filter-option:hover { background: var(--background-color-hover, rgba(130,130,130,0.12)); }
+  .multi-filter-empty { padding: 6px 8px; font-size: 12px; color: var(--text-color-muted, #656d76); }
+  .advanced-filters { flex-basis: 100%; margin: 0; }
+  .advanced-filters summary { padding: 8px 0; }
   th[data-sort] { cursor: pointer; user-select: none; }
   th[data-sort]:hover { color: var(--text-color-default, #1f2328); }
   th[data-sort] .sort-arrow { font-size: 10px; margin-left: 4px; color: var(--text-color-muted, #656d76); }
@@ -822,6 +975,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 <header>
   <h1>Goobers Portal</h1>
   <div class="toolbar">
@@ -881,53 +1035,63 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   </div>
   <div id="dashboard" style="display:none">
     <div class="internal-tabs" role="tablist" aria-label="Dashboard sections">
-      <button id="dashboard-tab-attention" role="tab" data-tab="attention" aria-controls="dashboard-panel-attention">Attention</button>
+      <button id="dashboard-tab-attention" role="tab" data-tab="attention" aria-controls="dashboard-panel-attention">Overview</button>
       <button id="dashboard-tab-workflows" role="tab" data-tab="workflows" aria-controls="dashboard-panel-workflows">Workflows</button>
       <button id="dashboard-tab-runs" role="tab" data-tab="runs" aria-controls="dashboard-panel-runs">Runs</button>
     </div>
     <section id="dashboard-panel-attention" role="tabpanel" aria-labelledby="dashboard-tab-attention">
-      <div class="cards" id="cards"></div>
       <div id="needs-you" aria-labelledby="needs-you-heading">
-        <h2 id="needs-you-heading">Needs you <span class="freshness" id="freshness" aria-live="polite"></span></h2>
+        <h2 id="needs-you-heading">Needs attention</h2>
+        <p class="section-description">Review blockers and decisions before exploring workflow activity.</p>
         <div id="attention-list"></div>
       </div>
+      <h2>Activity at a glance</h2>
+      <div class="cards" id="cards"></div>
     </section>
     <section id="dashboard-panel-workflows" role="tabpanel" aria-labelledby="dashboard-tab-workflows" hidden>
       <h2>Workflows</h2>
+      <p class="section-description">Select a workflow to explore its runs. Trigger controls affect future automatic runs only.</p>
+      <div class="table-scroll" role="region" aria-label="Workflows" tabindex="0">
       <table id="workflows-table">
         <thead>
-          <tr><th>Workflow</th><th>Gaggle</th><th>Trigger</th><th>In flight</th><th>Max</th><th>Enabled</th></tr>
+          <tr><th>Workflow</th><th>Gaggle</th><th>Trigger</th><th>In flight</th><th>Max</th><th>Run</th><th>Enabled</th></tr>
         </thead>
         <tbody></tbody>
       </table>
+      </div>
     </section>
     <section id="dashboard-panel-runs" role="tabpanel" aria-labelledby="dashboard-tab-runs" hidden>
       <h2>Runs</h2>
       <div class="filters-bar" id="runs-filters">
-        <select id="filter-gaggle" multiple title="Select one or more gaggles"><option value="">All gaggles</option></select>
-        <select id="filter-workflow" multiple title="Select one or more workflows"><option value="">All workflows</option></select>
-        <select id="filter-phase" multiple title="Select one or more phases">
+        <select id="filter-gaggle" class="native-multi-filter" multiple data-all-label="All gaggles" aria-label="Gaggles" title="Select one or more gaggles"><option value="">All gaggles</option></select>
+        <select id="filter-workflow" class="native-multi-filter" multiple data-all-label="All workflows" aria-label="Workflows" title="Select one or more workflows"><option value="">All workflows</option></select>
+        <select id="filter-phase" class="native-multi-filter" multiple data-all-label="All phases" aria-label="Phases" title="Select one or more phases">
           <option value="running">running</option>
           <option value="completed">completed</option>
           <option value="failed">failed</option>
           <option value="aborted">aborted</option>
           <option value="escalated">escalated</option>
         </select>
-        <select id="filter-trigger" multiple title="Select one or more triggers">
+        <select id="filter-trigger" class="native-multi-filter" multiple data-all-label="All triggers" aria-label="Triggers" title="Select one or more triggers">
           <option value="manual">manual</option>
           <option value="schedule">schedule</option>
           <option value="item">item</option>
           <option value="webhook">webhook</option>
         </select>
+        <label class="filter-toggle"><input id="filter-show-no-work" type="checkbox" /> Show no-work</label>
+        <button id="filters-clear" type="button">Reset</button>
+        <details class="advanced-filters">
+          <summary>More filters and saved views</summary>
+          <div class="filters-bar">
         <input id="filter-stage" type="text" placeholder="Stage" title="Stage name (daemon sources)" />
-        <select id="filter-outcome" multiple title="Select one or more outcomes">
+        <select id="filter-outcome" class="native-multi-filter" multiple data-all-label="All outcomes" aria-label="Outcomes" title="Select one or more outcomes">
           <option value="finished">finished</option>
           <option value="terminal">terminal</option>
           <option value="success">success</option>
           <option value="failure">failure</option>
           <option value="other">other</option>
         </select>
-        <select id="filter-population" multiple title="Select one or more populations">
+        <select id="filter-population" class="native-multi-filter" multiple data-all-label="All populations" aria-label="Populations" title="Select one or more populations">
           <option value="attempts">attempts</option>
           <option value="measured">measured</option>
           <option value="token-measured">token measured</option>
@@ -935,15 +1099,16 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
           <option value="cost-measured">cost measured</option>
           <option value="retry-waste">retry waste</option>
         </select>
-        <label class="filter-toggle"><input id="filter-show-no-work" type="checkbox" /> Show no-work</label>
         <select id="saved-filter-presets" aria-label="Saved filters">
           <option value="">Saved filters</option>
         </select>
         <button id="save-filter-preset" type="button">Save</button>
         <input id="filter-since" type="datetime-local" title="Since" />
         <input id="filter-until" type="datetime-local" title="Until" />
-        <button id="filters-clear" type="button">Reset</button>
+          </div>
+        </details>
       </div>
+      <div class="table-scroll" role="region" aria-label="Runs" tabindex="0">
       <table id="runs-table">
         <thead>
           <tr>
@@ -959,6 +1124,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         </thead>
         <tbody></tbody>
       </table>
+      </div>
       <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
         <button id="runs-load-more" type="button" style="display:none">Load more</button>
       </div>
@@ -1053,6 +1219,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   }
 
   initInternalTabs(dashboardEl, activeDashboardTab);
+  document.getElementById("remote-token").type = "password";
+  document.getElementById("remote-token").setAttribute("aria-label", "Remote API bearer token");
+  document.querySelectorAll("#runs-filters select[title], #runs-filters input[title]").forEach((input) =>
+    input.setAttribute("aria-label", input.title));
 
   function applyThemePreference(preference) {
     const normalized = ["system", "light", "dark"].includes(preference) ? preference : "system";
@@ -1098,6 +1268,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   // config reload that makes it visible is asynchronous, so returning early
   // would flash a stale label and let the next poll appear to revert it.
   async function toggleWorkflow(gaggle, name, desired) {
+    const sourceId = sourceSelect.value;
     const key = gaggle + "/" + name;
     // renderSnapshot() clears #error, so failures must be re-applied after the
     // final re-render rather than set before it.
@@ -1105,10 +1276,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     pendingToggles.set(key, desired);
     await loadSnapshot();
     try {
+      if (sourceId !== sourceSelect.value) return;
       const res = await fetch("/api/set-workflow-enabled", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: sourceSelect.value, gaggle, workflow: name, enabled: desired }),
+        body: JSON.stringify({ source: sourceId, gaggle, workflow: name, enabled: desired }),
       });
       const data = await res.json();
       if (!data.ok) {
@@ -1117,6 +1289,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         const deadline = Date.now() + 30000;
         let confirmed = false;
         while (Date.now() < deadline) {
+          if (sourceId !== sourceSelect.value) return;
           const snap = await fetchSnapshot();
           if (snap && snap.connected && workflowEnabledState(snap, gaggle, name) === desired) {
             confirmed = true;
@@ -1223,7 +1396,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     const markup = '<div class="attention-list">' + visible.map((item, index) => {
       const run = (runs || []).find((candidate) => (candidate.runId || candidate.id) === item.id);
       const runLabel = escapeHtml(item.id || "unknown run");
-      const stage = item.stage ? " · stage " + escapeHtml(item.stage) : "";
+      const stage = item.stage ? " · " + renderGooberChip(item.stage, { kind: "stage" }) : "";
       const elapsed = item.elapsedMillis == null ? "" : " · " + Math.round(item.elapsedMillis / 60000) + "m";
       const expanded = expandedAttention.has(item.id);
       const detailsId = "attention-details-" + index;
@@ -1232,7 +1405,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         '<strong>' + escapeHtml(item.phase) + '</strong>' +
         '<span class="attention-reason" id="' + detailsId + '">' +
         (run ? '<a href="#run=' + encodeURIComponent(item.id) + '" data-attention-run="' + escapeHtml(item.id) + '">' : "") +
-        '<code>' + runLabel + '</code> ' + escapeHtml(item.workflow) + stage + elapsed +
+        '<code>' + runLabel + '</code> ' + escapeHtml(item.workflow) + stage + escapeHtml(elapsed) +
         (run ? "</a>" : "") + '<br />' + escapeHtml(item.reason) + '</span>' +
         '<span class="attention-action">' + escapeHtml(item.nextAction) +
         ' <button type="button" data-expand-attention="' + escapeHtml(item.id) +
@@ -1315,7 +1488,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       return;
     }
     emptyEl.style.display = "none";
-    dashboardEl.style.display = "block";
+    dashboardEl.style.display = selectedRunId ? "none" : "block";
 
     lastCapabilities = data.capabilities || {};
     const workflows = data.workflows || [];
@@ -1333,10 +1506,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
     cardsEl.innerHTML = "";
     const cards = [
-      ["Instance", data.instance?.name || "\u2014"],
       ["Workflows", workflows.length],
       ["In flight", inFlight],
-      ["Recent runs", runs.length],
+      ["Loaded runs", runs.length],
       ["Warnings", (data.instance?.warnings || []).length],
     ];
     for (const [label, value] of cards) {
@@ -1441,7 +1613,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       }
     }
     if (workflows.length === 0) {
-      workflowsBody.innerHTML = '<tr><td colspan="6" class="muted">No workflows configured.</td></tr>';
+      workflowsBody.innerHTML = '<tr><td colspan="7" class="muted">No workflows configured.</td></tr>';
     }
 
     populateFilterOptions(data.gaggles || [], workflows);
@@ -1495,6 +1667,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   let invalidCursorRecoveryInProgress = false;
   let filterPersistenceTimer = null;
   const persistedFilterState = ${initialFilters};
+  const multiFilters = new Map();
+
+  function selectedOptionLabels(element) {
+    return [...element.selectedOptions].map((option) => option.textContent.trim()).filter(Boolean);
+  }
 
   function selectedValues(element) {
     return [...element.selectedOptions].map((option) => option.value).filter(Boolean);
@@ -1503,7 +1680,109 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   function setSelectedValues(element, values) {
     const selected = new Set(Array.isArray(values) ? values : values ? [values] : []);
     for (const option of element.options) option.selected = selected.has(option.value);
+    syncMultiFilter(element);
   }
+
+  function syncMultiFilter(select) {
+    const state = multiFilters.get(select);
+    if (!state) return;
+    const options = [...select.options].filter((option) => option.value);
+    const selected = selectedValues(select);
+    const labels = selectedOptionLabels(select);
+    state.button.disabled = select.disabled;
+    state.button.title = select.title || "";
+    state.button.setAttribute("aria-expanded", String(!state.menu.hidden));
+    const buttonLabel = labels.length === 0
+      ? (select.dataset.allLabel || "All")
+      : labels.length <= 2 ? labels.join(", ") : labels.length + " selected";
+    state.button.textContent = buttonLabel;
+    state.button.setAttribute("aria-label", buttonLabel);
+    state.menu.innerHTML = "";
+    if (options.length === 0) {
+      state.menu.innerHTML = '<div class="multi-filter-empty">No options available</div>';
+      return;
+    }
+    for (const option of options) {
+      const id = select.id + "-option-" + option.value.replace(/[^A-Za-z0-9_-]/g, "-");
+      const label = document.createElement("label");
+      label.className = "multi-filter-option";
+      label.setAttribute("for", id);
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.id = id;
+      checkbox.value = option.value;
+      checkbox.checked = selected.includes(option.value);
+      checkbox.disabled = select.disabled;
+      checkbox.addEventListener("change", () => {
+        option.selected = checkbox.checked;
+        syncMultiFilter(select);
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      const text = document.createElement("span");
+      text.textContent = option.textContent;
+      label.append(checkbox, text);
+      state.menu.appendChild(label);
+    }
+  }
+
+  function closeMultiFilters(except) {
+    for (const state of multiFilters.values()) {
+      if (state === except) continue;
+      state.menu.hidden = true;
+      state.button.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function initMultiFilter(select) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "multi-filter";
+    wrapper.dataset.filterControl = select.id;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "multi-filter-button";
+    button.setAttribute("aria-haspopup", "true");
+    button.setAttribute("aria-expanded", "false");
+    const menu = document.createElement("div");
+    menu.className = "multi-filter-menu";
+    menu.hidden = true;
+    menu.setAttribute("role", "group");
+    menu.setAttribute("aria-label", select.getAttribute("aria-label") || select.title || "Filter options");
+    select.before(wrapper);
+    wrapper.append(button, menu, select);
+    const state = { wrapper, button, menu };
+    multiFilters.set(select, state);
+    button.addEventListener("click", () => {
+      if (select.disabled) return;
+      const shouldOpen = menu.hidden;
+      closeMultiFilters(state);
+      menu.hidden = !shouldOpen;
+      syncMultiFilter(select);
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" && menu.hidden) {
+        event.preventDefault();
+        button.click();
+        menu.querySelector("input")?.focus();
+      }
+      if (event.key === "Escape") {
+        menu.hidden = true;
+        syncMultiFilter(select);
+      }
+    });
+    menu.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        menu.hidden = true;
+        syncMultiFilter(select);
+        button.focus();
+      }
+    });
+    syncMultiFilter(select);
+  }
+
+  [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterOutcome, filterPopulation].forEach(initMultiFilter);
+  document.addEventListener("click", (event) => {
+    if (![...multiFilters.values()].some((state) => state.wrapper.contains(event.target))) closeMultiFilters();
+  });
 
   function populateFilterOptions(gaggles, workflows) {
     const prevGaggle = selectedValues(filterGaggle);
@@ -1589,7 +1868,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       el.title = !supported
         ? "Requires a running Goobers daemon"
         : hasStage ? "" : "Choose a stage first";
-      if (!hasStage) el.value = "";
+      if (!hasStage) setSelectedValues(el, []);
+      else syncMultiFilter(el);
     }
     filterNoWork.disabled = !supported;
     filterNoWork.title = supported ? "Include no-work runs" : "Requires a running Goobers daemon";
@@ -1613,13 +1893,15 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   function updateSortIndicators() {
     document.querySelectorAll("#runs-table th[data-sort]").forEach((th) => {
-      const label = th.textContent.replace(/\s*[\u25b2\u25bc]$/, "");
-      th.textContent = label;
+      const button = th.querySelector("button");
+      const label = button.textContent.replace(/\s*[\u25b2\u25bc]$/, "");
+      button.textContent = label;
+      th.setAttribute("aria-sort", th.dataset.sort === sortKey ? (sortDir === "asc" ? "ascending" : "descending") : "none");
       if (th.dataset.sort === sortKey) {
         const arrow = document.createElement("span");
         arrow.className = "sort-arrow";
         arrow.textContent = sortDir === "asc" ? "\u25b2" : "\u25bc";
-        th.appendChild(arrow);
+        button.appendChild(arrow);
       }
     });
   }
@@ -1635,7 +1917,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         ? ' <a class="actions-run-link" href="' + escapeHtml(actionsUrl) +
           '" target="_blank" rel="noopener noreferrer" title="Open GitHub Actions run">Action &#8599;</a>'
         : "";
-      const associations = renderRunAssociations(r.operator);
+      const associations = renderRunAssociations(r);
       tr.className = "clickable-row";
       tr.dataset.runId = runId;
       tr.innerHTML = renderRunRowCells(r, {
@@ -1644,6 +1926,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         startedAt: fmtTime(r.startedAt),
         lastActivityAt: fmtTime(r.lastActivityAt),
       });
+      attachRunIdControls(tr);
       tr.querySelectorAll(".actions-run-link, .run-association-link").forEach((link) =>
         link.addEventListener("click", (event) => event.stopPropagation()));
       tr.addEventListener("click", () => openRun(runId));
@@ -1653,6 +1936,29 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       runsBody.innerHTML = '<tr><td colspan="8" class="muted">No runs match the current filters.</td></tr>';
     }
     updateSortIndicators();
+  }
+
+  function attachRunIdControls(root) {
+    root.querySelectorAll("[data-open-run]").forEach((button) =>
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          openRun(button.dataset.openRun);
+        }));
+    root.querySelectorAll("[data-copy-run-id]").forEach((button) =>
+        button.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(button.dataset.copyRunId || "");
+            button.classList.add("copied");
+            button.textContent = "✅";
+            setTimeout(() => {
+              button.classList.remove("copied");
+              button.textContent = "\uD83D\uDCCB";
+            }, 1200);
+          } catch {
+            errorEl.textContent = "Could not copy the run id.";
+          }
+        }));
   }
 
   function loadSavedFilters() {
@@ -1807,7 +2113,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     document.getElementById("runs-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   document.querySelectorAll("#runs-table th[data-sort]").forEach((th) => {
-    th.addEventListener("click", () => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "sort-button";
+    button.textContent = th.textContent;
+    th.replaceChildren(button);
+    button.addEventListener("click", () => {
       const key = th.dataset.sort;
       if (sortKey === key) {
         sortDir = sortDir === "asc" ? "desc" : "asc";
@@ -2351,6 +2662,15 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   async function openRun(runId) {
     const sourceId = sourceSelect.value;
+    if (!sourceId) {
+      errorEl.textContent = "Choose a source before opening a run.";
+      sourceSelect.focus();
+      return;
+    }
+    const requestSequence = ++runRequestSequence;
+    const isNewRun = selectedRunId !== runId;
+    selectedRunId = runId;
+    if (isNewRun) activeRunTab = "summary";
     const activeFilter = document.activeElement?.closest("[data-transcript-filter]");
     const savedFilters = [...runContentEl.querySelectorAll("[data-transcript-filter]")].map((input) => ({
       name: input.dataset.transcriptFilter,
@@ -2366,6 +2686,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     try {
       const res = await fetch("/api/run?source=" + encodeURIComponent(sourceId) + "&id=" + encodeURIComponent(runId));
       const data = await res.json();
+      if (sourceId !== sourceSelect.value || requestSequence !== runRequestSequence) return;
       if (!data.connected) {
         runErrorEl.textContent = data.reason || "Run unavailable.";
         runContentEl.innerHTML = "";
@@ -2400,6 +2721,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         "</section>";
       runContentEl.innerHTML = html;
       initInternalTabs(runContentEl, activeRunTab);
+      attachRunIdControls(runContentEl);
+      if (isNewRun) document.getElementById("run-back").focus();
       savedFilters.forEach((saved) => {
         const input = runContentEl.querySelector('[data-transcript-filter="' + saved.name + '"]');
         if (!input) return;
@@ -2427,19 +2750,27 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       }
       initGraphInteractions(r.graph, r.transitions, events, r);
     } catch (err) {
+      if (sourceId !== sourceSelect.value || requestSequence !== runRequestSequence) return;
       runErrorEl.textContent = String(err);
       runContentEl.innerHTML = "";
     }
   }
 
   document.getElementById("run-back").addEventListener("click", () => {
+    const previousRunId = selectedRunId;
+    selectedRunId = "";
+    ++runRequestSequence;
     runViewEl.style.display = "none";
     dashboardEl.style.display = "block";
+    activateInternalTab(dashboardEl, "runs", true);
+    const row = [...runsBody.querySelectorAll("[data-run-id]")].find((row) => row.dataset.runId === previousRunId);
+    row?.querySelector(".table-link")?.focus();
     syncViewUrl();
   });
 
   async function loadSnapshot() {
     const sourceId = sourceSelect.value;
+    const requestSequence = ++snapshotRequestSequence;
     if (!sourceId) {
       emptyEl.style.display = "block";
       dashboardEl.style.display = "none";
@@ -2449,8 +2780,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     try {
       const data = await fetchSnapshot();
+      if (sourceId !== sourceSelect.value || requestSequence !== snapshotRequestSequence) return;
       if (data) renderSnapshot(data);
     } catch (err) {
+      if (sourceId !== sourceSelect.value || requestSequence !== snapshotRequestSequence) return;
       errorEl.textContent = portalRequestError(err);
     }
   }
@@ -2466,6 +2799,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   function setFreshnessState(state, freshAt = null) {
     const timestamp = freshAt || lastUpdatedAt;
     const timeStr = timestamp ? fmtTime(timestamp) : "never";
+    freshnessEl.dataset.freshness = String(state || "").toLowerCase();
     freshnessEl.textContent = state + " · Updated " + timeStr;
   }
 
@@ -2538,7 +2872,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       });
       setFreshnessState(freshness, lastUpdatedAt);
       startFreshnessTimer();
-      if (wasReconnect) void loadSnapshot();
+      if (wasReconnect) void requestLiveSnapshotRefresh();
     };
     eventSource.onmessage = (event) => {
       if (!decodeStreamEvent(event.data)) return;
@@ -2550,7 +2884,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         now: Date.now(),
       });
       setFreshnessState(freshness, lastUpdatedAt);
-      void loadSnapshot();
+      void requestLiveSnapshotRefresh();
     };
     eventSource.onerror = () => {
       if (eventSource) {
@@ -2595,7 +2929,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     if (!response.ok || result.error) throw new Error(result.error || "Could not add source.");
     await loadSources();
     sourceSelect.value = result.id;
-    await loadSnapshot();
+    await changeSource();
+    document.getElementById("add-source-details").open = false;
   }
 
   async function openDirectory(directory) {
