@@ -10,12 +10,24 @@ import {
 } from "./configuration-warnings.mjs";
 import {
     formatRunDetailTime,
+    INSIGHT_WINDOWS,
+    insightPreviousWindowRange,
+    insightRequestParams,
+    insightScopeApiParams,
+    insightScopeLabel,
+    insightScopeOptionsFromStats,
+    insightScopeValue,
+    insightUsageForScope,
+    insightWindowRange,
+    isInInsightScope,
+    parseInsightScope,
     renderTelemetryInsights,
     renderCausalDiagnosis,
     renderExecutionWaterfall,
     renderHtml,
     renderFleetPortalLink,
     renderGooberChip,
+    renderInsightPanel,
     renderRunDetailSummary,
     renderRunEventItems,
     renderOperatorPanel,
@@ -546,4 +558,286 @@ test("telemetry insights render multi-second durations in seconds", () => {
         finishedAt: "2026-08-28T10:00:12Z",
     });
     assert.match(html, /12s/);
+});
+
+// ---- Insights tab ----
+
+test("INSIGHT_WINDOWS matches the portal's InsightPage.tsx labels and values exactly", () => {
+    assert.deepEqual(INSIGHT_WINDOWS, [
+        { value: "24h", label: "Last 24 hours" },
+        { value: "7d", label: "Last 7 days" },
+        { value: "30d", label: "Last 30 days" },
+        { value: "all", label: "All time" },
+    ]);
+});
+
+test("insight window range computes since/until for bounded windows and omits since for all time", () => {
+    const now = new Date("2026-01-08T00:00:00Z");
+    assert.deepEqual(insightWindowRange("24h", now), {
+        since: "2026-01-07T00:00:00.000Z",
+        until: "2026-01-08T00:00:00.000Z",
+    });
+    assert.deepEqual(insightWindowRange("7d", now), {
+        since: "2026-01-01T00:00:00.000Z",
+        until: "2026-01-08T00:00:00.000Z",
+    });
+    assert.deepEqual(insightWindowRange("all", now), { until: "2026-01-08T00:00:00.000Z" });
+});
+
+test("insight previous window range is the same-length window immediately before, and undefined for all time", () => {
+    const now = new Date("2026-01-08T00:00:00Z");
+    assert.deepEqual(insightPreviousWindowRange("24h", now), {
+        since: "2026-01-06T00:00:00.000Z",
+        until: "2026-01-07T00:00:00.000Z",
+    });
+    assert.equal(insightPreviousWindowRange("all", now), undefined);
+});
+
+test("insight scope parses, round-trips through its value encoding, and labels", () => {
+    assert.deepEqual(parseInsightScope(""), { kind: "instance" });
+    assert.deepEqual(parseInsightScope("instance"), { kind: "instance" });
+    assert.deepEqual(parseInsightScope("bogus-value"), { kind: "instance" });
+    assert.deepEqual(parseInsightScope("gaggle:core"), { kind: "gaggle", gaggle: "core" });
+    assert.deepEqual(parseInsightScope("workflow:core|implementation"), {
+        kind: "workflow",
+        gaggle: "core",
+        workflow: "implementation",
+    });
+    assert.deepEqual(parseInsightScope("workflow:missing-separator"), { kind: "instance" });
+
+    for (const scope of [
+        { kind: "instance" },
+        { kind: "gaggle", gaggle: "core" },
+        { kind: "workflow", gaggle: "core", workflow: "implementation" },
+    ]) {
+        assert.deepEqual(parseInsightScope(insightScopeValue(scope)), scope);
+    }
+    assert.equal(insightScopeLabel({ kind: "instance" }), "Instance");
+    assert.match(insightScopeLabel({ kind: "gaggle", gaggle: "core" }), /Gaggle.*core/);
+    assert.match(insightScopeLabel({ kind: "workflow", gaggle: "core", workflow: "implementation" }), /Workflow.*core \/ implementation/);
+});
+
+test("insight scope API params include only the identifying fields for each scope kind", () => {
+    assert.deepEqual(insightScopeApiParams({ kind: "instance" }), {});
+    assert.deepEqual(insightScopeApiParams({ kind: "gaggle", gaggle: "core" }), { gaggle: "core" });
+    assert.deepEqual(
+        insightScopeApiParams({ kind: "workflow", gaggle: "core", workflow: "implementation" }),
+        { gaggle: "core", workflow: "implementation" },
+    );
+});
+
+test("insight scope options are derived from the loaded stats' gaggles and runs", () => {
+    const options = insightScopeOptionsFromStats({
+        gaggles: [{ gaggle: "core" }, { gaggle: "extra" }],
+        runs: [{ gaggle: "core", workflow: "implementation" }],
+    });
+    assert.deepEqual(options.map((o) => o.value), [
+        "instance",
+        "gaggle:core",
+        "gaggle:extra",
+        "workflow:core|implementation",
+    ]);
+});
+
+test("insight request params combine scope, window, and trend math for a bounded window", () => {
+    const now = new Date("2026-01-08T00:00:00Z");
+    const params = insightRequestParams({ kind: "gaggle", gaggle: "core" }, "24h", now);
+    assert.equal(params.gaggle, "core");
+    assert.equal(params.since, "2026-01-07T00:00:00.000Z");
+    assert.equal(params.until, "2026-01-08T00:00:00.000Z");
+    assert.equal(params.trendSince, "2026-01-06T00:00:00.000Z");
+    assert.equal(params.trendUntil, "2026-01-08T00:00:00.000Z");
+    assert.equal(params.trendBuckets, 16);
+    assert.equal(params.trendPreviousSince, "2026-01-06T00:00:00.000Z");
+    assert.equal(params.trendPreviousUntil, "2026-01-07T00:00:00.000Z");
+});
+
+test("insight request params omit trend fields entirely for the all-time window", () => {
+    const params = insightRequestParams({ kind: "instance" }, "all", new Date("2026-01-08T00:00:00Z"));
+    assert.deepEqual(Object.keys(params).sort(), ["until"]);
+});
+
+test("isInInsightScope filters by gaggle and workflow identity per scope kind", () => {
+    const instance = { kind: "instance" };
+    const gaggle = { kind: "gaggle", gaggle: "core" };
+    const workflow = { kind: "workflow", gaggle: "core", workflow: "implementation" };
+    assert.equal(isInInsightScope(instance, { gaggle: "anything" }), true);
+    assert.equal(isInInsightScope(gaggle, { gaggle: "core" }), true);
+    assert.equal(isInInsightScope(gaggle, { gaggle: "other" }), false);
+    assert.equal(isInInsightScope(workflow, { gaggle: "core", workflow: "implementation" }), true);
+    assert.equal(isInInsightScope(workflow, { gaggle: "core", workflow: "other" }), false);
+});
+
+test("insightUsageForScope matches the usage entry tagged with the scope's own kind and identity", () => {
+    const stats = {
+        usage: [
+            { scope: "instance", costUSD: 1 },
+            { scope: "gaggle", gaggle: "core", costUSD: 2 },
+            { scope: "gaggle", gaggle: "other", costUSD: 3 },
+        ],
+    };
+    assert.equal(insightUsageForScope(stats, { kind: "instance" }).costUSD, 1);
+    assert.equal(insightUsageForScope(stats, { kind: "gaggle", gaggle: "core" }).costUSD, 2);
+    assert.equal(insightUsageForScope(stats, { kind: "gaggle", gaggle: "missing" }), undefined);
+});
+
+// A realistic instance-scope fixture exercising every major TelemetryStatsResult
+// section the panel renders: outcome breakdown, curation/ready-pool health,
+// credit assignment, usage, cost trend, and stage hotspots.
+const INSTANCE_STATS_FIXTURE = {
+    gaggles: [
+        { gaggle: "core", totalRuns: 20, completedRuns: 16, failedRuns: 3, otherRuns: 1, infraFailedRuns: 1, successRate: 0.8421 },
+        { gaggle: "extra", totalRuns: 5, completedRuns: 5, failedRuns: 0, otherRuns: 0, infraFailedRuns: 0, successRate: 1 },
+    ],
+    runs: [],
+    stages: [
+        {
+            gaggle: "core", workflow: "implementation", stage: "implement",
+            p50DurationMs: 4200, p95DurationMs: 9800, avgDurationMs: 5000, durationSamples: 12,
+        },
+    ],
+    usage: [
+        {
+            scope: "instance", totalAttempts: 25, p50Tokens: 1200, p95Tokens: 4300,
+            costUSD: 12.34, p50CostUSD: 0.4, p95CostUSD: 1.1, costSamples: 25,
+            retryWasteAttempts: 2, retryWasteTokens: 900, retryWasteCostUSD: 0.75,
+        },
+    ],
+    models: [],
+    creditAssignment: [
+        {
+            gaggle: "core", workflow: "implementation", stage: "implement", kind: "stage",
+            failureShare: 0.62, failureRuns: 3, escalationRuns: 1, retryWasteAttempts: 2,
+        },
+    ],
+    causalCredit: [],
+    graphAnalytics: {},
+    promotionSignals: [],
+    promotionCandidates: [],
+    curation: { runs: 4, ready: 2, needsHuman: 1, closed: 1, everRecorded: true },
+    readyPool: {
+        depth: 3, starved: false, oldestAgeSeconds: 120, averageClaimAgeSeconds: 45,
+        inFlightClaimSamples: 1, averageInFlightClaimAgeSeconds: 30,
+        bounceRate: 0.1, bounceEverRecorded: true,
+        forwardCurationThroughput: 2, implementationDemand: 3,
+        sampleEverRecorded: true,
+    },
+    trend: [
+        { since: "2026-01-06T00:00:00Z", until: "2026-01-06T12:00:00Z", usage: [{ scope: "instance", costUSD: 3, p50Tokens: 900, costSamples: 5 }] },
+        { since: "2026-01-06T12:00:00Z", until: "2026-01-07T00:00:00Z", usage: [{ scope: "instance", costUSD: 4, p50Tokens: 1000, costSamples: 6 }] },
+        { since: "2026-01-07T00:00:00Z", until: "2026-01-07T12:00:00Z", usage: [{ scope: "instance", costUSD: 2.5, p50Tokens: 800, costSamples: 4 }] },
+        { since: "2026-01-07T12:00:00Z", until: "2026-01-08T00:00:00Z", usage: [{ scope: "instance", costUSD: 2.85, p50Tokens: 850, costSamples: 5 }] },
+    ],
+    trendPrevious: { since: "2026-01-06T00:00:00Z", until: "2026-01-07T00:00:00Z", usage: [{ scope: "instance", costUSD: 7 }] },
+};
+
+test("renderInsightPanel renders outcome, curation, credit, usage, trend, and stage sections for instance scope", () => {
+    const html = renderInsightPanel(INSTANCE_STATS_FIXTURE, { kind: "instance" }, "24h");
+    // Outcome breakdown: per-gaggle rows plus the recomputed instance summary.
+    assert.match(html, /Success and failure/);
+    assert.match(html, /core/);
+    assert.match(html, /extra/);
+    // Curation / ready-pool health (instance-scope only).
+    assert.match(html, /Ready-pool health/);
+    assert.match(html, />3</);
+    // Highest-contributing nodes (credit assignment).
+    assert.match(html, /Highest-contributing nodes/);
+    assert.match(html, /implement/);
+    // Usage / tokens and retry waste.
+    assert.match(html, /Tokens and retry waste/);
+    assert.match(html, /\$12\.34/);
+    // Cost trend: only the most recent 8 (bucket count for 24h) buckets show, all 4 fixture buckets included here.
+    assert.match(html, /Cost over time/);
+    assert.match(html, /\$3\.00/);
+    // Slowest stages.
+    assert.match(html, /Slowest stages/);
+    assert.match(html, /9\.8s/);
+});
+
+test("renderInsightPanel scopes outcome and stage sections down to a workflow, and hides curation health", () => {
+    const html = renderInsightPanel(INSTANCE_STATS_FIXTURE, { kind: "workflow", gaggle: "core", workflow: "implementation" }, "24h");
+    assert.doesNotMatch(html, /Ready-pool health/);
+    assert.match(html, /Slowest stages/);
+    assert.match(html, /implement/);
+});
+
+test("renderInsightPanel shows the all-time trend note instead of bucketed data", () => {
+    const html = renderInsightPanel(INSTANCE_STATS_FIXTURE, { kind: "instance" }, "all");
+    assert.match(html, /bounded time window/);
+});
+
+test("renderInsightPanel renders an explicit empty state when nothing is recorded for the scope", () => {
+    const emptyStats = {
+        gaggles: [], runs: [], stages: [], usage: [], creditAssignment: [],
+        curation: { runs: 0, ready: 0, needsHuman: 0, closed: 0, everRecorded: false },
+        readyPool: {},
+    };
+    const html = renderInsightPanel(emptyStats, { kind: "instance" }, "24h");
+    assert.match(html, /No telemetry in this window/);
+});
+
+test("renderInsightPanel reports no stats loaded yet before any fetch completes", () => {
+    const html = renderInsightPanel(null, { kind: "instance" }, "24h");
+    assert.match(html, /No telemetry loaded yet/);
+});
+
+const WORKFLOW_SCOPED_STATS_FIXTURE = {
+    gaggles: [{ gaggle: "core", totalRuns: 6, completedRuns: 5, failedRuns: 1, otherRuns: 0, infraFailedRuns: 0, successRate: 0.8333 }],
+    runs: [
+        { gaggle: "core", workflow: "implementation", totalRuns: 6, completedRuns: 5, failedRuns: 1, otherRuns: 0, successRate: 0.8333 },
+        { gaggle: "core", workflow: "other-workflow", totalRuns: 2, completedRuns: 2, failedRuns: 0, otherRuns: 0, successRate: 1 },
+    ],
+    stages: [],
+    usage: [],
+    creditAssignment: [],
+    curation: { runs: 3, ready: 0, needsHuman: 0, closed: 0, everRecorded: false },
+    readyPool: {},
+};
+
+test("renderInsightPanel derives the gaggle-scope outcome breakdown from stats.runs", () => {
+    const html = renderInsightPanel(WORKFLOW_SCOPED_STATS_FIXTURE, { kind: "gaggle", gaggle: "core" }, "24h");
+    assert.match(html, /Success and failure/);
+    assert.match(html, /core \/ implementation/);
+    assert.match(html, /core \/ other-workflow/);
+});
+
+test("renderInsightPanel derives the workflow-scope outcome summary from stats.runs", () => {
+    const html = renderInsightPanel(
+        WORKFLOW_SCOPED_STATS_FIXTURE,
+        { kind: "workflow", gaggle: "core", workflow: "implementation" },
+        "24h",
+    );
+    assert.match(html, /Success and failure/);
+    assert.match(html, /insight-outcome-summary/);
+});
+
+test("renderInsightPanel labels an unrecorded ready pool as never recorded rather than a measured zero", () => {
+    const html = renderInsightPanel(WORKFLOW_SCOPED_STATS_FIXTURE, { kind: "instance" }, "24h");
+    assert.match(html, /Ready-pool health/);
+    assert.match(html, /Never recorded/);
+});
+
+test("renderInsightPanel escapes hostile gaggle and stage identifiers", () => {
+    const html = renderInsightPanel(
+        {
+            gaggles: [{ gaggle: "<img src=x onerror=alert(1)>", totalRuns: 1, completedRuns: 1, failedRuns: 0, otherRuns: 0, infraFailedRuns: 0, successRate: 1 }],
+            runs: [], stages: [], usage: [], creditAssignment: [],
+            curation: {}, readyPool: {},
+        },
+        { kind: "instance" },
+        "24h",
+    );
+    assert.doesNotMatch(html, /<img src=x/);
+    assert.match(html, /&lt;img/);
+});
+
+test("the browser script inlines every Insights helper and render function", () => {
+    const page = renderHtml("inst-1");
+    for (const name of [
+        "INSIGHT_WINDOWS", "parseInsightScope", "insightScopeValue", "insightScopeLabel",
+        "insightRequestParams", "isInInsightScope", "renderInsightPanel",
+    ]) {
+        assert.match(page, new RegExp("const " + name + " = "), `${name} was not inlined into the browser script`);
+    }
+    assert.ok(!page.includes("escapeAssociationHtml"), "escapeAssociationHtml leaked into the Insights panel");
 });

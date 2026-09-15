@@ -73,6 +73,38 @@ const workflowWarnings = [
   },
 ];
 
+const insightStats = {
+  gaggles: [{ gaggle: "team", totalRuns: 20, completedRuns: 16, failedRuns: 3, otherRuns: 1, infraFailedRuns: 1, successRate: 0.8421 }],
+  runs: [{ gaggle: "team", workflow: "implementation", totalRuns: 20, completedRuns: 16, failedRuns: 3, otherRuns: 1, successRate: 0.8421 }],
+  stages: [{
+    gaggle: "team", workflow: "implementation", stage: "implement",
+    p50DurationMs: 4200, p95DurationMs: 9800, avgDurationMs: 5000, durationSamples: 12,
+  }],
+  usage: [{
+    scope: "instance", totalAttempts: 25, p50Tokens: 1200, p95Tokens: 4300,
+    costUSD: 12.34, p50CostUSD: 0.4, p95CostUSD: 1.1, costSamples: 25,
+    retryWasteAttempts: 2, retryWasteTokens: 900, retryWasteCostUSD: 0.75,
+  }],
+  models: [],
+  creditAssignment: [{
+    gaggle: "team", workflow: "implementation", stage: "implement", kind: "stage",
+    failureShare: 0.62, failureRuns: 3, escalationRuns: 1, retryWasteAttempts: 2,
+  }],
+  causalCredit: [], graphAnalytics: {}, promotionSignals: [], promotionCandidates: [],
+  curation: { runs: 4, ready: 2, needsHuman: 1, closed: 1, everRecorded: true },
+  readyPool: {
+    depth: 3, starved: false, oldestAgeSeconds: 120, averageClaimAgeSeconds: 45,
+    inFlightClaimSamples: 1, averageInFlightClaimAgeSeconds: 30,
+    bounceRate: 0.1, bounceEverRecorded: true,
+    forwardCurationThroughput: 2, implementationDemand: 3, sampleEverRecorded: true,
+  },
+  trend: [
+    { since: "2026-09-13T00:00:00Z", until: "2026-09-13T12:00:00Z", usage: [{ scope: "instance", costUSD: 3, p50Tokens: 900, costSamples: 5 }] },
+    { since: "2026-09-13T12:00:00Z", until: "2026-09-14T00:00:00Z", usage: [{ scope: "instance", costUSD: 4, p50Tokens: 1000, costSamples: 6 }] },
+  ],
+  trendPrevious: { since: "2026-09-12T00:00:00Z", until: "2026-09-13T00:00:00Z", usage: [{ scope: "instance", costUSD: 7 }] },
+};
+
 function snapshot(source: typeof sources[number]) {
   return {
     connected: true, source, mode: "daemon", instance: { name: source.label, warnings: [instanceWarning] },
@@ -146,6 +178,7 @@ async function openCanvas(page: Page) {
       : url.pathname === "/api/run" ? { connected: true, run }
       : url.pathname === "/api/workflow-detail" ? { connected: true, workflow: workflowDetail }
       : url.pathname === "/api/runs" ? { connected: true, runs: [run] }
+      : url.pathname === "/api/insight-stats" ? { connected: true, stats: insightStats }
       : {};
     await route.fulfill({ json: body });
   });
@@ -657,5 +690,102 @@ test("canvas hides Fleet association when switching to an unassociated source", 
   await expect(page.locator("#fleet-panel")).toBeHidden();
   await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[0].id);
   await expect(link).toHaveAttribute("href", "https://fleet.example.com/");
+  expect(errors).toEqual([]);
+});
+
+test("Insights tab loads aggregate telemetry for the instance scope by default", async ({ page }) => {
+  const errors = await openCanvas(page);
+  const requests: URL[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/insight-stats") requests.push(url);
+  });
+  await page.getByRole("tab", { name: "Insights", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Insight scope" })).toHaveValue("instance");
+  await expect(page.getByRole("combobox", { name: "Time window" })).toHaveValue("24h");
+  const content = page.locator("#insight-content");
+  await expect(content).toContainText("Success and failure");
+  await expect(content).toContainText("Tokens and retry waste");
+  await expect(content).toContainText("Cost over time");
+  await expect(content).toContainText("Ready-pool health");
+  await expect(content).toContainText("Highest-contributing nodes");
+  await expect(page.locator("#insight-status")).toBeEmpty();
+  expect(requests).toHaveLength(1);
+  expect(requests[0].searchParams.get("gaggle")).toBeNull();
+  expect(requests[0].searchParams.get("workflow")).toBeNull();
+  expect(requests[0].searchParams.get("since")).not.toBeNull();
+  expect(requests[0].searchParams.get("trendBuckets")).toBe("16");
+  expect(errors).toEqual([]);
+});
+
+test("Insights scope switch refetches with the matching gaggle/workflow params", async ({ page }) => {
+  const errors = await openCanvas(page);
+  const requests: URL[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/insight-stats") requests.push(url);
+  });
+  await page.getByRole("tab", { name: "Insights", exact: true }).click();
+  const scopeSelect = page.getByRole("combobox", { name: "Insight scope" });
+  await scopeSelect.selectOption("gaggle:team");
+  await expect(page.locator("#insight-content tr.insight-outcome-summary")).toContainText("team");
+  await scopeSelect.selectOption("workflow:team|implementation");
+  await expect(page.locator("#insight-content tr.insight-outcome-summary")).toContainText("team / implementation");
+  expect(requests).toHaveLength(3);
+  expect(requests[1].searchParams.get("gaggle")).toBe("team");
+  expect(requests[1].searchParams.get("workflow")).toBeNull();
+  expect(requests[2].searchParams.get("gaggle")).toBe("team");
+  expect(requests[2].searchParams.get("workflow")).toBe("implementation");
+  expect(errors).toEqual([]);
+});
+
+test("Insights window switch refetches with an updated time range and omits since/trend for all time", async ({ page }) => {
+  const errors = await openCanvas(page);
+  const requests: URL[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/insight-stats") requests.push(url);
+  });
+  await page.getByRole("tab", { name: "Insights", exact: true }).click();
+  const windowSelect = page.getByRole("combobox", { name: "Time window" });
+  await windowSelect.selectOption("7d");
+  await expect.poll(() => requests.length).toBe(2);
+  await windowSelect.selectOption("all");
+  await expect.poll(() => requests.length).toBe(3);
+  await expect(page.locator("#insight-content")).toContainText("choose 24h, 7d, or 30d");
+  expect(requests[1].searchParams.get("since")).not.toBeNull();
+  expect(requests[2].searchParams.get("since")).toBeNull();
+  expect(requests[2].searchParams.get("trendBuckets")).toBeNull();
+  expect(errors).toEqual([]);
+});
+
+test("Insights tab renders loading, error, and empty states", async ({ page }) => {
+  const errors = await openCanvas(page);
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("http://canvas.test/api/insight-stats?**", async (route) => {
+    await blocked;
+    await route.fulfill({ json: { connected: false, reason: "Telemetry stats require a running Goobers daemon." } });
+  });
+  await page.getByRole("tab", { name: "Insights", exact: true }).click();
+  await expect(page.locator("#insight-status")).toHaveText("Loading\u2026");
+  release();
+  await expect(page.locator("#insight-status")).toHaveText("Telemetry stats require a running Goobers daemon.");
+  await expect(page.locator("#insight-content")).toBeEmpty();
+
+  await page.route("http://canvas.test/api/insight-stats?**", (route) =>
+    route.fulfill({
+      json: {
+        connected: true,
+        stats: {
+          gaggles: [], runs: [], stages: [], usage: [], models: [], creditAssignment: [],
+          causalCredit: [], graphAnalytics: {}, promotionSignals: [], promotionCandidates: [],
+          curation: {}, readyPool: {}, trend: [], trendPrevious: {},
+        },
+      },
+    }));
+  await page.getByRole("combobox", { name: "Time window" }).selectOption("30d");
+  await expect(page.locator("#insight-status")).toBeEmpty();
+  await expect(page.locator("#insight-content")).toContainText("No telemetry in this window");
   expect(errors).toEqual([]);
 });
