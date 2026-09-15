@@ -281,6 +281,19 @@ async function runGoobersJSON(root, args) {
     return JSON.parse(stdout);
 }
 
+export async function loadFleetStatus(source) {
+    if (!source || source.kind !== "local") return { available: false };
+    try {
+        const { stdout } = await execFileAsync(GOOBERS_BIN, ["fleet", "status", "--json", source.value], {
+            timeout: 15000,
+            maxBuffer: 1024 * 1024,
+        });
+        return { available: true, source: "local-association", ...JSON.parse(stdout) };
+    } catch (err) {
+        return { available: false, reason: cliErrorMessage(err) };
+    }
+}
+
 /** Standalone (no-daemon) snapshot, read directly off disk via the CLI's own --json reader. */
 async function loadStandaloneSnapshot(root) {
     const [status, runsList] = await Promise.all([

@@ -112,11 +112,11 @@ async function snapshotFor(sourceId) {
             kind: source.kind,
             error: resolved.reason,
         });
-        return { sourceId, connected: false, reason: resolved.reason, source };
+        return { sourceId, connected: false, reason: resolved.reason, source, fleet: await loadFleetStatus(source) };
     }
     try {
         const data = await loadSnapshot(resolved);
-        return { sourceId, connected: true, source, ...data };
+        return { sourceId, connected: true, source, ...data, fleet: await loadFleetStatus(source) };
     } catch (err) {
         logEvent("snapshot_load_failed", {
             sourceId,
@@ -124,7 +124,7 @@ async function snapshotFor(sourceId) {
             mode: resolved.mode,
             error: err.message || String(err),
         });
-        return { sourceId, connected: false, reason: err.message || String(err), source };
+        return { sourceId, connected: false, reason: err.message || String(err), source, fleet: await loadFleetStatus(source) };
     }
 }
 
@@ -525,7 +525,7 @@ export const canvases = [
         createCanvas({
             id: "goobers-portal",
             displayName: "Goobers Portal",
-            description: "Dashboard for live Goobers instances and persisted GitHub Actions run journals, with source selection and deep run diagnostics.",
+            description: "Dashboard for Goobers instances and Actions journals, with run diagnostics and derived Fleet portal links.",
             inputSchema,
             actions: [
                 {
