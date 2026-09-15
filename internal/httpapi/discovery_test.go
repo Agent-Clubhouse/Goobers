@@ -15,6 +15,75 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 )
 
+func TestAuthenticatedOpenAPIRequiresPrivateCacheRevalidation(t *testing.T) {
+	authenticator := &fakeAuthenticator{principal: &Principal{Subject: "viewer", Roles: []Role{RoleView}}}
+	handler, err := NewHandler(&fakeReader{}, RequireRoles(), discardLogger(), WithAuthenticator(authenticator))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.OpenAPIPath, nil))
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "private, no-cache" {
+		t.Fatalf("OpenAPI status=%d cache=%q", response.Code, response.Header().Get("Cache-Control"))
+	}
+	request := httptest.NewRequest(http.MethodGet, apicontract.OpenAPIPath, nil)
+	request.Header.Set("If-None-Match", response.Header().Get("ETag"))
+	conditional := httptest.NewRecorder()
+	handler.ServeHTTP(conditional, request)
+	if conditional.Code != http.StatusNotModified || conditional.Header().Get("Cache-Control") != "private, no-cache" {
+		t.Fatalf("conditional OpenAPI status=%d cache=%q", conditional.Code, conditional.Header().Get("Cache-Control"))
+	}
+	authenticator.principal = nil
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, request)
+	if unauthorized.Code != http.StatusUnauthorized && unauthorized.Code != http.StatusForbidden {
+		t.Fatalf("unauthorized conditional OpenAPI status=%d", unauthorized.Code)
+	}
+}
+
+func TestOpenAPIDrivesEventsResumeHeader(t *testing.T) {
+	store := feedTestStoreAt(t, t.TempDir())
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithChangeFeedStream(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.OpenAPIPath, nil))
+	var document struct {
+		Paths map[string]map[string]struct {
+			OperationID apicontract.RouteID `json:"operationId"`
+			Parameters  []struct {
+				Name string `json:"name"`
+				In   string `json:"in"`
+			} `json:"parameters"`
+		} `json:"paths"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&document); err != nil {
+		t.Fatal(err)
+	}
+	for path, methods := range document.Paths {
+		operation := methods["get"]
+		if operation.OperationID != apicontract.RouteEvents {
+			continue
+		}
+		for _, parameter := range operation.Parameters {
+			if parameter.In != "header" || parameter.Name != "Last-Event-ID" {
+				continue
+			}
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.Header.Set(parameter.Name, "invalid-resume-cursor")
+			result := httptest.NewRecorder()
+			handler.ServeHTTP(result, request)
+			if result.Code != http.StatusBadRequest || !strings.Contains(result.Body.String(), "invalid_cursor") {
+				t.Fatalf("contract-derived cursor response=%d %s", result.Code, result.Body)
+			}
+			return
+		}
+		t.Fatal("events operation does not declare a resume header")
+	}
+	t.Fatal("OpenAPI has no events operation")
+}
+
 func TestDiscoveryBootstrapsTheServingDaemonContract(t *testing.T) {
 	reader := &fakeReader{err: errors.New("journal unavailable")}
 	identity := DiscoveryIdentity{

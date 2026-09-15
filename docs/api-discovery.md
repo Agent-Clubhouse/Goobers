@@ -50,6 +50,11 @@ contract/capability changes without downloading OpenAPI on every heartbeat.
 All three discovery routes use the same authentication and authorization
 pipeline as the rest of the API. In authenticated deployments a principal with
 the `view` role may read them; local-trust loopback deployments require no
-bearer token. Discovery is generated from immutable build/boot identity and
+bearer token. OpenAPI responses require private-cache revalidation, including
+conditional responses; shared caches must not reuse protected metadata.
+Mutation schemas require `actor` in local-trust mode; authenticated deployments
+derive the actor from the principal instead. The events operation declares
+`Last-Event-ID` for resuming the event stream.
+Discovery is generated from immutable build/boot identity and
 the canonical route contract; it does not read journals, projections, or
 scheduler health.

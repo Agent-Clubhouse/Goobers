@@ -60,7 +60,7 @@ func OpenAPIDocument(authenticated bool) ([]byte, error) {
 			"securitySchemes": map[string]any{
 				"bearerAuth": map[string]any{"type": "http", "scheme": "bearer"},
 			},
-			"schemas": openAPISchemas(),
+			"schemas": openAPISchemas(authenticated),
 		},
 	}
 	output, err := json.MarshalIndent(document, "", "  ")
@@ -97,12 +97,6 @@ func openAPIParameters(route Route) []map[string]any {
 				"name": name, "in": "query", "schema": map[string]any{"type": "string"},
 			})
 		}
-		if route.ID == RouteEvents {
-			parameters = append(parameters, map[string]any{
-				"name": "Last-Event-ID", "in": "header",
-				"schema": map[string]any{"type": "string", "maxLength": 512},
-			})
-		}
 		for _, name := range []string{"since", "until"} {
 			parameters = append(parameters, map[string]any{
 				"name": name, "in": "query", "schema": map[string]any{"type": "string", "format": "date-time"},
@@ -113,6 +107,12 @@ func openAPIParameters(route Route) []map[string]any {
 				"name": name, "in": "query", "schema": map[string]any{"type": "boolean"},
 			})
 		}
+	}
+	if route.ID == RouteEvents {
+		parameters = append(parameters, map[string]any{
+			"name": "Last-Event-ID", "in": "header",
+			"schema": map[string]any{"type": "string", "maxLength": 512},
+		})
 	}
 	if route.ID == RouteRunRecovery || route.ID == RouteRunRecoveryPublish {
 		for _, name := range []string{"repositoryKey", "issue"} {
@@ -306,10 +306,10 @@ func mergeSchemaProperties(left, right map[string]any) map[string]any {
 	return merged
 }
 
-func openAPISchemas() map[string]any {
+func openAPISchemas(authenticated bool) map[string]any {
 	return mergeSchemaProperties(
 		mergeSchemaProperties(openAPIDiscoverySchemas(), openAPIRemoteReadSchemas()),
-		openAPIOperationSchemas(),
+		openAPIOperationSchemas(authenticated),
 	)
 }
 
@@ -443,7 +443,15 @@ func openAPIDiscoverySchemas() map[string]any {
 	}
 }
 
-func openAPIOperationSchemas() map[string]any {
+func openAPIOperationSchemas(authenticated bool) map[string]any {
+	actorRequired := []string{}
+	if !authenticated {
+		actorRequired = append(actorRequired, "actor")
+	}
+	actor := map[string]any{
+		"type":        "string",
+		"description": "Required in local-trust mode. In authenticated deployments the principal supplies the actor and overrides this value.",
+	}
 	return map[string]any{
 		"TriggerRequest": map[string]any{
 			"type": "object", "required": []string{"workflow"}, "additionalProperties": false,
@@ -475,8 +483,9 @@ func openAPIOperationSchemas() map[string]any {
 			},
 		},
 		"CancelRunRequest": map[string]any{
-			"type": "object", "additionalProperties": false,
+			"type": "object", "required": actorRequired, "additionalProperties": false,
 			"properties": map[string]any{
+				"actor":    actor,
 				"workflow": map[string]any{"type": "string"},
 				"gaggle":   map[string]any{"type": "string"},
 			},
@@ -490,16 +499,18 @@ func openAPIOperationSchemas() map[string]any {
 			},
 		},
 		"InterventionRequest": map[string]any{
-			"type": "object", "additionalProperties": false,
+			"type": "object", "required": actorRequired, "additionalProperties": false,
 			"properties": map[string]any{
+				"actor":               actor,
 				"decision":            map[string]any{"type": "string"},
 				"rationale":           map[string]any{"type": "string"},
 				"instructionAddendum": map[string]any{"type": "string"},
 			},
 		},
 		"EscalationResolutionRequest": map[string]any{
-			"type": "object", "required": []string{"resolution"}, "additionalProperties": false,
+			"type": "object", "required": append([]string{"resolution"}, actorRequired...), "additionalProperties": false,
 			"properties": map[string]any{
+				"actor":      actor,
 				"resolution": map[string]any{"type": "string", "enum": []string{"approve", "deny", "redirect"}},
 				"gate":       map[string]any{"type": "string"},
 				"decision":   map[string]any{"type": "string"},

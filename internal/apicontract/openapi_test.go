@@ -5,7 +5,47 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 )
+
+func TestOpenAPIMutationActorMatchesAuthenticationMode(t *testing.T) {
+	for _, authenticated := range []bool{false, true} {
+		document, err := OpenAPIDocument(authenticated)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Components struct {
+				Schemas map[string]json.RawMessage `json:"schemas"`
+			} `json:"components"`
+		}
+		if err := json.Unmarshal(document, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"CancelRunRequest", "InterventionRequest", "EscalationResolutionRequest"} {
+			schema, err := jsonschema.CompileString("request.json", string(decoded.Components.Schemas[name]))
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			request := map[string]any{"actor": "local-operator"}
+			if name == "EscalationResolutionRequest" {
+				request["resolution"] = "approve"
+			}
+			if err := schema.Validate(request); err != nil {
+				t.Errorf("%s authenticated=%t rejects actor-bearing request: %v", name, authenticated, err)
+			}
+			delete(request, "actor")
+			if err := schema.Validate(request); (err == nil) != authenticated {
+				t.Errorf("%s authenticated=%t missing actor validation = %v", name, authenticated, err)
+			}
+			request["unknown"] = true
+			if err := schema.Validate(request); err == nil {
+				t.Errorf("%s accepts an unknown property", name)
+			}
+		}
+	}
+}
 
 func TestOpenAPIDocumentIsDeterministic(t *testing.T) {
 	first, err := OpenAPIDocument(true)
@@ -109,15 +149,14 @@ func TestOpenAPIInitialRemoteProfileHasConcreteSchemasAndHeaders(t *testing.T) {
 			if !ok || reference == "" {
 				t.Errorf("%s response schema = %#v, want concrete component reference", route.ID, schema)
 			}
-			if route.ID == RouteEvents {
-				if response.Headers["Cache-Control"] == nil || response.Headers["X-Accel-Buffering"] == nil {
-					t.Errorf("events response headers = %#v", response.Headers)
-				}
-				foundCursor := false
-				for _, parameter := range operation.Parameters {
-					if parameter.Name == "Last-Event-ID" && parameter.In == "header" {
-						foundCursor = true
-					}
+		} else {
+			if response.Headers["Cache-Control"] == nil || response.Headers["X-Accel-Buffering"] == nil {
+				t.Errorf("events response headers = %#v", response.Headers)
+			}
+			foundCursor := false
+			for _, parameter := range operation.Parameters {
+				if parameter.Name == "Last-Event-ID" && parameter.In == "header" {
+					foundCursor = true
 				}
 				if !foundCursor {
 					t.Error("events operation is missing Last-Event-ID")

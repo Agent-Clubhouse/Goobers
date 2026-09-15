@@ -132,7 +132,7 @@ func (s *discoveryState) serveOpenAPI(w http.ResponseWriter, request *http.Reque
 		w,
 		request,
 		"application/vnd.oai.openapi+json;version=3.1",
-		"public, max-age=3600",
+		"private, no-cache",
 		s.openAPI,
 	)
 }
