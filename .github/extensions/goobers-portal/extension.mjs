@@ -19,6 +19,7 @@ import {
     probeSource,
     resolveSource,
     loadSnapshot,
+    loadFleetStatus,
     loadRunDetail,
     loadRunArtifact,
     loadRunTranscript,
@@ -116,7 +117,8 @@ async function snapshotFor(sourceId) {
     }
     try {
         const data = await loadSnapshot(resolved);
-        return { sourceId, connected: true, source, ...data, fleet: await loadFleetStatus(source) };
+        const fleet = data.fleet ?? (source.kind === "local" ? await loadFleetStatus(source) : { available: false });
+        return { sourceId, connected: true, source, ...data, fleet };
     } catch (err) {
         logEvent("snapshot_load_failed", {
             sourceId,

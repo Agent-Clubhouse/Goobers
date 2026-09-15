@@ -33,6 +33,7 @@ function escapeAssociationHtml(value) {
 
 function updateFleetPanel(data) {
   const fleet = data.fleet || {};
+  const fleetPanelEl = document.getElementById("fleet-panel");
   const href = safeExternalUrl(fleet.canonicalUri);
   fleetPanelEl.replaceChildren();
   if (fleet.associated && href) {
@@ -60,6 +61,11 @@ function updateFleetPanel(data) {
     meta.className = "muted";
     meta.textContent = "This instance is enrolled, but its Fleet portal URL is not available from the selected source.";
     fleetPanelEl.append(label, meta);
+    return;
+  }
+  if (fleet.reason) {
+    fleetPanelEl.hidden = false;
+    fleetPanelEl.textContent = "Fleet status unavailable: " + fleet.reason;
     return;
   }
   fleetPanelEl.hidden = true;
@@ -626,6 +632,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     border-radius: 8px;
     margin-bottom: 12px;
   }
+  .fleet-panel[hidden] { display: none; }
   #source-select { max-width: min(100%, 360px); }
   .muted { color: var(--text-color-muted, #656d76); }
   .cards {
@@ -2978,6 +2985,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   async function loadSnapshot() {
     const sourceId = sourceSelect.value;
     if (snapshotSourceId !== sourceId) {
+      updateFleetPanel({});
       if (snapshotSourceId !== null) {
         restoredRunId = "";
         selectedRunId = "";
@@ -2998,6 +3006,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     const requestSequence = ++snapshotRequestSequence;
     if (!sourceId) {
+      updateFleetPanel({});
       emptyEl.style.display = "block";
       dashboardEl.style.display = "none";
       startBarEl.style.display = "none";

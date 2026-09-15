@@ -342,9 +342,13 @@ The canvas opens with an attention-first **Overview**, with **Workflows** and
 refreshes; returning to Runs preserves filters and restores keyboard focus.
 Advanced run filters and saved views are under **More filters and saved views**.
 
-For a Fleet-enrolled local instance, the canvas reads the non-secret
-`goobers fleet status --json` association and shows **Open Fleet portal** using
-that Fleet's canonical URI. The link opens the web app in a separate browser tab
+For a Fleet-enrolled instance, the canvas reads the non-secret Fleet association
+from the daemon's `/api/v1/instance` response and shows **Open Fleet portal** using
+that Fleet's canonical URI. Local sources fall back to `goobers fleet status
+--json` when the daemon does not provide this metadata. Older remote daemons
+that report enrollment without a URI show an explanatory message instead of a
+guessed link. Switching sources updates or hides the Fleet panel.
+The link opens the web app in a separate browser tab
 for Microsoft Entra sign-in, inventory, and instance portals. The canvas does
 not ask for a Fleet URL, embed Fleet inventory, or store Fleet credentials.
 

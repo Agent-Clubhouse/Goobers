@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -82,6 +83,51 @@ func inventoryDefinitions() *instance.ConfigSet {
 			testInventoryWorkflow("beta", "deploy", "Beta Deploy", "", apiv1.TaskDeterministic),
 			testInventoryWorkflow("alpha", "deploy", "Alpha Deploy", "builder", apiv1.TaskAgentic),
 		},
+	}
+}
+
+func TestInstanceFleetPortalMetadata(t *testing.T) {
+	root := t.TempDir()
+	association := fleet.Association{
+		FleetID: "fleet-one", CanonicalURI: "https://fleet.example.test/",
+		ConnectionEndpoint: "wss://private.example.test/", ACL: fleet.ACL{PolicyVersion: "private"},
+	}
+	var loadErr error
+	service, err := NewLocal(LocalSources{
+		Layout: instance.NewLayout(root), Definitions: testDefinitions(),
+		FleetAssociation: func(gotRoot string) (fleet.Association, error) {
+			if gotRoot != root {
+				t.Fatalf("association root = %q, want %q", gotRoot, root)
+			}
+			return association, loadErr
+		},
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.Instance(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.FleetEnrolled || got.Fleet == nil || !got.Fleet.Associated || got.Fleet.CanonicalURI != association.CanonicalURI {
+		t.Fatalf("Fleet association not projected: %+v", got.Fleet)
+	}
+	raw, err := json.Marshal(got.Fleet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"associated":true,"canonicalUri":"https://fleet.example.test/","fleetId":"fleet-one"}` {
+		t.Fatalf("unexpected Fleet projection: %s", raw)
+	}
+	loadErr = fleet.ErrNotAssociated
+	got, err = service.Instance(context.Background())
+	if err != nil || got.Fleet != nil || got.FleetEnrolled {
+		t.Fatalf("removed association retained: %+v, err=%v", got.Fleet, err)
+	}
+	loadErr = errors.New("storage unavailable")
+	got, err = service.Instance(context.Background())
+	if err != nil || got.Fleet == nil || got.Fleet.Associated || !strings.Contains(got.Fleet.Reason, "storage unavailable") {
+		t.Fatalf("association failure not surfaced: %+v, err=%v", got.Fleet, err)
 	}
 }
 

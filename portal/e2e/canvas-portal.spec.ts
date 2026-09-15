@@ -22,7 +22,9 @@ function snapshot(source: typeof sources[number]) {
     connected: true, source, mode: "daemon", instance: { name: source.label },
     workflows: [{ identity: { name: "implementation", gaggle: "team" }, triggers: [], concurrency: { activeRuns: 1 } }],
     runs: [run], attention: [],
-    fleet: { associated: true, canonicalUri: "https://fleet.example.com/", connectionState: "connected", fleetId: "fleet" },
+    fleet: source.id === sources[0].id
+      ? { associated: true, canonicalUri: "https://fleet.example.com/", connectionState: "connected", fleetId: "fleet" }
+      : { associated: false },
   };
 }
 
@@ -244,5 +246,18 @@ test("canvas derives Fleet link and associated work links from selected source d
   await expect(copyButton).toHaveClass(/copied/);
   await page.getByRole("button", { name: "Open Run id", exact: true }).click();
   await expect(page.locator(".goober-chip", { hasText: "implementer" })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("canvas hides Fleet association when switching to an unassociated source", async ({ page }) => {
+  const errors = await openCanvas(page);
+  const link = page.getByRole("link", { name: /Open Fleet portal/ });
+  await expect(link).toBeVisible();
+  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+  await expect(page.locator("#source-context")).toHaveText("Instance two");
+  await expect(link).toHaveCount(0);
+  await expect(page.locator("#fleet-panel")).toBeHidden();
+  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[0].id);
+  await expect(link).toHaveAttribute("href", "https://fleet.example.com/");
   expect(errors).toEqual([]);
 });

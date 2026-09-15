@@ -17,6 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -95,7 +96,16 @@ type Instance struct {
 	// FleetEnrolled reports whether this instance is associated with a Fleet
 	// service (fleet.LoadAssociation), a filesystem-only check independent
 	// of daemon state.
-	FleetEnrolled bool `json:"fleetEnrolled"`
+	FleetEnrolled bool         `json:"fleetEnrolled"`
+	Fleet         *FleetPortal `json:"fleet,omitempty"`
+}
+
+// FleetPortal exposes only the association fields needed to open the Fleet UI.
+type FleetPortal struct {
+	Associated   bool   `json:"associated"`
+	CanonicalURI string `json:"canonicalUri,omitempty"`
+	FleetID      string `json:"fleetId,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // InventoryCounts summarizes configured definitions and active runs.
@@ -399,6 +409,14 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	}
 	memoryHighWater, memoryGateDisabled, _ := runConditions.ResolveMemoryHighWater(os.LookupEnv)
 	fleetEnrolled := false
+	var fleetPortal *FleetPortal
+	association, fleetErr := s.sources.FleetAssociation(s.sources.Layout.Root)
+	if fleetErr == nil {
+		fleetEnrolled = true
+		fleetPortal = &FleetPortal{Associated: true, CanonicalURI: association.CanonicalURI, FleetID: association.FleetID}
+	} else if !errors.Is(fleetErr, fleet.ErrNotAssociated) {
+		fleetPortal = &FleetPortal{Reason: fmt.Sprintf("read Fleet association: %v", fleetErr)}
+	}
 	if s.sources.FleetEnrolled != nil {
 		fleetEnrolled = s.sources.FleetEnrolled(s.sources.Layout.Root)
 	}
@@ -450,6 +468,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		MemoryGateEnabled:  !memoryGateDisabled,
 		FsyncDisabled:      journal.FsyncDisabled(),
 		FleetEnrolled:      fleetEnrolled,
+		Fleet:              fleetPortal,
 	}, nil
 }
 

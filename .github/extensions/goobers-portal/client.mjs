@@ -617,6 +617,7 @@ export async function loadSnapshot(resolved, runFilters = {}) {
         baseUrl,
         health,
         instance,
+        fleet: instance.fleet,
         gaggles: gaggles.items || [],
         workflows,
         runs: runItems,
