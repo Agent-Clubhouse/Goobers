@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -926,65 +925,7 @@ func (s *runInterventionService) reacquireClaims(resolved resolvedInterventionRu
 }
 
 func (s *runInterventionService) claimHistory(resolved resolvedInterventionRun) ([]localscheduler.ClaimEntry, error) {
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(s.layout.SchedulerDir(), claimLedgerFileName))
-	if err != nil {
-		return nil, err
-	}
-	durable := ledger.HistoryForRun(resolved.runID)
-	claims := make(map[string]localscheduler.ClaimEntry, len(durable))
-	for _, entry := range durable {
-		key := entry.Gaggle + "\x00" + entry.Provider + "\x00" + entry.ExternalID
-		claims[key] = entry
-	}
-
-	events, err := journal.ReadInstanceLog(s.layout.SchedulerDir())
-	if err != nil {
-		if len(durable) > 0 {
-			return durable, nil
-		}
-		return nil, err
-	}
-	for _, event := range events {
-		if event.Type != journal.EventClaimAcquired || event.RunID != resolved.runID {
-			continue
-		}
-		itemID := strings.TrimSpace(event.Name)
-		if itemID == "" {
-			return nil, errors.New("claim acquisition event has no item identity")
-		}
-		externalID, _ := event.Runner["claimExternalId"].(string)
-		if externalID == "" {
-			externalID = itemID
-		}
-		provider, _ := event.Runner["claimProvider"].(string)
-		if provider == "" && event.Gaggle != "" {
-			provider = string(resolved.repoRef.Provider)
-		}
-		entry := localscheduler.ClaimEntry{
-			ItemID:     itemID,
-			Gaggle:     event.Gaggle,
-			Provider:   provider,
-			ExternalID: externalID,
-			RunID:      resolved.runID,
-			Workflow:   resolved.workflow,
-		}
-		key := entry.Gaggle + "\x00" + entry.Provider + "\x00" + entry.ExternalID
-		claims[key] = entry
-	}
-	result := make([]localscheduler.ClaimEntry, 0, len(claims))
-	for _, entry := range claims {
-		result = append(result, entry)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Gaggle != result[j].Gaggle {
-			return result[i].Gaggle < result[j].Gaggle
-		}
-		if result[i].Provider != result[j].Provider {
-			return result[i].Provider < result[j].Provider
-		}
-		return result[i].ExternalID < result[j].ExternalID
-	})
-	return result, nil
+	return claimHistoryForRun(s.layout, resolved.runID, resolved.repoRef.Provider)
 }
 
 func interventionBranch(machine *workflow.Machine, events []journal.Event, gateName, decision string) (apiv1.Gate, string, error) {

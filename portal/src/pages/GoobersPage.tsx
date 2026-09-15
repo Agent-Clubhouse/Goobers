@@ -121,7 +121,7 @@ function GooberGroup({
 }: {
   inventory: OperationalSnapshot["inventories"][number];
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const contentId = `goober-group-${inventory.gaggle.name}`;
 
   return (

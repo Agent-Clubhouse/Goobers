@@ -8,6 +8,7 @@ export interface PortalWorkbenchProps {
   scope: string;
   diagnostics?: PortalDiagnostics;
   mode?: Exclude<DashboardMode, "getting-started">;
+  pollingEnabled?: boolean;
 }
 
 export function PortalWorkbench({
@@ -15,6 +16,7 @@ export function PortalWorkbench({
   scope,
   diagnostics,
   mode = "daemon",
+  pollingEnabled = false,
 }: PortalWorkbenchProps) {
   if (!client || !scope.trim()) {
     throw new Error("PortalWorkbench requires an explicit client and nonempty cursor scope.");
@@ -26,7 +28,7 @@ export function PortalWorkbench({
       diagnostics={diagnostics}
       mode={mode}
       cursorScope={scope}
-      liveDataConfig={{ pollingEnabled: false }}
+      liveDataConfig={{ pollingEnabled }}
     />
   );
 }
