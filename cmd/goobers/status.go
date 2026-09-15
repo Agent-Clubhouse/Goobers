@@ -1030,7 +1030,7 @@ func statusCompiledHarnessWarnings(
 		return nil, 1
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
 		false, modelCredential,
 	)
 	if err != nil {

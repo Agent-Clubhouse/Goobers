@@ -235,7 +235,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 
 	envCaps := buildEnvCapabilities()
-	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, instanceRoot, selfBin, false, nil,
+	adapterRegistry, err := buildHarnessRegistry(envCaps, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, instanceRoot, selfBin, false, nil,
 		// Same runner property the deterministic executor binds: a self
 		// entry declaring tmp:ephemeral must be true of agentic stages too,
 		// or the declaration is only half enforced.
@@ -707,7 +707,7 @@ func (e *workflowCompileError) Unwrap() error {
 // WF-016); no registry is wired at the instance level yet, so this pins
 // version 1 for every workflow, matching run.go's existing limitation until a
 // follow-up introduces one.
-func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, envPassthrough []string, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error)) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, environment harness.EnvironmentConfig, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error)) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	// The admission registry resolves harness config (model/options), and model
@@ -723,7 +723,7 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	// deliver the token as a raw ambient env var just to satisfy discovery.
 	//
 	// It never executes a stage, so it binds no runner restriction.
-	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", deferModelDiscovery, modelCredential, false)
+	adapterRegistry, err := buildHarnessRegistry(nil, environment, harnessCommand, "", "", deferModelDiscovery, modelCredential, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}

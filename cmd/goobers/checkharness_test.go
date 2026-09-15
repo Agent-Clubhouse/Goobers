@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,7 +16,7 @@ import (
 // withHarnessAdapter substitutes harnessAdapterFor for the duration of a
 // test, so --check-harness tests never depend on a real, installed,
 // signed-in Copilot CLI being present on the machine running `make ci`.
-func withHarnessAdapter(t *testing.T, lookup func(apiv1.Harness, []string, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error)) {
+func withHarnessAdapter(t *testing.T, lookup func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error)) {
 	t.Helper()
 	orig := harnessAdapterFor
 	harnessAdapterFor = lookup
@@ -23,7 +24,7 @@ func withHarnessAdapter(t *testing.T, lookup func(apiv1.Harness, []string, map[s
 }
 
 func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
-	adapter, err := adapterFor(apiv1.HarnessCopilot, nil, nil, nil)
+	adapter, err := adapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{}, nil, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(copilot): %v", err)
 	}
@@ -31,7 +32,7 @@ func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
 		t.Fatalf("adapterFor(copilot) = %T, want *harness.CopilotAdapter", adapter)
 	}
 
-	adapter, err = adapterFor(apiv1.HarnessClaudeCode, []string{"USER"}, nil, nil)
+	adapter, err = adapterFor(apiv1.HarnessClaudeCode, harness.EnvironmentConfig{ExtraAllowlist: []string{"USER"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(claude-code): %v", err)
 	}
@@ -43,20 +44,20 @@ func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
 		t.Fatalf("claude-code ExtraEnvAllowlist = %v, want [USER]", claude.ExtraEnvAllowlist)
 	}
 
-	if _, err := adapterFor("nonesuch", nil, nil, nil); err == nil {
+	if _, err := adapterFor("nonesuch", harness.EnvironmentConfig{}, nil, nil); err == nil {
 		t.Fatal("expected an error for an unsupported harness")
 	}
 }
 
 func TestCheckHarnessesSucceeds(t *testing.T) {
-	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(h apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harnesstest.FakeAdapter{AdapterName: string(h)}, nil
 	})
 	goobers := []apiv1.Goober{
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
 	}
 	var out, errOut strings.Builder
-	if !checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil, nil) {
+	if !checkHarnessesAtSources(goobers, &out, &errOut, nil, harness.EnvironmentConfig{}, nil, nil) {
 		t.Fatalf("checkHarnesses returned false; stdout=%q", out.String())
 	}
 	if !strings.Contains(out.String(), "HARNESS copilot: OK") {
@@ -65,14 +66,14 @@ func TestCheckHarnessesSucceeds(t *testing.T) {
 }
 
 func TestCheckHarnessesFailsClosedOnPreflightError(t *testing.T) {
-	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(h apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harnesstest.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 	})
 	goobers := []apiv1.Goober{
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
 	}
 	var out, errOut strings.Builder
-	if checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil, nil) {
+	if checkHarnessesAtSources(goobers, &out, &errOut, nil, harness.EnvironmentConfig{}, nil, nil) {
 		t.Fatal("checkHarnesses returned true, want false on a Preflight failure")
 	}
 	if !strings.Contains(out.String(), errNotSignedIn.Error()) {
@@ -82,7 +83,7 @@ func TestCheckHarnessesFailsClosedOnPreflightError(t *testing.T) {
 
 func TestCheckHarnessesDedupsRepeatedHarness(t *testing.T) {
 	calls := 0
-	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(h apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
 		calls++
 		return &harnesstest.FakeAdapter{AdapterName: string(h)}, nil
 	})
@@ -92,7 +93,7 @@ func TestCheckHarnessesDedupsRepeatedHarness(t *testing.T) {
 		{Spec: apiv1.GooberSpec{Harness: ""}}, // no harness declared — skipped
 	}
 	var out, errOut strings.Builder
-	if !checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil, nil) {
+	if !checkHarnessesAtSources(goobers, &out, &errOut, nil, harness.EnvironmentConfig{}, nil, nil) {
 		t.Fatal("checkHarnesses returned false")
 	}
 	if calls != 1 {
@@ -120,13 +121,14 @@ func TestValidateCheckHarnessFlagWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Runner.EnvPassthrough = []string{"CLAUDE_CONFIG_DIR"}
+	cfg.Runner.HarnessEnvUnset = []string{"OUTER_LAUNCHER_SESSION_ID"}
 	if err := instance.WriteConfig(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	var gotEnvPassthrough []string
-	withHarnessAdapter(t, func(h apiv1.Harness, envPassthrough []string, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
-		gotEnvPassthrough = append([]string(nil), envPassthrough...)
+	var gotEnvironment harness.EnvironmentConfig
+	withHarnessAdapter(t, func(h apiv1.Harness, environment harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+		gotEnvironment = environment
 		return &harnesstest.FakeAdapter{AdapterName: string(h)}, nil
 	})
 	code, stdout, stderr := runArgs(t, "validate", "--check-harness", root)
@@ -136,11 +138,13 @@ func TestValidateCheckHarnessFlagWiring(t *testing.T) {
 	if !strings.Contains(stdout, "HARNESS copilot: OK") {
 		t.Fatalf("stdout = %q", stdout)
 	}
-	if strings.Join(gotEnvPassthrough, ",") != "CLAUDE_CONFIG_DIR" {
-		t.Fatalf("adapter env passthrough = %v, want [CLAUDE_CONFIG_DIR]", gotEnvPassthrough)
+	wantEnvironment := harnessEnvironmentPolicy(cfg.Runner)
+	if !slices.Equal(gotEnvironment.ExtraAllowlist, wantEnvironment.ExtraAllowlist) ||
+		!slices.Equal(gotEnvironment.Unset, wantEnvironment.Unset) {
+		t.Fatalf("adapter environment policy = %+v, want %+v", gotEnvironment, wantEnvironment)
 	}
 
-	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(h apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harnesstest.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 	})
 	code, stdout, _ = runArgs(t, "validate", "--check-harness", root)
@@ -184,7 +188,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	// it mirrors what adapterFor produces. (That adapterFor sets it is proven
 	// directly by TestAdapterForConfiguresAuthProbe.)
 	authInvoked := false
-	withHarnessAdapter(t, func(apiv1.Harness, []string, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
 			AuthCheckArgs: copilotAuthCheckArgs,
@@ -192,7 +196,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 		}, nil
 	})
 	var out, errOut strings.Builder
-	if checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil, nil) {
+	if checkHarnessesAtSources(goobers, &out, &errOut, nil, harness.EnvironmentConfig{}, nil, nil) {
 		t.Fatal("checkHarnesses returned true; a signed-out CLI (version OK, auth probe fails) must fail closed")
 	}
 	if !authInvoked {
@@ -200,7 +204,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	}
 
 	// Fully authenticated: both succeed → check passes.
-	withHarnessAdapter(t, func(apiv1.Harness, []string, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
 			AuthCheckArgs: copilotAuthCheckArgs,
@@ -209,7 +213,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	})
 	out.Reset()
 	errOut.Reset()
-	if !checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil, nil) {
+	if !checkHarnessesAtSources(goobers, &out, &errOut, nil, harness.EnvironmentConfig{}, nil, nil) {
 		t.Fatalf("checkHarnesses returned false for a healthy signed-in CLI; stdout=%q", out.String())
 	}
 }

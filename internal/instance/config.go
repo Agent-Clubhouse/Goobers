@@ -335,6 +335,13 @@ type RunnerConfig struct {
 	// stays default-deny — an explicit opt-in list of names, never os.Environ()
 	// passthrough — and declaring a name whose var is unset is a harmless no-op.
 	EnvPassthrough []string `json:"envPassthrough,omitempty" yaml:"envPassthrough,omitempty"`
+	// HarnessEnvUnset names ambient environment variables that must be removed
+	// from agent harness subprocesses and their preflight probes. It is applied
+	// after the built-in allowlist and EnvPassthrough, so an operator can
+	// isolate a forwarding launcher from a parent process's session identity
+	// without adding a shell-specific wrapper. It does not affect deterministic
+	// stages or scoped credentials injected for declared capabilities.
+	HarnessEnvUnset []string `json:"harnessEnvUnset,omitempty" yaml:"harnessEnvUnset,omitempty"`
 	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
 	// the daemon is reported unhealthy. Empty defaults to two minutes.
 	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`

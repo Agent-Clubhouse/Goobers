@@ -180,5 +180,6 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 		Grants:          wireGrants,
 		SandboxPosture:  string(instance.EffectiveAgenticSandbox(cfg, nil)),
 		HarnessCommand:  slices.Clone(cfg.Runner.HarnessCommand[string(spec.Harness)]),
+		HarnessEnvUnset: slices.Clone(cfg.Runner.HarnessEnvUnset),
 	}, nil
 }

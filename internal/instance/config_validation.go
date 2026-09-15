@@ -801,6 +801,11 @@ func (c RunnerConfig) validate() error {
 			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
 		}
 	}
+	for i, name := range c.HarnessEnvUnset {
+		if !procenv.ValidName(name) {
+			return fmt.Errorf("runner.harnessEnvUnset[%d]: %q is not a valid environment variable name", i, name)
+		}
+	}
 	for name, command := range c.HarnessCommand {
 		if !knownHarnessName(name) {
 			return fmt.Errorf("runner.harnessCommand[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))

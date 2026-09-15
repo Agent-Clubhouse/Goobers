@@ -2826,6 +2826,20 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "runner.envPassthrough[0]",
 		},
 		{
+			name: "runner harness env unset valid names",
+			cfg:  Config{Runner: RunnerConfig{HarnessEnvUnset: []string{"OUTER_LAUNCHER_SESSION_ID", "ProgramFiles(x86)"}}},
+		},
+		{
+			name:    "runner harness env unset with assignment rejected",
+			cfg:     Config{Runner: RunnerConfig{HarnessEnvUnset: []string{"OUTER_LAUNCHER_SESSION_ID=value"}}},
+			wantErr: "runner.harnessEnvUnset[0]",
+		},
+		{
+			name:    "runner harness env unset empty rejected",
+			cfg:     Config{Runner: RunnerConfig{HarnessEnvUnset: []string{""}}},
+			wantErr: "runner.harnessEnvUnset[0]",
+		},
+		{
 			name: "runner harness command override valid",
 			cfg: Config{Runner: RunnerConfig{HarnessCommand: map[string][]string{
 				"copilot":     {"agency", "copilot"},
