@@ -38,11 +38,18 @@ func TestConfigRepoReadIsKnownButRunnerOnly(t *testing.T) {
 	if !Known(string(ConfigRepoRead)) {
 		t.Fatal("configrepo:read is not in the canonical registry")
 	}
+
 	if StageDeclarable(string(ConfigRepoRead)) {
 		t.Fatal("configrepo:read must not be stage-declarable")
 	}
 	if !StageDeclarable(string(RepoRead)) {
 		t.Fatal("repo:read should remain stage-declarable")
+	}
+}
+
+func TestCoordinationWriteIsRunnerOnly(t *testing.T) {
+	if !Known(string(CoordinationWrite)) || StageDeclarable(string(CoordinationWrite)) {
+		t.Fatal("coordination authority must be canonical and unavailable to workflow/agentic stages")
 	}
 }
 

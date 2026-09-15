@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "id": "contract-v2",
+  "gaggle": "coordinator",
+  "parent": {
+    "repository": {"provider": "github", "owner": "acme", "name": "planning"},
+    "id": "42"
+  },
+  "summary": "Coordinate the reviewed contract update and consumer integration.",
+  "integrationCommand": "go test ./integration -run TestContractV2 -count=1",
+  "children": [
+    {
+      "repository": {"provider": "github", "owner": "acme", "name": "core"},
+      "id": "contract",
+      "title": "Publish contract v2",
+      "body": "Add the reviewed v2 contract. Preserve v1 compatibility and add contract tests. Open one PR; a maintainer owns merge and release.",
+      "kind": "implementation",
+      "completion": "release",
+      "releaseTag": "v2.0.0"
+    },
+    {
+      "repository": {"provider": "github", "owner": "acme", "name": "consumer"},
+      "id": "consume",
+      "title": "Consume contract v2",
+      "body": "Consume core v2.0.0 and add integration coverage for the reviewed v2 contract. Open one PR; a maintainer owns merge.",
+      "kind": "implementation",
+      "dependsOn": [
+        {
+          "repository": {"provider": "github", "owner": "acme", "name": "core"},
+          "id": "contract"
+        }
+      ],
+      "completion": "merged"
+    }
+  ]
+}

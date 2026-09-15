@@ -57,6 +57,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers config-seed`](#goobers-config-seed) | seed a private worker instance from a rendered configuration mirror |
+| [`goobers coordinate`](#goobers-coordinate) | reconcile an explicitly approved cross-repository plan (local operator only) |
 | [`goobers diagnostics`](#goobers-diagnostics) | collect a portable, redacted support bundle |
 | [`goobers diagnostics bundle`](#goobers-diagnostics-bundle) | write a portable, redacted support bundle |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions |
@@ -966,6 +967,29 @@ or provider error, 2 = usage error.
 $ goobers connect acme/web ./my-instance
 $ goobers connect acme/web --token-env MY_GITHUB_TOKEN --seed ./my-instance
 $ goobers connect acme/web --json ./my-instance
+~~~
+
+## `goobers coordinate`
+
+reconcile an explicitly approved cross-repository plan (local operator only)
+
+~~~text
+Usage: goobers coordinate --gaggle NAME --plan FILE [--check]
+       [--workflow NAME] [--evidence FILE] [--artifact FILE] [--result FILE] [instance-root]
+
+Reconcile one explicitly approved cross-repository plan. This CLI is operator-only;
+never starts a run/daemon, implements code, merges, or deploys. Requires
+instance.yaml coordination authority. --check validates and prints canonical
+plan/evidence digests without resolving credentials or contacting providers.
+--workflow NAME with --check also prints the native manual workflow digest.
+Exit codes: 0 = checked or reconciled, 1 = refusal/provider failure, 2 = usage.
+A successful pass may still report waiting, blocked, or integration-required.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers coordinate --gaggle coordinator --plan plan.json --check
 ~~~
 
 ## `goobers cost`

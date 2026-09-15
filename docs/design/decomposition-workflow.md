@@ -34,6 +34,15 @@ Decomposition is curation, not implementation. It mutates issues but never code 
 pull requests, and it does not weaken the implementation workflow's one-issue,
 one-PR boundary.
 
+**Repository scope:** all children and provider-native dependency links in this
+workflow belong to the publisher's one repository. Its `ChildPlan` has no
+repository selector; `additionalRepos` are read-only references, not extra
+publication authority. For approved plans spanning separate repo-owning
+gaggles, use the distinct local operator
+[cross-repository coordination](../guides/cross-repository-coordination.md)
+interface. It does not change repository-local decomposition or transfer parent
+approval into arbitrary repositories (documentation clarification #5172).
+
 ## 2. Source signal and eligibility
 
 For reactive selection, the source of truth is the implementation run journal,

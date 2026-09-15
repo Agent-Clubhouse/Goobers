@@ -54,10 +54,17 @@ the seam a formality. Mint a separate fine-grained PAT per capability class
 your gaggle's workflows actually use, and register each as its own named ref
 in `instance.yaml`:
 
-`configrepo:read` is the runner-only exception: only the workflow-config
+`configrepo:read` is a runner-only exception: only the workflow-config
 source may materialize it, directly from `workflowSource.token`. Use the
 [Workflow CD credential-isolation pen test](workflow-cd-isolation-pen-test.md)
 to verify the two-token boundary against disposable repositories.
+
+`coordination:write` is also runner-only. The local operator `coordinate`
+command materializes it only for explicitly authorized repository identities,
+from each exact repository's configured token. It ignores `credentials` and
+`daemonIdentity` overrides, never injects these tokens into an agent or shell,
+and requires separately reviewed plan/evidence digests. See
+[cross-repository coordination](cross-repository-coordination.md).
 
 The capability names below are the canonical registry in
 `internal/capability` — the same list the workflow compiler admits from. A name
@@ -88,6 +95,7 @@ for this page; see [`ado-authentication.md`](ado-authentication.md).
 | `telemetry:read` | *(no GitHub permission)* | Read the local telemetry rollup and named host-governed external connectors. Backed by connector configuration, not a GitHub PAT. |
 | `journal:read` | *(no GitHub permission)* | Read-only, digest-verified access to **another** run's journal. Local filesystem authority, not a GitHub PAT. |
 | `configrepo:read` | Contents: Read-only | Runner-only access to the workflow-config repo. Configure only through `workflowSource.token`; stages cannot declare or source it through `credentials`. |
+| `coordination:write` | Issues: Read and write; Pull requests: Read-only; Contents: Read-only | Runner-owned issue publication/approval and exact PR/release observation for explicitly allowlisted repositories, through the local operator command or pinned native manual workflow. No PR merge, contents write, release creation or deployment. Use a separate exact-repository token per configured target; never declare this capability on a workflow/goober or under `credentials`. |
 | `agent:model` | Stored Copilot CLI sign-in, or *(Account permissions)* Copilot Requests: Read-only for headless use; on claude-code, stored `claude` CLI sign-in (or a real `sk-ant-...` Anthropic API key for headless use) | Agent harness model authentication for agentic stages. An existing per-user CLI sign-in is the local default on either harness; a configured token is injected as `COPILOT_GITHUB_TOKEN` (copilot) or `ANTHROPIC_API_KEY` (claude-code) for services/CI. Only **one** `agent:model` grant exists per instance — see [Mixed-harness instances](#mixed-harness-instances-scoping-agentmodel-per-harness) below before configuring both harnesses. |
 
 Repository access: select **Only select repositories** and list exactly the
