@@ -63,21 +63,63 @@ export function renderGooberChip(value, options = {}) {
 }
 
 export function renderRunAssociations(operator) {
+    const root = operator && operator.operator ? operator.operator : operator;
     const links = [];
-    const issueURL = safeAssociationUrl(operator?.issue?.url);
-    if (issueURL) {
-        const title = String(operator.issue.title || "").trim();
-        const label = "Issue #" + operator.issue.number + (title ? ": " + title : "");
-        links.push('<a class="run-association-link" href="' + escapeAssociationHtml(issueURL) +
-            '" target="_blank" rel="noopener noreferrer">' + escapeAssociationHtml(label) + "</a>");
+    const seen = new Set();
+    function addLink(kind, item, title) {
+        if (!item) return;
+        const href = safeAssociationUrl(item?.url || item?.htmlUrl || item?.webUrl);
+        const identity = item.number ?? item.id ?? item.externalId ?? "";
+        if (!href || seen.has(kind + ":" + identity)) return;
+        seen.add(kind + ":" + identity);
+        const status = String(item.state || item.status || item.phase || "").trim();
+        const statusAttr = status ? ' data-status="' + escapeAssociationHtml(status.toLowerCase()) + '"' : "";
+        const shortLabel = (identity ? "#" + identity : "") + (title ? ": " + String(title).trim() : "");
+        const label = kind + (shortLabel ? " " + shortLabel : "");
+        links.push('<a class="run-association-link work-chip" data-kind="' + escapeAssociationHtml(kind.toLowerCase()) +
+            '"' + statusAttr + ' href="' + escapeAssociationHtml(href) +
+            '" target="_blank" rel="noopener noreferrer" title="' + escapeAssociationHtml(label) + '">' +
+            '<span class="work-chip-kind">' + escapeAssociationHtml(kind) + "</span> " +
+            '<span class="work-chip-label">' + escapeAssociationHtml(shortLabel || kind) + "</span>" +
+            (status ? ' <span class="work-chip-status">' + escapeAssociationHtml(status) + "</span>" : "") +
+            "</a>");
     }
-    const pullURL = safeAssociationUrl(operator?.pullRequest?.url);
-    if (pullURL) {
-        const title = String(operator.pullRequestTitle || "").trim();
-        const label = "PR #" + operator.pullRequest.id + (title ? ": " + title : "");
-        links.push('<a class="run-association-link" href="' + escapeAssociationHtml(pullURL) +
-            '" target="_blank" rel="noopener noreferrer">' + escapeAssociationHtml(label) + "</a>");
+    function addRef(ref) {
+        const kind = String(ref?.kind || ref?.type || "").toLowerCase();
+        const identity = ref?.number ?? ref?.id ?? ref?.externalId ?? "";
+        if (["issue", "work-item", "workitem"].includes(kind)) {
+            const issueTitle = [
+                root?.issue,
+                operator?.issue,
+                root?.workItem,
+                operator?.workItem,
+            ].find((item) => String(item?.number ?? item?.id ?? item?.externalId ?? "") === String(identity))?.title;
+            addLink("Issue", ref, ref?.title || issueTitle);
+        }
+        if (["pr", "pull-request", "pullrequest"].includes(kind)) {
+            const prTitle = [
+                [root?.pullRequest, root?.pullRequestTitle || root?.pullRequest?.title],
+                [operator?.pullRequest, operator?.pullRequestTitle || operator?.pullRequest?.title],
+            ].find(([item]) => String(item?.number ?? item?.id ?? item?.externalId ?? "") === String(identity))?.[1];
+            addLink("PR", ref, ref?.title || prTitle);
+        }
     }
+    [
+        root?.issue,
+        operator?.issue,
+        root?.workItem,
+        operator?.workItem,
+    ].forEach((issue) => addLink("Issue", issue, issue?.title));
+    [
+        [root?.pullRequest, root?.pullRequestTitle || root?.pullRequest?.title],
+        [operator?.pullRequest, operator?.pullRequestTitle || operator?.pullRequest?.title],
+    ].forEach(([pullRequest, title]) => addLink("PR", pullRequest, title));
+    [
+        ...(Array.isArray(root?.refs) ? root.refs : []),
+        ...(Array.isArray(operator?.refs) ? operator.refs : []),
+        ...(Array.isArray(root?.externalRefs) ? root.externalRefs : []),
+        ...(Array.isArray(operator?.externalRefs) ? operator.externalRefs : []),
+    ].forEach(addRef);
     return links.length ? '<div class="run-associations">' + links.join("") + "</div>" : "\u2014";
 }
 
@@ -752,15 +794,80 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     text-decoration: none;
   }
   .actions-run-link:hover { background: var(--background-color-hover, #f6f8fa); }
-  .run-associations { display: flex; flex-direction: column; gap: 3px; min-width: 180px; }
+  .run-id-control { display: inline-flex; align-items: center; gap: 6px; }
+  .copy-run-id {
+    padding: 2px 7px;
+    font-size: 12px;
+    color: var(--text-color-muted, #656d76);
+  }
+  .copy-run-id.copied {
+    color: var(--true-color-green, #1a7f37);
+    border-color: var(--true-color-green-muted, #1a7f3766);
+    animation: copy-pop 240ms ease-out;
+  }
+  [data-full-run-id]::after {
+    content: "";
+  }
+  .goober-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 999px;
+    padding: 2px 7px;
+    background: var(--border-color-default, #d0d7de22);
+    font-size: 12px;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .goober-avatar { line-height: 1; }
+  .goober-label { overflow: hidden; text-overflow: ellipsis; }
+  .run-associations { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 180px; }
   .run-association-link {
-    color: var(--true-color-blue, #0969da);
+    color: inherit;
     max-width: 320px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    text-decoration: none;
   }
   .run-association-link:hover { text-decoration: underline; }
+  .work-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 320px;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 999px;
+    padding: 3px 8px;
+    background: var(--background-color-default, #fff);
+  }
+  .work-chip-kind {
+    color: var(--true-color-blue, #0969da);
+    font-size: 10px;
+    font-weight: var(--font-weight-semibold, 600);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .work-chip-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .work-chip-status {
+    color: var(--text-color-muted, #656d76);
+    font-size: 10px;
+    border-left: 1px solid var(--border-color-default, #d0d7de);
+    padding-left: 5px;
+    text-transform: lowercase;
+  }
+  .work-chip[data-status="open"], .work-chip[data-status="running"] {
+    border-color: var(--true-color-green-muted, #1a7f3766);
+  }
+  .work-chip[data-status="closed"], .work-chip[data-status="merged"], .work-chip[data-status="completed"] {
+    border-color: var(--true-color-purple-muted, #8250df66);
+  }
   .kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 12px 0 20px; }
   .kv { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px; padding: 10px 12px; }
   .kv-wide { grid-column: 1 / -1; }

@@ -33,6 +33,48 @@ test("multi-value filters fan out daemon queries and merge unique runs", async (
     }
 });
 
+test("daemon run summaries hydrate associated issue refs from run events", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url) => {
+        requests.push(url);
+        if (String(url).includes("/api/v1/runs?")) {
+            return new Response(JSON.stringify({
+                runs: [{
+                    id: "run-one",
+                    operator: {
+                        issue: { number: "159", title: "Implement classifier" },
+                    },
+                }],
+            }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+            events: [
+                {
+                    externalRef: {
+                        provider: "github",
+                        kind: "issue",
+                        id: "159",
+                        url: "https://github.com/octo/app/issues/159",
+                    },
+                },
+            ],
+        }), { status: 200 });
+    };
+    try {
+        const result = await loadRuns({ mode: "daemon", baseUrl: "http://daemon" });
+        assert.equal(requests.length, 2);
+        assert.deepEqual(result.runs[0].externalRefs, [{
+            provider: "github",
+            kind: "issue",
+            id: "159",
+            url: "https://github.com/octo/app/issues/159",
+        }]);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
 test("run interventions validate actor and action-specific fields", () => {
     assert.throws(() => validateIntervention("approve", { decision: "pass" }), /actor is required/);
     assert.throws(() => validateIntervention("approve", { actor: "operator" }), /decision=pass/);
