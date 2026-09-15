@@ -299,6 +299,91 @@ export function renderRunDetailSummary(run = {}, parts = {}) {
         '<div class="kv-grid">' + grid + "</div>";
 }
 
+function stageKindLabel(kind) {
+    if (kind === "agentic") return "Agentic task";
+    if (kind === "deterministic") return "Deterministic task";
+    if (kind === "gate") return "Gate";
+    if (kind === "parallel") return "Parallel";
+    return "Stage";
+}
+
+function stageActor(stage) {
+    if (stage.kind === "gate") {
+        return stage.evaluator ? `${stage.evaluator} evaluator` : "Evaluator not declared";
+    }
+    if (stage.owner) return `${stage.owner.gaggle}/${stage.owner.name}`;
+    if (stage.kind === "deterministic") return "Deterministic runtime";
+    return "Owner not declared";
+}
+
+function stageProperty(label, value) {
+    return "<div><dt>" + escapeAssociationHtml(label) + "</dt><dd>" +
+        escapeAssociationHtml(value) + "</dd></div>";
+}
+
+export function renderStageDefinitionInspector(stage = {}, view = "fields") {
+    const yamlSelected = view === "yaml";
+    const capabilities = Array.isArray(stage.capabilities) && stage.capabilities.length
+        ? stage.capabilities.join(", ")
+        : "None declared";
+    const retry = stage.retry
+        ? `${stage.retry.maxAttempts} attempt${stage.retry.maxAttempts === 1 ? "" : "s"}, ${stage.retry.backoffSeconds ?? 0}s backoff`
+        : "No retry declared";
+    const properties = [
+        stageProperty(stage.kind === "gate" ? "Evaluator" : "Owner", stageActor(stage)),
+        stageProperty("Capabilities", capabilities),
+        stageProperty("Timeout", stage.timeoutSeconds ? `${stage.timeoutSeconds}s` : "Default"),
+        stageProperty("Retry", retry),
+    ];
+    if (stage.kind === "gate") {
+        const branches = stage.branches && Object.keys(stage.branches).length
+            ? Object.entries(stage.branches)
+                .map(([outcome, target]) => `${outcome} \u2192 ${target || "(terminal)"}`)
+                .join(", ")
+            : "None declared";
+        properties.push(stageProperty("Branches", branches));
+        properties.push(stageProperty("Max repasses", stage.maxRepasses || "Inherited"));
+    } else {
+        properties.push(stageProperty(
+            "Policy actions",
+            Array.isArray(stage.policyActions) && stage.policyActions.length
+                ? stage.policyActions.join(", ")
+                : "None declared",
+        ));
+        properties.push(stageProperty(
+            "Required runner capabilities",
+            Array.isArray(stage.requiredCapabilities) && stage.requiredCapabilities.length
+                ? stage.requiredCapabilities.join(", ")
+                : "None declared",
+        ));
+        properties.push(stageProperty("On timeout", stage.onTimeout || "fail (default)"));
+    }
+    return '<aside class="stage-definition-panel" aria-label="' +
+        escapeAssociationHtml((stage.name || "Stage") + " definition") + '">' +
+        '<div class="stage-inspector-heading"><span class="stage-kind-badge" data-kind="' +
+        escapeAssociationHtml(stage.kind || "") + '">' + escapeAssociationHtml(stageKindLabel(stage.kind)) +
+        "</span><h3>" + escapeAssociationHtml(stage.name || "Unnamed stage") + "</h3></div>" +
+        '<p class="stage-inspector-description">' +
+        escapeAssociationHtml(stage.goal || "No stage goal declared.") + "</p>" +
+        '<div class="internal-tabs" role="tablist" aria-label="Stage config view">' +
+        '<button id="stage-tab-fields" type="button" role="tab" data-tab="fields" aria-controls="stage-panel-fields"' +
+        ' aria-selected="' + String(!yamlSelected) + '">Fields</button>' +
+        '<button id="stage-tab-yaml" type="button" role="tab" data-tab="yaml" aria-controls="stage-panel-yaml"' +
+        ' aria-selected="' + String(yamlSelected) + '">Raw YAML</button></div>' +
+        '<section id="stage-panel-fields" role="tabpanel" aria-labelledby="stage-tab-fields"' +
+        (yamlSelected ? " hidden" : "") + '><dl class="property-list">' + properties.join("") + "</dl></section>" +
+        '<section id="stage-panel-yaml" role="tabpanel" aria-labelledby="stage-tab-yaml"' +
+        (yamlSelected ? "" : " hidden") + '><pre class="code-block">' +
+        escapeAssociationHtml(stage.rawYaml || "No YAML available.") + "</pre></section></aside>";
+}
+
+export function renderStageInspectorStatus(message, options = {}) {
+    const role = options.error ? "alert" : "status";
+    const className = options.error ? "stage-inspector-state stage-inspector-error" : "stage-inspector-state";
+    return '<div class="' + className + '" role="' + role + '">' +
+        escapeAssociationHtml(message) + "</div>";
+}
+
 export function renderRunEventItems(displayedEvents = [], sourceId = "", runId = "", options = {}) {
     const formatTime = options.formatTime || formatRunDetailTime;
     const safeUrl = options.safeUrl || safeAssociationUrl;
@@ -888,6 +973,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     .graph-toolbar { flex-wrap: wrap; }
     .graph-help { width: 100%; }
   }
+  @media (max-width: 900px) {
+    .stage-definition-layout { grid-template-columns: minmax(0, 1fr); }
+  }
   #start-daemon-bar {
     display: flex;
     gap: 8px;
@@ -1015,6 +1103,47 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .kv .label { color: var(--text-color-muted, #656d76); font-size: 12px; }
   .kv .value { font-size: 14px; margin-top: 2px; word-break: break-word; }
   .kv .value a { color: inherit; }
+  .stage-definition-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+  .stage-definition-panel,
+  .stage-inspector-state {
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    padding: 12px;
+    background: var(--background-color-default, #fff);
+    min-width: 0;
+  }
+  .stage-inspector-state { color: var(--text-color-muted, #656d76); }
+  .stage-inspector-error { border-color: var(--true-color-red-muted, #cf222e66); color: var(--true-color-red, #cf222e); }
+  .stage-inspector-heading { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .stage-inspector-heading h3 { margin: 0; font-size: var(--text-title-medium, 18px); }
+  .stage-kind-badge {
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 999px;
+    padding: 2px 7px;
+    color: var(--text-color-muted, #656d76);
+    font-size: 11px;
+  }
+  .stage-kind-badge[data-kind="gate"] { border-color: var(--true-color-purple-muted, #8250df66); }
+  .stage-kind-badge[data-kind="agentic"] { border-color: var(--true-color-blue-muted, #0969da66); }
+  .stage-kind-badge[data-kind="deterministic"] { border-color: var(--true-color-green-muted, #1a7f3766); }
+  .stage-inspector-description { color: var(--text-color-muted, #656d76); overflow-wrap: anywhere; }
+  .property-list { display: grid; gap: 0; margin: 0; }
+  .property-list > div { padding: 8px 0; border-bottom: 1px solid var(--border-color-default, #d0d7de); }
+  .property-list > div:last-child { border-bottom: 0; }
+  .property-list dt { color: var(--text-color-muted, #656d76); font-size: 12px; }
+  .property-list dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+  .code-block {
+    max-height: 520px;
+    margin: 0;
+    overflow: auto;
+    white-space: pre;
+    font-size: 12px;
+  }
   .graph-panel {
     border: 1px solid var(--border-color-default, #d0d7de);
     border-radius: 8px;
@@ -1042,6 +1171,13 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     user-select: none;
   }
   #graph-svg.is-panning { cursor: grabbing; }
+  .stage-node { cursor: pointer; outline: none; }
+  .stage-node:hover .node-rect,
+  .stage-node:focus .node-rect,
+  .stage-node.selected .node-rect {
+    stroke: var(--true-color-blue, #0969da);
+    stroke-width: 3;
+  }
   .node-rect { fill: var(--border-color-default, #d0d7de33); stroke: var(--border-color-default, #d0d7de); }
   .node-rect.visited { fill: var(--true-color-blue-muted, #ddf4ff); stroke: var(--true-color-blue, #0969da); }
   .node-rect.pending { fill: var(--background-color-default, #ffffff); stroke: var(--border-color-default, #d0d7de); }
@@ -1521,6 +1657,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   let snapshotSourceId = null;
   let lastSnapshot = null;
   let sourceSelectionEpoch = 0;
+  let stageInspectorRequestSequence = 0;
+  let selectedStageName = "";
+  let activeStageInspectorView = "fields";
   let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
@@ -1530,6 +1669,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const workflowRunRequests = new Map();
   const workflowUndo = new Map();
   const pendingRunActions = new Map();
+  const workflowDetailCache = new Map();
 
   function portalRequestError(err) {
     const message = String(err && err.message ? err.message : err);
@@ -1551,7 +1691,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       if (panel) panel.hidden = !active;
     }
     if (root === dashboardEl) activeDashboardTab = selected.dataset.tab;
-    else activeRunTab = selected.dataset.tab;
+    else if (root === runContentEl) activeRunTab = selected.dataset.tab;
+    else if (root.matches(".stage-definition-panel")) activeStageInspectorView = selected.dataset.tab;
     if (focus) selected.focus();
   }
 
@@ -2723,7 +2864,68 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     };
   }
 
-  function renderGraphSvg(graph, transitions, events, run, orientation = "horizontal") {
+  function workflowDetailKey(sourceId, gaggle, workflow) {
+    return [sourceId, gaggle, workflow].join("\\u0000");
+  }
+
+  function loadWorkflowDefinition(sourceId, gaggle, workflow) {
+    const key = workflowDetailKey(sourceId, gaggle, workflow);
+    if (workflowDetailCache.has(key)) return workflowDetailCache.get(key);
+    const request = fetch("/api/workflow-detail?source=" + encodeURIComponent(sourceId) +
+      "&gaggle=" + encodeURIComponent(gaggle) + "&workflow=" + encodeURIComponent(workflow))
+      .then((response) => response.json())
+      .then((data) => {
+        if (!data.connected) throw new Error(data.reason || "Workflow detail unavailable.");
+        return data.workflow;
+      });
+    workflowDetailCache.set(key, request);
+    request.catch(() => {
+      if (workflowDetailCache.get(key) === request) workflowDetailCache.delete(key);
+    });
+    return request;
+  }
+
+  function setStageInspectorStatus(inspector, message, error = false) {
+    const state = document.createElement("div");
+    state.className = error ? "stage-inspector-state stage-inspector-error" : "stage-inspector-state";
+    state.setAttribute("role", error ? "alert" : "status");
+    state.textContent = message;
+    inspector.replaceChildren(state);
+  }
+
+  async function inspectStage(stageName, run, sourceId, runSequence) {
+    const inspector = document.getElementById("stage-inspector");
+    if (!inspector) return;
+    selectedStageName = stageName;
+    document.querySelectorAll("#graph-svg .stage-node").forEach((node) =>
+      node.classList.toggle("selected", node.dataset.stageName === stageName));
+    const requestSequence = ++stageInspectorRequestSequence;
+    setStageInspectorStatus(inspector, "Loading " + stageName + " definition\u2026");
+    try {
+      if (!run.gaggle || !run.workflow) {
+        throw new Error("This run does not identify its gaggle and workflow.");
+      }
+      const detail = await loadWorkflowDefinition(sourceId, run.gaggle, run.workflow);
+      if (sourceId !== sourceSelect.value || runSequence !== runRequestSequence ||
+          requestSequence !== stageInspectorRequestSequence || selectedStageName !== stageName) return;
+      const stage = (detail.stages || []).find((candidate) => candidate.name === stageName);
+      if (!stage) {
+        throw new Error('The workflow definition does not contain stage "' + stageName + '".');
+      }
+      inspector.innerHTML = renderStageDefinitionInspector(stage, activeStageInspectorView);
+      initInternalTabs(inspector.querySelector(".stage-definition-panel"), activeStageInspectorView);
+    } catch (err) {
+      if (sourceId !== sourceSelect.value || runSequence !== runRequestSequence ||
+          requestSequence !== stageInspectorRequestSequence || selectedStageName !== stageName) return;
+      setStageInspectorStatus(
+        inspector,
+        "Stage definition unavailable: " + portalRequestError(err),
+        true,
+      );
+    }
+  }
+
+  function renderGraphSvg(graph, transitions, events, run, orientation = "horizontal", selectedStage = "") {
     if (!graph || !graph.nodes) return '<p class="muted">No workflow graph available for this run.</p>';
     const terminalTransition = [...(transitions || [])].reverse().find((t) => t.terminal);
     const lastFinishedStage = [...(events || [])].reverse().find((event) =>
@@ -2817,6 +3019,13 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       else if (state === "skipped") cls += " skipped";
       else cls += " pending";
       if (n.id === finalNodeId) cls += " terminal " + (run.phase === "failed" || run.phase === "escalated" ? "failed" : "succeeded");
+      const interactive = n.id !== finalNodeId;
+      if (interactive) {
+        svg += '<g class="stage-node' + (n.id === selectedStage ? " selected" : "") +
+          '" role="button" tabindex="0" data-stage-name="' + escapeHtml(n.id) +
+          '" aria-label="Inspect stage ' + escapeHtml(n.id) + '"><title>Inspect stage ' +
+          escapeHtml(n.id) + "</title>";
+      }
       svg += '<rect class="' + cls + '" x="' + p.x + '" y="' + p.y + '" width="' + layout.nodeW + '" height="' + layout.nodeH + '" rx="6" />';
       const label = n.id === finalNodeId ? "Final: " + finalLabel : n.id + (n.owner ? " (" + n.owner + ")" : "");
       svg += '<text class="node-label" x="' + (p.x + 7) + '" y="' + (p.y + 17) + '">' + escapeHtml(label.length > 24 ? label.slice(0, 23) + "\\u2026" : label) + "</text>";
@@ -2825,6 +3034,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       } else if (n.id === finalNodeId) {
         svg += '<text class="node-status" x="' + (p.x + 7) + '" y="' + (p.y + 32) + '">' + escapeHtml(run.terminal ? "terminal" : "current") + "</text>";
       }
+      if (interactive) svg += "</g>";
     }
     return '<div class="graph-panel">' +
       '<div class="graph-toolbar" role="toolbar" aria-label="Workflow graph zoom controls">' +
@@ -2844,7 +3054,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       svg + "</g></svg>" + renderGraphLegend() + "</div>";
   }
 
-  function initGraphInteractions(graph, transitions, events, run) {
+  function initGraphInteractions(graph, transitions, events, run, sourceId, runSequence) {
     const svg = document.getElementById("graph-svg");
     if (!svg) return;
     const panel = svg.closest(".graph-panel");
@@ -2905,8 +3115,22 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     panel.querySelector(".graph-orientation").addEventListener("change", (event) => {
       graphOrientation = event.target.value === "vertical" ? "vertical" : "horizontal";
       const container = document.getElementById("graph-container");
-      container.innerHTML = renderGraphSvg(graph, transitions, events, run, graphOrientation);
-      initGraphInteractions(graph, transitions, events, run);
+      container.innerHTML = renderGraphSvg(graph, transitions, events, run, graphOrientation, selectedStageName);
+      initGraphInteractions(graph, transitions, events, run, sourceId, runSequence);
+    });
+
+    const activateStage = (target) => inspectStage(target.dataset.stageName, run, sourceId, runSequence);
+    svg.querySelectorAll(".stage-node").forEach((node) => {
+      node.addEventListener("click", (event) => {
+        event.stopPropagation();
+        activateStage(node);
+      });
+      node.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        activateStage(node);
+      });
     });
 
     svg.addEventListener("wheel", (event) => {
@@ -2916,6 +3140,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
     svg.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
+      if (event.target.closest(".stage-node")) return;
       svg.setPointerCapture(event.pointerId);
       lastPointer = { x: event.clientX, y: event.clientY };
       svg.classList.add("is-panning");
@@ -2936,7 +3161,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     svg.addEventListener("pointerup", endPan);
     svg.addEventListener("pointercancel", endPan);
-    svg.addEventListener("dblclick", (event) => setZoom(zoom * 1.5, event.clientX, event.clientY));
+    svg.addEventListener("dblclick", (event) => {
+      if (!event.target.closest(".stage-node")) setZoom(zoom * 1.5, event.clientX, event.clientY);
+    });
     svg.addEventListener("keydown", (event) => {
       if (event.key === "+" || event.key === "=") setZoom(zoom * 1.25);
       else if (event.key === "-") setZoom(zoom / 1.25);
@@ -2987,6 +3214,14 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunDetailSummary = ${renderRunDetailSummary.toString()
         .replaceAll("formatRunDetailTime", "fmtTime")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const stageKindLabel = ${stageKindLabel.toString()};
+  const stageActor = ${stageActor.toString()};
+  const stageProperty = ${stageProperty.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderStageDefinitionInspector = ${renderStageDefinitionInspector.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderStageInspectorStatus = ${renderStageInspectorStatus.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunEventItems = ${renderRunEventItems.toString()
         .replaceAll("formatRunDetailTime", "fmtTime")
@@ -3191,7 +3426,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     const requestSequence = ++runRequestSequence;
     const isNewRun = selectedRunId !== runId;
     selectedRunId = runId;
-    if (isNewRun) activeRunTab = "summary";
+    if (isNewRun) {
+      activeRunTab = "summary";
+      activeStageInspectorView = "fields";
+      selectedStageName = "";
+      ++stageInspectorRequestSequence;
+    }
     const activeFilter = document.activeElement?.closest("[data-transcript-filter]");
     const savedFilters = [...runContentEl.querySelectorAll("[data-transcript-filter]")].map((input) => ({
       name: input.dataset.transcriptFilter,
@@ -3230,8 +3470,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       }
       html += "<h2>Telemetry insights</h2>" + renderTelemetryInsights(r);
       html += '</section><section id="run-panel-execution" role="tabpanel" aria-labelledby="run-tab-execution" hidden>';
-      html += '<h2>Workflow graph</h2><div id="graph-container">' +
-        renderGraphSvg(r.graph, r.transitions, events, r, graphOrientation) + "</div>";
+      html += '<h2>Workflow graph</h2><div class="stage-definition-layout"><div id="graph-container">' +
+        renderGraphSvg(r.graph, r.transitions, events, r, graphOrientation, selectedStageName) +
+        '</div><div id="stage-inspector">' +
+        renderStageInspectorStatus("Select a stage to inspect its workflow definition.") + "</div></div>";
       html += "<h2>Causal diagnosis</h2>" + renderCausalDiagnosis(r);
       html += "<h2>Execution waterfall</h2>" + renderExecutionWaterfall(r);
       html += "<h2>Transitions</h2>" + renderTransitions(r.transitions);
@@ -3269,7 +3511,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
           list.innerHTML = renderRunEventItems(filterTranscriptEntries(transcriptEvents, restoredFilterValues), sourceId, runId);
         }
       }
-      initGraphInteractions(r.graph, r.transitions, events, r);
+      initGraphInteractions(r.graph, r.transitions, events, r, sourceId, requestSequence);
+      if (selectedStageName) inspectStage(selectedStageName, r, sourceId, requestSequence);
     } catch (err) {
       if (sourceId !== sourceSelect.value || requestSequence !== runRequestSequence) return;
       runErrorEl.textContent = String(err);
@@ -3281,6 +3524,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     const previousRunId = selectedRunId;
     selectedRunId = "";
     ++runRequestSequence;
+    ++stageInspectorRequestSequence;
+    selectedStageName = "";
+    activeStageInspectorView = "fields";
     runViewEl.style.display = "none";
     dashboardEl.style.display = "block";
     activateInternalTab(dashboardEl, "runs", true);
@@ -3299,6 +3545,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         restoredRunId = "";
         selectedRunId = "";
         ++runRequestSequence;
+        ++stageInspectorRequestSequence;
+        selectedStageName = "";
+        activeStageInspectorView = "fields";
         ++filterRequestSequence;
         runViewEl.style.display = "none";
         runContentEl.innerHTML = "";

@@ -14,7 +14,49 @@ const run = {
     pullRequest: { id: 42, url: "https://github.com/octo/app/pull/42" },
     pullRequestTitle: "Ship thing",
   },
-  events: [], transitions: [],
+  graph: {
+    start: "query",
+    nodes: [
+      { id: "query", kind: "deterministic" },
+      { id: "implement", kind: "agentic", owner: "team/implementer" },
+      { id: "review", kind: "gate", evaluator: "agentic" },
+    ],
+    edges: [
+      { source: "query", target: "implement" },
+      { source: "implement", target: "review" },
+      { source: "review", target: "", outcome: "pass", terminal: "complete" },
+    ],
+  },
+  events: [
+    { type: "stage.finished", stage: "query", status: "succeeded" },
+    { type: "stage.started", stage: "implement" },
+  ],
+  transitions: [{ source: "query", target: "implement" }],
+};
+const workflowDetail = {
+  identity: { gaggle: "team", name: "implementation" },
+  stages: [
+    {
+      name: "query", kind: "deterministic", goal: "Find work.", owner: null, evaluator: "",
+      capabilities: ["github:issues:read"], timeoutSeconds: 120,
+      requiredCapabilities: ["linux"], onTimeout: "fail",
+      rawYaml: "name: query\ngoal: Find work.\n",
+    },
+    {
+      name: "implement", kind: "agentic", goal: "Implement the issue.",
+      owner: { gaggle: "team", name: "implementer" }, evaluator: "",
+      capabilities: ["repo:push"], timeoutSeconds: 3600,
+      retry: { maxAttempts: 2, backoffSeconds: 30 }, policyActions: ["pr:open"],
+      requiredCapabilities: ["linux", "git"], onTimeout: "escalate",
+      rawYaml: "name: implement\ngoal: Implement the issue.\npolicyActions:\n- pr:open\n",
+    },
+    {
+      name: "review", kind: "gate", goal: "Review the change.", owner: null,
+      evaluator: "agentic", capabilities: ["repo:read"],
+      branches: { pass: "", "needs-changes": "implement" }, maxRepasses: 3,
+      rawYaml: "name: review\nevaluator: agentic\nbranches:\n  pass: \"\"\n",
+    },
+  ],
 };
 const instanceWarning = {
   code: "MODEL002", severity: "warning", scope: "Goober/coder",
@@ -102,6 +144,7 @@ async function openCanvas(page: Page) {
       : url.pathname === "/api/selected-source" ? { sourceId: sources[0].id }
       : url.pathname === "/api/snapshot" ? snapshot(source)
       : url.pathname === "/api/run" ? { connected: true, run }
+      : url.pathname === "/api/workflow-detail" ? { connected: true, workflow: workflowDetail }
       : url.pathname === "/api/runs" ? { connected: true, runs: [run] }
       : {};
     await route.fulfill({ json: body });
@@ -157,6 +200,61 @@ test("canvas preserves run detail on refresh and returns keyboard focus to runs"
   await expect(page.locator('th[data-sort="workflow"]')).toHaveAttribute("aria-sort", "ascending");
   expect(errors).toEqual([]);
 });
+
+test("run graph stages open a cached Fields and Raw YAML inspector", async ({ page }) => {
+  const errors = await openCanvas(page);
+  let detailRequests = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/workflow-detail") detailRequests++;
+  });
+  await page.getByRole("tab", { name: "Runs", exact: true }).click();
+  await page.getByRole("button", { name: "Open Run id", exact: true }).click();
+  await page.getByRole("tab", { name: "Execution", exact: true }).click();
+
+  const implement = page.getByRole("button", { name: "Inspect stage implement", exact: true });
+  await implement.focus();
+  await page.keyboard.press("Enter");
+  const inspector = page.locator("#stage-inspector");
+  await expect(inspector.getByRole("heading", { name: "implement", exact: true })).toBeVisible();
+  await expect(inspector).toContainText("team/implementer");
+  await expect(inspector).toContainText("Policy actions");
+  await expect(inspector).toContainText("Required runner capabilities");
+  await expect(inspector).toContainText("On timeout");
+  await expect(inspector).not.toContainText("Branches");
+
+  await inspector.getByRole("tab", { name: "Raw YAML", exact: true }).click();
+  await expect(inspector.locator(".code-block")).toContainText("policyActions:");
+  await expect(inspector.getByText("Policy actions", { exact: true })).toBeHidden();
+
+  await page.getByRole("button", { name: "Inspect stage review", exact: true }).click();
+  await expect(inspector.getByRole("heading", { name: "review", exact: true })).toBeVisible();
+  await expect(inspector.locator(".code-block")).toContainText("evaluator: agentic");
+  await inspector.getByRole("tab", { name: "Fields", exact: true }).click();
+  await expect(inspector).toContainText("Branches");
+  await expect(inspector).toContainText("pass \u2192 (terminal)");
+  await expect(inspector).toContainText("Max repasses");
+  await expect(inspector).not.toContainText("Policy actions");
+  expect(detailRequests).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+for (const failure of [
+  "Workflow detail requires a running Goobers daemon.",
+  "HTTP 503: workflow unavailable",
+]) {
+  test(`stage inspector renders workflow-detail failure: ${failure}`, async ({ page }) => {
+    const errors = await openCanvas(page);
+    await page.route("http://canvas.test/api/workflow-detail?**", (route) =>
+      route.fulfill({ json: { connected: false, reason: failure } }));
+    await page.getByRole("tab", { name: "Runs", exact: true }).click();
+    await page.getByRole("button", { name: "Open Run id", exact: true }).click();
+    await page.getByRole("tab", { name: "Execution", exact: true }).click();
+    await page.getByRole("button", { name: "Inspect stage implement", exact: true }).click();
+    await expect(page.locator("#stage-inspector")).toHaveText(`Stage definition unavailable: ${failure}`);
+    await expect(page.locator("#stage-inspector [role='alert']")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+}
 
 test("run controls and goober chips own their styling and respect reduced motion", async ({ page }) => {
   await openCanvas(page);
