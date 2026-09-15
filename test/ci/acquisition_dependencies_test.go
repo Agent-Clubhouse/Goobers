@@ -20,6 +20,7 @@ type dependencyAcquisition struct {
 var dependencyAcquisitionDecisions = map[string]dependencyAcquisition{
 	"bash":           {reason: "interpreter; fixture command acquisitions are inventoried separately"},
 	"bwrap":          {reason: "preinstalled containment executable"},
+	"claude":         {reason: "preinstalled CLI; live service tests are separately opt-in, not binary provisioning"},
 	"copilot":        {reason: "preinstalled CLI; live service tests are separately opt-in, not binary provisioning"},
 	"cp":             {reason: "local coreutils operation"},
 	"dirname":        {reason: "local coreutils operation"},
