@@ -119,7 +119,7 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	// Explicit credential refs: each sources one capability or named BYO MCP
 	// credential from its own token, namespaced away from repo refs.
 	for _, cg := range cfg.Credentials {
-		key, err := credentialGrantKey(cg)
+		key, err := credentialGrantStorageKey(cg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build credentials: %w", err)
 		}
@@ -140,7 +140,7 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	overrides := make([]credentials.Grant, 0, len(daemonIdentityOverrides)+len(cfg.Credentials))
 	overrides = append(overrides, daemonIdentityOverrides...)
 	for _, cg := range cfg.Credentials {
-		key, err := credentialGrantKey(cg)
+		key, err := credentialGrantStorageKey(cg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build credentials: %w", err)
 		}
@@ -165,15 +165,47 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	return resolver, grants, nil
 }
 
+// gooberCredentialRefs is one base capability's runner-owned sources: at most
+// one unscoped ref (shared across every harness) and at most one ref per
+// harness-scoped credentialGrant (#5148).
+type gooberCredentialRefs struct {
+	unscoped  string
+	byHarness map[string]string
+}
+
 // buildGooberCredentialGrants binds the configured credential sources to one
-// goober's definition-level capability and MCP credential keys. The resulting
-// grants carry the goober identity, so a forged stage envelope cannot make this
-// injector reach a key granted only to another goober.
-func buildGooberCredentialGrants(gooberName string, keys []string, sources []credentials.Grant) []credentials.Grant {
-	refs := make(map[string]string, len(sources))
+// goober's definition-level capability and MCP credential keys, resolving
+// per-harness scoping (#5148): for each key, a source whose harness matches
+// this goober's own harness wins; absent that, the unscoped source (if any)
+// is used, so a single-grant config resolves exactly as it always has. The
+// resulting grants carry the goober identity and are keyed by the PLAIN
+// capability string — harness scoping is fully resolved here, so nothing
+// downstream (the Injector, the materialized Set, or an adapter's env
+// building) ever sees a harness-qualified key. A forged stage envelope
+// cannot make this injector reach a key granted only to another goober.
+func buildGooberCredentialGrants(gooberName, harness string, keys []string, sources []credentials.Grant) []credentials.Grant {
+	refs := make(map[string]*gooberCredentialRefs, len(sources))
+	entry := func(base string) *gooberCredentialRefs {
+		e, ok := refs[base]
+		if !ok {
+			e = &gooberCredentialRefs{}
+			refs[base] = e
+		}
+		return e
+	}
 	for _, source := range sources {
-		if source.Goober == "" {
-			refs[source.Capability] = source.Ref
+		if source.Goober != "" {
+			continue
+		}
+		base, sourceHarness, scoped := credentials.SplitHarnessScopedCapability(source.Capability)
+		e := entry(base)
+		if scoped {
+			if e.byHarness == nil {
+				e.byHarness = make(map[string]string, 1)
+			}
+			e.byHarness[sourceHarness] = source.Ref
+		} else {
+			e.unscoped = source.Ref
 		}
 	}
 	grants := make([]credentials.Grant, 0, len(keys))
@@ -186,13 +218,24 @@ func buildGooberCredentialGrants(gooberName string, keys []string, sources []cre
 		if !capability.StageDeclarable(key) && !mcpconfig.IsBYOCredentialKey(key) {
 			continue
 		}
-		if ref, ok := refs[key]; ok {
-			grants = append(grants, credentials.Grant{
-				Goober:     gooberName,
-				Capability: key,
-				Ref:        ref,
-			})
+		e, ok := refs[key]
+		if !ok {
+			continue
 		}
+		ref := e.unscoped
+		if harness != "" {
+			if scopedRef, ok := e.byHarness[harness]; ok {
+				ref = scopedRef
+			}
+		}
+		if ref == "" {
+			continue
+		}
+		grants = append(grants, credentials.Grant{
+			Goober:     gooberName,
+			Capability: key,
+			Ref:        ref,
+		})
 	}
 	return grants
 }
@@ -222,6 +265,25 @@ func credentialGrantKey(grant instance.CredentialGrant) (string, error) {
 	default:
 		return "", errors.New("credential grant must set exactly one valid capability or mcp name")
 	}
+}
+
+// credentialGrantStorageKey is credentialGrantKey's result, further qualified
+// by the grant's optional harness (#5148) via credentials.HarnessScopedCapability
+// so a harness-scoped grant and an unscoped grant for the same capability
+// coexist as distinct runner-owned sources instead of colliding. An unscoped
+// grant's storage key is byte-identical to credentialGrantKey's plain result,
+// so a single-grant config resolves and namespaces its ref exactly as before.
+// buildGooberCredentialGrants is the only place that ever splits this key back
+// apart, once a goober's own harness is known.
+func credentialGrantStorageKey(grant instance.CredentialGrant) (string, error) {
+	key, err := credentialGrantKey(grant)
+	if err != nil {
+		return "", err
+	}
+	if grant.Harness == "" {
+		return key, nil
+	}
+	return credentials.HarnessScopedCapability(key, grant.Harness), nil
 }
 
 // credentialRefName is the resolver ref name for an explicit credentials entry,

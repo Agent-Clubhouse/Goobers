@@ -1647,7 +1647,7 @@ func TestBuildCredentialsScopesBYOMCPGrantToReferencingGoober(t *testing.T) {
 		t.Fatalf("buildCredentials: %v", err)
 	}
 	key := mcpconfig.BYOCredentialKey("sharepoint")
-	gooberGrants := buildGooberCredentialGrants("knowledge", []string{key}, grants)
+	gooberGrants := buildGooberCredentialGrants("knowledge", "", []string{key}, grants)
 	injector, err := credentials.NewGooberInjectorWithCredentialKeys(
 		resolver,
 		"knowledge",
@@ -1667,7 +1667,7 @@ func TestBuildCredentialsScopesBYOMCPGrantToReferencingGoober(t *testing.T) {
 		t.Fatalf("BYO MCP token = %q, %v", token, err)
 	}
 
-	otherGrants := buildGooberCredentialGrants("coder", nil, grants)
+	otherGrants := buildGooberCredentialGrants("coder", "", nil, grants)
 	other, err := credentials.NewGooberInjector(resolver, "coder", otherGrants, &escTestRegistrar{})
 	if err != nil {
 		t.Fatalf("NewGooberInjector(other): %v", err)
@@ -2908,6 +2908,7 @@ func TestBuildGooberCredentialGrantsScopesSourcesToIdentity(t *testing.T) {
 	}
 	grants := buildGooberCredentialGrants(
 		"curator",
+		"",
 		[]string{"agent:model", "telemetry:read", "configrepo:read", "agent:model"},
 		sources,
 	)
@@ -2916,6 +2917,132 @@ func TestBuildGooberCredentialGrantsScopesSourcesToIdentity(t *testing.T) {
 	}
 	if got := grants[0]; got.Goober != "curator" || got.Capability != "agent:model" || got.Ref != "model-token" {
 		t.Fatalf("grant = %+v, want curator/agent:model/model-token", got)
+	}
+}
+
+// TestBuildCredentialsThreeHarnessesEachGetOwnGrant is #5148's core
+// acceptance case: an instance with one agent:model grant per harness
+// resolves the right secret for a goober on each harness, with no
+// cross-harness injection, in the same run set.
+func TestBuildCredentialsThreeHarnessesEachGetOwnGrant(t *testing.T) {
+	t.Setenv("COPILOT_PAT", "copilot-secret")
+	t.Setenv("ANTHROPIC_KEY", "claude-secret")
+	t.Setenv("OPENAI_KEY", "codex-secret")
+	cfg := &instance.Config{
+		Credentials: []instance.CredentialGrant{
+			{Capability: "agent:model", Harness: "copilot", Token: instance.TokenRef{Env: "COPILOT_PAT"}},
+			{Capability: "agent:model", Harness: "claude-code", Token: instance.TokenRef{Env: "ANTHROPIC_KEY"}},
+			{Capability: "agent:model", Harness: "codex", Token: instance.TokenRef{Env: "OPENAI_KEY"}},
+		},
+	}
+	resolver, runnerGrants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	for harness, want := range map[string]string{
+		"copilot":     "copilot-secret",
+		"claude-code": "claude-secret",
+		"codex":       "codex-secret",
+	} {
+		gooberGrants := buildGooberCredentialGrants("worker", harness, []string{"agent:model"}, runnerGrants)
+		if len(gooberGrants) != 1 {
+			t.Fatalf("harness %s: grants = %+v, want exactly one", harness, gooberGrants)
+		}
+		got, err := resolver.Resolve(context.Background(), gooberGrants[0].Ref)
+		if err != nil {
+			t.Fatalf("harness %s: resolve: %v", harness, err)
+		}
+		if got != want {
+			t.Fatalf("harness %s: agent:model = %q, want %q (cross-harness injection)", harness, got, want)
+		}
+		if gooberGrants[0].Capability != "agent:model" {
+			t.Fatalf("harness %s: grant capability = %q, want the plain unscoped key", harness, gooberGrants[0].Capability)
+		}
+	}
+}
+
+// TestBuildCredentialsScopedGrantPreferredOverUnscoped is #5148's fallback
+// case: a harness-scoped grant wins for its own harness, and every other
+// harness falls back to the unscoped grant.
+func TestBuildCredentialsScopedGrantPreferredOverUnscoped(t *testing.T) {
+	t.Setenv("SHARED_TOKEN", "shared-secret")
+	t.Setenv("CLAUDE_TOKEN", "claude-only-secret")
+	cfg := &instance.Config{
+		Credentials: []instance.CredentialGrant{
+			{Capability: "agent:model", Token: instance.TokenRef{Env: "SHARED_TOKEN"}},
+			{Capability: "agent:model", Harness: "claude-code", Token: instance.TokenRef{Env: "CLAUDE_TOKEN"}},
+		},
+	}
+	resolver, runnerGrants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	claudeGrants := buildGooberCredentialGrants("worker", "claude-code", []string{"agent:model"}, runnerGrants)
+	if len(claudeGrants) != 1 {
+		t.Fatalf("claude-code grants = %+v, want one", claudeGrants)
+	}
+	if got, _ := resolver.Resolve(context.Background(), claudeGrants[0].Ref); got != "claude-only-secret" {
+		t.Fatalf("claude-code agent:model = %q, want the harness-scoped grant to win", got)
+	}
+	copilotGrants := buildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, runnerGrants)
+	if len(copilotGrants) != 1 {
+		t.Fatalf("copilot grants = %+v, want one", copilotGrants)
+	}
+	if got, _ := resolver.Resolve(context.Background(), copilotGrants[0].Ref); got != "shared-secret" {
+		t.Fatalf("copilot agent:model = %q, want the unscoped grant as fallback", got)
+	}
+}
+
+// TestBuildCredentialsSingleUnscopedGrantUnchanged pins that a legacy
+// single-grant, single-harness config (no harness field at all) resolves
+// byte-identically for every possible harness — #5148 must not change
+// existing single-harness instance behavior.
+func TestBuildCredentialsSingleUnscopedGrantUnchanged(t *testing.T) {
+	t.Setenv("ONLY_TOKEN", "only-secret")
+	cfg := &instance.Config{
+		Credentials: []instance.CredentialGrant{
+			{Capability: "agent:model", Token: instance.TokenRef{Env: "ONLY_TOKEN"}},
+		},
+	}
+	resolver, runnerGrants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	for _, harness := range []string{"copilot", "claude-code", "codex", ""} {
+		grants := buildGooberCredentialGrants("worker", harness, []string{"agent:model"}, runnerGrants)
+		if len(grants) != 1 {
+			t.Fatalf("harness %q: grants = %+v, want one", harness, grants)
+		}
+		if got, _ := resolver.Resolve(context.Background(), grants[0].Ref); got != "only-secret" {
+			t.Fatalf("harness %q: agent:model = %q, want only-secret unchanged", harness, got)
+		}
+	}
+}
+
+// TestBuildGooberCredentialGrantsHarnessPrecedence exercises the raw
+// buildGooberCredentialGrants precedence rule directly against synthetic
+// credentials.Grant sources (as credentialGrantStorageKey would produce
+// them), independent of buildCredentials/instance.Config wiring.
+func TestBuildGooberCredentialGrantsHarnessPrecedence(t *testing.T) {
+	sources := []credentials.Grant{
+		{Capability: "agent:model", Ref: "unscoped-ref"},
+		{Capability: credentials.HarnessScopedCapability("agent:model", "claude-code"), Ref: "claude-ref"},
+		{Capability: credentials.HarnessScopedCapability("agent:model", "codex"), Ref: "codex-ref"},
+	}
+	cases := []struct {
+		harness string
+		wantRef string
+	}{
+		{"claude-code", "claude-ref"},
+		{"codex", "codex-ref"},
+		{"copilot", "unscoped-ref"}, // no copilot-scoped grant configured: falls back
+		{"", "unscoped-ref"},
+	}
+	for _, tc := range cases {
+		grants := buildGooberCredentialGrants("worker", tc.harness, []string{"agent:model"}, sources)
+		if len(grants) != 1 || grants[0].Ref != tc.wantRef || grants[0].Capability != "agent:model" {
+			t.Fatalf("harness %q: grants = %+v, want one grant {agent:model, %s}", tc.harness, grants, tc.wantRef)
+		}
 	}
 }
 

@@ -2157,6 +2157,108 @@ credentials:
 	}
 }
 
+func TestLoadConfigCredentialsHarnessScoping(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GH_TOKEN
+credentials:
+  - capability: agent:model
+    harness: copilot
+    token:
+      env: COPILOT_GITHUB_TOKEN
+  - capability: agent:model
+    harness: claude-code
+    token:
+      env: ANTHROPIC_API_KEY
+  - capability: agent:model
+    harness: codex
+    token:
+      env: CODEX_API_KEY
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Credentials) != 3 {
+		t.Fatalf("expected 3 credentials, got %+v", cfg.Credentials)
+	}
+	for i, want := range []string{"copilot", "claude-code", "codex"} {
+		if cfg.Credentials[i].Harness != want {
+			t.Fatalf("credentials[%d].Harness = %q, want %q", i, cfg.Credentials[i].Harness, want)
+		}
+	}
+}
+
+func TestLoadConfigCredentialsRejectsUnknownHarness(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+credentials:
+  - capability: agent:model
+    harness: cursor
+    token:
+      env: CURSOR_TOKEN
+`)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("unknown harness passed validation")
+	}
+	if !strings.Contains(err.Error(), "unknown harness") {
+		t.Fatalf("error = %v, want mention of unknown harness", err)
+	}
+}
+
+func TestLoadConfigCredentialsAllowsSameCapabilityDifferentHarnesses(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+credentials:
+  - capability: agent:model
+    harness: claude-code
+    token:
+      env: ANTHROPIC_API_KEY
+  - capability: agent:model
+    harness: codex
+    token:
+      env: CODEX_API_KEY
+  - capability: agent:model
+    token:
+      env: SHARED_MODEL_TOKEN
+`)
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+}
+
+func TestLoadConfigCredentialsRejectsDuplicateHarnessScopedGrant(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+credentials:
+  - capability: agent:model
+    harness: claude-code
+    token:
+      env: ANTHROPIC_API_KEY
+  - capability: agent:model
+    harness: claude-code
+    token:
+      env: ANTHROPIC_API_KEY_2
+`)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("duplicate harness-scoped grant passed validation")
+	}
+	if !strings.Contains(err.Error(), "sourced more than once") {
+		t.Fatalf("error = %v, want mention of duplicate sourcing", err)
+	}
+}
+
 func TestLoadConfigRejectsMalformedBYOMCPCredentialGrant(t *testing.T) {
 	for name, grant := range map[string]string{
 		"missing selector": `token:

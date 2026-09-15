@@ -96,6 +96,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 		}
 		stageGrants := buildGooberCredentialGrants(
 			fixture.Goober,
+			"",
 			[]string{fixture.CodeCapability},
 			runnerGrants,
 		)
@@ -123,6 +124,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 
 		forgedGrants := buildGooberCredentialGrants(
 			fixture.Goober,
+			"",
 			[]string{string(capability.ConfigRepoRead)},
 			runnerGrants,
 		)
@@ -180,6 +182,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 		}
 		stageGrants := buildGooberCredentialGrants(
 			fixture.Goober,
+			"",
 			[]string{fixture.CodeCapability},
 			runnerGrants,
 		)

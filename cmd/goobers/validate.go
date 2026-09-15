@@ -329,7 +329,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "INSTANCE002", string(validate.Error), err.Error())
 		return 1
 	}
-	modelCredential, err := agentModelCredentialResolver(cfg, harnessStores)
+	modelCredential, _, err := agentModelCredentialResolver(cfg, harnessStores, "")
 	if err != nil {
 		pf(stdout, "INVALID credentials:\n  %v\n", err)
 		diagnostics.add(diagnosticFile(root, configFile), "/credentials", "INSTANCE003", string(validate.Error), err.Error())
@@ -456,7 +456,11 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	if options.checkHarness {
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
-		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, modelCredential, diagnostics) {
+		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+			func(h apiv1.Harness) (func(context.Context) (string, error), string, error) {
+				return agentModelCredentialResolver(cfg, harnessStores, h)
+			},
+			diagnostics) {
 			return 1
 		}
 	}
@@ -1380,13 +1384,22 @@ var harnessAdapterFor = adapterFor
 // checkHarnessesAtSources preflights every distinct harness referenced by set's
 // goobers (GBO-011), printing actionable guidance per failure. Returns false
 // if any harness failed its preflight.
+//
+// credentialResolverFor (#5148), when non-nil, is called once per distinct
+// harness to get that harness's own agent:model credential resolver — the
+// same scoped-over-unscoped precedence buildGooberCredentialGrants applies at
+// run time — plus a label naming which grant would be used (never its
+// value), so an operator validating a mixed-harness instance can see, per
+// harness, which credential source resolves before ever dispatching a run.
+// nil (as every existing test passes) preserves the pre-#5148 behavior of
+// preflighting with no resolved agent:model credential at all.
 func checkHarnessesAtSources(
 	goobers []apiv1.Goober,
 	stdout, stderr io.Writer,
 	sourceFile func(apiv1.Goober) string,
 	envPassthrough []string,
 	harnessCommand map[string][]string,
-	modelCredential func(ctx context.Context) (string, error),
+	credentialResolverFor func(apiv1.Harness) (func(ctx context.Context) (string, error), string, error),
 	collectors ...*diagnosticCollector,
 ) bool {
 	seen := map[apiv1.Harness]bool{}
@@ -1400,6 +1413,22 @@ func checkHarnessesAtSources(
 		file := "."
 		if sourceFile != nil {
 			file = sourceFile(g)
+		}
+
+		var modelCredential func(context.Context) (string, error)
+		credentialLabel := "no agent:model grant configured"
+		if credentialResolverFor != nil {
+			resolve, label, err := credentialResolverFor(h)
+			if err != nil {
+				pf(stdout, "HARNESS %s: %v\n", h, err)
+				addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
+				ok = false
+				continue
+			}
+			modelCredential = resolve
+			if label != "" {
+				credentialLabel = label
+			}
 		}
 
 		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand, modelCredential)
@@ -1423,7 +1452,7 @@ func checkHarnessesAtSources(
 			continue
 		}
 
-		pf(stdout, "HARNESS %s: OK\n", h)
+		pf(stdout, "HARNESS %s: OK (agent:model: %s)\n", h, credentialLabel)
 	}
 	return ok
 }

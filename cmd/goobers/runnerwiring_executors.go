@@ -496,7 +496,7 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 	}
 	credentialKeys := append([]string(nil), spec.Capabilities...)
 	credentialKeys = append(credentialKeys, mcpconfig.BYOCredentialKeys(spec.MCPServers)...)
-	gooberGrants := buildGooberCredentialGrants(input.GooberName, credentialKeys, input.Grants)
+	gooberGrants := buildGooberCredentialGrants(input.GooberName, string(harnessName), credentialKeys, input.Grants)
 	injector, err := credentials.NewGooberInjectorWithCredentialKeys(
 		input.Resolver,
 		input.GooberName,

@@ -18,26 +18,63 @@ import (
 // this, a file/keychain-sourced agent:model PAT is invisible to the sign-in
 // probe, which then silently falls back to whatever the CLI has cached from
 // its own prior interactive login — a different, possibly wrong, account).
-// Returns nil, nil when no agent:model grant is configured, leaving preflight
-// to reflect only ambient env or the CLI's own cached login, unchanged from
-// before this resolver existed.
-func agentModelCredentialResolver(cfg *instance.Config, stores credentials.StoreResolver) (func(ctx context.Context) (string, error), error) {
-	for _, grant := range cfg.Credentials {
+//
+// forHarness selects among multiple configured agent:model grants the same
+// way buildGooberCredentialGrants does at run time (#5148): a grant scoped to
+// forHarness wins; absent that, an unscoped grant (one with no harness set,
+// backing every harness) is used. Pass "" to require an unscoped grant only —
+// compiledMachinesWithGooberDigestsAndWarnings' single shared model-discovery
+// pass covers every goober's harness at once and has no one harness to prefer,
+// so it keeps the pre-#5148 behavior of resolving only the shared grant; a
+// mixed-harness instance with no unscoped agent:model grant degrades to no
+// online model-name validation there (deferModelDiscovery / the config's own
+// declared model still work), which is no worse than before this field
+// existed. `validate --check-harness` (checkHarnessesAtSources) calls this
+// once per distinct harness instead, so it always gets that harness's actual
+// grant.
+//
+// Returns a nil func and an empty label when no matching agent:model grant is
+// configured, leaving preflight to reflect only ambient env or the CLI's own
+// cached login, unchanged from before this resolver existed. label names
+// which grant would be used (never the resolved value) for --check-harness's
+// reporting.
+func agentModelCredentialResolver(cfg *instance.Config, stores credentials.StoreResolver, forHarness apiv1.Harness) (resolve func(ctx context.Context) (string, error), label string, err error) {
+	var scoped, unscoped *instance.CredentialGrant
+	for i := range cfg.Credentials {
+		grant := &cfg.Credentials[i]
 		if grant.Capability != string(capability.AgentModel) {
 			continue
 		}
-		resolver, err := credentials.NewResolverWithStores(
-			[]credentials.TokenRef{grant.Token.CredentialTokenRef(string(capability.AgentModel))},
-			stores,
-		)
-		if err != nil {
-			return nil, err
+		if forHarness != "" && grant.Harness == string(forHarness) && scoped == nil {
+			scoped = grant
+		} else if grant.Harness == "" && unscoped == nil {
+			unscoped = grant
 		}
-		return func(ctx context.Context) (string, error) {
-			return resolver.Resolve(ctx, string(capability.AgentModel))
-		}, nil
 	}
-	return nil, nil
+	grant := scoped
+	switch {
+	case grant != nil:
+		label = fmt.Sprintf("credentials[] agent:model scoped to harness %q", grant.Harness)
+	case unscoped != nil:
+		grant = unscoped
+		label = "credentials[] agent:model (unscoped)"
+	default:
+		return nil, "", nil
+	}
+	key := string(capability.AgentModel)
+	if grant.Harness != "" {
+		key = credentials.HarnessScopedCapability(key, grant.Harness)
+	}
+	resolver, err := credentials.NewResolverWithStores(
+		[]credentials.TokenRef{grant.Token.CredentialTokenRef(key)},
+		stores,
+	)
+	if err != nil {
+		return nil, "", err
+	}
+	return func(ctx context.Context) (string, error) {
+		return resolver.Resolve(ctx, key)
+	}, label, nil
 }
 
 // preflightHarnesses is the seam buildSchedulerSetup calls to preflight agentic
