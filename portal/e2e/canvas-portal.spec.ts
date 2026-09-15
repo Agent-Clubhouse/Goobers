@@ -49,21 +49,26 @@ async function openCanvas(page: Page) {
   });
   await page.goto("http://canvas.test/");
   await expect(page.getByRole("tab", { name: "Overview", exact: true })).toBeVisible();
+  await expect(page.locator("#error")).toBeEmpty();
   return errors;
 }
 
 test("canvas preserves run detail on refresh and returns keyboard focus to runs", async ({ page }) => {
   const errors = await openCanvas(page);
   await page.getByRole("tab", { name: "Runs", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Issue #7: Implement thing", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "PR #42: Ship thing", exact: true })).toBeVisible();
   const runButton = page.getByRole("button", { name: "Open Run id", exact: true });
   await runButton.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("tab", { name: "Summary", exact: true })).toBeVisible();
+  await expect(page.locator("#run-content .goober-chip").filter({ hasText: "implementer" })).toBeVisible();
   await page.route("http://canvas.test/api/snapshot?**", (route) =>
     route.fulfill({ json: snapshot({ ...sources[0], label: "Refreshed instance" }) }));
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.locator("#source-context")).toHaveText("Refreshed instance");
   await expect(page.locator("#dashboard")).toBeHidden();
+  await expect(page).toHaveURL(/[?&]run=run-1(?:&|$)/);
   await page.getByRole("button", { name: "Back to runs" }).click();
   await expect(page.getByRole("tab", { name: "Runs", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(runButton).toBeFocused();
@@ -119,5 +124,43 @@ test("run filters use checkbox dropdowns instead of multi-select lists", async (
   await page.getByRole("checkbox", { name: "implementation", exact: true }).check();
   await request;
   await expect(page.getByRole("button", { name: "implementation", exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("canvas refreshes snapshots on live events after switching sources", async ({ page }) => {
+  const errors = await openCanvas(page);
+  let snapshots = 0;
+  await page.route("http://canvas.test/api/snapshot?**", (route) =>
+    route.fulfill({ json: snapshot({
+      ...sources[1],
+      label: ++snapshots === 1 ? "Initial snapshot" : "Live event snapshot",
+    }) }));
+  await page.route("http://canvas.test/api/events?**", (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'data: {"type":"snapshot.changed"}\n\n',
+    }));
+  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+  await expect(page.locator("#source-context")).toHaveText("Live event snapshot");
+  await expect(page.locator("#error")).toBeEmpty();
+  expect(errors).toEqual([]);
+});
+
+test("connecting a source clears the previous run and closes the source form", async ({ page }) => {
+  const errors = await openCanvas(page);
+  await page.getByRole("tab", { name: "Runs", exact: true }).click();
+  await page.getByRole("button", { name: "Open Run id", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Summary", exact: true })).toBeVisible();
+  await page.route("http://canvas.test/api/add-source", (route) =>
+    route.fulfill({ json: { id: sources[1].id } }));
+  await page.locator("#add-source-details summary").click();
+  await page.locator("#remote-url").fill(sources[1].value);
+  await page.getByRole("button", { name: "Add remote", exact: true }).click();
+  await expect(page.locator("#source-context")).toHaveText("Instance two");
+  await expect(page.locator("#add-source-details")).not.toHaveAttribute("open", "");
+  await expect(page.locator("#run-view")).toBeHidden();
+  await expect(page.locator("#run-content")).toBeEmpty();
+  await expect(page.locator("#error")).toBeEmpty();
+  await expect(page).not.toHaveURL(/[?&]run=/);
   expect(errors).toEqual([]);
 });

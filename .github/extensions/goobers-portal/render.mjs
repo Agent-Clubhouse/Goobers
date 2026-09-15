@@ -984,13 +984,15 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <option value="light">Light theme</option>
       <option value="dark">Dark theme</option>
     </select>
-    <select id="source-select"><option value="">No sources yet</option></select>
+    <select id="source-select" aria-label="Goobers source"><option value="">No sources yet</option></select>
     <input id="run-jump" type="text" placeholder="Run ID" aria-label="Jump to a run" style="max-width: 180px;" />
     <button id="run-jump-button" type="button">Jump</button>
     <button id="refresh">Refresh</button>
   </div>
 </header>
-<main>
+<main id="main-content" tabindex="-1">
+  <p id="source-context" class="muted"></p>
+  <p id="freshness" class="freshness" role="status">Connecting</p>
   <details id="add-source-details">
     <summary>Connect a source&hellip;</summary>
     <div class="add-form">
@@ -1168,6 +1170,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const expandedAttention = new Set();
   let activeDashboardTab = "attention";
   let activeRunTab = "summary";
+  let selectedRunId = "";
+  let runRequestSequence = 0;
+  let snapshotRequestSequence = 0;
+  let snapshotSourceId = null;
   let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
@@ -1475,6 +1481,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   function renderSnapshot(data) {
     errorEl.textContent = "";
+    document.getElementById("source-context").textContent =
+      data.source?.label || data.instance?.name || data.source?.value || "";
     updateStartBar(data);
     if (!data.connected) {
       emptyEl.style.display = data.reason ? "block" : "none";
@@ -1535,7 +1543,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const nameTip = purpose || (displayName && displayName !== name ? displayName : "");
       const nameTitleAttr = nameTip ? ' title="' + escapeHtml(nameTip) + '"' : "";
       tr.innerHTML =
-        "<td" + nameTitleAttr + "><code>" + escapeHtml(name) + "</code></td>" +
+        "<td" + nameTitleAttr + '><button type="button" class="table-link">' + escapeHtml(name) + "</button></td>" +
         "<td>" + escapeHtml(gaggle) + "</td>" +
         "<td>" + escapeHtml(triggerLabel) + "</td>" +
         "<td>" + escapeHtml(w.concurrency?.activeRuns ?? "\u2014") + "</td>" +
@@ -1812,7 +1820,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     return f;
   }
 
-  function syncViewUrl(runId = "") {
+  function syncViewUrl(runId = selectedRunId) {
     const query = new URLSearchParams(encodeViewState(currentFilters(), runId));
     const next = query.toString();
     window.history.replaceState(null, "", next ? "?" + next : window.location.pathname);
@@ -1917,7 +1925,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         ? ' <a class="actions-run-link" href="' + escapeHtml(actionsUrl) +
           '" target="_blank" rel="noopener noreferrer" title="Open GitHub Actions run">Action &#8599;</a>'
         : "";
-      const associations = renderRunAssociations(r);
+      const associations = renderRunAssociations(r.operator);
       tr.className = "clickable-row";
       tr.dataset.runId = runId;
       tr.innerHTML = renderRunRowCells(r, {
@@ -2459,6 +2467,13 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
   }
 
+  const gooberAvatar = ${gooberAvatar.toString()};
+  const renderGooberChip = ${renderGooberChip.toString()
+    .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderFullRunId = ${renderFullRunId.toString()
+    .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderRunIdControl = ${renderRunIdControl.toString()
+    .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunAssociations = ${renderRunAssociations.toString()
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
@@ -2770,6 +2785,25 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   async function loadSnapshot() {
     const sourceId = sourceSelect.value;
+    if (snapshotSourceId !== sourceId) {
+      if (snapshotSourceId !== null) {
+        restoredRunId = "";
+        selectedRunId = "";
+        ++runRequestSequence;
+        ++filterRequestSequence;
+        runViewEl.style.display = "none";
+        runContentEl.innerHTML = "";
+        runErrorEl.textContent = "";
+        runStatusEl.textContent = "";
+        dashboardEl.style.display = "none";
+        document.getElementById("source-context").textContent = "";
+        lastRuns = [];
+        pendingToggles.clear();
+        workflowUndo.clear();
+        syncViewUrl();
+      }
+      snapshotSourceId = sourceId;
+    }
     const requestSequence = ++snapshotRequestSequence;
     if (!sourceId) {
       emptyEl.style.display = "block";
@@ -2872,7 +2906,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       });
       setFreshnessState(freshness, lastUpdatedAt);
       startFreshnessTimer();
-      if (wasReconnect) void requestLiveSnapshotRefresh();
+      if (wasReconnect) void loadSnapshot();
     };
     eventSource.onmessage = (event) => {
       if (!decodeStreamEvent(event.data)) return;
@@ -2884,7 +2918,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         now: Date.now(),
       });
       setFreshnessState(freshness, lastUpdatedAt);
-      void requestLiveSnapshotRefresh();
+      void loadSnapshot();
     };
     eventSource.onerror = () => {
       if (eventSource) {
@@ -2897,12 +2931,14 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   }
 
   document.getElementById("refresh").addEventListener("click", refreshAll);
-  sourceSelect.addEventListener("change", () => {
+  async function changeSource() {
     liveConnectionEstablished = false;
     reconnectAttemptCount = 0;
     if (eventSource) eventSource.close();
-    void loadSnapshot().then(connectLiveEvents);
-  });
+    await loadSnapshot();
+    connectLiveEvents();
+  }
+  sourceSelect.addEventListener("change", () => void changeSource());
   function jumpToRun() {
     const runId = runJumpInput.value.trim();
     if (!runId) return;
