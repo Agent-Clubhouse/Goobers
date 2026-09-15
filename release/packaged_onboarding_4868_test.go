@@ -87,6 +87,8 @@ func TestPackagedOnboardingUsesInstallRouteCommand(t *testing.T) {
 			for _, guidance := range []string{
 				"### Goobers Portal canvas",
 				"**More filters and saved views**",
+				"**Run now**",
+				"A source change during force confirmation cancels that retry.",
 				"`/api/v1/instance`",
 				"**Open Fleet portal**",
 				"Switching sources updates or hides the Fleet panel.",
