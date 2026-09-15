@@ -170,7 +170,15 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 		return fmt.Errorf("rebound workspace branch %q could not be cloned from %s; refusing to create it at base — the branch names work that already exists: %w", rebound, cloneURL, cloneErr)
 	}
 	// First stage of the run: the branch does not exist yet.
-	//
+	return checkoutFallbackBranchAtBase(ctx, dir, gitEnv, stderr, branch, base, cloneURL)
+}
+
+// checkoutFallbackBranchAtBase is checkoutRepoWorkspace's first-stage-of-the-run
+// arm: the run branch does not exist on the remote yet, so this clones base
+// directly and creates the run branch locally on top of it. Split out to keep
+// checkoutRepoWorkspace's own branching flat (test/complexitygate), mirroring
+// why finishWritableRepoCheckoutOnExistingBranch was split out earlier.
+func checkoutFallbackBranchAtBase(ctx context.Context, dir string, gitEnv []string, stderr io.Writer, branch, base, cloneURL string) error {
 	// The attempt above may have left partial state — git can populate the
 	// destination and only then discover the branch is missing — and a second
 	// `clone <url> .` into a non-empty directory is refused outright. Clearing
@@ -187,6 +195,19 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	// worktree the worker would have handed a self-placed stage.
 	if err := runGit(ctx, dir, gitEnv, stderr, "checkout", "--quiet", "-b", branch); err != nil {
 		return fmt.Errorf("create run branch %s: %w", branch, err)
+	}
+	// This clone checked out base directly, so a local refs/heads/<base> is
+	// already there — but a stage command that runs after this returns
+	// (gather-pr-context's own checkout of a selected PR's head, #5103) can
+	// leave this pod's HEAD on an entirely different branch by the time
+	// recovery custody resolves base. Calling this here as well as on the
+	// existing-branch arm makes both writable arms provision the SAME
+	// belt-and-suspenders guarantee rather than leaving one implicitly
+	// correct and the other merely usually correct. Cheap: the probe inside
+	// finds refs/heads/<base> immediately and returns without touching the
+	// network.
+	if err := ensureRecoveryBaseRemoteRef(ctx, dir, gitEnv, stderr, base); err != nil {
+		return err
 	}
 	if err := applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr); err != nil {
 		return err
