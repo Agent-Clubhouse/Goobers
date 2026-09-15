@@ -40,7 +40,7 @@ func TestRecoveryClaimMatchingRequiresUnambiguousCompleteIdentity(t *testing.T) 
 				wantErr = true
 			}
 			matched, err := recoveryClaimMatches(events, runID, repoKey, "7")
-			if want := mode == "match" || mode == "retry"; matched != want || (err != nil) != wantErr {
+			if want := mode == "match" || mode == "retry" || mode == "pull-request"; matched != want || (err != nil) != wantErr {
 				t.Fatalf("matched=%t err=%v, want match=%t error=%t", matched, err, want, wantErr)
 			}
 		})

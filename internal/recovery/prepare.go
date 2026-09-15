@@ -49,12 +49,17 @@ func PrepareRecord(ctx context.Context, repository, repositoryKey, runID, baseRe
 	return Record{Version: 1, RunID: runID, RepositoryKey: repositoryKey, Ref: ref, BaseRef: remoteRecoveryBaseRef(baseRef), BaseSHA: baseSHA, SnapshotSHA: snapshot, PatchDigest: digest, CreatedAt: identityTime, RetainUntil: retainUntil}, nil
 }
 
-// remoteRecoveryBaseRef converts the pinned workspace's local mirror-tracking
-// namespace into the source ref a later restore must fetch. Other fully
-// qualified refs and object IDs retain their exact identity.
+// remoteRecoveryBaseRef converts a local remote-tracking namespace into the
+// source ref a later restore must fetch: "mirror" is the worker-side managed
+// mirror's remote name, "origin" a mode-3 pod's own clone's (#5103) — both
+// name the same base branch on the same origin repository, just under
+// whichever remote each caller's checkout happened to use locally. Other
+// fully qualified refs and object IDs retain their exact identity.
 func remoteRecoveryBaseRef(baseRef string) string {
-	if branch, ok := strings.CutPrefix(baseRef, "refs/remotes/mirror/"); ok {
-		return "refs/heads/" + branch
+	for _, prefix := range []string{"refs/remotes/mirror/", "refs/remotes/origin/"} {
+		if branch, ok := strings.CutPrefix(baseRef, prefix); ok {
+			return "refs/heads/" + branch
+		}
 	}
 	if strings.HasPrefix(baseRef, "refs/") || gitObjectID.MatchString(baseRef) {
 		return baseRef

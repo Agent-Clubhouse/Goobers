@@ -63,3 +63,55 @@ func TestIntegrationRetentionRequiresJournalAcknowledgementAfterArchive(t *testi
 		t.Fatalf("retry failed to acknowledge same snapshot: %+v %q %v", got, path, err)
 	}
 }
+
+// TestIntegrationRetainSkipsCustodyForAGenuinelyEmptyDiff pins #5103's
+// acceptance criterion: a stage whose pod made no commits and left no dirty
+// files must skip custody cleanly, with no journal write and no acknowledge
+// call at all — not merely "no error". SkipEmpty only ever gets to run this
+// check once PrepareRecord can resolve the base in the first place, so this
+// also exercises resolution against a base reachable only as a
+// remote-tracking ref, the shape a mode-3 pod's checkout leaves behind on an
+// already-existing run branch (#5103).
+func TestIntegrationRetainSkipsCustodyForAGenuinelyEmptyDiff(t *testing.T) {
+	testdep.Require(t, "git")
+	origin := t.TempDir()
+	recoveryTestGit(t, origin, "init", "--initial-branch=main")
+	recoveryTestGit(t, origin, "commit", "--allow-empty", "-m", "base")
+	recoveryTestGit(t, origin, "checkout", "-b", "run-branch")
+
+	// The shape checkoutRepoWorkspace's "already exists" arm leaves: a
+	// single-branch clone of the run branch, no local "main" at all, only the
+	// remote-tracking ref recovery custody now fetches for exactly this.
+	parent := t.TempDir()
+	recoveryTestGit(t, parent, "clone", "--quiet", "--branch", "run-branch", origin, "checkout")
+	repository := filepath.Join(parent, "checkout")
+	recoveryTestGit(t, repository, "fetch", "--quiet", "origin", "main:refs/remotes/origin/main")
+	if got := recoveryTestGit(t, repository, "branch", "--list", "main"); got != "" {
+		t.Fatalf("test fixture unexpectedly carries a local main branch: %q", got)
+	}
+
+	inventory := t.TempDir()
+	template := storageTestRecord()
+	request := RetentionRequest{
+		Repository: repository, RepositoryKey: template.RepositoryKey, RunID: template.RunID,
+		BaseRef: "refs/remotes/origin/main", IdentityTime: template.CreatedAt, RetainUntil: template.RetainUntil,
+		InventoryRoot: inventory, CleanupRoots: []string{repository}, MaxSnapshots: 1, MaxArchiveBytes: 1 << 20,
+		SkipEmpty: true,
+		AcknowledgeArchive: func(context.Context, Record, string) error {
+			t.Fatal("an empty diff still attempted custody upload")
+			return nil
+		},
+	}
+	log := retentionJournalFunc(func(journal.Event) error {
+		t.Fatal("an empty diff still journaled a retention publication")
+		return nil
+	})
+	got, path, err := Retain(context.Background(), request, log)
+	if err != nil || got != (Record{}) || path != "" {
+		t.Fatalf("empty diff was not skipped cleanly: %+v %q %v", got, path, err)
+	}
+	entries, err := os.ReadDir(inventory)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("empty diff consumed an inventory slot: %v %v", entries, err)
+	}
+}

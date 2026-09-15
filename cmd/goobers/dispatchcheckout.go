@@ -144,18 +144,7 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	// still reach this stage. applyStageWorkspaceDelta covers that.
 	cloneErr := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", branch, cloneURL, ".")
 	if cloneErr == nil {
-		if err := applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr); err != nil {
-			return err
-		}
-		// Base sync AFTER the delta, matching the self runner's order: the
-		// worker/worktree provisioner applies the delta into the mirror and
-		// only then creates the worktree with SyncBase, so the merge lands on
-		// the branch as the stage will see it. Reversing the two would merge
-		// base into a branch the delta is about to reset away from.
-		if err := syncWorkspaceBase(ctx, dir, gitEnv, stderr, branch, base); err != nil {
-			return err
-		}
-		return recordStagePublishBase(ctx, dir, gitEnv, stderr)
+		return finishWritableRepoCheckoutOnExistingBranch(ctx, dir, gitEnv, stderr, branch, base)
 	}
 	// A REBOUND branch this pod could not clone is a refusal, not a fallback
 	// (#392). The fallback below creates the branch locally at base, which is
@@ -203,6 +192,59 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 		return err
 	}
 	return recordStagePublishBase(ctx, dir, gitEnv, stderr)
+}
+
+// finishWritableRepoCheckoutOnExistingBranch runs the rest of a writable repo
+// checkout that landed directly on the run branch (checkoutRepoWorkspace's
+// clone above already succeeded): ensure base is resolvable for recovery
+// custody, carry forward any earlier stage's unpushed delta, sync base when
+// the stage declared it, and record what this stage checked out against.
+// Split out from checkoutRepoWorkspace to keep its own branching flat
+// (#5103 added the base-ref step alongside the three that were already
+// here).
+func finishWritableRepoCheckoutOnExistingBranch(ctx context.Context, dir string, gitEnv []string, stderr io.Writer, branch, base string) error {
+	// This clone is scoped to the run branch alone (single-branch by
+	// construction: `--branch` without `--no-single-branch`), so nothing
+	// above ever fetched base — the fallback below is the only other arm
+	// that does, and this succeeded instead of falling into it. Recovery
+	// custody (cmd/goobers/recoverypod.go) resolves its cumulative diff
+	// against base after the stage exits, and internal/recovery
+	// deliberately runs no git transport of its own — it needs base
+	// resolvable locally by then regardless of whether this stage declared
+	// syncBase (#5103).
+	if err := ensureRecoveryBaseRemoteRef(ctx, dir, gitEnv, stderr, base); err != nil {
+		return err
+	}
+	if err := applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr); err != nil {
+		return err
+	}
+	// Base sync AFTER the delta, matching the self runner's order: the
+	// worker/worktree provisioner applies the delta into the mirror and only
+	// then creates the worktree with SyncBase, so the merge lands on the
+	// branch as the stage will see it. Reversing the two would merge base
+	// into a branch the delta is about to reset away from.
+	if err := syncWorkspaceBase(ctx, dir, gitEnv, stderr, branch, base); err != nil {
+		return err
+	}
+	return recordStagePublishBase(ctx, dir, gitEnv, stderr)
+}
+
+// ensureRecoveryBaseRemoteRef makes base resolvable as a git revision in dir,
+// fetching it as a persistent remote-tracking ref when the clone above never
+// touched it. It is a no-op — no network call — when base already resolves
+// (the syncBase arm's own `fetch origin base` only ever updates FETCH_HEAD,
+// never a persisted ref, so this still fetches on a syncBase stage too).
+func ensureRecoveryBaseRemoteRef(ctx context.Context, dir string, gitEnv []string, stderr io.Writer, base string) error {
+	probe := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", base+"^{commit}")
+	probe.Env = composeGitEnv(dir, gitEnv)
+	probe.Stdout, probe.Stderr = io.Discard, io.Discard
+	if probe.Run() == nil {
+		return nil
+	}
+	if err := runGit(ctx, dir, gitEnv, stderr, "fetch", "--quiet", "origin", base+":refs/remotes/origin/"+base); err != nil {
+		return fmt.Errorf("fetch base %s for recovery custody: %w", base, err)
+	}
+	return nil
 }
 
 // applyStageWorkspaceDelta moves the freshly-checked-out branch onto whatever
