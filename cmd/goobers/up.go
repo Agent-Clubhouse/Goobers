@@ -368,6 +368,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	ctx := webhookGate.Context()
+	// Claim administration must outlive admission shutdown so active runs can
+	// finish delegated recovery while the daemon drains.
+	claimAdminCtx, stopClaimAdmin := context.WithCancel(context.Background())
+	defer stopClaimAdmin()
 	var ready atomic.Bool
 	// Named subsystem readiness checks (#3806), surfaced on /readyz alongside
 	// the overall Ready gate above. Each flips exactly once, in startup
@@ -1674,7 +1678,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// `goobers claim`/release could wait indefinitely with no trigger-side
 	// misbehavior of its own. Its own ticker gives claims the same isolation
 	// cancelTicker/applyTicker already have from each other below.
-	claimAdminTickerDone := startPeriodicSweep(ctx, delegationSweepInterval, func() {
+	claimAdminTickerDone := startPeriodicSweep(claimAdminCtx, delegationSweepInterval, func() {
 		claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
 	})
 
@@ -1918,7 +1922,6 @@ daemonLoop:
 	<-startupMergedPRCostSweepDone
 	<-apiReadCacheLockSweepTickerDone
 	<-delegationTickerDone
-	<-claimAdminTickerDone
 	<-cancelTickerDone
 	<-applyTickerDone
 	<-supervisorStopDone
@@ -1945,6 +1948,8 @@ daemonLoop:
 
 	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout,
 		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
+	stopClaimAdmin()
+	<-claimAdminTickerDone
 	stopTerminalCleanupRetry()
 	<-terminalCleanupRetryDone
 	runTerminalCleanupRetryFinal(cleanupRetries, terminalCleanupRetryErrors, readyNow)
