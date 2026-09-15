@@ -4,6 +4,11 @@ import test from "node:test";
 
 import { lintInnerHTMLAssignments } from "./innerhtml-lint.mjs";
 import {
+    configurationWarningKey,
+    groupConfigurationWarnings,
+    renderConfigurationWarnings,
+} from "./configuration-warnings.mjs";
+import {
     formatRunDetailTime,
     renderTelemetryInsights,
     renderCausalDiagnosis,
@@ -53,6 +58,72 @@ test("execution waterfall renders retry timing, gaps, and unavailable timing", (
 // inlining test below covers the browser actually getting the escaped copy.
 
 const HOSTILE = '<img src=x onerror=alert(1)>';
+const MODEL_WARNING = {
+    code: "MODEL002",
+    severity: "warning",
+    scope: "Goober/coder",
+    explanation: "requested model is unavailable; using the harness default",
+};
+
+test("configuration warnings group by scope and remediation in deterministic order", () => {
+    const warnings = [
+        { ...MODEL_WARNING, scope: "Workflow/zeta", code: "VER003", explanation: "later" },
+        { ...MODEL_WARNING, explanation: "second" },
+        MODEL_WARNING,
+    ];
+    const groups = groupConfigurationWarnings(warnings);
+    assert.equal(groups.length, 2);
+    assert.equal(groups[0].scope, "Goober/coder");
+    assert.deepEqual(groups[0].warnings.map((warning) => warning.explanation), [
+        MODEL_WARNING.explanation,
+        "second",
+    ]);
+    assert.equal(groups[0].remediation.key, "config-validate");
+    assert.equal(groups[1].scope, "Workflow/zeta");
+});
+
+test("configuration warning dismissal survives unchanged refreshes and changed content reappears", () => {
+    const dismissed = new Set([configurationWarningKey(MODEL_WARNING)]);
+    const unchanged = renderConfigurationWarnings(
+        [{ ...MODEL_WARNING }],
+        "instance",
+        { dismissedWarningKeys: dismissed },
+    );
+    assert.match(unchanged, /Warnings dismissed for this portal session/);
+    assert.doesNotMatch(unchanged, /requested model is unavailable/);
+
+    const changed = renderConfigurationWarnings(
+        [{ ...MODEL_WARNING, explanation: "the configured model changed" }],
+        "instance",
+        { dismissedWarningKeys: dismissed },
+    );
+    assert.match(changed, /the configured model changed/);
+    assert.match(changed, /1 active warning/);
+});
+
+test("configuration warning empty states differ by context", () => {
+    assert.match(
+        renderConfigurationWarnings([], "instance"),
+        />No active configuration warnings\.<\/strong>/,
+    );
+    assert.match(
+        renderConfigurationWarnings([], "workflow"),
+        />No active configuration warnings for this workflow\.<\/strong>/,
+    );
+});
+
+test("configuration warnings render collapsible groups and escaped dismiss controls", () => {
+    const html = renderConfigurationWarnings([
+        MODEL_WARNING,
+        { ...MODEL_WARNING, explanation: HOSTILE },
+    ], "workflow");
+    assert.match(html, /<details class="configuration-warning-group" open>/);
+    assert.match(html, /Dismiss all 2 warnings for Goober\/coder/);
+    assert.match(html, /data-dismiss-warning=/);
+    assert.match(html, /goobers validate/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.doesNotMatch(html, /<img/);
+});
 
 test("compact portal puts attention before activity and keeps source status outside tabs", () => {
     const html = renderHtml("compact");
@@ -271,6 +342,7 @@ test("the browser script receives the escaping helpers, not raw interpolation", 
     const page = renderHtml("inst-1");
     // The helpers are inlined verbatim for the client to call...
     assert.match(page, /const renderSnapshotCard = function renderSnapshotCard/);
+    assert.match(page, /const renderConfigurationWarnings = function renderConfigurationWarnings/);
     assert.match(page, /const renderRunRowCells = function renderRunRowCells/);
     assert.match(page, /const renderRunDetailSummary = function renderRunDetailSummary/);
     assert.match(page, /const renderRunEventItems = function renderRunEventItems/);
@@ -279,6 +351,7 @@ test("the browser script receives the escaping helpers, not raw interpolation", 
     // ...remapped onto the client's own escapeHtml, so no stale identifier
     // survives to throw at runtime.
     assert.ok(!page.includes("escapeAssociationHtml"), "escapeAssociationHtml leaked into the page");
+    assert.ok(!page.includes("escapeWarningHtml"), "escapeWarningHtml leaked into the page");
     // ...and the call sites go through them rather than concatenating.
     assert.match(page, /div\.innerHTML = renderSnapshotCard\(label, value\);/);
     assert.match(page, /tr\.innerHTML = renderRunRowCells\(r, \{/);

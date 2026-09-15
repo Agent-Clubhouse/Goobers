@@ -875,6 +875,22 @@ export async function loadRunDetail(resolved, runId) {
     return { ...detail, events: eventList.events || [] };
 }
 
+/**
+ * Fetch a workflow's full definition detail from the daemon. The standalone
+ * and GitHub Actions readers only expose workflow summaries, so callers must
+ * connect to a live daemon before requesting stages and graph data.
+ */
+export async function loadWorkflowDetail(resolved, gaggle, workflow) {
+    if (resolved.mode !== "daemon") {
+        throw new Error("Workflow detail requires a running Goobers daemon.");
+    }
+    const { baseUrl, token } = resolved;
+    return await fetchJSON(
+        `${baseUrl}/api/v1/gaggles/${encodeURIComponent(gaggle)}/workflows/${encodeURIComponent(workflow)}`,
+        { token },
+    );
+}
+
 async function fetchRunContent(resolved, resourcePath) {
     if (resolved.mode === "standalone") {
         throw new Error("Run content is not available in standalone (no-daemon) mode.");
