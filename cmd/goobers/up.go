@@ -397,7 +397,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		planeReady atomic.Bool
 	)
 	stopDaemon := func() {
-		ready.Store(false)
 		webhookGate.Stop()
 	}
 	parentBridgeDone := make(chan struct{})
@@ -1902,29 +1901,6 @@ daemonLoop:
 	}
 	openPRs.Stop()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-	shutdownErr := apiServer.Shutdown(shutdownCtx)
-	var webhookShutdownErr error
-	if webhookServer != nil {
-		webhookShutdownErr = webhookServer.Shutdown(shutdownCtx)
-	}
-	shutdownCancel()
-	apiStopped = true
-	if shutdownErr != nil {
-		apiFailed = true
-		pf(stderr, "error: %v\n", shutdownErr)
-	}
-	if webhookShutdownErr != nil {
-		webhookFailed = true
-		pf(stderr, "error: shut down webhook listener: %v\n", webhookShutdownErr)
-	}
-	if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
-		apiFailed = true
-		pf(stderr, "error: %v\n", err)
-	} else {
-		apiAddressPublished = false
-	}
-
 	// Wait for both background goroutines to fully stop BEFORE any further
 	// stdout/stderr writes below: each reacts to the same ctx cancellation
 	// independently, so without this join a tick still in flight when
@@ -1977,6 +1953,36 @@ daemonLoop:
 	} else {
 		pf(stdout, "hard shutdown complete: %d run(s) stopped; they will resume from their last checkpoints on the next `goobers up`\n", drainResult.terminated)
 	}
+
+	// Keep the versioned API ready and discoverable while active runs drain:
+	// stages may still need the daemon's claims plane to recover or renew
+	// coordination state. Closing the listener, or flipping the recovery gate
+	// first, makes those already-admitted runs fail even though this process is
+	// deliberately waiting for them.
+	ready.Store(false)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+	shutdownErr := apiServer.Shutdown(shutdownCtx)
+	var webhookShutdownErr error
+	if webhookServer != nil {
+		webhookShutdownErr = webhookServer.Shutdown(shutdownCtx)
+	}
+	shutdownCancel()
+	apiStopped = true
+	if shutdownErr != nil {
+		apiFailed = true
+		pf(stderr, "error: %v\n", shutdownErr)
+	}
+	if webhookShutdownErr != nil {
+		webhookFailed = true
+		pf(stderr, "error: shut down webhook listener: %v\n", webhookShutdownErr)
+	}
+	if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
+		apiFailed = true
+		pf(stderr, "error: %v\n", err)
+	} else {
+		apiAddressPublished = false
+	}
+
 	if apiFailed || webhookFailed || configFailed || schedulerFailed {
 		return 1
 	}
