@@ -102,6 +102,7 @@ test("stage inspector fallbacks and status messages are escaped", () => {
         name: "query",
         kind: "deterministic",
         capabilities: [],
+        retry: {},
     });
     assert.match(deterministic, /Deterministic runtime/);
     assert.match(deterministic, /No retry declared/);
@@ -109,6 +110,12 @@ test("stage inspector fallbacks and status messages are escaped", () => {
     assert.match(deterministic, /No YAML available/);
     assert.match(renderStageInspectorStatus("<unavailable>", { error: true }), /role="alert"/);
     assert.match(renderStageInspectorStatus("<unavailable>", { error: true }), /&lt;unavailable&gt;/);
+    assert.match(renderStageDefinitionInspector({
+        name: "review",
+        kind: "gate",
+        capabilities: [],
+        maxRepasses: 0,
+    }), /Max repasses<\/dt><dd>0/);
 });
 
 // #4567: the snapshot cards and run table interpolate values that originate

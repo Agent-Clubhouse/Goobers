@@ -326,7 +326,7 @@ export function renderStageDefinitionInspector(stage = {}, view = "fields") {
     const capabilities = Array.isArray(stage.capabilities) && stage.capabilities.length
         ? stage.capabilities.join(", ")
         : "None declared";
-    const retry = stage.retry
+    const retry = stage.retry?.maxAttempts !== undefined
         ? `${stage.retry.maxAttempts} attempt${stage.retry.maxAttempts === 1 ? "" : "s"}, ${stage.retry.backoffSeconds ?? 0}s backoff`
         : "No retry declared";
     const properties = [
@@ -342,7 +342,7 @@ export function renderStageDefinitionInspector(stage = {}, view = "fields") {
                 .join(", ")
             : "None declared";
         properties.push(stageProperty("Branches", branches));
-        properties.push(stageProperty("Max repasses", stage.maxRepasses || "Inherited"));
+        properties.push(stageProperty("Max repasses", stage.maxRepasses ?? "Inherited"));
     } else {
         properties.push(stageProperty(
             "Policy actions",
@@ -1144,6 +1144,17 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     white-space: pre;
     font-size: 12px;
   }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
   .graph-panel {
     border: 1px solid var(--border-color-default, #d0d7de);
     border-radius: 8px;
@@ -1177,6 +1188,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .stage-node.selected .node-rect {
     stroke: var(--true-color-blue, #0969da);
     stroke-width: 3;
+  }
+  @media (forced-colors: active) {
+    .stage-node:focus .node-rect { stroke: CanvasText; }
   }
   .node-rect { fill: var(--border-color-default, #d0d7de33); stroke: var(--border-color-default, #d0d7de); }
   .node-rect.visited { fill: var(--true-color-blue-muted, #ddf4ff); stroke: var(--true-color-blue, #0969da); }
@@ -1679,8 +1693,13 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     return message;
   }
 
+  function internalTabsFor(root) {
+    return [...root.querySelectorAll('.internal-tabs [role="tab"][data-tab]')]
+      .filter((tab) => tab.closest(".internal-tabs")?.parentElement === root);
+  }
+
   function activateInternalTab(root, name, focus = false) {
-    const tabs = [...root.querySelectorAll('.internal-tabs [role="tab"][data-tab]')];
+    const tabs = internalTabsFor(root);
     const selected = tabs.find((tab) => tab.dataset.tab === name) || tabs[0];
     if (!selected) return;
     for (const tab of tabs) {
@@ -1697,7 +1716,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   }
 
   function initInternalTabs(root, initial) {
-    const tabs = [...root.querySelectorAll('.internal-tabs [role="tab"][data-tab]')];
+    const tabs = internalTabsFor(root);
     tabs.forEach((tab, index) => {
       tab.addEventListener("click", () => activateInternalTab(root, tab.dataset.tab));
       tab.addEventListener("keydown", (event) => {
@@ -2876,6 +2895,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       .then((response) => response.json())
       .then((data) => {
         if (!data.connected) throw new Error(data.reason || "Workflow detail unavailable.");
+        if (!data.workflow) throw new Error("Workflow definition was empty.");
         return data.workflow;
       });
     workflowDetailCache.set(key, request);
@@ -2886,6 +2906,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   }
 
   function setStageInspectorStatus(inspector, message, error = false) {
+    const liveRegion = document.getElementById("stage-inspector-status");
+    if (liveRegion) {
+      liveRegion.setAttribute("aria-live", error ? "assertive" : "polite");
+      liveRegion.textContent = message;
+    }
     const state = document.createElement("div");
     state.className = error ? "stage-inspector-state stage-inspector-error" : "stage-inspector-state";
     state.setAttribute("role", error ? "alert" : "status");
@@ -2897,8 +2922,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     const inspector = document.getElementById("stage-inspector");
     if (!inspector) return;
     selectedStageName = stageName;
-    document.querySelectorAll("#graph-svg .stage-node").forEach((node) =>
-      node.classList.toggle("selected", node.dataset.stageName === stageName));
+    document.querySelectorAll("#graph-svg .stage-node").forEach((node) => {
+      const selected = node.dataset.stageName === stageName;
+      node.classList.toggle("selected", selected);
+      node.setAttribute("aria-pressed", String(selected));
+    });
     const requestSequence = ++stageInspectorRequestSequence;
     setStageInspectorStatus(inspector, "Loading " + stageName + " definition\u2026");
     try {
@@ -2914,6 +2942,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       }
       inspector.innerHTML = renderStageDefinitionInspector(stage, activeStageInspectorView);
       initInternalTabs(inspector.querySelector(".stage-definition-panel"), activeStageInspectorView);
+      const liveRegion = document.getElementById("stage-inspector-status");
+      if (liveRegion) {
+        liveRegion.setAttribute("aria-live", "polite");
+        liveRegion.textContent = stageName + " definition loaded.";
+      }
     } catch (err) {
       if (sourceId !== sourceSelect.value || runSequence !== runRequestSequence ||
           requestSequence !== stageInspectorRequestSequence || selectedStageName !== stageName) return;
@@ -3023,6 +3056,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       if (interactive) {
         svg += '<g class="stage-node' + (n.id === selectedStage ? " selected" : "") +
           '" role="button" tabindex="0" data-stage-name="' + escapeHtml(n.id) +
+          '" aria-pressed="' + String(n.id === selectedStage) +
           '" aria-label="Inspect stage ' + escapeHtml(n.id) + '"><title>Inspect stage ' +
           escapeHtml(n.id) + "</title>";
       }
@@ -3473,7 +3507,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       html += '<h2>Workflow graph</h2><div class="stage-definition-layout"><div id="graph-container">' +
         renderGraphSvg(r.graph, r.transitions, events, r, graphOrientation, selectedStageName) +
         '</div><div id="stage-inspector">' +
-        renderStageInspectorStatus("Select a stage to inspect its workflow definition.") + "</div></div>";
+        renderStageInspectorStatus("Select a stage to inspect its workflow definition.") +
+        '</div><div id="stage-inspector-status" class="sr-only" aria-live="polite" aria-atomic="true"></div></div>';
       html += "<h2>Causal diagnosis</h2>" + renderCausalDiagnosis(r);
       html += "<h2>Execution waterfall</h2>" + renderExecutionWaterfall(r);
       html += "<h2>Transitions</h2>" + renderTransitions(r.transitions);

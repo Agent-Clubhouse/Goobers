@@ -234,6 +234,11 @@ test("run graph stages open a cached Fields and Raw YAML inspector", async ({ pa
   await expect(inspector).toContainText("pass \u2192 (terminal)");
   await expect(inspector).toContainText("Max repasses");
   await expect(inspector).not.toContainText("Policy actions");
+  await page.getByRole("tab", { name: "Summary", exact: true }).click();
+  await page.getByRole("tab", { name: "Execution", exact: true }).click();
+  await expect(inspector.getByRole("tab", { name: "Fields", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(inspector.getByText("Branches", { exact: true })).toBeVisible();
+  await expect(page.locator("#stage-inspector-status")).toHaveText("review definition loaded.");
   expect(detailRequests).toBe(1);
   expect(errors).toEqual([]);
 });
@@ -251,10 +256,39 @@ for (const failure of [
     await page.getByRole("tab", { name: "Execution", exact: true }).click();
     await page.getByRole("button", { name: "Inspect stage implement", exact: true }).click();
     await expect(page.locator("#stage-inspector")).toHaveText(`Stage definition unavailable: ${failure}`);
-    await expect(page.locator("#stage-inspector [role='alert']")).toBeVisible();
+    await expect(page.locator("#stage-inspector-status")).toHaveText(`Stage definition unavailable: ${failure}`);
+    await expect(page.locator("#stage-inspector-status")).toHaveAttribute("aria-live", "assertive");
     expect(errors).toEqual([]);
   });
 }
+
+test("stage inspector retries after a failed workflow-detail request", async ({ page }) => {
+  const errors = await openCanvas(page);
+  let requests = 0;
+  await page.route("http://canvas.test/api/workflow-detail?**", (route) => {
+    requests++;
+    return route.fulfill({
+      json: requests === 1
+        ? { connected: false, reason: "temporary failure" }
+        : { connected: true, workflow: workflowDetail },
+    });
+  });
+  await page.getByRole("tab", { name: "Runs", exact: true }).click();
+  await page.getByRole("button", { name: "Open Run id", exact: true }).click();
+  await page.getByRole("tab", { name: "Execution", exact: true }).click();
+  const implement = page.getByRole("button", { name: "Inspect stage implement", exact: true });
+  await implement.click();
+  await expect(page.locator("#stage-inspector")).toHaveText(
+    "Stage definition unavailable: temporary failure",
+  );
+  await implement.click();
+  await expect(page.locator("#stage-inspector").getByRole("heading", {
+    name: "implement",
+    exact: true,
+  })).toBeVisible();
+  expect(requests).toBe(2);
+  expect(errors).toEqual([]);
+});
 
 test("run controls and goober chips own their styling and respect reduced motion", async ({ page }) => {
   await openCanvas(page);
