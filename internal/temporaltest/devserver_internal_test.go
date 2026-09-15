@@ -1,6 +1,7 @@
 package temporaltest
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -26,18 +27,18 @@ func TestResolveDevServerAcquisition(t *testing.T) {
 			wantModeContains: "existing CLI",
 		},
 		{
-			name:             "env unset falls back to today's cached download",
+			name:             "env unset selects the pinned cached download",
 			rawEnv:           "",
 			wantExistingPath: "",
 			wantCached:       testsuite.CachedDownload{Version: CLIVersion},
-			wantModeContains: "cached download",
+			wantModeContains: "cached download (version=" + CLIVersion + ")",
 		},
 		{
 			name:             "whitespace-only env is treated as unset",
 			rawEnv:           "   ",
 			wantExistingPath: "",
 			wantCached:       testsuite.CachedDownload{Version: CLIVersion},
-			wantModeContains: "cached download",
+			wantModeContains: "cached download (version=" + CLIVersion + ")",
 		},
 	}
 
@@ -54,5 +55,11 @@ func TestResolveDevServerAcquisition(t *testing.T) {
 				t.Errorf("mode = %q, want it to contain %q", mode, tt.wantModeContains)
 			}
 		})
+	}
+}
+
+func TestDevServerCLIVersionIsPinned(t *testing.T) {
+	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(CLIVersion) {
+		t.Fatalf("CLIVersion = %q, want an explicit release, not a floating download alias", CLIVersion)
 	}
 }

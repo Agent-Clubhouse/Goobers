@@ -25,6 +25,13 @@ an entry for a hosted action does not mean a local developer needs that action.
 | Go vulnerability database | Override the Make `GOVULNCHECK` command with the pinned tool plus `-db file:///absolute/database/path` | Use a complete, current, trusted database mirror, never an empty replacement. The pinned tool takes `-db`, not a `GOVULNDB` environment override. |
 | Kubernetes schemas | Override the Make `KUBECONFORM` command with the pinned tool plus `-schema-location /absolute/registry/template` | Provide every needed schema locally; do not include `default` or HTTP fallback locations, and do not skip missing schemas. |
 
+Without `GOOBERS_TEMPORAL_CLI`, the Temporal helper downloads the explicit
+`temporaltest.CLIVersion` release (`v1.8.2`), not the SDK's floating `default`.
+Upgrade that pin only after validating both the engine schedule lifecycle and
+bootstrap schedule-reconciler tests against the proposed release. The offline
+override remains authoritative; it does not validate or replace the supplied
+binary's version.
+
 The manifest separately records apt, Chocolatey, Maven, opt-in NuGet restore,
 browser system libraries, and external GitHub Actions. Some hosted steps have cache fast paths but retain
 network-backed miss paths. They are marked `no-offline-path` where the shipped

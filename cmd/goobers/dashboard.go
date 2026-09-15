@@ -797,7 +797,12 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	// the read model #1933 attaches. When none could be opened (a read-only
 	// volume with no writable cache directory) there is no SSE, and the
 	// freshness surface already renders that as degraded.
-	var streamOpts []httpapi.HandlerOption
+	streamOpts := []httpapi.HandlerOption{httpapi.WithTelemetryReadAvailability(telemetry != nil)}
+	if identity := daemonDiscoveryIdentity(layout.Root); identity.DaemonInstanceID != "" {
+		streamOpts = append(streamOpts, httpapi.WithDiscoveryIdentity(identity))
+	} else {
+		errorLog.Printf("dashboard API discovery unavailable: root has no readable durable identity; inspection does not adopt it")
+	}
 	if readStore != nil {
 		streamOpts = append(streamOpts, httpapi.WithChangeFeedStream(readStore))
 	}
@@ -894,7 +899,7 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode, ins
 	// with a 3xx before dispatching, which both leaks routing behavior and
 	// prevents the asset handlers' own containment checks from returning 404.
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if strings.HasPrefix(request.URL.Path, "/api/") {
+		if strings.HasPrefix(request.URL.Path, "/api/") || request.URL.Path == httpapi.DiscoveryPath {
 			api.ServeHTTP(response, request)
 			return
 		}

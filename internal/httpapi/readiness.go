@@ -26,11 +26,12 @@ type InstanceReadinessService interface {
 // inventory RouteInstance exposes — so that route's response contract stays
 // unchanged (#5019) while this one stays servable during recovery.
 type InstanceReadiness struct {
-	APIVersion    string                    `json:"apiVersion"`
-	SchemaVersion string                    `json:"schemaVersion"`
-	ComputerName  string                    `json:"computerName,omitempty"`
-	InstanceRoot  string                    `json:"instanceRoot"`
-	RootIdentity  *readservice.RootIdentity `json:"rootIdentity,omitempty"`
+	APIVersion    string                       `json:"apiVersion"`
+	SchemaVersion string                       `json:"schemaVersion"`
+	Protocol      *apicontract.ProtocolSummary `json:"protocol,omitempty"`
+	ComputerName  string                       `json:"computerName,omitempty"`
+	InstanceRoot  string                       `json:"instanceRoot"`
+	RootIdentity  *readservice.RootIdentity    `json:"rootIdentity,omitempty"`
 	// Ready is the same overall gate /readyz and /api/v1/health.Ready read,
 	// so no surface can ever disagree about whether recovery has completed.
 	Ready    bool                  `json:"ready"`
@@ -47,7 +48,7 @@ type InstanceRecoveryPhase struct {
 	ElapsedSeconds float64 `json:"elapsedSeconds"`
 }
 
-func registerInstanceReadinessRoute(router *Router, svc InstanceReadinessService, errorLog *log.Logger) {
+func registerInstanceReadinessRoute(router *Router, svc InstanceReadinessService, errorLog *log.Logger, discovery *discoveryState) {
 	router.Handle(apicontract.RouteInstanceReadiness, func(w http.ResponseWriter, request *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "instance_readiness_unavailable", "this daemon does not publish readiness state")
@@ -57,6 +58,12 @@ func registerInstanceReadinessRoute(router *Router, svc InstanceReadinessService
 		if err != nil {
 			errorLog.Printf("instance readiness read failed: %v", err)
 			writeError(w, http.StatusInternalServerError, "read_error", "readiness state could not be read")
+			return
+		}
+		value.Protocol, err = discovery.protocolSummary()
+		if err != nil {
+			errorLog.Printf("instance readiness protocol summary failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "encode_error", "protocol summary could not be encoded")
 			return
 		}
 		writeJSON(w, http.StatusOK, value)
