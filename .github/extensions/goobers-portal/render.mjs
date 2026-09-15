@@ -20,6 +20,13 @@ import {
   normalizeViewFilters,
   shouldApplyRestoredFilters,
 } from "./ux.mjs";
+import {
+  configurationWarningKey,
+  groupConfigurationWarnings,
+  renderConfigurationWarnings,
+  sortConfigurationWarnings,
+  warningRemediation,
+} from "./configuration-warnings.mjs";
 
 function escapeAssociationHtml(value) {
     return String(value).replace(/[&<>"']/g, (character) => ({
@@ -694,6 +701,78 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   #empty-state { padding: 32px 0; }
   #empty-state ol { padding-left: 20px; }
   #needs-you { margin-bottom: 20px; }
+  .configuration-warning-section {
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 0 0 20px;
+    min-width: 260px;
+    white-space: normal;
+  }
+  .configuration-warning-heading,
+  .configuration-warning-group summary,
+  .configuration-warning-identity,
+  .configuration-warning-group-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+  }
+  .configuration-warning-heading h2 { margin: 0; }
+  .section-count,
+  .configuration-warning-group-count,
+  .warning-severity {
+    color: var(--text-color-muted, #656d76);
+    font-size: 12px;
+  }
+  .configuration-warning-groups { display: grid; gap: 10px; }
+  .configuration-warning-group {
+    margin: 0;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .configuration-warning-group summary {
+    padding: 9px 10px;
+    color: var(--text-color-default, #1f2328);
+    background: var(--border-color-default, #d0d7de22);
+  }
+  .configuration-warning-group-content { padding: 10px; }
+  .configuration-warning-group-actions { justify-content: flex-end; }
+  .configuration-warning-remediation {
+    margin: 0 0 10px;
+    color: var(--text-color-muted, #656d76);
+    font-size: 12px;
+  }
+  .configuration-warning-list { display: grid; gap: 8px; }
+  .configuration-warning {
+    border-left: 4px solid var(--true-color-yellow, #9a6700);
+    border-radius: 6px;
+    background: var(--border-color-default, #d0d7de22);
+    padding: 9px 10px;
+  }
+  .configuration-warning p { margin: 6px 0; overflow-wrap: anywhere; }
+  .warning-code {
+    color: var(--true-color-red, #cf222e);
+    background: var(--true-color-red-muted, #ffebe9);
+    font-weight: var(--font-weight-semibold, 600);
+  }
+  .configuration-warning-dismiss {
+    padding: 3px 8px;
+    color: var(--text-color-muted, #656d76);
+    font-size: 12px;
+  }
+  .configuration-warning-empty {
+    display: grid;
+    gap: 2px;
+    color: var(--text-color-muted, #656d76);
+    padding-top: 8px;
+  }
+  .configuration-warning-empty strong { color: var(--text-color-default, #1f2328); }
+  .configuration-warning-cell { min-width: 320px; vertical-align: top; }
+  .configuration-warning-cell .configuration-warning-section { margin: 0; }
+  .configuration-warning-cell .configuration-warning-heading h2 { font-size: 13px; }
   .attention-list { display: grid; gap: 8px; }
   .attention-item {
     display: grid;
@@ -1262,6 +1341,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         <p class="section-description">Review blockers and decisions before exploring workflow activity.</p>
         <div id="attention-list"></div>
       </div>
+      <div id="instance-configuration-warnings" data-warning-context="instance"></div>
       <h2>Activity at a glance</h2>
       <div class="cards" id="cards"></div>
     </section>
@@ -1271,7 +1351,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <div class="table-scroll" role="region" aria-label="Workflows" tabindex="0">
       <table id="workflows-table">
         <thead>
-          <tr><th>Workflow</th><th>Gaggle</th><th>Trigger</th><th>In flight</th><th>Max</th><th>Run</th><th>Enabled</th></tr>
+          <tr><th>Workflow</th><th>Gaggle</th><th>Trigger</th><th>In flight</th><th>Max</th><th>Run</th><th>Enabled</th><th>Warnings</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -1408,6 +1488,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const dashboardEl = document.getElementById("dashboard");
   const cardsEl = document.getElementById("cards");
   const attentionListEl = document.getElementById("attention-list");
+  const instanceWarningsEl = document.getElementById("instance-configuration-warnings");
   const fleetPanelEl = document.getElementById("fleet-panel");
   const freshnessEl = document.getElementById("freshness");
   const workflowsBody = document.querySelector("#workflows-table tbody");
@@ -1430,6 +1511,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   let freshnessTimer = null;
   let liveConnectionEstablished = false;
   const dismissedAttention = new Map();
+  const dismissedConfigurationWarnings = new Set();
   const expandedAttention = new Set();
   let activeDashboardTab = "attention";
   let activeRunTab = "summary";
@@ -1437,6 +1519,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   let runRequestSequence = 0;
   let snapshotRequestSequence = 0;
   let snapshotSourceId = null;
+  let lastSnapshot = null;
   let sourceSelectionEpoch = 0;
   let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
@@ -1833,6 +1916,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     lastCapabilities = data.capabilities || {};
     const workflows = data.workflows || [];
     const runs = data.runs || [];
+    lastSnapshot = data;
     lastUpdatedAt = Date.now();
     const freshness = deriveFreshnessState({
       lastUpdatedAt,
@@ -1842,6 +1926,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     });
     setFreshnessState(freshness, lastUpdatedAt);
     renderAttention(data.attention, runs);
+    instanceWarningsEl.innerHTML = renderConfigurationWarnings(
+      data.instance?.warnings || [],
+      "instance",
+      { dismissedWarningKeys: dismissedConfigurationWarnings },
+    );
     const inFlight = workflows.reduce((n, w) => n + (w.concurrency?.activeRuns || 0), 0);
 
     cardsEl.innerHTML = "";
@@ -1881,11 +1970,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         "<td>" + escapeHtml(w.concurrency?.activeRuns ?? "\u2014") + "</td>" +
         "<td>" + escapeHtml(w.concurrency?.maxConcurrentRuns ?? "\u2014") + "</td>" +
         '<td class="run-now-cell"></td>' +
-        '<td class="enabled-cell"></td>';
+        '<td class="enabled-cell"></td>' +
+        '<td class="configuration-warning-cell"></td>';
       tr.classList.add("clickable-row");
       tr.title = "Filter runs to this workflow";
       tr.addEventListener("click", (ev) => {
-        if (ev.target.closest(".enabled-cell, .run-now-cell")) return;
+        if (ev.target.closest(".enabled-cell, .run-now-cell, .configuration-warning-cell")) return;
         filterToWorkflow(gaggle, name);
       });
       workflowsBody.appendChild(tr);
@@ -1922,6 +2012,15 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       runCell.appendChild(runBtn);
 
       const enabledCell = tr.querySelector(".enabled-cell");
+      const warningCell = tr.querySelector(".configuration-warning-cell");
+      warningCell.dataset.warningContext = "workflow";
+      warningCell.dataset.gaggle = gaggle;
+      warningCell.dataset.workflow = name;
+      warningCell.innerHTML = renderConfigurationWarnings(
+        w.warnings || [],
+        "workflow",
+        { dismissedWarningKeys: dismissedConfigurationWarnings },
+      );
       if (nonManualTriggers.length === 0) {
         enabledCell.innerHTML = '<span class="muted">manual only</span>';
       } else if (!lastCapabilities.workflowEnable) {
@@ -1985,7 +2084,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       }
     }
     if (workflows.length === 0) {
-      workflowsBody.innerHTML = '<tr><td colspan="7" class="muted">No workflows configured.</td></tr>';
+      workflowsBody.innerHTML = '<tr><td colspan="8" class="muted">No workflows configured.</td></tr>';
     }
 
     populateFilterOptions(data.gaggles || [], workflows);
@@ -2154,7 +2253,37 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterOutcome, filterPopulation].forEach(initMultiFilter);
   document.addEventListener("click", (event) => {
     if (![...multiFilters.values()].some((state) => state.wrapper.contains(event.target))) closeMultiFilters();
+    const warningButton = event.target.closest("[data-dismiss-warning], [data-dismiss-warning-group]");
+    if (!warningButton) return;
+    event.stopPropagation();
+    if (warningButton.hasAttribute("data-dismiss-warning-group")) {
+      warningButton.closest(".configuration-warning-group")
+        ?.querySelectorAll("[data-warning-key]")
+        .forEach((warning) => dismissedConfigurationWarnings.add(warning.dataset.warningKey));
+    } else {
+      dismissedConfigurationWarnings.add(warningButton.dataset.dismissWarning);
+    }
+    rerenderConfigurationWarnings(warningButton.closest("[data-warning-context]"));
   });
+
+  function rerenderConfigurationWarnings(container) {
+    if (!container || !lastSnapshot) return;
+    const context = container.dataset.warningContext;
+    let warnings = [];
+    if (context === "instance") {
+      warnings = lastSnapshot.instance?.warnings || [];
+    } else {
+      const workflow = (lastSnapshot.workflows || []).find((item) =>
+        (item.identity?.gaggle || item.gaggle) === container.dataset.gaggle &&
+        (item.identity?.name || item.name) === container.dataset.workflow);
+      warnings = workflow?.warnings || [];
+    }
+    container.innerHTML = renderConfigurationWarnings(
+      warnings,
+      context,
+      { dismissedWarningKeys: dismissedConfigurationWarnings },
+    );
+  }
 
   function populateFilterOptions(gaggles, workflows) {
     const prevGaggle = selectedValues(filterGaggle);
@@ -2831,6 +2960,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
   }
 
+  const configurationWarningKey = ${configurationWarningKey.toString()};
+  const warningRemediation = ${warningRemediation.toString()};
+  const sortConfigurationWarnings = ${sortConfigurationWarnings.toString()};
+  const groupConfigurationWarnings = ${groupConfigurationWarnings.toString()};
+  const renderConfigurationWarnings = ${renderConfigurationWarnings.toString()
+        .replaceAll("escapeWarningHtml", "escapeHtml")};
   const gooberAvatar = ${gooberAvatar.toString()};
   const renderGooberChip = ${renderGooberChip.toString()
     .replaceAll("escapeAssociationHtml", "escapeHtml")};

@@ -16,17 +16,73 @@ const run = {
   },
   events: [], transitions: [],
 };
+const instanceWarning = {
+  code: "MODEL002", severity: "warning", scope: "Goober/coder",
+  explanation: "requested model is unavailable; using the harness default",
+};
+const workflowWarnings = [
+  {
+    code: "VER003", severity: "warning", scope: "Workflow/implementation",
+    explanation: "expectedOutputs needs a result file",
+  },
+  {
+    code: "VER001", severity: "warning", scope: "Workflow/implementation",
+    explanation: "deprecated feature remains supported",
+  },
+];
 
 function snapshot(source: typeof sources[number]) {
   return {
-    connected: true, source, mode: "daemon", instance: { name: source.label },
-    workflows: [{ identity: { name: "implementation", gaggle: "team" }, triggers: [], concurrency: { activeRuns: 1 } }],
+    connected: true, source, mode: "daemon", instance: { name: source.label, warnings: [instanceWarning] },
+    workflows: [{
+      identity: { name: "implementation", gaggle: "team" },
+      triggers: [],
+      concurrency: { activeRuns: 1 },
+      warnings: workflowWarnings,
+    }],
     runs: [run], attention: [],
     fleet: source.id === sources[0].id
       ? { associated: true, canonicalUri: "https://fleet.example.com/", connectionState: "connected", fleetId: "fleet" }
       : { associated: false },
   };
 }
+
+test("configuration warnings dismiss by content and return when content changes", async ({ page }) => {
+  const errors = await openCanvas(page);
+  await expect(page.getByText(instanceWarning.explanation, { exact: true })).toBeVisible();
+  await page.getByRole("button", {
+    name: "Dismiss MODEL002 warning for Goober/coder",
+  }).click();
+  await expect(page.getByText("Warnings dismissed for this portal session.", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByText("Warnings dismissed for this portal session.", { exact: true })).toBeVisible();
+
+  const changedWarning = { ...instanceWarning, explanation: "the configured model changed" };
+  await page.route("http://canvas.test/api/snapshot?**", (route) =>
+    route.fulfill({ json: { ...snapshot(sources[0]), instance: { name: "Instance one", warnings: [changedWarning] } } }));
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByText(changedWarning.explanation, { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("workflow warning groups collapse and dismiss together", async ({ page }) => {
+  const errors = await openCanvas(page);
+  await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+  const warningCell = page.locator(".configuration-warning-cell");
+  const group = warningCell.locator(".configuration-warning-group");
+  await expect(group).toHaveAttribute("open", "");
+  await group.locator("summary").click();
+  await expect(group).not.toHaveAttribute("open", "");
+  await group.locator("summary").click();
+  await warningCell.getByRole("button", {
+    name: "Dismiss all 2 warnings for Workflow/implementation",
+  }).click();
+  await expect(warningCell.getByText("Warnings dismissed for this portal session.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(warningCell.getByText("Warnings dismissed for this portal session.", { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
 
 async function openCanvas(page: Page) {
   const errors: string[] = [];
