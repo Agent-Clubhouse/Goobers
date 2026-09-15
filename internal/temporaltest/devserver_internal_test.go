@@ -29,14 +29,14 @@ func TestResolveDevServerAcquisition(t *testing.T) {
 			name:             "env unset falls back to today's cached download",
 			rawEnv:           "",
 			wantExistingPath: "",
-			wantCached:       testsuite.CachedDownload{Version: "default"},
+			wantCached:       testsuite.CachedDownload{Version: CLIVersion},
 			wantModeContains: "cached download",
 		},
 		{
 			name:             "whitespace-only env is treated as unset",
 			rawEnv:           "   ",
 			wantExistingPath: "",
-			wantCached:       testsuite.CachedDownload{Version: "default"},
+			wantCached:       testsuite.CachedDownload{Version: CLIVersion},
 			wantModeContains: "cached download",
 		},
 	}
