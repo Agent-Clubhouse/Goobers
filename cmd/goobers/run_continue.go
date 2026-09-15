@@ -86,35 +86,10 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	sourceBranch := strings.TrimSpace(*branch)
-	if sourceBranch == "" {
-		sourceBranch = strings.TrimSpace(sourceIdentity.WorkspaceBranch)
-	}
-	sourceSHA := strings.TrimSpace(*expectedSHA)
-	if sourceSHA == "" {
-		sourceSHA = strings.TrimSpace(sourceIdentity.WorkspaceBranchSHA)
-	}
-
-	// Extract branch from recorded events if not provided directly.
-	// This matches CreateContinuation's logic: branch provenance in EventRefTouched
-	// is the source of truth when WorkspaceBranch is empty.
-	var recordedBranch, recordedSHA string
-	sourceEvents, err := sourceReader.Events()
+	sourceBranch, sourceSHA, err := continuationSourceBranch(sourceReader, sourceIdentity, *branch, *expectedSHA)
 	if err != nil {
 		pf(stderr, "error: read continuation source events: %v\n", err)
 		return 1
-	}
-	for _, event := range sourceEvents {
-		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
-			recordedBranch = event.ExternalRef.ID
-			recordedSHA = event.ExternalRef.CommitSHA
-		}
-	}
-	if sourceBranch == "" {
-		sourceBranch = recordedBranch
-	}
-	if sourceSHA == "" {
-		sourceSHA = recordedSHA
 	}
 
 	repo, err := continuationRepository(root, sourceIdentity.Gaggle)
@@ -226,6 +201,35 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "%s\n", runID)
 	return 0
+}
+
+func continuationSourceBranch(sourceReader *journal.Reader, sourceIdentity journal.RunIdentity, requestedBranch, expectedSHA string) (string, string, error) {
+	sourceBranch := strings.TrimSpace(requestedBranch)
+	if sourceBranch == "" {
+		sourceBranch = strings.TrimSpace(sourceIdentity.WorkspaceBranch)
+	}
+	sourceSHA := strings.TrimSpace(expectedSHA)
+	if sourceSHA == "" {
+		sourceSHA = strings.TrimSpace(sourceIdentity.WorkspaceBranchSHA)
+	}
+	sourceEvents, err := sourceReader.Events()
+	if err != nil {
+		return "", "", err
+	}
+	var recordedBranch, recordedSHA string
+	for _, event := range sourceEvents {
+		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
+			recordedBranch = event.ExternalRef.ID
+			recordedSHA = event.ExternalRef.CommitSHA
+		}
+	}
+	if sourceBranch == "" {
+		sourceBranch = recordedBranch
+	}
+	if sourceSHA == "" {
+		sourceSHA = recordedSHA
+	}
+	return sourceBranch, sourceSHA, nil
 }
 
 type continuationEligibilityProvider interface {
@@ -346,21 +350,6 @@ func createOrReuseContinuation(root, runsDir string, sourceIdentity journal.RunI
 		return "", err
 	}
 	return continuationRunID, nil
-}
-
-func reclaimContinuationClaims(root, sourceRunID, workflow, continuationRunID string, repo providers.RepositoryRef) error {
-	layout := layoutFor(root)
-	claims, err := claimHistoryForRun(layout, sourceRunID, apiv1.Provider(repo.Provider))
-	if err != nil {
-		return fmt.Errorf("reclaim continuation claims: %w", err)
-	}
-	lockPath := filepath.Join(layout.SchedulerDir(), claimLockFileName)
-	if err := withClaimLockForRun(lockPath, claimLockOperationContinuationReacquire, layout.Gaggle(), continuationRunID, func() error {
-		return reclaimContinuationClaimsLocked(layout, claims, workflow, continuationRunID)
-	}); err != nil {
-		return fmt.Errorf("reclaim continuation claims: %w", err)
-	}
-	return nil
 }
 
 func reclaimContinuationClaimsLocked(layout instance.Layout, claims []localscheduler.ClaimEntry, workflow, continuationRunID string) error {
