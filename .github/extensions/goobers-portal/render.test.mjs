@@ -21,6 +21,8 @@ import {
     renderOperatorPanel,
     renderRunRowCells,
     renderSnapshotCard,
+    renderStageDefinitionInspector,
+    renderStageInspectorStatus,
     renderTransitions,
 } from "./render.mjs";
 
@@ -49,6 +51,72 @@ test("execution waterfall renders retry timing, gaps, and unavailable timing", (
     assert.match(html, /retry/);
     assert.match(html, /Idle gaps: 2s/);
     assert.match(html, /timing unavailable/);
+});
+
+test("stage definition inspector renders non-gate fields and escaped YAML tabs", () => {
+    const html = renderStageDefinitionInspector({
+        name: "implement <unsafe>",
+        kind: "agentic",
+        goal: "Ship safely",
+        owner: { gaggle: "core", name: "implementer" },
+        capabilities: ["repo:push"],
+        timeoutSeconds: 3600,
+        retry: { maxAttempts: 2, backoffSeconds: 30 },
+        policyActions: ["pr:open"],
+        requiredCapabilities: ["linux"],
+        onTimeout: "escalate",
+        rawYaml: "goal: <unsafe>\n",
+    });
+    assert.match(html, /class="internal-tabs" role="tablist" aria-label="Stage config view"/);
+    assert.match(html, /role="tab" data-tab="fields"[^>]*aria-selected="true"/);
+    assert.match(html, /core\/implementer/);
+    assert.match(html, /Policy actions/);
+    assert.match(html, /Required runner capabilities/);
+    assert.match(html, /On timeout/);
+    assert.doesNotMatch(html, /<dt>Branches<\/dt>|Max repasses/);
+    assert.match(html, /goal: &lt;unsafe&gt;/);
+    assert.doesNotMatch(html, /implement <unsafe>|goal: <unsafe>/);
+});
+
+test("stage definition inspector renders gate fields and YAML view", () => {
+    const html = renderStageDefinitionInspector({
+        name: "review",
+        kind: "gate",
+        goal: "",
+        evaluator: "agentic",
+        capabilities: [],
+        branches: { pass: "", "needs-changes": "implement" },
+        maxRepasses: 3,
+        rawYaml: "name: review\n",
+    }, "yaml");
+    assert.match(html, /agentic evaluator/);
+    assert.match(html, /pass \u2192 \(terminal\), needs-changes \u2192 implement/);
+    assert.match(html, /Max repasses<\/dt><dd>3/);
+    assert.match(html, /id="stage-tab-yaml"[^>]*aria-selected="true"/);
+    assert.match(html, /id="stage-panel-fields"[^>]* hidden/);
+    assert.doesNotMatch(html, /Policy actions|Required runner capabilities|On timeout/);
+});
+
+test("stage inspector fallbacks and status messages are escaped", () => {
+    const deterministic = renderStageDefinitionInspector({
+        name: "query",
+        kind: "deterministic",
+        capabilities: [],
+        retry: {},
+    });
+    assert.match(deterministic, /Deterministic runtime/);
+    assert.match(deterministic, /No retry declared/);
+    assert.match(deterministic, /fail \(default\)/);
+    assert.match(deterministic, /No YAML available/);
+    assert.match(renderStageInspectorStatus("<unavailable>", { error: true }), /stage-inspector-error/);
+    assert.doesNotMatch(renderStageInspectorStatus("<unavailable>", { error: true }), /role=/);
+    assert.match(renderStageInspectorStatus("<unavailable>", { error: true }), /&lt;unavailable&gt;/);
+    assert.match(renderStageDefinitionInspector({
+        name: "review",
+        kind: "gate",
+        capabilities: [],
+        maxRepasses: 0,
+    }), /Max repasses<\/dt><dd>0/);
 });
 
 // #4567: the snapshot cards and run table interpolate values that originate

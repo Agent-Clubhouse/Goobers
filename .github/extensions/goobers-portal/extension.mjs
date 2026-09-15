@@ -21,6 +21,7 @@ import {
     loadSnapshot,
     loadFleetStatus,
     loadRunDetail,
+    loadWorkflowDetail,
     loadRunArtifact,
     loadRunTranscript,
     loadRuns,
@@ -200,6 +201,36 @@ async function runDetailFor(sourceId, runId) {
         logEvent("run_detail_load_failed", {
             sourceId,
             runId,
+            kind: source.kind,
+            mode: resolved.mode,
+            error: err.message || String(err),
+        });
+        return { connected: false, reason: err.message || String(err) };
+    }
+}
+
+async function workflowDetailFor(sourceId, gaggle, workflow) {
+    const known = await listKnownSources();
+    const source = known.find((s) => s.id === sourceId);
+    if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
+    const resolved = await resolveSource(source);
+    if (!resolved.ok) {
+        logEvent("source_resolution_failed", {
+            sourceId,
+            kind: source.kind,
+            error: resolved.reason,
+        });
+        return { connected: false, reason: resolved.reason };
+    }
+
+    try {
+        const detail = await loadWorkflowDetail(resolved, gaggle, workflow);
+        return { connected: true, workflow: detail };
+    } catch (err) {
+        logEvent("workflow_detail_load_failed", {
+            sourceId,
+            gaggle,
+            workflow,
             kind: source.kind,
             mode: resolved.mode,
             error: err.message || String(err),
@@ -396,6 +427,24 @@ async function startServer(instanceId) {
                     return;
                 }
                 const data = await runDetailFor(sourceId, runId);
+                res.setHeader("Content-Type", "application/json; charset=utf-8");
+                res.end(JSON.stringify(data));
+                return;
+            }
+            if (url.pathname === "/api/workflow-detail") {
+                const sourceId = url.searchParams.get("source");
+                const gaggle = url.searchParams.get("gaggle");
+                const workflow = url.searchParams.get("workflow");
+                if (!sourceId || !gaggle || !workflow) {
+                    res.statusCode = 400;
+                    res.setHeader("Content-Type", "application/json; charset=utf-8");
+                    res.end(JSON.stringify({
+                        connected: false,
+                        reason: "source, gaggle, and workflow are required",
+                    }));
+                    return;
+                }
+                const data = await workflowDetailFor(sourceId, gaggle, workflow);
                 res.setHeader("Content-Type", "application/json; charset=utf-8");
                 res.end(JSON.stringify(data));
                 return;
