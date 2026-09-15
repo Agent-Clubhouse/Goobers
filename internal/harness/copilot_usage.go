@@ -39,10 +39,11 @@ func copilotUsageCapture(reported string) string {
 type copilotCapturePaths struct {
 	argv, env                 []string
 	transcriptPath, usagePath string
+	mcpLogPath                string
 	cleanup                   func()
 }
 
-func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequest, argv, env []string) (copilotCapturePaths, error) {
+func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequest, argv, env []string, confinement *copilotConfinement) (copilotCapturePaths, error) {
 	usageReq := req
 	if c.DisableUsageOutput {
 		usageReq.HarnessVersion = ""
@@ -56,10 +57,33 @@ func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequ
 		cleanupUsage()
 		return copilotCapturePaths{}, err
 	}
+	mcpLogPath, cleanupMCPLog, err := prepareCopilotMCPLog(req, confinement)
+	if err != nil {
+		cleanupSession()
+		cleanupUsage()
+		return copilotCapturePaths{}, err
+	}
+	if mcpLogPath != "" {
+		argv = append(argv, "--log-dir", mcpLogPath)
+	}
 	return copilotCapturePaths{
-		argv: argv, env: env, transcriptPath: transcriptPath, usagePath: usagePath,
-		cleanup: func() { cleanupSession(); cleanupUsage() },
+		argv: argv, env: env, transcriptPath: transcriptPath, usagePath: usagePath, mcpLogPath: mcpLogPath,
+		cleanup: func() { cleanupMCPLog(); cleanupSession(); cleanupUsage() },
 	}, nil
+}
+
+func prepareCopilotMCPLog(req RunRequest, confinement *copilotConfinement) (string, func(), error) {
+	if confinement != nil {
+		return confinement.logDir, func() {}, nil
+	}
+	if !req.GoobersIORegistered && len(req.MCPServers) == 0 {
+		return "", func() {}, nil
+	}
+	dir, err := os.MkdirTemp(filepath.Join(req.Workspace, ".goobers"), "copilot-log-")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("prepare MCP diagnostics: %w", err)
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 func prepareCopilotUsageOutput(req RunRequest, argv []string) ([]string, string, func(), error) {

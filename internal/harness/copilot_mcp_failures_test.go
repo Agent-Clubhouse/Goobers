@@ -1,9 +1,11 @@
 package harness
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -22,6 +24,10 @@ const (
 	copilotLogPolicyCheck = `2026-08-21T23:27:46.279Z [DEBUG] [rust:copilot_runtime::github_telemetry::service] Sending telemetry event: cli.telemetry (kind: mcp_policy_check)`
 
 	copilotLogNoMCP = `2026-08-21T23:27:45.272Z [INFO] [managedSettings] effective policy resolved: source=none, bypassDisabled=false, serverFetchFailed=false`
+
+	copilotLogRootWithGoobersIO = `2026-09-11T18:38:29.377Z [DEBUG] [rust:copilot_runtime::session::mcp::session_host] mcp discover_and_start_root {"force":false,"root_present":false,"signature_matches":false,"previous_signature":"<none>","signature":"{\"servers\":[[\"goobers-io\",\"{\\\"command\\\":\\\"goobers\\\"}\"]],\"disabled\":[],\"managedPolicyStartPending\":false}"}`
+
+	copilotLogRootWithoutGoobersIO = `2026-09-11T18:38:30.994Z [DEBUG] [rust:copilot_runtime::session::mcp::session_host] mcp discover_and_start_root {"force":false,"root_present":true,"signature_matches":false,"previous_signature":"with-additional","signature":"{\"servers\":[],\"disabled\":[],\"managedPolicyStartPending\":false}"}`
 )
 
 func writeCopilotLog(t *testing.T, lines ...string) string {
@@ -45,6 +51,101 @@ func TestCopilotMCPServerFailuresConnectedServerIsNotAFailure(t *testing.T) {
 	dir := writeCopilotLog(t, copilotLogPolicyCheck, copilotLogServerStderr, copilotLogHandshakeGoobersIO)
 	if got := copilotMCPServerFailures(goobersIORequest(), dir); len(got) != 0 {
 		t.Fatalf("failures = %+v, want none for a server that completed its handshake", got)
+	}
+}
+
+func TestCopilotMCPServerFailuresReportsConnectedServerRemovedByLaterReconciliation(t *testing.T) {
+	dir := writeCopilotLog(t,
+		copilotLogRootWithGoobersIO,
+		copilotLogServerStderr,
+		copilotLogHandshakeGoobersIO,
+		copilotLogRootWithoutGoobersIO,
+	)
+	got := copilotMCPServerFailures(goobersIORequest(), dir)
+	if len(got) != 1 {
+		t.Fatalf("failures = %+v, want exactly one", got)
+	}
+	if got[0].Server != goobersIOServerName || got[0].Status != copilotMCPStatusRemovedAfterConnect {
+		t.Fatalf("failure = %+v, want %s/%s", got[0], goobersIOServerName, copilotMCPStatusRemovedAfterConnect)
+	}
+}
+
+func TestCopilotMCPServerFailuresKeepsConnectedServerPresentInLaterReconciliation(t *testing.T) {
+	dir := writeCopilotLog(t,
+		copilotLogRootWithGoobersIO,
+		copilotLogServerStderr,
+		copilotLogHandshakeGoobersIO,
+		copilotLogRootWithGoobersIO,
+	)
+	if got := copilotMCPServerFailures(goobersIORequest(), dir); len(got) != 0 {
+		t.Fatalf("failures = %+v, want none while the later effective signature retains the server", got)
+	}
+}
+
+func TestCopilotMCPServerFailuresClearsIntermediateRemovalWhenServerIsReadded(t *testing.T) {
+	dir := writeCopilotLog(t,
+		copilotLogRootWithGoobersIO,
+		copilotLogServerStderr,
+		copilotLogHandshakeGoobersIO,
+		copilotLogRootWithoutGoobersIO,
+		copilotLogRootWithGoobersIO,
+	)
+	if got := copilotMCPServerFailures(goobersIORequest(), dir); len(got) != 0 {
+		t.Fatalf("failures = %+v, want none when the final effective signature restores the server", got)
+	}
+}
+
+func TestCopilotAdapterCapturesRemovalDiagnosticsWithoutSandbox(t *testing.T) {
+	workspace := t.TempDir()
+	var logDir string
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			for i, arg := range req.Command {
+				if arg == "--log-dir" && i+1 < len(req.Command) {
+					logDir = req.Command[i+1]
+					break
+				}
+			}
+			if logDir == "" {
+				return os.ErrInvalid
+			}
+			if err := os.WriteFile(filepath.Join(logDir, "process.log"), []byte(
+				copilotLogRootWithGoobersIO+"\n"+
+					copilotLogServerStderr+"\n"+
+					copilotLogHandshakeGoobersIO+"\n"+
+					copilotLogRootWithoutGoobersIO+"\n",
+			), 0o600); err != nil {
+				return err
+			}
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+			})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+		SelfBin: filepath.Join(workspace, "goobers"),
+	}
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Mode:           ModeInvoke,
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Timeout:        5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(out.MCPServerFailures) != 1 ||
+		out.MCPServerFailures[0].Server != goobersIOServerName ||
+		out.MCPServerFailures[0].Status != copilotMCPStatusRemovedAfterConnect {
+		t.Fatalf("MCPServerFailures = %+v, want %s/%s", out.MCPServerFailures,
+			goobersIOServerName, copilotMCPStatusRemovedAfterConnect)
+	}
+	if _, err := os.Stat(logDir); !os.IsNotExist(err) {
+		t.Fatalf("private MCP log directory was not cleaned up: %v", err)
 	}
 }
 

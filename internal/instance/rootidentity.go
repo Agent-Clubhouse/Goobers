@@ -67,7 +67,7 @@ func ensureRootIdentity(ctx context.Context, root string, requireConfig bool) (s
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if id, err := ReadRootIdentity(root); err == nil || !errors.Is(err, os.ErrNotExist) {
+	if id, err := ReadRootIdentity(root); err == nil || (!errors.Is(err, os.ErrNotExist) && !rootIdentityReadContended(err)) {
 		return id, err
 	}
 	if _, err := os.Lstat(filepath.Join(root, RootDecommissionFileName)); !errors.Is(err, os.ErrNotExist) {
