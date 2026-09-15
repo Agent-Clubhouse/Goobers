@@ -16,8 +16,18 @@
 #
 # The entry below is the key that actually signed the published v0.4.x
 # release tags, recovered from the signature on v0.4.0-rc.2 and confirmed
-# against it. The principal matches the tagger identity git checks, so it
-# must be updated in the same commit as any change to the signing identity
-# or key — a stale entry here fails verification exactly as a forged tag
-# would, and the two are indistinguishable to a consumer.
-scratch@local namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHYykeYMvmgzLRIMb5oG8v24FUY1ed6UlXwT62EN0UQ9
+# against it.
+#
+# The principal is a LABEL, not a matcher: git verifies the KEY and then
+# reports whichever principal here holds it, regardless of the tag's tagger
+# identity. So this name is what a consumer sees in
+#
+#   Good "git" signature for <principal> with ED25519 key SHA256:...
+#
+# and nothing more. The key is the entire security property — replacing it
+# with the wrong one fails as "No principal matched", which is the check
+# that actually protects anyone.
+#
+# It follows that rotating the KEY must update this file in the same commit;
+# changing the maintainer's email need not.
+mason@agent-clubhouse.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHYykeYMvmgzLRIMb5oG8v24FUY1ed6UlXwT62EN0UQ9
