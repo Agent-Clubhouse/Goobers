@@ -91,6 +91,7 @@ type StorageGate struct {
 	criticalFloorBytes   int64
 	criticalFloorPercent float64
 	criticalFloorDerived bool
+	warningFloorDerived  bool
 
 	read func(string) (diskstat.Footprint, error)
 	now  func() time.Time
@@ -108,7 +109,7 @@ type StorageGate struct {
 // StorageMeasurementUnavailable until Sample is called for the first time,
 // which the daemon does once at startup before wiring the gate in (#4873's
 // "measure ... at startup").
-func NewStorageGate(path string, warningFloorBytes int64, warningFloorPercent float64, criticalFloorBytes int64, criticalFloorPercent float64, criticalFloorDerived bool) *StorageGate {
+func NewStorageGate(path string, warningFloorBytes int64, warningFloorPercent float64, criticalFloorBytes int64, criticalFloorPercent float64, criticalFloorDerived bool, warningFloorDerived bool) *StorageGate {
 	return &StorageGate{
 		path:                 path,
 		warningFloorBytes:    warningFloorBytes,
@@ -116,6 +117,7 @@ func NewStorageGate(path string, warningFloorBytes int64, warningFloorPercent fl
 		criticalFloorBytes:   criticalFloorBytes,
 		criticalFloorPercent: criticalFloorPercent,
 		criticalFloorDerived: criticalFloorDerived,
+		warningFloorDerived:  warningFloorDerived,
 		read:                 diskstat.Read,
 		now:                  time.Now,
 		tier:                 StorageMeasurementUnavailable,
@@ -279,7 +281,11 @@ func (g *StorageGate) Stats() StorageHealthStats {
 		criticalFloor, source := effectiveCriticalFloor(g.criticalFloorBytes, g.criticalFloorPercent, g.criticalFloorDerived, g.footprint.TotalBytes)
 		criticalFloorBytes = int64(criticalFloor)
 		criticalFloorSource = source
-		_, warningFloorSource = effectiveFloorWithSource(g.warningFloorBytes, g.warningFloorPercent, g.footprint.TotalBytes, "bytes")
+		warningByteSource := "bytes"
+		if g.warningFloorDerived {
+			warningByteSource = "derived"
+		}
+		_, warningFloorSource = effectiveFloorWithSource(g.warningFloorBytes, g.warningFloorPercent, g.footprint.TotalBytes, warningByteSource)
 	}
 	return StorageHealthStats{
 		Tier:                 g.tier,

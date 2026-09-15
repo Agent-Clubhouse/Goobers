@@ -15,7 +15,7 @@ import (
 // runs on. Each call to Sample consumes the next reading in readings; a nil
 // entry simulates a measurement failure.
 func gateWith(warningBytes int64, warningPercent float64, criticalBytes int64, criticalPercent float64, readings ...*diskstat.Footprint) *StorageGate {
-	gate := NewStorageGate("/instance-root", warningBytes, warningPercent, criticalBytes, criticalPercent, false)
+	gate := NewStorageGate("/instance-root", warningBytes, warningPercent, criticalBytes, criticalPercent, false, false)
 	i := 0
 	gate.read = func(string) (diskstat.Footprint, error) {
 		reading := readings[i]
@@ -35,7 +35,7 @@ func footprintAt(available, total uint64) *diskstat.Footprint {
 }
 
 func TestStorageGateStartsMeasurementUnavailableBeforeFirstSample(t *testing.T) {
-	gate := NewStorageGate("/instance-root", 0, 10, 0, 5, false)
+	gate := NewStorageGate("/instance-root", 0, 10, 0, 5, false, false)
 	if stats := gate.Stats(); stats.Tier != StorageMeasurementUnavailable {
 		t.Fatalf("Tier = %v before first Sample, want StorageMeasurementUnavailable", stats.Tier)
 	}
@@ -93,7 +93,7 @@ func TestStorageGateUnderPressureReportsTheEffectiveFloorNotTheRawBytesConfig(t 
 
 func TestStorageGateClampsDerivedCriticalFloorToVolumeFraction(t *testing.T) {
 	const total = 64 << 30
-	gate := NewStorageGate("/instance-root", 0, 0, 128<<30, 0, true)
+	gate := NewStorageGate("/instance-root", 0, 0, 128<<30, 0, true, false)
 	gate.read = func(string) (diskstat.Footprint, error) {
 		return *footprintAt(20<<30, total), nil
 	}
@@ -104,6 +104,23 @@ func TestStorageGateClampsDerivedCriticalFloorToVolumeFraction(t *testing.T) {
 	}
 	if stats.CriticalFloorBytes != 16<<30 || stats.CriticalFloorSource != "derived-clamped" {
 		t.Fatalf("critical floor = %d from %q, want 16Gi from derived-clamped", stats.CriticalFloorBytes, stats.CriticalFloorSource)
+	}
+}
+
+func TestStorageGateReportsDerivedWarningFloorSourceWithPercentPrecedence(t *testing.T) {
+	const total = 1 << 40
+	gate := NewStorageGate("/instance-root", 128<<30, 0, 0, 0, false, true)
+	gate.read = func(string) (diskstat.Footprint, error) {
+		return *footprintAt(500<<30, total), nil
+	}
+	gate.Sample()
+	if source := gate.Stats().WarningFloorSource; source != "derived" {
+		t.Fatalf("WarningFloorSource = %q, want derived", source)
+	}
+
+	gate.warningFloorPercent = 20
+	if source := gate.Stats().WarningFloorSource; source != "percent" {
+		t.Fatalf("WarningFloorSource = %q with a stricter percent floor, want percent", source)
 	}
 }
 
