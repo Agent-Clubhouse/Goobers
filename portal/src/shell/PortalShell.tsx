@@ -9,6 +9,7 @@ import {
   type DataFreshness,
   type LiveDataSSEFailure,
   type LiveFreshness,
+  type LiveUpdateDetails,
 } from "../liveData";
 import { useLiveQuery } from "../liveQuery";
 import { useGaggleList } from "../operationalData";
@@ -74,7 +75,13 @@ export function PortalShell({
       ? currentScope
       : undefined;
   const { config } = useCobrand();
-  const { admissionState, dataFreshness, freshness, lastSSEFailure } = useLiveData();
+  const {
+    admissionState,
+    dataFreshness,
+    freshness,
+    lastSSEFailure,
+    liveUpdateDetails,
+  } = useLiveData();
   const updateNotice = useUpdateNotice();
   const mainContent = useRef<HTMLElement>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -175,23 +182,13 @@ export function PortalShell({
           </div>
         </div>
         <div className="topbar-actions">
-          {freshness === "polling-fallback" ? (
-            <PollingFallbackIndicator failure={lastSSEFailure} state={dataFreshness} />
-          ) : (
-            <>
-              <DataFreshnessIndicator state={dataFreshness} />
-              <span
-                aria-live="polite"
-                className={`freshness-status freshness-status-${freshness}`}
-                data-state={freshness}
-                role="status"
-                title={describeConnectionTitle(freshness, lastSSEFailure)}
-              >
-                <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
-                {connectionStatus}
-              </span>
-            </>
-          )}
+          <LiveUpdatesIndicator
+            connectionStatus={connectionStatus}
+            details={liveUpdateDetails}
+            failure={lastSSEFailure}
+            freshness={freshness}
+            state={dataFreshness}
+          />
           <button
             aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
             className="theme-button"
@@ -411,17 +408,6 @@ function describeConnectionStatus(
   return `${freshnessLabel[freshness]} — ${causeChunk}`;
 }
 
-function describeConnectionTitle(
-  freshness: LiveFreshness,
-  failure: LiveDataSSEFailure | undefined,
-): string {
-  if (freshness !== "polling-fallback" || !failure) {
-    return "Live update connection";
-  }
-  const detail = failure.result ? `${failure.cause} (${failure.result})` : failure.cause;
-  return `${detail} on ${failure.endpoint}`;
-}
-
 /**
  * Renders how current the data is.
  *
@@ -442,7 +428,6 @@ export function DataFreshnessIndicator({ state }: { state: DataFreshness }) {
       className={`data-freshness data-freshness-${state.kind}`}
       data-state={state.kind}
       role="status"
-      title={dataFreshnessTitle(state)}
     >
       <span aria-hidden="true" className={`data-mark data-mark-${state.kind}`} />
       {dataFreshnessLabel(state)}
@@ -451,10 +436,8 @@ export function DataFreshnessIndicator({ state }: { state: DataFreshness }) {
 }
 
 function PollingFallbackIndicator({
-  failure,
   state,
 }: {
-  failure: LiveDataSSEFailure | undefined;
   state: DataFreshness;
 }) {
   const dataLabel = state.kind === "unknown" ? "Data current" : dataFreshnessLabel(state);
@@ -464,12 +447,163 @@ function PollingFallbackIndicator({
       className="freshness-status freshness-status-polling-fallback"
       data-state="polling-fallback"
       role="status"
-      title={describeConnectionTitle("polling-fallback", failure)}
     >
       <span aria-hidden="true" className="live-mark live-mark-polling-fallback" />
       {dataLabel} via polling
     </span>
   );
+}
+
+function LiveUpdatesIndicator({
+  connectionStatus,
+  details,
+  failure,
+  freshness,
+  state,
+}: {
+  connectionStatus: string;
+  details: LiveUpdateDetails;
+  failure: LiveDataSSEFailure | undefined;
+  freshness: LiveFreshness;
+  state: DataFreshness;
+}) {
+  const tooltipId = "live-updates-tooltip";
+  const dataLabel = state.kind === "unknown" ? "Unknown" : dataFreshnessTitle(state);
+  return (
+    <span className="live-status-wrap">
+      <button
+        aria-describedby={tooltipId}
+        aria-label={`${connectionStatus}. Show live update details`}
+        className="live-status-trigger"
+        type="button"
+      >
+        {freshness === "polling-fallback" ? (
+          <PollingFallbackIndicator state={state} />
+        ) : (
+          <>
+            <DataFreshnessIndicator state={state} />
+            <span
+              aria-live="polite"
+              className={`freshness-status freshness-status-${freshness}`}
+              data-state={freshness}
+              role="status"
+            >
+              <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
+              {connectionStatus}
+            </span>
+          </>
+        )}
+      </button>
+      <span className="live-status-tooltip" id={tooltipId} role="tooltip">
+        <strong>Live update diagnostics</strong>
+        <span className="topbar-tooltip-grid">
+          <span>Transport</span>
+          <span>{describeTransport(details)}</span>
+          <span>Status</span>
+          <span>{describeDetailedStatus(freshness, failure, details)}</span>
+          <span>Data</span>
+          <span>{dataLabel}</span>
+          <span>Last SSE message</span>
+          <span>{formatTimestamp(details.lastMessageAt)}</span>
+          <span>Last data event</span>
+          <span>{formatTimestamp(details.lastDataEventAt)}</span>
+          <span>Connected since</span>
+          <span>{formatTimestamp(details.connectedAt)}</span>
+          <span>Failures</span>
+          <span>{details.consecutiveFailures} consecutive</span>
+          <span>Last failure</span>
+          <span>{describeFailure(details.lastFailure, details.lastFailureAt)}</span>
+          <span>Next SSE retry</span>
+          <span>{describeNextReconnect(details)}</span>
+          <span>Last poll</span>
+          <span>{describeLastPoll(details)}</span>
+          <span>Next poll</span>
+          <span>{formatTimestamp(details.nextPollAt)}</span>
+        </span>
+      </span>
+    </span>
+  );
+}
+
+function describeTransport(details: LiveUpdateDetails): string {
+  if (details.transport === "polling") {
+    return "Polling fallback; SSE retries continue";
+  }
+  if (details.transport === "none") {
+    return "Paused";
+  }
+  return details.shared ? "SSE shared from another tab" : "SSE";
+}
+
+function describeDetailedStatus(
+  freshness: LiveFreshness,
+  failure: LiveDataSSEFailure | undefined,
+  details: LiveUpdateDetails,
+): string {
+  if (details.connectStartedAt !== undefined) {
+    return `Connecting; attempt ${details.consecutiveFailures + 1}`;
+  }
+  if (freshness === "reconnecting" && details.nextReconnectAt !== undefined) {
+    return `Waiting to reconnect; attempt ${details.consecutiveFailures + 1}`;
+  }
+  if (failure) {
+    const result = failure.result ? ` (${failure.result})` : "";
+    return `${freshnessLabel[freshness]} — ${failure.cause}${result}`;
+  }
+  return freshnessLabel[freshness];
+}
+
+function describeFailure(
+  failure: LiveDataSSEFailure | undefined,
+  failedAt: number | undefined,
+): string {
+  if (!failure) {
+    return "None";
+  }
+  const result = failure.result ? ` (${failure.result})` : "";
+  return `${failure.cause}${result} on ${failure.endpoint}; ${formatTimestamp(failedAt)}`;
+}
+
+function describeNextReconnect(details: LiveUpdateDetails): string {
+  if (details.connectStartedAt !== undefined) {
+    return details.connectDeadlineAt === undefined
+      ? "Connecting now"
+      : `Connecting now; timeout ${formatTimestamp(details.connectDeadlineAt)}`;
+  }
+  return formatTimestamp(details.nextReconnectAt);
+}
+
+function describeLastPoll(details: LiveUpdateDetails): string {
+  if (details.lastPollAt === undefined) {
+    return "Never";
+  }
+  const result = details.lastPollSucceeded ? "succeeded" : "failed";
+  return `${formatTimestamp(details.lastPollAt)}; ${result}`;
+}
+
+function formatTimestamp(timestamp: number | undefined): string {
+  if (timestamp === undefined) {
+    return "Never";
+  }
+  const difference = timestamp - Date.now();
+  const absolute = new Date(timestamp).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const elapsed = Math.abs(difference);
+  const amount =
+    elapsed < 1_000
+      ? "now"
+      : elapsed < 60_000
+        ? `${Math.round(elapsed / 1_000)}s`
+        : elapsed < 3_600_000
+          ? `${Math.round(elapsed / 60_000)}m`
+          : `${Math.round(elapsed / 3_600_000)}h`;
+  if (amount === "now") {
+    return `${absolute} (now)`;
+  }
+  return `${absolute} (${difference > 0 ? `in ${amount}` : `${amount} ago`})`;
 }
 
 function dataFreshnessLabel(state: DataFreshness): string {

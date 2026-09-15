@@ -676,6 +676,70 @@ summary:focus-visible {
   font-size: 13px;
 }
 
+.live-status-wrap {
+  display: inline-flex;
+  position: relative;
+}
+
+.live-status-trigger {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: inherit;
+  cursor: help;
+  display: inline-flex;
+  font: inherit;
+  gap: 10px;
+  padding: 4px 6px;
+}
+
+.live-status-trigger:hover,
+.live-status-trigger:focus-visible {
+  background: var(--surface-subtle);
+  outline: none;
+}
+
+.live-status-trigger:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.live-status-tooltip {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 16%, transparent);
+  color: var(--text);
+  display: grid;
+  gap: 10px;
+  min-width: min(430px, calc(100vw - 24px));
+  opacity: 0;
+  padding: 12px 14px;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 10px);
+  transform: translateY(-4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    visibility 120ms ease;
+  visibility: hidden;
+  white-space: normal;
+  z-index: 40;
+}
+
+.live-status-wrap:hover .live-status-tooltip,
+.live-status-wrap:focus-within .live-status-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.live-status-tooltip > strong {
+  font-size: 13px;
+}
+
 .topbar-tooltip-grid {
   display: grid;
   font-size: 12px;
