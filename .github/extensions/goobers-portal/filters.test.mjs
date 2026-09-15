@@ -253,6 +253,11 @@ for (const kind of ["issue", "pr"]) {
                 { kind, id: "42", url: firstUrl },
                 { kind, id: "42", url: secondUrl },
                 { kind, number: 42, url: firstUrl + "#issuecomment-123" },
+                { kind, id: "42", url: firstUrl + "/" },
+                { kind, id: "42", url: firstUrl.replace("https:", "http:") },
+                { kind, id: "42", url: firstUrl.replace("github.com", "www.github.com") },
+                { kind, id: "42", url: firstUrl.replace("/octo/a/", "/OCTO/A/") },
+                { kind, id: "42", url: `http://www.github.com/OCTO/A/${segment.toUpperCase()}/42/#comment` },
             ],
             externalRefs: [{ kind, externalId: "42", url: firstUrl }],
         });
@@ -261,6 +266,22 @@ for (const kind of ["issue", "pr"]) {
         assert.equal((html.match(/class="run-association-link work-chip"/g) || []).length, 2);
     });
 }
+
+test("association URL normalization preserves non-GitHub resource distinctions", () => {
+    const urls = [
+        "https://example.test/Repo/issues/42",
+        "https://example.test/repo/issues/42",
+        "http://example.test/Repo/issues/42",
+        "https://example.test/Repo/issues/42/",
+        "https://github.com:8443/octo/a/issues/42",
+        "https://github.com/octo/a/issues/42",
+    ];
+    const html = renderRunAssociations({
+        refs: urls.map((url) => ({ kind: "issue", id: "42", url })),
+    });
+    assert.equal((html.match(/class="run-association-link work-chip"/g) || []).length, urls.length);
+    for (const url of urls) assert.ok(html.includes(`href="${url}"`));
+});
 
 test("GitHub Actions rejects unsupported telemetry filters", async () => {
     const result = await loadRuns({ mode: "actions" }, { outcome: "success" });

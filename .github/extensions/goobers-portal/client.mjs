@@ -394,8 +394,8 @@ function mergeExternalRefs(run, refs) {
 // (internal/localscheduler/conditions.go). Snapshot refreshes fire on every
 // SSE event, so an unbounded Promise.all over every hydration candidate can
 // burst well past that budget and start getting requests rejected. Keep
-// well under the limit and cache outcomes per source+run so repeat refreshes
-// don't re-request runs we already resolved (or very recently failed on).
+// well under the limit and cache resolved terminal runs plus recent failures.
+// Live runs must re-read events because later stages can add associated work.
 const ASSOCIATION_HYDRATION_CONCURRENCY = 4;
 const ASSOCIATION_HYDRATION_FAILURE_TTL_MS = 30_000;
 const associationHydrationCache = new Map();
@@ -423,15 +423,17 @@ async function hydrateRunAssociationRefs(resolved, runs) {
         const runId = run.runId || run.id;
         if (!runId) continue;
         const cacheKey = `${resolved.baseUrl}|${runId}`;
+        const revision = JSON.stringify([run.terminal, run.phase, run.finishedAt, run.lastActivityAt]);
         const cached = associationHydrationCache.get(cacheKey);
-        if (cached && (cached.status === "ok" || cached.expiresAt > now)) {
+        if (cached && cached.revision === revision &&
+            (cached.status === "ok" ? run.terminal === true : cached.expiresAt > now)) {
             if (cached.patch) hydrated.set(runId, cached.patch);
             continue;
         }
-        toFetch.push({ run, runId, cacheKey });
+        toFetch.push({ run, runId, cacheKey, revision });
     }
 
-    await mapWithConcurrency(toFetch, ASSOCIATION_HYDRATION_CONCURRENCY, async ({ run, runId, cacheKey }) => {
+    await mapWithConcurrency(toFetch, ASSOCIATION_HYDRATION_CONCURRENCY, async ({ run, runId, cacheKey, revision }) => {
         try {
             const events = await fetchJSON(
                 `${resolved.baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/events`,
@@ -442,17 +444,18 @@ async function hydrateRunAssociationRefs(resolved, runs) {
                 .map((event) => event?.externalRef)
                 .filter((ref) => associationRefKind(ref) && refIdentity(ref) && refUrl(ref));
             if (refs.length) {
-                const patch = { externalRefs: mergeExternalRefs(run, refs) };
+                const patch = { externalRefs: refs };
                 hydrated.set(runId, patch);
-                // Once resolved, a run's associated work doesn't change - cache
-                // this success permanently (per source) so later snapshot
-                // refreshes skip re-fetching this run's event ledger.
-                associationHydrationCache.set(cacheKey, { status: "ok", patch });
+                if (run.terminal === true) {
+                    associationHydrationCache.set(cacheKey, { status: "ok", patch, revision });
+                } else {
+                    associationHydrationCache.delete(cacheKey);
+                }
             } else {
                 // No refs yet (e.g. run just started) - don't cache a "success"
                 // with nothing found, but do record a short-lived entry so a
                 // burst of SSE-triggered refreshes doesn't repeat the request.
-                associationHydrationCache.set(cacheKey, { status: "empty", expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
+                associationHydrationCache.set(cacheKey, { status: "empty", revision, expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
             }
         } catch (err) {
             const operator = {
@@ -464,14 +467,19 @@ async function hydrateRunAssociationRefs(resolved, runs) {
             };
             const patch = { operator };
             hydrated.set(runId, patch);
-            associationHydrationCache.set(cacheKey, { status: "failed", patch, expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
+            associationHydrationCache.set(cacheKey, { status: "failed", patch, revision, expiresAt: now + ASSOCIATION_HYDRATION_FAILURE_TTL_MS });
         }
     });
 
     return runs.map((run) => {
         const runId = run.runId || run.id;
         if (!hydrated.has(runId)) return run;
-        return { ...run, ...hydrated.get(runId) };
+        const patch = hydrated.get(runId);
+        return {
+            ...run,
+            ...patch,
+            ...(patch.externalRefs ? { externalRefs: mergeExternalRefs(run, patch.externalRefs) } : {}),
+        };
     });
 }
 

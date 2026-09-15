@@ -9,6 +9,7 @@ import {
     runStageIntervention,
     validateIntervention,
 } from "./client.mjs";
+import { renderRunAssociations } from "./render.mjs";
 
 test("multi-value filters fan out daemon queries and merge unique runs", async () => {
     const originalFetch = globalThis.fetch;
@@ -74,6 +75,77 @@ test("daemon run summaries hydrate associated issue refs from run events", async
         globalThis.fetch = originalFetch;
     }
 });
+
+for (const terminal of [false, true]) {
+    test(`${terminal ? "terminal cached" : "live"} hydration keeps newly associated refs on refresh`, async () => {
+        const originalFetch = globalThis.fetch;
+        const issue = { kind: "issue", id: "159", url: "https://github.com/octo/app/issues/159" };
+        const pr = { kind: "pr", id: "42", url: "https://github.com/octo/app/pull/42" };
+        let refreshes = 0;
+        let eventReads = 0;
+        globalThis.fetch = async (url) => {
+            if (String(url).includes("/api/v1/runs?")) {
+                refreshes++;
+                return Response.json({ runs: [{
+                    id: `refresh-${terminal}`,
+                    terminal,
+                    operator: { issue: { number: "159" } },
+                    externalRefs: terminal && refreshes > 1 ? [pr] : [],
+                }] });
+            }
+            eventReads++;
+            const refs = !terminal && refreshes > 1 ? [issue, pr] : [issue];
+            return Response.json({ events: refs.map((externalRef) => ({ externalRef })) });
+        };
+        try {
+            const resolved = { mode: "daemon", baseUrl: "http://association-refresh" };
+            const first = await loadRuns(resolved);
+            assert.deepEqual(first.runs[0].externalRefs, [issue]);
+            const second = await loadRuns(resolved);
+            assert.equal(eventReads, terminal ? 1 : 2);
+            assert.equal(second.runs[0].externalRefs.length, 2);
+            const html = renderRunAssociations(second.runs[0]);
+            assert.ok(html.includes(`href="${issue.url}"`));
+            assert.ok(html.includes(`href="${pr.url}"`));
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+}
+
+for (const scenario of ["terminal advances", "terminal resumes", "empty run advances"]) {
+    test(`association cache invalidates when ${scenario}`, async () => {
+        const originalFetch = globalThis.fetch;
+        const issue = { kind: "issue", id: "159", url: "https://github.com/octo/app/issues/159" };
+        const pr = { kind: "pr", id: "42", url: "https://github.com/octo/app/pull/42" };
+        let refreshes = 0;
+        let eventReads = 0;
+        globalThis.fetch = async (url) => {
+            if (String(url).includes("/api/v1/runs?")) {
+                refreshes++;
+                return Response.json({ runs: [{
+                    id: scenario,
+                    terminal: scenario === "terminal advances" ||
+                        (scenario === "terminal resumes" && refreshes === 1),
+                    lastActivityAt: `2026-09-15T03:00:0${refreshes}Z`,
+                    operator: { issue: { number: "159" } },
+                }] });
+            }
+            eventReads++;
+            const refs = refreshes > 1 ? [issue, pr] : scenario === "empty run advances" ? [] : [issue];
+            return Response.json({ events: refs.map((externalRef) => ({ externalRef })) });
+        };
+        try {
+            const resolved = { mode: "daemon", baseUrl: "http://association-revisions" };
+            await loadRuns(resolved);
+            const second = await loadRuns(resolved);
+            assert.equal(eventReads, 2);
+            assert.deepEqual(second.runs[0].externalRefs, [issue, pr]);
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+}
 
 test("run interventions validate actor and action-specific fields", () => {
     assert.throws(() => validateIntervention("approve", { decision: "pass" }), /actor is required/);

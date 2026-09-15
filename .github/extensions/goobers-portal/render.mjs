@@ -66,12 +66,24 @@ export function renderRunAssociations(operator) {
     const root = operator && operator.operator ? operator.operator : operator;
     const links = [];
     const seen = new Set();
+    function canonicalRefUrl(href) {
+        const url = new URL(href);
+        url.hash = "";
+        if (["github.com", "www.github.com"].includes(url.hostname) && !url.port &&
+            /^\/[^/]+\/[^/]+\/(issues|pull)\/\d+\/?$/i.test(url.pathname)) {
+            url.protocol = "https:";
+            url.hostname = "github.com";
+            url.pathname = url.pathname.toLowerCase().replace(/\/$/, "");
+        }
+        return url.href;
+    }
     function addLink(kind, item, title) {
         if (!item) return;
         const href = safeAssociationUrl(item?.url || item?.htmlUrl || item?.webUrl);
+        if (!href) return;
         const identity = item.number ?? item.id ?? item.externalId ?? "";
-        const key = kind + ":" + href.split("#")[0];
-        if (!href || seen.has(key)) return;
+        const key = kind + ":" + canonicalRefUrl(href);
+        if (seen.has(key)) return;
         seen.add(key);
         const status = String(item.state || item.status || item.phase || "").trim();
         const statusAttr = status ? ' data-status="' + escapeAssociationHtml(status.toLowerCase()) + '"' : "";
