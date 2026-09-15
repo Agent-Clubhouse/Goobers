@@ -368,10 +368,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	ctx := webhookGate.Context()
-	// Claim administration must outlive admission shutdown so active runs can
-	// finish delegated recovery while the daemon drains.
-	claimAdminCtx, stopClaimAdmin := context.WithCancel(context.Background())
-	defer stopClaimAdmin()
 	var ready atomic.Bool
 	// Named subsystem readiness checks (#3806), surfaced on /readyz alongside
 	// the overall Ready gate above. Each flips exactly once, in startup
@@ -1456,6 +1452,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	triggerSweepErrors.report(runStartupPhase(stdout, tracker, "trigger-request-reconcile", "", triggerSweep))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
 	claimAdminSweepErrors.report(reconcileStartupClaimAdmin(l, setup, recoverExpiredClaims, tracker, stdout))
+	stopClaimAdminSweep := startClaimAdminSweep(l, setup.InstanceLog, recoverExpiredClaims, claimAdminSweepErrors)
+	defer stopClaimAdminSweep()
 	// #831's daemon-side half: cancel one live in-flight run on operator request
 	// by resolving its owning Runner and calling CancelRun. Its own ticker (below)
 	// keeps a worst-case wedged-stage cancellation — which blocks in CancelRun for
@@ -1670,17 +1668,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			}
 		}
 	}()
-
-	// #4323: claims used to share the trigger delegation ticker above, so a
-	// large pending-trigger backlog (#4326's runaway automation is the
-	// incident that exposed this) starved claims processing behind it for as
-	// long as that single sweepPendingTriggers call ran — an operator's
-	// `goobers claim`/release could wait indefinitely with no trigger-side
-	// misbehavior of its own. Its own ticker gives claims the same isolation
-	// cancelTicker/applyTicker already have from each other below.
-	claimAdminTickerDone := startPeriodicSweep(claimAdminCtx, delegationSweepInterval, func() {
-		claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
-	})
 
 	// #831's cancel sweep runs on its own ticker so a slow (wedged-stage)
 	// cancellation never delays the trigger/claim delegation sweeps above.
@@ -1948,8 +1935,7 @@ daemonLoop:
 
 	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout,
 		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
-	stopClaimAdmin()
-	<-claimAdminTickerDone
+	stopClaimAdminSweep()
 	stopTerminalCleanupRetry()
 	<-terminalCleanupRetryDone
 	runTerminalCleanupRetryFinal(cleanupRetries, terminalCleanupRetryErrors, readyNow)
