@@ -1247,6 +1247,15 @@ type CredentialGrant struct {
 	// MCP names a BYO MCP credential. It is not a stage capability and is
 	// reachable only by goobers whose MCP server declarations reference it.
 	MCP string `json:"mcp,omitempty" yaml:"mcp,omitempty"`
+	// Harness optionally scopes this grant to one agent harness (#5148), e.g.
+	// "claude-code" — one of the names knownHarnessNames() reports. A goober
+	// running that harness prefers this grant over an unscoped one sourcing
+	// the same capability/mcp; a goober on any other harness never resolves
+	// it. Leaving Harness unset keeps the pre-#5148 behavior: the grant backs
+	// every harness, which is exactly right for a single-harness instance and
+	// for capabilities (like repo:push) that are not harness-specific. Two
+	// grants may not match the same (capability, mcp, harness) triple.
+	Harness string `json:"harness,omitempty" yaml:"harness,omitempty"`
 	// Token is the source of the credential — exactly one supported TokenRef
 	// source, like a repo's token; inline secret values are never permitted.
 	Token TokenRef `json:"token" yaml:"token"`

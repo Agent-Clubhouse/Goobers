@@ -746,8 +746,16 @@ func (c CredentialGrant) validate(i int, seen map[string]bool, stores map[string
 	if err != nil {
 		return err
 	}
+	if c.Harness != "" && !knownHarnessName(c.Harness) {
+		return fmt.Errorf("credentials[%d] (%s): unknown harness %q (known: %s)", i, label, c.Harness, strings.Join(knownHarnessNames(), ", "))
+	}
+	if c.Harness != "" {
+		key = key + "#harness:" + c.Harness
+		label = label + " scoped to harness " + strconv.Quote(c.Harness)
+	}
 	if seen[key] {
-		return fmt.Errorf("credentials[%d]: %s is sourced more than once", i, label)
+		return fmt.Errorf("credentials[%d]: %s is sourced more than once — "+
+			"two grants must not match the same capability/mcp and harness", i, label)
 	}
 	seen[key] = true
 	if c.Token.sourceCount() != 1 {

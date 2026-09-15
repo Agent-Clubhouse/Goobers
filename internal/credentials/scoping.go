@@ -1,5 +1,7 @@
 package credentials
 
+import "strings"
+
 // RepoBinding maps a target repository (by owner/name) to the resolver token-ref
 // name that backs it. It is the input to per-gaggle credential scoping (MGV-5,
 // #1012): the runner computes one gaggle's grants from the bindings of the
@@ -75,6 +77,37 @@ func RunnerGrants(bindings []RepoBinding, owner, name string, credentialedCaps [
 // capability strings uniformly.
 func RepoScopedCapability(base, owner, name string) string {
 	return base + "@" + owner + "/" + name
+}
+
+// harnessScopeSeparator namespaces a harness-scoped grant capability key away
+// from any base capability string. Capability strings are colon-separated
+// (e.g. "agent:model") and repo-scoped keys use "@" (RepoScopedCapability), so
+// "#harness:" cannot collide with either.
+const harnessScopeSeparator = "#harness:"
+
+// HarnessScopedCapability returns the harness-qualified grant key for a base
+// capability: "base#harness:name". It carries the harness dimension of a
+// credentialGrant's optional harness selector (#5148) through the otherwise
+// harness-agnostic capability→token maps, mirroring RepoScopedCapability's
+// repo dimension. The key is opaque to Injector/Set, which treat all
+// capability strings uniformly; only the wiring that binds a goober's own
+// harness to its credential sources (buildGooberCredentialGrants) ever splits
+// it back apart, collapsing to a plain capability key before a Set is
+// materialized — so nothing downstream of that point needs to know harness
+// scoping exists.
+func HarnessScopedCapability(base, harness string) string {
+	return base + harnessScopeSeparator + harness
+}
+
+// SplitHarnessScopedCapability reverses HarnessScopedCapability. ok is false
+// for a plain (unscoped) capability key, in which case base is returned
+// unchanged and harness is "".
+func SplitHarnessScopedCapability(key string) (base, harness string, ok bool) {
+	i := strings.Index(key, harnessScopeSeparator)
+	if i < 0 {
+		return key, "", false
+	}
+	return key[:i], key[i+len(harnessScopeSeparator):], true
 }
 
 // AdditionalReadGrants computes runner-owned read-only grants for a gaggle's

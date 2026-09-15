@@ -1024,7 +1024,7 @@ func statusCompiledHarnessWarnings(
 		pf(stderr, "error: invalid secretStores: %v\n", err)
 		return nil, 1
 	}
-	modelCredential, err := agentModelCredentialResolver(cfg, stores)
+	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		pf(stderr, "error: invalid credentials: %v\n", err)
 		return nil, 1
