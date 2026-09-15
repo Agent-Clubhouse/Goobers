@@ -70,3 +70,8 @@ verification, and recovery publication) from their base services. Telemetry
 and work-item availability reflect the configured telemetry store rather than
 querying its health. Embedders supply this immutable fact with
 `WithTelemetryReadAvailability`; absent configuration is unavailable.
+Work-item routes additionally require the reader's work-item extension.
+The contract distinguishes bounded work-item lists (no cursor) from run
+pagination, requires repository identity for work-item detail and gaggle/window
+inputs for defect aggregates, and documents the mutually exclusive conditional
+headers for state writes.

@@ -282,7 +282,7 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		apicontract.RouteTelemetryErrorSignatures, apicontract.RouteTelemetryErrors,
 		apicontract.RouteTelemetryImplementationOutcomes, apicontract.RouteWorkItems,
 		apicontract.RouteWorkItemDetail:
-		available = config.telemetryReadsAvailable
+		available = telemetryRouteAvailable(id, config)
 	default:
 		return true, "", ""
 	}
@@ -303,6 +303,13 @@ func routeExtensionAvailable(id apicontract.RouteID, config handlerConfig) bool 
 		_, available = config.recovery.(RecoveryPublisher)
 	}
 	return available
+}
+
+func telemetryRouteAvailable(id apicontract.RouteID, config handlerConfig) bool {
+	if id == apicontract.RouteWorkItems || id == apicontract.RouteWorkItemDetail {
+		return config.telemetryReadsAvailable && config.workItemsAvailable
+	}
+	return config.telemetryReadsAvailable
 }
 
 func requiredRole(route apicontract.Route) string {

@@ -85,12 +85,13 @@ func openAPIParameters(route Route) []map[string]any {
 			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}},
 			map[string]any{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string"}},
 		)
-	case RouteRuns, RouteWorkItems:
+	case RouteRuns:
 		parameters = append(parameters,
 			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}},
 			map[string]any{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string"}},
 		)
 	}
+	parameters = append(parameters, openAPIServiceParameters(route.ID)...)
 	if route.ID == RouteRuns {
 		for _, name := range []string{"gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger"} {
 			parameters = append(parameters, map[string]any{
@@ -133,6 +134,35 @@ func openAPIParameters(route Route) []map[string]any {
 		})
 	}
 	return parameters
+}
+
+func openAPIServiceParameters(id RouteID) []map[string]any {
+	switch id {
+	case RouteWorkItems:
+		return []map[string]any{
+			{"name": "provider", "in": "query", "schema": stringSchema()},
+			{"name": "kind", "in": "query", "schema": map[string]any{"type": "string", "enum": []string{"pr", "issue"}}},
+			{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}},
+		}
+	case RouteWorkItemDetail:
+		return []map[string]any{
+			{"name": "repository", "in": "query", "required": true, "schema": map[string]any{"type": "string", "minLength": 1}},
+		}
+	case RouteTelemetryDefectAggregates:
+		return []map[string]any{
+			{"name": "gaggle", "in": "query", "required": true, "schema": map[string]any{"type": "string", "minLength": 1}},
+			{"name": "since", "in": "query", "required": true, "schema": dateTimeSchema(),
+				"description": "Start of the bounded lookback window ending at request time; must satisfy the daemon's window policy."},
+		}
+	case RouteGaggleStatePut:
+		return []map[string]any{
+			{"name": "If-Match", "in": "header", "schema": map[string]any{"type": "string", "pattern": `^"[^",]+"$`},
+				"description": "Replace this version. Exactly one of If-Match or If-None-Match is required; do not send both."},
+			{"name": "If-None-Match", "in": "header", "schema": map[string]any{"type": "string", "const": "*"},
+				"description": "Create only if absent. Exactly one of If-Match or If-None-Match is required; do not send both."},
+		}
+	}
+	return nil
 }
 
 func routeRequiresIdempotency(id RouteID) bool {

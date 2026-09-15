@@ -582,6 +582,7 @@ type handlerConfig struct {
 	recoveryGate            func() bool
 	discoveryIdentity       DiscoveryIdentity
 	telemetryReadsAvailable bool
+	workItemsAvailable      bool
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -955,9 +956,11 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if errorLog == nil {
 		return nil, errors.New("http API error logger is required")
 	}
+	_, workItemsAvailable := reader.(readservice.WorkItemReader)
 	config := handlerConfig{
 		authenticator:       NullAuthenticator{},
 		interventionContext: context.Background(),
+		workItemsAvailable:  workItemsAvailable,
 	}
 	for _, opt := range opts {
 		if err := opt(&config); err != nil {
