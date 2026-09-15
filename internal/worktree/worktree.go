@@ -231,24 +231,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		}
 	}()
 
-	// A lost acquisition record makes the next stage fetch the remote branch
-	// again. Reconcile a surrendered same-run occupant before that fetch:
-	// Git refuses to update a branch checked out by the retained worktree.
-	// The branch's local presence is enough to establish the safe cleanup
-	// path; acquisition still runs afterwards to restore its durable record.
-	_, targetStatErr := os.Stat(path)
-	if targetStatErr != nil && !os.IsNotExist(targetStatErr) {
-		return nil, fmt.Errorf("worktree: stat %s: %w", path, targetStatErr)
-	}
-	if os.IsNotExist(targetStatErr) && opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch) {
-		if err := m.reconcileReleasedSameRunBranch(ctx, key, repoDir, path, opts); err != nil {
-			return nil, err
-		}
-	}
-	if opts.AcquireRemoteBranch {
-		if err := m.acquireRemoteBranchLocked(ctx, key, opts.RepoURL, repoDir, opts.OwnerRunID, opts.Branch); err != nil {
-			return nil, err
-		}
+	if err := m.prepareBranchAcquisition(ctx, key, repoDir, path, opts); err != nil {
+		return nil, err
 	}
 
 	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
@@ -437,6 +421,26 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	lockHeld = false
 	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 	return wt, nil
+}
+
+// prepareBranchAcquisition clears a surrendered prior-stage worktree before
+// fetching its branch again, which Git otherwise refuses while it is checked out.
+func (m *Manager) prepareBranchAcquisition(ctx context.Context, key, repoDir, path string, opts CreateOptions) error {
+	_, targetStatErr := os.Stat(path)
+	if targetStatErr != nil && !os.IsNotExist(targetStatErr) {
+		return fmt.Errorf("worktree: stat %s: %w", path, targetStatErr)
+	}
+	if os.IsNotExist(targetStatErr) && opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch) {
+		if err := m.reconcileReleasedSameRunBranch(ctx, key, repoDir, path, opts); err != nil {
+			return err
+		}
+	}
+	if opts.AcquireRemoteBranch {
+		if err := m.acquireRemoteBranchLocked(ctx, key, opts.RepoURL, repoDir, opts.OwnerRunID, opts.Branch); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // resolvedCleanupBaseRef records the exact ref namespace Git selected for the
