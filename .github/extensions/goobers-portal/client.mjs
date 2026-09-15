@@ -891,6 +891,40 @@ export async function loadWorkflowDetail(resolved, gaggle, workflow) {
     );
 }
 
+const INSIGHT_STATS_OPTION_KEYS = [
+    "workflow",
+    "gaggle",
+    "since",
+    "until",
+    "trendSince",
+    "trendUntil",
+    "trendBuckets",
+    "trendPreviousSince",
+    "trendPreviousUntil",
+];
+
+/**
+ * Fetch aggregate telemetry statistics (success/failure breakdowns, token and
+ * cost usage, cost trend buckets, curation health, ready-pool depth, and
+ * credit assignment) for the Insights tab. Only a live daemon computes these
+ * cross-run aggregates — standalone and GitHub Actions sources only expose
+ * per-run detail.
+ */
+export async function loadInsightStats(resolved, options = {}) {
+    if (resolved.mode !== "daemon") {
+        throw new Error("Telemetry insights require a running Goobers daemon.");
+    }
+    const { baseUrl, token } = resolved;
+    const params = new URLSearchParams();
+    for (const key of INSIGHT_STATS_OPTION_KEYS) {
+        const value = options[key];
+        if (value === undefined || value === null || value === "") continue;
+        params.set(key, String(value));
+    }
+    const query = params.toString();
+    return await fetchJSON(`${baseUrl}/api/v1/telemetry/stats${query ? `?${query}` : ""}`, { token });
+}
+
 async function fetchRunContent(resolved, resourcePath) {
     if (resolved.mode === "standalone") {
         throw new Error("Run content is not available in standalone (no-daemon) mode.");
