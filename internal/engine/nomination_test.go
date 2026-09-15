@@ -241,6 +241,8 @@ type nominationConnector struct {
 	rec       localrunner.ArtifactRecorder
 	validator *validate.Validator
 	artifact  []byte
+	quiet     bool
+	stages    []string
 }
 
 // Run serves the shipped work-nomination workflow's three deterministic
@@ -249,6 +251,7 @@ type nominationConnector struct {
 // whose command drifts fails loudly here rather than being served the wrong
 // artifact.
 func (c *nominationConnector) Run(_ context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.stages = append(c.stages, env.TaskID)
 	if len(run.Command) > 1 && run.Command[1] == "security-alerts-query" {
 		return c.runSecurityAlerts(env, run)
 	}
@@ -266,6 +269,9 @@ func (c *nominationConnector) Run(_ context.Context, env apiv1.InvocationEnvelop
 	}
 	if got := env.Inputs["resultFile"]; got != "candidate-findings.json" {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("gather-signals resultFile = %#v, want candidate-findings.json", got)
+	}
+	if c.quiet {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultNoWork, Summary: "no telemetry findings"}, nil
 	}
 	if err := c.validator.ValidateJSON(schemas.CandidateFindings, c.artifact); err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("validate connector artifact: %w", err)
@@ -325,6 +331,9 @@ func (c *nominationConnector) runSecurityAlerts(env apiv1.InvocationEnvelope, ru
 	if got := env.Inputs["resultFile"]; got != want.resultFile {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("%s intake resultFile = %#v, want %s", source, got, want.resultFile)
 	}
+	if c.quiet {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultNoWork, Summary: "no " + source + " alerts"}, nil
+	}
 	artifact := securityAlertsFixture(source)
 	if err := c.validator.ValidateJSON(schemas.SecurityAlerts, artifact); err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("validate %s intake artifact: %w", source, err)
@@ -377,6 +386,7 @@ type fixtureNominator struct {
 	validator *validate.Validator
 	runsDir   string
 	existing  map[string]bool
+	quiet     bool
 
 	gotGoal     string
 	gotCap      string
@@ -392,9 +402,13 @@ type fixtureNominator struct {
 	// class (an exit written, documented, and unreachable).
 	gotContext          []string
 	gotContextIntegrity []string
+	gotRepository       bool
 }
 
 func (n *fixtureNominator) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	if _, err := os.Stat(filepath.Join(env.Workspace, "README.md")); err == nil {
+		n.gotRepository = true
+	}
 	n.gotGoal = env.Goal
 	for _, pointer := range env.ContextPointers {
 		n.gotContext = append(n.gotContext, pointer.Name)
@@ -417,6 +431,10 @@ func (n *fixtureNominator) Invoke(_ context.Context, env apiv1.InvocationEnvelop
 		}
 	}
 	if artifact == nil {
+		if n.quiet {
+			n.summary = "all nomination sources and repository inspection were empty"
+			return apiv1.ResultEnvelope{Status: apiv1.ResultNoWork, Summary: n.summary}, nil
+		}
 		return apiv1.ResultEnvelope{}, errors.New("candidate-findings context pointer not received")
 	}
 	data, err := artifact.Resolve(filepath.Join(n.runsDir, env.RunID))
@@ -465,7 +483,7 @@ func nominationMachine(t *testing.T, spec apiv1.WorkflowSpec) *workflow.Machine 
 	return machine
 }
 
-func runNominationFixture(t *testing.T, runID string, existing map[string]bool) *fixtureNominator {
+func runNominationFixture(t *testing.T, runID string, existing map[string]bool, quiet bool) (*fixtureNominator, *nominationConnector, localrunner.Result) {
 	t.Helper()
 	validator, err := validate.New()
 	if err != nil {
@@ -479,10 +497,12 @@ func runNominationFixture(t *testing.T, runID string, existing map[string]bool) 
 		t.Fatalf("create worktree manager: %v", err)
 	}
 	repo := nominationFixtureRepo(t)
-	nominator := &fixtureNominator{validator: validator, runsDir: runsDir, existing: existing}
+	nominator := &fixtureNominator{validator: validator, runsDir: runsDir, existing: existing, quiet: quiet}
+	var connector *nominationConnector
 	r, err := localrunner.New(localrunner.Config{
 		NewDeterministic: func(rec localrunner.ArtifactRecorder, _ localrunner.SecretRegistrar) (invoke.Deterministic, error) {
-			return &nominationConnector{rec: rec, validator: validator, artifact: artifact}, nil
+			connector = &nominationConnector{rec: rec, validator: validator, artifact: artifact, quiet: quiet}
+			return connector, nil
 		},
 		NewAgentic: func(name string, _ localrunner.ArtifactRecorder, _ localrunner.SecretRegistrar) (invoke.Goober, error) {
 			if name != "nominator" {
@@ -490,8 +510,9 @@ func runNominationFixture(t *testing.T, runID string, existing map[string]bool) 
 			}
 			return nominator, nil
 		},
-		Worktrees: manager,
-		RunsDir:   runsDir,
+		Worktrees:  manager,
+		RunsDir:    runsDir,
+		ScratchDir: t.TempDir(),
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
 			return repo, nil
 		},
@@ -512,7 +533,7 @@ func runNominationFixture(t *testing.T, runID string, existing map[string]bool) 
 	if result.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want completed", result.Phase)
 	}
-	return nominator
+	return nominator, connector, result
 }
 
 func nominationFixtureRepo(t *testing.T) string {
@@ -551,7 +572,7 @@ func runNominationGit(t *testing.T, dir string, args ...string) {
 // schema-valid connector artifact: two recurring-error signatures and two
 // coverage gaps, all within the default cap of 5.
 func TestWorkNominationDryRun(t *testing.T) {
-	nominator := runNominationFixture(t, "run-nomination", nil)
+	nominator, _, _ := runNominationFixture(t, "run-nomination", nil, false)
 	if nominator.gotGoal == "" {
 		t.Error("nominate stage did not receive a goal")
 	}
@@ -609,15 +630,39 @@ func TestWorkNominationDedupesOnSecondRun(t *testing.T) {
 		existing[s.Subject] = true
 	}
 
-	nominator := runNominationFixture(t, "run-nomination-second", existing)
+	nominator, _, _ := runNominationFixture(t, "run-nomination-second", existing, false)
 	if nominator.gotFiled != 0 {
 		t.Errorf("second-run filed = %d, want 0 (all deduped)", nominator.gotFiled)
 	}
+
 	if nominator.gotDeduped != len(signals) {
 		t.Errorf("second-run deduped = %d, want %d", nominator.gotDeduped, len(signals))
 	}
 	if nominator.summary != "found 4 candidates; 4 deduped; filed 0; 0 skipped at per-run cap" {
 		t.Errorf("second-run nominate summary = %q, want run counts", nominator.summary)
+	}
+}
+
+func TestWorkNominationQuietSourcesReachRepositoryInspection(t *testing.T) {
+	nominator, connector, result := runNominationFixture(t, "run-nomination-quiet", nil, true)
+	if result.NoWork != true {
+		t.Fatal("quiet sources did not produce a terminal no-work completion")
+	}
+	if nominator.summary == "" {
+		t.Fatal("nominator did not run after every source reported no-work")
+	}
+	if !nominator.gotRepository {
+		t.Fatal("nominator did not receive the repository checkout")
+	}
+	for _, stage := range []string{"gather-signals", "gather-code-scanning-alerts", "gather-dependabot-alerts"} {
+		if !slices.ContainsFunc(connector.stages, func(id string) bool {
+			return strings.HasSuffix(id, ":"+stage)
+		}) {
+			t.Errorf("quiet source stage %q did not run: %v", stage, connector.stages)
+		}
+	}
+	if len(nominator.gotContext) != 0 {
+		t.Fatalf("quiet sources delivered unexpected context: %v", nominator.gotContext)
 	}
 }
 
