@@ -272,7 +272,8 @@ func init() {
 			withSynopsis(synopsisByID["doctor"]).
 			withHelp("preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions", doctorHelp).
 			withExamples("goobers doctor --k8s", "goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0", "goobers doctor --av-exclusions --report json ./instance"),
-		command("coordinate", apicontract.ActionConfigTime, runCoordinate).
+		command("coordinate", apicontract.ActionWorkflowExecution, runCoordinate).
+			withSynopsis("  coordinate --gaggle NAME --plan FILE [--check] [path] Reconcile an approved cross-repository plan").
 			withHelp("reconcile an explicitly approved cross-repository plan (local operator only)", coordinateHelp).
 			withExamples("goobers coordinate --gaggle coordinator --plan plan.json --check"),
 		command("netpol-render", apicontract.ActionConfigTime, runNetpolRender).

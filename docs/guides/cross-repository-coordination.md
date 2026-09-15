@@ -200,10 +200,13 @@ JSON is printed to stdout and optionally written to `--result`. Its contract is
 includes its qualified `repository` and logical `id`, actual `issue` / `pr`,
 `state`, `reason`, separate `issueClosed` / `prMerged` booleans, `headSha`,
 `mergeSha`, `releaseTag` and `releaseSha` when known.
+An approved evidence file also produces `evidenceDigest`; a completed integration
+adds `integrationArtifactSha256`. Those digests and landed/released commit pins
+are retained in the parent's tracking section for an auditable completion record.
 
 Exit `0` means the pass or offline check ran successfully, **not** that the
 parent completed. Inspect `state`: `waiting`, `blocked`, `integration-required`,
-or `complete`. Child states include `ready`, `in-review`, `blocked`, `failed`,
+or `complete`. Child states include `ready`, `in-progress`, `in-review`, `blocked`, `failed`,
 and `complete`. Exit `1` means admission, provider, evidence, or persistence
 failure; a live-pass result is `error` when reconciliation failed. Exit `2` is
 usage. Never gate integration or downstream workflows on process exit alone.
@@ -226,6 +229,7 @@ Issue edits use the provider's expected-revision guard.
 | Child publication text changed | Restore the reviewed content or stop this parent and author a separately reviewed follow-up plan. Changed text is never automatically approved. |
 | Parent plan digest changed | Active parent plans are immutable. Restore the original reviewed file/config approval; scope changes need a new parent and plan. Never strip the pin/intent markers to reset an active plan. |
 | Cancelled issue or abandoned PR | Parent reports blocked/failed and does not complete. A maintainer must reopen/correct the work or author a new approved follow-up; do not represent cancellation as a merge. |
+| Owner workflow parks a child with `goobers:needs-human` | Remains blocked; coordinator does not silently remove the escalation and retry implementation. Resolve it through the existing owner workflow/operator recovery path, then clear that marker intentionally. |
 | Head/merge/release pin changed | Re-inspect live revisions, rerun integration where relevant, and approve new evidence. Old integration evidence does not transfer. |
 | Wrong/missing integration log, failed attestation, incomplete vector | Remains `integration-required`; provide real, complete, separately reviewed evidence. |
 

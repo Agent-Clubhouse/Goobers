@@ -58,11 +58,13 @@ type ChildResult struct {
 }
 
 type Result struct {
-	PlanID     string        `json:"planId"`
-	PlanDigest string        `json:"planDigest"`
-	State      string        `json:"state"`
-	Reason     string        `json:"reason,omitempty"`
-	Children   []ChildResult `json:"children"`
+	PlanID                    string        `json:"planId"`
+	PlanDigest                string        `json:"planDigest"`
+	EvidenceDigest            string        `json:"evidenceDigest,omitempty"`
+	IntegrationArtifactSHA256 string        `json:"integrationArtifactSha256,omitempty"`
+	State                     string        `json:"state"`
+	Reason                    string        `json:"reason,omitempty"`
+	Children                  []ChildResult `json:"children"`
 }
 
 type Publication struct {
@@ -114,9 +116,12 @@ func (r Reconciler) Reconcile(ctx context.Context, p Plan, evidence *Evidence) (
 			return out, fmt.Errorf("child provider is not authorized")
 		}
 	}
-	bindings, err := r.approvedBindings(p, evidence, out.PlanDigest)
+	bindings, err := r.evidenceBindings(p, evidence, out.PlanDigest, true)
 	if err != nil {
 		return out, err
+	}
+	if evidence != nil {
+		out.EvidenceDigest, _ = Digest(evidence)
 	}
 	// Lock every plan for this parent, not only this digest. CanonicalKey also
 	// includes host identity, unlike a repository-local issue-number lease.
@@ -125,83 +130,95 @@ func (r Reconciler) Reconcile(ctx context.Context, p Plan, evidence *Evidence) (
 		return out, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, release()) }()
-	parent, err := parentProvider.GetWorkItem(ctx, p.Parent.Repository.Ref(), p.Parent.ID)
+	pin := "<!-- goobers-coordination:plan:" + out.PlanDigest + " -->"
+	if err := r.prepareParent(ctx, p, pin); err != nil {
+		return out, err
+	}
+	defer func() {
+		if resultErr != nil {
+			out.State, out.Reason = "error", "Coordination failed; inspect the local operator result."
+			out.IntegrationArtifactSHA256 = ""
+			resultErr = errors.Join(resultErr, r.writeTracking(ctx, p, out))
+		}
+	}()
+	items, err := r.publishBatch(ctx, p, out.PlanDigest)
 	if err != nil {
 		return out, err
 	}
-	if parent.StateReason == "not_planned" {
-		return out, fmt.Errorf("parent has been cancelled")
+	out.Children, err = r.observeBatch(ctx, p, items, bindings)
+	if err != nil {
+		return out, err
 	}
-	pin := "<!-- goobers-coordination:plan:" + out.PlanDigest + " -->"
-	if strings.Contains(parent.Body, "<!-- goobers-coordination:plan:") && !strings.Contains(parent.Body, pin) {
-		return out, fmt.Errorf("parent is pinned to a different plan; do not replace an active plan")
+	if err := r.releaseBatch(ctx, p, items, out.Children); err != nil {
+		return out, err
+	}
+	r.resultState(p, evidence, &out)
+	return out, r.writeTracking(ctx, p, out)
+}
+
+func (r Reconciler) prepareParent(ctx context.Context, p Plan, pin string) error {
+	parentProvider := r.Providers[p.Parent.Repository.Key()]
+	parent, err := parentProvider.GetWorkItem(ctx, p.Parent.Repository.Ref(), p.Parent.ID)
+	if err != nil {
+		return err
+	}
+	if parent.StateReason == "not_planned" {
+		return fmt.Errorf("parent has been cancelled")
+	}
+	count := strings.Count(parent.Body, "<!-- goobers-coordination:plan:")
+	if count > 1 || count == 1 && !strings.Contains(parent.Body, pin) {
+		return fmt.Errorf("parent is pinned to a different or ambiguous plan; do not replace an active plan")
 	}
 	if !strings.Contains(parent.Body, pin) {
 		if parent.State != "open" {
-			return out, fmt.Errorf("cannot coordinate a closed parent")
+			return fmt.Errorf("cannot coordinate a closed parent")
 		}
 		body := parent.Body + "\n\n" + pin
-		parent, err = parentProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		_, err = parentProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: p.Parent.Repository.Ref(), ID: parent.ID, ExpectedRevision: parent.Revision, Body: &body,
 		})
 		if err != nil {
-			return out, err
+			return err
 		}
 	}
-	defer func() {
-		if resultErr == nil {
-			return
-		}
-		// Provider errors can contain private context or credentials. Publish
-		// only this fixed failure summary; the CLI scrubs the detailed error.
-		out.State, out.Reason = "error", "Coordination failed; inspect the local operator result."
-		current, err := parentProvider.GetWorkItem(ctx, p.Parent.Repository.Ref(), p.Parent.ID)
-		if err != nil {
-			resultErr = errors.Join(resultErr, err)
-			return
-		}
-		if !strings.Contains(current.Body, pin) {
-			return
-		}
-		body, err := trackingBody(current.Body, p, out)
-		if err != nil {
-			resultErr = errors.Join(resultErr, err)
-			return
-		}
-		_, err = parentProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: p.Parent.Repository.Ref(), ID: current.ID, ExpectedRevision: current.Revision, Body: &body, State: "open",
-		})
-		resultErr = errors.Join(resultErr, err)
-	}()
+	return nil
+}
+
+func (r Reconciler) publishBatch(ctx context.Context, p Plan, digest string) (map[string]providers.WorkItem, error) {
 	items := map[string]providers.WorkItem{}
 	for _, child := range p.Children {
-		item, err := r.publish(ctx, p, child, out.PlanDigest)
+		item, err := r.publish(ctx, p, child, digest)
 		if err != nil {
-			return out, fmt.Errorf("publish %s: %w", child.Key(), err)
+			return nil, fmt.Errorf("publish %s: %w", child.Key(), err)
 		}
 		items[child.Key()] = item
 	}
 	for _, child := range p.Children {
 		item := items[child.Key()]
-		base := child.Body + "\n\n" + childMarker(p, child, out.PlanDigest)
+		base := child.Body + "\n\n" + childMarker(p, child, digest)
 		body := base
 		for _, dep := range child.DependsOn {
 			fmtRef := dep.Repository.Owner + "/" + dep.Repository.Name + "#" + items[dep.Key()].ID
 			body += "\n\nDepends on " + fmtRef + " (" + dep.ID + ")."
 		}
 		if item.Body != base && item.Body != body {
-			return out, fmt.Errorf("child %s has unreviewed publication content", child.Key())
+			return nil, fmt.Errorf("child %s has unreviewed publication content", child.Key())
 		}
 		if item.Body != body {
-			item, err = r.Providers[child.Repository.Key()].UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			updated, err := r.Providers[child.Repository.Key()].UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 				Repository: child.Repository.Ref(), ID: item.ID, ExpectedRevision: item.Revision, Body: &body,
 			})
 			if err != nil {
-				return out, err
+				return nil, err
 			}
-			items[child.Key()] = item
+			items[child.Key()] = updated
 		}
 	}
+	return items, nil
+}
+
+func (r Reconciler) observeBatch(ctx context.Context, p Plan, items map[string]providers.WorkItem, bindings map[string]Binding) ([]ChildResult, error) {
+	out := make([]ChildResult, 0, len(p.Children))
 	// Observe the complete batch before releasing anything. Provider failure
 	// cannot silently satisfy a dependency or leave a successful result.
 	for _, child := range p.Children {
@@ -209,15 +226,15 @@ func (r Reconciler) Reconcile(ctx context.Context, p Plan, evidence *Evidence) (
 		if err != nil {
 			observation.State, observation.Reason = "blocked", "provider observation failed"
 		}
-		out.Children = append(out.Children, observation)
+		out = append(out, observation)
 		if err != nil {
 			return out, fmt.Errorf("observe %s: %w", child.Key(), err)
 		}
 	}
-	byKey := map[string]*ChildResult{}
-	for i := range out.Children {
-		byKey[out.Children[i].Key()] = &out.Children[i]
-	}
+	return out, nil
+}
+
+func dependencySatisfaction(p Plan, byKey map[string]*ChildResult) map[string]bool {
 	plans := map[string]Child{}
 	for _, child := range p.Children {
 		plans[child.Key()] = child
@@ -243,9 +260,18 @@ func (r Reconciler) Reconcile(ctx context.Context, p Plan, evidence *Evidence) (
 	for _, child := range p.Children {
 		satisfied(child.Key())
 	}
+	return satisfaction
+}
+
+func (r Reconciler) releaseBatch(ctx context.Context, p Plan, items map[string]providers.WorkItem, children []ChildResult) error {
+	byKey := map[string]*ChildResult{}
+	for i := range children {
+		byKey[children[i].Key()] = &children[i]
+	}
+	satisfied := dependencySatisfaction(p, byKey)
 	busy := map[string]string{}
 	for _, child := range p.Children {
-		if byKey[child.Key()].State == "in-review" || byKey[child.Key()].State == "pending" && items[child.Key()].HasLabel(providers.LabelReady) {
+		if occupiesSlot(*byKey[child.Key()], items[child.Key()]) {
 			if busy[child.Repository.Key()] == "" {
 				busy[child.Repository.Key()] = child.Key()
 			}
@@ -257,7 +283,7 @@ func (r Reconciler) Reconcile(ctx context.Context, p Plan, evidence *Evidence) (
 		eligible := observed.State == "pending"
 		approved := observed.State != "failed" && observed.State != "blocked"
 		for _, dep := range child.DependsOn {
-			if !satisfied(dep.Key()) {
+			if !satisfied[dep.Key()] {
 				eligible, approved = false, false
 				if observed.State != "failed" {
 					observed.State, observed.Reason = "blocked", "dependency "+dep.Key()+" is "+byKey[dep.Key()].State
@@ -272,12 +298,27 @@ func (r Reconciler) Reconcile(ctx context.Context, p Plan, evidence *Evidence) (
 			busy[child.Repository.Key()] = child.Key()
 		}
 		if err := r.setEligibility(ctx, child, item, eligible, approved); err != nil {
-			return out, err
+			return err
 		}
 		if eligible {
 			observed.State = "ready"
 		}
 	}
+	return nil
+}
+
+func occupiesSlot(child ChildResult, item providers.WorkItem) bool {
+	switch child.State {
+	case "in-review", "in-progress":
+		return true
+	case "pending":
+		return item.HasLabel(providers.LabelReady)
+	default:
+		return false
+	}
+}
+
+func (r Reconciler) resultState(p Plan, evidence *Evidence, out *Result) {
 	out.State = "waiting"
 	for _, child := range out.Children {
 		if child.State == "failed" || child.State == "blocked" {
@@ -294,18 +335,24 @@ func (r Reconciler) Reconcile(ctx context.Context, p Plan, evidence *Evidence) (
 			out.State, out.Reason = "integration-required", err.Error()
 		} else {
 			out.State = "complete"
+			out.IntegrationArtifactSHA256 = r.ArtifactDigest
 		}
 	}
-	parent, err = parentProvider.GetWorkItem(ctx, p.Parent.Repository.Ref(), p.Parent.ID)
+}
+
+func (r Reconciler) writeTracking(ctx context.Context, p Plan, out Result) error {
+	parentProvider := r.Providers[p.Parent.Repository.Key()]
+	parent, err := parentProvider.GetWorkItem(ctx, p.Parent.Repository.Ref(), p.Parent.ID)
 	if err != nil {
-		return out, err
+		return err
 	}
-	if !strings.Contains(parent.Body, pin) {
-		return out, fmt.Errorf("parent plan pin changed during reconciliation")
+	pin := "<!-- goobers-coordination:plan:" + out.PlanDigest + " -->"
+	if strings.Count(parent.Body, "<!-- goobers-coordination:plan:") != 1 || !strings.Contains(parent.Body, pin) {
+		return fmt.Errorf("parent plan pin changed during reconciliation")
 	}
 	body, err := trackingBody(parent.Body, p, out)
 	if err != nil {
-		return out, err
+		return err
 	}
 	state := ""
 	if out.State == "complete" {
@@ -318,10 +365,18 @@ func (r Reconciler) Reconcile(ctx context.Context, p Plan, evidence *Evidence) (
 			Repository: p.Parent.Repository.Ref(), ID: parent.ID, ExpectedRevision: parent.Revision, Body: &body, State: state,
 		})
 	}
-	return out, err
+	return err
 }
 
-func (r Reconciler) approvedBindings(p Plan, e *Evidence, digest string) (map[string]Binding, error) {
+// ValidateEvidence performs offline binding validation before any credentials
+// are resolved. Approval is optional only for the operator's --check preview.
+func ValidateEvidence(p Plan, e *Evidence, a Authority, requireApproval bool) error {
+	digest, _ := Digest(p)
+	_, err := (Reconciler{Authority: a}).evidenceBindings(p, e, digest, requireApproval)
+	return err
+}
+
+func (r Reconciler) evidenceBindings(p Plan, e *Evidence, digest string, requireApproval bool) (map[string]Binding, error) {
 	bindings := map[string]Binding{}
 	if e == nil {
 		return bindings, nil
@@ -330,7 +385,7 @@ func (r Reconciler) approvedBindings(p Plan, e *Evidence, digest string) (map[st
 	if err != nil {
 		return nil, err
 	}
-	if e.PlanDigest != digest || r.Authority.ApprovedEvidence[p.ID] != evidenceDigest {
+	if e.PlanDigest != digest || requireApproval && r.Authority.ApprovedEvidence[p.ID] != evidenceDigest {
 		return nil, fmt.Errorf("evidence is not approved for this exact plan")
 	}
 	known := map[string]bool{}
@@ -401,7 +456,6 @@ func (r Reconciler) publish(ctx context.Context, p Plan, c Child, digest string)
 		}
 		return provider.CreateWorkItem(ctx, providers.CreateWorkItemRequest{
 			Repository: c.Repository.Ref(), Title: c.Title, Body: body,
-			Labels: []string{providers.LabelNeedsHuman},
 		})
 	}
 	item, err := provider.GetWorkItem(ctx, c.Repository.Ref(), items[0].ID)
@@ -414,21 +468,39 @@ func (r Reconciler) publish(ctx context.Context, p Plan, c Child, digest string)
 	return item, nil
 }
 
-func (r Reconciler) observe(ctx context.Context, c Child, item providers.WorkItem, binding Binding) (ChildResult, error) {
+func observeIssue(c Child, item providers.WorkItem) (ChildResult, bool) {
 	out := ChildResult{NodeRef: c.NodeRef, Issue: item.ID, State: "pending", IssueClosed: item.State == "closed", ReleaseTag: c.ReleaseTag}
 	if item.StateReason == "not_planned" {
 		out.State, out.Reason = "failed", "issue cancelled/not planned"
-		return out, nil
+		return out, true
+	}
+	if item.HasLabel(providers.LabelNeedsHuman) {
+		out.State, out.Reason = "blocked", "implementation requires human attention"
+		return out, true
 	}
 	if c.Completion == "closed" {
 		if out.IssueClosed && item.StateReason == "completed" {
 			out.State = "complete"
+		} else if out.IssueClosed {
+			out.State, out.Reason = "blocked", "closed task lacks an explicit completed reason"
 		}
+		return out, true
+	}
+	return out, false
+}
+
+func (r Reconciler) observe(ctx context.Context, c Child, item providers.WorkItem, binding Binding) (ChildResult, error) {
+	out, terminal := observeIssue(c, item)
+	if terminal {
 		return out, nil
 	}
 	if binding.PR == "" {
 		if out.IssueClosed {
 			out.State, out.Reason = "blocked", "issue closed without approved PR evidence"
+		} else if item.Status == providers.WorkItemStatusInReview {
+			out.State, out.Reason = "in-review", "owner reports in-review; approved PR binding required"
+		} else if item.HasLabel(providers.LabelClaimed) || item.Status == providers.WorkItemStatusInProgress || item.Status == providers.WorkItemStatusClaimed {
+			out.State = "in-progress"
 		}
 		return out, nil
 	}
@@ -483,9 +555,6 @@ func (r Reconciler) setEligibility(ctx context.Context, c Child, item providers.
 			remove = append(remove, label)
 		}
 	}
-	if eligible && item.HasLabel(providers.LabelNeedsHuman) {
-		remove = append(remove, providers.LabelNeedsHuman)
-	}
 	if len(add)+len(remove) == 0 {
 		return nil
 	}
@@ -525,15 +594,28 @@ func (r Reconciler) integration(p Plan, e *Evidence, children []ChildResult) err
 func trackingBody(body string, p Plan, out Result) (string, error) {
 	const start, end = "<!-- goobers-coordination:tracking:start -->", "<!-- goobers-coordination:tracking:end -->"
 	i, j := strings.Index(body, start), strings.Index(body, end)
-	if (i < 0) != (j < 0) || i >= 0 && j < i {
+	if (i < 0) != (j < 0) || i >= 0 && j < i || strings.Count(body, start) > 1 || strings.Count(body, end) > 1 {
 		return "", fmt.Errorf("invalid parent tracking markers")
 	}
 	var section strings.Builder
 	fmt.Fprintf(&section, "%s\n%s\n\nCoordination: **%s**\n", start, p.Summary, out.State)
+	fmt.Fprintf(&section, "\nPlan SHA-256: `%s`.\n", out.PlanDigest)
+	if out.EvidenceDigest != "" {
+		fmt.Fprintf(&section, "\nEvidence SHA-256: `%s`.\n", out.EvidenceDigest)
+	}
+	if out.IntegrationArtifactSHA256 != "" {
+		fmt.Fprintf(&section, "\nIntegration artifact SHA-256: `%s`.\n", out.IntegrationArtifactSHA256)
+	}
 	for _, child := range out.Children {
 		fmt.Fprintf(&section, "\n- %s/%s#%s (%s): %s", child.Repository.Owner, child.Repository.Name, child.Issue, child.ID, child.State)
 		if child.PR != "" {
 			fmt.Fprintf(&section, "; PR %s/%s#%s", child.Repository.Owner, child.Repository.Name, child.PR)
+		}
+		if child.MergeSHA != "" {
+			fmt.Fprintf(&section, "; merge `%s`", child.MergeSHA)
+		}
+		if child.ReleaseSHA != "" {
+			fmt.Fprintf(&section, "; release `%s` at `%s`", child.ReleaseTag, child.ReleaseSHA)
 		}
 	}
 	fmt.Fprintf(&section, "\n%s", end)

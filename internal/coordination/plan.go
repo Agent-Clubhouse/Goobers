@@ -3,6 +3,7 @@
 package coordination
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -136,7 +137,15 @@ func Digest(value any) (string, error) {
 // Decode refuses unknown fields and trailing documents, including misspelled
 // approval/evidence properties that would otherwise look accepted.
 func Decode(r io.Reader, value any) error {
-	d := json.NewDecoder(io.LimitReader(r, 2<<20))
+	const limit = 2 << 20
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > limit {
+		return fmt.Errorf("coordination document exceeds 2 MiB")
+	}
+	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(value); err != nil {
 		return err
@@ -167,42 +176,33 @@ func (p Plan) Validate(a Authority, requireApproval bool) error {
 	if strings.Contains(p.Summary, "goobers-coordination:") {
 		return fmt.Errorf("summary contains reserved coordination marker")
 	}
+	if err := p.validateChildren(a); err != nil {
+		return err
+	}
+	if requireApproval {
+		digest, err := Digest(p)
+		if err != nil {
+			return err
+		}
+		if a.ApprovedPlans[p.ID] != digest {
+			return fmt.Errorf("plan content is not approved in trusted instance configuration")
+		}
+	}
+	return nil
+}
+
+func (p Plan) validateChildren(a Authority) error {
 	allowed := map[string]bool{}
 	for _, target := range a.Targets {
 		allowed[target.Repository.Key()] = true
 	}
 	children := map[string]Child{}
 	for _, child := range p.Children {
-		if err := child.Repository.Validate(); err != nil {
+		if err := child.validate(); err != nil {
 			return err
 		}
 		if !allowed[child.Repository.Key()] {
 			return fmt.Errorf("unauthorized target for child %s", child.ID)
-		}
-		if !namePattern.MatchString(child.ID) || strings.TrimSpace(child.Title) == "" || strings.TrimSpace(child.Body) == "" {
-			return fmt.Errorf("child requires id and explicitly reviewed title/body")
-		}
-		if strings.Contains(child.Body, "goobers-coordination:") || strings.Contains(child.Title, "goobers-coordination:") {
-			return fmt.Errorf("child content contains reserved coordination marker")
-		}
-		if child.Kind != "implementation" && child.Kind != "task" {
-			return fmt.Errorf("invalid child kind")
-		}
-		switch child.Completion {
-		case "merged":
-		case "release":
-			if child.ReleaseTag == "" {
-				return fmt.Errorf("release completion requires exact releaseTag")
-			}
-		case "closed":
-			if child.Kind != "task" {
-				return fmt.Errorf("issue closure cannot prove implementation")
-			}
-		default:
-			return fmt.Errorf("completion must be merged, release, or closed")
-		}
-		if child.Completion != "release" && child.ReleaseTag != "" {
-			return fmt.Errorf("releaseTag requires release completion")
 		}
 		if _, exists := children[child.Key()]; exists {
 			return fmt.Errorf("duplicate child %s", child.Key())
@@ -242,14 +242,37 @@ func (p Plan) Validate(a Authority, requireApproval bool) error {
 			return err
 		}
 	}
-	if requireApproval {
-		digest, err := Digest(p)
-		if err != nil {
-			return err
+	return nil
+}
+
+func (child Child) validate() error {
+	if err := child.Repository.Validate(); err != nil {
+		return err
+	}
+	if !namePattern.MatchString(child.ID) || strings.TrimSpace(child.Title) == "" || strings.TrimSpace(child.Body) == "" {
+		return fmt.Errorf("child requires id and explicitly reviewed title/body")
+	}
+	if strings.Contains(child.Body, "goobers-coordination:") || strings.Contains(child.Title, "goobers-coordination:") {
+		return fmt.Errorf("child content contains reserved coordination marker")
+	}
+	if child.Kind != "implementation" && child.Kind != "task" {
+		return fmt.Errorf("invalid child kind")
+	}
+	switch child.Completion {
+	case "merged":
+	case "release":
+		if child.ReleaseTag == "" {
+			return fmt.Errorf("release completion requires exact releaseTag")
 		}
-		if a.ApprovedPlans[p.ID] != digest {
-			return fmt.Errorf("plan content is not approved in trusted instance configuration")
+	case "closed":
+		if child.Kind != "task" {
+			return fmt.Errorf("issue closure cannot prove implementation")
 		}
+	default:
+		return fmt.Errorf("completion must be merged, release, or closed")
+	}
+	if child.Completion != "release" && child.ReleaseTag != "" {
+		return fmt.Errorf("releaseTag requires release completion")
 	}
 	return nil
 }

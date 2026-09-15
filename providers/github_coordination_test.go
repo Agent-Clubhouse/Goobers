@@ -16,7 +16,8 @@ func TestCoordinationReleaseRequiresPublishedExactTagAndAncestry(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				if r.Method != http.MethodGet {
-					t.Fatal("release observer attempted mutation")
+					t.Error("release observer attempted mutation")
+					return
 				}
 				switch {
 				case strings.Contains(r.URL.Path, "/releases/tags/"):

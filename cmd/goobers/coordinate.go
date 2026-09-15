@@ -91,6 +91,10 @@ func runCoordinate(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	if err := coordination.ValidateEvidence(plan, evidence, *authority, !*check); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	planDigest, _ := coordination.Digest(plan)
 	if *check {
 		out := map[string]any{"planDigest": planDigest, "publications": coordination.Publications(plan)}
@@ -107,6 +111,10 @@ func runCoordinate(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	return executeCoordinate(cfg, layout, *authority, plan, evidence, *artifactPath, *resultPath, stdout, stderr)
+}
+
+func executeCoordinate(cfg *instance.Config, layout instance.Layout, authority coordination.Authority, plan coordination.Plan, evidence *coordination.Evidence, artifactPath, resultPath string, stdout, stderr io.Writer) int {
 	// Resolve the existing config tree without starting its scheduler.
 	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
@@ -117,7 +125,7 @@ func runCoordinate(args []string, stdout, stderr io.Writer) int {
 		pln(stderr, "error: gaggle definitions failed validation")
 		return 1
 	}
-	if err := coordinateGaggles(set, *authority); err != nil {
+	if err := coordinateGaggles(set, authority); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -130,7 +138,7 @@ func runCoordinate(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	reconciler := coordination.Reconciler{
-		Authority: *authority, Providers: map[string]coordination.Provider{},
+		Authority: authority, Providers: map[string]coordination.Provider{},
 		Leaser: decomposition.FileTargetLeaser{Directory: filepath.Join(layout.Root, "coordination-locks")},
 	}
 	repos := []coordination.Repository{authority.ParentRepo}
@@ -148,8 +156,8 @@ func runCoordinate(args []string, stdout, stderr io.Writer) int {
 		}
 		reconciler.Providers[repo.Key()] = provider
 	}
-	if *artifactPath != "" {
-		f, err := os.Open(*artifactPath)
+	if artifactPath != "" {
+		f, err := os.Open(artifactPath)
 		if err != nil {
 			pf(stderr, "error: open integration artifact: %v\n", err)
 			return 1
@@ -172,8 +180,8 @@ func runCoordinate(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if *resultPath != "" {
-		if err := os.WriteFile(*resultPath, data, 0o600); err != nil {
+	if resultPath != "" {
+		if err := os.WriteFile(resultPath, data, 0o600); err != nil {
 			pf(stderr, "error: write result: %v\n", err)
 			return 1
 		}

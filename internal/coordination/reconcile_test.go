@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,12 +19,13 @@ import (
 )
 
 type fakeProvider struct {
-	items                map[string]providers.WorkItem
-	pr                   providers.PullRequestSummary
-	release              providers.ReleaseObservation
-	creates              int
-	failCreateAfterWrite bool
-	readError            error
+	items                 map[string]providers.WorkItem
+	pr                    providers.PullRequestSummary
+	release               providers.ReleaseObservation
+	creates               int
+	failCreateAfterWrite  bool
+	failCreateBeforeWrite bool
+	readError             error
 }
 
 func (f *fakeProvider) GetWorkItem(_ context.Context, _ providers.RepositoryRef, id string) (providers.WorkItem, error) {
@@ -50,7 +52,10 @@ func (f *fakeProvider) FindWorkItemsByMarker(_ context.Context, _ providers.Repo
 }
 func (f *fakeProvider) CreateWorkItem(_ context.Context, req providers.CreateWorkItemRequest) (providers.WorkItem, error) {
 	f.creates++
-	item := providers.WorkItem{ID: "7", Revision: "1", Title: req.Title, Body: req.Body, Labels: req.Labels, State: "open"}
+	if f.failCreateBeforeWrite {
+		return providers.WorkItem{}, errors.New("create outcome unknown")
+	}
+	item := providers.WorkItem{ID: strconv.Itoa(6 + f.creates), Revision: "1", Title: req.Title, Body: req.Body, Labels: req.Labels, State: "open"}
 	f.items[item.ID] = item
 	if f.failCreateAfterWrite {
 		f.failCreateAfterWrite = false
@@ -326,6 +331,9 @@ func TestCoordinationStrictDecodeAndStableDigest(t *testing.T) {
 		if err := coordination.Decode(strings.NewReader(raw), &p); err == nil {
 			t.Fatal("non-strict JSON")
 		}
+		if err := coordination.Decode(strings.NewReader("{}"+strings.Repeat(" ", 2<<20)), &p); err == nil {
+			t.Fatal("oversized document accepted")
+		}
 	}
 	p, r, _ := fixture(t)
 	digest, _ := coordination.Digest(p)
@@ -334,5 +342,139 @@ func TestCoordinationStrictDecodeAndStableDigest(t *testing.T) {
 	}
 	if !reflect.DeepEqual(p.Children[1].DependsOn[0], p.Children[0].NodeRef) {
 		t.Fatal("example dependency not fully qualified")
+	}
+}
+
+func TestCoordinationAmbiguousCreateRequiresManualRecovery(t *testing.T) {
+	p, r, f := fixture(t)
+	f[1].failCreateBeforeWrite = true
+	if _, err := r.Reconcile(t.Context(), p, nil); err == nil {
+		t.Fatal("expected ambiguous outcome")
+	}
+	if _, err := r.Reconcile(t.Context(), p, nil); err == nil || !strings.Contains(err.Error(), "prior create intent") {
+		t.Fatalf("unsafe automatic retry: %v", err)
+	}
+	if f[1].creates != 1 {
+		t.Fatal("repeated ambiguous POST")
+	}
+	f[1].failCreateBeforeWrite = false
+	draft := coordination.Publications(p)[0]
+	if _, err := f[1].CreateWorkItem(t.Context(), providers.CreateWorkItemRequest{Repository: draft.Repository.Ref(), Title: draft.Title, Body: draft.Body}); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, p, nil)
+	if f[1].creates != 2 {
+		t.Fatal("manual recovery issue was not adopted")
+	}
+}
+
+func TestCoordinationDeletedMarkerCannotCreateDuplicate(t *testing.T) {
+	p, r, f := fixture(t)
+	reconcile(t, r, p, nil)
+	item := f[1].items["7"]
+	item.Body = "marker removed"
+	f[1].items["7"] = item
+	if _, err := r.Reconcile(t.Context(), p, nil); err == nil {
+		t.Fatal("missing marker accepted")
+	}
+	if f[1].creates != 1 {
+		t.Fatal("missing marker created duplicate issue")
+	}
+}
+
+func TestCoordinationSerializesChildrenWithinRepository(t *testing.T) {
+	p, r, f := fixture(t)
+	p.Children[1].Repository = p.Children[0].Repository
+	p.Children[1].DependsOn = nil
+	r.Authority.Targets = r.Authority.Targets[:1]
+	r.Authority.ApprovedPlans[p.ID], _ = coordination.Digest(p)
+	out := reconcile(t, r, p, nil)
+	if out.Children[0].State != "ready" || out.Children[1].State != "blocked" || f[1].items["8"].HasLabel(providers.LabelReady) {
+		t.Fatalf("parallel child release: %+v", out)
+	}
+	e := mergedEvidence(p, f)
+	e.Children = e.Children[:1]
+	approveEvidence(&r, p, e)
+	out = reconcile(t, r, p, e)
+	if out.Children[1].State != "ready" || !f[1].items["8"].HasLabel(providers.LabelReady) {
+		t.Fatalf("next child not released: %+v", out)
+	}
+}
+
+func TestCoordinationDependencyReleaseUsesMergedAndReleasedNotClosed(t *testing.T) {
+	p, r, f := fixture(t)
+	reconcile(t, r, p, nil)
+	e := mergedEvidence(p, f)
+	e.Children = e.Children[:1]
+	approveEvidence(&r, p, e)
+	out := reconcile(t, r, p, e)
+	if out.Children[0].IssueClosed || !out.Children[0].PRMerged || out.Children[1].State != "ready" {
+		t.Fatalf("incorrect condition semantics: %+v", out)
+	}
+	f[1].release.SHA = strings.Repeat("f", 40)
+	out = reconcile(t, r, p, e)
+	if out.Children[1].State != "blocked" || f[2].items["7"].HasLabel(providers.LabelReady) {
+		t.Fatal("release invalidation did not withdraw eligibility")
+	}
+}
+
+func TestCoordinationParentPinConflictAndBounds(t *testing.T) {
+	p, r, f := fixture(t)
+	reconcile(t, r, p, nil)
+	item := f[0].items["42"]
+	item.Body += "\n<!-- goobers-coordination:plan:other -->"
+	f[0].items["42"] = item
+	if _, err := r.Reconcile(t.Context(), p, nil); err == nil {
+		t.Fatal("ambiguous parent plan pin accepted")
+	}
+	p, r, _ = fixture(t)
+	p.Children = make([]coordination.Child, 101)
+	if err := p.Validate(r.Authority, false); err == nil {
+		t.Fatal("unbounded plan accepted")
+	}
+}
+
+func TestCoordinationHonorsOwnerEscalationAndClaim(t *testing.T) {
+	p, r, f := fixture(t)
+	reconcile(t, r, p, nil)
+	item := f[1].items["7"]
+	item.Labels = append(item.Labels, providers.LabelClaimed)
+	f[1].items["7"] = item
+	out := reconcile(t, r, p, nil)
+	if out.Children[0].State != "in-progress" || f[1].items["7"].HasLabel(providers.LabelReady) {
+		t.Fatalf("claimed work was released again: %+v", out)
+	}
+	item = f[1].items["7"]
+	item.Status = providers.WorkItemStatusInReview
+	f[1].items["7"] = item
+	out = reconcile(t, r, p, nil)
+	if out.Children[0].State != "in-review" || f[1].items["7"].HasLabel(providers.LabelReady) {
+		t.Fatal("unbound PR review was released as fresh implementation")
+	}
+	item = f[1].items["7"]
+	item.Labels = append(item.Labels, providers.LabelNeedsHuman)
+	f[1].items["7"] = item
+	out = reconcile(t, r, p, nil)
+	if out.Children[0].State != "blocked" || !f[1].items["7"].HasLabel(providers.LabelNeedsHuman) {
+		t.Fatal("owner escalation was silently cleared")
+	}
+}
+
+func TestCoordinationTaskClosureRequiresCompletedReason(t *testing.T) {
+	p, r, f := fixture(t)
+	p.Children[0].Kind, p.Children[0].Completion, p.Children[0].ReleaseTag = "task", "closed", ""
+	r.Authority.ApprovedPlans[p.ID], _ = coordination.Digest(p)
+	reconcile(t, r, p, nil)
+	item := f[1].items["7"]
+	item.State = "closed"
+	f[1].items["7"] = item
+	if out := reconcile(t, r, p, nil); out.Children[0].State != "blocked" {
+		t.Fatal("unknown closure reason accepted")
+	}
+	item = f[1].items["7"]
+	item.StateReason = "completed"
+	f[1].items["7"] = item
+	if out := reconcile(t, r, p, nil); out.Children[0].State != "complete" || out.Children[1].State != "ready" {
+		t.Fatalf("completed non-code task did not release consumer: %+v", out)
 	}
 }
