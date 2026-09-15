@@ -108,7 +108,8 @@ test("stage inspector fallbacks and status messages are escaped", () => {
     assert.match(deterministic, /No retry declared/);
     assert.match(deterministic, /fail \(default\)/);
     assert.match(deterministic, /No YAML available/);
-    assert.match(renderStageInspectorStatus("<unavailable>", { error: true }), /role="alert"/);
+    assert.match(renderStageInspectorStatus("<unavailable>", { error: true }), /stage-inspector-error/);
+    assert.doesNotMatch(renderStageInspectorStatus("<unavailable>", { error: true }), /role=/);
     assert.match(renderStageInspectorStatus("<unavailable>", { error: true }), /&lt;unavailable&gt;/);
     assert.match(renderStageDefinitionInspector({
         name: "review",

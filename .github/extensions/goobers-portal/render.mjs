@@ -378,10 +378,8 @@ export function renderStageDefinitionInspector(stage = {}, view = "fields") {
 }
 
 export function renderStageInspectorStatus(message, options = {}) {
-    const role = options.error ? "alert" : "status";
     const className = options.error ? "stage-inspector-state stage-inspector-error" : "stage-inspector-state";
-    return '<div class="' + className + '" role="' + role + '">' +
-        escapeAssociationHtml(message) + "</div>";
+    return '<div class="' + className + '">' + escapeAssociationHtml(message) + "</div>";
 }
 
 export function renderRunEventItems(displayedEvents = [], sourceId = "", runId = "", options = {}) {
@@ -1184,10 +1182,14 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   #graph-svg.is-panning { cursor: grabbing; }
   .stage-node { cursor: pointer; outline: none; }
   .stage-node:hover .node-rect,
-  .stage-node:focus .node-rect,
   .stage-node.selected .node-rect {
     stroke: var(--true-color-blue, #0969da);
     stroke-width: 3;
+  }
+  .stage-node:focus .node-rect {
+    stroke: var(--true-color-blue, #0969da);
+    stroke-width: 3;
+    stroke-dasharray: 5 3;
   }
   @media (forced-colors: active) {
     .stage-node:focus .node-rect { stroke: CanvasText; }
@@ -2913,7 +2915,6 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     const state = document.createElement("div");
     state.className = error ? "stage-inspector-state stage-inspector-error" : "stage-inspector-state";
-    state.setAttribute("role", error ? "alert" : "status");
     state.textContent = message;
     inspector.replaceChildren(state);
   }
@@ -3082,7 +3083,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       '</select>' +
       '<span class="graph-help muted">Scroll to zoom · drag to pan</span>' +
       '</div>' +
-      '<svg id="graph-svg" tabindex="0" role="img" aria-label="Workflow graph" viewBox="0 0 ' +
+      '<svg id="graph-svg" tabindex="0" role="group" aria-label="Workflow graph" viewBox="0 0 ' +
       layout.width + " " + layout.height + '" data-base-width="' + layout.width +
       '" data-base-height="' + layout.height + '" xmlns="http://www.w3.org/2000/svg"><g>' +
       svg + "</g></svg>" + renderGraphLegend() + "</div>";
@@ -3729,10 +3730,14 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     };
   }
 
-  document.getElementById("refresh").addEventListener("click", refreshAll);
+  document.getElementById("refresh").addEventListener("click", () => {
+    workflowDetailCache.clear();
+    void refreshAll();
+  });
   async function changeSource() {
     liveConnectionEstablished = false;
     reconnectAttemptCount = 0;
+    workflowDetailCache.clear();
     if (eventSource) eventSource.close();
     await loadSnapshot();
     connectLiveEvents();
