@@ -77,6 +77,14 @@ const anthropicOAuthTokenPrefix = "sk-ant-oat"
 // key (which the API rejects). A regular API key (or anything else) passes
 // through untouched. Must run before dropForeignAnthropicAPIKey: once
 // remapped, the OAuth value is no longer under the ANTHROPIC_API_KEY name for
+// normalizeAnthropicCredentialEnv routes a subscription OAuth token to
+// CLAUDE_CODE_OAUTH_TOKEN, then drops any remaining foreign-shaped
+// ANTHROPIC_API_KEY. Order matters: remap first, so an OAuth token is never
+// mistaken for a foreign key.
+func normalizeAnthropicCredentialEnv(env []string) []string {
+	return dropForeignAnthropicAPIKey(remapAnthropicOAuthToken(env))
+}
+
 // that guard to inspect.
 func remapAnthropicOAuthToken(env []string) []string {
 	remapped := env[:0:0]
@@ -402,8 +410,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		return Outcome{}, err
 	}
 	env = append(env, mcpEnvAdditions...)
-	env = remapAnthropicOAuthToken(env)
-	env = dropForeignAnthropicAPIKey(env)
+	env = normalizeAnthropicCredentialEnv(env)
 
 	// Isolate this run from the invoking user's ambient ~/.claude: an
 	// unsandboxed run must not inherit the host's personal settings, hooks,

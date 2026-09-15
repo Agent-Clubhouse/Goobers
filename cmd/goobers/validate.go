@@ -456,11 +456,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	if options.checkHarness {
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
-		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
-			func(h apiv1.Harness) (func(context.Context) (string, error), string, error) {
-				return agentModelCredentialResolver(cfg, harnessStores, h)
-			},
-			diagnostics) {
+		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, perHarnessModelCredential(cfg, harnessStores), diagnostics) {
 			return 1
 		}
 	}
@@ -1380,6 +1376,14 @@ func scrubRepositoryError(err error, token string) string {
 // Package-level so tests can substitute a fake lookup without depending on a
 // real, installed, signed-in Copilot CLI.
 var harnessAdapterFor = adapterFor
+
+// perHarnessModelCredential adapts agentModelCredentialResolver to the
+// per-harness resolver shape checkHarnessesAtSources takes (#5148).
+func perHarnessModelCredential(cfg *instance.Config, stores credentials.StoreResolver) func(apiv1.Harness) (func(context.Context) (string, error), string, error) {
+	return func(h apiv1.Harness) (func(context.Context) (string, error), string, error) {
+		return agentModelCredentialResolver(cfg, stores, h)
+	}
+}
 
 // checkHarnessesAtSources preflights every distinct harness referenced by set's
 // goobers (GBO-011), printing actionable guidance per failure. Returns false
