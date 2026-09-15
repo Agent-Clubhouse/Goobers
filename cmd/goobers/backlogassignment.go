@@ -146,7 +146,7 @@ func runBacklogAssignmentWithMutationHook(
 		if err != nil {
 			return failProviderStage(stderr, "recheck backlog item "+assignment.ItemID, err, "backlog-assignment.json")
 		}
-		if current.Assignee != "" {
+		if current.Assignee != "" || current.HasLabel(providers.LabelCoordinationWait) {
 			concurrentlyAssigned++
 			continue
 		}
@@ -251,7 +251,7 @@ func assignmentEligibleItems(
 ) ([]providers.WorkItem, error) {
 	eligible := make([]providers.WorkItem, 0, len(items))
 	for _, item := range items {
-		if !item.HasLabel(trustLabel) || (item.State != "" && !strings.EqualFold(item.State, "open")) {
+		if !item.HasLabel(trustLabel) || item.HasLabel(providers.LabelCoordinationWait) || (item.State != "" && !strings.EqualFold(item.State, "open")) {
 			continue
 		}
 		matched, err := labelFilter.Matches(item.Labels)

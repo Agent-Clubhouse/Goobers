@@ -34,10 +34,13 @@ const (
 	LabelReady      = "goobers:ready"
 	LabelCritical   = "goobers:critical"
 	LabelNeedsHuman = "goobers:needs-human"
-	LabelNominated  = "goobers:nominated"
-	LabelAutoClose  = "goobers:auto-close"
-	LabelStale      = "stale"
-	LabelTracking   = "tracking"
+	// LabelCoordinationWait keeps parent trackers and dependency-blocked
+	// children out of ordinary curation and implementation admission.
+	LabelCoordinationWait = "goobers:coordination-wait"
+	LabelNominated        = "goobers:nominated"
+	LabelAutoClose        = "goobers:auto-close"
+	LabelStale            = "stale"
+	LabelTracking         = "tracking"
 )
 
 // WorkItemStatus is the Goobers processing status mirrored to backlog items.

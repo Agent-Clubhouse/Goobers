@@ -1534,8 +1534,8 @@ func appendBlockedResweepCandidates(
 			env.debugf("excluded %s: missing required label %q", item.ID, blockedOnSiblingLabel)
 			continue
 		}
-		if item.HasLabel(providers.LabelNeedsHuman) {
-			env.debugf("excluded %s: has excluded label %q", item.ID, providers.LabelNeedsHuman)
+		if label, parked := backlogCoordinationOrHumanPark(item); parked {
+			env.debugf("excluded %s: has excluded label %q", item.ID, label)
 			continue
 		}
 		if item.State != "" && !strings.EqualFold(item.State, "open") {
@@ -1648,8 +1648,8 @@ func appendReadyResweepCandidates(
 			env.debugf("excluded %s: missing required label %q", item.ID, opts.policy.readyLabel)
 			continue
 		}
-		if item.HasLabel(providers.LabelNeedsHuman) {
-			env.debugf("excluded %s: has excluded label %q", item.ID, providers.LabelNeedsHuman)
+		if label, parked := backlogCoordinationOrHumanPark(item); parked {
+			env.debugf("excluded %s: has excluded label %q", item.ID, label)
 			continue
 		}
 		if item.State != "" && !strings.EqualFold(item.State, "open") {

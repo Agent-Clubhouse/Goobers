@@ -69,8 +69,10 @@ type Result struct {
 
 type Publication struct {
 	NodeRef
-	Title string `json:"title"`
-	Body  string `json:"body"`
+	Title    string   `json:"title"`
+	Body     string   `json:"body"`
+	Labels   []string `json:"labels"`
+	Assignee string   `json:"assignee,omitempty"`
 }
 
 // Publications is the exact initial public content, also usable for manual
@@ -79,7 +81,7 @@ func Publications(p Plan) []Publication {
 	digest, _ := Digest(p)
 	out := make([]Publication, 0, len(p.Children))
 	for _, child := range p.Children {
-		out = append(out, Publication{NodeRef: child.NodeRef, Title: child.Title, Body: child.Body + "\n\n" + childMarker(p, child, digest)})
+		out = append(out, Publication{NodeRef: child.NodeRef, Title: child.Title, Body: child.Body + "\n\n" + childMarker(p, child, digest), Labels: []string{providers.LabelCoordinationWait}, Assignee: child.Assignee})
 	}
 	return out
 }
@@ -169,13 +171,17 @@ func (r Reconciler) prepareParent(ctx context.Context, p Plan, pin string) error
 	if count > 1 || count == 1 && !strings.Contains(parent.Body, pin) {
 		return fmt.Errorf("parent is pinned to a different or ambiguous plan; do not replace an active plan")
 	}
-	if !strings.Contains(parent.Body, pin) {
+	body := parent.Body
+	if !strings.Contains(body, pin) {
 		if parent.State != "open" {
 			return fmt.Errorf("cannot coordinate a closed parent")
 		}
-		body := parent.Body + "\n\n" + pin
+		body += "\n\n" + pin
+	}
+	if body != parent.Body || !parent.HasLabel(providers.LabelCoordinationWait) || parent.HasLabel(providers.LabelReady) {
 		_, err = checkedUpdate(ctx, parentProvider, providers.UpdateWorkItemRequest{
 			Repository: p.Parent.Repository.Ref(), ID: parent.ID, ExpectedRevision: parent.Revision, Body: &body,
+			AddLabels: []string{providers.LabelCoordinationWait}, RemoveLabels: []string{providers.LabelReady},
 		})
 		if err != nil {
 			return err
@@ -197,6 +203,9 @@ func (r Reconciler) publishBatch(ctx context.Context, p Plan, digest string) (ma
 		item := items[child.Key()]
 		if !numberPattern.MatchString(item.ID) || item.Title != child.Title {
 			return nil, fmt.Errorf("provider returned an invalid child identity or changed its reviewed title")
+		}
+		if child.Assignee != "" && item.Assignee != child.Assignee {
+			return nil, fmt.Errorf("child %s no longer matches its reviewed assignee", child.Key())
 		}
 		base := child.Body + "\n\n" + childMarker(p, child, digest)
 		body := base
@@ -457,9 +466,15 @@ func (r Reconciler) publish(ctx context.Context, p Plan, c Child, digest string)
 		}); err != nil {
 			return providers.WorkItem{}, err
 		}
-		return provider.CreateWorkItem(ctx, providers.CreateWorkItemRequest{
+		item, err := provider.CreateWorkItem(ctx, providers.CreateWorkItemRequest{
 			Repository: c.Repository.Ref(), Title: c.Title, Body: body,
+			Labels:   []string{providers.LabelCoordinationWait},
+			Assignee: c.Assignee,
 		})
+		if err == nil && !item.HasLabel(providers.LabelCoordinationWait) {
+			return item, fmt.Errorf("provider did not apply coordination wait label to the new child")
+		}
+		return item, err
 	}
 	item, err := provider.GetWorkItem(ctx, c.Repository.Ref(), items[0].ID)
 	if err != nil {
@@ -546,10 +561,13 @@ func (r Reconciler) observe(ctx context.Context, c Child, item providers.WorkIte
 
 func (r Reconciler) setEligibility(ctx context.Context, c Child, item providers.WorkItem, eligible, approved bool) error {
 	add, remove := []string{}, []string{}
-	for _, label := range []string{providers.LabelApproved, providers.LabelReady} {
+	for _, label := range []string{providers.LabelApproved, providers.LabelReady, providers.LabelCoordinationWait} {
 		wanted := eligible
 		if label == providers.LabelApproved {
 			wanted = approved
+		}
+		if label == providers.LabelCoordinationWait {
+			wanted = !approved
 		}
 		if wanted && !item.HasLabel(label) {
 			add = append(add, label)

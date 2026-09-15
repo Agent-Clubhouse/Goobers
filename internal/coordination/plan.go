@@ -108,6 +108,7 @@ type Child struct {
 	NodeRef
 	Title      string    `json:"title"`
 	Body       string    `json:"body"`
+	Assignee   string    `json:"assignee,omitempty"`
 	Kind       string    `json:"kind"`
 	DependsOn  []NodeRef `json:"dependsOn,omitempty"`
 	Completion string    `json:"completion"`
@@ -251,6 +252,9 @@ func (child Child) validate() error {
 	}
 	if !namePattern.MatchString(child.ID) || strings.TrimSpace(child.Title) == "" || strings.TrimSpace(child.Body) == "" {
 		return fmt.Errorf("child requires id and explicitly reviewed title/body")
+	}
+	if child.Assignee != "" && !namePattern.MatchString(child.Assignee) {
+		return fmt.Errorf("child assignee must be an explicit provider login")
 	}
 	if strings.Contains(child.Body, "goobers-coordination:") || strings.Contains(child.Title, "goobers-coordination:") {
 		return fmt.Errorf("child content contains reserved coordination marker")

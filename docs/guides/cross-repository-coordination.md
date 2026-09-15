@@ -66,6 +66,17 @@ setup before activation. Coordination verifies provider-returned label, body and
 state mutations; a missing/ignored eligibility label is an error, not a ready
 child.
 
+Use `excludeLabels: goobers:coordination-wait` in the candidate's owner and
+curation selectors, preserving every existing exclusion, required label and
+assignee filter. This also lets the existing connection-label derivation
+provision the wait label later, during an explicitly authorized setup. New Core
+backlog queries, routing/refill selection, curation re-sweeps and assignment
+additionally enforce this exclusion natively; disabling park-label filtering
+does not disable coordination waiting. This only narrows existing admission.
+The coordinator keeps the parent tracker waiting, creates every child with the
+wait label, and clears it only when the child's dependency/ownership conditions
+permit progress. It restores waiting when those conditions fail.
+
 The runner-only `coordination:write` capability is deliberately **not**
 stage-declarable or configurable under `credentials`. Only this deterministic
 operator command materializes it, under a repository-qualified key, using the
@@ -140,6 +151,7 @@ command whose real passing output a maintainer must later attest.
 | `repository` | Explicit `{provider: "github", owner, name}` identity authorized by a target entry. |
 | `id` | Stable logical child ID, not a provider issue number. |
 | `title`, `body` | Explicitly reviewed publication text. No copied parent context. |
+| `assignee` | Optional explicitly reviewed provider login, assigned during issue creation. Use this when the owner workflow requires an assignee; omission leaves creation unassigned. A changed explicit assignment blocks reconciliation rather than silently transferring authority. |
 | `kind` | `implementation` or `task`. |
 | `dependsOn` | Optional array of `{repository, id}` references to other logical children. Bare issue numbers are never dependency keys. |
 | `completion` | `merged`, `release`, or `closed`. `closed` is allowed only for a non-code `task`. |
@@ -228,7 +240,7 @@ Issue edits use the provider's expected-revision guard.
 | Condition | Operator recovery |
 |---|---|
 | Provider unavailable or permission refused | Fix the exact target's credential/access or retry when healthy. No alternative ambient token or success fallback is used. A failure cannot release new dependents. |
-| Intent exists but no issue is found | Do not delete the intent and blindly retry. Inspect the provider for the original issue; restore its exact marker if edited. If the request never created an issue, a maintainer can manually create exactly the title/body in `--check`'s `publications`; rerun to adopt that marker. This intentionally trades automatic recovery for duplicate prevention after ambiguous writes. |
+| Intent exists but no issue is found | Do not delete the intent and blindly retry. Inspect the provider for the original issue; restore its exact marker if edited. If the request never created an issue, a maintainer can manually create exactly the title/body, labels and optional assignee in `--check`'s `publications`; rerun to adopt that marker. This intentionally trades automatic recovery for duplicate prevention after ambiguous writes. |
 | Duplicate marker | Human inspection must identify the canonical issue and remove the marker from the unintended duplicate. The coordinator will not choose one arbitrarily or delete issues. |
 | Child publication text changed | Restore the reviewed content or stop this parent and author a separately reviewed follow-up plan. Changed text is never automatically approved. |
 | Parent plan digest changed | Active parent plans are immutable. Restore the original reviewed file/config approval; scope changes need a new parent and plan. Never strip the pin/intent markers to reset an active plan. |

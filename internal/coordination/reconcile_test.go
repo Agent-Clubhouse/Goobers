@@ -57,7 +57,7 @@ func (f *fakeProvider) CreateWorkItem(_ context.Context, req providers.CreateWor
 	if f.failCreateBeforeWrite {
 		return providers.WorkItem{}, errors.New("create outcome unknown")
 	}
-	item := providers.WorkItem{ID: strconv.Itoa(6 + f.creates), Revision: "1", Title: req.Title, Body: req.Body, Labels: req.Labels, State: "open"}
+	item := providers.WorkItem{ID: strconv.Itoa(6 + f.creates), Revision: "1", Title: req.Title, Body: req.Body, Labels: req.Labels, State: "open", Assignee: req.Assignee}
 	f.items[item.ID] = item
 	if f.failCreateAfterWrite {
 		f.failCreateAfterWrite = false
@@ -155,6 +155,9 @@ func TestCoordinationExampleEndToEnd(t *testing.T) {
 	}
 	if f[2].items["7"].HasLabel(providers.LabelApproved) {
 		t.Fatal("downstream approved before dependency completion")
+	}
+	if !f[0].items["42"].HasLabel(providers.LabelCoordinationWait) || !f[2].items["7"].HasLabel(providers.LabelCoordinationWait) || f[1].items["7"].HasLabel(providers.LabelCoordinationWait) {
+		t.Fatal("coordinator did not keep parent/downstream waiting and release only eligible child")
 	}
 	if !strings.Contains(f[2].items["7"].Body, "acme/core#7") {
 		t.Fatal("cross-repo dependency link missing")
@@ -361,7 +364,7 @@ func TestCoordinationAmbiguousCreateRequiresManualRecovery(t *testing.T) {
 	}
 	f[1].failCreateBeforeWrite = false
 	draft := coordination.Publications(p)[0]
-	if _, err := f[1].CreateWorkItem(t.Context(), providers.CreateWorkItemRequest{Repository: draft.Repository.Ref(), Title: draft.Title, Body: draft.Body}); err != nil {
+	if _, err := f[1].CreateWorkItem(t.Context(), providers.CreateWorkItemRequest{Repository: draft.Repository.Ref(), Title: draft.Title, Body: draft.Body, Labels: draft.Labels, Assignee: draft.Assignee}); err != nil {
 		t.Fatal(err)
 	}
 	reconcile(t, r, p, nil)
@@ -501,5 +504,24 @@ func TestCoordinationVerifiesProviderMutationResults(t *testing.T) {
 				t.Fatal("publication started without persisted parent pin")
 			}
 		})
+	}
+}
+
+func TestCoordinationReviewedAssigneeRoutesChild(t *testing.T) {
+	p, r, f := fixture(t)
+	p.Children[0].Assignee = "implementer"
+	if err := p.Validate(r.Authority, true); err == nil {
+		t.Fatal("assignee changed without new plan approval")
+	}
+	r.Authority.ApprovedPlans[p.ID], _ = coordination.Digest(p)
+	reconcile(t, r, p, nil)
+	if f[1].items["7"].Assignee != "implementer" || coordination.Publications(p)[0].Assignee != "implementer" {
+		t.Fatal("reviewed assignee missing from publication")
+	}
+	item := f[1].items["7"]
+	item.Assignee = "different-user"
+	f[1].items["7"] = item
+	if _, err := r.Reconcile(t.Context(), p, nil); err == nil {
+		t.Fatal("unreviewed reassignment accepted")
 	}
 }
