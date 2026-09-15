@@ -101,6 +101,7 @@ const (
 	claimLockOperationAdminList               = "claims.list"
 	claimLockOperationAdminRelease            = "claims.release"
 	claimLockOperationIntervention            = "intervention.reacquire"
+	claimLockOperationContinuationReacquire   = "continuation.reacquire"
 
 	claimLockSlowThreshold = 5 * time.Second
 	claimLockRetryInterval = 10 * time.Millisecond

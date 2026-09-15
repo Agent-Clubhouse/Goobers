@@ -13,6 +13,13 @@ import (
 // acquire the Temporal CLI binary. See StartDevServer for the two modes.
 const CLIEnvVar = "GOOBERS_TEMPORAL_CLI"
 
+// CLIVersion pins the Temporal CLI the cached download fetches. "default" on
+// temporal.download floats to the newest release: v1.9.1 (Server 1.32.0),
+// published 2026-09-14, rejects this suite's schedule reconciliation with
+// "Not enough time to schedule next run", failing every PR's CI without a
+// code change. Bump deliberately, alongside the linux-ci image pin.
+const CLIVersion = "v1.8.2"
+
 // StartDevServer starts a Temporal CLI dev server, centralizing how the
 // engine and bootstrap suites that need a real dev server (Schedules and
 // worker/bootstrap paths cannot run in the SDK's in-process test environment)
@@ -23,9 +30,8 @@ const CLIEnvVar = "GOOBERS_TEMPORAL_CLI"
 // egress-controlled environment and, as a side effect, pins the dev-server
 // version instead of floating on whatever "default" currently resolves to on
 // temporal.download. If CLIEnvVar is unset, the CLI is fetched and cached via
-// DevServerOptions.CachedDownload{Version: "default"} — exactly the behavior
-// every call site had before this helper existed, so ordinary CI (which does
-// not set CLIEnvVar) is unaffected. Either way, StartDevServer logs which
+// DevServerOptions.CachedDownload{Version: CLIVersion}, a pinned release rather
+// than the floating "default". Either way, StartDevServer logs which
 // mode it used through t, so a run's test output shows whether it acquired
 // the CLI online or offline.
 //
@@ -55,7 +61,7 @@ func resolveDevServerAcquisition(rawEnv string) (existingPath string, cached tes
 	if path := strings.TrimSpace(rawEnv); path != "" {
 		return path, testsuite.CachedDownload{}, "starting Temporal dev server from existing CLI (" + CLIEnvVar + "=" + path + ")"
 	}
-	return "", testsuite.CachedDownload{Version: "default"},
-		"starting Temporal dev server via cached download (version=default); set " + CLIEnvVar +
+	return "", testsuite.CachedDownload{Version: CLIVersion},
+		"starting Temporal dev server via cached download (version=" + CLIVersion + "); set " + CLIEnvVar +
 			" to a pre-existing Temporal CLI binary to run offline"
 }

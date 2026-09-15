@@ -86,6 +86,73 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	}
 }
 
+func TestOpenPRUsesContinuationIdentityWorkspaceBranch(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	const (
+		sourceRunID       = "source-run"
+		continuationRunID = "run-continuation"
+		sourceBranch      = "goobers/implementation/source-run"
+	)
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), continuationRunID)
+
+	source, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: sourceRunID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create source journal: %v", err)
+	}
+	if err := source.Append(journal.Event{
+		Type: journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{
+			Provider: "github",
+			Kind:     "branch",
+			ID:       sourceBranch,
+		},
+	}); err != nil {
+		t.Fatalf("record source branch: %v", err)
+	}
+	if err := source.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted),
+	}); err != nil {
+		t.Fatalf("finish source run: %v", err)
+	}
+	terminalSeq := source.Seq()
+	if err := source.Close(); err != nil {
+		t.Fatalf("close source journal: %v", err)
+	}
+
+	continuation, err := journal.CreateContinuation(layoutFor(root).RunsDir(), journal.ContinuationRequest{
+		RunID:               continuationRunID,
+		SourceRunID:         sourceRunID,
+		ExpectedTerminalSeq: terminalSeq,
+		Operator:            "operator@example.test",
+		Target:              "open-pr",
+	})
+	if err != nil {
+		t.Fatalf("create continuation: %v", err)
+	}
+	if err := continuation.Close(); err != nil {
+		t.Fatalf("close continuation journal: %v", err)
+	}
+
+	t.Chdir(t.TempDir())
+	if code, stdout, stderr := runArgs(t, "open-pr", root); code != 0 {
+		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	server.mu.Lock()
+	pr := server.prs[1]
+	server.mu.Unlock()
+	if pr == nil {
+		t.Fatal("no PR opened")
+	}
+	if pr.head != sourceBranch {
+		t.Fatalf("pull request head = %q, want continuation branch", pr.head)
+	}
+}
+
 func TestOpenPRRoutesADOThroughExecutorInjectedAuthentication(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("helper process wrapper uses a POSIX shell")
