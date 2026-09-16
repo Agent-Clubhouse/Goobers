@@ -38,6 +38,7 @@ import {
     renderCostPanel,
     renderRunDetailSummary,
     renderRunEventItems,
+    DIAGNOSTICS_INLINE_FILE_LIMIT,
     renderOperatorPanel,
     renderRunRowCells,
     renderSnapshotCard,
@@ -549,6 +550,32 @@ test("run event items add a transcript link only for transcript events", () => {
 
     const withoutTranscript = renderRunEventItems([{ name: "build", seq: 4 }], "src", "run-1");
     assert.doesNotMatch(withoutTranscript, /run-transcript/);
+});
+
+test("run event items auto-load small artifacts and require a button for large/unsized ones", () => {
+    const small = renderRunEventItems([{
+        seq: 1,
+        artifact: { digest: "abc", name: "small.txt", size: DIAGNOSTICS_INLINE_FILE_LIMIT - 1 },
+    }], "src", "run-1");
+    assert.match(small, /data-artifact-mode="auto"/);
+    assert.match(small, /data-artifact-state="pending"/);
+    assert.doesNotMatch(small, /artifact-load-btn/);
+
+    const large = renderRunEventItems([{
+        seq: 2,
+        artifact: { digest: "def", name: "large.txt", size: DIAGNOSTICS_INLINE_FILE_LIMIT },
+    }], "src", "run-1");
+    assert.match(large, /data-artifact-mode="manual"/);
+    assert.match(large, /artifact-load-btn/);
+
+    const unsized = renderRunEventItems([{
+        seq: 3,
+        artifact: { digest: "ghi", name: "unsized.txt" },
+    }], "src", "run-1");
+    assert.match(unsized, /data-artifact-mode="manual"/);
+
+    const transcript = renderRunEventItems([{ name: "Agent transcript", seq: 4 }], "src", "run-1");
+    assert.match(transcript, /data-artifact-mode="manual"/);
 });
 
 // formatDuration's sub-second branch: a run that finishes in under a second

@@ -412,6 +412,34 @@ export function renderStageInspectorStatus(message, options = {}) {
     return '<div class="' + className + '">' + escapeAssociationHtml(message) + "</div>";
 }
 
+// Files at or above this size fall back to an explicit "Load" action instead
+// of being fetched and rendered inline automatically (64KB).
+export const DIAGNOSTICS_INLINE_FILE_LIMIT = 65536;
+
+// Builds the inline-file widget markup shared by artifact links and the
+// transcript link: an auto-loading plain-text box for files known to be
+// under DIAGNOSTICS_INLINE_FILE_LIMIT, or a Load button for larger/unsized
+// files. The actual fetch happens client-side (see initArtifactInlineLoad);
+// this only emits the static markup and data attributes it reads.
+function renderInlineFileWidget(href, label, size) {
+    const known = size !== undefined && size !== null && size !== "" && Number.isFinite(Number(size));
+    const sizeLabel = known ? " (" + escapeAssociationHtml(String(size)) + " bytes)" : "";
+    const auto = known && Number(size) < DIAGNOSTICS_INLINE_FILE_LIMIT;
+    const safeHref = escapeAssociationHtml(href);
+    const labelHtml = escapeAssociationHtml(label) + sizeLabel;
+    if (auto) {
+        return '<div class="artifact-file" data-artifact-href="' + safeHref + '" data-artifact-mode="auto">' +
+            '<div class="artifact-file-label">' + labelHtml + '</div>' +
+            '<div class="artifact-file-body" data-artifact-state="pending">Loading&hellip;</div>' +
+            '</div>';
+    }
+    return '<div class="artifact-file" data-artifact-href="' + safeHref + '" data-artifact-mode="manual">' +
+        '<div class="artifact-file-label">' + labelHtml + '</div>' +
+        '<button type="button" class="artifact-load-btn" data-artifact-load>Load file</button>' +
+        '<div class="artifact-file-body" data-artifact-state="idle" hidden></div>' +
+        '</div>';
+}
+
 export function renderRunEventItems(displayedEvents = [], sourceId = "", runId = "", options = {}) {
     const formatTime = options.formatTime || formatRunDetailTime;
     const safeUrl = options.safeUrl || safeAssociationUrl;
@@ -433,14 +461,12 @@ export function renderRunEventItems(displayedEvents = [], sourceId = "", runId =
         }).map((artifact) => {
             const href = "/api/run-artifact?source=" + encodeURIComponent(sourceId) +
                 "&id=" + encodeURIComponent(runId) + "&digest=" + encodeURIComponent(artifact.digest);
-            const label = artifact.name || artifact.digest;
-            return '<a href="' + href + '" target="_blank" rel="noopener">' +
-                escapeAssociationHtml(label) + " (" + escapeAssociationHtml(artifact.size ?? "") + " bytes)</a>";
+            return renderInlineFileWidget(href, artifact.name || artifact.digest, artifact.size);
         });
         if (event.name && String(event.name).toLowerCase().includes("transcript")) {
             const href = "/api/run-transcript?source=" + encodeURIComponent(sourceId) +
                 "&id=" + encodeURIComponent(runId) + "&seq=" + encodeURIComponent(event.seq);
-            artifactLinks.push('<a href="' + href + '" target="_blank" rel="noopener">Agent transcript / messages</a>');
+            artifactLinks.push(renderInlineFileWidget(href, "Agent transcript / messages", undefined));
         }
         const externalUrl = event.externalRef && safeUrl(event.externalRef.url);
         const refHtml = externalUrl
@@ -457,7 +483,7 @@ export function renderRunEventItems(displayedEvents = [], sourceId = "", runId =
             ? "<pre>" + escapeAssociationHtml(JSON.stringify(details, null, 2)) + "</pre>"
             : "";
         const linksHtml = artifactLinks.length
-            ? '<div class="artifact-links">' + artifactLinks.join(" \u00b7 ") + "</div>"
+            ? '<div class="artifact-links">' + artifactLinks.join("") + "</div>"
             : "";
         const hasBody = Boolean(refHtml || detailsHtml || linksHtml);
         if (!hasBody) {
@@ -2396,8 +2422,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .event-list .event-body pre { max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: var(--border-color-default, #d0d7de22); padding: 8px; border-radius: 6px; }
   .event-seq { color: var(--text-color-muted, #656d76); min-width: 34px; }
   .event-time { color: var(--text-color-muted, #656d76); margin-left: auto; }
-  .artifact-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-  .artifact-links a { color: inherit; }
+  .artifact-links { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+  .artifact-file { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 6px; padding: 6px 8px; }
+  .artifact-file-label { font-size: 12px; color: var(--text-color-muted, #656d76); margin-bottom: 4px; }
+  .artifact-load-btn { font-size: 12px; padding: 3px 8px; }
+  .artifact-file-body[data-artifact-state="error"] { color: var(--danger-color, #cf222e); }
+  .artifact-file-content { max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: var(--border-color-default, #d0d7de22); padding: 8px; border-radius: 6px; margin: 0; font-size: 12px; }
   .filters-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .filters-bar select, .filters-bar input { font-size: 12px; padding: 4px 8px; }
   .native-multi-filter { display: none; }
@@ -5074,6 +5104,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderStageInspectorStatus = ${renderStageInspectorStatus.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const DIAGNOSTICS_INLINE_FILE_LIMIT = ${DIAGNOSTICS_INLINE_FILE_LIMIT};
+  const renderInlineFileWidget = ${renderInlineFileWidget.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunEventItems = ${renderRunEventItems.toString()
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
@@ -5228,6 +5261,49 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     return transcriptFilterHtml + '<div class="event-list" id="transcript-events">' + eventList + '</div>';
   }
 
+  // Fetches an artifact/transcript file body and renders it inline as plain
+  // text (never interpreted as markdown/HTML). Shared by both the auto-load
+  // path (small files) and the manual Load button (large/unsized files).
+  async function loadArtifactBody(bodyEl, href) {
+    bodyEl.hidden = false;
+    bodyEl.dataset.artifactState = "loading";
+    bodyEl.textContent = "Loading\u2026";
+    try {
+      const res = await fetch(href);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const text = await res.text();
+      bodyEl.dataset.artifactState = "loaded";
+      const pre = document.createElement("pre");
+      pre.className = "artifact-file-content";
+      pre.textContent = text;
+      bodyEl.replaceChildren(pre);
+    } catch (err) {
+      bodyEl.dataset.artifactState = "error";
+      bodyEl.textContent = "Couldn't load this file: " + (err && err.message ? err.message : String(err));
+    }
+  }
+
+  function initArtifactInlineLoad(root) {
+    root.querySelectorAll('.artifact-file[data-artifact-mode="auto"]').forEach((container) => {
+      const body = container.querySelector(".artifact-file-body");
+      if (body && body.dataset.artifactState === "pending") {
+        loadArtifactBody(body, container.dataset.artifactHref);
+      }
+    });
+    root.querySelectorAll(".artifact-load-btn").forEach((btn) => {
+      if (btn.dataset.artifactWired) return;
+      btn.dataset.artifactWired = "true";
+      btn.addEventListener("click", () => {
+        const container = btn.closest(".artifact-file");
+        const body = container && container.querySelector(".artifact-file-body");
+        if (!container || !body) return;
+        btn.disabled = true;
+        btn.hidden = true;
+        loadArtifactBody(body, container.dataset.artifactHref);
+      });
+    });
+  }
+
   function initTranscriptFilters(events, sourceId, runId) {
     const transcriptEvents = events.filter((event) => {
       const name = String(event?.name || "").toLowerCase();
@@ -5240,6 +5316,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const filters = {};
       controls.forEach((input) => { filters[input.dataset.transcriptFilter] = input.value; });
       list.innerHTML = renderRunEventItems(filterTranscriptEntries(transcriptEvents, filters), sourceId, runId);
+      initArtifactInlineLoad(list);
     };
     controls.forEach((input) => input.addEventListener("input", update));
   }
@@ -5416,6 +5493,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         (runActionPanel(r, events, sourceId) || '<p class="muted">No operator actions are available for this source.</p>') +
         "</section>";
       runContentEl.innerHTML = html;
+      initArtifactInlineLoad(runContentEl);
       initInternalTabs(runContentEl, activeRunTab);
       attachRunIdControls(runContentEl);
       if (isNewRun) document.getElementById("run-back").focus();
@@ -5442,6 +5520,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         });
         if (list && transcriptEvents.length) {
           list.innerHTML = renderRunEventItems(filterTranscriptEntries(transcriptEvents, restoredFilterValues), sourceId, runId);
+          initArtifactInlineLoad(list);
         }
       }
       initGraphInteractions(r.graph, r.transitions, events, r, sourceId, requestSequence);

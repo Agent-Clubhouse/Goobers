@@ -562,6 +562,46 @@ test("workflows table shows the schedule frequency alongside the trigger kind", 
   await expect(page.getByRole("row", { name: /implementation/ }).getByText("schedule (hourly)")).toBeVisible();
 });
 
+test("diagnostics tab auto-loads small artifacts and requires a click for large ones", async ({ page }) => {
+  await openCanvas(page);
+  const smallContent = "small file body";
+  const largeContent = "large file body";
+  const withArtifacts = {
+    ...run,
+    events: [
+      {
+        type: "stage.finished", seq: 1, stage: "query", status: "succeeded",
+        artifact: { name: "small.txt", digest: "sha256:small", size: smallContent.length },
+      },
+      {
+        type: "stage.finished", seq: 2, stage: "implement", status: "succeeded",
+        artifact: { name: "large.txt", digest: "sha256:large", size: 65536 },
+      },
+    ],
+  };
+  await page.route("http://canvas.test/api/run?**", async (route) => {
+    await route.fulfill({ json: { connected: true, run: withArtifacts } });
+  });
+  await page.route("http://canvas.test/api/run-artifact?**", async (route) => {
+    const url = new URL(route.request().url());
+    const digest = url.searchParams.get("digest");
+    await route.fulfill({ body: digest === "sha256:small" ? smallContent : largeContent });
+  });
+  await page.getByRole("tab", { name: "Runs", exact: true }).click();
+  await page.getByRole("button", { name: "Open Run id", exact: true }).click();
+  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
+
+  const smallFile = page.locator('.artifact-file[data-artifact-mode="auto"]');
+  await smallFile.locator("xpath=ancestor::details[1]/summary").click();
+  await expect(smallFile.getByText(smallContent)).toBeVisible();
+
+  const largeFile = page.locator('.artifact-file[data-artifact-mode="manual"]');
+  await largeFile.locator("xpath=ancestor::details[1]/summary").click();
+  await expect(largeFile.getByText(largeContent)).toHaveCount(0);
+  await largeFile.getByRole("button", { name: "Load file" }).click();
+  await expect(largeFile.getByText(largeContent)).toBeVisible();
+});
+
 test("canvas fits a narrow panel and supports keyboard workflow drilldown", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await openCanvas(page);
