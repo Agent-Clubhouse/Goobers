@@ -144,24 +144,23 @@ func resumeStartupRuns(
 // required to be safe for that (the same rule every other background sweep in
 // up.go follows). The crash-resume tally line already named how many terminal
 // candidates were handed over.
-func startStartupTerminalFinalize(ctx context.Context, setup *schedulerSetup, candidates []terminalFinalization) <-chan struct{} {
-	done := make(chan struct{})
-	if len(candidates) == 0 {
-		close(done)
-		return done
+//
+// Whatever it does not reach before shutdown is finished by
+// finishAfterDrain, so deferring this work never drops it.
+func startStartupTerminalFinalize(ctx context.Context, setup *schedulerSetup, candidates []terminalFinalization) *startupTerminalFinalizer {
+	finalizer := &startupTerminalFinalizer{
+		remaining: candidates, log: setup.InstanceLog, watermarks: setup.Watermarks,
+		reporter: newSweepErrorReporter(setup.InstanceLog, "startup_terminal_finalize_failed"),
+		done:     make(chan struct{}),
 	}
-	reporter := newSweepErrorReporter(setup.InstanceLog, "startup_terminal_finalize_failed")
 	go func() {
-		defer close(done)
-		err := finalizeTerminalCandidates(ctx, candidates, setup.InstanceLog, setup.Watermarks, nil)
-		if ctx.Err() != nil {
-			// Shutdown, not failure: the remaining candidates keep their
-			// active markers and are finalized by the next start.
-			return
+		defer close(finalizer.done)
+		err := finalizer.run(ctx, nil)
+		if ctx.Err() == nil {
+			finalizer.reporter.report(err)
 		}
-		reporter.report(err)
 	}()
-	return done
+	return finalizer
 }
 
 // startupProgressReporter rate-limits progress lines for one startup phase and

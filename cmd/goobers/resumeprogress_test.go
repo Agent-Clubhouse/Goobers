@@ -85,11 +85,48 @@ func TestStartupInventoryCountsNameEachSource(t *testing.T) {
 // startStartupTerminalFinalize must not leave the shutdown join waiting when
 // there is nothing to finalize.
 func TestStartStartupTerminalFinalizeClosesWithNoCandidates(t *testing.T) {
-	done := startStartupTerminalFinalize(context.Background(), &schedulerSetup{}, nil)
+	finalizer := startStartupTerminalFinalize(context.Background(), &schedulerSetup{}, nil)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		finalizer.finishAfterDrain()
+	}()
 	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("empty terminal finalization never closed its done channel")
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("empty terminal finalization never finished")
+	}
+}
+
+// Deferring terminal cleanup past readiness must not turn into dropping it
+// when shutdown arrives first: whatever the background pass did not reach
+// gets one bounded turn after drain (#5199).
+func TestStartupTerminalFinalizerFinishesWhatCancellationLeft(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var finalized []string
+	finalizer := &startupTerminalFinalizer{
+		remaining: []terminalFinalization{{identity: journal.RunIdentity{RunID: "0123456789abcdef0123456789abcdef"}}},
+		reporter:  newSweepErrorReporter(nil, "startup_terminal_finalize_failed"),
+		done:      make(chan struct{}),
+	}
+	close(finalizer.done)
+
+	// The cancelled background pass takes nothing off the queue.
+	if err := finalizer.run(ctx, func(done, _ int) { finalized = append(finalized, "background") }); err != nil {
+		t.Fatalf("cancelled pass reported %v, want no failure", err)
+	}
+	if len(finalized) != 0 || len(finalizer.remaining) != 1 {
+		t.Fatalf("cancelled pass consumed the queue: finalized=%v remaining=%d", finalized, len(finalizer.remaining))
+	}
+
+	// The post-drain turn runs on a context of its own, so the candidate is
+	// finalized rather than abandoned. It fails (no such run), which is the
+	// reporter's business, not this assertion's.
+	finalizer.finishAfterDrain()
+	if len(finalizer.remaining) != 0 {
+		t.Fatalf("post-drain turn left %d candidates unfinalized", len(finalizer.remaining))
 	}
 }
 

@@ -1798,7 +1798,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	terminalCleanupRetryCtx, stopTerminalCleanupRetry := context.WithCancel(context.Background())
 	defer stopTerminalCleanupRetry()
 	terminalCleanupRetryDone := startTerminalCleanupRetry(terminalCleanupRetryCtx, cleanupRetries, terminalCleanupRetryErrors, readyNow)
-	startupTerminalFinalizeDone := startStartupTerminalFinalize(ctx, setup, resumeResult.Terminal)
+	startupTerminalFinalize := startStartupTerminalFinalize(ctx, setup, resumeResult.Terminal)
 	startupMergedPRCostSweepDone := mergedPRCostSweeps.startDeferred(ctx, readyNow)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", root, len(setup.Entries), apiServer.Scheme(), apiServer.Address(), httpapi.Prefix)
 	if webhookServer != nil {
@@ -1939,7 +1939,7 @@ daemonLoop:
 		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
 	stopClaimAdminSweep()
 	stopTerminalCleanupRetry()
-	<-startupTerminalFinalizeDone
+	startupTerminalFinalize.finishAfterDrain()
 	<-terminalCleanupRetryDone
 	runTerminalCleanupRetryFinal(cleanupRetries, terminalCleanupRetryErrors, readyNow)
 	if !drainResult.forced {

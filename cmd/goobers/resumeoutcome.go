@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -67,36 +68,75 @@ type terminalFinalization struct {
 	phase    journal.RunPhase
 }
 
-// finalizeTerminalCandidates runs every collected terminal finalization,
-// reporting progress as it goes. A cleanup that must be retried later is
-// journaled, not fatal; any other failure is returned joined, so a caller on
-// the startup path can still refuse to start and a caller after readiness can
-// journal and carry on. A cancelled ctx stops the pass between candidates and
-// returns what failed so far.
-func finalizeTerminalCandidates(ctx context.Context, candidates []terminalFinalization, log *journal.InstanceLog, watermarks *intake.Store, progress func(done, total int)) error {
+// startupTerminalFinalizer owns the deferred terminal finalizations for one
+// daemon start. It hands them out one at a time so the background pass and
+// the bounded pass after drain consume the SAME queue: cleanup deferred past
+// readiness must not become cleanup dropped on a shutdown that arrives first.
+type startupTerminalFinalizer struct {
+	mu         sync.Mutex
+	remaining  []terminalFinalization
+	log        *journal.InstanceLog
+	watermarks *intake.Store
+	reporter   *sweepErrorReporter
+	done       chan struct{}
+}
+
+func (f *startupTerminalFinalizer) next() (terminalFinalization, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.remaining) == 0 {
+		return terminalFinalization{}, false
+	}
+	candidate := f.remaining[0]
+	f.remaining = f.remaining[1:]
+	return candidate, true
+}
+
+// run finalizes candidates until the queue drains or ctx is done. ctx is
+// checked only between candidates: a half-finalized run is worse than an
+// unfinalized one, and an unfinalized one is picked up by the next start.
+func (f *startupTerminalFinalizer) run(ctx context.Context, progress func(done, total int)) error {
 	var failures error
-	for index, candidate := range candidates {
-		// Checked between candidates, never inside one: a half-finalized run
-		// is worse than an unfinalized one, and an unfinalized one is simply
-		// picked up again by the next start. This is what keeps a SIGTERM
-		// during a large deferred pass from holding the drain open for the
-		// whole pass.
-		if ctx.Err() != nil {
-			return failures
+	finalized := 0
+	for ctx.Err() == nil {
+		candidate, ok := f.next()
+		if !ok {
+			break
 		}
-		if err := candidate.finalize(log); err != nil {
+		if err := candidate.finalize(f.log); err != nil {
 			failures = errors.Join(failures, err)
 		}
 		// #2190: a run that was already terminal at startup never took the
 		// normal terminal run's telemetryingest.RunTelemetry path, so it
 		// never recorded its intake watermark and the read model never
 		// discovered it advanced.
-		telemetryingest.RunIntake(watermarks, candidate.layout, candidate.identity.RunID, log)
+		telemetryingest.RunIntake(f.watermarks, candidate.layout, candidate.identity.RunID, f.log)
+		finalized++
 		if progress != nil {
-			progress(index+1, len(candidates))
+			progress(finalized, finalized+len(f.remaining))
 		}
 	}
 	return failures
+}
+
+// finishAfterDrain joins the background pass and gives whatever it did not
+// reach one bounded turn on a context of its own — the same shape
+// runTerminalCleanupRetryFinal uses, and for the same reason: the daemon is
+// already draining, but work deferred past readiness still has to happen
+// before the process exits rather than waiting for the next start.
+func (f *startupTerminalFinalizer) finishAfterDrain() {
+	<-f.done
+	ctx, cancel := context.WithTimeout(context.Background(), terminalCleanupRetryTimeout)
+	defer cancel()
+	f.reporter.report(f.run(ctx, nil))
+}
+
+// finalizeTerminalCandidates runs every candidate synchronously. The one-shot
+// callers use it: they have no readiness to protect and no drain to survive,
+// so their terminal cleanup stays inline and fatal, exactly as before #5199.
+func finalizeTerminalCandidates(ctx context.Context, candidates []terminalFinalization, log *journal.InstanceLog, watermarks *intake.Store, progress func(done, total int)) error {
+	finalizer := &startupTerminalFinalizer{remaining: candidates, log: log, watermarks: watermarks}
+	return finalizer.run(ctx, progress)
 }
 
 func (c terminalFinalization) finalize(log *journal.InstanceLog) error {
