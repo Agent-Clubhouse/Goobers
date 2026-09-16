@@ -162,6 +162,78 @@ const costSummary = {
   }],
 };
 
+const workItemPage = {
+  items: [{
+    provider: "github",
+    repository: "Agent-Clubhouse/Goobers",
+    kind: "pr",
+    externalId: "42",
+    url: "https://github.com/Agent-Clubhouse/Goobers/pull/42",
+    actionCount: 2,
+    lastOperation: "request-review",
+    lastActionAt: "2026-09-14T18:00:00Z",
+    lastRunId: "run-1",
+    gaggle: "team",
+    workflow: "implementation",
+    runStatus: "running",
+  }, {
+    provider: "github",
+    repository: "Agent-Clubhouse/Goobers",
+    kind: "issue",
+    externalId: "7",
+    url: "https://github.com/Agent-Clubhouse/Goobers/issues/7",
+    actionCount: 1,
+    lastOperation: "comment",
+    lastActionAt: "2026-09-14T17:00:00Z",
+    lastRunId: "run-1",
+    gaggle: "triage",
+    workflow: "curation",
+    runStatus: "completed",
+  }],
+  hasMore: false,
+};
+
+const workItemDetail = {
+  provider: "github",
+  repository: "Agent-Clubhouse/Goobers",
+  kind: "issue",
+  externalId: "7",
+  url: "https://github.com/Agent-Clubhouse/Goobers/issues/7",
+  cost: {
+    costUSD: 1.25,
+    totalRuns: 2,
+    measuredRuns: 1,
+    totalAttempts: 3,
+    measuredAttempts: 2,
+    lowerBound: true,
+  },
+  relatedPullRequests: [{
+    provider: "github",
+    repository: "Agent-Clubhouse/Goobers",
+    kind: "pr",
+    externalId: "42",
+    url: "https://github.com/Agent-Clubhouse/Goobers/pull/42",
+  }],
+  actions: [{
+    runId: "run-1",
+    sequence: 9,
+    operation: "comment",
+    occurredAt: "2026-09-14T18:00:00Z",
+    gaggle: "team",
+    workflow: "implementation",
+    runStatus: "running",
+  }, {
+    runId: "run-2",
+    sequence: 4,
+    operation: "label",
+    occurredAt: "2026-09-14T17:00:00Z",
+    gaggle: "triage",
+    workflow: "curation",
+    runStatus: "completed",
+  }],
+  truncated: false,
+};
+
 function snapshot(source: typeof sources[number]) {
   return {
     connected: true, source, mode: "daemon", instance: { name: source.label, warnings: [instanceWarning] },
@@ -244,6 +316,16 @@ async function openCanvas(page: Page) {
               ? { ...costSummary, scope: "issue", externalId: url.searchParams.get("id") ?? "", pullRequests: [] }
               : costSummary,
         }
+      : url.pathname === "/api/work-items" ? {
+          connected: true,
+          workItems: {
+            ...workItemPage,
+            items: url.searchParams.get("kind")
+              ? workItemPage.items.filter((item) => item.kind === url.searchParams.get("kind"))
+              : workItemPage.items,
+          },
+        }
+      : url.pathname === "/api/work-item-detail" ? { connected: true, workItem: workItemDetail }
       : {};
     await route.fulfill({ json: body });
   });
@@ -755,6 +837,176 @@ test("canvas hides Fleet association when switching to an unassociated source", 
   await expect(page.locator("#fleet-panel")).toBeHidden();
   await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[0].id);
   await expect(link).toHaveAttribute("href", "https://fleet.example.com/");
+  expect(errors).toEqual([]);
+});
+
+test("Work Items tab filters the bounded list and opens action, cost, and related-work detail", async ({ page }) => {
+  const errors = await openCanvas(page);
+  const listRequests: URL[] = [];
+  const detailRequests: URL[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/work-items") listRequests.push(url);
+    if (url.pathname === "/api/work-item-detail") detailRequests.push(url);
+  });
+
+  await page.getByRole("tab", { name: "Work Items", exact: true }).click();
+  await expect(page.getByRole("button", {
+    name: "Open PR #42 in Agent-Clubhouse/Goobers",
+    exact: true,
+  })).toBeVisible();
+  await expect(page.getByRole("button", {
+    name: "Open issue #7 in Agent-Clubhouse/Goobers",
+    exact: true,
+  })).toBeVisible();
+  expect(listRequests).toHaveLength(1);
+  expect(listRequests[0].searchParams.get("limit")).toBe("200");
+
+  await page.getByRole("combobox", { name: "Filter work items by gaggle" }).selectOption("triage");
+  await expect(page.getByRole("button", {
+    name: "Open PR #42 in Agent-Clubhouse/Goobers",
+    exact: true,
+  })).toHaveCount(0);
+  await page.getByRole("searchbox", { name: "Search work items" }).fill("Goobers#7");
+  await expect(page.getByRole("button", {
+    name: "Open issue #7 in Agent-Clubhouse/Goobers",
+    exact: true,
+  })).toBeVisible();
+  expect(listRequests).toHaveLength(1);
+
+  await page.getByRole("button", { name: "Issues", exact: true }).click();
+  await expect.poll(() => listRequests.length).toBe(2);
+  expect(listRequests[1].searchParams.get("kind")).toBe("issue");
+  await page.getByRole("button", {
+    name: "Open issue #7 in Agent-Clubhouse/Goobers",
+    exact: true,
+  }).click();
+
+  const detail = page.locator("#work-item-content");
+  await expect(detail.getByRole("heading", { name: "Agent-Clubhouse/Goobers#7", exact: true })).toBeVisible();
+  await expect(detail).toContainText("$1.25");
+  await expect(detail).toContainText("Lower bound; some usage is unmeasured.");
+  await expect(detail.getByRole("link", { name: "Open issue", exact: false })).toHaveAttribute(
+    "href",
+    "https://github.com/Agent-Clubhouse/Goobers/issues/7",
+  );
+  await expect(detail.getByRole("link", {
+    name: "Open related PR Agent-Clubhouse/Goobers#42",
+  })).toHaveAttribute("href", "https://github.com/Agent-Clubhouse/Goobers/pull/42");
+  await expect(detail.getByRole("table", {
+    name: "Action history for Agent-Clubhouse/Goobers#7",
+  })).toBeVisible();
+
+  await detail.getByRole("combobox", { name: "Filter actions by type" }).selectOption("label");
+  await expect(detail.locator(".work-item-action-row")).toHaveCount(1);
+  await expect(detail.locator(".work-item-action-row")).toContainText("Label");
+  await detail.getByRole("button", { name: "View run", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Back to Work Items", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Back to Work Items", exact: true }).click();
+  await expect(detail.getByRole("heading", { name: "Agent-Clubhouse/Goobers#7", exact: true })).toBeVisible();
+  await expect(detail.getByRole("combobox", { name: "Filter actions by type" })).toHaveValue("label");
+  await detail.getByRole("button", { name: "Back to Work Items" }).click();
+  await expect(page.getByRole("searchbox", { name: "Search work items" })).toHaveValue("Goobers#7");
+
+  await page.getByRole("button", {
+    name: "Open issue #7 in Agent-Clubhouse/Goobers",
+    exact: true,
+  }).click();
+  await expect(detail.getByRole("heading", { name: "Agent-Clubhouse/Goobers#7", exact: true })).toBeVisible();
+  expect(detailRequests).toHaveLength(1);
+  expect(Object.fromEntries(detailRequests[0].searchParams.entries())).toEqual({
+    source: sources[0].id,
+    provider: "github",
+    repository: "Agent-Clubhouse/Goobers",
+    kind: "issue",
+    id: "7",
+  });
+  expect(errors).toEqual([]);
+});
+
+test("Work Items discards late detail responses and resets filters when the source changes", async ({ page }) => {
+  const errors = await openCanvas(page);
+  let detailRequests = 0;
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("http://canvas.test/api/work-item-detail?**", async (route) => {
+    detailRequests++;
+    if (detailRequests === 1) {
+      await blocked;
+    }
+    await route.fulfill({ json: { connected: true, workItem: workItemDetail } });
+  });
+
+  await page.getByRole("tab", { name: "Work Items", exact: true }).click();
+  await page.getByRole("searchbox", { name: "Search work items" }).fill("Goobers#7");
+  await page.getByRole("combobox", { name: "Filter work items by gaggle" }).selectOption("triage");
+  await page.getByRole("button", {
+    name: "Open issue #7 in Agent-Clubhouse/Goobers",
+    exact: true,
+  }).click();
+  await expect(page.locator("#work-item-status")).toHaveText("Loading\u2026");
+
+  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+  release();
+  await expect(page.locator("#source-context")).toHaveText("Instance two");
+  await expect(page.getByRole("searchbox", { name: "Search work items" })).toHaveValue("");
+  await expect(page.getByRole("combobox", { name: "Filter work items by gaggle" })).toHaveValue("");
+  await expect(page.getByRole("button", {
+    name: "Open issue #7 in Agent-Clubhouse/Goobers",
+    exact: true,
+  })).toBeVisible();
+
+  await page.getByRole("button", {
+    name: "Open issue #7 in Agent-Clubhouse/Goobers",
+    exact: true,
+  }).click();
+  await expect(page.locator("#work-item-content").getByRole("heading", {
+    name: "Agent-Clubhouse/Goobers#7",
+    exact: true,
+  })).toBeVisible();
+  expect(detailRequests).toBe(2);
+  expect(errors).toEqual([]);
+});
+
+test("Work Items tab renders loading, list error, detail error, and empty states", async ({ page }) => {
+  const errors = await openCanvas(page);
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("http://canvas.test/api/work-items?**", async (route) => {
+    await blocked;
+    await route.fulfill({ json: { connected: false, reason: "Work items require a running Goobers daemon." } });
+  });
+  await page.getByRole("tab", { name: "Work Items", exact: true }).click();
+  await expect(page.locator("#work-item-status")).toHaveText("Loading\u2026");
+  release();
+  await expect(page.locator("#work-item-status")).toHaveText("Work items require a running Goobers daemon.");
+  await expect(page.locator("#work-item-content")).toBeEmpty();
+
+  await page.unroute("http://canvas.test/api/work-items?**");
+  await page.route("http://canvas.test/api/work-items?**", (route) =>
+    route.fulfill({ json: { connected: true, workItems: { items: [], hasMore: false } } }));
+  await page.getByRole("button", { name: "Pull requests", exact: true }).click();
+  await expect(page.locator("#work-item-status")).toBeEmpty();
+  await expect(page.locator("#work-item-content")).toContainText(
+    "No confirmed provider actions match this filter.",
+  );
+
+  await page.unroute("http://canvas.test/api/work-items?**");
+  await page.route("http://canvas.test/api/work-items?**", (route) =>
+    route.fulfill({ json: { connected: true, workItems: workItemPage } }));
+  await page.getByRole("button", { name: "Issues", exact: true }).click();
+  await expect(page.getByRole("button", {
+    name: "Open issue #7 in Agent-Clubhouse/Goobers",
+    exact: true,
+  })).toBeVisible();
+  await page.route("http://canvas.test/api/work-item-detail?**", (route) =>
+    route.fulfill({ json: { connected: false, reason: "work item detail unavailable" } }));
+  await page.getByRole("button", {
+    name: "Open issue #7 in Agent-Clubhouse/Goobers",
+    exact: true,
+  }).click();
+  await expect(page.locator("#work-item-status")).toHaveText("work item detail unavailable");
+  await expect(page.getByRole("button", { name: "Back to Work Items" })).toBeVisible();
   expect(errors).toEqual([]);
 });
 

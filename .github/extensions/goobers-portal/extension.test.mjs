@@ -72,8 +72,31 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                 pullRequests: [],
                 issues: [],
             };
+            const workItemPage = {
+                items: [{
+                    provider: "github",
+                    repository: "acme/app",
+                    kind: "pr",
+                    externalId: "42",
+                    actionCount: 2,
+                    lastOperation: "comment",
+                    lastActionAt: "2026-09-15T00:00:00Z",
+                    lastRunId: "run-1",
+                }],
+                hasMore: false,
+            };
+            const workItemDetail = {
+                provider: "github",
+                repository: "acme/app",
+                kind: "pr",
+                externalId: "42",
+                relatedPullRequests: [],
+                actions: [],
+                truncated: false,
+            };
             const insightRequests = [];
             const costRequests = [];
+            const workItemRequests = [];
             const daemon = createServer((req, res) => {
                 if (fail) {
                     res.writeHead(503).end();
@@ -87,12 +110,20 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                 if (pathname === "/api/v1/telemetry/costs") {
                     costRequests.push(Object.fromEntries(parsedUrl.searchParams.entries()));
                 }
+                if (pathname === "/api/v1/work-items") {
+                    workItemRequests.push({ kind: "list", query: Object.fromEntries(parsedUrl.searchParams.entries()) });
+                }
+                if (pathname === "/api/v1/work-items/github/pr/42") {
+                    workItemRequests.push({ kind: "detail", query: Object.fromEntries(parsedUrl.searchParams.entries()) });
+                }
                 const body = pathname === "/api/v1/instance" ? { name: "remote-instance", fleet, warnings }
                     : pathname === "/api/v1/health" ? { ready: true }
                     : pathname === "/api/v1/gaggles" ? { items: [] }
                     : pathname === "/api/v1/gaggles/core/workflows/implementation" ? workflowDetail
                     : pathname === "/api/v1/telemetry/stats" ? insightStats
                     : pathname === "/api/v1/telemetry/costs" ? costSummary
+                    : pathname === "/api/v1/work-items" ? workItemPage
+                    : pathname === "/api/v1/work-items/github/pr/42" ? workItemDetail
                     : pathname === "/api/v1/runs" ? { runs: [] }
                     : {};
                 res.setHeader("Content-Type", "application/json");
@@ -168,6 +199,26 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                 until: "2026-01-02T00:00:00Z",
             });
 
+            const workItemsResponse = await fetch(
+                `${opened.url}api/work-items?source=${encodeURIComponent(source.id)}&provider=github&kind=pr&limit=200&gaggle=ignored`,
+            );
+            assert.equal(workItemsResponse.status, 200);
+            assert.deepEqual(await workItemsResponse.json(), { connected: true, workItems: workItemPage });
+            assert.deepEqual(workItemRequests.at(-1), {
+                kind: "list",
+                query: { provider: "github", kind: "pr", limit: "200" },
+            });
+
+            const workItemDetailResponse = await fetch(
+                `${opened.url}api/work-item-detail?source=${encodeURIComponent(source.id)}&provider=github&repository=acme%2Fapp&kind=pr&id=42`,
+            );
+            assert.equal(workItemDetailResponse.status, 200);
+            assert.deepEqual(await workItemDetailResponse.json(), { connected: true, workItem: workItemDetail });
+            assert.deepEqual(workItemRequests.at(-1), {
+                kind: "detail",
+                query: { repository: "acme/app" },
+            });
+
             const missingInsightSource = await fetch(`${opened.url}api/insight-stats`);
             assert.equal(missingInsightSource.status, 200);
             assert.deepEqual(await missingInsightSource.json(), {
@@ -180,6 +231,22 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
             assert.deepEqual(await missingCostSource.json(), {
                 connected: false,
                 reason: "no source selected",
+            });
+
+            const missingWorkItemsSource = await fetch(`${opened.url}api/work-items`);
+            assert.equal(missingWorkItemsSource.status, 200);
+            assert.deepEqual(await missingWorkItemsSource.json(), {
+                connected: false,
+                reason: "no source selected",
+            });
+
+            const missingWorkItemIdentity = await fetch(
+                `${opened.url}api/work-item-detail?source=${encodeURIComponent(source.id)}&provider=github`,
+            );
+            assert.equal(missingWorkItemIdentity.status, 400);
+            assert.deepEqual(await missingWorkItemIdentity.json(), {
+                connected: false,
+                reason: "source, provider, repository, kind, and id are required",
             });
 
             const unsupportedInsight = await fetch(
@@ -198,6 +265,24 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
             assert.deepEqual(await unsupportedCost.json(), {
                 connected: false,
                 reason: "Cost telemetry requires a running Goobers daemon.",
+            });
+
+            const unsupportedWorkItems = await fetch(
+                `${opened.url}api/work-items?source=${encodeURIComponent(actionsSource.id)}`,
+            );
+            assert.equal(unsupportedWorkItems.status, 200);
+            assert.deepEqual(await unsupportedWorkItems.json(), {
+                connected: false,
+                reason: "Work items require a running Goobers daemon.",
+            });
+
+            const unsupportedWorkItemDetail = await fetch(
+                `${opened.url}api/work-item-detail?source=${encodeURIComponent(actionsSource.id)}&provider=github&repository=acme%2Fapp&kind=pr&id=42`,
+            );
+            assert.equal(unsupportedWorkItemDetail.status, 200);
+            assert.deepEqual(await unsupportedWorkItemDetail.json(), {
+                connected: false,
+                reason: "Work item detail requires a running Goobers daemon.",
             });
 
             fleet = { associated: false };
