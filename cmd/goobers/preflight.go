@@ -102,7 +102,25 @@ type harnessPreflightInfo map[apiv1.Harness]harness.PreflightInfo
 // environment as a dispatched run and the operator's harnessCommand override
 // (#2483); each preflight is bounded by harnessPreflightTimeout so a hung CLI
 // or network can't hang startup.
-func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, environment harness.EnvironmentConfig, harnessCommand map[string][]string, modelCredential func(ctx context.Context) (string, error)) (harnessPreflightInfo, error) {
+// modelCredentialFor resolves the agent:model credential for ONE harness. The
+// preflight takes this instead of a single pre-resolved credential because a
+// harness-scoped grant (#5148) is only findable when the harness is known:
+// resolving once with an empty harness silently returns the unscoped grant, or
+// none, for every harness alike (#5163).
+type modelCredentialFor func(apiv1.Harness) (func(ctx context.Context) (string, error), error)
+
+// harnessModelCredentialResolver adapts agentModelCredentialResolver — which
+// already understands harness-scoped grants — into the per-harness form the
+// preflight needs. Both the daemon and the worker wire it the same way, so
+// neither can drift back to resolving once with an empty harness (#5163).
+func harnessModelCredentialResolver(cfg *instance.Config, stores credentials.StoreResolver) modelCredentialFor {
+	return func(h apiv1.Harness) (func(ctx context.Context) (string, error), error) {
+		resolve, _, err := agentModelCredentialResolver(cfg, stores, h)
+		return resolve, err
+	}
+}
+
+func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, environment harness.EnvironmentConfig, harnessCommand map[string][]string, credentialFor modelCredentialFor) (harnessPreflightInfo, error) {
 	seen := map[apiv1.Harness]bool{}
 	info := make(harnessPreflightInfo)
 	preflight := func(wfName, stageName, gooberName string) error {
@@ -118,6 +136,19 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 			return nil
 		}
 		seen[h] = true
+		// Resolve the credential FOR THIS HARNESS. Startup previously resolved
+		// once with an empty harness and reused it, so an instance whose
+		// agent:model grant was scoped to claude-code preflighted
+		// `claude auth status` with no token and reported loggedIn:false —
+		// then took the whole daemon down with it (#5163).
+		var modelCredential func(ctx context.Context) (string, error)
+		if credentialFor != nil {
+			resolved, err := credentialFor(h)
+			if err != nil {
+				return fmt.Errorf("workflow %q stage %q: agent:model credential for harness %q: %w", wfName, stageName, h, err)
+			}
+			modelCredential = resolved
+		}
 		adapter, err := harnessAdapterFor(h, environment, harnessCommand, modelCredential)
 		if err != nil {
 			return fmt.Errorf("workflow %q stage %q: %w", wfName, stageName, err)
