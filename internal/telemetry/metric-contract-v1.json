@@ -1,0 +1,423 @@
+{
+  "id": "goobers.telemetry.metrics",
+  "version": "v1",
+  "lifecycle": {
+    "stability": "ga",
+    "sinceVersion": "dev",
+    "deprecated": false
+  },
+  "compatibility": {
+    "additiveMetrics": "allowed",
+    "breakingChangeRequires": [
+      "explicit compatibility note",
+      "coordinated Goobernetes-Infra update"
+    ]
+  },
+  "dimensionCardinality": {
+    "maxDistinctValuesPerAttributePerProcess": 100,
+    "maxValueLength": 64,
+    "overflowValue": "other",
+    "invalidValueBehavior": "drop_dimension",
+    "overflowBehavior": "fold_to_other",
+    "valuePolicies": [
+      {
+        "attribute": "*",
+        "pattern": "^[A-Za-z0-9._-]{1,64}$"
+      },
+      {
+        "attribute": "goobers.metric.unit",
+        "pattern": "^[A-Za-z0-9._{}\\/%-]{1,64}$"
+      }
+    ]
+  },
+  "resourceAttributes": [
+    {
+      "name": "service.name",
+      "presence": "required",
+      "sources": [
+        "default:goobers",
+        "Config.ServiceName",
+        "OTEL_SERVICE_NAME"
+      ],
+      "behavior": "Always emitted. OTEL_SERVICE_NAME overrides Config.ServiceName and the default value.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "service.instance.id",
+      "presence": "required",
+      "sources": [
+        "generated per client",
+        "OTEL_RESOURCE_ATTRIBUTES service.instance.id"
+      ],
+      "behavior": "Always emitted. A fresh value is generated unless OTEL_RESOURCE_ATTRIBUTES supplies one.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "service.version",
+      "presence": "optional",
+      "sources": [
+        "Config.ServiceVersion"
+      ],
+      "behavior": "Emitted only when Config.ServiceVersion is non-empty.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.build.commit",
+      "presence": "optional",
+      "sources": [
+        "Config.BuildCommit"
+      ],
+      "behavior": "Emitted only when Config.BuildCommit is non-empty.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "deployment.environment",
+      "presence": "optional",
+      "sources": [
+        "Config.Environment"
+      ],
+      "behavior": "Emitted only when Config.Environment is non-empty.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    }
+  ],
+  "metrics": [
+    {
+      "name": "goobers.run.duration",
+      "kind": "histogram",
+      "numberType": "float64",
+      "unit": "s",
+      "description": "Workflow run duration.",
+      "allowedDimensions": [
+        "goobers.workflow",
+        "goobers.outcome",
+        "goobers.error.code"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.run.outcomes",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{run}",
+      "description": "Finished workflow runs by outcome.",
+      "allowedDimensions": [
+        "goobers.workflow",
+        "goobers.outcome",
+        "goobers.error.code"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.stage.duration",
+      "kind": "histogram",
+      "numberType": "float64",
+      "unit": "s",
+      "description": "Workflow stage duration.",
+      "allowedDimensions": [
+        "goobers.workflow",
+        "goobers.stage",
+        "goobers.stage.type",
+        "goobers.model",
+        "goobers.outcome",
+        "goobers.error.code",
+        "goobers.attempt.kind"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.stage.outcomes",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{stage}",
+      "description": "Finished workflow stages by outcome.",
+      "allowedDimensions": [
+        "goobers.workflow",
+        "goobers.stage",
+        "goobers.stage.type",
+        "goobers.model",
+        "goobers.outcome",
+        "goobers.error.code",
+        "goobers.attempt.kind"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.stage.retries",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{attempt}",
+      "description": "Stage attempts beyond the first.",
+      "allowedDimensions": [
+        "goobers.workflow",
+        "goobers.stage",
+        "goobers.stage.type",
+        "goobers.model",
+        "goobers.attempt.kind"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.gate.decisions",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{decision}",
+      "description": "Evaluated gate decisions.",
+      "allowedDimensions": [
+        "goobers.workflow",
+        "goobers.stage",
+        "goobers.stage.type",
+        "goobers.model",
+        "goobers.gate.decision"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.escalations",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{escalation}",
+      "description": "Stages and gates escalated to a human.",
+      "allowedDimensions": [
+        "goobers.workflow",
+        "goobers.stage",
+        "goobers.stage.type",
+        "goobers.model",
+        "goobers.attempt.kind"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.journal.redactions_total",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{event}",
+      "description": "Scrub events that removed secret material, separated by layer.",
+      "allowedDimensions": [
+        "layer"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.journal.appends_dropped",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{event}",
+      "description": "Explicitly best-effort instance-journal appends that failed.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.work.active",
+      "kind": "up_down_counter",
+      "numberType": "int64",
+      "unit": "{span}",
+      "description": "In-flight runs and stages.",
+      "allowedDimensions": [
+        "goobers.workflow",
+        "goobers.span.kind"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.stage.metric.value",
+      "kind": "histogram",
+      "numberType": "float64",
+      "unit": "1",
+      "description": "Stage-emitted metrics.jsonl values.",
+      "allowedDimensions": [
+        "goobers.workflow",
+        "goobers.stage",
+        "goobers.stage.type",
+        "goobers.model",
+        "goobers.attempt.kind",
+        "goobers.metric.name",
+        "goobers.metric.unit"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.worktree.disk.usage",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "By",
+      "description": "Apparent bytes of one managed worktree.",
+      "allowedDimensions": [
+        "goobers.storage.operation"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.workcopy.disk.usage",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "By",
+      "description": "Aggregate apparent bytes of managed workcopies.",
+      "allowedDimensions": [
+        "goobers.storage.operation"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.recovery.snapshot.format",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{capture}",
+      "description": "Recovery snapshot bundle captures by format selected.",
+      "allowedDimensions": [
+        "goobers.recovery.format"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.recovery.snapshot.bytes",
+      "kind": "histogram",
+      "numberType": "float64",
+      "unit": "By",
+      "description": "Emitted recovery snapshot bundle size.",
+      "allowedDimensions": [
+        "goobers.recovery.format"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.recovery.snapshot.fallback",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{capture}",
+      "description": "Recovery captures that fell back to a full bundle, by reason.",
+      "allowedDimensions": [
+        "goobers.recovery.reason"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.recovery.restore.failures",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{failure}",
+      "description": "Recovery bundle restore failures, by reason.",
+      "allowedDimensions": [
+        "goobers.recovery.reason"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.storage.free_bytes",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "By",
+      "description": "Most recent free-space sample of the filesystem containing the instance root.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.storage.health.tier_changes",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{transition}",
+      "description": "Tiered low-disk protection tier transitions, tagged by the tier entered.",
+      "allowedDimensions": [
+        "goobers.storage.tier"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    }
+  ],
+  "deploymentSpecificInputs": {
+    "azureQueriesIncluded": false,
+    "thresholdsIncluded": false
+  }
+}

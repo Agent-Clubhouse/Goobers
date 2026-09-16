@@ -52,28 +52,36 @@ meter provider alongside the tracer provider.
 Stage `metrics.jsonl` values are exported as metrics *and* retained as span
 events, so trace correlation and the existing rollup keep working unchanged.
 
+The committed machine-readable contract lives at
+`internal/telemetry/metric-contract-v1.json`; package tests compare that file
+with the in-code registry and with runtime emission, so implementation,
+documentation, and the artifact stay in lockstep.
+
 Instrument names, types, units, and the attributes they may carry — this is the
-contract the Goobernetes-Infra collector pipeline is configured against:
+human-readable projection of the same contract the Goobernetes-Infra collector
+pipeline is configured against:
 
 | Metric | Type | Unit | Attributes |
 | --- | --- | --- | --- |
 | `goobers.run.duration` | histogram (float64) | `s` | `goobers.workflow`, `goobers.outcome`, `goobers.error.code` |
 | `goobers.run.outcomes` | counter (int64) | `{run}` | `goobers.workflow`, `goobers.outcome`, `goobers.error.code` |
-| `goobers.stage.duration` | histogram (float64) | `s` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.outcome`, `goobers.error.code` |
+| `goobers.stage.duration` | histogram (float64) | `s` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.outcome`, `goobers.error.code`, `goobers.attempt.kind` |
 | `goobers.stage.outcomes` | counter (int64) | `{stage}` | same as `goobers.stage.duration` |
-| `goobers.stage.retries` | counter (int64) | `{attempt}` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.attempt.kind` |
-| `goobers.gate.decisions` | counter (int64) | `{decision}` | `goobers.workflow`, `goobers.stage`, `goobers.gate.decision` |
-| `goobers.escalations` | counter (int64) | `{escalation}` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type` |
+| `goobers.stage.retries` | counter (int64) | `{attempt}` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind` |
+| `goobers.gate.decisions` | counter (int64) | `{decision}` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.gate.decision` |
+| `goobers.escalations` | counter (int64) | `{escalation}` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind` |
 | `goobers.journal.redactions_total` | counter (int64) | `{event}` | `layer` (`registry`/`pattern`) |
 | `goobers.journal.appends_dropped` | counter (int64) | `{event}` | none |
 | `goobers.work.active` | up-down counter (int64) | `{span}` | `goobers.workflow`, `goobers.span.kind` (`run`/`task`/`gate`/`scheduler`) |
-| `goobers.stage.metric.value` | histogram (float64) | `1` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.metric.name`, `goobers.metric.unit` |
+| `goobers.stage.metric.value` | histogram (float64) | `1` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind`, `goobers.metric.name`, `goobers.metric.unit` |
 | `goobers.worktree.disk.usage` | gauge (int64) | `By` | `goobers.storage.operation` |
 | `goobers.workcopy.disk.usage` | gauge (int64) | `By` | `goobers.storage.operation` |
 | `goobers.recovery.snapshot.format` | counter (int64) | `{capture}` | `goobers.recovery.format` (`full`/`delta`) |
 | `goobers.recovery.snapshot.bytes` | histogram (float64) | `By` | `goobers.recovery.format` (`full`/`delta`) |
 | `goobers.recovery.snapshot.fallback` | counter (int64) | `{capture}` | `goobers.recovery.reason` (`no_base_ref`/`base_unreachable`) |
 | `goobers.recovery.restore.failures` | counter (int64) | `{failure}` | `goobers.recovery.reason` (`archive_invalid`/`base_missing`/`import_failed`) |
+| `goobers.storage.free_bytes` | gauge (int64) | `By` | none |
+| `goobers.storage.health.tier_changes` | counter (int64) | `{transition}` | `goobers.storage.tier` (`healthy`/`warning`/`admission-stopped`/`measurement-unavailable`) |
 
 Cardinality and privacy are enforced in two layers, both in `metrics.go`:
 
