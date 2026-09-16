@@ -212,11 +212,6 @@ func collectFailureDigest(stdout, stderr []byte) []string {
 	return digest
 }
 
-// FailureDigest returns every distinct failure line a command's output carries.
-func FailureDigest(stdout, stderr []byte) []string {
-	return summarizeCommandFailure(stdout, stderr).digest
-}
-
 func failureLineSpecificity(line string) int {
 	line = cleanOutputLine(line)
 	switch {

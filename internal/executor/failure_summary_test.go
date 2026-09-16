@@ -234,7 +234,7 @@ func TestFailureDigestCarriesEveryFailure(t *testing.T) {
 		"FAIL\n")
 	stderr := []byte("make: *** [Makefile:391: ci] Error 1\n")
 
-	digest := FailureDigest(stdout, stderr)
+	digest := summarizeCommandFailure(stdout, stderr).digest
 	joined := strings.Join(digest, "\n")
 	for _, want := range []string{"TestAlpha", "TestBeta", "TestGamma", "internal/one", "internal/two"} {
 		if !strings.Contains(joined, want) {
@@ -259,7 +259,7 @@ func TestFailureDigestCarriesEveryFailure(t *testing.T) {
 func TestFailureDigestDeduplicates(t *testing.T) {
 	line := "--- FAIL: TestRepeated (0.01s)\n"
 	stdout := []byte(strings.Repeat(line, 5) + "FAIL\tgithub.com/goobers/goobers/internal/one\t1.0s\n")
-	digest := FailureDigest(stdout, nil)
+	digest := summarizeCommandFailure(stdout, nil).digest
 	count := 0
 	for _, entry := range digest {
 		if strings.Contains(entry, "TestRepeated") {
@@ -274,7 +274,7 @@ func TestFailureDigestDeduplicates(t *testing.T) {
 // A build that dies before any test runs still has to say something: the
 // wrapper trailer is dropped only when something more specific exists.
 func TestFailureDigestKeepsTrailerWhenItIsAllThereIs(t *testing.T) {
-	digest := FailureDigest(nil, []byte("make: *** [Makefile:391: ci] Error 1\n"))
+	digest := summarizeCommandFailure(nil, []byte("make: *** [Makefile:391: ci] Error 1\n")).digest
 	if len(digest) == 0 {
 		t.Fatal("digest is empty for a build that failed before any test ran")
 	}
