@@ -56,6 +56,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 	mapped := map[string][]workflow.FeatureID{
 		"WorkflowSpec.Gaggle":      {"workflow.spec.gaggle"},
 		"WorkflowSpec.DisplayName": {"workflow.spec.displayName"},
+		"WorkflowSpec.Enabled":     {"workflow.spec.enabled"},
 		"WorkflowSpec.Triggers":    {"workflow.spec.triggers"},
 		"WorkflowSpec.Readiness":   {"workflow.spec.readiness"},
 		"WorkflowSpec.RunControls": {
@@ -78,6 +79,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"WorkflowSpec.Parallels": {"workflow.spec.parallels"},
 
 		"GaggleSpec.DisplayName":  {"gaggle.spec.displayName"},
+		"GaggleSpec.Enabled":      {"gaggle.spec.enabled"},
 		"GaggleSpec.Cost":         {"gaggle.spec.cost.enabled"},
 		"GaggleSpec.SelfIdentity": {"gaggle.spec.selfIdentity"},
 		"GaggleSpec.Project": {

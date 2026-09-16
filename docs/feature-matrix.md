@@ -28,7 +28,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gaggle.spec.ciCommand` | 2.0 | ga | supported | dev |
 | `gaggle.spec.cost.enabled` | 2.0 | ga | supported | v0.4.0 |
 | `gaggle.spec.displayName` | 2.0 | ga | supported | dev |
-| `gaggle.spec.enabled` | 2.0 | ga | supported | dev |
+| `gaggle.spec.enabled` | 2.0 | ga | supported | v0.4.0 |
 | `gaggle.spec.isolation.identityRef` | 2.0 | ga | supported | dev |
 | `gaggle.spec.isolation.namespace` | 2.0 | ga | supported | dev |
 | `gaggle.spec.outboxMirrorPath` | 2.0 | ga | supported | dev |
@@ -164,7 +164,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `trigger.webhook` | 2.0 | ga | supported | dev |
 | `workflow.spec.displayName` | 2.0 | ga | supported | dev |
 | `workflow.spec.docsRoots` | 2.0 | ga | supported | dev |
-| `workflow.spec.enabled` | 2.0 | ga | supported | dev |
+| `workflow.spec.enabled` | 2.0 | ga | supported | v0.4.0 |
 | `workflow.spec.gaggle` | 2.0 | ga | supported | dev |
 | `workflow.spec.gates` | 2.0 | ga | supported | dev |
 | `workflow.spec.outboxMirrorPath` | 2.0 | ga | supported | dev |
@@ -215,7 +215,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gaggle.spec.ciCommand` | 3.0 | ga | preview | dev |
 | `gaggle.spec.cost.enabled` | 3.0 | ga | preview | v0.4.0 |
 | `gaggle.spec.displayName` | 3.0 | ga | preview | dev |
-| `gaggle.spec.enabled` | 3.0 | ga | preview | dev |
+| `gaggle.spec.enabled` | 3.0 | ga | preview | v0.4.0 |
 | `gaggle.spec.isolation.identityRef` | 3.0 | ga | preview | dev |
 | `gaggle.spec.isolation.namespace` | 3.0 | ga | preview | dev |
 | `gaggle.spec.outboxMirrorPath` | 3.0 | ga | preview | dev |
@@ -369,7 +369,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `trigger.webhook` | 3.0 | ga | preview | dev |
 | `workflow.spec.displayName` | 3.0 | ga | preview | dev |
 | `workflow.spec.docsRoots` | 3.0 | ga | preview | dev |
-| `workflow.spec.enabled` | 3.0 | ga | preview | dev |
+| `workflow.spec.enabled` | 3.0 | ga | preview | v0.4.0 |
 | `workflow.spec.gaggle` | 3.0 | ga | preview | dev |
 | `workflow.spec.gates` | 3.0 | ga | preview | dev |
 | `workflow.spec.outboxMirrorPath` | 3.0 | ga | preview | dev |
