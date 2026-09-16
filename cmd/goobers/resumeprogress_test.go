@@ -85,7 +85,7 @@ func TestStartupInventoryCountsNameEachSource(t *testing.T) {
 // startStartupTerminalFinalize must not leave the shutdown join waiting when
 // there is nothing to finalize.
 func TestStartStartupTerminalFinalizeClosesWithNoCandidates(t *testing.T) {
-	done := startStartupTerminalFinalize(context.Background(), &schedulerSetup{}, nil, nil)
+	done := startStartupTerminalFinalize(context.Background(), &schedulerSetup{}, nil)
 	select {
 	case <-done:
 	case <-time.After(time.Second):
