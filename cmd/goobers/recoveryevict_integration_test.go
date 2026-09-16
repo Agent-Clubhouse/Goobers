@@ -203,3 +203,126 @@ func TestIntegrationRecoveryCleanupEvictsLandedEntryUnderFullInventory(t *testin
 		t.Fatal("new run's snapshot was not published despite a full-then-evicted inventory")
 	}
 }
+
+func TestIntegrationRecoveryCleanupEvictsNoDiffEntryUnderFullInventory(t *testing.T) {
+	testdep.Require(t, "git")
+	ctx := context.Background()
+	layout := instance.NewLayout(t.TempDir())
+	source := t.TempDir()
+	recoveryCLIGit(t, source, "init", "--initial-branch=main")
+	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
+	base := recoveryCLIGit(t, source, "rev-parse", "HEAD")
+
+	workcopies := filepath.Join(layout.Root, "workcopies")
+	manager, err := worktree.NewManager(workcopies)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cloneURL := func(apiv1.RepoRef) (string, error) { return source, nil }
+	previous := repoCloneURL
+	repoCloneURL = cloneURL
+	t.Cleanup(func() { repoCloneURL = previous })
+
+	cfg := &instance.Config{
+		Repos:     []instance.RepoRef{{Provider: "github", Owner: "team", Name: "repo"}},
+		Retention: instance.RetentionConfig{Recovery: &instance.RecoverySnapshotConfig{MaxSnapshots: 2}},
+	}
+	key := (providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}).CanonicalKey()
+	root, err := prepareRecoveryInventory(layout.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirror, err := manager.WorkingCopy(ctx, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noDiffDigest, err := recovery.WriteSnapshotPatch(ctx, mirror, base, base, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	noDiffRunIDs := []string{"empty-run-1", "empty-run-2"}
+	for _, runID := range noDiffRunIDs {
+		ref, err := recovery.RefForSnapshot(runID, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := recovery.Record{
+			Version: 1, RunID: runID, RepositoryKey: key, Ref: ref,
+			BaseSHA: base, SnapshotSHA: base, PatchDigest: noDiffDigest,
+			CreatedAt: time.Now().Add(-time.Hour), RetainUntil: time.Now().Add(29 * 24 * time.Hour),
+		}
+		if _, _, err := recovery.PublishToInventoryWithEviction(ctx, mirror, root, []string{manager.Root}, record, 2, 1<<20, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	option, err := recoveryCleanupOption(layout, cfg, workcopies, cloneURL, journal.NewRegistryScrubber(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	option(manager)
+
+	const newRunID = "new-run"
+	newRun, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: newRunID, Workflow: "implementation", WorkflowVersion: 1, StartedAt: time.Now()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = newRun.Close() }()
+	workspace, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: newRunID + "-stage", OwnerRunID: newRunID, BaseRef: "main", Branch: "goobers/implementation/" + newRunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace.Path, "new.txt"), []byte("new work"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := workspace.Remove(ctx, worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("cleanup did not reclaim a no-diff entry under a full inventory: %v", err)
+	}
+	if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
+		t.Fatalf("worktree was not removed after cleanup: %v", err)
+	}
+
+	entries, err := recovery.ReadInventory(ctx, root, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("inventory has %d entries, want 2 (cap respected)", len(entries))
+	}
+	foundNew := false
+	remainingNoDiff := map[string]bool{}
+	for _, runID := range noDiffRunIDs {
+		remainingNoDiff[runID] = false
+	}
+	for _, entry := range entries {
+		switch entry.Record.RunID {
+		case newRunID:
+			foundNew = true
+			if entry.Record.HasNoDiff() {
+				t.Fatal("new run lost its real patch and was retained as a no-diff snapshot")
+			}
+		case noDiffRunIDs[0], noDiffRunIDs[1]:
+			if !entry.Record.HasNoDiff() {
+				t.Fatalf("no-diff entry %s changed into a real patch", entry.Record.RunID)
+			}
+			remainingNoDiff[entry.Record.RunID] = true
+		default:
+			t.Fatalf("unexpected inventory entry after eviction: %+v", entry.Record)
+		}
+	}
+	if !foundNew {
+		t.Fatal("new run's real snapshot was not published after reclaiming no-diff capacity")
+	}
+	remainingCount := 0
+	for _, stillPresent := range remainingNoDiff {
+		if stillPresent {
+			remainingCount++
+		}
+	}
+	if remainingCount != 1 {
+		t.Fatalf("remaining no-diff entries = %d, want 1 after evicting exactly one no-diff reservation", remainingCount)
+	}
+}

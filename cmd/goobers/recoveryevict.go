@@ -44,12 +44,35 @@ func recoveryEvictFunc(layout instance.Layout, cfg *instance.Config, manager *wo
 			if entry.Record.RepositoryKey != key {
 				continue
 			}
+			if retired, _ := tryRetireNoDiffEntry(ctx, root, cfg, manager, entry); retired {
+				return true, nil
+			}
+		}
+		for _, entry := range entries {
+			if entry.Record.RepositoryKey != key {
+				continue
+			}
 			if retired, _ := tryRetireLandedEntry(ctx, root, layout, cfg, manager, entry); retired {
 				return true, nil
 			}
 		}
 		return false, nil
 	}
+}
+
+// No-diff entries carry the empty patch digest recorded at capture time, so
+// they protect no recoverable work and can be reclaimed under capacity
+// pressure without waiting for landing proof.
+func tryRetireNoDiffEntry(ctx context.Context, root string, cfg *instance.Config, manager *worktree.Manager, entry recovery.InventoryEntry) (bool, error) {
+	record, err := recovery.ReadRetainedRecord(entry.RecordPath)
+	if err != nil || !record.HasNoDiff() {
+		return false, err
+	}
+	url, err := recoveryRetentionCloneURL(cfg, record.RepositoryKey)
+	if err != nil {
+		return false, err
+	}
+	return retireInventoryEntry(ctx, root, manager, url, record)
 }
 
 // tryRetireLandedEntry retires one inventory entry purely on landing proof —
@@ -89,24 +112,38 @@ func tryRetireLandedEntry(ctx context.Context, root string, layout instance.Layo
 		if err != nil {
 			return err
 		}
-		_, err = manager.WithRecoveryRepositoriesLocked(ctx, url, func(repositories []string) error {
-			verified, err := verifyRecoveryLandingRepositories(ctx, repositories, record, landed, cfg.Retention.RecoveryEffective().MaxArchiveBytesEffective())
-			if err != nil || !verified {
+		retired, err = retireInventoryEntryWhen(ctx, root, manager, url, record, func(repositories []string) (bool, error) {
+			return verifyRecoveryLandingRepositories(ctx, repositories, record, landed, cfg.Retention.RecoveryEffective().MaxArchiveBytesEffective())
+		})
+		return err
+	})
+	return retired, err
+}
+
+func retireInventoryEntry(ctx context.Context, root string, manager *worktree.Manager, url string, record recovery.Record) (bool, error) {
+	return retireInventoryEntryWhen(ctx, root, manager, url, record, nil)
+}
+
+func retireInventoryEntryWhen(ctx context.Context, root string, manager *worktree.Manager, url string, record recovery.Record, eligible func([]string) (bool, error)) (bool, error) {
+	var retired bool
+	_, err := manager.WithRecoveryRepositoriesLocked(ctx, url, func(repositories []string) error {
+		if eligible != nil {
+			ok, err := eligible(repositories)
+			if err != nil || !ok {
 				return err
 			}
-			_, err = recovery.RetireSnapshot(ctx, root, record, func(current recovery.Record) error {
-				for _, repository := range repositories {
-					if err := recovery.DeleteSnapshotRef(ctx, repository, current); err != nil {
-						return err
-					}
+		}
+		_, err := recovery.RetireSnapshot(ctx, root, record, func(current recovery.Record) error {
+			for _, repository := range repositories {
+				if err := recovery.DeleteSnapshotRef(ctx, repository, current); err != nil {
+					return err
 				}
-				return nil
-			})
-			if err == nil {
-				retired = true
 			}
-			return err
+			return nil
 		})
+		if err == nil {
+			retired = true
+		}
 		return err
 	})
 	return retired, err

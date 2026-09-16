@@ -53,6 +53,12 @@ func (r Record) archiveFormat() string {
 	return archiveFormatFull
 }
 
+// HasNoDiff reports whether the captured snapshot matched its base exactly,
+// so the retained entry contains no recoverable patch bytes.
+func (r Record) HasNoDiff() bool {
+	return r.PatchDigest == emptyPatchDigest
+}
+
 // RefForRun returns a private Git ref, never a provider branch name. Rejecting
 // arbitrary ref syntax prevents a restore or reap request from naming main.
 func RefForRun(runID string) (string, error) {

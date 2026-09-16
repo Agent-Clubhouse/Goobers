@@ -70,3 +70,15 @@ func TestSnapshotRefBindsOwnerAndExactSnapshot(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordHasNoDiff(t *testing.T) {
+	record := storageTestRecord()
+	record.PatchDigest = emptyPatchDigest
+	if !record.HasNoDiff() {
+		t.Fatal("empty patch digest did not report a no-diff snapshot")
+	}
+	record.PatchDigest = "sha256:" + strings.Repeat("c", 64)
+	if record.HasNoDiff() {
+		t.Fatal("non-empty patch digest reported a no-diff snapshot")
+	}
+}
