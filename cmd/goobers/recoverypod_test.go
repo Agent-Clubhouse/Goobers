@@ -66,6 +66,26 @@ func TestResolveRecoveryBaseRef(t *testing.T) {
 			t.Fatal("resolved a base branch this checkout never fetched")
 		}
 	})
+	// git REFUSING to answer must never be reported as the base branch being
+	// absent. In a stage pod the refusal is "detected dubious ownership" (exit
+	// 128) on the workspace the container user does not own; the probe used to
+	// run bare and discard stderr, so every candidate failed that way and
+	// custody blamed a ref that was present the whole time (#5162, #5180 both
+	// chased it). "not a git repository" is the same exit status through a
+	// trigger a test can create without a uid mismatch.
+	t.Run("git refuses the repository", func(t *testing.T) {
+		dir := t.TempDir()
+		_, err := resolveRecoveryBaseRef(t.Context(), dir, "main")
+		if err == nil {
+			t.Fatal("resolved a base branch in a directory that is not a repository")
+		}
+		if strings.Contains(err.Error(), "is not resolvable in this checkout") {
+			t.Fatalf("git refusing the repository was recast as a missing base branch: %v", err)
+		}
+		if !strings.Contains(err.Error(), "probe recovery base ref") {
+			t.Fatalf("error does not carry git's own refusal: %v", err)
+		}
+	})
 }
 
 func TestPodRecoveryNonWritableWorkspaceNeedsNoCustody(t *testing.T) {
