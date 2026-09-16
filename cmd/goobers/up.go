@@ -1395,19 +1395,19 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, reattached, err := resumeStartupRuns(ctx, l, setup, engineGuards, sched, &wg, recoveryRunDirs, tracker, stdout)
+	resumeResult, err := resumeStartupRuns(ctx, l, setup, engineGuards, sched, &wg, recoveryRunDirs, tracker, stdout)
 	if err != nil {
 		return daemonStartupFailure(ctx, err, func() {
 			pf(stderr, "error: %v\n", err)
 		})
 	}
-	for _, runID := range resumed {
+	for _, runID := range resumeResult.Resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
 	}
 	// An engine-driven run is NOT resumed: this daemon waits for the engine's
 	// workflow and echoes its outcome. Announced separately so an operator
 	// reading the startup log can tell the two apart at a glance.
-	for _, runID := range reattached {
+	for _, runID := range resumeResult.Reattached {
 		pf(stdout, "re-attaching to engine-driven run %s\n", runID)
 	}
 	// Renew resumed runs' claims immediately rather than waiting up to
@@ -1420,8 +1420,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// exactly them (plus any engine-live holders — idempotent). Best-effort,
 	// same as the periodic sweep: a renewal failure here does not fail daemon
 	// start, since the claim ledger's own reap is what it would fail open to.
-	if len(resumed) > 0 {
-		renewErr := renewResumedClaimsAtStartup(ctx, l, claimLiveness, len(resumed), tracker, stdout)
+	if len(resumeResult.Resumed) > 0 {
+		renewErr := renewResumedClaimsAtStartup(ctx, l, claimLiveness, len(resumeResult.Resumed), tracker, stdout)
 		if isJournaledClaimsLockTimeout(renewErr) {
 			renewErr = nil
 		}
@@ -1432,13 +1432,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			return 0
 		}
 	}
-	for _, runID := range warned {
+	for _, runID := range resumeResult.Warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
 	// #3806: crash-resume of every interrupted run in the non-terminal
 	// inventory finished. Its duration scales with genuinely recoverable work,
 	// so a kubelet startupProbe against /readyz must still allow enough time
 	// for those runs, not for retained terminal history.
+	// #5199 made that claim true: see startStartupTerminalFinalize below.
 	resumeComplete.Store(true)
 	logGateFlip(stdout, processStart, "resumeComplete")
 
@@ -1797,6 +1798,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	terminalCleanupRetryCtx, stopTerminalCleanupRetry := context.WithCancel(context.Background())
 	defer stopTerminalCleanupRetry()
 	terminalCleanupRetryDone := startTerminalCleanupRetry(terminalCleanupRetryCtx, cleanupRetries, terminalCleanupRetryErrors, readyNow)
+	startupTerminalFinalize := startStartupTerminalFinalize(ctx, setup, resumeResult.Terminal)
 	startupMergedPRCostSweepDone := mergedPRCostSweeps.startDeferred(ctx, readyNow)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", root, len(setup.Entries), apiServer.Scheme(), apiServer.Address(), httpapi.Prefix)
 	if webhookServer != nil {
@@ -1937,6 +1939,7 @@ daemonLoop:
 		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
 	stopClaimAdminSweep()
 	stopTerminalCleanupRetry()
+	startupTerminalFinalize.finishAfterDrain()
 	<-terminalCleanupRetryDone
 	runTerminalCleanupRetryFinal(cleanupRetries, terminalCleanupRetryErrors, readyNow)
 	if !drainResult.forced {

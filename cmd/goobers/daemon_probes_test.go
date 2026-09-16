@@ -257,3 +257,45 @@ func TestDaemonProbeStateReadinessPlaneReadyNilDefaultsFalse(t *testing.T) {
 		t.Fatal("readiness() with a nil planeReady pointer must fail closed (Ready = false), not panic or default true")
 	}
 }
+
+// TestDaemonProbeHTTPNamesCrashResumeAsSchedulingBlocker is #5199's second
+// ask: "a daemon that cannot schedule is not ready in any operationally
+// useful sense; at minimum the distinction needs to be visible". /readyz's
+// 200 reports plane-readiness deliberately (#4252), so the body has to say
+// both that the scheduler is NOT ready and which phase is holding it —
+// otherwise a 51-minute scheduling outage looks identical to a healthy pod.
+func TestDaemonProbeHTTPNamesCrashResumeAsSchedulingBlocker(t *testing.T) {
+	var listening, planeReady, ready, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
+	var lastTick, lastSweep atomic.Int64
+	started := time.Date(2026, 9, 16, 6, 10, 7, 0, time.UTC)
+	tracker := &startupPhaseTracker{}
+	tracker.set("crash-resume", "candidates=1481")
+	state := &daemonProbeState{
+		apiListening: &listening, planeReady: &planeReady, ready: &ready, configLoaded: &configLoaded,
+		stateOpen: &stateOpen, resumeComplete: &resumeComplete, sweepsStarted: &sweepsStarted,
+		lastTickAtNanos: &lastTick, lastTriggerSweepAtNanos: &lastSweep, startup: tracker,
+		livenessTimeout: time.Minute, now: func() time.Time { return started.Add(35 * time.Minute) },
+	}
+	listening.Store(true)
+	planeReady.Store(true)
+	configLoaded.Store(true)
+	stateOpen.Store(true)
+
+	handler := httpapi.WrapWithProbes(http.NotFoundHandler(), nil, state.readiness)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, httpapi.ReadinessPath, nil))
+
+	var status httpapi.ReadinessStatus
+	if err := json.NewDecoder(recorder.Body).Decode(&status); err != nil {
+		t.Fatalf("decode readiness body: %v", err)
+	}
+	if !status.Ready {
+		t.Fatal("plane-ready must still report ready: the pod serves stage traffic during crash-resume")
+	}
+	if status.SchedulerReady || status.Checks["resumeComplete"] {
+		t.Fatalf("readiness = %+v, want scheduling reported as not ready while crash-resume runs", status)
+	}
+	if status.Startup == nil || status.Startup.Phase != "crash-resume" {
+		t.Fatalf("startup = %+v, want the blocking phase named", status.Startup)
+	}
+}
