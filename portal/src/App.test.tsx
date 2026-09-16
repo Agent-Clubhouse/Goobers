@@ -61,7 +61,28 @@ describe("portal foundation", () => {
       name: "Show portal details",
     });
     expect(details).toHaveAttribute("aria-describedby", "portal-context-tooltip");
-    expect(screen.getByRole("tooltip")).toHaveTextContent(fixtures.instance.instanceRoot);
+    expect(document.getElementById("portal-context-tooltip")).toHaveTextContent(
+      fixtures.instance.instanceRoot,
+    );
+  });
+
+  it("shows detailed live transport diagnostics in a custom tooltip", async () => {
+    renderLiveApp();
+
+    const trigger = await screen.findByRole("button", {
+      name: /live updates connected\. show live update details/i,
+    });
+    expect(trigger).toHaveAttribute("aria-describedby", "live-updates-tooltip");
+
+    const tooltip = document.getElementById("live-updates-tooltip");
+    expect(tooltip).toHaveAttribute("role", "tooltip");
+    expect(tooltip).toHaveTextContent("Transport");
+    expect(tooltip).toHaveTextContent("SSE");
+    expect(tooltip).toHaveTextContent("Last SSE message");
+    expect(tooltip).toHaveTextContent("Last data event");
+    expect(tooltip).toHaveTextContent("Failures");
+    expect(tooltip).toHaveTextContent("Next SSE retry");
+    expect(tooltip).toHaveTextContent("Last poll");
   });
 
   it("uses the query-string Fleet host override", async () => {
