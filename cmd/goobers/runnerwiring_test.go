@@ -786,7 +786,7 @@ func TestRunRejectsStoredCopilotAuthShadowingBeforeRunAdmission(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
+	registry, err := buildHarnessRegistry(envCaps, harness.EnvironmentConfig{}, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -879,7 +879,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 // allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
 // each did for weeks before their own follow-up issue was filed.
 func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), harness.EnvironmentConfig{}, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -917,7 +917,7 @@ func TestAdapterForAppliesLauncherOverride(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 	}
-	adapter, err := adapterFor(apiv1.HarnessCopilot, nil, override, nil)
+	adapter, err := adapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{}, override, nil)
 	if err != nil {
 		t.Fatalf("adapterFor: %v", err)
 	}
@@ -935,7 +935,7 @@ func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 		// claude-code intentionally omitted: it must keep its default launcher.
 	}
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false, nil, false)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), harness.EnvironmentConfig{}, override, "", "", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -1044,7 +1044,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 			_, _, _, err := compiledMachinesWithWarnings(
 				&instance.ConfigSet{},
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
-				nil,
+				harness.EnvironmentConfig{},
 				nil,
 				false,
 				nil,
@@ -1068,7 +1068,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 				},
 			},
 		},
-		nil,
+		harness.EnvironmentConfig{},
 		nil,
 		false,
 		nil,
@@ -1113,7 +1113,7 @@ func TestCompiledMachinesThreadsModelCredentialIntoAdmissionDiscovery(t *testing
 		map[string]apiv1.GooberSpec{
 			"coder": {Harness: apiv1.HarnessCopilot, Model: "gpt-5.4"},
 		},
-		nil,
+		harness.EnvironmentConfig{},
 		nil,
 		false,
 		func(context.Context) (string, error) {
@@ -1168,7 +1168,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 				},
 			},
 		},
-		[]string{"COPILOT_HOME"},
+		harness.EnvironmentConfig{ExtraAllowlist: []string{"COPILOT_HOME"}},
 		nil,
 		false,
 		nil,
@@ -2360,7 +2360,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false,
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false,
 		nil,
 	)
 	if err != nil {

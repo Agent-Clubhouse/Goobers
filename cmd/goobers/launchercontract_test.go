@@ -20,7 +20,7 @@ func TestLauncherContractRequiredThroughProductionAdapterLookup(t *testing.T) {
 		{name: "renamed executable", commands: map[string][]string{"copilot": {"my-copilot"}}, custom: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			adapter, err := adapterFor(apiv1.HarnessCopilot, nil, tc.commands, nil)
+			adapter, err := adapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{}, tc.commands, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

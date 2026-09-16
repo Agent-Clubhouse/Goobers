@@ -804,6 +804,11 @@ func (c RunnerConfig) validate() error {
 			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
 		}
 	}
+	for i, name := range c.HarnessEnvUnset {
+		if !procenv.ValidName(name) {
+			return fmt.Errorf("runner.harnessEnvUnset[%d]: %q is not a valid environment variable name", i, name)
+		}
+	}
 	for name, command := range c.HarnessCommand {
 		if !knownHarnessName(name) {
 			return fmt.Errorf("runner.harnessCommand[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
@@ -813,6 +818,40 @@ func (c RunnerConfig) validate() error {
 		}
 		if strings.TrimSpace(command[0]) == "" {
 			return fmt.Errorf("runner.harnessCommand[%q]: program name (first element) must not be empty", name)
+		}
+	}
+	if err := c.validateHarnessSessionArgs(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c RunnerConfig) validateHarnessSessionArgs() error {
+	for name, args := range c.HarnessSessionArgs {
+		if !knownHarnessName(name) {
+			return fmt.Errorf("runner.harnessSessionArgs[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
+		}
+		if name != "copilot" {
+			return fmt.Errorf("runner.harnessSessionArgs[%q]: only the copilot harness supports launcher session arguments", name)
+		}
+		if _, ok := c.HarnessCommand[name]; !ok {
+			return fmt.Errorf("runner.harnessSessionArgs[%q]: requires runner.harnessCommand[%q]", name, name)
+		}
+		if len(args) == 0 || len(args) > 16 {
+			return fmt.Errorf("runner.harnessSessionArgs[%q]: must contain 1 to 16 arguments", name)
+		}
+		foundSessionID := false
+		for i, arg := range args {
+			if arg == "" || len(arg) > 1024 || strings.ContainsRune(arg, 0) {
+				return fmt.Errorf("runner.harnessSessionArgs[%q][%d]: invalid session argument", name, i)
+			}
+			foundSessionID = foundSessionID || strings.Contains(arg, "{sessionId}")
+			if strings.ContainsAny(strings.ReplaceAll(arg, "{sessionId}", ""), "{}") {
+				return fmt.Errorf("runner.harnessSessionArgs[%q][%d]: only {sessionId} is supported", name, i)
+			}
+		}
+		if !foundSessionID {
+			return fmt.Errorf("runner.harnessSessionArgs[%q]: at least one argument must contain {sessionId}", name)
 		}
 	}
 	return nil

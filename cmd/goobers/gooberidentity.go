@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/workflow"
@@ -164,13 +165,13 @@ func compiledMachinesWithGooberDigestsAndWarnings(
 	set *instance.ConfigSet,
 	goobers map[string]apiv1.GooberSpec,
 	instructions map[string]string,
-	envPassthrough []string,
+	environment harness.EnvironmentConfig,
 	harnessCommand map[string][]string,
 	deferModelDiscovery bool,
 	modelCredential func(ctx context.Context) (string, error),
 ) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	return compiledMachinesWithGooberDigests(
-		set, goobers, instructions, envPassthrough, harnessCommand, deferModelDiscovery, modelCredential,
+		set, goobers, instructions, environment, harnessCommand, deferModelDiscovery, modelCredential,
 		func(gaggle string, resolved map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
 			return loadGooberSkillPackages(configDir, gaggle, resolved)
 		},
@@ -196,13 +197,13 @@ func compiledMachinesWithGooberDigests(
 	set *instance.ConfigSet,
 	goobers map[string]apiv1.GooberSpec,
 	instructions map[string]string,
-	envPassthrough []string,
+	environment harness.EnvironmentConfig,
 	harnessCommand map[string][]string,
 	deferModelDiscovery bool,
 	modelCredential func(ctx context.Context) (string, error),
 	skillPackagesFor func(gaggle string, resolved map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error),
 ) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
-	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, envPassthrough, harnessCommand, deferModelDiscovery, modelCredential)
+	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, environment, harnessCommand, deferModelDiscovery, modelCredential)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

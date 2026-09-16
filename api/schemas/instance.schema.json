@@ -599,6 +599,30 @@
             "examples": ["NUGET_CONFIG_FILE", "ProgramFiles(x86)"]
           }
         },
+        "harnessEnvUnset": {
+          "description": "Ambient environment variable NAMES removed from agent harness subprocesses and harness preflight probes after the built-in allowlist and envPassthrough are applied. Use this to prevent a forwarding launcher from inheriting parent-process session identity or other ambient state. It does not affect deterministic stages or scoped credentials injected for declared capabilities.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\([A-Za-z0-9_]+\\))?$",
+            "description": "A valid environment variable name to remove from harness process environments."
+          }
+        },
+        "harnessSessionArgs": {
+          "description": "Declares how a custom harness launcher receives the fresh session ID generated for each invocation, keyed by harness name. Values are literal argv entries appended to harnessCommand; at least one must contain `{sessionId}`. Configuring these arguments is an explicit launcher contract, so Goobers does not run the command-based contract probe.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "propertyNames": { "$ref": "#/$defs/harnessName" }
+        },
         "defaultStageTimeout": {
           "description": "Baseline deadline for a deterministic stage that declares no timeoutSeconds of its own, as a Go duration. Unset keeps the built-in 10 minutes, which is sized for short commands rather than a mature repository's build+test entrypoint: if `make ci` routinely runs 15 minutes, raise this once here instead of stamping timeoutSeconds onto every such stage in every workflow. A stage's own timeoutSeconds always wins; this only moves the floor. Sizing it too low is not free — a timed-out stage is reported retryable, so a workflow that routes the failure to an agent spends a repass on something no diff can fix.",
           "$ref": "#/$defs/duration",

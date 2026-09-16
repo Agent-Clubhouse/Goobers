@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -108,33 +109,38 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	}}}}
 
 	// Unusable harness (its version check exits non-zero) → fail closed.
-	harnessAdapterFor = func(apiv1.Harness, []string, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+	harnessAdapterFor = func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 1}}, nil
 	}
-	if _, err := preflightAgenticHarnesses(goobers, agentic, nil, nil, nil); err == nil {
+	if _, err := preflightAgenticHarnesses(goobers, agentic, harness.EnvironmentConfig{}, nil, nil); err == nil {
 		t.Fatal("expected preflight to fail closed on an unusable agentic harness")
 	}
 	// A deterministic-only workflow references no harness, so it must not be
 	// gated by a broken harness (the adapter would fail if consulted).
-	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly, nil, nil, nil); err != nil {
+	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly, harness.EnvironmentConfig{}, nil, nil); err != nil {
 		t.Fatalf("deterministic-only workflow must not preflight a harness: %v", err)
 	}
 
 	// Healthy harness → preflight passes.
-	var gotEnvPassthrough []string
-	harnessAdapterFor = func(_ apiv1.Harness, envPassthrough []string, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
-		gotEnvPassthrough = append([]string(nil), envPassthrough...)
+	var gotEnvironment harness.EnvironmentConfig
+	harnessAdapterFor = func(_ apiv1.Harness, environment harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+		gotEnvironment = environment
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 0}}, nil
 	}
-	info, err := preflightAgenticHarnesses(goobers, agentic, []string{"CLAUDE_CONFIG_DIR"}, nil, nil)
+	environment := harness.EnvironmentConfig{
+		ExtraAllowlist: []string{"CLAUDE_CONFIG_DIR"},
+		Unset:          []string{"OUTER_LAUNCHER_SESSION_ID"},
+	}
+	info, err := preflightAgenticHarnesses(goobers, agentic, environment, nil, nil)
 	if err != nil {
 		t.Fatalf("healthy agentic harness should preflight OK: %v", err)
 	}
 	if got := info[apiv1.HarnessCopilot].Version; got != "copilot version 1.2.3" {
 		t.Fatalf("preflight version = %q", got)
 	}
-	if strings.Join(gotEnvPassthrough, ",") != "CLAUDE_CONFIG_DIR" {
-		t.Fatalf("adapter env passthrough = %v, want [CLAUDE_CONFIG_DIR]", gotEnvPassthrough)
+	if !slices.Equal(gotEnvironment.ExtraAllowlist, environment.ExtraAllowlist) ||
+		!slices.Equal(gotEnvironment.Unset, environment.Unset) {
+		t.Fatalf("adapter environment policy = %+v, want %+v", gotEnvironment, environment)
 	}
 
 	gateOnly := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Gates: []apiv1.Gate{{
@@ -144,7 +150,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	info, err = preflightAgenticHarnesses(
 		map[string]apiv1.GooberSpec{"reviewer": {}},
 		gateOnly,
-		nil,
+		harness.EnvironmentConfig{},
 		nil,
 		nil,
 	)
@@ -161,7 +167,10 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 // preflight through adapterFor — validate --check-harness AND the automatic
 // daemon-startup preflight — verifies sign-in, not just CLI presence.
 func TestAdapterForConfiguresAuthProbe(t *testing.T) {
-	a, err := adapterFor(apiv1.HarnessCopilot, []string{"CLAUDE_CONFIG_DIR"}, nil, nil)
+	a, err := adapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{
+		ExtraAllowlist: []string{"CLAUDE_CONFIG_DIR"},
+		Unset:          []string{"OUTER_LAUNCHER_SESSION_ID"},
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(copilot): %v", err)
 	}
@@ -177,6 +186,9 @@ func TestAdapterForConfiguresAuthProbe(t *testing.T) {
 	}
 	if strings.Join(ca.ExtraEnvAllowlist, ",") != "CLAUDE_CONFIG_DIR" {
 		t.Fatalf("ExtraEnvAllowlist = %v, want [CLAUDE_CONFIG_DIR]", ca.ExtraEnvAllowlist)
+	}
+	if strings.Join(ca.EnvUnset, ",") != "OUTER_LAUNCHER_SESSION_ID" {
+		t.Fatalf("EnvUnset = %v, want [OUTER_LAUNCHER_SESSION_ID]", ca.EnvUnset)
 	}
 }
 
@@ -198,14 +210,14 @@ func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
 	// Installed but signed out: version 0, auth probe non-zero. The adapter
 	// carries copilotAuthCheckArgs (as the real adapterFor now does), so the
 	// probe actually runs during the startup preflight.
-	harnessAdapterFor = func(apiv1.Harness, []string, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+	harnessAdapterFor = func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
 			AuthCheckArgs: copilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1},
 		}, nil
 	}
-	_, err := preflightAgenticHarnesses(goobers, agentic, nil, nil, nil)
+	_, err := preflightAgenticHarnesses(goobers, agentic, harness.EnvironmentConfig{}, nil, nil)
 	if err == nil {
 		t.Fatal("expected the daemon-startup preflight to fail closed on a signed-out harness")
 	}
