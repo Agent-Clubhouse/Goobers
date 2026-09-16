@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // #5199: the crash-resume phase ran for 51 minutes on the live instance and
@@ -81,10 +85,36 @@ func TestStartupInventoryCountsNameEachSource(t *testing.T) {
 // startStartupTerminalFinalize must not leave the shutdown join waiting when
 // there is nothing to finalize.
 func TestStartStartupTerminalFinalizeClosesWithNoCandidates(t *testing.T) {
-	done := startStartupTerminalFinalize(&schedulerSetup{}, nil, nil)
+	done := startStartupTerminalFinalize(context.Background(), &schedulerSetup{}, nil, nil)
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("empty terminal finalization never closed its done channel")
+	}
+}
+
+// A SIGTERM during a large deferred pass must not hold the drain open for the
+// whole pass. Cancellation is observed between candidates, so nothing is left
+// half-finalized and the remaining candidates keep their active markers for
+// the next start.
+func TestFinalizeTerminalCandidatesStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// A candidate that would certainly fail if it ran: no runner, and a
+	// layout rooted at a path with no run of this ID in it.
+	candidates := []terminalFinalization{{
+		layout:   instance.NewLayout(t.TempDir()),
+		runsDir:  t.TempDir(),
+		identity: journal.RunIdentity{RunID: "0123456789abcdef0123456789abcdef"},
+		phase:    journal.PhaseCompleted,
+	}}
+
+	var finalized int
+	if err := finalizeTerminalCandidates(ctx, candidates, nil, nil, func(int, int) { finalized++ }); err != nil {
+		t.Fatalf("cancelled pass reported %v, want no failure", err)
+	}
+	if finalized != 0 {
+		t.Fatalf("finalized %d candidates after cancellation, want none", finalized)
 	}
 }

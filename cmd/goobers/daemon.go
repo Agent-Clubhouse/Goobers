@@ -1666,7 +1666,7 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 	}
 	// This one-shot path has no readiness to protect, so its terminal
 	// finalizations stay synchronous and fatal, exactly as before #5199.
-	return outcome.Resumed, outcome.Warned, finalizeTerminalCandidates(outcome.Terminal, log, watermarks, nil)
+	return outcome.Resumed, outcome.Warned, finalizeTerminalCandidates(ctx, outcome.Terminal, log, watermarks, nil)
 }
 
 func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*workflow.Machine, string) {
@@ -1682,7 +1682,9 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		return resumeOutcome{}, err
 	}
 	outcome.Total = len(candidates)
-	defer outcome.report(progress)
+	// A closure, not `defer outcome.report(progress)`: the latter evaluates
+	// the receiver at defer time, reporting the zero outcome.
+	defer func() { outcome.report(progress) }()
 	for _, dir := range candidates {
 		outcome.Examined++
 		outcome.report(progress)

@@ -301,7 +301,7 @@ func TestResumeScanFinalizesTerminalRunFromRemovedGaggle(t *testing.T) {
 	}
 	// The daemon hands these to a background goroutine after readiness; this
 	// test drives them directly.
-	if err := finalizeTerminalCandidates(outcome.Terminal, setup.InstanceLog, setup.Watermarks, nil); err != nil {
+	if err := finalizeTerminalCandidates(context.Background(), outcome.Terminal, setup.InstanceLog, setup.Watermarks, nil); err != nil {
 		t.Fatalf("finalize terminal candidates: %v", err)
 	}
 	if len(released) != 1 || released[0] != "default-implement" {

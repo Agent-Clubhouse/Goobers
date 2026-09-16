@@ -144,7 +144,7 @@ func resumeStartupRuns(
 // required to be safe for that (the same rule every other background sweep in
 // up.go follows). The crash-resume tally line already named how many terminal
 // candidates were handed over.
-func startStartupTerminalFinalize(setup *schedulerSetup, candidates []terminalFinalization, reporter *sweepErrorReporter) <-chan struct{} {
+func startStartupTerminalFinalize(ctx context.Context, setup *schedulerSetup, candidates []terminalFinalization, reporter *sweepErrorReporter) <-chan struct{} {
 	done := make(chan struct{})
 	if len(candidates) == 0 {
 		close(done)
@@ -152,7 +152,13 @@ func startStartupTerminalFinalize(setup *schedulerSetup, candidates []terminalFi
 	}
 	go func() {
 		defer close(done)
-		reporter.report(finalizeTerminalCandidates(candidates, setup.InstanceLog, setup.Watermarks, nil))
+		err := finalizeTerminalCandidates(ctx, candidates, setup.InstanceLog, setup.Watermarks, nil)
+		if ctx.Err() != nil {
+			// Shutdown, not failure: the remaining candidates keep their
+			// active markers and are finalized by the next start.
+			return
+		}
+		reporter.report(err)
 	}()
 	return done
 }

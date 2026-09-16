@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -70,10 +71,19 @@ type terminalFinalization struct {
 // reporting progress as it goes. A cleanup that must be retried later is
 // journaled, not fatal; any other failure is returned joined, so a caller on
 // the startup path can still refuse to start and a caller after readiness can
-// journal and carry on.
-func finalizeTerminalCandidates(candidates []terminalFinalization, log *journal.InstanceLog, watermarks *intake.Store, progress func(done, total int)) error {
+// journal and carry on. A cancelled ctx stops the pass between candidates and
+// returns what failed so far.
+func finalizeTerminalCandidates(ctx context.Context, candidates []terminalFinalization, log *journal.InstanceLog, watermarks *intake.Store, progress func(done, total int)) error {
 	var failures error
 	for index, candidate := range candidates {
+		// Checked between candidates, never inside one: a half-finalized run
+		// is worse than an unfinalized one, and an unfinalized one is simply
+		// picked up again by the next start. This is what keeps a SIGTERM
+		// during a large deferred pass from holding the drain open for the
+		// whole pass.
+		if ctx.Err() != nil {
+			return failures
+		}
 		if err := candidate.finalize(log); err != nil {
 			failures = errors.Join(failures, err)
 		}

@@ -1809,7 +1809,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// shape as the sweeps around it — a goroutine that reports through the
 	// concurrency-safe instance journal and never writes to stdout.
 	startupTerminalFinalizeDone := startStartupTerminalFinalize(
-		setup, resumeResult.Terminal,
+		ctx, setup, resumeResult.Terminal,
 		newSweepErrorReporter(setup.InstanceLog, "startup_terminal_finalize_failed"),
 	)
 	startupMergedPRCostSweepDone := mergedPRCostSweeps.startDeferred(ctx, readyNow)
