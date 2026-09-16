@@ -80,7 +80,8 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err != nil {
 		return err
 	}
-	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target, captureAt)
+	publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
+	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target, captureAt, publication)
 	if err != nil {
 		return err
 	}
@@ -89,7 +90,6 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 		return err
 	}
 	request.BaseRef = baseRef
-	publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return err
 	}
@@ -113,11 +113,11 @@ func recoveryCleanupHistoricalTarget(ctx context.Context, layout instance.Layout
 	if err != nil {
 		return retainUnknownBase(fmt.Errorf("terminal run evidence unavailable: %w", err))
 	}
-	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target, captureAt)
+	publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
+	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target, captureAt, publication)
 	if err != nil {
 		return retainUnknownBase(err)
 	}
-	publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return retainUnknownBase(fmt.Errorf("abandoned recovery preparation could not be retained: %w", err))
 	}
@@ -142,12 +142,17 @@ func recoveryCleanupRun(layout instance.Layout, target worktree.CleanupTarget) (
 	return reader, identity, nil
 }
 
-func recoveryCleanupRequest(layout instance.Layout, cfg *instance.Config, cleanupRoot string, manager *worktree.Manager, key string, target worktree.CleanupTarget, captureAt time.Time) (recovery.RetentionRequest, error) {
+func recoveryCleanupRequest(layout instance.Layout, cfg *instance.Config, cleanupRoot string, manager *worktree.Manager, key string, target worktree.CleanupTarget, captureAt time.Time, publication recovery.PublicationJournal) (recovery.RetentionRequest, error) {
 	root, err := prepareRecoveryInventory(layout.Root)
 	if err != nil {
 		return recovery.RetentionRequest{}, fmt.Errorf("recovery inventory unavailable: %w", err)
 	}
-	recoveryCfg := cfg.Retention.RecoveryEffective()
+	// Resolved from instance.yaml, not from cfg: this reservation competes for
+	// slots in the instance-wide inventory with every other writer, and a cap
+	// only this path believes in refuses cleanup at a count the operator's own
+	// tooling reports as far below the limit (#5092).
+	recoveryCfg, origin := resolveRecoveryPolicy(layout, cfg)
+	journalRecoveryPolicyFallback(publication, origin, recoveryCfg, root)
 	retainWindow, err := recoveryCfg.RetainWindowEffective()
 	if err != nil {
 		return recovery.RetentionRequest{}, fmt.Errorf("recovery retention policy unavailable: %w", err)
