@@ -25,6 +25,7 @@ import {
     loadRunArtifact,
     loadRunTranscript,
     loadRuns,
+    loadCostSummary,
     loadInsightStats,
     openEventStream,
     setWorkflowEnabled,
@@ -180,6 +181,34 @@ async function insightStatsFor(sourceId, options) {
         return { connected: true, stats };
     } catch (err) {
         logEvent("insight_stats_load_failed", {
+            sourceId,
+            kind: source.kind,
+            mode: resolved.mode,
+            error: err.message || String(err),
+        });
+        return { connected: false, reason: err.message || String(err) };
+    }
+}
+
+async function costSummaryFor(sourceId, options) {
+    const known = await listKnownSources();
+    const source = known.find((s) => s.id === sourceId);
+    if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
+    const resolved = await resolveSource(source);
+    if (!resolved.ok) {
+        logEvent("source_resolution_failed", {
+            sourceId,
+            kind: source.kind,
+            error: resolved.reason,
+        });
+        return { connected: false, reason: resolved.reason };
+    }
+
+    try {
+        const costs = await loadCostSummary(resolved, options);
+        return { connected: true, costs };
+    } catch (err) {
+        logEvent("cost_summary_load_failed", {
             sourceId,
             kind: source.kind,
             mode: resolved.mode,
@@ -477,6 +506,23 @@ async function startServer(instanceId) {
                     if (value) options[key] = value;
                 }
                 const data = await insightStatsFor(sourceId, options);
+                res.setHeader("Content-Type", "application/json; charset=utf-8");
+                res.end(JSON.stringify(data));
+                return;
+            }
+            if (url.pathname === "/api/cost-summary") {
+                const sourceId = url.searchParams.get("source");
+                if (!sourceId) {
+                    res.setHeader("Content-Type", "application/json; charset=utf-8");
+                    res.end(JSON.stringify({ connected: false, reason: "no source selected" }));
+                    return;
+                }
+                const options = {};
+                for (const key of ["provider", "scope", "id", "since", "until"]) {
+                    const value = url.searchParams.get(key);
+                    if (value) options[key] = value;
+                }
+                const data = await costSummaryFor(sourceId, options);
                 res.setHeader("Content-Type", "application/json; charset=utf-8");
                 res.end(JSON.stringify(data));
                 return;

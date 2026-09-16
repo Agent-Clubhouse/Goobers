@@ -84,6 +84,14 @@ const insightStats = {
     scope: "instance", totalAttempts: 25, p50Tokens: 1200, p95Tokens: 4300,
     costUSD: 12.34, p50CostUSD: 0.4, p95CostUSD: 1.1, costSamples: 25,
     retryWasteAttempts: 2, retryWasteTokens: 900, retryWasteCostUSD: 0.75,
+  }, {
+    scope: "gaggle", gaggle: "team", totalAttempts: 20, p50Tokens: 1000, p95Tokens: 3000,
+    costUSD: 9.5, p50CostUSD: 0.35, p95CostUSD: 0.9, costSamples: 20,
+    retryWasteAttempts: 1, retryWasteTokens: 300, retryWasteCostUSD: 0.25,
+  }, {
+    scope: "workflow", gaggle: "team", workflow: "implementation", totalAttempts: 18, p50Tokens: 950, p95Tokens: 2800,
+    costUSD: 8.75, p50CostUSD: 0.32, p95CostUSD: 0.85, costSamples: 18,
+    retryWasteAttempts: 1, retryWasteTokens: 250, retryWasteCostUSD: 0.2,
   }],
   models: [],
   creditAssignment: [{
@@ -103,6 +111,55 @@ const insightStats = {
     { since: "2026-09-13T12:00:00Z", until: "2026-09-14T00:00:00Z", usage: [{ scope: "instance", costUSD: 4, p50Tokens: 1000, costSamples: 6 }] },
   ],
   trendPrevious: { since: "2026-09-12T00:00:00Z", until: "2026-09-13T00:00:00Z", usage: [{ scope: "instance", costUSD: 7 }] },
+};
+
+const costSummary = {
+  provider: "github",
+  scope: "summary",
+  since: "2026-09-08T00:00:00Z",
+  until: "2026-09-15T00:00:00Z",
+  pullRequests: [{
+    provider: "github",
+    repository: "Agent-Clubhouse/Goobers",
+    url: "https://github.com/Agent-Clubhouse/Goobers/pull/5183",
+    externalKind: "pr",
+    externalId: "5183",
+    totalRuns: 2,
+    measuredRuns: 2,
+    totalAttempts: 3,
+    measuredAttempts: 3,
+    nativeTotals: [{ unit: "usd", value: 4.2, estimated: false }],
+    normalizedTotals: [{ unit: "aiCredits", value: 420, estimated: false }],
+    billingModels: ["usd"],
+    costBases: ["provider"],
+    coverage: { totalRuns: 2, measuredRuns: 2, totalAttempts: 3, measuredAttempts: 3, complete: true, lowerBound: false },
+    models: [{
+      model: "gpt-test",
+      usageAttempts: 3,
+      measuredAttempts: 3,
+      nativeTotals: [{ unit: "usd", value: 4.2, estimated: false }],
+      normalizedTotals: [{ unit: "aiCredits", value: 420, estimated: false }],
+      billingModels: ["usd"],
+      costBases: ["provider"],
+    }],
+    runs: [{ runId: "run-1", startedAt: "2026-09-14T18:00:00Z", usageAttempts: 2, measuredAttempts: 2, nativeTotals: [], normalizedTotals: [], billingModels: [], costBases: [], models: [] }],
+  }],
+  issues: [{
+    provider: "github",
+    externalKind: "issue",
+    externalId: "7",
+    totalRuns: 1,
+    measuredRuns: 1,
+    totalAttempts: 1,
+    measuredAttempts: 1,
+    nativeTotals: [{ unit: "aiCredits", value: 12, estimated: true }],
+    normalizedTotals: [{ unit: "usd", value: 1.5, estimated: true }],
+    billingModels: ["premium"],
+    costBases: ["estimate"],
+    coverage: { totalRuns: 2, measuredRuns: 1, totalAttempts: 4, measuredAttempts: 2, complete: false, lowerBound: true },
+    models: [],
+    runs: [{ runId: "run-1", startedAt: "2026-09-14T18:00:00Z", usageAttempts: 1, measuredAttempts: 1, nativeTotals: [], normalizedTotals: [], billingModels: [], costBases: [], models: [] }],
+  }],
 };
 
 function snapshot(source: typeof sources[number]) {
@@ -179,6 +236,14 @@ async function openCanvas(page: Page) {
       : url.pathname === "/api/workflow-detail" ? { connected: true, workflow: workflowDetail }
       : url.pathname === "/api/runs" ? { connected: true, runs: [run] }
       : url.pathname === "/api/insight-stats" ? { connected: true, stats: insightStats }
+      : url.pathname === "/api/cost-summary" ? {
+          connected: true,
+          costs: url.searchParams.get("scope") === "pr"
+            ? { ...costSummary, scope: "pr", externalId: url.searchParams.get("id") ?? "", issues: [] }
+            : url.searchParams.get("scope") === "issue"
+              ? { ...costSummary, scope: "issue", externalId: url.searchParams.get("id") ?? "", pullRequests: [] }
+              : costSummary,
+        }
       : {};
     await route.fulfill({ json: body });
   });
@@ -787,5 +852,146 @@ test("Insights tab renders loading, error, and empty states", async ({ page }) =
   await page.getByRole("combobox", { name: "Time window" }).selectOption("30d");
   await expect(page.locator("#insight-status")).toBeEmpty();
   await expect(page.locator("#insight-content")).toContainText("No telemetry in this window");
+  expect(errors).toEqual([]);
+});
+
+test("Cost tab renders selected-scope usage, instance rollup, trend, and attributed work items", async ({ page }) => {
+  const errors = await openCanvas(page);
+  const insightRequests: URL[] = [];
+  const costRequests: URL[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/insight-stats") insightRequests.push(url);
+    if (url.pathname === "/api/cost-summary") costRequests.push(url);
+  });
+  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Cost scope" })).toHaveValue("instance");
+  await expect(page.getByRole("combobox", { name: "Cost time window" })).toHaveValue("7d");
+  const content = page.locator("#cost-content");
+  await expect(content).toContainText("Cost summary");
+  await expect(content).toContainText("$12.34");
+  await expect(content).toContainText("Cost trend");
+  await expect(content).toContainText("Cost by gaggle");
+  await expect(content).toContainText("Cost by pull request and issue");
+  await expect(content).toContainText("PR #5183");
+  await expect(content).toContainText("Issue #7");
+  await expect(page.locator("#cost-status")).toBeEmpty();
+  expect(insightRequests).toHaveLength(1);
+  expect(costRequests).toHaveLength(1);
+  expect(costRequests[0].searchParams.get("scope")).toBe("summary");
+  expect(costRequests[0].searchParams.get("since")).not.toBeNull();
+  expect(errors).toEqual([]);
+});
+
+test("Cost scope and window changes refetch and hide instance-only rollup outside instance scope", async ({ page }) => {
+  const errors = await openCanvas(page);
+  const insightRequests: URL[] = [];
+  const costRequests: URL[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/insight-stats") insightRequests.push(url);
+    if (url.pathname === "/api/cost-summary") costRequests.push(url);
+  });
+  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  const scopeSelect = page.getByRole("combobox", { name: "Cost scope" });
+  await scopeSelect.selectOption("gaggle:team");
+  await expect(page.locator("#cost-content")).toContainText("$9.50");
+  await expect(page.locator("#cost-content")).not.toContainText("Cost by gaggle");
+  await expect(page.locator("#cost-content")).toContainText("Attribution is instance-wide");
+  await expect(page.locator("#cost-content")).toContainText("PR #5183");
+  await page.getByRole("combobox", { name: "Cost time window" }).selectOption("all");
+  await expect.poll(() => costRequests.length).toBe(3);
+  await expect(page.locator("#cost-content")).toContainText("choose 24h, 7d, or 30d");
+  await expect(page.locator("#cost-content")).toContainText("all-time attribution is capped at 90 days");
+  expect(insightRequests.at(-1)?.searchParams.get("since")).toBeNull();
+  expect(costRequests.at(-1)?.searchParams.get("since")).not.toBeNull();
+  expect(costRequests.at(-1)?.searchParams.get("scope")).toBe("summary");
+  expect(errors).toEqual([]);
+});
+
+test("Cost tab looks up pull request and issue costs by provider and id", async ({ page }) => {
+  const errors = await openCanvas(page);
+  const costRequests: URL[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/cost-summary") costRequests.push(url);
+  });
+  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  await page.getByRole("textbox", { name: "External cost ID" }).fill("5183");
+  await page.getByRole("button", { name: "Lookup" }).click();
+  await expect(page.locator("#cost-content")).toContainText("Lookup result");
+  await expect.poll(() => costRequests.some((url) =>
+    url.searchParams.get("scope") === "pr" &&
+    url.searchParams.get("provider") === "github" &&
+    url.searchParams.get("id") === "5183",
+  )).toBe(true);
+
+  await page.getByRole("combobox", { name: "External cost type" }).selectOption("issue");
+  await page.getByRole("textbox", { name: "External cost ID" }).fill("7");
+  await page.getByRole("button", { name: "Lookup" }).click();
+  await expect.poll(() => costRequests.some((url) =>
+    url.searchParams.get("scope") === "issue" &&
+    url.searchParams.get("provider") === "github" &&
+    url.searchParams.get("id") === "7",
+  )).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test("Cost tab renders loading, error, and empty states", async ({ page }) => {
+  const errors = await openCanvas(page);
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("http://canvas.test/api/cost-summary?**", async (route) => {
+    await blocked;
+    await route.fulfill({ json: { connected: false, reason: "Cost telemetry requires a running Goobers daemon." } });
+  });
+  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  await expect(page.locator("#cost-status")).toHaveText("Loading\u2026");
+  release();
+  await expect(page.locator("#cost-status")).toHaveText("Attributed costs unavailable: Cost telemetry requires a running Goobers daemon.");
+  await expect(page.locator("#cost-content")).toContainText("Cost summary");
+  await expect(page.locator("#cost-content")).toContainText("Attributed pull request and issue costs could not be loaded");
+
+  await page.route("http://canvas.test/api/cost-summary?**", (route) =>
+    route.fulfill({ json: { connected: true, costs: { pullRequests: [], issues: [] } } }));
+  await page.getByRole("combobox", { name: "Cost time window" }).selectOption("30d");
+  await expect(page.locator("#cost-status")).toBeEmpty();
+  await expect(page.locator("#cost-content")).toContainText("No pull request or issue cost was attributed");
+  expect(errors).toEqual([]);
+});
+
+test("Cost tab keeps attributed costs visible when selected-scope stats fail", async ({ page }) => {
+  const errors = await openCanvas(page);
+  await page.route("http://canvas.test/api/insight-stats?**", (route) =>
+    route.fulfill({ status: 503, contentType: "text/plain", body: "Telemetry stats budget exhausted." }));
+  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  await expect(page.locator("#cost-status")).toContainText("Selected-scope cost telemetry unavailable:");
+  await expect(page.locator("#cost-content")).toContainText("Selected-scope usage, trend, and instance rollup are unavailable");
+  await expect(page.locator("#cost-content")).toContainText("PR #5183");
+  await expect(page.locator("#cost-content")).toContainText("Issue #7");
+  expect(errors).toEqual([]);
+});
+
+test("Cost tab still runs explicit lookup when summary attribution fails", async ({ page }) => {
+  const errors = await openCanvas(page);
+  await page.route("http://canvas.test/api/cost-summary?**", (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("scope") === "summary") {
+      return route.fulfill({ status: 503, contentType: "text/plain", body: "summary unavailable" });
+    }
+    return route.fulfill({
+      json: {
+        connected: true,
+        costs: { ...costSummary, scope: "pr", externalId: url.searchParams.get("id") ?? "", issues: [] },
+      },
+    });
+  });
+  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  await page.locator("#cost-lookup-id").fill("5183");
+  await page.getByRole("button", { name: "Lookup", exact: true }).click();
+  await expect(page.locator("#cost-status")).toContainText("Attributed costs unavailable:");
+  await expect(page.locator("#cost-content")).toContainText("Attributed pull request and issue costs could not be loaded");
+  await expect(page.locator("#cost-content")).toContainText("Lookup result");
+  await expect(page.locator("#cost-content")).toContainText("PR #5183");
   expect(errors).toEqual([]);
 });
