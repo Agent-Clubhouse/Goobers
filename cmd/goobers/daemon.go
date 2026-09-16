@@ -1664,9 +1664,11 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 	if err != nil {
 		return outcome.Resumed, outcome.Warned, err
 	}
-	// This one-shot path has no readiness to protect, so its terminal
-	// finalizations stay synchronous and fatal, exactly as before #5199.
-	return outcome.Resumed, outcome.Warned, finalizeTerminalCandidates(ctx, outcome.Terminal, log, watermarks, nil)
+	// This one-shot path has no readiness to protect and no drain to survive,
+	// so its terminal finalizations stay inline and fatal, exactly as before
+	// #5199.
+	finalizer := &startupTerminalFinalizer{remaining: outcome.Terminal, log: log, watermarks: watermarks}
+	return outcome.Resumed, outcome.Warned, finalizer.run(ctx, nil)
 }
 
 func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*workflow.Machine, string) {

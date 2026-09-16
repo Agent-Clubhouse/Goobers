@@ -134,7 +134,7 @@ func TestStartupTerminalFinalizerFinishesWhatCancellationLeft(t *testing.T) {
 // whole pass. Cancellation is observed between candidates, so nothing is left
 // half-finalized and the remaining candidates keep their active markers for
 // the next start.
-func TestFinalizeTerminalCandidatesStopsOnCancellation(t *testing.T) {
+func TestStartupTerminalFinalizerStopsOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -148,7 +148,8 @@ func TestFinalizeTerminalCandidatesStopsOnCancellation(t *testing.T) {
 	}}
 
 	var finalized int
-	if err := finalizeTerminalCandidates(ctx, candidates, nil, nil, func(int, int) { finalized++ }); err != nil {
+	finalizer := &startupTerminalFinalizer{remaining: candidates}
+	if err := finalizer.run(ctx, func(int, int) { finalized++ }); err != nil {
 		t.Fatalf("cancelled pass reported %v, want no failure", err)
 	}
 	if finalized != 0 {

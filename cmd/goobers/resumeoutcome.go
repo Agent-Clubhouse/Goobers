@@ -68,8 +68,8 @@ type terminalFinalization struct {
 	phase    journal.RunPhase
 }
 
-// startupTerminalFinalizer owns the deferred terminal finalizations for one
-// daemon start. It hands them out one at a time so the background pass and
+// startupTerminalFinalizer owns the terminal finalizations one crash-resume
+// pass deferred. It hands them out one at a time so the background pass and
 // the bounded pass after drain consume the SAME queue: cleanup deferred past
 // readiness must not become cleanup dropped on a shutdown that arrives first.
 type startupTerminalFinalizer struct {
@@ -129,14 +129,6 @@ func (f *startupTerminalFinalizer) finishAfterDrain() {
 	ctx, cancel := context.WithTimeout(context.Background(), terminalCleanupRetryTimeout)
 	defer cancel()
 	f.reporter.report(f.run(ctx, nil))
-}
-
-// finalizeTerminalCandidates runs every candidate synchronously. The one-shot
-// callers use it: they have no readiness to protect and no drain to survive,
-// so their terminal cleanup stays inline and fatal, exactly as before #5199.
-func finalizeTerminalCandidates(ctx context.Context, candidates []terminalFinalization, log *journal.InstanceLog, watermarks *intake.Store, progress func(done, total int)) error {
-	finalizer := &startupTerminalFinalizer{remaining: candidates, log: log, watermarks: watermarks}
-	return finalizer.run(ctx, progress)
 }
 
 func (c terminalFinalization) finalize(log *journal.InstanceLog) error {
