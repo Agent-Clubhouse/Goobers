@@ -135,6 +135,23 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			IdempotencyKey: "message-key", CompletedAt: fixedClock()().Add(2 * time.Minute),
 			Status: apiv1.OperatorMessageDelivered,
 		}},
+		{Type: EventAgentProgress, Progress: &AgentProgress{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      testIdentity().RunID,
+			Stage:      "impl",
+			Attempt:    1,
+			Sequence:   1,
+			Kind:       AgentProgressSummary,
+			Source:     AgentProgressSourceModel,
+			OccurredAt: fixedClock()(),
+			UpdatedAt:  fixedClock()(),
+			Fidelity:   AgentFidelityFull,
+			Summary:    "Validated the parser and will patch the failing branch.",
+			Plan:       []string{"Confirm root cause", "Patch parser"},
+			Progress:   []string{"Confirmed failing branch", "Parsing the root cause"},
+			Evidence:   []AgentProgressEvidence{{Type: "tool", ID: "grep-1", Label: "failing test"}},
+		}},
 	} {
 		if err := run.Append(ev); err != nil {
 			t.Fatalf("Append %s: %v", ev.Type, err)

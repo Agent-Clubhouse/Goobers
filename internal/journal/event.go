@@ -139,6 +139,9 @@ const (
 	// EventAgentMessage records orchestration-relevant peer communication
 	// without retaining the message body.
 	EventAgentMessage EventType = "agent.message"
+	// EventAgentProgress records a structured operator-readable progress update
+	// intentionally emitted by the agent or adapter for live status surfaces.
+	EventAgentProgress EventType = "agent.progress"
 	// EventBanditAssignment records the deterministic arm selected for a stage.
 	EventBanditAssignment EventType = "bandit.assignment"
 	// EventBanditObservation records the outcome used by an experiment.
@@ -474,6 +477,9 @@ type Event struct {
 	OperatorMessageOutcome *apiv1.OperatorMessageOutcome `json:"operatorMessageOutcome,omitempty"`
 	// Agent carries normalized nested-agent provenance on agent events.
 	Agent *AgentProvenance `json:"agent,omitempty"`
+	// Progress carries a structured operator-readable progress update emitted by
+	// a nested agent or adapter without retaining hidden chain-of-thought.
+	Progress *AgentProgress `json:"progress,omitempty"`
 	// PeerMessage carries scrubbed coordination metadata, never raw content.
 	PeerMessage *PeerMessageMetadata `json:"peerMessage,omitempty"`
 
