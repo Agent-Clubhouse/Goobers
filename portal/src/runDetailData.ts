@@ -642,6 +642,9 @@ export function eventHeading(event: RunEvent): string {
     "parallel.finished": "Parallel finished",
     "branch.started": "Branch started",
     "branch.finished": "Branch finished",
+    "agent.lifecycle": "Agent lifecycle recorded",
+    "agent.message": "Agent coordination recorded",
+    "agent.progress": "Agent progress recorded",
   };
   return headings[event.type] ?? humanize(event.type);
 }
@@ -748,6 +751,34 @@ export function eventSummary(
         .map((branch) => `${branch.name}: ${branch.status}`)
         .join(", ");
       return `${label} finished — ${succeeded}/${event.completeness.length} branches succeeded (${detail}).`;
+    }
+    case "agent.lifecycle": {
+      const id = event.agent?.id || "agent";
+      const lifecycle = event.agent?.lifecycle || "updated";
+      return `Agent ${id} is now ${lifecycle}.`;
+    }
+    case "agent.message": {
+      const sender = event.peerMessage?.senderId || "agent";
+      const recipient = event.peerMessage?.recipientId || "another agent";
+      const purpose = event.peerMessage?.purpose ? ` for ${event.peerMessage.purpose}` : "";
+      return `${sender} sent a coordination message to ${recipient}${purpose}.`;
+    }
+    case "agent.progress": {
+      const progress = event.progress;
+      if (!progress) {
+        return "A structured agent progress record was recorded.";
+      }
+      const detail =
+        progress.summary ||
+        progress.progress?.join("; ") ||
+        progress.decision ||
+        progress.blocker ||
+        progress.question ||
+        progress.nextAction ||
+        progress.plan?.join("; ") ||
+        progress.kind;
+      const source = progress.source ? ` (${progress.source})` : "";
+      return `Agent ${progress.agentId} reported ${progress.kind}${source}: ${detail}.`;
     }
     default:
       return event.reason || event.name || event.target || "Durable journal event.";
