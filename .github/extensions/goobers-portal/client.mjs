@@ -78,8 +78,11 @@ async function fetchJSON(url, { token, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
             body = text;
         }
         if (!res.ok) {
-            const err = new Error(`HTTP ${res.status}${body?.error ? `: ${body.error}` : ""}`);
+            const apiError = body?.error && typeof body.error === "object" ? body.error : undefined;
+            const message = apiError?.message || (typeof body?.error === "string" ? body.error : undefined) || body?.reason;
+            const err = new Error(`HTTP ${res.status}${message ? `: ${message}` : ""}`);
             err.status = res.status;
+            err.code = apiError?.code;
             err.body = body;
             throw err;
         }

@@ -788,11 +788,11 @@ test("connecting a source clears the previous run and closes the source form", a
   await expect(page.getByRole("tab", { name: "Summary", exact: true })).toBeVisible();
   await page.route("http://canvas.test/api/add-source", (route) =>
     route.fulfill({ json: { id: sources[1].id } }));
-  await page.locator("#add-source-details summary").click();
+  await page.getByRole("button", { name: "Connect a source", exact: false }).click();
   await page.locator("#remote-url").fill(sources[1].value);
   await page.getByRole("button", { name: "Add remote", exact: true }).click();
   await expect(page.locator("#source-context")).toHaveText("Instance two");
-  await expect(page.locator("#add-source-details")).not.toHaveAttribute("open", "");
+  await expect(page.locator("#connect-source-dialog")).not.toBeVisible();
   await expect(page.locator("#run-view")).toBeHidden();
   await expect(page.locator("#run-content")).toBeEmpty();
   await expect(page.locator("#error")).toBeEmpty();

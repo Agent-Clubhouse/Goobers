@@ -429,6 +429,12 @@ export function renderRunEventItems(displayedEvents = [], sourceId = "", runId =
         const linksHtml = artifactLinks.length
             ? '<div class="artifact-links">' + artifactLinks.join(" \u00b7 ") + "</div>"
             : "";
+        const hasBody = Boolean(refHtml || detailsHtml || linksHtml);
+        if (!hasBody) {
+            return '<div class="event-row event-row-flat">' +
+                summary.replace(/^<summary>/, '<span class="event-summary-line">').replace(/<\/summary>$/, "</span>") +
+                "</div>";
+        }
         return "<details>" + summary + '<div class="event-body">' + refHtml + detailsHtml + linksHtml + "</div></details>";
     }).join("");
 }
@@ -1311,17 +1317,81 @@ export function filterWorkItems(items, gaggle, search) {
     });
 }
 
-export function renderWorkItemList(page, gaggle = "", search = "") {
+export const WORK_ITEM_SORT_KEYS = ["identity", "lastActionAt", "workflow", "actionCount"];
+
+export function sortWorkItems(items, sortKey = "lastActionAt", sortDir = "desc") {
+    const dir = sortDir === "asc" ? 1 : -1;
+    const valueFor = (item) => {
+        if (sortKey === "identity") return workItemLabel(item.repository, item.externalId).toLocaleLowerCase();
+        if (sortKey === "actionCount") return item.actionCount ?? 0;
+        if (sortKey === "lastActionAt") return new Date(item.lastActionAt || 0).getTime() || 0;
+        return String(item[sortKey] || "").toLocaleLowerCase();
+    };
+    return [...(items || [])].sort((a, b) => {
+        const av = valueFor(a);
+        const bv = valueFor(b);
+        if (av < bv) return -1 * dir;
+        if (av > bv) return 1 * dir;
+        return 0;
+    });
+}
+
+export function workItemKindIcon(kind) {
+    const icons = {
+        pr: '<svg class="work-item-kind-icon" data-work-item-kind-icon="pr" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"></path></svg>',
+        issue: '<svg class="work-item-kind-icon" data-work-item-kind-icon="issue" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"></path><path fill="currentColor" d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"></path></svg>',
+    };
+    return icons[kind] || icons.issue;
+}
+
+export function renderWorkItemStatusBadge(runStatus) {
+    const status = String(runStatus || "").trim();
+    if (!status) return "";
+    const meta = {
+        running: { emoji: "\ud83d\udd35", label: "Running" },
+        completed: { emoji: "\u2705", label: "Completed" },
+        succeeded: { emoji: "\u2705", label: "Succeeded" },
+        failed: { emoji: "\u274c", label: "Failed" },
+        escalated: { emoji: "\ud83d\udea8", label: "Escalated" },
+        blocked: { emoji: "\u23f8\ufe0f", label: "Blocked" },
+        "awaiting-human": { emoji: "\ud83d\udd52", label: "Awaiting human" },
+        pending: { emoji: "\u26aa", label: "Pending" },
+    }[status] || { emoji: "\u26aa", label: status };
+    return '<span class="phase" data-phase="' + escapeAssociationHtml(status) + '" title="Last run status: ' +
+        escapeAssociationHtml(meta.label) + '">' + meta.emoji + " " + escapeAssociationHtml(meta.label) + "</span>";
+}
+
+function renderWorkItemListHeader(sortKey, sortDir) {
+    const columns = [
+        ["identity", "Work item"],
+        ["lastActionAt", "Last action"],
+        ["workflow", "Workflow / Gaggle"],
+        ["actionCount", "Actions"],
+    ];
+    const cells = columns.map(([key, label]) => {
+        const active = key === sortKey;
+        const ariaSort = active ? (sortDir === "asc" ? "ascending" : "descending") : "none";
+        const arrow = active ? (sortDir === "asc" ? " \u25b2" : " \u25bc") : "";
+        return '<span role="columnheader" aria-sort="' + ariaSort + '"><button type="button" class="sort-button" data-work-item-sort="' +
+            key + '">' + escapeAssociationHtml(label) + arrow + "</button></span>";
+    }).join("");
+    return '<div class="work-item-row work-item-header" role="row">' + cells + "<span></span></div>";
+}
+
+export function renderWorkItemList(page, gaggle = "", search = "", sortKey = "lastActionAt", sortDir = "desc") {
     if (!page) return '<p class="inline-empty">No work items loaded yet.</p>';
-    const items = filterWorkItems(page.items, gaggle, search);
+    const items = sortWorkItems(filterWorkItems(page.items, gaggle, search), sortKey, sortDir);
+    const header = renderWorkItemListHeader(sortKey, sortDir);
     if (!items.length) {
-        return '<p class="inline-empty">No confirmed provider actions match this filter.' +
+        return '<div class="work-items-list work-items-list-empty">' + header + "</div>" +
+            '<p class="inline-empty">No confirmed provider actions match this filter.' +
             (page.hasMore ? " Only the 200 most recently actioned work items are searched." : "") +
             "</p>";
     }
     const rows = items.map((item) => {
         const identity = workItemLabel(item.repository, item.externalId);
         const typeLabel = item.kind === "pr" ? "pull request" : "issue";
+        const statusBadge = renderWorkItemStatusBadge(item.runStatus);
         return '<button type="button" class="work-item-row" data-work-item-provider="' +
             escapeAssociationHtml(item.provider || "") + '" data-work-item-repository="' +
             escapeAssociationHtml(item.repository || "") + '" data-work-item-kind="' +
@@ -1329,23 +1399,25 @@ export function renderWorkItemList(page, gaggle = "", search = "") {
             escapeAssociationHtml(item.externalId || "") + '" aria-label="Open ' +
             escapeAssociationHtml(item.kind === "pr" ? "PR" : "issue") + " #" +
             escapeAssociationHtml(item.externalId || "") + " in " +
-            escapeAssociationHtml(item.repository || "unknown repository") + '">' +
-            '<span class="work-item-identity"><strong>' + escapeAssociationHtml(identity) +
+            escapeAssociationHtml(item.repository || "unknown repository") + '" title="' +
+            escapeAssociationHtml(identity) + " \u00b7 " + escapeAssociationHtml(typeLabel) + '">' +
+            '<span class="work-item-identity" title="' + escapeAssociationHtml(typeLabel) + '">' +
+            workItemKindIcon(item.kind) + '<strong>' + escapeAssociationHtml(identity) +
             '</strong><small>' + escapeAssociationHtml(item.provider || "provider") + " \u00b7 " +
             escapeAssociationHtml(typeLabel) + "</small></span>" +
-            '<span><strong>' + escapeAssociationHtml(humanizeWorkItemOperation(item.lastOperation)) +
+            '<span title="Last action"><strong>' + escapeAssociationHtml(humanizeWorkItemOperation(item.lastOperation)) +
             '</strong><small>' + escapeAssociationHtml(formatWorkItemTimestamp(item.lastActionAt)) +
-            "</small></span>" +
-            '<span><strong>' + escapeAssociationHtml(item.workflow || "Unknown") +
+            (statusBadge ? " " + statusBadge : "") + "</small></span>" +
+            '<span title="Workflow and gaggle"><strong>' + escapeAssociationHtml(item.workflow || "Unknown") +
             '</strong><small>' + escapeAssociationHtml(item.gaggle || "No gaggle recorded") +
             "</small></span>" +
-            '<strong class="work-item-action-count">' + escapeAssociationHtml(item.actionCount ?? 0) +
+            '<strong class="work-item-action-count" title="Recorded provider actions">' + escapeAssociationHtml(item.actionCount ?? 0) +
             '</strong><span aria-hidden="true">\u203a</span></button>';
     }).join("");
     const overflow = page.hasMore
         ? '<p class="muted work-item-overflow">Showing the 200 most recently actioned work items.</p>'
         : "";
-    return '<div class="work-items-list" role="group" aria-label="Work items">' + rows + "</div>" + overflow;
+    return '<div class="work-items-list" role="group" aria-label="Work items">' + header + rows + "</div>" + overflow;
 }
 
 export function renderWorkItemDetail(item, actionType = "all") {
@@ -1507,15 +1579,16 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   main { padding: 16px; min-width: 0; }
   .skip-link { position: absolute; top: -100px; left: 12px; z-index: 10; }
   .skip-link:focus { top: 12px; padding: 8px; background: var(--background-color-default, #fff); }
-  .source-context { display: flex; gap: 8px 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-  #source-context { font-weight: 600; overflow-wrap: anywhere; }
+  .source-context { display: flex; gap: 8px 16px; align-items: center; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+  #source-context { font-weight: 600; overflow-wrap: anywhere; margin: 0; }
+  #freshness { margin: 0; }
   .section-description { margin: 0 0 12px; color: var(--text-color-muted, #656d76); }
   .cost-coverage-warning { color: var(--true-color-yellow, #9a6700); }
   .table-link { padding: 0; border: 0; background: transparent; color: var(--true-color-blue, #0969da); text-align: left; }
   .table-link:hover { background: transparent; text-decoration: underline; }
   .sort-button { border: 0; padding: 0; background: transparent; color: inherit; }
   .table-scroll { max-width: 100%; overflow-x: auto; }
-  .table-scroll table { white-space: nowrap; }
+  .table-scroll table { width: auto; min-width: 100%; white-space: nowrap; }
   .work-items-list {
     display: grid;
     border: 1px solid var(--border-color-default, #d0d7de);
@@ -1540,6 +1613,15 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .work-item-row small { display: block; overflow-wrap: anywhere; }
   .work-item-row small { color: var(--text-color-muted, #656d76); }
   .work-item-action-count { text-align: center; }
+  .work-item-header { font-weight: 600; background: var(--background-color-hover, #f6f8fa); cursor: default; }
+  .work-item-header span[role="columnheader"] { min-width: 0; }
+  .work-item-header .sort-button { font: inherit; font-weight: 600; white-space: nowrap; }
+  .work-item-identity { display: flex !important; align-items: center; gap: 6px; }
+  .work-item-identity strong { flex: 1 1 auto; min-width: 0; }
+  .work-item-kind-icon { flex: 0 0 auto; color: var(--text-color-muted, #656d76); }
+  .work-item-row[data-work-item-kind="pr"] .work-item-kind-icon { color: var(--true-color-green, #1a7f37); }
+  .work-item-row[data-work-item-kind="issue"] .work-item-kind-icon { color: var(--true-color-blue, #0969da); }
+  .work-items-list-empty .work-item-header { border-radius: 8px; }
   .work-item-overflow { margin: 10px 0 0; }
   .work-item-detail-heading,
   .work-item-heading-links {
@@ -1718,7 +1800,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     padding-top: 8px;
   }
   .configuration-warning-empty strong { color: var(--text-color-default, #1f2328); }
-  .configuration-warning-cell { min-width: 320px; vertical-align: top; }
+  .configuration-warning-cell:not(:empty) { min-width: 320px; vertical-align: top; }
   .configuration-warning-cell .configuration-warning-section { margin: 0; }
   .configuration-warning-cell .configuration-warning-heading h2 { font-size: 13px; }
   .attention-list { display: grid; gap: 8px; }
@@ -1772,16 +1854,16 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     align-items: center;
     gap: 5px;
     max-width: 100%;
+    overflow: hidden;
     border: 1px solid var(--border-color-default, #d0d7de);
     border-radius: 999px;
     padding: 2px 7px;
     background: var(--border-color-default, #d0d7de22);
     font-size: 12px;
-    white-space: nowrap;
     vertical-align: middle;
   }
-  .goober-avatar { line-height: 1; }
-  .goober-label { overflow: hidden; text-overflow: ellipsis; }
+  .goober-avatar { line-height: 1; flex: 0 0 auto; }
+  .goober-label { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .freshness {
     color: var(--text-color-muted, #656d76);
     font-size: 12px;
@@ -1866,6 +1948,56 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     flex-wrap: wrap;
   }
   .add-form input { flex: 1; min-width: 160px; }
+  .dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color-default, #d0d7de);
+  }
+  .dialog-header h2 { margin: 0; font-size: var(--text-title-medium, 18px); }
+  #connect-source-close {
+    border: 0;
+    background: transparent;
+    font-size: 18px;
+    line-height: 1;
+    padding: 4px 8px;
+  }
+  #connect-source-dialog { max-height: calc(100vh - 48px); overflow: auto; }
+  .add-form-section { padding: 4px 16px 16px; }
+  .add-form-section:not(:last-of-type) { border-bottom: 1px solid var(--border-color-default, #d0d7de); }
+  .add-form-section h3 {
+    font-size: var(--text-body-medium, 14px);
+    margin: 12px 0 8px;
+    color: var(--text-color-muted, #656d76);
+  }
+  .discover-local { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+  #discover-local-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #discover-local-results li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 6px;
+    overflow-wrap: anywhere;
+  }
+  .remove-source-button {
+    border: 0;
+    background: transparent;
+    color: var(--text-color-muted, #656d76);
+    padding: 4px 6px;
+  }
+  .remove-source-button:hover { color: var(--true-color-red, #cf222e); }
   dialog {
     width: min(680px, calc(100vw - 32px));
     max-height: calc(100vh - 48px);
@@ -2126,9 +2258,34 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .external-refs a { font-size: 12px; border: 1px solid var(--border-color-default, #d0d7de); border-radius: 999px; padding: 3px 9px; color: inherit; text-decoration: none; }
   .external-refs a:hover { text-decoration: underline; }
   .event-list { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px; max-height: 560px; overflow-y: auto; }
-  .event-list details { margin: 0; border-bottom: 1px solid var(--border-color-default, #d0d7de); }
-  .event-list details:last-child { border-bottom: none; }
-  .event-list summary { padding: 7px 10px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .event-list details,
+  .event-list .event-row { margin: 0; border-bottom: 1px solid var(--border-color-default, #d0d7de); }
+  .event-list details:last-child,
+  .event-list .event-row:last-child { border-bottom: none; }
+  .event-list summary {
+    padding: 7px 10px 7px 26px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    position: relative;
+    list-style: none;
+  }
+  .event-list summary::-webkit-details-marker { display: none; }
+  .event-list summary::before {
+    content: "+";
+    position: absolute;
+    left: 10px;
+    width: 12px;
+    text-align: center;
+    color: var(--text-color-muted, #656d76);
+    font-weight: 600;
+  }
+  .event-list details[open] > summary::before { content: "\u2212"; }
+  .event-list .event-row-flat {
+    padding: 7px 10px 7px 26px;
+  }
+  .event-list .event-summary-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .event-list .event-body { padding: 0 12px 10px 46px; font-size: 12px; }
   .event-list .event-body pre { max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: var(--border-color-default, #d0d7de22); padding: 8px; border-radius: 6px; }
   .event-seq { color: var(--text-color-muted, #656d76); min-width: 34px; }
@@ -2291,6 +2448,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 <a class="skip-link" href="#main-content">Skip to content</a>
 <header>
   <h1>Goobers Portal</h1>
+  <div class="source-context">
+    <p id="source-context" class="muted"></p>
+    <p id="freshness" class="freshness" role="status">Connecting</p>
+  </div>
   <div class="toolbar">
     <select id="theme-select" aria-label="Color theme" title="Color theme">
       <option value="system">System theme</option>
@@ -2298,31 +2459,48 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <option value="dark">Dark theme</option>
     </select>
     <select id="source-select" aria-label="Goobers source"><option value="">No sources yet</option></select>
+    <button id="remove-source" type="button" class="remove-source-button" title="Remove this local instance" aria-label="Remove this local instance" hidden>&#10005;</button>
     <input id="run-jump" type="text" placeholder="Run ID" aria-label="Jump to a run" style="max-width: 180px;" />
     <button id="run-jump-button" type="button">Jump</button>
     <button id="refresh">Refresh</button>
   </div>
 </header>
 <main id="main-content" tabindex="-1">
-  <p id="source-context" class="muted"></p>
-  <p id="freshness" class="freshness" role="status">Connecting</p>
-  <details id="add-source-details">
-    <summary>Connect a source&hellip;</summary>
+  <button id="connect-source-button" type="button">+ Connect a source&hellip;</button>
+  <dialog id="connect-source-dialog" aria-label="Connect a source">
+    <div class="dialog-header">
+      <h2>Connect a source</h2>
+      <button id="connect-source-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <section class="add-form-section">
+    <h3>Local instance</h3>
     <div class="add-form">
       <input id="local-root" aria-label="Local instance root" placeholder="Local instance root path (e.g. C:\\\\path\\\\to\\\\instance)" />
       <button id="browse-local" title="Browse folders">&#128193; Browse</button>
       <button id="add-local">Add local</button>
     </div>
+    <div class="discover-local">
+      <button id="discover-local-instances" type="button">&#128269; Discover local instances</button>
+      <div id="discover-local-status" class="muted" role="status"></div>
+      <ul id="discover-local-results"></ul>
+    </div>
+    </section>
+    <section class="add-form-section">
+    <h3>Remote control plane</h3>
     <div class="add-form">
       <input id="remote-url" aria-label="Remote control-plane URL" placeholder="Remote control-plane URL (e.g. http://10.0.0.5:8080)" />
       <input id="remote-token" placeholder="Bearer token (optional)" style="flex: 0 0 200px" />
       <button id="add-remote">Add remote</button>
     </div>
+    </section>
+    <section class="add-form-section">
+    <h3>GitHub Actions</h3>
     <div class="add-form">
       <input id="github-workflow-url" aria-label="GitHub Actions workflow URL" placeholder="GitHub Actions workflow URL (https://github.com/owner/repo/actions/workflows/file.yml)" />
       <button id="add-github">Connect to GitHub</button>
     </div>
-  </details>
+    </section>
+  </dialog>
   <div id="fleet-panel" class="fleet-panel" hidden></div>
   <dialog id="directory-dialog">
     <div class="directory-dialog-header">
@@ -2375,7 +2553,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <div class="table-scroll" role="region" aria-label="Workflows" tabindex="0">
       <table id="workflows-table">
         <thead>
-          <tr><th>Workflow</th><th>Gaggle</th><th>Trigger</th><th>In flight</th><th>Max</th><th>Run</th><th>Enabled</th><th>Warnings</th></tr>
+          <tr><th data-sort="name">Workflow</th><th data-sort="gaggle">Gaggle</th><th data-sort="trigger">Trigger</th><th data-sort="inFlight">In flight</th><th data-sort="max">Max</th><th>Run</th><th>Enabled</th><th>Warnings</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -2965,6 +3143,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     sourceSelect.innerHTML = "";
     if (sources.length === 0) {
       sourceSelect.innerHTML = '<option value="">No sources yet</option>';
+      updateRemoveSourceButton();
       return null;
     }
     for (const s of sources) {
@@ -2977,15 +3156,25 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     if (prevValue && sources.some((s) => s.id === prevValue)) {
       sourceSelect.value = prevValue;
+      updateRemoveSourceButton();
       return prevValue;
     }
     if (selected.sourceId && sources.some((s) => s.id === selected.sourceId)) {
       sourceSelect.value = selected.sourceId;
+      updateRemoveSourceButton();
       return selected.sourceId;
     }
     const firstConnected = sources.find((s) => s.connected);
     sourceSelect.value = (firstConnected || sources[0]).id;
+    updateRemoveSourceButton();
     return sourceSelect.value;
+  }
+
+  function updateRemoveSourceButton() {
+    const removeButton = document.getElementById("remove-source");
+    if (!removeButton) return;
+    const kind = sourceSelect.selectedOptions[0]?.dataset.kind;
+    removeButton.hidden = !sourceSelect.value || kind !== "local";
   }
 
   function renderSnapshot(data) {
@@ -3043,7 +3232,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
 
     workflowsBody.innerHTML = "";
-    for (const w of workflows) {
+    for (const w of sortWorkflows(workflows)) {
       const tr = document.createElement("tr");
       const name = w.identity ? w.identity.name : w.name;
       const gaggle = w.identity ? w.identity.gaggle : w.gaggle;
@@ -3108,14 +3297,19 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
       const enabledCell = tr.querySelector(".enabled-cell");
       const warningCell = tr.querySelector(".configuration-warning-cell");
-      warningCell.dataset.warningContext = "workflow";
-      warningCell.dataset.gaggle = gaggle;
-      warningCell.dataset.workflow = name;
-      warningCell.innerHTML = renderConfigurationWarnings(
-        w.warnings || [],
-        "workflow",
-        { dismissedWarningKeys: dismissedConfigurationWarnings },
-      );
+      // Skip the whole warnings block for rows with nothing to report -
+      // showing an empty "0 active warnings" section on every row just adds
+      // noise to a table where most workflows are unremarkable.
+      if ((w.warnings || []).length > 0) {
+        warningCell.dataset.warningContext = "workflow";
+        warningCell.dataset.gaggle = gaggle;
+        warningCell.dataset.workflow = name;
+        warningCell.innerHTML = renderConfigurationWarnings(
+          w.warnings || [],
+          "workflow",
+          { dismissedWarningKeys: dismissedConfigurationWarnings },
+        );
+      }
       if (nonManualTriggers.length === 0) {
         enabledCell.innerHTML = '<span class="muted">manual only</span>';
       } else if (!lastCapabilities.workflowEnable) {
@@ -3181,6 +3375,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     if (workflows.length === 0) {
       workflowsBody.innerHTML = '<tr><td colspan="8" class="muted">No workflows configured.</td></tr>';
     }
+    updateSortIndicators("workflows-table", workflowSortKey, workflowSortDir);
 
     populateFilterOptions(data.gaggles || [], workflows);
     // Rebuild the preset list while preserving the operator's selection and focus.
@@ -3225,6 +3420,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   let lastRuns = [];
   let sortKey = "startedAt";
   let sortDir = "desc";
+  let workflowSortKey = "name";
+  let workflowSortDir = "asc";
   let advancedFiltersSupported = false;
   let filterRequestSequence = 0;
   let restoredFilters = false;
@@ -3441,10 +3638,16 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     return f;
   }
 
-  function syncViewUrl(runId = selectedRunId) {
+  function syncViewUrl(runId = selectedRunId, { push = false } = {}) {
     const query = new URLSearchParams(encodeViewState(currentFilters(), runId));
     const next = query.toString();
-    window.history.replaceState(null, "", next ? "?" + next : window.location.pathname);
+    const url = next ? "?" + next : window.location.pathname;
+    // Most filter/tab tweaks replace in place to avoid spamming history, but
+    // opening a run pushes a real entry so a browser/mouse "back" lands on
+    // the dashboard (handled by the popstate listener) instead of leaving
+    // the document entirely.
+    if (push) window.history.pushState(null, "", url);
+    else window.history.replaceState(null, "", url);
   }
 
   function persistFilters() {
@@ -3520,16 +3723,35 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     });
   }
 
-  function updateSortIndicators() {
-    document.querySelectorAll("#runs-table th[data-sort]").forEach((th) => {
+  function sortWorkflows(workflows) {
+    const dir = workflowSortDir === "asc" ? 1 : -1;
+    const value = (w, key) => {
+      if (key === "name") return (w.identity ? w.identity.name : w.name) || "";
+      if (key === "gaggle") return (w.identity ? w.identity.gaggle : w.gaggle) || "";
+      if (key === "trigger") return (w.triggers || []).map((t) => t.type || t.kind).filter(Boolean).join(", ");
+      if (key === "inFlight") return w.concurrency?.activeRuns ?? -1;
+      if (key === "max") return w.concurrency?.maxConcurrentRuns ?? -1;
+      return "";
+    };
+    return [...workflows].sort((a, b) => {
+      const av = value(a, workflowSortKey);
+      const bv = value(b, workflowSortKey);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  }
+
+  function updateSortIndicators(tableId = "runs-table", activeKey = sortKey, activeDir = sortDir) {
+    document.querySelectorAll("#" + tableId + " th[data-sort]").forEach((th) => {
       const button = th.querySelector("button");
       const label = button.textContent.replace(/\s*[\u25b2\u25bc]$/, "");
       button.textContent = label;
-      th.setAttribute("aria-sort", th.dataset.sort === sortKey ? (sortDir === "asc" ? "ascending" : "descending") : "none");
-      if (th.dataset.sort === sortKey) {
+      th.setAttribute("aria-sort", th.dataset.sort === activeKey ? (activeDir === "asc" ? "ascending" : "descending") : "none");
+      if (th.dataset.sort === activeKey) {
         const arrow = document.createElement("span");
         arrow.className = "sort-arrow";
-        arrow.textContent = sortDir === "asc" ? "\u25b2" : "\u25bc";
+        arrow.textContent = activeDir === "asc" ? "\u25b2" : "\u25bc";
         button.appendChild(arrow);
       }
     });
@@ -3758,6 +3980,23 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       renderRuns(lastRuns);
     });
   });
+  document.querySelectorAll("#workflows-table th[data-sort]").forEach((th) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "sort-button";
+    button.textContent = th.textContent;
+    th.replaceChildren(button);
+    button.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (workflowSortKey === key) {
+        workflowSortDir = workflowSortDir === "asc" ? "desc" : "asc";
+      } else {
+        workflowSortKey = key;
+        workflowSortDir = key === "inFlight" || key === "max" ? "desc" : "asc";
+      }
+      if (lastSnapshot) renderSnapshot(lastSnapshot);
+    });
+  });
 
   // ---- Insights tab: aggregate telemetry ----
   const INSIGHT_WINDOWS = ${JSON.stringify(INSIGHT_WINDOWS)};
@@ -3918,6 +4157,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const workItemSearchInput = document.getElementById("work-item-search");
   const workItemKindButtons = [...document.querySelectorAll("[data-work-item-kind-filter]")];
   let workItemKind = "";
+  let workItemSortKey = "lastActionAt";
+  let workItemSortDir = "desc";
   let workItemRequestSequence = 0;
   let lastWorkItemPage = null;
   let selectedWorkItem = null;
@@ -3953,6 +4194,18 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         externalId: button.dataset.workItemId,
       }));
     });
+    workItemContentEl.querySelectorAll("[data-work-item-sort]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = button.dataset.workItemSort;
+        if (workItemSortKey === key) {
+          workItemSortDir = workItemSortDir === "asc" ? "desc" : "asc";
+        } else {
+          workItemSortKey = key;
+          workItemSortDir = key === "lastActionAt" ? "desc" : "asc";
+        }
+        renderCurrentWorkItemList();
+      });
+    });
   }
 
   function renderCurrentWorkItemList() {
@@ -3962,6 +4215,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       lastWorkItemPage,
       workItemGaggleSelect.value,
       workItemSearchInput.value,
+      workItemSortKey,
+      workItemSortDir,
     );
     bindWorkItemList();
   }
@@ -4653,6 +4908,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const formatWorkItemTimestamp = ${formatWorkItemTimestamp.toString()};
   const formatWorkItemCost = ${formatWorkItemCost.toString()};
   const filterWorkItems = ${filterWorkItems.toString()};
+  const sortWorkItems = ${sortWorkItems.toString()};
+  const workItemKindIcon = ${workItemKindIcon.toString()};
+  const renderWorkItemStatusBadge = ${renderWorkItemStatusBadge.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderWorkItemListHeader = ${renderWorkItemListHeader.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderWorkItemList = ${renderWorkItemList.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderWorkItemDetail = ${renderWorkItemDetail.toString()
@@ -4816,7 +5077,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     });
   }
 
-  async function openRun(runId, origin = "runs") {
+  async function openRun(runId, origin = "runs", { fromPopstate = false } = {}) {
     const sourceId = sourceSelect.value;
     if (!sourceId) {
       errorEl.textContent = "Choose a source before opening a run.";
@@ -4842,7 +5103,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       selectionStart: input.selectionStart,
       selectionEnd: input.selectionEnd,
     }));
-    syncViewUrl(runId);
+    syncViewUrl(runId, { push: isNewRun && !fromPopstate });
     dashboardEl.style.display = "none";
     runViewEl.style.display = "block";
     runErrorEl.textContent = "";
@@ -4924,8 +5185,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
   }
 
-  document.getElementById("run-back").addEventListener("click", () => {
-    const previousRunId = selectedRunId;
+  // Closes the run detail view and returns to the dashboard. Shared by the
+  // explicit "Back" button and the popstate handler (browser/mouse back
+  // navigation), so both paths always leave the DOM in a rendered state
+  // instead of a blank one.
+  function closeRunView(previousRunId, options = {}) {
+    const { syncUrl = true } = options;
     selectedRunId = "";
     ++runRequestSequence;
     ++stageInspectorRequestSequence;
@@ -4937,13 +5202,34 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const actionButton = [...workItemContentEl.querySelectorAll("[data-work-item-run]")]
         .find((button) => button.dataset.workItemRun === previousRunId);
       actionButton?.focus();
-      syncViewUrl();
+      if (syncUrl) syncViewUrl();
       return;
     }
     activateInternalTab(dashboardEl, "runs", true);
     const row = [...runsBody.querySelectorAll("[data-run-id]")].find((row) => row.dataset.runId === previousRunId);
     row?.querySelector(".table-link")?.focus();
-    syncViewUrl();
+    if (syncUrl) syncViewUrl();
+  }
+
+  document.getElementById("run-back").addEventListener("click", () => {
+    closeRunView(selectedRunId);
+  });
+
+  // The extension page is a single long-lived document with no server-side
+  // routing, so a real browser/mouse "back" navigation has no other page to
+  // land on: without a listener it just leaves the last-rendered DOM in
+  // place (or blanks it) instead of restoring the dashboard or a prior run.
+  // Re-derive the visible state from the URL on every popstate so back/
+  // forward navigation always re-renders something instead of going blank.
+  window.addEventListener("popstate", () => {
+    const decoded = decodeViewState(window.location.search);
+    if (decoded.selectedRun) {
+      if (decoded.selectedRun !== selectedRunId) {
+        void openRun(decoded.selectedRun, runOrigin || "runs", { fromPopstate: true });
+      }
+    } else if (selectedRunId) {
+      closeRunView(selectedRunId, { syncUrl: false });
+    }
   });
 
   async function loadSnapshot() {
@@ -5126,6 +5412,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     reconnectAttemptCount = 0;
     workflowDetailCache.clear();
     if (eventSource) eventSource.close();
+    updateRemoveSourceButton();
     await loadSnapshot();
     connectLiveEvents();
   }
@@ -5157,7 +5444,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     await loadSources();
     sourceSelect.value = result.id;
     await changeSource();
-    document.getElementById("add-source-details").open = false;
+    document.getElementById("connect-source-dialog").close();
   }
 
   async function openDirectory(directory) {
@@ -5247,6 +5534,74 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       input.value = "";
     } catch (err) {
       errorEl.textContent = portalRequestError(err);
+    }
+  });
+
+  const connectSourceDialog = document.getElementById("connect-source-dialog");
+  document.getElementById("connect-source-button").addEventListener("click", () => {
+    connectSourceDialog.showModal();
+  });
+  document.getElementById("connect-source-close").addEventListener("click", () => {
+    connectSourceDialog.close();
+  });
+
+  document.getElementById("remove-source").addEventListener("click", async () => {
+    const option = sourceSelect.selectedOptions[0];
+    if (!option || !option.value) return;
+    const label = option.textContent.replace(/^[\u25cf\u25cb]\s*/, "");
+    if (!window.confirm("Remove " + label + " from known sources?")) return;
+    try {
+      const response = await fetch("/api/remove-source", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: option.value }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) throw new Error(result.error || "Could not remove source.");
+      await loadSources();
+      await changeSource();
+    } catch (err) {
+      errorEl.textContent = portalRequestError(err);
+    }
+  });
+
+  const discoverStatusEl = document.getElementById("discover-local-status");
+  const discoverResultsEl = document.getElementById("discover-local-results");
+  document.getElementById("discover-local-instances").addEventListener("click", async () => {
+    discoverStatusEl.textContent = "Scanning for local instances\u2026";
+    discoverResultsEl.innerHTML = "";
+    try {
+      const response = await fetch("/api/discover-local-sources");
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || "Could not scan for local instances.");
+      const candidates = data.candidates || [];
+      if (candidates.length === 0) {
+        discoverStatusEl.textContent = "No unregistered local instances found.";
+        return;
+      }
+      discoverStatusEl.textContent = candidates.length + " found:";
+      for (const candidate of candidates) {
+        const li = document.createElement("li");
+        const label = document.createElement("span");
+        label.textContent = candidate.root;
+        const addButton = document.createElement("button");
+        addButton.type = "button";
+        addButton.textContent = "Add";
+        addButton.addEventListener("click", async () => {
+          addButton.disabled = true;
+          try {
+            await connectSource({ kind: "local", value: candidate.root });
+            li.remove();
+          } catch (err) {
+            errorEl.textContent = portalRequestError(err);
+            addButton.disabled = false;
+          }
+        });
+        li.append(label, addButton);
+        discoverResultsEl.appendChild(li);
+      }
+    } catch (err) {
+      discoverStatusEl.textContent = portalRequestError(err);
     }
   });
 

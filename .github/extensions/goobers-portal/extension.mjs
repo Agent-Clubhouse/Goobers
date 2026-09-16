@@ -12,6 +12,7 @@
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { renderHtml } from "./render.mjs";
 import { listKnownSources, addSource, removeSource } from "./registry.mjs";
 import { readPreferences, setFilterPreferences, setThemePreference } from "./preferences.mjs";
@@ -437,6 +438,73 @@ async function browseDirectories(requestedPath) {
     };
 }
 
+// Directory names skipped while scanning for local Goobers instances: known
+// system/vendor/cache directories that are either off-limits, huge, or never
+// contain a hand-configured instance root.
+const DISCOVERY_SKIP_DIRS = new Set([
+    "node_modules", ".git", "$recycle.bin", "system volume information",
+    "windows", "program files", "program files (x86)", "programdata",
+    "appdata", ".cache", ".npm", ".vscode", ".copilot",
+]);
+
+/**
+ * Scan a bounded set of filesystem roots for `instance.yaml` files, i.e.
+ * Goobers instance roots the user hasn't registered yet. Depth, elapsed
+ * time, and match count are all capped so this never turns into an
+ * unbounded full-disk crawl on a shared machine.
+ */
+async function discoverLocalInstances({ timeoutMs = 5000, maxVisited = 20000, maxResults = 25 } = {}) {
+    const known = await listKnownSources();
+    const knownRoots = new Set(
+        known.filter((s) => s.kind === "local").map((s) => path.resolve(s.value).toLowerCase()));
+    const deadline = Date.now() + timeoutMs;
+    let visited = 0;
+    const found = [];
+
+    async function walk(dir, depth) {
+        if (found.length >= maxResults || visited >= maxVisited || Date.now() > deadline) return;
+        visited++;
+        let entries;
+        try {
+            entries = await fs.readdir(dir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        if (entries.some((entry) => entry.isFile() && entry.name === "instance.yaml")) {
+            const resolved = path.resolve(dir);
+            if (!knownRoots.has(resolved.toLowerCase())) found.push(resolved);
+            return; // an instance root is a leaf - don't descend into it
+        }
+        if (depth <= 0) return;
+        for (const entry of entries) {
+            if (found.length >= maxResults || visited >= maxVisited || Date.now() > deadline) return;
+            if (!entry.isDirectory()) continue;
+            const lower = entry.name.toLowerCase();
+            if (lower.startsWith(".") || DISCOVERY_SKIP_DIRS.has(lower)) continue;
+            await walk(path.join(dir, entry.name), depth - 1);
+        }
+    }
+
+    const homeDir = os.homedir();
+    const roots = [homeDir];
+    if (process.platform === "win32") {
+        const candidates = Array.from({ length: 26 }, (_, index) =>
+            `${String.fromCharCode(65 + index)}:\\`);
+        const available = await Promise.all(candidates.map(async (candidate) =>
+            (await fs.stat(candidate).catch(() => null))?.isDirectory() ? candidate : null));
+        roots.push(...available.filter(Boolean).filter((root) => root !== path.parse(homeDir).root));
+    } else {
+        roots.push("/");
+    }
+
+    for (const root of roots) {
+        if (found.length >= maxResults || Date.now() > deadline) break;
+        await walk(root, root === homeDir ? 4 : 2);
+    }
+
+    return found.map((root) => ({ root, label: path.basename(root) || root }));
+}
+
 async function startServer(instanceId) {
     const server = createServer(async (req, res) => {
         const url = new URL(req.url, "http://localhost");
@@ -494,6 +562,12 @@ async function startServer(instanceId) {
                 const directories = await browseDirectories(url.searchParams.get("path") || process.cwd());
                 res.setHeader("Content-Type", "application/json; charset=utf-8");
                 res.end(JSON.stringify(directories));
+                return;
+            }
+            if (url.pathname === "/api/discover-local-sources") {
+                const candidates = await discoverLocalInstances();
+                res.setHeader("Content-Type", "application/json; charset=utf-8");
+                res.end(JSON.stringify({ candidates }));
                 return;
             }
             if (url.pathname === "/api/events") {
