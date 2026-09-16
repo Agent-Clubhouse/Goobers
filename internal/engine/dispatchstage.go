@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // dispatchstage.go is the mode-3 engine cutover (#3588): the seam through
@@ -115,6 +116,11 @@ type DispatchStageInput struct {
 	// omitempty, and the JSON name is new: an existing recorded history carries
 	// no such key and decodes to "" — the pre-#392 behaviour byte for byte.
 	WorkspaceBranch string `json:"workspaceBranch,omitempty"`
+	// Checkout and PartialClone are configuration policy, independent of the
+	// selected identity's closed, non-authoritative repository projection.
+	Checkout          *apiv1.CheckoutSpec      `json:"checkout,omitempty"`
+	PartialClone      bool                     `json:"partialClone,omitempty"`
+	WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
 	// Review marks an agentic reviewer GATE evaluation (decision 001 rulings
 	// 7–8): the pod drives the gate's reviewer goober in review mode and
 	// surrenders a Verdict, which DispatchStage re-validates and returns as
@@ -203,28 +209,34 @@ func gatePodAttempt(gateDispatches map[string]int, gate string) int {
 // #3844's instance-root refusal list is command-keyed and a gate declares
 // no command, so there is nothing of it to apply here; the pod entrypoint's
 // backstop still stands for anything a reviewer's harness might spawn.
-func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int, class journal.AttemptClass, rec *runJournal) (apiv1.Verdict, error) {
+func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, partialClone bool, podAttempt int, class journal.AttemptClass, rec *runJournal) (apiv1.Verdict, error) {
 	workspace := g.EffectiveWorkspace()
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
 	}
 	attemptEnv := env
 	attemptEnv.Attempt = int32(podAttempt)
+	if env.WorkspaceRevision != nil && !workspace.IsWritableRepo() {
+		workspaceBranch, workspaceDelta = "", ""
+	}
 	var result stageActivityResult
 	// OwningWorkflowID is read here, inside the workflow, for the same reason
 	// dispatchRemoteTask reads it in its own retry closure: this walk's
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
 	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
-		PodAttempt:       dispatchPodAttempt(ctx, g.Name, podAttempt),
-		Class:            dispatchAttemptClass(ctx, class),
-		Envelope:         attemptEnv,
-		Placement:        placement,
-		Workspace:        workspace,
-		WorkspaceDelta:   workspaceDelta,
-		WorkspaceBranch:  workspaceBranch,
-		Review:           true,
-		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		PodAttempt:        dispatchPodAttempt(ctx, g.Name, podAttempt),
+		Class:             dispatchAttemptClass(ctx, class),
+		Envelope:          attemptEnv,
+		Placement:         placement,
+		Workspace:         workspace,
+		WorkspaceDelta:    workspaceDelta,
+		WorkspaceBranch:   workspaceBranch,
+		WorkspaceRevision: env.WorkspaceRevision.DeepCopy(),
+		Checkout:          checkoutFromEnvelope(env),
+		PartialClone:      partialClone,
+		Review:            true,
+		OwningWorkflowID:  workflow.GetInfo(ctx).WorkflowExecution.ID,
 	}).Get(ctx, &result)
 	recordGatePlacement(ctx, rec, g.Name, podAttempt, class, result, err)
 	if err != nil {
@@ -330,20 +342,26 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		taskDispatches[t.Name]++
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
+		if env.WorkspaceRevision != nil && !t.EffectiveWorkspace().IsWritableRepo() {
+			workspaceBranch, workspaceDelta = "", ""
+		}
 		// OwningWorkflowID is read here, inside the workflow, because this
 		// walk's execution IS the attempt's driver: for a scheduled run that
 		// is claimID+"-run", which no id composed from the pod's labels or
 		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
 		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
-			PodAttempt:       dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
-			Class:            dispatchAttemptClass(ctx, class),
-			Envelope:         attemptEnv,
-			Placement:        placement,
-			Run:              t.Run,
-			Workspace:        t.Workspace,
-			WorkspaceDelta:   workspaceDelta,
-			WorkspaceBranch:  workspaceBranch,
-			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			PodAttempt:        dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
+			Class:             dispatchAttemptClass(ctx, class),
+			Envelope:          attemptEnv,
+			Placement:         placement,
+			Run:               t.Run,
+			Workspace:         t.Workspace,
+			WorkspaceDelta:    workspaceDelta,
+			WorkspaceBranch:   workspaceBranch,
+			WorkspaceRevision: env.WorkspaceRevision.DeepCopy(),
+			Checkout:          checkoutFromEnvelope(env),
+			PartialClone:      in.PartialClone,
+			OwningWorkflowID:  workflow.GetInfo(ctx).WorkflowExecution.ID,
 		}).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
@@ -588,6 +606,24 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	if workspace != "" {
 		attempt.Workspace = string(workspace)
 	}
+	if workspace == apiv1.WorkspaceRepoReadOnly {
+		selected, err := workspacerevision.Accept(input.Envelope.WorkspaceRevision, input.WorkspaceRevision, true, true)
+		if err != nil {
+			return stageActivityResult{}, classifySeamError(err)
+		}
+		attempt.WorkspaceRevision = selected.DeepCopy()
+		attempt.WorkspaceRepository = input.Envelope.RepoRef
+		attempt.PartialClone = input.PartialClone
+		if input.Checkout != nil {
+			policy := *input.Checkout
+			policy.Sparse = append([]string(nil), policy.Sparse...)
+			attempt.Checkout = &policy
+		}
+		if selected != nil && (input.WorkspaceBranch != "" || input.WorkspaceDelta != "" || (input.Run != nil && input.Run.SyncBase)) {
+			return stageActivityResult{}, classifySeamError(&workspacerevision.Error{Code: workspacerevision.CodeConflict,
+				Message: "selected-revision repo-readonly cannot use branch, delta or syncBase"})
+		}
+	}
 	// What earlier stages committed (#3763). Only meaningful for a workspace
 	// the pod can commit into; handing it to a scratch or read-only stage
 	// would be a no-op at best and a silent rewrite of a read-only stage's
@@ -621,7 +657,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// the stage's environment, so a stage does not gain repository authority by
 	// needing a working tree. The worker has always behaved this way — it
 	// provisions worktrees with instance credentials, not the stage's.
-	if workspace.IsRepoBacked() && !declaresRepoCapability(attempt.Capabilities) {
+	if workspace.IsRepoBacked() && attempt.WorkspaceRevision == nil && !declaresRepoCapability(attempt.Capabilities) {
 		attempt.CheckoutCapability = string(capability.RepoPush)
 	}
 	needsRepoContext = workspace.IsRepoBacked() || (input.Run != nil && workspace == "")

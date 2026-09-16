@@ -69,7 +69,7 @@ word — read the page, not this table, before depending on it.
 | [Portal read architecture — a rethink](portal-read-architecture.md) | `implemented` | — | — | #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952 | — | — | — |
 | [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `implemented` | — | — | #2305, #2884 | — | — | — |
 | [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `implemented` | — | — | #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499, #5122 | — | — | — |
-| [Selected-revision workspaces](selected-revision-workspaces.md) | `approved` | @brandiv / runtime / repository workspaces | #4157, #5121, #5122, #5123, #5124, #5125, #5126, #5127 | #5121, #5122, #5123 | #5124, #5125, #5126, #5127 | — | — |
+| [Selected-revision workspaces](selected-revision-workspaces.md) | `approved` | @brandiv / runtime / repository workspaces | #4157, #5121, #5122, #5123, #5124, #5125, #5126, #5127 | #5121, #5122, #5123, #5124, #5125 | #5126, #5127 | — | — |
 | [Design: Separate GitHub repository sink for docs-updater](separate-docs-repository-sink.md) | `approved` | — | — | — | — | — | — |
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — | — | — | — |
 | [Design: Static fan-out/fan-in — bounded parallel branches and a real join](static-fan-out-fan-in.md) | `implemented` | — | — | #1939 | — | — | — |

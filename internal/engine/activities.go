@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -354,6 +355,10 @@ func classifySeamError(err error) error {
 	if err == nil {
 		return nil
 	}
+	var revisionErr *workspacerevision.Error
+	if errors.As(err, &revisionErr) {
+		return temporal.NewNonRetryableApplicationError(err.Error(), revisionErr.Code, err)
+	}
 	if invoke.IsInfrastructureFailure(err) {
 		options := temporal.ApplicationErrorOptions{}
 		if retryAt, ok := invoke.InfrastructureRetryAt(err); ok {
@@ -389,25 +394,39 @@ func classifySeamError(err error) error {
 // read-only stage reads the pinned base by definition (the same gate the pod
 // arm applies in dispatchstage.go).
 func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch, workspaceDelta string) (Workspace, error) {
+	if env.WorkspaceRevision != nil && mode == apiv1.WorkspaceRepoReadOnly &&
+		(syncBase || workspaceBranch != "" || workspaceDelta != "") {
+		return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid,
+			Message: "selected read-only workspaces cannot synchronize base, bind a branch, or consume a delta"}
+	}
 	if a.Workspaces == nil {
 		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
 	}
 	if !writableWorkspace(mode) {
 		workspaceDelta = ""
+		if env.WorkspaceRevision != nil {
+			workspaceBranch = ""
+		}
 	}
 	ws, err := a.Workspaces.Provision(ctx, WorkspaceRequest{
-		RunID:           env.RunID,
-		Stage:           strings.TrimPrefix(env.TaskID, env.RunID+":"),
-		Gaggle:          env.Gaggle,
-		Workflow:        env.WorkflowID,
-		BranchNamespace: env.BranchNamespace,
-		WorkspaceBranch: workspaceBranch,
-		RepoRef:         env.RepoRef,
-		Mode:            mode,
-		SyncBase:        syncBase,
-		WorkspaceDelta:  workspaceDelta,
+		RunID:             env.RunID,
+		Stage:             strings.TrimPrefix(env.TaskID, env.RunID+":"),
+		Gaggle:            env.Gaggle,
+		Workflow:          env.WorkflowID,
+		BranchNamespace:   env.BranchNamespace,
+		WorkspaceBranch:   workspaceBranch,
+		WorkspaceRevision: env.WorkspaceRevision.DeepCopy(),
+		Checkout:          checkoutFromEnvelope(*env),
+		RepoRef:           env.RepoRef,
+		Mode:              mode,
+		SyncBase:          syncBase,
+		WorkspaceDelta:    workspaceDelta,
 	})
 	if err != nil {
+		var revisionErr *workspacerevision.Error
+		if errors.As(err, &revisionErr) {
+			return nil, err
+		}
 		if worktree.IsTransientProvisionError(err) {
 			return nil, invoke.InfrastructureFailure(fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err))
 		}

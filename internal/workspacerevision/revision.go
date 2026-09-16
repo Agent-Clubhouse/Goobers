@@ -19,7 +19,7 @@ const (
 	CodeSHAMismatch  = "workspace_revision_sha_mismatch"
 )
 
-// Error is a stable, non-retryable selected-revision refusal. Substrates may
+// Error is a stable selected-revision failure. Substrates may
 // preserve Cause for diagnostics without changing the code on the wire.
 type Error struct {
 	Code    string
@@ -37,8 +37,10 @@ func (e *Error) Error() string {
 // Unwrap exposes acquisition or validation detail to errors.Is/errors.As.
 func (e *Error) Unwrap() error { return e.Cause }
 
-// NonRetryable prevents retries from turning a refusal into branch fallback.
-func (e *Error) NonRetryable() bool { return true }
+// NonRetryable rejects immutable identity/object failures immediately. Acquisition
+// failures may use bounded transport retries against the same authorized SHA;
+// retries never permit branch, repository, or credential fallback.
+func (e *Error) NonRetryable() bool { return e.Code != CodeAcquisition }
 
 // StageErrorCode preserves the classification through runner terminal failures.
 func (e *Error) StageErrorCode() string { return e.Code }

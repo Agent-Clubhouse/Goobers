@@ -7,18 +7,23 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
 func (r *Runner) acceptWorkspaceRevision(in StartInput, task apiv1.Task, result apiv1.ResultEnvelope) (*apiv1.WorkspaceRevision, error) {
+	return acceptWorkspaceRevision(in, task, result, r.cfg.AdditionalRepos)
+}
+
+func acceptWorkspaceRevision(in StartInput, task apiv1.Task, result apiv1.ResultEnvelope, additional []apiv1.RepoRef) (*apiv1.WorkspaceRevision, error) {
 	selected, err := workspacerevision.Accept(in.workspaceRevision, result.WorkspaceRevision,
 		task.Type == apiv1.TaskDeterministic, result.Status == apiv1.ResultSuccess)
 	if err != nil {
 		return nil, err
 	}
 	if selected != nil {
-		if _, err := workspacerevision.Resolve(*selected, in.RepoRef, r.cfg.AdditionalRepos); err != nil {
+		if _, err := workspacerevision.Resolve(*selected, in.RepoRef, additional); err != nil {
 			return nil, err
 		}
 	}
@@ -26,6 +31,13 @@ func (r *Runner) acceptWorkspaceRevision(in StartInput, task apiv1.Task, result 
 }
 
 func (r *Runner) restoreWorkspaceRevision(events []journal.Event, in StartInput) (*apiv1.WorkspaceRevision, error) {
+	return RestoredWorkspaceRevision(events, in.Machine, in.RepoRef, r.cfg.AdditionalRepos)
+}
+
+// RestoredWorkspaceRevision reconstructs accepted authority from journal history,
+// applying the same producer and configured-repository checks as the live runner.
+func RestoredWorkspaceRevision(events []journal.Event, machine *workflow.Machine, base apiv1.RepoRef, additional []apiv1.RepoRef) (*apiv1.WorkspaceRevision, error) {
+	in := StartInput{Machine: machine, RepoRef: base}
 	for _, event := range events {
 		if event.WorkspaceRevision == nil {
 			continue
@@ -34,9 +46,9 @@ func (r *Runner) restoreWorkspaceRevision(events []journal.Event, in StartInput)
 		if event.Type != journal.EventStageFinished || !exists {
 			return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "workspace revision has no deterministic stage result"}
 		}
-		selected, err := r.acceptWorkspaceRevision(in, task, apiv1.ResultEnvelope{
+		selected, err := acceptWorkspaceRevision(in, task, apiv1.ResultEnvelope{
 			Status: apiv1.ResultStatus(event.Status), WorkspaceRevision: event.WorkspaceRevision,
-		})
+		}, additional)
 		if err != nil {
 			return nil, fmt.Errorf("restore workspace revision at event %d: %w", event.Seq, err)
 		}

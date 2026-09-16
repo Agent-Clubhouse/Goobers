@@ -70,6 +70,8 @@ var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
 
 // Config is the dispatcher's per-instance wiring.
 type Config struct {
+	// WorkspaceRepositories is configuration authority, never stage output.
+	WorkspaceRepositories map[string][]apiv1.RepoRef
 	// GaggleNamespaces maps each gaggle name this dispatcher serves to the
 	// Kubernetes namespace its stage pods are created in — Gaggle.spec.
 	// isolation.namespace, keyed by gaggle name (#4897). A stage pod's
@@ -415,7 +417,12 @@ type Attempt struct {
 	// makes the in-pod executor check the repository out before running the
 	// command; scratch (or empty) leaves it an empty directory, which is what
 	// every pod-executed stage got before pod-side checkout existed.
-	Workspace string
+	Workspace         string
+	WorkspaceRevision *apiv1.WorkspaceRevision
+	PartialClone      bool
+	Checkout          *apiv1.CheckoutSpec
+	// WorkspaceRepository is the configured base authority supplied by the driver.
+	WorkspaceRepository apiv1.RepoRef
 	// Agentic marks a stage the pod executes by invoking a goober through its
 	// harness rather than by running a declared command. Such a stage needs its
 	// whole InvocationEnvelope and its goober's resolved execution inputs, which
@@ -802,6 +809,9 @@ var ErrPodUnschedulable = errors.New("dispatcher: stage pod cannot be scheduled 
 // without a verified recovery acknowledgment are preserved. Every retry still
 // receives a fresh pod, never a reused one (D1).
 func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []RunnerSpec) (Report, error) {
+	if _, err := selectedWorkspaceCheckout(d.cfg, attempt); err != nil {
+		return Report{}, err
+	}
 	runner, err := SelectRunner(attempt, eligible)
 	if err != nil {
 		return Report{}, err

@@ -20,8 +20,9 @@ func testRevision() *apiv1.WorkspaceRevision {
 func requireCode(t *testing.T, err error, code string) {
 	t.Helper()
 	var typed *Error
-	if !errors.As(err, &typed) || typed.Code != code || !typed.NonRetryable() {
-		t.Fatalf("error = %v, want nonretryable %s", err, code)
+	wantNonRetryable := code != CodeAcquisition
+	if !errors.As(err, &typed) || typed.Code != code || typed.NonRetryable() != wantNonRetryable {
+		t.Fatalf("error = %v, want %s with NonRetryable=%t", err, code, wantNonRetryable)
 	}
 }
 

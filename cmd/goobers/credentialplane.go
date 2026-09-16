@@ -190,6 +190,10 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 			fmt.Sprintf("the run's pinned workflow definition could not be verified: %v", err))
 	}
 
+	if request.WorkspaceRevision != nil {
+		return s.resolveRevisionCheckout(ctx, request, *defs, reader, identity, machine)
+	}
+
 	// The pinned gate-goober state is loaded lazily — only an agentic
 	// reviewer gate needs it — from the same journal the workflow pin came
 	// from, mirroring how the task path reaches the pinned workflow.
@@ -538,7 +542,7 @@ func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefin
 // (BYO MCP sources excluded), goober-scoped grants for agentic work — a
 // capability granted only to another goober stays unreachable even if this
 // stage declares the same capability name.
-func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, profile stageProfile) (*credentials.Injector, error) {
+func (s *daemonCredentialService) credentialSources(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
 	build := s.buildSources
 	if build == nil {
 		build = func(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
@@ -549,7 +553,11 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 			return buildCredentials(s.config, s.stores, owner, scope.Project.Name, scope.AdditionalRepos, s.shared)
 		}
 	}
-	resolver, grants, err := build(scope)
+	return build(scope)
+}
+
+func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, profile stageProfile) (*credentials.Injector, error) {
+	resolver, grants, err := s.credentialSources(scope)
 	if err != nil {
 		return nil, err
 	}

@@ -60,7 +60,8 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// and fails the run; a harness failure carries the harness's own class
 	// (see the review arm below), as the self arm's ReviewGoober does.
 	fail := func(code string, err error) stageOutcome {
-		envelope := failureEnvelope(code, err.Error())
+		code = podWorkspaceFailureCode(code, err)
+		envelope := podWorkspaceFailure(code, err)
 		if kit.IsReview() && reviewSubstrateFailure(code) {
 			envelope.Error.Retryable = substrateRetryable(err)
 		}

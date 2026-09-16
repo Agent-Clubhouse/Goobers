@@ -28,6 +28,11 @@ type WorkspaceRequest struct {
 	// deterministic stage. Empty means the run's own derived branch. A non-empty
 	// branch must already exist; provisioners must never create it from base.
 	WorkspaceBranch string
+	// WorkspaceRevision binds readonly acquisition independently of writable
+	// branch/delta continuity. Scratch stages do not acquire it.
+	WorkspaceRevision *apiv1.WorkspaceRevision
+	// Checkout is configured materialization policy, never producer authority.
+	Checkout *apiv1.CheckoutSpec
 	// RepoRef is the repository a repo-mode workspace is provisioned from.
 	RepoRef apiv1.RepoRef
 	// Mode selects the workspace kind. Empty or apiv1.WorkspaceRepo provisions

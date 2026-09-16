@@ -98,6 +98,12 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			var activityResult stageActivityResult
 			activityResult, err = dispatch(ctx, int(attempt), class)
 			res = activityResult.ResultEnvelope
+			if err == nil {
+				res, err = acceptWorkspaceRevision(in, t, res)
+				if err == nil {
+					err = validateRevisionPublication(in, t, activityResult)
+				}
+			}
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
 				return apiv1.ResultEnvelope{}, err
 			}
@@ -174,6 +180,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)
 		}
 		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err)
+		if workspaceRevisionErrorCode(err) != "" {
+			return apiv1.ResultEnvelope{}, err
+		}
 		if isWorkerLossTimeout(err) && len(t.PolicyActions) > 0 {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
 		}

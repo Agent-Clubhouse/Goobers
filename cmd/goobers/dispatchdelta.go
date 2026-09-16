@@ -160,6 +160,9 @@ type publishedWorkspaceDelta struct {
 // nothing else will carry them, and reporting success would strand exactly the
 // diff this exists to preserve.
 func publishWorkspaceDelta(ctx context.Context, dir string, stderr io.Writer) (publishedWorkspaceDelta, error) {
+	if os.Getenv(dispatcher.EnvWorkspaceRevision) != "" {
+		return publishedWorkspaceDelta{}, nil
+	}
 	if !stageWorkspaceIsWritableRepo() {
 		return publishedWorkspaceDelta{}, nil
 	}

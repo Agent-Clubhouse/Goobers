@@ -154,6 +154,78 @@ kubelet pulls via the AcrPull identity, dispatcher only names the image).
 
 ## 5. Stamped pod spec — the interactions infra flagged
 
+### Selected-revision pod checkout
+
+Selected-revision `repo-readonly` uses the same immutable repository+SHA identity
+as local and workerhost execution (#5125). `DispatchStageInput.WorkspaceRevision`
+and `dispatcher.Attempt.WorkspaceRevision` carry the closed API identity; the pod
+receives its JSON as `GOOBERS_WORKSPACE_REVISION`. Separately,
+`GOOBERS_WORKSPACE_CHECKOUT` carries the configuration-authorized `RepoRef` and
+partial-clone policy. The dispatcher resolves the source against the run's
+configured base and its gaggle's declared additional repositories. Result URLs,
+provider IDs and `sourceRef` never become clone routes, credentials or branch
+selectors. Both environment names are privileged, workflow-nonoverridable and
+removed before stage execution, including for CLI stages.
+
+The pod initializes a fresh, template-free repository, fetches the exact SHA
+without tags or submodule recursion, verifies `FETCH_HEAD`, checks the object is
+a **commit**, detaches at it, and verifies `HEAD == expected SHA`. There is no
+fallback to the configured base, a same-named branch, another repository, or
+ambient/base-repository credentials. Invalid selection, missing authorization,
+conflicting writable controls, acquisition failure, non-commit objects and SHA
+mismatch retain the shared `workspace_revision_*` taxonomy. Identity and object
+refusals are non-retryable; acquisition failures may retry the same authorized
+source and exact SHA under bounded transport policy, never substitute a fallback.
+
+Materialization policy remains separate from identity on all three substrates:
+
+| Configuration | Local / workerhost / pod selected checkout |
+|---|---|
+| Full | Fetch and materialize the exact commit's full tracked tree |
+| `workcopies.partialClone: true` | Blobless fetch; materialization hydrates needed blobs only from the authorized source |
+| `RepoRef.checkout.sparse` | Preserve the same cone paths; partial+sparse does not hydrate excluded blobs |
+
+Selected-source checkout credentials are requested separately from business-stage
+capabilities. The existing credential-resolve endpoint accepts `runId`, `stage`
+and optional `workspaceRevision`; no business capability list accompanies a
+selected checkout request. The daemon reconstructs the immutable accepted
+deterministic selection from the **full durable journal**, verifies that the
+pinned stage declares `repo-readonly`, matches the exact requested revision,
+and reauthorizes its source against configuration. A selected URL or provider ID
+is never credential authority.
+
+The server resolves **only the configured source's repository-qualified
+`ContentsRead` grant**, including when the source is the base repository. It
+never substitutes `RepoPush`, a generic capability override, or another repo's
+token. An authenticated response contains one credential whose capability is
+`workspace-revision:checkout` (`WorkspaceRevisionCheckoutCapability`) and whose
+value is nonempty. Grants and resolved values never become stage/agent
+environment variables or pod-spec secrets; only checkout's child Git process
+receives the token. No broader credential is created to make a fork readable.
+
+A declared public source with no configured token returns HTTP 200 with
+`credentials: []`, explicitly authorizing anonymous checkout. The client marks
+this authorization internally; an absent grant, empty credential value, or
+configured-token resolution failure never becomes anonymous fallback.
+Authorization and credential failures return typed non-200 responses. Anonymous
+checkout discards ambient askpass/token settings, and selected checkout isolates
+Git's HOME so image-provided `.netrc` credentials cannot substitute for the
+authorized source credential policy.
+
+`GOOBERS_WORKSPACE_BRANCH`, `GOOBERS_WORKSPACE_DELTA`, `GOOBERS_STAGE_SYNC_BASE`
+and the legacy checkout capability are explicitly empty in a selected-readonly
+pod, shadowing image/template defaults. Selected workspaces consume and publish
+**no workspace delta**, even if a stage creates local commits. Scratch and
+legacy configured-base behavior remain unchanged.
+
+Submodule recursion, Git LFS expansion and custom clean/smudge/process filters
+are disabled by default. Selected checkout ignores ambient Git config and object
+stores, creates no template hooks, and disables hooks and fsmonitor for every
+provisioning command. Declaring a selected identity does not opt into any of
+these content-expansion behaviors.
+
+### Other stamped pod interactions
+
 - **tmpfs sizeLimit set-and-budgeted (constraint (d)):** the decision-006 `tmp:ephemeral`
   mount is memory-backed `emptyDir`, which counts against the container memory limit
   (GA 1.22). The dispatcher sets the tmpfs `sizeLimit` explicitly (never default-to-half-node-

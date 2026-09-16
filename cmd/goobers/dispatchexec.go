@@ -331,7 +331,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// The checkout may use a credential the stage itself never receives.
 	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
 	if checkoutErr != nil {
-		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
+		return podWorkspaceFailure("credential_resolve_failed", checkoutErr)
 	}
 	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
 		// A genuine syncBase base-merge conflict is classified exactly as the
@@ -358,7 +358,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		// would otherwise run against an empty directory and fail somewhere far
 		// away — a missing Makefile, a missing test file — with an error that
 		// says nothing about provisioning.
-		return failureEnvelope("workspace_provision_failed", err.Error())
+		return podWorkspaceFailure("workspace_provision_failed", err)
 	}
 	// The STAGE's git needs the same exemption: it runs in the same
 	// differently-owned workspace, and real workflows commit and push from it.
@@ -525,6 +525,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		}
 	}
 	stageArtifacts := recordStageArtifactsTyped(ctx, stderr, streams, mediaTypes)
+	var selectedRevision *apiv1.WorkspaceRevision
 	// Lift the declared result file into Outputs, exactly as the local
 	// executor does. WITHOUT THIS a pod-executed stage surrenders only stdout,
 	// so a gate reading an output key finds nothing and evaluates its FAILURE
@@ -536,6 +537,13 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		data, rerr := resultData, resultErr
 		switch {
 		case rerr == nil:
+			var err error
+			selectedRevision, err = podResultWorkspaceRevision(data)
+			if err != nil {
+				result := podWorkspaceFailure("result_file_invalid", err)
+				result.Artifacts, result.Metrics = stageArtifacts, stageMetrics
+				return result
+			}
 			mergeResultFileOutputs(outputs, data)
 		case os.IsNotExist(rerr) && runErr == nil && !timedOut:
 			// A stage that succeeded but did not write its declared result
@@ -581,11 +589,12 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 			}
 		}
 		return apiv1.ResultEnvelope{
-			Status:    apiv1.ResultSuccess,
-			Outputs:   outputs,
-			Artifacts: stageArtifacts,
-			Metrics:   stageMetrics,
-			Summary:   "stage completed",
+			Status:            apiv1.ResultSuccess,
+			WorkspaceRevision: selectedRevision,
+			Outputs:           outputs,
+			Artifacts:         stageArtifacts,
+			Metrics:           stageMetrics,
+			Summary:           "stage completed",
 		}
 	}
 
@@ -843,6 +852,16 @@ func stageDeclaredCapabilities() ([]string, error) {
 // when the stage already declares a repo-shaped capability — the checkout uses
 // that one, and minting a second would be pointless.
 func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+	revision, _, err := podWorkspaceRevision()
+	if err != nil {
+		return nil, err
+	}
+	if revision != nil {
+		client := &dispatcher.CredentialResolveClient{
+			BaseURL: os.Getenv(dispatcher.EnvDaemonAPI), Token: os.Getenv(dispatcher.EnvPodToken),
+		}
+		return client.ResolveCheckout(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), revision)
+	}
 	capability := strings.TrimSpace(os.Getenv(dispatcher.EnvCheckoutCapability))
 	if capability == "" {
 		return nil, nil

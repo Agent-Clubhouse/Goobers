@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -72,7 +73,14 @@ type RunInput struct {
 	PreviewFeaturesEnabled *bool              `json:"previewFeaturesEnabled,omitempty"`
 	Spec                   apiv1.WorkflowSpec `json:"spec"`
 	RepoRef                apiv1.RepoRef      `json:"repoRef"`
-	Item                   *apiv1.BacklogItem `json:"item,omitempty"`
+	// WorkspaceRevision is immutable workflow state, reconstructed from the
+	// pinned input and successful deterministic activity results on replay.
+	WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
+	// AdditionalRepos pins configured source authorization, never stage grants.
+	AdditionalRepos []apiv1.RepoRef `json:"additionalRepos,omitempty"`
+	// PartialClone pins the instance materialization policy for pod transport.
+	PartialClone bool               `json:"partialClone,omitempty"`
+	Item         *apiv1.BacklogItem `json:"item,omitempty"`
 	// TriggerRef identifies the event or item that caused the run — the same
 	// bounded scheduler metadata the local runner threads into every
 	// envelope's triggerRef field (#621 envelope parity).
@@ -453,6 +461,12 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
+	if in.WorkspaceRevision != nil {
+		if _, err := workspacerevision.Resolve(*in.WorkspaceRevision, in.RepoRef, in.AdditionalRepos); err != nil {
+			return RunResult{}, err
+		}
+		in.WorkspaceRevision = in.WorkspaceRevision.DeepCopy()
+	}
 	// The workspace continuity record (continuity.go, #3803/#3767): every
 	// workspace-delta publication so far, keyed by producing stage. A pod is
 	// disposed after surrender and a worker's mirror never sees a pod's
@@ -525,6 +539,9 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			res, terr := runTask(ctx, in, m, t, pointers, lastResult, completed, workspaceBranch, selected.Digest, addendum, &published, taskDispatches, rec)
 			if terr != nil {
 				return RunResult{}, terr
+			}
+			if res.WorkspaceRevision != nil {
+				in.WorkspaceRevision = res.WorkspaceRevision.DeepCopy()
 			}
 			// Keyed on the PRE-rebind binding on purpose: the rebind below
 			// applies from the NEXT stage on, and this stage's commits were made
@@ -912,6 +929,9 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 }
 
 func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, taskDispatches map[string]int, rec *runJournal) (apiv1.ResultEnvelope, error) {
+	if in.WorkspaceRevision != nil && !writableWorkspace(t.EffectiveWorkspace()) {
+		workspaceBranch, workspaceDelta = "", ""
+	}
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -930,6 +950,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
 	}
 	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream, t.Goober)
+	if t.EffectiveWorkspace() == apiv1.WorkspaceRepoReadOnly {
+		env.CheckoutCones = invocationCheckoutCones(in, true)
+	}
 	env.MinimumIntegrity = t.MinimumIntegrity
 	env.Attempt = 1
 	env.OwnershipBoundary = "task:" + t.Name
@@ -992,6 +1015,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// as before this branch existed (zero-declaration invariance,
 	// architecture §11 item 1).
 	if placement, remote := remotePlacementFor(in, t.Name); remote {
+		if err := ensureSelectedRevisionJournal(ctx, in, t.EffectiveWorkspace(), rec); err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
 		ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
 		produced := engineProducedIntegrity(t, env, inputGrades)
 		// workspaceBranch rides to the pod for the same reason it rides to the
@@ -1066,6 +1092,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 // #3845): that arm is untouched, and the walk's continuity selector already
 // hands both arms the same delta.
 func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gatePolicyAttempts map[string]int, gateDispatches map[string]int, firstClass journal.AttemptClass, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
+	if in.WorkspaceRevision != nil && !writableWorkspace(g.EffectiveWorkspace()) {
+		workspaceBranch, workspaceDelta = "", ""
+	}
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -1117,6 +1146,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			gateCaps = in.GateGooberCapabilities[reviewerGoober]
 		}
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
+		if g.EffectiveWorkspace() == apiv1.WorkspaceRepoReadOnly {
+			env.CheckoutCones = invocationCheckoutCones(in, true)
+		}
 		_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
 		env.ReviewerMechanicalEscalationAllowed = gate.StructuredMechanicalEscalation(g)
 		env.InstructionAddendum = instructionAddendum
@@ -1141,6 +1173,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// ones it has always had.
 		placement, remote := remotePlacementFor(in, g.Name)
 		if remote {
+			if err := ensureSelectedRevisionJournal(ctx, in, g.EffectiveWorkspace(), rec); err != nil {
+				return "", nil, GateReviewResult{}, err
+			}
 			ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
 		} else {
 			ctx = stageActivityContext(ctx, env.Limits)
@@ -1173,7 +1208,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		var review GateReviewResult
 		if err := evaluateWithInfraRetry(ctx, g, rec, firstClass, func(ctx workflow.Context, class journal.AttemptClass) error {
 			if remote {
-				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
+				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, in.PartialClone, gatePodAttempt(gateDispatches, g.Name), class, rec)
 				if err != nil {
 					return err
 				}
@@ -1253,23 +1288,25 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		baseBranch = "main"
 	}
 	return apiv1.InvocationEnvelope{
-		TaskID:          in.RunID + ":" + stateName,
-		InstanceID:      in.InstanceID,
-		WorkflowID:      in.WorkflowName,
-		RunID:           in.RunID,
-		TriggerRef:      in.TriggerRef,
-		Gaggle:          in.Gaggle,
-		BranchNamespace: in.BranchNamespace,
-		BaseBranch:      baseBranch,
-		Goal:            goal,
-		Goober:          goober,
-		GooberDigest:    in.GooberDigest,
-		RepoRef:         in.RepoRef.EnvelopeRef(),
-		Item:            in.Item,
-		ContextPointers: upstream,
-		Capabilities:    capabilities,
-		Limits:          limits,
-		Inputs:          inputs,
+		TaskID:            in.RunID + ":" + stateName,
+		InstanceID:        in.InstanceID,
+		WorkflowID:        in.WorkflowName,
+		RunID:             in.RunID,
+		TriggerRef:        in.TriggerRef,
+		Gaggle:            in.Gaggle,
+		BranchNamespace:   in.BranchNamespace,
+		BaseBranch:        baseBranch,
+		Goal:              goal,
+		Goober:            goober,
+		GooberDigest:      in.GooberDigest,
+		RepoRef:           in.RepoRef.EnvelopeRef(),
+		WorkspaceRevision: in.WorkspaceRevision.DeepCopy(),
+		CheckoutCones:     invocationCheckoutCones(in, false),
+		Item:              in.Item,
+		ContextPointers:   upstream,
+		Capabilities:      capabilities,
+		Limits:            limits,
+		Inputs:            inputs,
 	}
 }
 

@@ -125,6 +125,10 @@ type InvocationEnvelope struct {
 	Workspace string `json:"workspace"`
 	// RepoRef is the target repository for this run.
 	RepoRef RepoRef `json:"repoRef"`
+	// WorkspaceRevision is the accepted immutable inspection input. RepoRef
+	// remains the configured base for provider operations; this control grants
+	// no source-branch write authority or checkout policy.
+	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
 	// AdditionalWorkspaces are read-only checkouts of the gaggle's reference
 	// repos (GaggleSpec.AdditionalRepos, MGV-11 #1286): the stage may READ them
 	// for cross-repo context, but no push credential is ever provisioned for

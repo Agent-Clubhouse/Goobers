@@ -7,8 +7,8 @@
 > Last updated: 2026-09-15 · Descriptive/prescriptive status re-annotated
 > 2026-09-06: §4–§7 (as amended) describe shipped, verified behavior of the local
 > runner, except the capability namespace rule in §5, which is prescriptive
-> pending its atomic migration. §5.1 distinguishes delivered local selected-revision
-> work from pending distributed and writable-sandbox integration.
+> pending its atomic migration. §5.1 distinguishes delivered cross-substrate
+> selected-revision inspection from pending writable-sandbox integration.
 > The remaining V1 work identified in §12 is
 > prescriptive roadmap — mandated, not yet built.
 >
@@ -93,11 +93,11 @@ execution. Two runners implement the same contract:
   history down into the same run-journal format** (§4) so the portal, telemetry,
   Tutor, and operators see one shape everywhere. Raw Temporal mechanics (replay,
   task queues, worker lifecycle) are never part of the product surface.
-- Selected-revision workflow state and replay are a **pending integration**
-  under #5124, not implied by the existing Temporal substrate. Its contract
-  requires reconstructing the accepted immutable binding from history, including
-  legacy histories with no binding; it must never repoll a provider or resolve a
-  moving ref on replay. See [the selected-revision design](design/selected-revision-workspaces.md).
+- Selected-revision workflow state and replay reconstruct the accepted immutable
+  binding from history, including legacy histories with no binding. Retries and
+  replay never repoll a provider or resolve a moving source ref. Workerhost and
+  pod consumers preserve the same exact-SHA contract. See
+  [the selected-revision design](design/selected-revision-workspaces.md).
 - Brings durable long waits (multi-day human gates), schedules at scale, and
   per-gaggle worker isolation. **Child workflows** remain a **tier-3 DSL extension**: a
   definition that uses them is tier-3-only until the local runner implements them
@@ -461,13 +461,17 @@ restore workspace deltas, or publish source changes. Pinned execution holds the
 whole-run lease and resets/cleans before and after each such stage; this is a
 deliberate exception to ordinary pinned build-state retention described above.
 
-**Delivery boundary:** local binding, journal replay, provider source identity,
-and ordinary/pinned exact-SHA inspection are delivered in the local milestone.
-Temporal/workerhost parity (#5124), pod parity (#5125), remote isolated writable
-branches (#5126), and lifecycle/conformance/reference workflows (#5127) remain
-pending. The [owning design](design/selected-revision-workspaces.md) records that
-partial-delivery ledger; this local capability is not a claim of completed
-cross-substrate support.
+Temporal activities, workerhost requests, dispatcher attempts, and pod checkout
+carry the immutable selection separately from configured repository policy.
+Selected pods require an acknowledged durable journal record before dispatch.
+Checkout credentials resolve only for the configured source; no base write
+credential or stage-authored URL can supply fallback authority.
+
+**Delivery boundary:** #5121–#5125 deliver local binding/resume, provider source
+identity, ordinary/pinned exact-SHA inspection, Temporal replay, workerhost, and
+pod parity. Remote isolated writable branches (#5126) and complete lifecycle/
+conformance/reference workflows (#5127) remain pending. The
+[owning design](design/selected-revision-workspaces.md) records this partial ledger.
 
 ## 6. Instance anatomy (local runner)
 

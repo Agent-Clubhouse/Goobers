@@ -93,6 +93,15 @@ Declared additional repositories retain their independent disposable read-only
 checkouts alongside the pinned primary checkout. Declared sparse cones and
 partial-clone policy remain materialization controls, not result authority.
 
+Temporal keeps the selection in deterministic workflow state and carries it in
+the optional `InvocationEnvelope.workspaceRevision`; `repoRef` remains the
+configured base identity. Activity retries and replay preserve the identical
+source/SHA, including compatibility with old histories that omit the field.
+Workerhost and pod checkout enforce the same detached-object verification and
+read-only delta exclusion. Selected pod consumers require live journaling:
+acceptance is durably acknowledged before dispatch, so the checkout credential
+service can verify the run's selected authority rather than trust its request.
+
 ## How a stage gets its input
 
 The runner hands the stage an `InvocationEnvelope`:

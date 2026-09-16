@@ -436,12 +436,17 @@ func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProje
 	}
 
 	var adoSource providers.ADOCredentialSource
+	var adoProjectURL string
 	if adoRepo, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
 		source, err := adoauth.Source(adoRepo, nil, stores)
 		if err != nil {
 			return nil, fmt.Errorf("configure ADO worktree authentication: %w", err)
 		}
 		adoSource = source
+		adoProjectURL, err = cloneURL(gaggleProject)
+		if err != nil {
+			return nil, fmt.Errorf("resolve ADO project clone URL: %w", err)
+		}
 	}
 
 	// GitHub project-repo authentication (#667/#686): github-app installation
@@ -482,7 +487,7 @@ func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProje
 			}
 			return providers.GitHubGitAuthEnvironment(token, repoURL, reg), nil
 		}
-		if adoSource != nil {
+		if adoSource != nil && repoURL == adoProjectURL {
 			return providers.ADOGitAuthEnvironment(ctx, adoSource, reg, repoURL)
 		}
 		if githubProjectEnv != nil {

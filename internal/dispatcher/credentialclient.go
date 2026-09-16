@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // defaultCredentialTimeout bounds a resolve. Short on purpose: credentials are
@@ -19,6 +21,10 @@ import (
 // than one late write, and a stage that cannot get its credentials must fail
 // fast rather than run without them.
 const defaultCredentialTimeout = 30 * time.Second
+
+// WorkspaceRevisionCheckoutCapability identifies a checkout-only source grant,
+// never a stage-declarable capability or a base-repository credential.
+const WorkspaceRevisionCheckoutCapability = "workspace-revision:checkout"
 
 // defaultCredentialRetryDeadline bounds the WHOLE resolve loop — across
 // attempts — when the caller sets no RetryDeadline of its own (#3809).
@@ -48,6 +54,9 @@ const defaultCredentialRetryDeadline = 3 * time.Minute
 type MintedCredential struct {
 	Capability string `json:"capability"`
 	Value      string `json:"value"`
+	// Anonymous is an internal attestation of an empty successful selected-
+	// checkout response, never an externally supplied credential property.
+	Anonymous bool `json:"-"`
 }
 
 // CredentialResolveClient resolves a stage's declared credential capabilities
@@ -114,6 +123,50 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 	if len(capabilities) == 0 {
 		return nil, nil
 	}
+	return c.resolve(ctx, runID, stage, capabilities, nil)
+}
+
+// ResolveCheckout asks the daemon to reauthorize the selected source using the
+// run's configured repositories and existing credentials. No URL or selector
+// reconstructed from the result is ever sent as credential authority.
+func (c *CredentialResolveClient) ResolveCheckout(ctx context.Context, runID, stage string, revision *apiv1.WorkspaceRevision) ([]MintedCredential, error) {
+	if revision == nil {
+		return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "selected revision checkout requires identity"}
+	}
+	creds, err := c.resolve(ctx, runID, stage, nil, revision)
+	if err == nil {
+		if creds == nil {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeUnauthorized,
+				Message: "selected checkout response omitted its credential authorization"}
+		}
+		if len(creds) == 0 {
+			return []MintedCredential{{Capability: WorkspaceRevisionCheckoutCapability, Anonymous: true}}, nil
+		}
+		if len(creds) != 1 || creds[0].Capability != WorkspaceRevisionCheckoutCapability {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeUnauthorized,
+				Message: "selected checkout response must contain only one source checkout credential"}
+		}
+		return creds, nil
+	}
+	code := workspacerevision.CodeAcquisition
+	var refusal *CredentialResolveRefusal
+	if errors.As(err, &refusal) {
+		if refusal.Deterministic() {
+			code = workspacerevision.CodeUnauthorized
+		}
+		var detail apicontract.APIError
+		if json.Unmarshal([]byte(refusal.Detail), &detail) == nil {
+			switch detail.Code {
+			case workspacerevision.CodeInvalid, workspacerevision.CodeUnauthorized, workspacerevision.CodeConflict,
+				workspacerevision.CodeAcquisition, workspacerevision.CodeObjectType, workspacerevision.CodeSHAMismatch:
+				code = detail.Code
+			}
+		}
+	}
+	return nil, &workspacerevision.Error{Code: code, Message: "selected source credential could not be resolved", Cause: err}
+}
+
+func (c *CredentialResolveClient) resolve(ctx context.Context, runID, stage string, capabilities []string, revision *apiv1.WorkspaceRevision) ([]MintedCredential, error) {
 	base := strings.TrimRight(c.BaseURL, "/")
 	if base == "" {
 		return nil, errors.New("dispatcher: credential client has no base URL")
@@ -122,10 +175,11 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 		return nil, fmt.Errorf("dispatcher: credential resolve requires run and stage (got run %q stage %q)", runID, stage)
 	}
 	body, err := json.Marshal(struct {
-		RunID        string   `json:"runId"`
-		Stage        string   `json:"stage"`
-		Capabilities []string `json:"capabilities,omitempty"`
-	}{RunID: runID, Stage: stage, Capabilities: capabilities})
+		RunID             string                   `json:"runId"`
+		Stage             string                   `json:"stage"`
+		Capabilities      []string                 `json:"capabilities,omitempty"`
+		WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
+	}{RunID: runID, Stage: stage, Capabilities: capabilities, WorkspaceRevision: revision})
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: encode credential resolve request: %w", err)
 	}

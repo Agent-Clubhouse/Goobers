@@ -56,6 +56,21 @@ type e2Fixture struct {
 func e2Fixtures() []e2Fixture {
 	return []e2Fixture{
 		{
+			name: "immutable selected revision",
+			spec: fixtureSpec("select", []apiv1.Task{
+				{Name: "select", Type: apiv1.TaskDeterministic, Goal: "select",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+					Next: "inspect"},
+				{Name: "inspect", Type: apiv1.TaskDeterministic, Goal: "inspect",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceRepoReadOnly},
+					Next: wf.TerminalComplete},
+			}, nil),
+			script: map[string][]scriptedCall{
+				"select":  {{result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, WorkspaceRevision: selectedRevisionFixture()}}},
+				"inspect": {{result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, WorkspaceRevision: selectedRevisionFixture()}}},
+			},
+		},
+		{
 			name: "stage-qualified inputsFrom",
 			spec: fixtureSpec("produce", []apiv1.Task{
 				{Name: "produce", Type: apiv1.TaskDeterministic, Goal: "produce",

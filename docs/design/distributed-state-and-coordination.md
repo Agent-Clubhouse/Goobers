@@ -357,6 +357,72 @@ render, `ControlEnvOverrideError`); inputs cannot collide by construction
 (`InputEnvVar` prefixes `GOOBERS_INPUT_`); and the operator `envPassthrough` list carries names into
 the `env:default-deny` allowlist only, never values.
 
+### 7.2 Selected revisions and workspace continuity
+
+Selected revision transport (#5121/#5124) is a typed control path, not a workspace
+delta or branch alias:
+
+```text
+configured base + additional repositories
+        │
+        ├─ RunInput { RepoRef, AdditionalRepos, WorkspaceRevision?, PartialClone? }
+        │     └─ successful deterministic ResultEnvelope.workspaceRevision
+        │          └─ immutable workflow state + stage.finished.workspaceRevision
+        │               └─ InvocationEnvelope.workspaceRevision
+        │                    └─ WorkspaceRequest { WorkspaceRevision, Checkout }
+        │                         └─ workerhost: configured source → exact detached SHA
+        └─ worker's independently configured source grants and worktree manager
+```
+
+The first valid, configuration-authorized deterministic selection establishes the
+binding. Identical re-emission is idempotent; a different value is a non-retryable
+`workspace_revision_conflict`. Agentic results cannot establish it. Failed
+deterministic results establish nothing. The workflow checks before authoring
+`stage.finished`, so live journaling and repair projection contain only accepted
+authority.
+
+Selected-revision read-only pod dispatch requires `LiveJournal` (`engine-start
+--live-journal` for direct starts). The engine awaits the accepted
+`stage.finished` emission acknowledgment before scheduling downstream pods;
+projection-only runs are refused rather than racing credential authorization
+against asynchronous journal repair. The source checkout credential endpoint
+checks this durable accepted control, not merely the invocation's claim.
+
+`RepoRef` and `BaseBranch` in the invocation retain the **configured base** for
+provider operations. Only `repo-readonly` acquisition uses the selected source.
+Scratch selectors acquire no revision checkout. Writable stages retain their
+existing independent `workspaceBranch`/delta continuity; selecting an inspection
+revision does not create a writable sandbox or grant source-branch publication.
+Selected read-only requests are stamped with neither branch nor delta. Explicit
+branch/delta/sync-base combinations at the provisioner are refused; read-only
+results cannot publish a delta.
+
+The worker authorizes against its configured base/additional repositories and
+uses the **configured reference returned by authorization**, never a result's URL
+or native ID as a replacement route. That source's sparse cones and the existing
+credentialed manager's partial-clone setting survive exact-SHA acquisition.
+`WorkspaceRequest.Checkout` separately carries ordinary configured checkout policy
+that `RepoRef.EnvelopeRef()` intentionally excludes. Selected acquisition uses the
+worker's source configuration rather than treating this transport field as a
+grant. Worktrees are detached at `BaseRef = ExpectedSHA = commitSha`; acquisition
+verifies commit object type and final `HEAD`, with no moving-ref fallback.
+Undeclared submodule, LFS, and custom-filter expansion stays disabled.
+
+Retries on another worker receive the identical selected identity/SHA. Temporal
+replay derives state solely from pinned input and recorded activity results; it
+does not repoll a provider or resolve `SourceRef`. Additive optional envelope and
+input fields preserve old payloads without changing recorded activity positional
+arity. Checked-in pre-selection Temporal histories are replayed by
+`TestWorkspaceRevisionRecordedLegacyHistories`; the real-server E2 replay fixtures
+also cover selected establishment and identical re-emission.
+
+Shared local/worker failure codes remain non-retryable across Temporal application
+errors: `workspace_revision_invalid`, `workspace_revision_unauthorized`,
+`workspace_revision_conflict`, `workspace_revision_acquisition`,
+`workspace_revision_object_type`, and `workspace_revision_sha_mismatch`.
+See [selected-revision workspaces](selected-revision-workspaces.md) for the full
+contract and remaining writable/lifecycle work.
+
 ## 8. The live journal service
 
 **Authorship model.** Workers still never touch journal *files* — that invariant survives. What

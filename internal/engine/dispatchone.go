@@ -109,6 +109,9 @@ func DispatchOne(ctx workflow.Context, in DispatchStageInput) (DispatchStageResu
 	// above, and workflow.GetInfo's execution id is deterministic on replay.
 	in.OwningWorkflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
 	var result DispatchStageResult
+	// Forward the complete payload: runner-pinned WorkspaceRevision, Checkout,
+	// and PartialClone are independent of the base envelope repository. Do not
+	// reconstruct this input or resolve mutable configuration in the workflow.
 	if err := workflow.ExecuteActivity(ctx, ActDispatchStage, in).Get(ctx, &result); err != nil {
 		// Returned bare: the caller classifies it with
 		// ClassifyDispatchFailure, and wrapping would hide the

@@ -158,6 +158,7 @@ func (s *workerConfigSnapshot) withGaggle(gaggle string, built *builtGaggleSeams
 
 type gaggleSeams struct {
 	cfg     runner.Config
+	project apiv1.RepoRef
 	runsDir string
 	// manager is buildRunnerConfig's own worktree manager — the CREDENTIALED
 	// one. workerEngineDeps builds a bare manager with no git auth, which
@@ -277,6 +278,13 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 
 	scoped := l.ForGaggle(gaggle)
 	project := gaggleProjectRef(set, gaggle)
+	var additionalRepos []apiv1.RepoRef
+	for _, configured := range set.Gaggles {
+		if configured.Name == gaggle {
+			additionalRepos = configured.Spec.AdditionalRepos
+			break
+		}
+	}
 	runnerCfg, credentialedMgr, err := buildRunnerConfig(runnerCompositionInput{
 		ExecutionFence: func(ctx context.Context, env apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
 			if w.executionFence != nil {
@@ -302,6 +310,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		WorktreeManager:     nil,
 		BranchNamespaces:    branchNamespacesByGaggle(set),
 		GaggleProject:       project,
+		AdditionalRepos:     additionalRepos,
 		HarnessInfo:         harnessInfo,
 		CredentialStores:    stores,
 		SandboxPosture:      instance.EffectiveAgenticSandbox(cfg, nil),
@@ -317,7 +326,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		return nil, fmt.Errorf("worker: buildRunnerConfig returned no worktree manager for gaggle %q", gaggle)
 	}
 	return &builtGaggleSeams{
-		seams:       &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr},
+		seams:       &gaggleSeams{cfg: runnerCfg, project: project, runsDir: scoped.RunsDir(), manager: credentialedMgr},
 		fingerprint: fingerprint,
 	}, nil
 }
@@ -391,7 +400,10 @@ func (p *workerWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRe
 	// Store is the same --blob-store the worker's artifact recorder writes
 	// through: the RWX volume the daemon's blob plane serves pods from, so a
 	// bundle a pod PUT is what this provisioner GETs (#3803), and vice versa.
-	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot, Store: p.seams.store}
+	delegate := &workerhost.WorktreeWorkspaces{
+		Manager: g.manager, ScratchDir: p.scratchRoot, Store: p.seams.store,
+		ConfiguredBase: g.project, AdditionalRepos: g.cfg.AdditionalRepos,
+	}
 	if err := p.seams.installRemoteRecoveryGuard(g.manager); err != nil {
 		return nil, err
 	}

@@ -55,6 +55,13 @@ var checkoutCloneURL = runner.DefaultRepoCloneURL
 // declared a repo workspace. It is a no-op for scratch, which keeps the
 // pre-checkout behaviour byte-identical for stages that never needed it.
 func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential) error {
+	revision, checkout, err := podWorkspaceRevision()
+	if err != nil {
+		return err
+	}
+	if revision != nil {
+		return checkoutSelectedRevision(ctx, dir, creds, revision, *checkout)
+	}
 	mode := strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace))
 	if mode == "" || mode == string(apiv1.WorkspaceScratch) {
 		return nil
@@ -253,6 +260,9 @@ func ensureRecoveryBaseRemoteRef(ctx context.Context, dir string, gitEnv []strin
 // the first writable stage of a run, or a run whose earlier stages committed
 // nothing — and the base checkout already standing is correct.
 func applyStageWorkspaceDelta(ctx context.Context, dir string, gitEnv []string, stderr io.Writer) error {
+	if os.Getenv(dispatcher.EnvWorkspaceRevision) != "" {
+		return nil
+	}
 	digest := strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceDelta))
 	if digest == "" {
 		return nil

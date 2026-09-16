@@ -187,7 +187,12 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 		return stageDispatch{}, fmt.Errorf("stage dispatch: gaggle namespace preflight: %w", preflightErr)
 	}
 	build := version.Get()
+	workspaceRepositories := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
+	for _, gaggle := range set.Gaggles {
+		workspaceRepositories[gaggle.Name] = gaggle.Spec.AdditionalRepos
+	}
 	d, err := newStageDispatcher(dispatcher.Config{
+		WorkspaceRepositories: workspaceRepositories,
 		// Validation guarantees a non-nil signer before it enters the interface.
 		TokenMinter: signed,
 		// The kit writer uses the same key and the worker's pinned config

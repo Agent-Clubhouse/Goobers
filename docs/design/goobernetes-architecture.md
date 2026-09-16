@@ -199,6 +199,12 @@ The full path of one run in mode 3:
    worktree on the run branch fetched from origin at a declared handoff edge (record D6),
    artifacts materialized from the blobstore by digest, credentials delivered per the
    #2931 references-only contract (values re-resolved at execution, never in history).
+   A selected-revision `repo-readonly` workspace instead fetches the exact authorized
+   source repository's SHA, verifies a commit object and detached `HEAD == expected SHA`,
+   and neither consumes nor publishes a workspace delta. The selected identity travels
+   independently from configuration-authorized transport and checkout policy; source
+   refs are provenance, never branch fallback. See the
+   [selected-revision pod checkout contract](goobernetes-dispatcher.md#selected-revision-pod-checkout).
 6. **Execution.** The stage runs; journal events stream through the write API (D7);
    ledger-touching stages call claim/release (D6).
 7. **Surrender.** Artifacts and spans write through to the blobstore; a repo-writing stage

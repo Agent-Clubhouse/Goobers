@@ -192,6 +192,10 @@ const (
 	// the pod's own token can fetch, and a stage has no business reading or
 	// forging it.
 	EnvWorkspaceDelta = "GOOBERS_WORKSPACE_DELTA"
+	// EnvWorkspaceRevision is selected identity; EnvWorkspaceCheckout is
+	// separately configuration-authorized transport and materialization policy.
+	EnvWorkspaceRevision = "GOOBERS_WORKSPACE_REVISION"
+	EnvWorkspaceCheckout = "GOOBERS_WORKSPACE_CHECKOUT"
 	// EnvWorkspaceBranch carries the run's REBOUND workspace branch (#392) — the
 	// branch the in-pod checkout must clone instead of the one it would derive
 	// from workflow + run id. Stamped only when a stage actually rebound it
@@ -341,6 +345,7 @@ var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
+	EnvWorkspaceRevision, EnvWorkspaceCheckout,
 	EnvStageSyncBase, EnvCheckoutCapability,
 	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
 }
@@ -616,6 +621,9 @@ func sanitizeNameSegment(s string, maxLen int) string {
 // runner-class label, the deny-first posture labels, the OS node selector and
 // Windows toleration, and the always-on activeDeadlineSeconds execution bound.
 func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, error) {
+	if _, err := selectedWorkspaceCheckout(cfg, attempt); err != nil {
+		return nil, err
+	}
 	if err := refuseOverrides(attempt); err != nil {
 		return nil, err
 	}
@@ -710,6 +718,9 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 // template's FIRST container is taken as the stage container (the v1 reading
 // of architecture §12 open point 2, stated rather than implied).
 func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployment *appsv1.Deployment) (*corev1.Pod, error) {
+	if _, err := selectedWorkspaceCheckout(cfg, attempt); err != nil {
+		return nil, err
+	}
 	if deployment == nil {
 		return nil, fmt.Errorf("dispatcher: runner %q names no readable template deployment", runner.Name)
 	}
@@ -1197,6 +1208,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	if attempt.SyncBase {
 		env = append(env, corev1.EnvVar{Name: EnvStageSyncBase, Value: "true"})
 	}
+	env = append(env, workspaceRevisionEnv(cfg, attempt)...)
 	if len(attempt.Capabilities) > 0 {
 		if encoded, err := json.Marshal(attempt.Capabilities); err == nil {
 			env = append(env, corev1.EnvVar{Name: EnvStageCapabilities, Value: literalPodEnv(string(encoded))})

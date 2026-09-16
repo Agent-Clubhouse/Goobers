@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workspacedelta"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -38,6 +39,10 @@ import (
 type WorktreeWorkspaces struct {
 	// Manager provisions repo-mode worktrees (mirror clone + git worktree add).
 	Manager *worktree.Manager
+	// ConfiguredBase and AdditionalRepos are worker configuration, not request
+	// authority. Selected acquisition must match these before any git I/O.
+	ConfiguredBase  apiv1.RepoRef
+	AdditionalRepos []apiv1.RepoRef
 	// ScratchDir roots scratch-mode workspaces.
 	ScratchDir string
 	// CloneURL derives the git remote for a RepoRef. Nil applies the local
@@ -65,6 +70,12 @@ func (p *WorktreeWorkspaces) log() io.Writer {
 
 // Provision implements engine.WorkspaceProvisioner.
 func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRequest) (engine.Workspace, error) {
+	if req.WorkspaceRevision != nil && req.Mode == apiv1.WorkspaceRepoReadOnly {
+		return p.provisionRevision(ctx, req)
+	}
+	if req.Checkout != nil {
+		req.RepoRef.Checkout = req.Checkout
+	}
 	switch req.Mode {
 	case apiv1.WorkspaceScratch:
 		if req.SyncBase {
@@ -73,6 +84,7 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 			// runner's createStageWorkspace.
 			return nil, fmt.Errorf("workerhost: scratch workspace for stage %q: syncBase requires a repo workspace", req.Stage)
 		}
+
 		if req.WorkspaceDelta != "" {
 			return nil, fmt.Errorf("workerhost: scratch workspace for stage %q was handed workspace delta %s; a scratch workspace has no run branch to land it on", req.Stage, req.WorkspaceDelta)
 		}
@@ -178,6 +190,35 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 	default:
 		return nil, fmt.Errorf("workerhost: unknown workspace mode %q for stage %q", req.Mode, req.Stage)
 	}
+}
+
+func (p *WorktreeWorkspaces) provisionRevision(ctx context.Context, req engine.WorkspaceRequest) (engine.Workspace, error) {
+	if req.SyncBase || req.WorkspaceBranch != "" || req.WorkspaceDelta != "" {
+		return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid,
+			Message: "selected read-only workspaces cannot synchronize base, bind a branch, or consume a delta"}
+	}
+	source, err := workspacerevision.Resolve(*req.WorkspaceRevision, p.ConfiguredBase, p.AdditionalRepos)
+	if err != nil {
+		return nil, err
+	}
+	// Resolve returns configuration, including source-specific sparse policy.
+	// Neither a request's Checkout nor its identity URL can replace it.
+	req.RepoRef = source
+	repoURL, _, err := p.repoTarget(req)
+	if err != nil {
+		return nil, &workspacerevision.Error{Code: workspacerevision.CodeAcquisition, Message: err.Error(), Cause: err}
+	}
+	wt, err := p.Manager.Create(ctx, worktree.CreateOptions{
+		RepoURL: repoURL, RunID: req.RunID + "-" + req.Stage,
+		OwnerRunID: req.RunID, Gaggle: req.Gaggle,
+		BaseRef: req.WorkspaceRevision.CommitSHA, ExpectedSHA: req.WorkspaceRevision.CommitSHA,
+		Sparse: sparseCones(source.Checkout),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("workerhost: create selected-revision worktree for stage %q: %w", req.Stage, err)
+	}
+	return &worktreeWorkspace{wt: wt, manager: p.Manager, log: p.log(), repoURL: repoURL,
+		base: req.WorkspaceRevision.CommitSHA}, nil
 }
 
 // repoTarget resolves the clone URL and base ref a repo-backed request

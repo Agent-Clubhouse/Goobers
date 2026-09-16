@@ -5559,19 +5559,20 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 			gateBaseBranch = "main"
 		}
 		env = apiv1.InvocationEnvelope{
-			TaskID:          in.RunID + ":" + g.Name,
-			InstanceID:      in.instanceID,
-			WorkflowID:      in.Machine.Def.Name,
-			RunID:           in.RunID,
-			TriggerRef:      in.Trigger.Ref,
-			Gaggle:          in.Gaggle,
-			BranchNamespace: r.branchNamespaceFor(in.Gaggle),
-			BaseBranch:      gateBaseBranch,
-			Goal:            "gate: " + g.Name,
-			RepoRef:         in.RepoRef.EnvelopeRef(),
-			Item:            in.Item,
-			Limits:          gateLimits,
-			ContextPointers: append([]apiv1.ContextPointer(nil), upstream...),
+			TaskID:            in.RunID + ":" + g.Name,
+			InstanceID:        in.instanceID,
+			WorkflowID:        in.Machine.Def.Name,
+			RunID:             in.RunID,
+			TriggerRef:        in.Trigger.Ref,
+			Gaggle:            in.Gaggle,
+			BranchNamespace:   r.branchNamespaceFor(in.Gaggle),
+			BaseBranch:        gateBaseBranch,
+			Goal:              "gate: " + g.Name,
+			RepoRef:           in.RepoRef.EnvelopeRef(),
+			WorkspaceRevision: in.workspaceRevision.DeepCopy(),
+			Item:              in.Item,
+			Limits:            gateLimits,
+			ContextPointers:   append([]apiv1.ContextPointer(nil), upstream...),
 		}
 	} else {
 		var wt *worktree.Worktree
@@ -6158,6 +6159,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		GooberDigest:         in.GooberDigest,
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
+		WorkspaceRevision:    in.workspaceRevision.DeepCopy(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
 		CheckoutCones:        checkoutCones(workspace),
 		Item:                 in.Item,

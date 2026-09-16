@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // credentialplane.go implements the daemon write API's credential plane
@@ -46,6 +48,10 @@ const MaxCredentialResolveCapabilities = 32
 // MaxCredentialCapabilityBytes bounds one capability name in the request.
 const MaxCredentialCapabilityBytes = 128
 
+// WorkspaceRevisionCheckoutCapability is a checkout-only credential, never
+// exported to the stage's command environment.
+const WorkspaceRevisionCheckoutCapability = "workspace-revision:checkout"
+
 // CredentialResolveRequest asks the credential plane for the calling stage's
 // credentials. RunID and Stage identify which stage of which run is asking;
 // the service verifies Stage against the run's pinned workflow definition, so
@@ -56,9 +62,10 @@ const MaxCredentialCapabilityBytes = 128
 // did not declare is refused with a typed 403 naming the capability — nothing
 // materializes for an undeclared capability.
 type CredentialResolveRequest struct {
-	RunID        string   `json:"runId"`
-	Stage        string   `json:"stage"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	RunID             string                   `json:"runId"`
+	Stage             string                   `json:"stage"`
+	Capabilities      []string                 `json:"capabilities,omitempty"`
+	WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
 }
 
 // MintedCredential is one resolved credential value. ExpiresAt is present
@@ -141,6 +148,12 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 		if strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Stage) == "" {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId and stage are required")
 			return
+		}
+		if input.WorkspaceRevision != nil {
+			if err := input.WorkspaceRevision.Validate(); err != nil {
+				writeError(w, http.StatusBadRequest, workspacerevision.CodeInvalid, err.Error())
+				return
+			}
 		}
 		if len(input.Capabilities) > MaxCredentialResolveCapabilities {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest,

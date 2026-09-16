@@ -2,15 +2,18 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -83,6 +86,10 @@ func TestSelectedRevisionLocalRunAndResume(t *testing.T) {
 								return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, WorkspaceRevision: revision}, nil
 							}
 							observed++
+							if env.WorkspaceRevision == nil || env.WorkspaceRevision.CommitSHA != sha {
+								t.Fatalf("invocation lost selected authority: %+v", env.WorkspaceRevision)
+							}
+							env.WorkspaceRevision.CommitSHA = strings.Repeat("f", 40)
 							if actual := strings.TrimSpace(gitOutput(t, env.Workspace, "rev-parse", "HEAD")); actual != sha {
 								t.Fatalf("HEAD = %s, want %s", actual, sha)
 							}
@@ -109,13 +116,13 @@ func TestSelectedRevisionLocalRunAndResume(t *testing.T) {
 				const id = "revision-run"
 				var result Result
 				if resume {
-					jr, err := journal.Create(runs, journal.RunIdentity{
+					jr, createErr := journal.Create(runs, journal.RunIdentity{
 						RunID: id, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
 						WorkflowDigest: machine.Digest(), Gaggle: "acme-web",
 						Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
 					}, nil)
-					if err != nil {
-						t.Fatal(err)
+					if createErr != nil {
+						t.Fatal(createErr)
 					}
 					jr.SetMachineState("select")
 					if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "select", Attempt: 1}); err != nil {
@@ -226,6 +233,96 @@ func TestSelectedRevisionProducerAuthority(t *testing.T) {
 	}
 }
 
+func TestSelectedRevisionParallelBranchesReceiveIndependentTrees(t *testing.T) {
+	def := parallelRunnerMachine(t, 3, apiv1.WorkspaceRepoReadOnly).Def
+	def.Spec.Start = "select"
+	for i := range def.Spec.Tasks {
+		if strings.HasPrefix(def.Spec.Tasks[i].Name, "lens-") {
+			def.Spec.Tasks[i].Run.Workspace = apiv1.WorkspaceRepoReadOnly
+		}
+	}
+	def.Spec.Tasks = append(def.Spec.Tasks, apiv1.Task{
+		Name: "select", Type: apiv1.TaskDeterministic, Goal: "select exact revision",
+		Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: "fan",
+	})
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := newRebindFixtureRepo(t)
+	sha := strings.TrimSpace(gitOutput(t, "", "--git-dir="+repo, "rev-parse", rebindBranch))
+	root := t.TempDir()
+	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	arrived := make(chan string, 3)
+	release := make(chan struct{})
+	paths := make(chan []string, 1)
+	go func() {
+		var seen []string
+		for len(seen) != 3 {
+			select {
+			case path := <-arrived:
+				seen = append(seen, path)
+			case <-ctx.Done():
+				paths <- seen
+				close(release)
+				return
+			}
+		}
+		paths <- seen
+		close(release)
+	}()
+	r, err := New(Config{
+		Worktrees: manager, RunsDir: filepath.Join(root, "runs"), ScratchDir: filepath.Join(root, "scratch"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return repo, nil },
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return revisionExecutor{run: func(env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+				_, stage, _ := strings.Cut(env.TaskID, ":")
+				if stage == "select" {
+					return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, WorkspaceRevision: revisionFixture(sha)}, nil
+				}
+				if strings.HasPrefix(stage, "lens-") {
+					cmd := testgit.Command("rev-parse", "HEAD")
+					cmd.Dir = env.Workspace
+					head, err := cmd.CombinedOutput()
+					if err != nil {
+						return apiv1.ResultEnvelope{}, fmt.Errorf("read parallel HEAD: %w", err)
+					}
+					if strings.TrimSpace(string(head)) != sha {
+						return apiv1.ResultEnvelope{}, fmt.Errorf("parallel HEAD=%s, expected %s", head, sha)
+					}
+					arrived <- env.Workspace
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return apiv1.ResultEnvelope{}, ctx.Err()
+					}
+				}
+				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"inspected": true}}, nil
+			}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Start(ctx, StartInput{
+		RunID: "parallel-revision", Machine: machine, Gaggle: "demo",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	cancel()
+	seen := <-paths
+	if err != nil || result.Phase != journal.PhaseCompleted || len(seen) != 3 {
+		t.Fatalf("result=%+v err=%v concurrent workspaces=%v", result, err, seen)
+	}
+	if seen[0] == seen[1] || seen[0] == seen[2] || seen[1] == seen[2] {
+		t.Fatalf("parallel branches shared a tree: %v", seen)
+	}
+}
 func TestSelectedRevisionForkWorkspacesCoexist(t *testing.T) {
 	base := newFixtureRepo(t)
 	fork := newRebindFixtureRepo(t)

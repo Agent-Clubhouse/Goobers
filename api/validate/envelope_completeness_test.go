@@ -120,6 +120,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		OwnershipBoundary:                   "task:implement",
 		InstructionAddendum:                 "Preserve the public contract.",
 		Workspace:                           "/workspace",
+		WorkspaceRevision:                   completeResultEnvelope().WorkspaceRevision,
 		ReviewerDeferralAllowed:             true,
 		ReviewerMechanicalEscalationAllowed: true,
 		RepoRef: apiv1.RepoRef{

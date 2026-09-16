@@ -110,6 +110,8 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		RunID:           runID,
 		Gaggle:          req.gaggle,
 		RepoRef:         req.project,
+		AdditionalRepos: engineRunAdditionalRepos(req.set, req.gaggle),
+		PartialClone:    req.cfg.PartialCloneEnabled(),
 		Item:            req.item,
 		TriggerKind:     triggerKind,
 		TriggerRef:      triggerRef,
@@ -144,6 +146,15 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		// is the rollback posture and the pre-protocol behaviour exactly.
 		HITL: engineHITLPolicy(req.cfg),
 	}, nil
+}
+
+func engineRunAdditionalRepos(set *instance.ConfigSet, gaggle string) []apiv1.RepoRef {
+	for _, configured := range set.Gaggles {
+		if configured.Name == gaggle {
+			return configured.DeepCopy().Spec.AdditionalRepos
+		}
+	}
+	return nil
 }
 
 // engineHITLPolicy translates the instance's engine.hitl block into the

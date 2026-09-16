@@ -1,12 +1,12 @@
 # Selected-revision workspaces
 
-> Status: approved — local milestone delivered; distributed and writable-sandbox work remains.
+> Status: approved — local, Temporal/workerhost, and pod inspection delivered; writable-sandbox and lifecycle milestones remain.
 > Owner: @brandiv
 > Area: runtime / repository workspaces
 > Tracking: #4157, #5121, #5122, #5123, #5124, #5125, #5126, #5127
-> Delivered-by: #5121, #5122, #5123
-> Pending-delivery: #5124, #5125, #5126, #5127
-> Scope-delta: #5121 delivery covers the typed contract and local journal replay. Its Temporal state/replay obligation remains pending with #5124. Pod parity, isolated remote writable branches, and lifecycle/conformance/reference workflows are not yet delivered.
+> Delivered-by: #5121, #5122, #5123, #5124, #5125
+> Pending-delivery: #5126, #5127
+> Scope-delta: Typed state, local resume, Temporal replay, workerhost, and pod exact-SHA inspection are delivered. Isolated remote writable branches and lifecycle/conformance/reference workflows remain separate milestones.
 
 ## Purpose and authority
 
@@ -95,29 +95,74 @@ repository modifications or ordinary ignored/untracked build state between those
 stages. Configured additional read-only worktrees can coexist with the pinned
 primary and have independent teardown; coexistence creates no new access grant.
 
-Shared non-retryable failures preserve these codes through runner boundaries:
+Shared failures preserve these codes through runner boundaries:
 `workspace_revision_invalid`, `workspace_revision_unauthorized`,
 `workspace_revision_conflict`, `workspace_revision_acquisition`,
 `workspace_revision_object_type`, and `workspace_revision_sha_mismatch`.
+All except acquisition are non-retryable. Acquisition may use the existing
+bounded transport retry policy against the same authorized repository and exact
+SHA, including when an object is unavailable. Retrying never permits a different
+repository, branch, object ID, checkout policy, or credential.
 
-## Pending distributed and writable milestones
+## Delivered Temporal and workerhost inspection — #5121 / #5124
 
-### Temporal and workerhost — #5124
+`RunInput.WorkspaceRevision` and accepted deterministic activity results form
+immutable workflow state. Acceptance precedes `stage.finished` projection;
+failed, agentic, malformed, unauthorized, and conflicting controls cannot enter
+that accepted record. The next invocation carries the same optional
+`WorkspaceRevision`, while retaining the configured base `RepoRef` and
+`BaseBranch` for provider operations.
 
-The existing Temporal substrate does not by itself implement selected-revision
-state. The pending integration must keep the binding in deterministic workflow
-state, reconstruct the identical value from recorded history, carry it through
-activity/workspace requests, and retain legacy behavior when absent. Replay must
-not reselect a PR or resolve a source branch. Workerhost acquisition must match
-local exact-SHA verification, materialization policy, and failure classification.
-This explicitly carries the still-pending Temporal portion of #5121.
+Activity arity is unchanged: the optional structured invocation control carries
+the revision to `WorkspaceRequest.WorkspaceRevision`. The independent
+`Checkout` request field preserves ordinary materialization policy despite
+`RepoRef.EnvelopeRef()` excluding checkout configuration. Workerhost authorizes
+selected acquisition against worker configuration, returns that configured
+source reference, and uses its sparse cones plus the existing credentialed
+manager's original partial-clone policy. It provisions detached
+`BaseRef = ExpectedSHA = commitSha`, with shared object-type/HEAD verification and
+stable classified failures.
 
-### Pod dispatch and checkout — #5125
+Read-only revision requests carry neither `WorkspaceBranch` nor `WorkspaceDelta`,
+never sync base, and publish no delta. Explicit contradictory requests fail
+closed. Scratch selectors do not acquire a selected checkout, and existing
+writable continuity remains independent pending the sandbox milestone.
 
-Dispatch/attempt contracts must propagate the immutable selection. Pod checkout
-must acquire and verify its exact object, preserve declared partial/sparse policy,
-and refuse repository/branch fallback, delta publication, and undeclared checkout
-expansion.
+Checked-in Temporal histories predating the field replay with the new workflow.
+The real-server E2 replay fixture set includes selection and identical
+re-emission. Workflow tests exercise an infrastructure retry with identical
+selection and normative accepted journal events. Workerhost integration tests
+exercise same-repository/fork, full/partial, sparse/full worktrees on independent
+workers after the source branch moves, plus exact-object refusal parity.
+Neither retries nor replay reselect a PR or resolve a moving source ref.
+
+Selected read-only pod consumers require live journaling. Accepted controls are
+acknowledged by the journal writer before downstream pod dispatch; projection-only
+engine runs fail closed because source checkout credentials authorize against the
+durable accepted `stage.finished`, not an invocation's asserted selection.
+
+See [distributed state and workspace continuity](distributed-state-and-coordination.md#72-selected-revisions-and-workspace-continuity)
+for the request transport and authority boundaries.
+
+## Delivered pod dispatch and checkout — #5125
+
+Dispatch/attempt contracts propagate the immutable selection separately from the
+configured source and pinned checkout policy. Privileged pod environment values
+carry these controls only to provisioning, not into the stage's environment.
+Checkout fetches the exact source object into a fresh, template-free repository,
+verifies commit type and detached HEAD, and preserves full/partial/sparse policy.
+Submodules, LFS expansion, custom filters, hooks, and filesystem monitors remain
+inert. Selected read-only pods neither consume nor publish workspace deltas.
+
+The authenticated credential plane verifies the pinned read-only stage and the
+run's durably accepted revision before resolving the source's repository-qualified
+read grant. It never substitutes a generic stage grant, daemon identity, or base
+write credential. A configured credential that cannot resolve fails closed;
+anonymous access is reserved for explicitly configured public sources without a
+credential. See [pod dispatch](goobernetes-dispatcher.md) and
+[credential guidance](../guides/github-token-scopes.md#selected-revision-checkout-credentials).
+
+## Pending writable and lifecycle milestones
 
 ### Isolated remote writable branch — #5126
 

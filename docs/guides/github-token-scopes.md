@@ -93,6 +93,28 @@ for this page; see [`ado-authentication.md`](ado-authentication.md).
 Repository access: select **Only select repositories** and list exactly the
 gaggle's target repo(s) — never "All repositories".
 
+### Selected-revision checkout credentials
+
+A selected revision does not grant access to its reported URL. Its source must
+match the configured base repository or a gaggle `additionalRepos` entry. Give
+each declared fork its own repository-scoped **Contents: Read-only** credential;
+never reuse the base repository's write credential to acquire a fork.
+
+For selected-revision pods, the authenticated credential request carries
+`runId`, `stage`, and the typed `workspaceRevision`. The daemon verifies the
+pinned `repo-readonly` stage and the exact revision already accepted into the
+run's journal. It resolves only the configured source's repository-qualified
+`contents:read` grant, including when the source is the base repository.
+Generic capability overrides and `daemonIdentity` write credentials are not
+fallback sources. The response's internal `workspace-revision:checkout` key is
+consumed only by checkout, not exported to the stage command or goober.
+
+An explicitly configured public source with no credential may be fetched
+anonymously. Failure to resolve a configured credential is an error, never an
+anonymous retry or a fallback to another repository's credential. Each minted
+value is registered with the scrubber before returning, and resolution is
+audited without recording secret values.
+
 ### `daemonIdentity`: one distinct bot identity for authored PRs/reviews/merges
 
 The `github:pr:review` row above already recommends sourcing that one

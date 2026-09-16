@@ -429,12 +429,16 @@ type contextManifest struct {
 // executorError mirrors runTask's per-attempt dispatch-failure event.
 func (r *runJournal) executorError(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, failureClass journal.AttemptClass, dispatchErr error) {
 	code := telemetry.ErrCodeExecutor
+	eventCode := "executor_error"
+	if revisionCode := workspaceRevisionErrorCode(dispatchErr); revisionCode != "" {
+		eventCode = revisionCode
+	}
 	if failureClass == journal.AttemptInfra {
 		code = telemetry.ErrCodeInfraFailure
 	}
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
-		Error:  &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+		Error:  &journal.ErrorDetail{Code: eventCode, Message: dispatchErr.Error()},
 		Runner: map[string]any{"retryFailureClass": string(failureClass), "errorCode": code, "errorClass": string(telemetry.ClassifyError(code))},
 	})
 }
@@ -492,7 +496,8 @@ func stageFinishedEvent(stage string, attempt int, class journal.AttemptClass, r
 		Type: journal.EventStageFinished, Stage: stage, Attempt: attempt, AttemptClass: class,
 		Status: string(result.Status), Error: resultErrorDetail(result),
 		Outputs: outputs, Artifacts: journalRefsFrom(result.Artifacts),
-		Runner: runnerFacts,
+		WorkspaceRevision: result.WorkspaceRevision.DeepCopy(),
+		Runner:            runnerFacts,
 		// Mirrors the local runner's stage.finished: the produced provenance is
 		// normative, so it must appear identically in both journals (TBH-4).
 		Integrity: result.Integrity,
