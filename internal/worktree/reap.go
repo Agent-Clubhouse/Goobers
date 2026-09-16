@@ -20,6 +20,11 @@ type ReapOptions struct {
 	// they age past this duration. Zero leaves kept worktrees alone
 	// indefinitely — Reap then only clears genuine crash orphans.
 	StaleAfter time.Duration
+	// DeferCleanupPending leaves surrendered cleanup-pending worktrees for the
+	// bounded RetryCleanupPending loop. Daemon startup uses this so a large or
+	// persistently blocked cleanup queue cannot delay readiness; broad
+	// housekeeping callers retain the default immediate-retry behavior.
+	DeferCleanupPending bool
 	// IsRunTerminal reports whether a markerless, git-deregistered worktree
 	// belongs to a terminal run. Nil leaves that ambiguous shape untouched.
 	IsRunTerminal func(worktreeID string) (bool, error)
@@ -219,7 +224,11 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			}
 		case statusCleanupPending:
 			// Remove already recorded that the stage surrendered this tree.
-			// Retry immediately even while the owning daemon PID remains live.
+			// Retry immediately even while the owning daemon PID remains live,
+			// unless the caller delegates this queue to RetryCleanupPending.
+			if opts.DeferCleanupPending {
+				continue
+			}
 			reason = ReapReasonCleanupPending
 		case statusKept:
 			if opts.StaleAfter <= 0 || time.Since(mk.retainedAt()) <= opts.StaleAfter {

@@ -1133,13 +1133,19 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// worktree directory that makes worktree.Create refuse forever (fixed
 	// separately by adopt-and-reset, but Reap is still what actually reclaims
 	// the disk space and the git worktree-list registration).
+	//
+	// cleanup-pending worktrees are already surrendered and have their own
+	// bounded retry loop that starts immediately after readiness. Retrying the
+	// entire durable queue here made restart time proportional to historical
+	// cleanup failures, including entries whose handoff remains unavailable.
 	for gaggle, manager := range setup.WorktreesByGaggle {
 		manager := manager
 		var warnings []worktree.ReapWarning
 		reapErr := runStartupPhase(stdout, tracker, "worktree-reap-crash-orphan", gaggle, func() error {
 			var reapErr error
 			_, warnings, reapErr = manager.Reap(ctx, worktree.ReapOptions{
-				IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
+				DeferCleanupPending: true,
+				IsRunTerminal:       worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
 			})
 			return reapErr
 		})
@@ -1157,7 +1163,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		reapErr := runStartupPhase(stdout, tracker, "worktree-reap-crash-orphan", "legacy", func() error {
 			var reapErr error
 			_, warnings, reapErr = setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
-				IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
+				DeferCleanupPending: true,
+				IsRunTerminal:       worktreeRunTerminal(l.RunsDir()),
 			})
 			return reapErr
 		})
