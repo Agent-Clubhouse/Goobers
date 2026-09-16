@@ -380,7 +380,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		planeReady atomic.Bool
 	)
 	stopDaemon := func() {
-		ready.Store(false)
 		webhookGate.Stop()
 	}
 	parentBridgeDone := make(chan struct{})
@@ -1436,6 +1435,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	triggerSweepErrors.report(runStartupPhase(stdout, tracker, "trigger-request-reconcile", "", triggerSweep))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
 	claimAdminSweepErrors.report(reconcileStartupClaimAdmin(l, setup, recoverExpiredClaims, tracker, stdout))
+	stopClaimAdminSweep := startClaimAdminSweep(l, setup.InstanceLog, recoverExpiredClaims, claimAdminSweepErrors)
+	defer stopClaimAdminSweep()
 	// #831's daemon-side half: cancel one live in-flight run on operator request
 	// by resolving its owning Runner and calling CancelRun. Its own ticker (below)
 	// keeps a worst-case wedged-stage cancellation — which blocks in CancelRun for
@@ -1650,17 +1651,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			}
 		}
 	}()
-
-	// #4323: claims used to share the trigger delegation ticker above, so a
-	// large pending-trigger backlog (#4326's runaway automation is the
-	// incident that exposed this) starved claims processing behind it for as
-	// long as that single sweepPendingTriggers call ran — an operator's
-	// `goobers claim`/release could wait indefinitely with no trigger-side
-	// misbehavior of its own. Its own ticker gives claims the same isolation
-	// cancelTicker/applyTicker already have from each other below.
-	claimAdminTickerDone := startPeriodicSweep(ctx, delegationSweepInterval, func() {
-		claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
-	})
 
 	// #831's cancel sweep runs on its own ticker so a slow (wedged-stage)
 	// cancellation never delays the trigger/claim delegation sweeps above.
@@ -1885,29 +1875,6 @@ daemonLoop:
 	}
 	openPRs.Stop()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-	shutdownErr := apiServer.Shutdown(shutdownCtx)
-	var webhookShutdownErr error
-	if webhookServer != nil {
-		webhookShutdownErr = webhookServer.Shutdown(shutdownCtx)
-	}
-	shutdownCancel()
-	apiStopped = true
-	if shutdownErr != nil {
-		apiFailed = true
-		pf(stderr, "error: %v\n", shutdownErr)
-	}
-	if webhookShutdownErr != nil {
-		webhookFailed = true
-		pf(stderr, "error: shut down webhook listener: %v\n", webhookShutdownErr)
-	}
-	if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
-		apiFailed = true
-		pf(stderr, "error: %v\n", err)
-	} else {
-		apiAddressPublished = false
-	}
-
 	// Wait for both background goroutines to fully stop BEFORE any further
 	// stdout/stderr writes below: each reacts to the same ctx cancellation
 	// independently, so without this join a tick still in flight when
@@ -1925,7 +1892,6 @@ daemonLoop:
 	<-startupMergedPRCostSweepDone
 	<-apiReadCacheLockSweepTickerDone
 	<-delegationTickerDone
-	<-claimAdminTickerDone
 	<-cancelTickerDone
 	<-applyTickerDone
 	<-supervisorStopDone
@@ -1952,6 +1918,7 @@ daemonLoop:
 
 	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout,
 		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
+	stopClaimAdminSweep()
 	stopTerminalCleanupRetry()
 	<-terminalCleanupRetryDone
 	runTerminalCleanupRetryFinal(cleanupRetries, terminalCleanupRetryErrors, readyNow)
@@ -1960,6 +1927,36 @@ daemonLoop:
 	} else {
 		pf(stdout, "hard shutdown complete: %d run(s) stopped; they will resume from their last checkpoints on the next `goobers up`\n", drainResult.terminated)
 	}
+
+	// Keep the versioned API ready and discoverable while active runs drain:
+	// stages may still need the daemon's claims plane to recover or renew
+	// coordination state. Closing the listener, or flipping the recovery gate
+	// first, makes those already-admitted runs fail even though this process is
+	// deliberately waiting for them.
+	ready.Store(false)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+	shutdownErr := apiServer.Shutdown(shutdownCtx)
+	var webhookShutdownErr error
+	if webhookServer != nil {
+		webhookShutdownErr = webhookServer.Shutdown(shutdownCtx)
+	}
+	shutdownCancel()
+	apiStopped = true
+	if shutdownErr != nil {
+		apiFailed = true
+		pf(stderr, "error: %v\n", shutdownErr)
+	}
+	if webhookShutdownErr != nil {
+		webhookFailed = true
+		pf(stderr, "error: shut down webhook listener: %v\n", webhookShutdownErr)
+	}
+	if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
+		apiFailed = true
+		pf(stderr, "error: %v\n", err)
+	} else {
+		apiAddressPublished = false
+	}
+
 	if apiFailed || webhookFailed || configFailed || schedulerFailed {
 		return 1
 	}
