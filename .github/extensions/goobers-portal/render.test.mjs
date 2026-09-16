@@ -10,6 +10,10 @@ import {
 } from "./configuration-warnings.mjs";
 import {
     formatRunDetailTime,
+    filterWorkItems,
+    formatWorkItemCost,
+    formatWorkItemTimestamp,
+    humanizeWorkItemOperation,
     INSIGHT_WINDOWS,
     costLookupRequestParams,
     costSummaryRequestParams,
@@ -40,6 +44,9 @@ import {
     renderStageDefinitionInspector,
     renderStageInspectorStatus,
     renderTransitions,
+    renderWorkItemDetail,
+    renderWorkItemList,
+    workItemLabel,
 } from "./render.mjs";
 
 test("causal diagnosis renders attempts and escaped failure breadcrumbs", () => {
@@ -1084,4 +1091,167 @@ test("renderHtml includes Cost tab controls and inlines every Cost helper", () =
         assert.match(page, new RegExp("const " + name + " = "), `${name} was not inlined into the browser script`);
     }
     assert.ok(!page.includes("escapeAssociationHtml"), "escapeAssociationHtml leaked into the Cost panel");
+});
+
+// ---- Work Items tab ----
+
+const WORK_ITEM_PAGE_FIXTURE = {
+    items: [{
+        provider: "github",
+        repository: "acme/app",
+        kind: "pr",
+        externalId: "42",
+        actionCount: 2,
+        lastOperation: "request-review",
+        lastActionAt: "2026-09-15T00:00:00Z",
+        lastRunId: "run-2",
+        gaggle: "core",
+        workflow: "implementation",
+    }, {
+        provider: "github",
+        repository: "acme/service",
+        kind: "issue",
+        externalId: "77",
+        actionCount: 1,
+        lastOperation: "comment",
+        lastActionAt: "2026-09-14T00:00:00Z",
+        lastRunId: "run-1",
+        gaggle: "tools",
+        workflow: "triage",
+    }],
+    hasMore: true,
+};
+
+const WORK_ITEM_DETAIL_FIXTURE = {
+    provider: "github",
+    repository: "acme/app",
+    kind: "pr",
+    externalId: "42",
+    url: "https://github.com/acme/app/pull/42",
+    cost: {
+        costUSD: 1.25,
+        totalRuns: 2,
+        measuredRuns: 1,
+        totalAttempts: 3,
+        measuredAttempts: 2,
+        lowerBound: true,
+    },
+    relatedPullRequests: [{
+        provider: "github",
+        repository: "acme/app",
+        kind: "pr",
+        externalId: "43",
+        url: "https://github.com/acme/app/pull/43",
+    }],
+    actions: [{
+        runId: "run-2",
+        sequence: 9,
+        operation: "merge",
+        occurredAt: "2026-09-15T00:00:00Z",
+        gaggle: "core",
+        workflow: "merge-review",
+        runStatus: "completed",
+    }, {
+        runId: "run-1",
+        sequence: 4,
+        operation: "comment",
+        occurredAt: "2026-09-14T00:00:00Z",
+        gaggle: "core",
+        workflow: "implementation",
+        runStatus: "completed",
+    }],
+    truncated: true,
+};
+
+test("work item helpers format labels, operations, costs, and local filters", () => {
+    assert.equal(workItemLabel("acme/app", "42"), "acme/app#42");
+    assert.equal(workItemLabel("", "42"), "#42");
+    assert.equal(humanizeWorkItemOperation("request-review"), "Request Review");
+    assert.equal(humanizeWorkItemOperation(""), "Provider action");
+    assert.equal(formatWorkItemCost({ costUSD: 1.25 }), "$1.25");
+    assert.equal(formatWorkItemCost({ nanoAIU: 1200 }), "1,200 nano-AIU");
+    assert.equal(formatWorkItemCost(null), "Not attributed");
+    assert.equal(formatWorkItemTimestamp("0001-01-01T00:00:00Z"), "\u2014");
+    assert.deepEqual(
+        filterWorkItems(WORK_ITEM_PAGE_FIXTURE.items, "core", "app#42").map((item) => item.externalId),
+        ["42"],
+    );
+    assert.deepEqual(filterWorkItems(WORK_ITEM_PAGE_FIXTURE.items, "tools", "77").map((item) => item.externalId), ["77"]);
+});
+
+test("renderWorkItemList renders rows, metadata, overflow, and explicit empty states", () => {
+    const html = renderWorkItemList(WORK_ITEM_PAGE_FIXTURE);
+    assert.match(html, /Open PR #42 in acme\/app/);
+    assert.match(html, /Request Review/);
+    assert.match(html, /implementation/);
+    assert.match(html, /Showing the 200 most recently actioned work items/);
+    assert.match(
+        renderWorkItemList(WORK_ITEM_PAGE_FIXTURE, "missing"),
+        /No confirmed provider actions match.*Only the 200 most recently actioned work items are searched/,
+    );
+    assert.match(renderWorkItemList(null), /No work items loaded yet/);
+});
+
+test("renderWorkItemDetail renders cost coverage, related links, action filtering, and truncation", () => {
+    const html = renderWorkItemDetail(WORK_ITEM_DETAIL_FIXTURE, "comment");
+    assert.match(html, /acme\/app#42/);
+    assert.match(html, /\$1\.25/);
+    assert.match(html, /Lower bound; some usage is unmeasured/);
+    assert.match(html, /1\/2 runs/);
+    assert.match(html, /Open pull request/);
+    assert.match(html, /Related PR acme\/app#43/);
+    assert.match(html, /Action history for acme\/app#42/);
+    assert.match(html, />Comment</);
+    assert.doesNotMatch(html, /<strong>Merge<\/strong>/);
+    assert.match(html, /data-work-item-run="run-1"/);
+    assert.match(html, /Showing the 200 most recent actions/);
+    assert.match(renderWorkItemDetail(WORK_ITEM_DETAIL_FIXTURE, "missing"), /No actions match this type/);
+});
+
+test("work item renderers escape hostile values and reject unsafe links", () => {
+    const hostilePage = {
+        items: [{
+            provider: HOSTILE,
+            repository: HOSTILE,
+            kind: "issue",
+            externalId: HOSTILE,
+            actionCount: 1,
+            lastOperation: HOSTILE,
+            gaggle: HOSTILE,
+            workflow: HOSTILE,
+        }],
+        hasMore: false,
+    };
+    const list = renderWorkItemList(hostilePage);
+    assert.doesNotMatch(list, /<img src=x/);
+    assert.match(list, /&lt;img/);
+
+    const detail = renderWorkItemDetail({
+        ...WORK_ITEM_DETAIL_FIXTURE,
+        repository: HOSTILE,
+        externalId: HOSTILE,
+        url: "javascript:alert(1)",
+        relatedPullRequests: [{
+            repository: HOSTILE,
+            externalId: HOSTILE,
+            url: "javascript:alert(2)",
+        }],
+        actions: [{ ...WORK_ITEM_DETAIL_FIXTURE.actions[0], operation: HOSTILE }],
+    });
+    assert.doesNotMatch(detail, /<img src=x|javascript:alert/);
+    assert.match(detail, /&lt;img/);
+});
+
+test("renderHtml includes Work Items controls and inlines every Work Items helper", () => {
+    const page = renderHtml("inst-1");
+    assert.match(page, /dashboard-tab-work-items/);
+    assert.match(page, /id="work-item-search"/);
+    assert.match(page, /id="work-item-content"/);
+    for (const name of [
+        "workItemLabel", "humanizeWorkItemOperation", "formatWorkItemTimestamp",
+        "formatWorkItemCost", "filterWorkItems", "renderWorkItemList", "renderWorkItemDetail",
+    ]) {
+        assert.match(page, new RegExp("const " + name + " = "), `${name} was not inlined into the browser script`);
+    }
+    assert.ok(!page.includes("escapeAssociationHtml"), "escapeAssociationHtml leaked into the Work Items panel");
 });

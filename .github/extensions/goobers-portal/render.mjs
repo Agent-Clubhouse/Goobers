@@ -1266,6 +1266,168 @@ export function renderCostPanel(stats, costs, scope, windowValue, lookupCosts = 
     return summaryHtml + trendHtml + rollupHtml + externalHtml;
 }
 
+export function workItemLabel(repository, externalId) {
+    return repository ? repository + "#" + externalId : "#" + externalId;
+}
+
+export function humanizeWorkItemOperation(operation) {
+    const value = String(operation || "").trim();
+    if (!value) return "Provider action";
+    return value.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+export function formatWorkItemTimestamp(value) {
+    if (!value) return "\u2014";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) || date.getUTCFullYear() < 1970 ? "\u2014" : date.toLocaleString();
+}
+
+export function formatWorkItemCost(cost) {
+    if (!cost) return "Not attributed";
+    if (cost.costUSD !== undefined && cost.costUSD !== null) {
+        return new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency: "USD",
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 4,
+        }).format(cost.costUSD);
+    }
+    if (cost.nanoAIU !== undefined && cost.nanoAIU !== null) {
+        return new Intl.NumberFormat("en-US").format(cost.nanoAIU) + " nano-AIU";
+    }
+    return "Not measured";
+}
+
+export function filterWorkItems(items, gaggle, search) {
+    const query = String(search || "").trim().toLocaleLowerCase();
+    return (items || []).filter((item) => {
+        if (gaggle && item.gaggle !== gaggle) return false;
+        if (!query) return true;
+        return [
+            workItemLabel(item.repository, item.externalId),
+            item.repository,
+            item.externalId,
+        ].some((value) => String(value || "").toLocaleLowerCase().includes(query));
+    });
+}
+
+export function renderWorkItemList(page, gaggle = "", search = "") {
+    if (!page) return '<p class="inline-empty">No work items loaded yet.</p>';
+    const items = filterWorkItems(page.items, gaggle, search);
+    if (!items.length) {
+        return '<p class="inline-empty">No confirmed provider actions match this filter.' +
+            (page.hasMore ? " Only the 200 most recently actioned work items are searched." : "") +
+            "</p>";
+    }
+    const rows = items.map((item) => {
+        const identity = workItemLabel(item.repository, item.externalId);
+        const typeLabel = item.kind === "pr" ? "pull request" : "issue";
+        return '<button type="button" class="work-item-row" data-work-item-provider="' +
+            escapeAssociationHtml(item.provider || "") + '" data-work-item-repository="' +
+            escapeAssociationHtml(item.repository || "") + '" data-work-item-kind="' +
+            escapeAssociationHtml(item.kind || "") + '" data-work-item-id="' +
+            escapeAssociationHtml(item.externalId || "") + '" aria-label="Open ' +
+            escapeAssociationHtml(item.kind === "pr" ? "PR" : "issue") + " #" +
+            escapeAssociationHtml(item.externalId || "") + " in " +
+            escapeAssociationHtml(item.repository || "unknown repository") + '">' +
+            '<span class="work-item-identity"><strong>' + escapeAssociationHtml(identity) +
+            '</strong><small>' + escapeAssociationHtml(item.provider || "provider") + " \u00b7 " +
+            escapeAssociationHtml(typeLabel) + "</small></span>" +
+            '<span><strong>' + escapeAssociationHtml(humanizeWorkItemOperation(item.lastOperation)) +
+            '</strong><small>' + escapeAssociationHtml(formatWorkItemTimestamp(item.lastActionAt)) +
+            "</small></span>" +
+            '<span><strong>' + escapeAssociationHtml(item.workflow || "Unknown") +
+            '</strong><small>' + escapeAssociationHtml(item.gaggle || "No gaggle recorded") +
+            "</small></span>" +
+            '<strong class="work-item-action-count">' + escapeAssociationHtml(item.actionCount ?? 0) +
+            '</strong><span aria-hidden="true">\u203a</span></button>';
+    }).join("");
+    const overflow = page.hasMore
+        ? '<p class="muted work-item-overflow">Showing the 200 most recently actioned work items.</p>'
+        : "";
+    return '<div class="work-items-list" role="group" aria-label="Work items">' + rows + "</div>" + overflow;
+}
+
+export function renderWorkItemDetail(item, actionType = "all") {
+    if (!item) return '<p class="inline-empty">No work item detail loaded yet.</p>';
+    const identity = workItemLabel(item.repository, item.externalId);
+    const typeLabel = item.kind === "pr" ? "pull request" : "issue";
+    const itemHref = safeAssociationUrl(item.url);
+    const headingLink = itemHref
+        ? '<a class="actions-run-link" href="' + escapeAssociationHtml(itemHref) +
+            '" target="_blank" rel="noopener noreferrer">Open ' +
+            escapeAssociationHtml(typeLabel) + " \u2197</a>"
+        : "";
+    const relatedLinks = (item.relatedPullRequests || []).map((related) => {
+        const href = safeAssociationUrl(related.url);
+        if (!href) return "";
+        return '<a class="actions-run-link" href="' + escapeAssociationHtml(href) +
+            '" target="_blank" rel="noopener noreferrer" aria-label="Open related PR ' +
+            escapeAssociationHtml(workItemLabel(related.repository, related.externalId)) +
+            '">Related PR ' + escapeAssociationHtml(workItemLabel(related.repository, related.externalId)) +
+            " \u2197</a>";
+    }).filter(Boolean).join("");
+    const actions = item.actions || [];
+    const actionTypes = [...new Set(actions.map((action) => action.operation).filter(Boolean))]
+        .sort((left, right) => humanizeWorkItemOperation(left).localeCompare(humanizeWorkItemOperation(right)));
+    const options = ['<option value="all">All actions</option>'].concat(actionTypes.map((operation) =>
+        '<option value="' + escapeAssociationHtml(operation) + '"' +
+        (operation === actionType ? " selected" : "") + ">" +
+        escapeAssociationHtml(humanizeWorkItemOperation(operation)) + "</option>",
+    )).join("");
+    const visibleActions = actionType === "all"
+        ? actions
+        : actions.filter((action) => action.operation === actionType);
+    const actionRows = visibleActions.map((action) =>
+        '<div class="work-item-action-row" role="row">' +
+        '<span role="cell"><strong>' + escapeAssociationHtml(humanizeWorkItemOperation(action.operation)) +
+        '</strong><small>Sequence ' + escapeAssociationHtml(action.sequence ?? "") + "</small></span>" +
+        '<span role="cell"><strong>' + escapeAssociationHtml(action.gaggle || "Unknown gaggle") +
+        '</strong><small>' + escapeAssociationHtml(action.workflow || "Workflow unavailable") + "</small></span>" +
+        '<span role="cell">' + escapeAssociationHtml(action.runStatus
+            ? humanizeWorkItemOperation(action.runStatus)
+            : "Unknown") + "</span>" +
+        '<time role="cell" datetime="' + escapeAssociationHtml(action.occurredAt || "") + '">' +
+        escapeAssociationHtml(formatWorkItemTimestamp(action.occurredAt)) + "</time>" +
+        '<span role="cell"><button type="button" class="table-link" data-work-item-run="' +
+        escapeAssociationHtml(action.runId || "") + '">View run</button></span></div>',
+    ).join("");
+    const emptyActions = visibleActions.length
+        ? ""
+        : '<p class="inline-empty" role="status">No actions match this type.</p>';
+    const lowerBound = item.cost?.lowerBound
+        ? '<small class="cost-coverage-warning">Lower bound; some usage is unmeasured.</small>'
+        : "";
+    const coverage = item.cost
+        ? '<small>' + escapeAssociationHtml(
+            (item.cost.measuredRuns ?? 0) + "/" + (item.cost.totalRuns ?? 0) + " runs \u00b7 " +
+            (item.cost.measuredAttempts ?? 0) + "/" + (item.cost.totalAttempts ?? 0) + " attempts",
+        ) + "</small>"
+        : "";
+    const truncated = item.truncated
+        ? '<p class="muted work-item-overflow">Showing the 200 most recent actions.</p>'
+        : "";
+    return '<div class="work-item-detail">' +
+        '<button type="button" class="back" id="work-item-back">\u2190 Back to Work Items</button>' +
+        '<div class="work-item-detail-heading"><div><p class="muted">' +
+        escapeAssociationHtml(item.provider || "provider") + " " + escapeAssociationHtml(typeLabel) +
+        ' activity</p><h2>' + escapeAssociationHtml(identity) + "</h2></div>" +
+        '<div class="work-item-heading-links">' + headingLink + relatedLinks + "</div></div>" +
+        '<div class="cards work-item-summary-cards"><div class="card"><div class="label">Confirmed actions</div>' +
+        '<div class="value">' + escapeAssociationHtml(actions.length) + "</div></div>" +
+        '<div class="card"><div class="label">Attributed cost to date</div><div class="value">' +
+        escapeAssociationHtml(formatWorkItemCost(item.cost)) + "</div>" + coverage + lowerBound + "</div></div>" +
+        '<div class="filters-bar work-item-action-filters"><label>Action type ' +
+        '<select id="work-item-action-type" aria-label="Filter actions by type">' + options +
+        "</select></label></div>" +
+        '<div class="work-item-actions" role="table" aria-label="Action history for ' +
+        escapeAssociationHtml(identity) + '"><div class="work-item-action-header" role="row">' +
+        '<span role="columnheader">Action</span><span role="columnheader">Gaggle / workflow</span>' +
+        '<span role="columnheader">Status</span><span role="columnheader">Time</span>' +
+        '<span role="columnheader">Run</span></div>' + actionRows + emptyActions + "</div>" +
+        truncated + "</div>";
+}
+
 export function renderHtml(instanceId, themePreference = "system", persistedFilters = {}) {
   const initialFilters = JSON.stringify(persistedFilters).replaceAll("<", "\\u003c");
     return `<!doctype html>
@@ -1354,6 +1516,66 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .sort-button { border: 0; padding: 0; background: transparent; color: inherit; }
   .table-scroll { max-width: 100%; overflow-x: auto; }
   .table-scroll table { white-space: nowrap; }
+  .work-items-list {
+    display: grid;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .work-item-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 2fr) minmax(160px, 1.2fr) minmax(170px, 1.2fr) 70px 20px;
+    gap: 10px;
+    align-items: center;
+    width: 100%;
+    border: 0;
+    border-bottom: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 0;
+    padding: 10px 12px;
+    text-align: left;
+  }
+  .work-item-row:last-child { border-bottom: 0; }
+  .work-item-row span { min-width: 0; }
+  .work-item-row strong,
+  .work-item-row small { display: block; overflow-wrap: anywhere; }
+  .work-item-row small { color: var(--text-color-muted, #656d76); }
+  .work-item-action-count { text-align: center; }
+  .work-item-overflow { margin: 10px 0 0; }
+  .work-item-detail-heading,
+  .work-item-heading-links {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+  }
+  .work-item-detail-heading h2,
+  .work-item-detail-heading p { margin: 0; }
+  .work-item-heading-links { justify-content: flex-end; }
+  .work-item-summary-cards { margin-top: 14px; }
+  .work-item-summary-cards small { display: block; margin-top: 4px; }
+  .work-item-actions {
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .work-item-action-header,
+  .work-item-action-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 1.25fr) minmax(160px, 1.25fr) minmax(90px, .7fr) minmax(150px, 1fr) 70px;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 11px;
+  }
+  .work-item-action-header {
+    color: var(--text-color-muted, #656d76);
+    background: var(--border-color-default, #d0d7de22);
+    font-size: 12px;
+  }
+  .work-item-action-row { border-top: 1px solid var(--border-color-default, #d0d7de); }
+  .work-item-action-row strong,
+  .work-item-action-row small { display: block; overflow-wrap: anywhere; }
+  .work-item-action-row small { color: var(--text-color-muted, #656d76); }
   .toolbar > *, .add-form > * { max-width: 100%; }
   .fleet-panel {
     display: flex;
@@ -1613,6 +1835,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     .waterfall-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
     .graph-toolbar { flex-wrap: wrap; }
     .graph-help { width: 100%; }
+    .work-item-row,
+    .work-item-action-header,
+    .work-item-action-row { grid-template-columns: minmax(0, 1fr); }
+    .work-item-action-header { display: none; }
   }
   @media (max-width: 900px) {
     .stage-definition-layout { grid-template-columns: minmax(0, 1fr); }
@@ -2129,6 +2355,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <button id="dashboard-tab-attention" role="tab" data-tab="attention" aria-controls="dashboard-panel-attention">Overview</button>
       <button id="dashboard-tab-workflows" role="tab" data-tab="workflows" aria-controls="dashboard-panel-workflows">Workflows</button>
       <button id="dashboard-tab-runs" role="tab" data-tab="runs" aria-controls="dashboard-panel-runs">Runs</button>
+      <button id="dashboard-tab-work-items" role="tab" data-tab="work-items" aria-controls="dashboard-panel-work-items">Work Items</button>
       <button id="dashboard-tab-insights" role="tab" data-tab="insights" aria-controls="dashboard-panel-insights">Insights</button>
       <button id="dashboard-tab-cost" role="tab" data-tab="cost" aria-controls="dashboard-panel-cost">Cost</button>
     </div>
@@ -2222,6 +2449,27 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
         <button id="runs-load-more" type="button" style="display:none">Load more</button>
       </div>
+    </section>
+    <section id="dashboard-panel-work-items" role="tabpanel" aria-labelledby="dashboard-tab-work-items" hidden>
+      <h2>Work Items</h2>
+      <p class="section-description">Pull requests and issues that Goobers changed through a provider operation.</p>
+      <div id="work-item-list-controls">
+        <div class="filters-bar" id="work-item-kind-filters" role="group" aria-label="Work item type">
+          <button type="button" data-work-item-kind-filter="" aria-pressed="true">All</button>
+          <button type="button" data-work-item-kind-filter="pr" aria-pressed="false">Pull requests</button>
+          <button type="button" data-work-item-kind-filter="issue" aria-pressed="false">Issues</button>
+          <label>Gaggle
+            <select id="work-item-gaggle" aria-label="Filter work items by gaggle">
+              <option value="">All gaggles</option>
+            </select>
+          </label>
+          <label>Find work item
+            <input id="work-item-search" type="search" aria-label="Search work items" placeholder="Repository or number" />
+          </label>
+        </div>
+      </div>
+      <div id="work-item-status" class="muted" role="status"></div>
+      <div id="work-item-content"></div>
     </section>
     <section id="dashboard-panel-insights" role="tabpanel" aria-labelledby="dashboard-tab-insights" hidden>
       <h2>Insights</h2>
@@ -2346,6 +2594,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const expandedAttention = new Set();
   let activeDashboardTab = "attention";
   let activeRunTab = "summary";
+  let runOrigin = "runs";
   let selectedRunId = "";
   let runRequestSequence = 0;
   let snapshotRequestSequence = 0;
@@ -2392,6 +2641,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     if (root === dashboardEl) {
       activeDashboardTab = selected.dataset.tab;
+      if (activeDashboardTab === "work-items") void loadWorkItems();
       if (activeDashboardTab === "insights") void loadInsights();
       if (activeDashboardTab === "cost") void loadCost();
     }
@@ -3660,6 +3910,186 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     void loadCost();
   });
 
+  // ---- Work Items tab: bounded provider-action index and detail ----
+  const workItemListControlsEl = document.getElementById("work-item-list-controls");
+  const workItemStatusEl = document.getElementById("work-item-status");
+  const workItemContentEl = document.getElementById("work-item-content");
+  const workItemGaggleSelect = document.getElementById("work-item-gaggle");
+  const workItemSearchInput = document.getElementById("work-item-search");
+  const workItemKindButtons = [...document.querySelectorAll("[data-work-item-kind-filter]")];
+  let workItemKind = "";
+  let workItemRequestSequence = 0;
+  let lastWorkItemPage = null;
+  let selectedWorkItem = null;
+  let workItemActionType = "all";
+  const workItemDetailCache = new Map();
+
+  function workItemCacheKey(sourceId, item) {
+    return [sourceId, item.provider, item.repository, item.kind, item.externalId].join("|");
+  }
+
+  function updateWorkItemKindButtons() {
+    for (const button of workItemKindButtons) {
+      const selected = button.dataset.workItemKindFilter === workItemKind;
+      button.setAttribute("aria-pressed", String(selected));
+    }
+  }
+
+  function populateWorkItemGaggles(items) {
+    const previous = workItemGaggleSelect.value;
+    const options = [...new Set((items || []).map((item) => item.gaggle).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right));
+    workItemGaggleSelect.innerHTML = '<option value="">All gaggles</option>' +
+      options.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + "</option>").join("");
+    workItemGaggleSelect.value = options.includes(previous) ? previous : "";
+  }
+
+  function bindWorkItemList() {
+    workItemContentEl.querySelectorAll("[data-work-item-provider]").forEach((button) => {
+      button.addEventListener("click", () => void openWorkItem({
+        provider: button.dataset.workItemProvider,
+        repository: button.dataset.workItemRepository,
+        kind: button.dataset.workItemKind,
+        externalId: button.dataset.workItemId,
+      }));
+    });
+  }
+
+  function renderCurrentWorkItemList() {
+    selectedWorkItem = null;
+    workItemListControlsEl.hidden = false;
+    workItemContentEl.innerHTML = renderWorkItemList(
+      lastWorkItemPage,
+      workItemGaggleSelect.value,
+      workItemSearchInput.value,
+    );
+    bindWorkItemList();
+  }
+
+  function bindWorkItemDetail() {
+    document.getElementById("work-item-back")?.addEventListener("click", () => {
+      ++workItemRequestSequence;
+      workItemStatusEl.textContent = "";
+      renderCurrentWorkItemList();
+      document.querySelector("[data-work-item-provider]")?.focus();
+    });
+    document.getElementById("work-item-action-type")?.addEventListener("change", (event) => {
+      workItemActionType = event.target.value;
+      workItemContentEl.innerHTML = renderWorkItemDetail(selectedWorkItem, workItemActionType);
+      bindWorkItemDetail();
+      document.getElementById("work-item-action-type")?.focus();
+    });
+    workItemContentEl.querySelectorAll("[data-work-item-run]").forEach((button) =>
+      button.addEventListener("click", () => void openRun(button.dataset.workItemRun, "work-items")));
+  }
+
+  function showWorkItemDetail(item) {
+    selectedWorkItem = item;
+    workItemActionType = "all";
+    workItemListControlsEl.hidden = true;
+    workItemStatusEl.textContent = "";
+    workItemContentEl.innerHTML = renderWorkItemDetail(item, workItemActionType);
+    bindWorkItemDetail();
+    document.getElementById("work-item-back")?.focus();
+  }
+
+  async function openWorkItem(identity) {
+    const sourceId = sourceSelect.value;
+    if (!sourceId) return;
+    const requestSequence = ++workItemRequestSequence;
+    const cacheKey = workItemCacheKey(sourceId, identity);
+    workItemListControlsEl.hidden = true;
+    workItemStatusEl.textContent = "Loading\u2026";
+    workItemContentEl.innerHTML = "";
+    try {
+      let item = workItemDetailCache.get(cacheKey);
+      if (!item) {
+        const params = new URLSearchParams({
+          source: sourceId,
+          provider: identity.provider,
+          repository: identity.repository,
+          kind: identity.kind,
+          id: identity.externalId,
+        });
+        const response = await fetch("/api/work-item-detail?" + params.toString());
+        const data = await response.json();
+        if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+        if (!data.connected) throw new Error(data.reason || "Could not load work item detail.");
+        item = data.workItem;
+        workItemDetailCache.set(cacheKey, item);
+      }
+      if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+      showWorkItemDetail(item);
+    } catch (error) {
+      if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+      selectedWorkItem = null;
+      workItemStatusEl.textContent = portalRequestError(error);
+      workItemContentEl.innerHTML = '<button type="button" class="back" id="work-item-error-back">\u2190 Back to Work Items</button>';
+      document.getElementById("work-item-error-back")?.addEventListener("click", () => {
+        ++workItemRequestSequence;
+        workItemStatusEl.textContent = "";
+        renderCurrentWorkItemList();
+      });
+      document.getElementById("work-item-error-back")?.focus();
+    }
+  }
+
+  function resetWorkItemsForNewSource() {
+    ++workItemRequestSequence;
+    workItemKind = "";
+    lastWorkItemPage = null;
+    selectedWorkItem = null;
+    workItemActionType = "all";
+    workItemDetailCache.clear();
+    workItemGaggleSelect.innerHTML = '<option value="">All gaggles</option>';
+    workItemSearchInput.value = "";
+    workItemListControlsEl.hidden = false;
+    workItemStatusEl.textContent = "";
+    workItemContentEl.innerHTML = "";
+    updateWorkItemKindButtons();
+  }
+
+  async function loadWorkItems() {
+    const sourceId = sourceSelect.value;
+    if (!sourceId) return;
+    const requestSequence = ++workItemRequestSequence;
+    selectedWorkItem = null;
+    workItemListControlsEl.hidden = false;
+    workItemStatusEl.textContent = "Loading\u2026";
+    workItemContentEl.innerHTML = "";
+    try {
+      const params = new URLSearchParams({ source: sourceId, limit: "200" });
+      if (workItemKind) params.set("kind", workItemKind);
+      const response = await fetch("/api/work-items?" + params.toString());
+      const data = await response.json();
+      if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+      if (!data.connected) {
+        workItemStatusEl.textContent = data.reason || "Could not load work items.";
+        return;
+      }
+      lastWorkItemPage = data.workItems || { items: [], hasMore: false };
+      populateWorkItemGaggles(lastWorkItemPage.items);
+      workItemStatusEl.textContent = "";
+      renderCurrentWorkItemList();
+    } catch (error) {
+      if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+      workItemStatusEl.textContent = portalRequestError(error);
+      workItemContentEl.innerHTML = "";
+    }
+  }
+
+  for (const button of workItemKindButtons) {
+    button.addEventListener("click", () => {
+      const nextKind = button.dataset.workItemKindFilter;
+      if (nextKind === workItemKind) return;
+      workItemKind = nextKind;
+      updateWorkItemKindButtons();
+      void loadWorkItems();
+    });
+  }
+  workItemGaggleSelect.addEventListener("change", renderCurrentWorkItemList);
+  workItemSearchInput.addEventListener("input", renderCurrentWorkItemList);
+
   // ---- Run detail view ----
   const runViewEl = document.getElementById("run-view");
   const runErrorEl = document.getElementById("run-error");
@@ -4218,6 +4648,16 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderCostPanel = ${renderCostPanel.toString()};
+  const workItemLabel = ${workItemLabel.toString()};
+  const humanizeWorkItemOperation = ${humanizeWorkItemOperation.toString()};
+  const formatWorkItemTimestamp = ${formatWorkItemTimestamp.toString()};
+  const formatWorkItemCost = ${formatWorkItemCost.toString()};
+  const filterWorkItems = ${filterWorkItems.toString()};
+  const renderWorkItemList = ${renderWorkItemList.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderWorkItemDetail = ${renderWorkItemDetail.toString()
+        .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
 
   function externalRefsFrom(events) {
     const refs = [];
@@ -4376,7 +4816,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     });
   }
 
-  async function openRun(runId) {
+  async function openRun(runId, origin = "runs") {
     const sourceId = sourceSelect.value;
     if (!sourceId) {
       errorEl.textContent = "Choose a source before opening a run.";
@@ -4385,6 +4825,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     const requestSequence = ++runRequestSequence;
     const isNewRun = selectedRunId !== runId;
+    runOrigin = origin;
+    document.getElementById("run-back").textContent =
+      runOrigin === "work-items" ? "Back to Work Items" : "Back to runs";
     selectedRunId = runId;
     if (isNewRun) {
       activeRunTab = "summary";
@@ -4490,6 +4933,13 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     activeStageInspectorView = "fields";
     runViewEl.style.display = "none";
     dashboardEl.style.display = "block";
+    if (runOrigin === "work-items") {
+      const actionButton = [...workItemContentEl.querySelectorAll("[data-work-item-run]")]
+        .find((button) => button.dataset.workItemRun === previousRunId);
+      actionButton?.focus();
+      syncViewUrl();
+      return;
+    }
     activateInternalTab(dashboardEl, "runs", true);
     const row = [...runsBody.querySelectorAll("[data-run-id]")].find((row) => row.dataset.runId === previousRunId);
     row?.querySelector(".table-link")?.focus();
@@ -4529,6 +4979,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         setFreshnessState("Loading");
         resetInsightsForNewSource();
         resetCostForNewSource();
+        resetWorkItemsForNewSource();
       }
       snapshotSourceId = sourceId;
     }
@@ -4548,6 +4999,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         renderSnapshot(data);
         if (sourceChanged && activeDashboardTab === "insights") void loadInsights();
         if (sourceChanged && activeDashboardTab === "cost") void loadCost();
+        if (sourceChanged && activeDashboardTab === "work-items") void loadWorkItems();
       }
     } catch (err) {
       if (sourceId !== sourceSelect.value || requestSequence !== snapshotRequestSequence) return;
@@ -4664,7 +5116,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   document.getElementById("refresh").addEventListener("click", () => {
     workflowDetailCache.clear();
-    void refreshAll();
+    workItemDetailCache.clear();
+    void refreshAll().then(() => {
+      if (activeDashboardTab === "work-items") void loadWorkItems();
+    });
   });
   async function changeSource() {
     liveConnectionEstablished = false;
