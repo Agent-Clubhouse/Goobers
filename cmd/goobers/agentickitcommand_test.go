@@ -35,6 +35,7 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 				if selected == other {
 					other = apiv1.HarnessClaudeCode
 				}
+				cfg.Runner.HarnessEnvUnset = []string{"OUTER_LAUNCHER_SESSION_ID"}
 				cfg.Runner.HarnessCommand = map[string][]string{string(other): {"unrelated-launcher-must-not-travel"}}
 				var declared []string
 				switch choice {
@@ -52,6 +53,11 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 				}
 				if len(declared) > 0 {
 					cfg.Runner.HarnessCommand[string(selected)] = slices.Clone(declared)
+					if selected == apiv1.HarnessCopilot {
+						cfg.Runner.HarnessSessionArgs = map[string][]string{
+							string(selected): {"--session-file", "{sessionId}.jsonl"},
+						}
+					}
 				}
 				if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
 					t.Fatal(err)
@@ -101,22 +107,31 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 					if got := kit.EnvCapabilities["agent:model"]; got != wantModelEnv {
 						t.Fatalf("kit agent:model env = %q, want %q", got, wantModelEnv)
 					}
-					assertPodLauncher(t, kit, selected, declared)
+					if !slices.Equal(kit.HarnessEnvUnset, cfg.Runner.HarnessEnvUnset) {
+						t.Fatalf("kit harness env unset = %v, want %v", kit.HarnessEnvUnset, cfg.Runner.HarnessEnvUnset)
+					}
+					if !slices.Equal(kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)]) {
+						t.Fatalf("kit harness session args = %v, want %v", kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)])
+					}
+					assertPodLauncher(t, kit, selected, declared, cfg.Runner.HarnessEnvUnset)
 				}
 			})
 		}
 	}
 }
 
-func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness, declared []string) {
+func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness, declared, envUnset []string) {
 	t.Helper()
 	previous := podHarnessRegistry
 	defer func() { podHarnessRegistry = previous }()
 	fake := &harnesstest.FakeAdapter{}
-	podHarnessRegistry = func(caps map[string]string, allow []string, commands map[string][]string, root, bin string, deferDiscovery bool, credential func(context.Context) (string, error), ephemeral bool) (*harness.Registry, error) {
+	podHarnessRegistry = func(caps map[string]string, environment harness.EnvironmentConfig, commands map[string][]string, root, bin string, deferDiscovery bool, credential func(context.Context) (string, error), ephemeral bool) (*harness.Registry, error) {
+		if !slices.Equal(environment.Unset, envUnset) {
+			t.Fatalf("pod harness env unset = %v, want %v", environment.Unset, envUnset)
+		}
 		// Build the real adapters from the actual pod-constructor arguments, then
 		// replace only the external process adapter before its preflight executes.
-		actual, err := buildHarnessRegistry(caps, allow, commands, root, bin, deferDiscovery, credential, ephemeral)
+		actual, err := buildHarnessRegistry(caps, environment, commands, root, bin, deferDiscovery, credential, ephemeral)
 		if err != nil {
 			return nil, err
 		}

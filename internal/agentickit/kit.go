@@ -89,6 +89,11 @@ type Kit struct {
 	// It is literal process data, not shell syntax. Omitted in legacy kits and
 	// when no override is declared, preserving the adapter's default command.
 	HarnessCommand []string `json:"harnessCommand,omitempty"`
+	// HarnessEnvUnset is the instance's harness-only ambient environment deny
+	// list. Stage pods apply it to execution and preflight just like the daemon.
+	HarnessEnvUnset []string `json:"harnessEnvUnset,omitempty"`
+	// HarnessSessionArgs is the selected launcher's configured session template.
+	HarnessSessionArgs []string `json:"harnessSessionArgs,omitempty"`
 }
 
 // Marshal renders the kit and returns it with its content address.

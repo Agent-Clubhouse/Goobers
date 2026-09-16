@@ -23,6 +23,7 @@ type credentialEnvConfig struct {
 	envCapabilities                map[string]string
 	optionalCredentialCapabilities map[string]bool
 	extraEnvAllowlist              []string
+	envUnset                       []string
 	instanceRoot                   string
 	selfBin                        string
 	// ephemeralTmp, when non-nil, is this attempt's private temp area — the
@@ -42,8 +43,17 @@ type credentialEnvConfig struct {
 	ephemeralTmp *ephemeraltmp.Scope
 }
 
-func baseEnv(extra []string) []string {
-	return procenv.BaseEnvWith(extra)
+// EnvironmentConfig controls ambient variables inherited by a harness and its
+// preflight probes. Scoped credentials are injected separately after this
+// policy is applied.
+type EnvironmentConfig struct {
+	ExtraAllowlist []string
+	Unset          []string
+	SessionArgs    map[string][]string
+}
+
+func baseEnv(extra, unset []string) []string {
+	return withoutEnvVars(procenv.BaseEnvWith(extra), unset...)
 }
 
 // establishEphemeralTmp carves this attempt's private temp area when the
@@ -66,7 +76,7 @@ func establishEphemeralTmp(adapterName string, enabled bool, root string) (*ephe
 }
 
 func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunRequest) ([]string, error) {
-	env := baseEnv(cfg.extraEnvAllowlist)
+	env := baseEnv(cfg.extraEnvAllowlist, cfg.envUnset)
 	if cfg.ephemeralTmp != nil {
 		scoped, err := cfg.ephemeralTmp.Apply(env)
 		if err != nil {

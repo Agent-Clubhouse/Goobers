@@ -31,6 +31,36 @@ proofs are cached for that Goobers process. Changing a wrapper requires
 restarting that process. A separate worker or stage process performs
 its own proof; verification is never written to configuration or shared storage.
 
+## Environment isolation
+
+Harness subprocesses inherit only Goobers' built-in environment allowlist plus
+names explicitly configured in `runner.envPassthrough`. If a forwarding
+launcher must not inherit a parent-process variable, list its name in
+`runner.harnessEnvUnset`:
+
+```yaml
+runner:
+  harnessEnvUnset:
+    - OUTER_LAUNCHER_SESSION_ID
+  harnessCommand:
+    copilot: ["forwarding-launcher", "copilot"]
+  harnessSessionArgs:
+    copilot: ["--session-file", "{sessionId}.jsonl"]
+```
+
+Removals apply to harness execution, version/authentication preflight, and
+admission-time harness probing. They do not affect deterministic stages or
+scoped credentials injected for declared capabilities. An absent variable is a
+no-op. If a name appears in both `envPassthrough` and `harnessEnvUnset`, removal
+wins for harnesses while deterministic stages still receive the passthrough.
+
+`runner.harnessSessionArgs` is an explicit alternative to the command-based
+launcher-contract probe. Goobers substitutes a fresh UUID for `{sessionId}`,
+appends the resulting literal arguments to the configured launcher, and reads
+the corresponding native Copilot transcript. Use it when a launcher already
+has a stable session argument but cannot implement `--goobers-launcher-contract`.
+Only the Copilot harness currently supports this setting.
+
 Model discovery is not sent through a custom launcher. Goobers connects the
 Copilot SDK directly to `copilot` for that server-mode exchange, then uses the
 configured launcher for authentication preflight and workflow execution. This

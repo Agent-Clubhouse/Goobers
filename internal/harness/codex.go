@@ -30,6 +30,7 @@ type CodexAdapter struct {
 	OptionalCredentialCapabilities map[string]bool
 	Runner                         ProcessRunner
 	ExtraEnvAllowlist              []string
+	EnvUnset                       []string
 	InstanceRoot                   string
 	SelfBin                        string
 	EphemeralTmp                   bool
@@ -90,7 +91,7 @@ func (c *CodexAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if _, err := exec.LookPath(bin); err != nil {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: %q not found on PATH — install Codex CLI and sign in before running agentic stages", bin)
 	}
-	env := baseEnv(c.ExtraEnvAllowlist)
+	env := baseEnv(c.ExtraEnvAllowlist, c.EnvUnset)
 	hasAPIKey := false
 	if c.ModelCredential != nil {
 		token, err := c.ModelCredential(ctx)
@@ -306,6 +307,7 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 		envCapabilities:                c.EnvCapabilities,
 		optionalCredentialCapabilities: c.OptionalCredentialCapabilities,
 		extraEnvAllowlist:              c.ExtraEnvAllowlist,
+		envUnset:                       c.EnvUnset,
 		instanceRoot:                   c.InstanceRoot,
 		selfBin:                        c.SelfBin,
 		ephemeralTmp:                   ephemeralTmp,

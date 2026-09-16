@@ -282,7 +282,7 @@ func newGooberDigestIndex(
 				set,
 				goobersByName(set),
 				instructions,
-				cfg.Runner.EnvPassthrough,
+				harnessEnvironmentPolicy(cfg.Runner),
 				cfg.Runner.HarnessCommand,
 				// The daemon defers model discovery when it computes the
 				// digests this pin is matched against. Deferring here too is
