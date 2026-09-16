@@ -44,6 +44,8 @@ func TestFeatureRegistryAgainstLatestRelease(t *testing.T) {
 // baseline must drop them or every release that ships one breaks this gate.
 var binaryLayerFeatureIDs = map[FeatureID]struct{}{
 	"gaggle.spec.cost.enabled": {},
+	"gaggle.spec.enabled":      {},
+	"workflow.spec.enabled":    {},
 }
 
 func withoutBinaryLayerFeatures(t *testing.T, released FeatureRegistry) FeatureRegistry {
