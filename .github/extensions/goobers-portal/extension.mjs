@@ -13,6 +13,7 @@ import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { renderHtml } from "./render.mjs";
 import { listKnownSources, addSource, removeSource } from "./registry.mjs";
 import { readPreferences, setFilterPreferences, setThemePreference } from "./preferences.mjs";
@@ -819,6 +820,13 @@ async function startServer(instanceId) {
                     res.setHeader("Content-Type", "application/json; charset=utf-8");
                     res.end(JSON.stringify({ ok: false, reason: err.message || String(err) }));
                 }
+                return;
+            }
+            if (url.pathname === "/goober-mascot.png") {
+                const assetPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "goober-mascot.png");
+                res.setHeader("Content-Type", "image/png");
+                res.setHeader("Cache-Control", "public, max-age=86400");
+                res.end(await fs.readFile(assetPath));
                 return;
             }
             res.setHeader("Content-Type", "text/html; charset=utf-8");

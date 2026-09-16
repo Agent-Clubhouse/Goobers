@@ -230,6 +230,7 @@ for (const field of ["refs", "externalRefs"]) {
                     renderRunAssociations,
                     renderRunRowCells,
                     fmtTime: () => "",
+                    fmtTimeTitle: () => "",
                     attachRunIdControls() {},
                     updateSortIndicators() {},
                 });

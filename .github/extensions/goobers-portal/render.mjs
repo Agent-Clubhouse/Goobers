@@ -225,7 +225,8 @@ export function renderSnapshotCard(label, value) {
 // safeExternalUrl and renderRunAssociations, which escape their own inputs;
 // every value read off the run itself is escaped here.
 export function renderRunRowCells(run, parts) {
-    const cell = (value) => "<td>" + escapeAssociationHtml(value) + "</td>";
+    const cell = (value, title) => "<td" + (title ? ' title="' + escapeAssociationHtml(title) + '"' : "") + ">" +
+        escapeAssociationHtml(value) + "</td>";
     const runId = (run && (run.runId || run.id)) || "";
     const extra = (parts && parts.actionsLink) || "";
     const associations = (parts && parts.associations) || "\u2014";
@@ -235,14 +236,43 @@ export function renderRunRowCells(run, parts) {
         cell((run && run.trigger && run.trigger.kind) || "\u2014") +
         '<td><span class="phase" data-phase="' + escapeAssociationHtml((run && run.phase) || "") + '">' + escapeAssociationHtml((run && run.phase) || "") + "</span></td>" +
         "<td>" + associations + "</td>" +
-        cell((parts && parts.startedAt) || "") +
-        cell((parts && parts.lastActivityAt) || "");
+        cell((parts && parts.startedAt) || "", parts && parts.startedAtTitle) +
+        cell((parts && parts.lastActivityAt) || "", parts && parts.lastActivityAtTitle);
+}
+
+// Returns a relative "Today"/"Yesterday"/short-date label plus a
+// seconds-precise, full-date title for a tooltip. Shared by every
+// timestamp rendered in the extension so date/time formatting stays
+// consistent (see the *Time/*Timestamp helpers below).
+export function formatSmartDateTime(value) {
+    if (!value) return { text: "\u2014", title: "" };
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime()) || date.getUTCFullYear() < 1970) return { text: "\u2014", title: "" };
+    const now = new Date();
+    const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const diffDays = Math.round((startOfDay(now) - startOfDay(date)) / 86400000);
+    const timePart = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const datePart = diffDays === 0
+        ? "Today"
+        : diffDays === 1
+            ? "Yesterday"
+            : date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    const title = date.toLocaleString(undefined, {
+        year: "numeric", month: "long", day: "numeric",
+        hour: "numeric", minute: "2-digit", second: "2-digit",
+    });
+    return { text: datePart + ", " + timePart, title };
 }
 
 export function formatRunDetailTime(value) {
     if (!value) return "\u2014";
     try {
-        return escapeAssociationHtml(new Date(value).toLocaleString());
+        const { text, title } = formatSmartDateTime(value);
+        if (text === "\u2014") return "\u2014";
+        let iso = "";
+        try { iso = new Date(value).toISOString(); } catch { iso = ""; }
+        return '<time datetime="' + escapeAssociationHtml(iso) + '" title="' + escapeAssociationHtml(title) + '">' +
+            escapeAssociationHtml(text) + "</time>";
     } catch {
         return escapeAssociationHtml(value);
     }
@@ -773,7 +803,10 @@ function insightFormatBucketLabel(since, until) {
     const start = new Date(since);
     const end = new Date(until);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return since + " \u2013 " + until;
-    return start.toLocaleString() + " \u2013 " + end.toLocaleString();
+    const fmt = (date) => date.toLocaleString(undefined, {
+        year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    });
+    return fmt(start) + " \u2013 " + fmt(end);
 }
 
 function insightGaggleMetric(item) {
@@ -1283,9 +1316,11 @@ export function humanizeWorkItemOperation(operation) {
 }
 
 export function formatWorkItemTimestamp(value) {
-    if (!value) return "\u2014";
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) || date.getUTCFullYear() < 1970 ? "\u2014" : date.toLocaleString();
+    return formatSmartDateTime(value).text;
+}
+
+export function formatWorkItemTimestampTitle(value) {
+    return formatSmartDateTime(value).title;
 }
 
 export function formatWorkItemCost(cost) {
@@ -1406,7 +1441,8 @@ export function renderWorkItemList(page, gaggle = "", search = "", sortKey = "la
             '</strong><small>' + escapeAssociationHtml(item.provider || "provider") + " \u00b7 " +
             escapeAssociationHtml(typeLabel) + "</small></span>" +
             '<span title="Last action"><strong>' + escapeAssociationHtml(humanizeWorkItemOperation(item.lastOperation)) +
-            '</strong><small>' + escapeAssociationHtml(formatWorkItemTimestamp(item.lastActionAt)) +
+            '</strong><small><time title="' + escapeAssociationHtml(formatWorkItemTimestampTitle(item.lastActionAt)) + '">' +
+            escapeAssociationHtml(formatWorkItemTimestamp(item.lastActionAt)) + "</time>" +
             (statusBadge ? " " + statusBadge : "") + "</small></span>" +
             '<span title="Workflow and gaggle"><strong>' + escapeAssociationHtml(item.workflow || "Unknown") +
             '</strong><small>' + escapeAssociationHtml(item.gaggle || "No gaggle recorded") +
@@ -1459,7 +1495,8 @@ export function renderWorkItemDetail(item, actionType = "all") {
         '<span role="cell">' + escapeAssociationHtml(action.runStatus
             ? humanizeWorkItemOperation(action.runStatus)
             : "Unknown") + "</span>" +
-        '<time role="cell" datetime="' + escapeAssociationHtml(action.occurredAt || "") + '">' +
+        '<time role="cell" datetime="' + escapeAssociationHtml(action.occurredAt || "") + '" title="' +
+        escapeAssociationHtml(formatWorkItemTimestampTitle(action.occurredAt)) + '">' +
         escapeAssociationHtml(formatWorkItemTimestamp(action.occurredAt)) + "</time>" +
         '<span role="cell"><button type="button" class="table-link" data-work-item-run="' +
         escapeAssociationHtml(action.runId || "") + '">View run</button></span></div>',
@@ -1566,17 +1603,22 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 12px 16px;
+    padding: 6px 16px;
     border-bottom: 1px solid var(--border-color-default, #d0d7de);
     flex-wrap: wrap;
   }
-  h1 {
-    font-size: var(--text-title-medium, 18px);
-    font-weight: var(--font-weight-semibold, 600);
-    margin: 0;
+  .brand-mark {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+  }
+  .brand-mark img {
+    display: block;
+    height: 28px;
+    width: auto;
   }
   .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  main { padding: 16px; min-width: 0; }
+  main { padding: 8px 16px 16px; min-width: 0; }
   .skip-link { position: absolute; top: -100px; left: 12px; z-index: 10; }
   .skip-link:focus { top: 12px; padding: 8px; background: var(--background-color-default, #fff); }
   .source-context { display: flex; gap: 8px 16px; align-items: center; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
@@ -1720,7 +1762,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .source-picker-option-select:hover { background: var(--background-color-muted, #f6f8fa); }
+  .source-picker-option-select:hover,
+  .source-picker-option-select:focus-visible { background: var(--background-color-muted, #f6f8fa); }
   .source-picker-option.is-selected .source-picker-option-select { font-weight: 600; }
   .source-picker-option-remove {
     border: 0;
@@ -1729,7 +1772,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     padding: 4px 6px;
     border-radius: 6px;
   }
-  .source-picker-option-remove:hover { color: var(--true-color-red, #cf222e); background: var(--background-color-muted, #f6f8fa); }
+  .source-picker-option-remove:hover,
+  .source-picker-option-remove:focus-visible { color: var(--true-color-red, #cf222e); background: var(--background-color-muted, #f6f8fa); }
+  .source-picker-option-select:focus-visible,
+  .source-picker-option-remove:focus-visible,
+  .source-picker-connect:focus-visible { outline: 2px solid var(--focus-outline-color, #0969da); outline-offset: -2px; }
   .source-picker-connect {
     width: 100%;
     margin-top: 6px;
@@ -2155,10 +2202,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     border-color: var(--true-color-purple-muted, #8250df66);
   }
   .kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 12px 0 20px; }
-  .kv { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px; padding: 10px 12px; }
+  .kv { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px; padding: 10px 12px; min-width: 0; }
   .kv-wide { grid-column: 1 / -1; }
   .kv .label { color: var(--text-color-muted, #656d76); font-size: 12px; }
-  .kv .value { font-size: 14px; margin-top: 2px; word-break: break-word; }
+  .kv .value { font-size: 14px; margin-top: 2px; word-break: break-word; min-width: 0; }
   .kv .value a { color: inherit; }
   .stage-definition-layout {
     display: grid;
@@ -2273,7 +2320,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .legend-chip.skipped .legend-swatch { background: var(--border-color-default, #d0d7de22); border: 1px solid var(--text-color-muted, #656d76); }
   .legend-chip.blocked .legend-swatch { background: var(--true-color-yellow, #9a670033); border: 1px solid var(--true-color-yellow, #9a6700); }
   .causal-diagnosis { margin: 12px 0 20px; }
-  .causal-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .causal-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+  .causal-list li { min-width: 0; overflow-wrap: anywhere; }
   .execution-waterfall { display: grid; gap: 8px; margin-top: 8px; }
   .waterfall-row { display: grid; grid-template-columns: minmax(140px, 210px) minmax(140px, 1fr) minmax(70px, 110px); gap: 10px; align-items: center; }
   .waterfall-stage { font-size: 12px; }
@@ -2481,7 +2529,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .internal-tabs {
     display: flex;
     gap: 4px;
-    margin: 12px 0;
+    margin: 4px 0 12px;
     border-bottom: 1px solid var(--border-color-default, #d0d7de);
     overflow-x: auto;
   }
@@ -2505,7 +2553,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
 <header>
-  <h1>Goobers Portal</h1>
+  <div class="brand-mark">
+    <img src="/goober-mascot.png" alt="Goobers" width="28" height="28" />
+  </div>
   <div class="source-context">
     <p id="source-context" class="muted"></p>
     <p id="freshness" class="freshness" role="status">Connecting</p>
@@ -2518,13 +2568,13 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     </select>
     <div class="source-picker">
       <button id="source-picker-trigger" type="button" class="source-picker-trigger"
-        aria-haspopup="listbox" aria-expanded="false" aria-controls="source-picker-menu" aria-label="Goobers source">
+        aria-haspopup="true" aria-expanded="false" aria-controls="source-picker-menu" aria-label="Goobers source">
         <span id="source-picker-label">No sources yet</span>
         <span class="source-picker-caret" aria-hidden="true">&#9662;</span>
       </button>
-      <div id="source-picker-menu" class="source-picker-menu" role="listbox" aria-label="Goobers source" hidden>
+      <div id="source-picker-menu" class="source-picker-menu" role="menu" aria-label="Goobers source" hidden>
         <div id="source-picker-list"></div>
-        <button id="connect-source-button" type="button" class="source-picker-connect">+ Connect a source&hellip;</button>
+        <button id="connect-source-button" type="button" role="menuitem" class="source-picker-connect">+ Connect a source&hellip;</button>
       </div>
     </div>
     <!-- Internal state store only: kept in sync with the picker above and driven
@@ -3138,7 +3188,24 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   function fmtTime(v) {
     if (!v) return "\u2014";
-    try { return escapeHtml(new Date(v).toLocaleString()); } catch { return escapeHtml(v); }
+    try { return escapeHtml(formatSmartDateTime(v).text); } catch { return escapeHtml(v); }
+  }
+
+  function fmtTimeTitle(v) {
+    if (!v) return "";
+    try { return formatSmartDateTime(v).title; } catch { return ""; }
+  }
+
+  // Turns a schedule trigger's cron/interval string into a short label for
+  // the Workflows table's Trigger column, e.g. "@hourly" -> "hourly" and
+  // "@every 90m" -> "every 90m". A raw cron expression (e.g. "0 */2 * * *")
+  // is shown as-is rather than attempting full cron humanization.
+  function humanizeScheduleFrequency(schedule) {
+    const value = String(schedule || "").trim();
+    if (!value) return "";
+    if (value.startsWith("@every")) return "every " + value.slice("@every".length).trim();
+    if (value.startsWith("@")) return value.slice(1);
+    return value;
   }
 
   function renderAttention(items, runs) {
@@ -3247,14 +3314,22 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     return sourceSelect.value;
   }
 
+  function sourcePickerMenuItems() {
+    return Array.from(sourcePickerMenu.querySelectorAll('[role="menuitemradio"], [role="menuitem"]'));
+  }
+
   function openSourcePicker() {
     sourcePickerMenu.hidden = false;
     sourcePickerTrigger.setAttribute("aria-expanded", "true");
+    const items = sourcePickerMenuItems();
+    const active = items.find((el) => el.getAttribute("aria-checked") === "true") || items[0];
+    active?.focus();
   }
 
-  function closeSourcePicker() {
+  function closeSourcePicker(options) {
     sourcePickerMenu.hidden = true;
     sourcePickerTrigger.setAttribute("aria-expanded", "false");
+    if (options && options.restoreFocus) sourcePickerTrigger.focus();
   }
 
   async function removeSourceById(id, label) {
@@ -3269,6 +3344,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       if (!response.ok || result.error) throw new Error(result.error || "Could not remove source.");
       await loadSources();
       await changeSource();
+      closeSourcePicker({ restoreFocus: true });
     } catch (err) {
       errorEl.textContent = portalRequestError(err);
     }
@@ -3281,24 +3357,27 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const dot = s.connected ? "\u25cf" : "\u25cb";
       const row = document.createElement("div");
       row.className = "source-picker-option";
-      row.setAttribute("role", "option");
       row.dataset.id = s.id;
       const isSelected = s.id === sourceSelect.value;
-      row.setAttribute("aria-selected", String(isSelected));
       if (isSelected) row.classList.add("is-selected");
+      const isLocal = s.kind === "local";
+      if (!isLocal) row.title = label + " is a " + s.kind + " source and can only be removed from its host.";
       const selectButton = document.createElement("button");
       selectButton.type = "button";
+      selectButton.setAttribute("role", "menuitemradio");
+      selectButton.setAttribute("aria-checked", String(isSelected));
       selectButton.className = "source-picker-option-select";
       selectButton.textContent = dot + " " + label + " (" + s.kind + ")";
       selectButton.addEventListener("click", () => {
         sourceSelect.value = s.id;
         sourceSelect.dispatchEvent(new Event("change"));
-        closeSourcePicker();
+        closeSourcePicker({ restoreFocus: true });
       });
       row.appendChild(selectButton);
-      if (s.kind === "local") {
+      if (isLocal) {
         const removeButton = document.createElement("button");
         removeButton.type = "button";
+        removeButton.setAttribute("role", "menuitem");
         removeButton.className = "source-picker-option-remove";
         removeButton.title = "Remove " + label;
         removeButton.setAttribute("aria-label", "Remove " + label);
@@ -3327,8 +3406,25 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !sourcePickerMenu.hidden) {
-      closeSourcePicker();
-      sourcePickerTrigger.focus();
+      closeSourcePicker({ restoreFocus: true });
+    }
+  });
+  sourcePickerMenu.addEventListener("keydown", (event) => {
+    const items = sourcePickerMenuItems();
+    if (items.length === 0) return;
+    const currentIndex = items.indexOf(document.activeElement);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      items[(currentIndex + 1 + items.length) % items.length].focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      items[(currentIndex - 1 + items.length) % items.length].focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      items[0].focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      items[items.length - 1].focus();
     }
   });
 
@@ -3365,8 +3461,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     });
     setFreshnessState(freshness, lastUpdatedAt);
     renderAttention(data.attention, runs);
-    instanceWarningsEl.innerHTML = renderConfigurationWarnings(
-      data.instance?.warnings || [],
+    const instanceWarnings = data.instance?.warnings || [];
+    instanceWarningsEl.hidden = instanceWarnings.length === 0;
+    instanceWarningsEl.innerHTML = instanceWarnings.length === 0 ? "" : renderConfigurationWarnings(
+      instanceWarnings,
       "instance",
       { dismissedWarningKeys: dismissedConfigurationWarnings },
     );
@@ -3393,7 +3491,14 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const gaggle = w.identity ? w.identity.gaggle : w.gaggle;
       const triggers = w.triggers || [];
       const triggerKinds = triggers.map((t) => t.type || t.kind).filter(Boolean);
-      const triggerLabel = triggerKinds.length ? triggerKinds.join(", ") : "\u2014";
+      const triggerLabel = triggerKinds.length
+        ? triggers.map((t) => {
+            const kind = t.type || t.kind;
+            if (!kind) return null;
+            const frequency = kind === "schedule" ? humanizeScheduleFrequency(t.schedule) : "";
+            return frequency ? kind + " (" + frequency + ")" : kind;
+          }).filter(Boolean).join(", ")
+        : "\u2014";
       const nonManualTriggers = triggers.filter((t) => (t.type || t.kind) !== "manual");
       // Workflows carry an optional human-readable blurb via the
       // goobers.dev/purpose annotation, surfaced as the purpose field by the
@@ -3930,7 +4035,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         actionsLink,
         associations,
         startedAt: fmtTime(r.startedAt),
+        startedAtTitle: fmtTimeTitle(r.startedAt),
         lastActivityAt: fmtTime(r.lastActivityAt),
+        lastActivityAtTitle: fmtTimeTitle(r.lastActivityAt),
       });
       attachRunIdControls(tr);
       tr.querySelectorAll(".actions-run-link, .run-association-link").forEach((link) =>
@@ -4954,8 +5061,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunRowCells = ${renderRunRowCells.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const formatSmartDateTime = ${formatSmartDateTime.toString()};
+  const formatRunDetailTime = ${formatRunDetailTime.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunDetailSummary = ${renderRunDetailSummary.toString()
-        .replaceAll("formatRunDetailTime", "fmtTime")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const stageKindLabel = ${stageKindLabel.toString()};
   const stageActor = ${stageActor.toString()};
@@ -4966,7 +5075,6 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const renderStageInspectorStatus = ${renderStageInspectorStatus.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunEventItems = ${renderRunEventItems.toString()
-        .replaceAll("formatRunDetailTime", "fmtTime")
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderTransitions = ${renderTransitions.toString()
@@ -5061,6 +5169,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const workItemLabel = ${workItemLabel.toString()};
   const humanizeWorkItemOperation = ${humanizeWorkItemOperation.toString()};
   const formatWorkItemTimestamp = ${formatWorkItemTimestamp.toString()};
+  const formatWorkItemTimestampTitle = ${formatWorkItemTimestampTitle.toString()};
   const formatWorkItemCost = ${formatWorkItemCost.toString()};
   const filterWorkItems = ${filterWorkItems.toString()};
   const sortWorkItems = ${sortWorkItems.toString()};
@@ -5081,7 +5190,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     for (const event of events || []) {
       const ref = event.externalRef;
       if (!ref) continue;
-      const key = [ref.provider, ref.kind, ref.id, ref.url].join("|");
+      // Key on identity (provider/kind/id) rather than URL: the same issue
+      // or PR can be referenced by multiple events with slightly different
+      // URL variants (API vs. HTML URL, trailing slash, etc.), and those
+      // should still collapse to a single Associated work entry.
+      const key = [ref.provider, ref.kind, ref.id].join("|");
       if (seen.has(key)) continue;
       seen.add(key);
       refs.push(ref);

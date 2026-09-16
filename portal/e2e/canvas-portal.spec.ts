@@ -514,6 +514,54 @@ test("canvas ignores late run responses after switching sources", async ({ page 
   await expect(page.locator("#run-content")).toBeEmpty();
 });
 
+test("run detail Associated work section dedupes the same issue referenced by multiple events", async ({ page }) => {
+  await openCanvas(page);
+  const dupedRun = {
+    ...run,
+    events: [
+      {
+        type: "stage.finished", stage: "query", status: "succeeded",
+        externalRef: { provider: "github", kind: "issue", id: "160", url: "https://github.com/octo/app/issues/160" },
+      },
+      {
+        type: "stage.started", stage: "implement",
+        externalRef: { provider: "github", kind: "issue", id: "160", url: "https://api.github.com/repos/octo/app/issues/160" },
+      },
+      {
+        type: "stage.finished", stage: "implement", status: "succeeded",
+        externalRef: { provider: "github", kind: "issue", id: "160", url: "https://github.com/octo/app/issues/160#event-1" },
+      },
+    ],
+  };
+  await page.route("http://canvas.test/api/run?**", async (route) => {
+    await route.fulfill({ json: { connected: true, run: dupedRun } });
+  });
+  await page.getByRole("tab", { name: "Runs", exact: true }).click();
+  await page.getByRole("button", { name: "Open Run id", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Associated work", exact: true })).toBeVisible();
+  await expect(page.locator(".external-refs a")).toHaveCount(1);
+  await expect(page.locator(".external-refs a")).toHaveText("github issue #160");
+});
+
+test("workflows table shows the schedule frequency alongside the trigger kind", async ({ page }) => {
+  await openCanvas(page);
+  await page.route("http://canvas.test/api/snapshot?**", async (route) => {
+    const scheduled = {
+      ...snapshot(sources[0]),
+      workflows: [{
+        identity: { name: "implementation", gaggle: "team" },
+        triggers: [{ type: "schedule", schedule: "@hourly" }],
+        concurrency: { activeRuns: 1 },
+        warnings: workflowWarnings,
+      }],
+    };
+    await route.fulfill({ json: scheduled });
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+  await expect(page.getByRole("row", { name: /implementation/ }).getByText("schedule (hourly)")).toBeVisible();
+});
+
 test("canvas fits a narrow panel and supports keyboard workflow drilldown", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await openCanvas(page);
@@ -794,7 +842,7 @@ test("connecting a source clears the previous run and closes the source form", a
   await page.route("http://canvas.test/api/add-source", (route) =>
     route.fulfill({ json: { id: sources[1].id } }));
   await page.getByRole("button", { name: "Goobers source" }).click();
-  await page.getByRole("button", { name: "Connect a source", exact: false }).click();
+  await page.getByRole("menuitem", { name: "Connect a source", exact: false }).click();
   await page.locator("#remote-url").fill(sources[1].value);
   await page.getByRole("button", { name: "Add remote", exact: true }).click();
   await expect(page.locator("#source-context")).toHaveText("Instance two");
@@ -843,6 +891,40 @@ test("canvas hides Fleet association when switching to an unassociated source", 
   await expect(page.locator("#fleet-panel")).toBeHidden();
   await selectSource(page, sources[0].id);
   await expect(link).toHaveAttribute("href", "https://fleet.example.com/");
+  expect(errors).toEqual([]);
+});
+
+test("source picker supports keyboard navigation and restores focus on close", async ({ page }) => {
+  const errors = await openCanvas(page);
+  const trigger = page.getByRole("button", { name: "Goobers source" });
+
+  // Opening moves focus to the currently-selected item, not just the first item.
+  await trigger.focus();
+  await trigger.press("Enter");
+  const firstOption = page.locator(`.source-picker-option[data-id="${sources[0].id}"] .source-picker-option-select`);
+  await expect(firstOption).toBeFocused();
+  await expect(firstOption).toHaveAttribute("aria-checked", "true");
+
+  // Arrow keys roam across menu items, including the trailing connect button.
+  await page.keyboard.press("ArrowDown");
+  const secondOption = page.locator(`.source-picker-option[data-id="${sources[1].id}"] .source-picker-option-select`);
+  await expect(secondOption).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(page.getByRole("menuitem", { name: "Connect a source", exact: false })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(firstOption).toBeFocused();
+
+  // Escape closes the menu and restores focus to the trigger.
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#source-picker-menu")).toBeHidden();
+  await expect(trigger).toBeFocused();
+
+  // Selecting a source also restores focus to the trigger.
+  await trigger.click();
+  await secondOption.click();
+  await expect(page.locator("#source-context")).toHaveText("Instance two");
+  await expect(page.locator("#source-picker-menu")).toBeHidden();
+  await expect(trigger).toBeFocused();
   expect(errors).toEqual([]);
 });
 
