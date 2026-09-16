@@ -525,9 +525,11 @@ test("canvas fits a narrow panel and supports keyboard workflow drilldown", asyn
 
 test("workflow run now prompts only when force is required", async ({ page }) => {
   const errors = await openCanvas(page);
-  const requests: Array<{ force?: boolean }> = [];
+  const requests: Array<{ source: string; gaggle: string; workflow: string; force?: boolean }> = [];
   await page.route("http://canvas.test/api/run-workflow-now", async (route) => {
-    const body = route.request().postDataJSON() as { force?: boolean };
+    const body = route.request().postDataJSON() as {
+      source: string; gaggle: string; workflow: string; force?: boolean;
+    };
     requests.push(body);
     if (!body.force) {
       await route.fulfill({
@@ -550,12 +552,31 @@ test("workflow run now prompts only when force is required", async ({ page }) =>
   await page.getByRole("tab", { name: "Workflows", exact: true }).click();
   await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
   await expect.poll(() => requests.length).toBe(2);
-  expect(requests.map((request) => request.force ?? false)).toEqual([false, true]);
+  expect(requests).toEqual([
+    { source: sources[0].id, gaggle: "team", workflow: "implementation", force: false },
+    { source: sources[0].id, gaggle: "team", workflow: "implementation", force: true },
+  ]);
   await expect(page.locator("#workflow-run-status")).toHaveText("Triggered implementation (forced-run)");
   await expect(page.getByRole("tab", { name: "Workflows", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
   await expect(page.locator("#source-context")).toHaveText("Instance two");
   await expect(page.locator("#workflow-run-status")).toBeEmpty();
+  expect(errors).toEqual([]);
+});
+
+test("workflow run now surfaces an invalid response", async ({ page }) => {
+  const errors = await openCanvas(page);
+  let requests = 0;
+  await page.route("http://canvas.test/api/run-workflow-now", async (route) => {
+    requests++;
+    await route.fulfill({ contentType: "application/json", body: "invalid json" });
+  });
+
+  await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+  await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
+  await expect.poll(() => requests).toBe(1);
+  await expect(page.locator("#error")).toContainText("Failed to run implementation:");
+  await expect(page.getByRole("button", { name: "Run implementation now", exact: true })).toBeEnabled();
   expect(errors).toEqual([]);
 });
 

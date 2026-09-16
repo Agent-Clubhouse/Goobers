@@ -3102,7 +3102,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       runBtn.addEventListener("click", (ev) => {
         ev.stopPropagation();
         if (!runSupported || pendingWorkflowRuns.has(runKey)) return;
-        runWorkflowNow(gaggle, name);
+        void runWorkflowNow(gaggle, name).catch((err) => {
+          errorEl.textContent = "Failed to run " + name + ": " + portalRequestError(err);
+        });
       });
       runCell.appendChild(runBtn);
 

@@ -124,7 +124,7 @@ async function snapshotFor(sourceId) {
     try {
         const data = await loadSnapshot(resolved);
         const fleet = data.fleet ?? (source.kind === "local" ? await loadFleetStatus(source) : { available: false });
-        return { sourceId, connected: true, source, ...data, fleet };
+        return { sourceId, connected: true, source, ...data, mode: resolved.mode, fleet };
     } catch (err) {
         logEvent("snapshot_load_failed", {
             sourceId,
