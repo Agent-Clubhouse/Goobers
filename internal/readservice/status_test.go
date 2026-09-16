@@ -341,7 +341,14 @@ func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	// Anchored to the clock, not to a fixed date. decorateOperatorClaims
+	// reopens the ledger WITHOUT a test clock, so the ledger's 30-day claim
+	// history retention runs against the real now: a fixture pinned to a
+	// calendar date silently ages past it and the released claim's history —
+	// the thing this test asserts on — is pruned before the assertion runs.
+	// Pinned to 2026-08-17T08:00Z, this test began failing on main at exactly
+	// 2026-09-16T08:00Z, thirty days later, with no code change.
+	now := time.Now().UTC()
 	ledgerNow := now.Add(-2 * time.Hour)
 	ledger, err := localscheduler.OpenClaimLedger(
 		filepath.Join(layout.SchedulerDir(), "claims.json"),
