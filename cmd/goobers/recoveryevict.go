@@ -28,7 +28,15 @@ import (
 // because re-acquiring that lock here would deadlock on it.
 func recoveryEvictFunc(layout instance.Layout, cfg *instance.Config, manager *worktree.Manager, key string) recovery.EvictFunc {
 	return func(ctx context.Context, root string, limit int) (bool, error) {
-		entries, err := recovery.ReadInventory(ctx, root, limit)
+		// Tolerant, for the same reason this function never fails on an
+		// individual ineligible candidate: one unreadable reservation must
+		// not stop a later, genuinely reclaimable one from being evicted. A
+		// crashed publish leaves a directory holding only lock files, and a
+		// strict read turned that into eviction failing FOREVER — capacity
+		// was never reclaimed again and the inventory grew without bound
+		// (#5092). A broken reservation is never an eviction candidate
+		// itself, so skipping it loses nothing.
+		entries, _, err := recovery.ReadInventoryTolerant(ctx, root, limit)
 		if err != nil {
 			return false, err
 		}
