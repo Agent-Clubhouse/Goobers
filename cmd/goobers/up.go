@@ -2170,6 +2170,8 @@ func newDaemonStorageGate(root string, cfg *instance.Config) (*localscheduler.St
 	gate := localscheduler.NewStorageGate(root,
 		thresholds.WarningFloorBytes, thresholds.WarningFloorPercent,
 		thresholds.CriticalFloorBytes, thresholds.CriticalFloorPercent,
+		thresholds.CriticalFloorDerived,
+		thresholds.WarningFloorDerived,
 	)
 	return gate, thresholds
 }

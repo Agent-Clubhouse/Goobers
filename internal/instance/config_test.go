@@ -3959,6 +3959,12 @@ func TestResolveStorageThresholdsDefaults(t *testing.T) {
 	if thresholds.CriticalFloorBytes != wantCritical {
 		t.Fatalf("CriticalFloorBytes = %d, want the recovery archive bound %d", thresholds.CriticalFloorBytes, wantCritical)
 	}
+	if !thresholds.CriticalFloorDerived {
+		t.Fatal("CriticalFloorDerived = false, want true for the recovery-derived default")
+	}
+	if !thresholds.WarningFloorDerived {
+		t.Fatal("WarningFloorDerived = false, want true for the recovery-derived default")
+	}
 	if thresholds.WarningFloorBytes != wantCritical*2 {
 		t.Fatalf("WarningFloorBytes = %d, want 2x the critical floor (%d)", thresholds.WarningFloorBytes, wantCritical*2)
 	}
@@ -3981,6 +3987,12 @@ func TestResolveStorageThresholdsOperatorOverrideBelowRecoveryBoundIsHonored(t *
 	thresholds := rc.ResolveStorageThresholds(recovery)
 	if thresholds.CriticalFloorBytes != 1<<20 {
 		t.Fatalf("CriticalFloorBytes = %d, want the explicit operator value 1<<20 honored as-is", thresholds.CriticalFloorBytes)
+	}
+	if thresholds.CriticalFloorDerived {
+		t.Fatal("CriticalFloorDerived = true, want false for an explicit operator floor")
+	}
+	if thresholds.WarningFloorDerived {
+		t.Fatal("WarningFloorDerived = true, want false when the critical floor is explicit")
 	}
 }
 
