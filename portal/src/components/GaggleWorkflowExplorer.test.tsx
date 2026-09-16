@@ -226,6 +226,7 @@ function workflowSummary(name: string, displayName: string): WorkflowSummary {
   return {
     identity: { gaggle: "core", name },
     displayName,
+    enabled: true,
     purpose: `${displayName} purpose`,
     triggers: [{ type: "manual" }],
     readiness: {},

@@ -249,6 +249,7 @@ export const goWireFixtures = {
       {
         "name": "core",
         "displayName": "Core",
+        "enabled": true,
         "status": "configured",
         "project": {
           "provider": "github",
@@ -355,6 +356,7 @@ export const goWireFixtures = {
           "name": "implementation"
         },
         "displayName": "Implementation",
+        "enabled": true,
         "purpose": "Implement an approved backlog item.",
         "triggers": [
           {
@@ -438,6 +440,7 @@ export const goWireFixtures = {
       "name": "implementation"
     },
     "displayName": "Implementation",
+    "enabled": true,
     "purpose": "Implement an approved backlog item.",
     "triggers": [
       {

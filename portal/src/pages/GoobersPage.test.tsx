@@ -28,6 +28,8 @@ describe("goobers roster page", () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
     const summary = await screen.findByRole("button", { name: /Core product/ });
+    expect(summary).toHaveClass("definition-disabled");
+    expect(within(summary).getByText("Disabled")).toBeInTheDocument();
     expect(summary).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Core implementer")).not.toBeInTheDocument();
     expect(screen.queryByText("Tools implementer")).not.toBeInTheDocument();

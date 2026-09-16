@@ -152,7 +152,7 @@ export function WorkflowPicker({
             <button
               aria-controls="gaggle-selected-workflow"
               aria-selected={selected}
-              className={`gaggle-workflow-choice${selected ? " is-selected" : ""}`}
+              className={`gaggle-workflow-choice${selected ? " is-selected" : ""}${workflow.enabled ? "" : " definition-disabled"}`}
               key={workflow.identity.name}
               onClick={() => onSelect(workflow.identity.name)}
               onKeyDown={(event) => onTabKeyDown(event, index)}
@@ -163,7 +163,12 @@ export function WorkflowPicker({
               tabIndex={selected ? 0 : -1}
               type="button"
             >
-              <strong>{workflow.displayName}</strong>
+              <span className="definition-nameplate">
+                <strong>{workflow.displayName}</strong>
+                {!workflow.enabled && (
+                  <span className="definition-disabled-badge">Disabled</span>
+                )}
+              </span>
               <small>
                 {workflow.stageCount} {workflow.stageCount === 1 ? "stage" : "stages"} ·{" "}
                 {formatTriggers(workflow)}

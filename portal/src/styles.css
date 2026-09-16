@@ -395,6 +395,15 @@ summary:focus-visible {
   color: var(--accent-ink);
 }
 
+.definition-disabled {
+  opacity: 0.55;
+}
+
+.definition-disabled:hover,
+.definition-disabled:focus-visible {
+  opacity: 0.72;
+}
+
 .nav-count {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -405,7 +414,7 @@ summary:focus-visible {
   border-top: 1px solid var(--line);
   flex-shrink: 0;
   margin-top: 10px;
-  max-height: 220px;
+  max-height: 420px;
   overflow-y: auto;
   padding-top: 10px;
 }
@@ -1590,6 +1599,27 @@ summary:focus-visible {
 .goober-group-summary > span:first-child {
   display: grid;
   gap: 3px;
+}
+
+.definition-nameplate {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.definition-disabled-badge {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 3px 8px;
+  text-transform: uppercase;
 }
 
 .goober-group-summary strong {
@@ -4247,6 +4277,11 @@ code,
 }
 
 .gaggle-workflow-choice > strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.gaggle-workflow-choice .definition-nameplate > strong {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -7746,7 +7781,7 @@ code,
   .sidebar-gaggle-nav {
     border-top: 0;
     margin-top: 0;
-    max-height: 180px;
+    max-height: 300px;
     padding-top: 0;
   }
 

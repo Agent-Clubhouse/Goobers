@@ -24,6 +24,7 @@ const page = (total: number) => ({
 const coreGaggle: Gaggle = {
   name: "core",
   displayName: "Core product",
+  enabled: false,
   status: "configured",
   project: { provider: "github", owner: "Agent-Clubhouse", name: "Goobers" },
   backlog: { provider: "github", project: "Agent-Clubhouse/Goobers" },
@@ -36,6 +37,7 @@ const coreGaggle: Gaggle = {
 const toolsGaggle: Gaggle = {
   name: "tools",
   displayName: "Developer tools",
+  enabled: true,
   status: "configured",
   project: { provider: "github", owner: "Agent-Clubhouse", name: "Toolbox" },
   backlog: { provider: "github", project: "Agent-Clubhouse/Toolbox" },
@@ -77,6 +79,7 @@ function workflow(gaggle: string): WorkflowSummary {
   return {
     identity: { gaggle, name: "implementation" },
     displayName: "Implementation",
+    enabled: gaggle !== "core",
     purpose: `Implement approved ${gaggle} backlog items.`,
     triggers: [{ type: "backlog-item", selector: { label: "goobers:ready" } }],
     readiness: { maxConcurrentRuns: 2 },

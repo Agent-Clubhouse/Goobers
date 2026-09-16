@@ -485,6 +485,7 @@ export interface BacklogRef {
 export interface Gaggle {
   name: string;
   displayName: string;
+  enabled: boolean;
   status: DefinitionStatus;
   project: RepoRef;
   backlog: BacklogRef;
@@ -588,6 +589,7 @@ export interface WorkflowSummary {
   engineFallback?: EngineFallback;
   identity: WorkflowReference;
   displayName: string;
+  enabled: boolean;
   purpose: string;
   triggers: WorkflowTrigger[];
   readiness: ReadinessConditions;
