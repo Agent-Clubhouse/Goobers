@@ -3,6 +3,8 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +17,47 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
 )
+
+func telemetryMetricContract() metricContractDocument {
+	metrics := make([]metricContract, len(firstClassMetricRegistry))
+	copy(metrics, firstClassMetricRegistry)
+	resources := make([]resourceAttributeContract, len(resourceAttributeRegistry))
+	copy(resources, resourceAttributeRegistry)
+	return metricContractDocument{
+		ID:        metricContractID,
+		Version:   metricContractVersion,
+		Lifecycle: stableContractLifecycle(),
+		Compatibility: compatibilityPolicy{
+			AdditiveMetrics:        "allowed",
+			BreakingChangeRequires: []string{"explicit compatibility note", "coordinated Goobernetes-Infra update"},
+		},
+		DimensionCardinality: dimensionCardinalityPolicy{
+			MaxDistinctValuesPerAttributePerProcess: metricAttributeMaxValues,
+			MaxValueLength:                          metricAttributeMaxLength,
+			OverflowValue:                           metricAttributeOverflow,
+			InvalidValueBehavior:                    dimensionInvalidBehaviorDrop,
+			OverflowBehavior:                        dimensionOverflowBehaviorFold,
+			ValuePolicies: []dimensionValuePolicy{
+				{Attribute: "*", Pattern: dimensionValuePatternDefault},
+				{Attribute: metricUnitAttribute, Pattern: dimensionValuePatternUnit},
+			},
+		},
+		ResourceAttributes: resources,
+		Metrics:            metrics,
+		DeploymentSpecificInputs: deploymentSpecificInputPolicy{
+			AzureQueriesIncluded: false,
+			ThresholdsIncluded:   false,
+		},
+	}
+}
+
+func telemetryMetricContractJSON() ([]byte, error) {
+	data, err := json.MarshalIndent(telemetryMetricContract(), "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal telemetry metric contract: %w", err)
+	}
+	return append(data, '\n'), nil
+}
 
 func TestMetricContractMatchesCommittedArtifact(t *testing.T) {
 	want, err := os.ReadFile(metricContractPath)
