@@ -50,7 +50,11 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 	if err != nil {
 		return err
 	}
-	recoveryCfg := cfg.Retention.RecoveryEffective()
+	recoveryCfg, origin := resolveRecoveryPolicy(s.layout, cfg)
+	journalRecoveryPolicyFallback(
+		recoveryCleanupJournal{directory: s.layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()},
+		origin, recoveryCfg, root,
+	)
 	retainWindow, err := recoveryCfg.RetainWindowEffective()
 	if err != nil {
 		return err

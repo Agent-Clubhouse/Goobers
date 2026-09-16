@@ -48,3 +48,30 @@ Use [`goobers recovery-abandon`](../cli/README.md#goobers-recovery-abandon) only
 when the retained implementation is deliberately no longer needed. The command
 requires the exact source run, recovery ref, and patch digest; its durable
 operator annotation authorizes the later sweep.
+
+## Inventory capacity
+
+The recovery inventory is a single instance-wide directory, `<instance
+root>/recovery`. Every writer shares it and every writer counts against one
+cap: each gaggle's live stage cleanup, the startup crash-orphan worktree reap,
+terminal finalization, and archives accepted from remote workers. Startup-reap
+publications are ordinary inventory entries — they are not exempt from the cap
+that gates live-run worktree teardown.
+
+`retention.recovery.maxSnapshots` in `instance.yaml` sets that cap (128 when
+the section is omitted). It is resolved from `instance.yaml` at the point of
+use rather than from whatever configuration a caller was built with, so a
+raised cap applies to live cleanups without a daemon restart and no path can
+enforce a different limit than the one `goobers status` reports for the same
+directory. A resolution that cannot read `instance.yaml`, and so falls back to
+a carried configuration or the built-in defaults, journals a
+`recovery_policy_fallback` error naming the limit it is about to enforce and
+the inventory root it applies to.
+
+`goobers status` reports occupancy as `recovery inventory: <used>/<limit>`
+alongside the earliest retention deadline, which is what distinguishes ordinary
+pressure from an inventory wedged behind a retain floor. When a cleanup is
+refused, the failure names the observed count, the limit, and the root:
+`recovery inventory is full: 130 of 128 slots used in /var/lib/goobers/recovery`.
+A refused cleanup preserves its source: the worktree stays on disk and is
+retried, so a full inventory costs disk and retries, never evidence.
