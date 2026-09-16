@@ -84,7 +84,7 @@ func TestResolvedHarnessCommandPreservesMultilinePrompt(t *testing.T) {
 	command := append(resolveHarnessCommand([]string{"claude"}), "-p", prompt)
 	result, err := (ExecProcessRunner{}).Run(t.Context(), ProcessRequest{
 		Command: command,
-		Env:     append(baseEnv(nil), "GOOBERS_PROMPT_CAPTURE="+outputPath),
+		Env:     append(baseEnv(nil, nil), "GOOBERS_PROMPT_CAPTURE="+outputPath),
 	})
 	if err != nil || result.ExitCode != 0 {
 		t.Fatalf("run resolved command: result=%+v err=%v transcript=%s", result, err, result.Transcript)
@@ -128,7 +128,7 @@ func TestResolvedHarnessCommandPreservesBackticksInPrompt(t *testing.T) {
 	command := append(resolveHarnessCommand([]string{"claude"}), "-p", prompt)
 	result, err := (ExecProcessRunner{}).Run(t.Context(), ProcessRequest{
 		Command: command,
-		Env:     append(baseEnv(nil), "GOOBERS_PROMPT_CAPTURE="+outputPath),
+		Env:     append(baseEnv(nil, nil), "GOOBERS_PROMPT_CAPTURE="+outputPath),
 	})
 	if err != nil || result.ExitCode != 0 {
 		t.Fatalf("run resolved command: result=%+v err=%v transcript=%s", result, err, result.Transcript)
