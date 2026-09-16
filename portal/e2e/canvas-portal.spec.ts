@@ -564,18 +564,36 @@ test("workflow run now prompts only when force is required", async ({ page }) =>
   expect(errors).toEqual([]);
 });
 
-test("workflow run now surfaces an invalid response", async ({ page }) => {
+test("workflow run now is enabled only when the snapshot reports daemon mode", async ({ page }) => {
   const errors = await openCanvas(page);
+  let daemonMode = false;
   let requests = 0;
+  await page.route("http://canvas.test/api/snapshot?**", async (route) => {
+    const source = sources.find((entry) => entry.id === new URL(route.request().url()).searchParams.get("source"))
+      ?? sources[0];
+    const body = snapshot(source);
+    if (!daemonMode) delete (body as Partial<typeof body>).mode;
+    await route.fulfill({ json: body });
+  });
   await page.route("http://canvas.test/api/run-workflow-now", async (route) => {
     requests++;
-    await route.fulfill({ contentType: "application/json", body: "invalid json" });
+    await route.fulfill({ json: { ok: true, result: { runId: "run-from-daemon" } } });
   });
 
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+  await expect(page.getByRole("button", {
+    name: "Run implementation now (requires a live daemon)", exact: true,
+  })).toBeDisabled();
+  expect(requests).toBe(0);
+
+  daemonMode = true;
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
   await expect.poll(() => requests).toBe(1);
-  await expect(page.locator("#error")).toContainText("Failed to run implementation:");
+  await expect(page.locator("#workflow-run-status")).toHaveText(
+    "Triggered implementation (run-from-daemon)",
+  );
   await expect(page.getByRole("button", { name: "Run implementation now", exact: true })).toBeEnabled();
   expect(errors).toEqual([]);
 });
