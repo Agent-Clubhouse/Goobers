@@ -20,16 +20,21 @@ func renewTerminalRecovery(layout instance.Layout, runID string) error {
 	// config happens to be unavailable at this exact moment — it never
 	// needed config before #4823 introduced tunable limits. Falling back to
 	// the same defaults config would resolve to (RecoverySnapshotConfig's
-	// zero value) keeps that pre-#4823 resilience.
-	recoveryCfg := instance.RecoverySnapshotConfig{}
-	if cfg, err := instance.LoadConfig(layout.ConfigFile()); err == nil {
-		recoveryCfg = cfg.Retention.RecoveryEffective()
-	}
+	// zero value) keeps that pre-#4823 resilience — but the fallback is
+	// journaled rather than silent (#5092): reading this instance-wide
+	// inventory at the built-in 128 while it legitimately holds thousands of
+	// entries fails as "inventory is full", which pins the run's active
+	// marker and so inflates the next restart's crash-resume candidate set
+	// (#5199).
+	log := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}
+	root := filepath.Join(layout.Root, "recovery")
+	recoveryCfg, origin := resolveRecoveryPolicy(layout, nil)
+	journalRecoveryPolicyFallback(log, origin, recoveryCfg, root)
 	retainWindow, err := recoveryCfg.RetainWindowEffective()
 	if err != nil {
 		return err
 	}
-	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), recoveryCfg.MaxSnapshotsEffective())
+	entries, err := recovery.ReadInventory(ctx, root, recoveryCfg.MaxSnapshotsEffective())
 	if err != nil {
 		return err
 	}
@@ -64,7 +69,6 @@ func renewTerminalRecovery(layout instance.Layout, runID string) error {
 	if err != nil {
 		return err
 	}
-	log := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}
 	for _, entry := range matching {
 		if !entry.Record.RetainUntil.Before(finishedAt.Add(retainWindow)) {
 			continue
