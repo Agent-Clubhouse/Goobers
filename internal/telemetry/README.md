@@ -52,22 +52,28 @@ meter provider alongside the tracer provider.
 Stage `metrics.jsonl` values are exported as metrics *and* retained as span
 events, so trace correlation and the existing rollup keep working unchanged.
 
+The committed machine-readable contract lives at
+`internal/telemetry/metric-contract-v1.json`; package tests compare that file
+with the in-code registry and with runtime emission, so implementation,
+documentation, and the artifact stay in lockstep.
+
 Instrument names, types, units, temporality, and the attributes they may carry — this is the
-contract the Goobernetes-Infra collector pipeline is configured against:
+human-readable projection of the same contract the Goobernetes-Infra collector
+pipeline is configured against:
 
 | Metric | Type | Unit | Temporality | Attributes |
 | --- | --- | --- | --- | --- |
 | `goobers.run.duration` | histogram (float64) | `s` | cumulative | `goobers.workflow`, `goobers.outcome`, `goobers.error.code` |
 | `goobers.run.outcomes` | counter (int64) | `{run}` | cumulative, monotonic | `goobers.workflow`, `goobers.outcome`, `goobers.error.code` |
-| `goobers.stage.duration` | histogram (float64) | `s` | cumulative | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.outcome`, `goobers.error.code` |
+| `goobers.stage.duration` | histogram (float64) | `s` | cumulative | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.outcome`, `goobers.error.code`, `goobers.attempt.kind` |
 | `goobers.stage.outcomes` | counter (int64) | `{stage}` | cumulative, monotonic | same as `goobers.stage.duration` |
-| `goobers.stage.retries` | counter (int64) | `{attempt}` | cumulative, monotonic | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.attempt.kind` |
-| `goobers.gate.decisions` | counter (int64) | `{decision}` | cumulative, monotonic | `goobers.workflow`, `goobers.stage`, `goobers.gate.decision` |
-| `goobers.escalations` | counter (int64) | `{escalation}` | cumulative, monotonic | `goobers.workflow`, `goobers.stage`, `goobers.stage.type` |
+| `goobers.stage.retries` | counter (int64) | `{attempt}` | cumulative, monotonic | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind` |
+| `goobers.gate.decisions` | counter (int64) | `{decision}` | cumulative, monotonic | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.gate.decision` |
+| `goobers.escalations` | counter (int64) | `{escalation}` | cumulative, monotonic | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind` |
 | `goobers.journal.redactions_total` | counter (int64) | `{event}` | cumulative, monotonic | `layer` (`registry`/`pattern`) |
 | `goobers.journal.appends_dropped` | counter (int64) | `{event}` | cumulative, monotonic | none |
 | `goobers.work.active` | up-down counter (int64) | `{span}` | cumulative, non-monotonic | `goobers.workflow`, `goobers.span.kind` (`run`/`task`/`gate`/`scheduler`) |
-| `goobers.stage.metric.value` | histogram (float64) | `1` | cumulative | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.metric.name`, `goobers.metric.unit` |
+| `goobers.stage.metric.value` | histogram (float64) | `1` | cumulative | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind`, `goobers.metric.name`, `goobers.metric.unit` |
 | `goobers.worktree.disk.usage` | gauge (int64) | `By` | current value | `goobers.storage.operation` |
 | `goobers.workcopy.disk.usage` | gauge (int64) | `By` | current value | `goobers.storage.operation` |
 | `goobers.recovery.snapshot.format` | counter (int64) | `{capture}` | cumulative, monotonic | `goobers.recovery.format` (`full`/`delta`) |

@@ -18,8 +18,8 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// The Goobers metric catalog. Every instrument here is documented in
-// internal/telemetry/README.md with its type, unit, and allowed attributes;
+// The Goobers metric catalog. Every first-class instrument here is documented
+// in internal/telemetry/README.md and internal/telemetry/metric-contract-v1.json;
 // the collector pipeline is configured against those names.
 const (
 	// MetricRunDuration measures wall-clock workflow run duration.
@@ -168,62 +168,43 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	inst := &instruments{limiter: newCardinalityLimiter(metricAttributeMaxValues)}
 	var err error
 
-	inst.runDuration, err = meter.Float64Histogram(MetricRunDuration,
-		apimetric.WithUnit("s"), apimetric.WithDescription("Workflow run duration."))
+	inst.runDuration, err = newFloat64Histogram(meter, MetricRunDuration)
 	record(err)
-	inst.runOutcomes, err = meter.Int64Counter(MetricRunOutcomes,
-		apimetric.WithUnit("{run}"), apimetric.WithDescription("Finished workflow runs by outcome."))
+	inst.runOutcomes, err = newInt64Counter(meter, MetricRunOutcomes)
 	record(err)
-	inst.stageDuration, err = meter.Float64Histogram(MetricStageDuration,
-		apimetric.WithUnit("s"), apimetric.WithDescription("Workflow stage duration."))
+	inst.stageDuration, err = newFloat64Histogram(meter, MetricStageDuration)
 	record(err)
-	inst.stageOutcomes, err = meter.Int64Counter(MetricStageOutcomes,
-		apimetric.WithUnit("{stage}"), apimetric.WithDescription("Finished workflow stages by outcome."))
+	inst.stageOutcomes, err = newInt64Counter(meter, MetricStageOutcomes)
 	record(err)
-	inst.stageRetries, err = meter.Int64Counter(MetricStageRetries,
-		apimetric.WithUnit("{attempt}"), apimetric.WithDescription("Stage attempts beyond the first."))
+	inst.stageRetries, err = newInt64Counter(meter, MetricStageRetries)
 	record(err)
-	inst.gateDecisions, err = meter.Int64Counter(MetricGateDecisions,
-		apimetric.WithUnit("{decision}"), apimetric.WithDescription("Evaluated gate decisions."))
+	inst.gateDecisions, err = newInt64Counter(meter, MetricGateDecisions)
 	record(err)
-	inst.escalations, err = meter.Int64Counter(MetricEscalations,
-		apimetric.WithUnit("{escalation}"), apimetric.WithDescription("Stages and gates escalated to a human."))
+	inst.escalations, err = newInt64Counter(meter, MetricEscalations)
 	record(err)
-	inst.redactions, err = meter.Int64Counter(MetricRedactionsTotal,
-		apimetric.WithUnit("{event}"), apimetric.WithDescription("Scrub events that removed secret material, separated by layer."))
+	inst.redactions, err = newInt64Counter(meter, MetricRedactionsTotal)
 	record(err)
-	inst.journalDrops, err = meter.Int64Counter(MetricJournalAppendsDropped,
-		apimetric.WithUnit("{event}"), apimetric.WithDescription("Explicitly best-effort instance-journal appends that failed."))
+	inst.journalDrops, err = newInt64Counter(meter, MetricJournalAppendsDropped)
 	record(err)
-	inst.activeWork, err = meter.Int64UpDownCounter(MetricWorkActive,
-		apimetric.WithUnit("{span}"), apimetric.WithDescription("In-flight runs and stages."))
+	inst.activeWork, err = newInt64UpDownCounter(meter, MetricWorkActive)
 	record(err)
-	inst.stageMetrics, err = meter.Float64Histogram(MetricStageMetricValue,
-		apimetric.WithUnit("1"), apimetric.WithDescription("Stage-emitted metrics.jsonl values."))
+	inst.stageMetrics, err = newFloat64Histogram(meter, MetricStageMetricValue)
 	record(err)
-	inst.worktreeBytes, err = meter.Int64Gauge(EventWorktreeDiskUsage,
-		apimetric.WithUnit("By"), apimetric.WithDescription("Apparent bytes of one managed worktree."))
+	inst.worktreeBytes, err = newInt64Gauge(meter, EventWorktreeDiskUsage)
 	record(err)
-	inst.workcopyBytes, err = meter.Int64Gauge(EventWorkcopyDiskUsage,
-		apimetric.WithUnit("By"), apimetric.WithDescription("Aggregate apparent bytes of managed workcopies."))
+	inst.workcopyBytes, err = newInt64Gauge(meter, EventWorkcopyDiskUsage)
 	record(err)
-	inst.recoverySnapshotFormat, err = meter.Int64Counter(MetricRecoverySnapshotFormat,
-		apimetric.WithUnit("{capture}"), apimetric.WithDescription("Recovery snapshot bundle captures by format selected."))
+	inst.recoverySnapshotFormat, err = newInt64Counter(meter, MetricRecoverySnapshotFormat)
 	record(err)
-	inst.recoverySnapshotBytes, err = meter.Float64Histogram(MetricRecoverySnapshotBytes,
-		apimetric.WithUnit("By"), apimetric.WithDescription("Emitted recovery snapshot bundle size."))
+	inst.recoverySnapshotBytes, err = newFloat64Histogram(meter, MetricRecoverySnapshotBytes)
 	record(err)
-	inst.recoverySnapshotFallback, err = meter.Int64Counter(MetricRecoverySnapshotFallback,
-		apimetric.WithUnit("{capture}"), apimetric.WithDescription("Recovery captures that fell back to a full bundle, by reason."))
+	inst.recoverySnapshotFallback, err = newInt64Counter(meter, MetricRecoverySnapshotFallback)
 	record(err)
-	inst.recoveryRestoreFailures, err = meter.Int64Counter(MetricRecoveryRestoreFailures,
-		apimetric.WithUnit("{failure}"), apimetric.WithDescription("Recovery bundle restore failures, by reason."))
+	inst.recoveryRestoreFailures, err = newInt64Counter(meter, MetricRecoveryRestoreFailures)
 	record(err)
-	inst.storageFreeBytes, err = meter.Int64Gauge(MetricStorageFreeBytes,
-		apimetric.WithUnit("By"), apimetric.WithDescription("Most recent free-space sample of the filesystem containing the instance root."))
+	inst.storageFreeBytes, err = newInt64Gauge(meter, MetricStorageFreeBytes)
 	record(err)
-	inst.storageHealthChanges, err = meter.Int64Counter(MetricStorageHealthTierChanges,
-		apimetric.WithUnit("{transition}"), apimetric.WithDescription("Tiered low-disk protection tier transitions, tagged by the tier entered."))
+	inst.storageHealthChanges, err = newInt64Counter(meter, MetricStorageHealthTierChanges)
 	record(err)
 
 	if len(errs) != 0 {
