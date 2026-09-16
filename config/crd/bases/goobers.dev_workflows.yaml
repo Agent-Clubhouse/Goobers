@@ -52,6 +52,14 @@ spec:
               displayName:
                 description: DisplayName is the human-facing name shown on the portal.
                 type: string
+              enabled:
+                description: |-
+                  Enabled selects whether new runs may start for this workflow. Null or
+                  omitted means true (enabled). Setting false blocks new run starts
+                  without touching schedule or backlog configuration; in-flight runs
+                  finish normally.
+                nullable: true
+                type: boolean
               docsRoots:
                 description: |-
                   DocsRoots declares the in-repo documentation roots this workflow is

@@ -94,6 +94,10 @@ type WorkflowEntry struct {
 	// their per-run capability check below stays their only refusal path,
 	// byte-identical to previous releases.
 	PlacementRefusal string
+	// DisabledReason, when non-empty, marks this workflow or its gaggle
+	// disabled by spec.enabled=false (#5200): refused before admission with
+	// this named diagnostic, while in-flight runs finish normally.
+	DisabledReason string
 }
 
 func entryIdentity(entry WorkflowEntry) WorkflowIdentity {
@@ -976,6 +980,13 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	for _, entry := range entries {
 		if s.authCircuitOpen(entryIdentity(entry)) {
+			continue
+		}
+		if entry.DisabledReason != "" {
+			// Disabled workflows/gaggles (#5200) are an operator-configured
+			// permanent stop on new starts. Skip them silently here so they do
+			// not spend polls or emit one tick.skipped per loop; explicit
+			// triggers below still receive a named refusal.
 			continue
 		}
 		if entry.PlacementRefusal != "" {
@@ -2456,6 +2467,18 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	}); err != nil {
 		reason := "trigger.fired journal write failed: " + err.Error()
 		span.Fail(err)
+		return "", false, reason
+	}
+
+	if entry.DisabledReason != "" {
+		reason := ReasonDisabled + ": " + entry.DisabledReason
+		s.journalEvent(journal.Event{
+			Type:     journal.EventTickSkipped,
+			Workflow: entry.Workflow,
+			Gaggle:   entry.Gaggle,
+			Reason:   s.refillRejectionReason(identity, now, triggerReason, reason),
+		})
+		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}
 
