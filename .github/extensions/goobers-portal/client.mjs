@@ -903,6 +903,14 @@ const INSIGHT_STATS_OPTION_KEYS = [
     "trendPreviousUntil",
 ];
 
+const COST_SUMMARY_OPTION_KEYS = [
+    "provider",
+    "scope",
+    "id",
+    "since",
+    "until",
+];
+
 /**
  * Fetch aggregate telemetry statistics (success/failure breakdowns, token and
  * cost usage, cost trend buckets, curation health, ready-pool depth, and
@@ -923,6 +931,26 @@ export async function loadInsightStats(resolved, options = {}) {
     }
     const query = params.toString();
     return await fetchJSON(`${baseUrl}/api/v1/telemetry/stats${query ? `?${query}` : ""}`, { token });
+}
+
+/**
+ * Fetch attributed telemetry costs from the daemon. Cost attribution is a
+ * daemon read model: standalone and GitHub Actions sources only expose their
+ * already-materialized run records, not cross-run cost aggregation.
+ */
+export async function loadCostSummary(resolved, options = {}) {
+    if (resolved.mode !== "daemon") {
+        throw new Error("Cost telemetry requires a running Goobers daemon.");
+    }
+    const { baseUrl, token } = resolved;
+    const params = new URLSearchParams();
+    for (const key of COST_SUMMARY_OPTION_KEYS) {
+        const value = options[key];
+        if (value === undefined || value === null || value === "") continue;
+        params.set(key, String(value));
+    }
+    const query = params.toString();
+    return await fetchJSON(`${baseUrl}/api/v1/telemetry/costs${query ? `?${query}` : ""}`, { token });
 }
 
 async function fetchRunContent(resolved, resourcePath) {

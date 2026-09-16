@@ -4,6 +4,7 @@ import test from "node:test";
 import {
     interventionCapability,
     interventionIdempotencyKey,
+    loadCostSummary,
     loadInsightStats,
     loadRuns,
     loadWorkflowDetail,
@@ -127,6 +128,62 @@ test("insight stats omit the query string entirely when no options are given", a
 test("insight stats require daemon mode", async () => {
     await assert.rejects(loadInsightStats({ mode: "standalone" }, {}), /running Goobers daemon/);
     await assert.rejects(loadInsightStats({ mode: "actions" }, {}), /running Goobers daemon/);
+});
+
+test("cost summary builds a query from only telemetry cost option keys", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push({ url, options });
+        return Response.json({ scope: "pr", pullRequests: [], issues: [] });
+    };
+    try {
+        const costs = await loadCostSummary(
+            { mode: "daemon", baseUrl: "http://daemon", token: "test-token" },
+            {
+                provider: "github",
+                scope: "pr",
+                id: "5183",
+                since: "2026-01-01T00:00:00Z",
+                until: "2026-01-02T00:00:00Z",
+                gaggle: "ignored",
+                empty: "",
+            },
+        );
+        const url = new URL(requests[0].url);
+        assert.equal(url.origin + url.pathname, "http://daemon/api/v1/telemetry/costs");
+        assert.deepEqual([...url.searchParams.entries()].sort(), [
+            ["id", "5183"],
+            ["provider", "github"],
+            ["scope", "pr"],
+            ["since", "2026-01-01T00:00:00Z"],
+            ["until", "2026-01-02T00:00:00Z"],
+        ]);
+        assert.equal(requests[0].options.headers.Authorization, "Bearer test-token");
+        assert.deepEqual(costs.pullRequests, []);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("cost summary omits the query string entirely when no options are given", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url) => {
+        requests.push(url);
+        return Response.json({ scope: "summary", pullRequests: [], issues: [] });
+    };
+    try {
+        await loadCostSummary({ mode: "daemon", baseUrl: "http://daemon" });
+        assert.equal(requests[0], "http://daemon/api/v1/telemetry/costs");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("cost summary requires daemon mode", async () => {
+    await assert.rejects(loadCostSummary({ mode: "standalone" }, {}), /running Goobers daemon/);
+    await assert.rejects(loadCostSummary({ mode: "actions" }, {}), /running Goobers daemon/);
 });
 
 test("daemon run summaries hydrate associated issue refs from run events", async () => {
