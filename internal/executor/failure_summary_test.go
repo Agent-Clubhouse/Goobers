@@ -197,3 +197,88 @@ make: *** [Makefile:352: ci] Error 1
 		t.Fatalf("failure = %+v, must not select the wrapper trailer", got)
 	}
 }
+
+// #5101, from the goobernetes cloud instance, run
+// ebd455dedd8f54270f9e0eb16c462a9c: 55,805 bytes of stdout whose ONLY failure
+// signal was a package-level "FAIL\tpkg\t1315.643s" — no "--- FAIL:", no
+// panic, no timeout — while stderr held 3,931 bytes of module-download noise
+// ending in make's trailer. The diagnostic picked stderr, so the implementer
+// was told nothing it could act on and repassed blind until its budget was
+// exhausted.
+func TestPackageLevelFailureOutranksWrapperTrailer(t *testing.T) {
+	stdout := []byte("go: downloading k8s.io/component-base v0.37.0\n" +
+		"ok  \tgithub.com/goobers/goobers/internal/journal\t1.2s\n" +
+		"FAIL\tgithub.com/goobers/goobers/cmd/goobers\t1315.643s\n" +
+		"FAIL\n")
+	stderr := []byte("npm notice changelog\nexit status 1\nci: test: exit status 1\nmake: *** [Makefile:391: ci] Error 1\n")
+
+	got := FailureDiagnostic(stdout, stderr)
+	if !strings.Contains(got, "cmd/goobers") {
+		t.Fatalf("diagnostic does not name the failing package, so a repass sees nothing actionable: %q", got)
+	}
+	if strings.Contains(got, "make: ***") {
+		t.Fatalf("wrapper trailer displaced the package failure: %q", got)
+	}
+}
+
+// The repass roster must carry EVERY failing test, across packages, not just
+// the first — that is the defect #5101 names.
+func TestFailureDigestCarriesEveryFailure(t *testing.T) {
+	stdout := []byte("--- FAIL: TestAlpha (0.01s)\n" +
+		"    alpha_test.go:10: want 1 got 2\n" +
+		"--- FAIL: TestBeta (0.02s)\n" +
+		"    beta_test.go:20: boom\n" +
+		"FAIL\tgithub.com/goobers/goobers/internal/one\t3.1s\n" +
+		"--- FAIL: TestGamma (0.03s)\n" +
+		"FAIL\tgithub.com/goobers/goobers/internal/two\t4.2s\n" +
+		"FAIL\n")
+	stderr := []byte("make: *** [Makefile:391: ci] Error 1\n")
+
+	digest := FailureDigest(stdout, stderr)
+	joined := strings.Join(digest, "\n")
+	for _, want := range []string{"TestAlpha", "TestBeta", "TestGamma", "internal/one", "internal/two"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("digest omits %q — a repass would fix what it can see and meet the rest next attempt:\n%s", want, joined)
+		}
+	}
+	// Per-test failures are more specific than package verdicts and must lead.
+	if !strings.HasPrefix(digest[0], "--- FAIL:") {
+		t.Fatalf("digest does not lead with the most specific failure: %q", digest[0])
+	}
+	// Wrapper trailers name nothing and must not consume the bound.
+	if strings.Contains(joined, "make: ***") {
+		t.Fatalf("digest kept the wrapper trailer:\n%s", joined)
+	}
+	if len(joined) > maxFailureDigestBytes {
+		t.Fatalf("digest = %d bytes, exceeds the documented bound %d", len(joined), maxFailureDigestBytes)
+	}
+}
+
+// Duplicates are common (a retried package reprints its verdict) and must not
+// crowd out distinct failures at the bound.
+func TestFailureDigestDeduplicates(t *testing.T) {
+	line := "--- FAIL: TestRepeated (0.01s)\n"
+	stdout := []byte(strings.Repeat(line, 5) + "FAIL\tgithub.com/goobers/goobers/internal/one\t1.0s\n")
+	digest := FailureDigest(stdout, nil)
+	count := 0
+	for _, entry := range digest {
+		if strings.Contains(entry, "TestRepeated") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("TestRepeated appears %d times, want 1: %v", count, digest)
+	}
+}
+
+// A build that dies before any test runs still has to say something: the
+// wrapper trailer is dropped only when something more specific exists.
+func TestFailureDigestKeepsTrailerWhenItIsAllThereIs(t *testing.T) {
+	digest := FailureDigest(nil, []byte("make: *** [Makefile:391: ci] Error 1\n"))
+	if len(digest) == 0 {
+		t.Fatal("digest is empty for a build that failed before any test ran")
+	}
+	if !strings.Contains(strings.Join(digest, "\n"), "make: ***") {
+		t.Fatalf("digest dropped the only failure signal available: %v", digest)
+	}
+}
