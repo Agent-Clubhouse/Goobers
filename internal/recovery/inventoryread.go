@@ -88,7 +88,7 @@ func readInventoryNames(root string, before os.FileInfo, limit int) ([]string, e
 		count--
 	}
 	if count > limit {
-		return nil, ErrInventoryFull
+		return nil, fmt.Errorf("%w: %d of %d slots used in %s", ErrInventoryFull, count, limit, root)
 	}
 	slices.Sort(names)
 	return names, nil

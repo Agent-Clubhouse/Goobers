@@ -161,7 +161,7 @@ func reserveSnapshotDirectory(root, name string, limit int) (string, error) {
 		}
 	}
 	if count >= limit {
-		return "", ErrInventoryFull
+		return "", fmt.Errorf("%w: %d of %d slots used in %s", ErrInventoryFull, count, limit, root)
 	}
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		return "", err

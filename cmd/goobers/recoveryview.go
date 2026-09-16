@@ -142,7 +142,10 @@ func recoveryInventoryOccupancy(ctx context.Context, layout instance.Layout) (us
 func printRecoveryInventoryOccupancy(out io.Writer, layout instance.Layout) {
 	used, limit, earliest, err := recoveryInventoryOccupancy(context.Background(), layout)
 	if err != nil {
-		pf(out, "recovery inventory: unavailable\n")
+		// Say WHY. An operator reading "unavailable" cannot tell a locked
+		// inventory from a full one from a corrupt record, and the occupancy
+		// line is the one place that failure is visible at all.
+		pf(out, "recovery inventory: unavailable (%v)\n", err)
 		return
 	}
 	if earliest.IsZero() {
