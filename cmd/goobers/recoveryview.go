@@ -115,11 +115,14 @@ func printStatusRecovery(out io.Writer, layout instance.Layout, runs []runSummar
 // which is what distinguishes ordinary pressure from an inventory wedged
 // behind a retain floor no eviction can shorten (#4994).
 func recoveryInventoryOccupancy(ctx context.Context, layout instance.Layout) (used, limit int, earliest time.Time, err error) {
-	cfg, err := instance.LoadConfig(layout.ConfigFile())
-	if err != nil {
-		return 0, 0, time.Time{}, err
+	// The same resolution every writer into this inventory uses (#5092), so
+	// what `goobers status` reports and what a cleanup is refused against
+	// cannot be two different numbers for the same directory.
+	policy, origin := resolveRecoveryPolicy(layout, nil)
+	if origin.LoadErr != nil {
+		return 0, 0, time.Time{}, origin.LoadErr
 	}
-	limit = cfg.Retention.RecoveryEffective().MaxSnapshotsEffective()
+	limit = policy.MaxSnapshotsEffective()
 	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), limit)
 	if err != nil {
 		return 0, limit, time.Time{}, err
