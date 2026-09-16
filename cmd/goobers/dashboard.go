@@ -239,7 +239,8 @@ const dashboardHelp = "Usage: goobers dashboard [--port=<port|auto>] [--listen=<
 	"running, or against a standalone read-only service otherwise. The default\n" +
 	"port is %d; --port=auto increments from there until a port is available.\n" +
 	"--wait-for-daemon optionally waits up to 30s for a concurrently starting\n" +
-	"daemon; use --wait-for-daemon=<duration> to choose another bound.\n" +
+	"daemon's read API; recovery may still be running when the portal opens.\n" +
+	"Use --wait-for-daemon=<duration> to choose another bound.\n" +
 	"--listen overrides the full bind address (host:port) and takes the place\n" +
 	"of --port when given; binding a non-loopback host requires api.auth to be\n" +
 	"configured in instance.yaml (SEC-043) — there is no insecure override.\n" +
@@ -655,12 +656,14 @@ func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, scheme,
 						switch decodeErr := json.NewDecoder(response.Body).Decode(&health); {
 						case decodeErr != nil:
 							lastErr = decodeErr
-						case !health.Ready:
-							lastErr = errors.New("daemon API is not ready")
 						case health.APIVersion != readservice.APIVersion || health.SchemaVersion != readservice.SchemaVersion:
 							lastErr = fmt.Errorf("daemon API contract is %s/%s, want %s/%s",
 								health.APIVersion, health.SchemaVersion, readservice.APIVersion, readservice.SchemaVersion)
 						default:
+							// The versioned read planes are available before scheduler
+							// recovery completes. Attach as soon as that contract is live
+							// so operators and Fleet can inspect recovery instead of
+							// waiting behind the scheduler-readiness gate.
 							lastErr = nil
 						}
 					}
