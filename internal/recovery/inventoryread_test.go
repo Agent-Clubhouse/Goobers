@@ -44,6 +44,38 @@ func TestReadInventoryBoundedAndIdentityChecked(t *testing.T) {
 	}
 }
 
+// A crashed publish leaves a reservation directory holding only lock files.
+// Strict ReadInventory refuses the whole scan for it — correct, since no
+// caller deciding what is safe to discard may see a partial inventory — but
+// the eviction hook then failed FOREVER, so capacity was never reclaimed and
+// the inventory grew without bound (#5092). The tolerant scan must return the
+// readable entries anyway, and name the broken one rather than hide it.
+func TestReadInventoryTolerantSkipsBrokenReservation(t *testing.T) {
+	root := t.TempDir()
+	record := storageTestRecord()
+	seedInventoryRecord(t, root, record)
+	broken := filepath.Join(root, "b0000000000000000000000000000000000000000000000000000000000000ff")
+	if err := os.Mkdir(broken, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, ".publish.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadInventory(context.Background(), root, 10); err == nil {
+		t.Fatal("strict read accepted a broken reservation; eviction's tolerance would be untested")
+	}
+	entries, unreadable, err := ReadInventoryTolerant(context.Background(), root, 10)
+	if err != nil {
+		t.Fatalf("tolerant read failed on a broken reservation: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Record != record {
+		t.Fatalf("tolerant read lost the readable entry: %+v", entries)
+	}
+	if len(unreadable) != 1 || unreadable[0].Name != filepath.Base(broken) || unreadable[0].Err == nil {
+		t.Fatalf("tolerant read did not report the broken reservation: %+v", unreadable)
+	}
+}
+
 func TestReadInventoryRefusesMisfiledRecord(t *testing.T) {
 	root := t.TempDir()
 	directory := seedInventoryRecord(t, root, storageTestRecord())

@@ -24,49 +24,87 @@ type InventoryEntry struct {
 // callers must not interpret an incomplete scan as absence of recovery state.
 // Missing inventories are empty and are not created by this read.
 func ReadInventory(ctx context.Context, root string, maxEntries int) ([]InventoryEntry, error) {
+	entries, _, err := readInventory(ctx, root, maxEntries, false)
+	return entries, err
+}
+
+// UnreadableEntry names a reservation a tolerant scan could not interpret.
+type UnreadableEntry struct {
+	Name string
+	Err  error
+}
+
+// ReadInventoryTolerant returns every reservation it CAN read plus the ones it
+// could not, instead of failing the whole scan for one broken entry.
+//
+// ReadInventory is deliberately all-or-nothing, so no caller mistakes an
+// incomplete scan for absence of recovery state. That is right for anything
+// deciding whether work is safe to discard, and wrong for the one caller that
+// is looking for something to evict: a single unreadable reservation — a
+// crashed publish leaves a directory holding only lock files — otherwise makes
+// eviction return an error forever, so capacity is never reclaimed and the
+// inventory grows without bound (#5092, MEASURED on the goobernetes cluster:
+// 7 such reservations, inventory climbing ~120/h with nothing ever evicted).
+//
+// A broken reservation is never itself an eviction candidate, so skipping it
+// costs the caller nothing; it is returned rather than discarded so callers
+// can still report or reconcile it.
+func ReadInventoryTolerant(ctx context.Context, root string, maxEntries int) ([]InventoryEntry, []UnreadableEntry, error) {
+	return readInventory(ctx, root, maxEntries, true)
+}
+
+func readInventory(ctx context.Context, root string, maxEntries int, tolerant bool) ([]InventoryEntry, []UnreadableEntry, error) {
 	if maxEntries <= 0 || maxEntries > 10000 {
-		return nil, fmt.Errorf("invalid recovery inventory read limit")
+		return nil, nil, fmt.Errorf("invalid recovery inventory read limit")
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	before, err := os.Lstat(root)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil || !before.IsDir() {
-		return nil, fmt.Errorf("recovery inventory must be a real directory")
+		return nil, nil, fmt.Errorf("recovery inventory must be a real directory")
 	}
 	handle, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = handle.Release() }()
 	names, err := readInventoryNames(root, before, maxEntries)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var entries []InventoryEntry
+	var unreadable []UnreadableEntry
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if name == ".inventory.lock" {
 			continue
 		}
 		if isRetiredName(name) {
 			if err := validateRetiredDirectory(root, name); err != nil {
-				return nil, err
+				if !tolerant {
+					return nil, nil, err
+				}
+				unreadable = append(unreadable, UnreadableEntry{Name: name, Err: err})
 			}
 			continue
 		}
 		entry, err := readInventoryEntry(root, name)
 		if err != nil {
-			return nil, fmt.Errorf("inspect recovery reservation %s: %w", name, err)
+			if !tolerant {
+				return nil, nil, fmt.Errorf("inspect recovery reservation %s: %w", name, err)
+			}
+			unreadable = append(unreadable, UnreadableEntry{Name: name, Err: err})
+			continue
 		}
 		entries = append(entries, entry)
 	}
-	return entries, nil
+	return entries, unreadable, nil
 }
 
 func readInventoryNames(root string, before os.FileInfo, limit int) ([]string, error) {
