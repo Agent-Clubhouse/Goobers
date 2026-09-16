@@ -577,7 +577,9 @@ type parityEnvelope struct {
 	// RepoRef is the target repo as it rides the wire (RepoRef.EnvelopeRef),
 	// JSON-encoded. A stage that is handed the wrong repo, owner or base
 	// branch is the bluntest parity bug there is.
-	RepoRef string
+	RepoRef                string
+	WorkspaceRevision      string
+	WorkspaceBranchBinding string
 	// AdditionalWorkspaces encodes the read-only reference-repo checkouts by
 	// NAME, in order (paths excluded — see above).
 	AdditionalWorkspaces string
@@ -620,11 +622,11 @@ func (e parityEnvelope) String() string {
 	return fmt.Sprintf("instanceId=%s stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
 		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q addendum=%q "+
 		"inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q "+
-		"repoRef=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s reviewerDeferralAllowed=%t reviewerMechanicalEscalationAllowed=%t",
+		"repoRef=%s workspaceRevision=%s workspaceBranchBinding=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s reviewerDeferralAllowed=%t reviewerMechanicalEscalationAllowed=%t",
 		e.InstanceID, e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
 		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity, e.InstructionAddendum,
 		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item,
-		e.RepoRef, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
+		e.RepoRef, e.WorkspaceRevision, e.WorkspaceBranchBinding, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
 		e.ParentPlatformPolicy, e.NestedAgentPolicy, e.ReviewerDeferralAllowed, e.ReviewerMechanicalEscalationAllowed)
 }
 
@@ -656,6 +658,8 @@ func projectParityEnvelope(env apiv1.InvocationEnvelope) parityEnvelope {
 		ContextPointers:                     encodeParityPointers(env.ContextPointers),
 		Item:                                encodeParityItem(env.Item),
 		RepoRef:                             encodeParityJSON(env.RepoRef),
+		WorkspaceRevision:                   encodeParityJSON(env.WorkspaceRevision),
+		WorkspaceBranchBinding:              encodeParityJSON(env.WorkspaceBranchBinding),
 		AdditionalWorkspaces:                encodeParityAdditionalWorkspaces(env.AdditionalWorkspaces),
 		CheckoutCones:                       encodeParityJSON(env.CheckoutCones),
 		Limits:                              encodeParityJSON(env.Limits),
@@ -1499,6 +1503,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 		Inputs:              "s-inputs", Capabilities: "s-caps", PolicyActions: "s-policy",
 		ContextPointers: "s-pointers", Item: "s-item",
 		RepoRef: "s-reporef", AdditionalWorkspaces: "s-additional", CheckoutCones: "s-cones",
+		WorkspaceRevision: "s-revision", WorkspaceBranchBinding: "s-binding",
 		Limits: "s-limits", ParentPlatformPolicy: "s-parentpolicy", NestedAgentPolicy: "s-nestedpolicy",
 		ReviewerDeferralAllowed: true, ReviewerMechanicalEscalationAllowed: true,
 	}
@@ -1507,7 +1512,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 		"s-instanceid",
 		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gooberdigest", "s-gaggle", "s-namespace", "s-base",
 		"s-trigger", "s-ownership", "s-integrity", "s-addendum", "s-inputs", "s-caps", "s-policy",
-		"s-pointers", "s-item", "s-reporef", "s-additional", "s-cones", "s-limits",
+		"s-pointers", "s-item", "s-reporef", "s-revision", "s-binding", "s-additional", "s-cones", "s-limits",
 		"s-parentpolicy", "s-nestedpolicy",
 		"reviewerDeferralAllowed=true", "reviewerMechanicalEscalationAllowed=true",
 	} {
@@ -1518,7 +1523,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 27; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 29; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
 	}
 }
@@ -1571,6 +1576,49 @@ func TestParityEnvelopeComparesEveryEnvelopeField(t *testing.T) {
 		if _, ok := envelopeType.FieldByName(name); !ok {
 			t.Errorf("parityEnvelopeExcludedFields names %q, which apiv1.InvocationEnvelope no longer declares — delete the entry", name)
 		}
+	}
+}
+
+func TestParityEnvelopeDetectsWorkspaceAuthorityChanges(t *testing.T) {
+	repository := apiv1.RepositoryIdentity{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"}
+	base := apiv1.InvocationEnvelope{
+		TaskID: "run:inspect",
+		WorkspaceRevision: &apiv1.WorkspaceRevision{
+			Repository: repository, CommitSHA: strings.Repeat("a", 40), SourceRef: "feature/source",
+		},
+		WorkspaceBranchBinding: &apiv1.WorkspaceBranchBinding{
+			Repository: repository, Ref: "refs/heads/goobers/owned", StartingSHA: strings.Repeat("a", 40),
+		},
+	}
+	projected := projectParityEnvelope(base)
+	for _, tc := range []struct {
+		name   string
+		field  string
+		mutate func(*apiv1.InvocationEnvelope)
+	}{
+		{"missing revision", "workspaceRevision", func(e *apiv1.InvocationEnvelope) { e.WorkspaceRevision = nil }},
+		{"different commit", "workspaceRevision", func(e *apiv1.InvocationEnvelope) { e.WorkspaceRevision.CommitSHA = strings.Repeat("b", 40) }},
+		{"different repository", "workspaceRevision", func(e *apiv1.InvocationEnvelope) { e.WorkspaceRevision.Repository.Owner = "fork" }},
+		{"missing binding", "workspaceBranchBinding", func(e *apiv1.InvocationEnvelope) { e.WorkspaceBranchBinding = nil }},
+		{"different owned ref", "workspaceBranchBinding", func(e *apiv1.InvocationEnvelope) { e.WorkspaceBranchBinding.Ref = "refs/heads/goobers/other" }},
+		{"different starting commit", "workspaceBranchBinding", func(e *apiv1.InvocationEnvelope) { e.WorkspaceBranchBinding.StartingSHA = strings.Repeat("b", 40) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := base
+			changed.WorkspaceRevision = base.WorkspaceRevision.DeepCopy()
+			changed.WorkspaceBranchBinding = base.WorkspaceBranchBinding.DeepCopy()
+			if got := projectParityEnvelope(changed); got != projected {
+				t.Fatal("equal authority values must compare equally regardless of pointer identity")
+			}
+			tc.mutate(&changed)
+			err := diffParityEnvelopes(parityObservation{
+				Runner: paritySide{Envelopes: []parityEnvelope{projected}},
+				Engine: paritySide{Envelopes: []parityEnvelope{projectParityEnvelope(changed)}},
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("authority divergence must name %s: %v", tc.field, err)
+			}
+		})
 	}
 }
 
