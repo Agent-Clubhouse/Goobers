@@ -84,16 +84,20 @@ type JournalHealthStatus struct {
 type StorageHealthStatus struct {
 	// Tier is one of "healthy", "warning", "admission-stopped", or
 	// "measurement-unavailable" (localscheduler.StorageTier.String()).
-	Tier                 string    `json:"tier"`
-	Path                 string    `json:"path,omitempty"`
-	FreeBytes            uint64    `json:"freeBytes"`
-	TotalBytes           uint64    `json:"totalBytes,omitempty"`
-	WarningFloorBytes    int64     `json:"warningFloorBytes,omitempty"`
-	WarningFloorPercent  float64   `json:"warningFloorPercent,omitempty"`
-	CriticalFloorBytes   int64     `json:"criticalFloorBytes,omitempty"`
-	CriticalFloorPercent float64   `json:"criticalFloorPercent,omitempty"`
-	MeasuredAt           time.Time `json:"measuredAt,omitempty"`
-	Error                string    `json:"error,omitempty"`
+	Tier                 string  `json:"tier"`
+	Path                 string  `json:"path,omitempty"`
+	FreeBytes            uint64  `json:"freeBytes"`
+	TotalBytes           uint64  `json:"totalBytes,omitempty"`
+	WarningFloorBytes    int64   `json:"warningFloorBytes,omitempty"`
+	WarningFloorPercent  float64 `json:"warningFloorPercent,omitempty"`
+	CriticalFloorBytes   int64   `json:"criticalFloorBytes,omitempty"`
+	CriticalFloorPercent float64 `json:"criticalFloorPercent,omitempty"`
+	// WarningFloorSource and CriticalFloorSource identify the byte, percent,
+	// or recovery-derived threshold currently binding each tier.
+	WarningFloorSource  string    `json:"warningFloorSource,omitempty"`
+	CriticalFloorSource string    `json:"criticalFloorSource,omitempty"`
+	MeasuredAt          time.Time `json:"measuredAt,omitempty"`
+	Error               string    `json:"error,omitempty"`
 }
 
 // storageHealthStatus converts a localscheduler.StorageHealthStats snapshot
@@ -108,6 +112,8 @@ func storageHealthStatus(stats localscheduler.StorageHealthStats) *StorageHealth
 		WarningFloorPercent:  stats.WarningFloorPercent,
 		CriticalFloorBytes:   stats.CriticalFloorBytes,
 		CriticalFloorPercent: stats.CriticalFloorPercent,
+		WarningFloorSource:   stats.WarningFloorSource,
+		CriticalFloorSource:  stats.CriticalFloorSource,
 		MeasuredAt:           stats.MeasuredAt,
 		Error:                stats.Error,
 	}
