@@ -212,9 +212,10 @@ func TestCopilotAdapterRecoveryTurnStaysConfined(t *testing.T) {
 	if diffs != 1 {
 		t.Fatalf("recovery argv differs from initial at %d positions, want exactly the prompt: %v vs %v", diffs, first, second)
 	}
-	// The prompt follows the wrapper prefix (2 args), the base command (1)
-	// and the prompt flag (1).
-	if wantIdx := 4; promptIdx != wantIdx {
+	// The prompt follows the wrapper prefix (2 args) and the base command
+	// (1). It is bound to its flag in that same element (`-p=<text>`), so it
+	// does not occupy one of its own — see copilotPromptArg.
+	if wantIdx := 3; promptIdx != wantIdx {
 		t.Fatalf("recovery prompt swapped at index %d, want %d (wrapper-shifted)", promptIdx, wantIdx)
 	}
 	if !strings.Contains(second[promptIdx], "completion") && !strings.Contains(second[promptIdx], "result") {

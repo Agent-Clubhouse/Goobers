@@ -29,6 +29,29 @@ import (
 // own --help, confirmed by a live invocation while building this adapter.
 const defaultPromptFlag = "-p"
 
+// copilotPromptArg binds the prompt to its flag in ONE argv element
+// (`-p=<text>`) rather than passing them as two.
+//
+// Every goober body starts with YAML frontmatter, so the rendered prompt
+// begins with "---". Passed as a separate argument the CLI reads that as
+// options, not as the flag's value, and refuses the whole invocation:
+//
+//	error: Invalid command format.
+//	It looks like your prompt was not quoted, so the extra words were
+//	treated as separate arguments.
+//
+// exit 1, before the model is ever reached. MEASURED against Copilot CLI
+// 1.0.85: a prompt beginning with "---" fails as two arguments and succeeds
+// as `-p=<text>`; an otherwise identical prompt without the leading "---"
+// succeeds either way. On the goobernetes cluster this failed EVERY
+// implementation run's implement stage (#5197).
+//
+// The = form is not a workaround for one leading token: it is the only shape
+// in which no prompt content can be reinterpreted as flags.
+func copilotPromptArg(flag, prompt string) string {
+	return flag + "=" + prompt
+}
+
 // defaultExtraArgs is used when ExtraArgs is nil. --allow-all-tools is
 // REQUIRED for the real CLI's non-interactive mode — without it, a session
 // blocks on an interactive permission prompt instead of exiting, which would
@@ -890,8 +913,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: tool-constrained run conflicts with configured argument %q", conflict)
 		}
 	}
-	argv := append(baseCommand, flag, prompt)
-	promptArg := len(baseCommand) + 1
+	argv := append(baseCommand, copilotPromptArg(flag, prompt))
+	promptArg := len(baseCommand)
 	if resolution.Model != "" {
 		argv = append(argv, "--model", resolution.Model)
 	}
@@ -1065,7 +1088,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 					recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
 					recoveryStdout = recoveryCapture
 				}
-				recoveryArgv[promptArg] = recoveryPrompt
+				recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
 				recovery, err := runner.Run(ctx, ProcessRequest{
 					Command:                      recoveryArgv,
 					Dir:                          req.Workspace,
