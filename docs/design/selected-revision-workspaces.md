@@ -1,12 +1,12 @@
 # Selected-revision workspaces
 
-> Status: approved — local, Temporal/workerhost, pod inspection, and owned remote branches delivered; lifecycle milestone remains.
+> Status: implemented — selected inspection, owned writable continuity, and conditional lifecycle delivered on the local implementation branch.
 > Owner: @brandiv
 > Area: runtime / repository workspaces
 > Tracking: #4157, #5121, #5122, #5123, #5124, #5125, #5126, #5127
-> Delivered-by: #5121, #5122, #5123, #5124, #5125, #5126
-> Pending-delivery: #5127
-> Scope-delta: Typed state, exact-SHA inspection, and remote owned-branch establishment/publication are delivered across local, workerhost, and pod execution. Final lifecycle/conformance/reference workflows remain a separate milestone.
+> Delivered-by: #5121, #5122, #5123, #5124, #5125, #5126, #5127
+> Scope-delta: No implementation scope remains within #4157. Live credentialed deployment is not claimed; distributed static fan-out, source mutation, merge, and revision-PR publication remain explicit non-goals.
+> Verified: c0f62156 (2026-09-15)
 
 ## Purpose and authority
 

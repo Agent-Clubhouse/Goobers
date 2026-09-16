@@ -3,6 +3,10 @@
 **Status:** approved — Goobernetes v1 design. Encodes the PO decision record in
 [goobernetes-decisions.md](goobernetes-decisions.md) (2026-08-22).
 
+> Delivered-by: #5124, #5126, #5127
+> Scope-delta: Section 7.2's selected-revision transport, ownership, and lifecycle are implemented and verified locally. This does not mark the broader coordination design delivered or claim a credentialed cluster deployment.
+> Verified: c0f62156 (2026-09-15)
+
 **Scope:** the state and coordination layer of Goobernetes mode 3 — who owns instance state, how a
 stage running in a disposable pod reaches it, how the run journal is authored live, and what happens
 when the daemon pod dies. Scheduling policy, the DSL surface, images, and data-plane transport live in

@@ -7,6 +7,10 @@ This document resolves the dispatcher's cluster-facing surface so the infra coll
 ones — the §12-open-point-1 topology question especially. It implements issue #3513 and the
 mode-3 half of #3482.
 
+> Delivered-by: #5125, #5126, #5127
+> Scope-delta: Selected-revision and owned-branch checkout contracts are implemented and verified through local pod-path integration tests. The broader infrastructure design remains draft; no credentialed cluster deployment is claimed.
+> Verified: c0f62156 (2026-09-15)
+
 Companions own what this doesn't: [goobernetes-architecture.md](goobernetes-architecture.md)
 (the substrate model + the §12 open points this closes), the constraint solver (#3506,
 merged — eligible-runner-set output the dispatcher consumes),

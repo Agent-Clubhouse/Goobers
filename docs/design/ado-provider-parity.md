@@ -8,6 +8,8 @@
 > Driving epic: #2061 (ADO end-to-end). Builds on `docs/design/provider-contract-conformance.md`
 > (the capability model) and `docs/design/v0/pr-lifecycle-loop.md` (the stage contract).
 > Delivered-by: #2745, #5122
+> Scope-delta: Selected-source service/project/repository-ID propagation is delivered by #5122. The previously recorded ADO end-to-end gaps and live-write validation limitations remain unchanged.
+> Verified: c0f62156 (2026-09-15)
 
 ## 1. Context
 

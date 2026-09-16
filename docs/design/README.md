@@ -15,8 +15,8 @@ word — read the page, not this table, before depending on it.
 | Status | Documents |
 |---|---:|
 | `draft` | 12 |
-| `approved` | 20 |
-| `implemented` | 27 |
+| `approved` | 19 |
+| `implemented` | 28 |
 | `superseded` | 4 |
 | `historical` | 6 |
 | **Total** | **69** |
@@ -32,7 +32,7 @@ word — read the page, not this table, before depending on it.
 
 | Document | Status | Owner / area | Tracking | Delivered by | Remaining | Superseded by | Verified |
 |---|---|---|---|---|---|---|---|
-| [Azure DevOps Provider Parity — the PR lifecycle on ADO](ado-provider-parity.md) | `implemented` | — | — | #2745, #5122 | — | — | — |
+| [Azure DevOps Provider Parity — the PR lifecycle on ADO](ado-provider-parity.md) | `implemented` | — | — | #2745, #5122 | — | — | c0f62156 (2026-09-15) |
 | [Agentic mutation-capability audit](agentic-mutation-capability-audit.md) | `historical` | — | — | — | — | — | — |
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `implemented` | — | — | #983, #1003 | — | — | 09db115bb (2026-09-06) |
 | [Design: Claim visibility - local by default, shared by opt-in](claim-visibility.md) | `approved` | — | — | — | — | — | — |
@@ -43,7 +43,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Dashboard / Portal - calm operations workbench over the daemon API](dashboard.md) | `approved` | — | — | — | — | — | — |
 | [Design: Decomposition workflow](decomposition-workflow.md) | `implemented` | — | — | #318, #415, #419, #489 | — | — | 09db115bb (2026-09-06) |
 | [Design: Deep-investigation workflow](deep-investigation-workflow.md) | `approved` | — | — | #1484 | #1482, #1483 | — | a4696d7c5 (2026-09-07) |
-| [Distributed state and coordination](distributed-state-and-coordination.md) | `approved` | — | — | — | — | — | — |
+| [Distributed state and coordination](distributed-state-and-coordination.md) | `approved` | — | — | #5124, #5126, #5127 | — | — | c0f62156 (2026-09-15) |
 | [DSL 3.0](dsl-3.0.md) | `approved` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Design: DSL Version Lifecycle & Multi-Version Runtime](dsl-version-lifecycle.md) | `implemented` | — | — | #860, #861, #862, #863, #864, #865, #866, #867, #868, #869 | — | — | — |
 | [Design: an e2e soak harness for load-dependent failures](e2e-soak-harness.md) | `draft` | — | — | — | — | — | — |
@@ -55,7 +55,7 @@ word — read the page, not this table, before depending on it.
 | [Goobernetes v1 — architecture](goobernetes-architecture.md) | `approved` | — | — | — | — | — | — |
 | [Goobernetes v1 — decision record](goobernetes-decisions.md) | `approved` | — | — | — | — | — | — |
 | [Goobernetes deployment shape and the image contract](goobernetes-deployment-images.md) | `approved` | — | — | — | — | — | — |
-| [Goobernetes dispatcher — the pod-per-stage substrate (infra-facing design)](goobernetes-dispatcher.md) | `draft` | — | — | — | — | — | — |
+| [Goobernetes dispatcher — the pod-per-stage substrate (infra-facing design)](goobernetes-dispatcher.md) | `draft` | — | — | #5125, #5126, #5127 | — | — | c0f62156 (2026-09-15) |
 | [Goobernetes restrictions — the effect-based isolation model](goobernetes-restrictions.md) | `approved` | — | — | #3516, #3568, #4540 | — | — | — |
 | [Goobernetes smoke — the distributed-shape v1 exit](goobernetes-smoke.md) | `approved` | — | — | — | — | — | — |
 | [Design: Human-in-the-Loop — escalation visibility & intervention](human-in-the-loop.md) | `implemented` | — | — | #3876, #3877, #3883 | — | — | 09db115bb (2026-09-06) |
@@ -68,8 +68,8 @@ word — read the page, not this table, before depending on it.
 | [Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)](onboarding-first-value-ladder.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Portal read architecture — a rethink](portal-read-architecture.md) | `implemented` | — | — | #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952 | — | — | — |
 | [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `implemented` | — | — | #2305, #2884 | — | — | — |
-| [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `implemented` | — | — | #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499, #5122 | — | — | — |
-| [Selected-revision workspaces](selected-revision-workspaces.md) | `approved` | @brandiv / runtime / repository workspaces | #4157, #5121, #5122, #5123, #5124, #5125, #5126, #5127 | #5121, #5122, #5123, #5124, #5125, #5126 | #5127 | — | — |
+| [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `implemented` | — | — | #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499, #5122 | — | — | c0f62156 (2026-09-15) |
+| [Selected-revision workspaces](selected-revision-workspaces.md) | `implemented` | @brandiv / runtime / repository workspaces | #4157, #5121, #5122, #5123, #5124, #5125, #5126, #5127 | #5121, #5122, #5123, #5124, #5125, #5126, #5127 | — | — | c0f62156 (2026-09-15) |
 | [Design: Separate GitHub repository sink for docs-updater](separate-docs-repository-sink.md) | `approved` | — | — | — | — | — | — |
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — | — | — | — |
 | [Design: Static fan-out/fan-in — bounded parallel branches and a real join](static-fan-out-fan-in.md) | `implemented` | — | — | #1939 | — | — | — |
