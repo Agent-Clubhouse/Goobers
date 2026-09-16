@@ -341,7 +341,14 @@ func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	// Anchored to the real clock, NOT a literal date: decorateOperatorClaims
+	// re-opens the ledger with the process clock, and ClaimLedger forgets
+	// history older than claimHistoryTTL (30 days). A literal "now" therefore
+	// passes until real time drifts 30 days past it and then fails everywhere
+	// at once — which is exactly what happened on 2026-09-16, 30 days after
+	// the 2026-08-17 literal these tests used, turning main red across linux,
+	// macOS and Windows simultaneously.
+	now := time.Now().UTC()
 	ledgerNow := now.Add(-2 * time.Hour)
 	ledger, err := localscheduler.OpenClaimLedger(
 		filepath.Join(layout.SchedulerDir(), "claims.json"),
@@ -442,7 +449,14 @@ func TestDecorateOperatorClaimsKeepsReaderCredentialGapOutOfRunBlockers(t *testi
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 8, 20, 3, 15, 0, 0, time.UTC)
+	// Anchored to the real clock, NOT a literal date: decorateOperatorClaims
+	// re-opens the ledger with the process clock, and ClaimLedger forgets
+	// history older than claimHistoryTTL (30 days). A literal "now" therefore
+	// passes until real time drifts 30 days past it and then fails everywhere
+	// at once — which is exactly what happened on 2026-09-16, 30 days after
+	// the 2026-08-17 literal these tests used, turning main red across linux,
+	// macOS and Windows simultaneously.
+	now := time.Now().UTC()
 	ledger, err := localscheduler.OpenClaimLedger(
 		filepath.Join(layout.SchedulerDir(), "claims.json"),
 		localscheduler.WithLedgerClock(func() time.Time { return now }),
@@ -516,7 +530,14 @@ func TestDecorateOperatorClaimsReportsRealMarkerDriftAsBlocker(t *testing.T) {
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 8, 20, 3, 15, 0, 0, time.UTC)
+	// Anchored to the real clock, NOT a literal date: decorateOperatorClaims
+	// re-opens the ledger with the process clock, and ClaimLedger forgets
+	// history older than claimHistoryTTL (30 days). A literal "now" therefore
+	// passes until real time drifts 30 days past it and then fails everywhere
+	// at once — which is exactly what happened on 2026-09-16, 30 days after
+	// the 2026-08-17 literal these tests used, turning main red across linux,
+	// macOS and Windows simultaneously.
+	now := time.Now().UTC()
 	ledger, err := localscheduler.OpenClaimLedger(
 		filepath.Join(layout.SchedulerDir(), "claims.json"),
 		localscheduler.WithLedgerClock(func() time.Time { return now }),
