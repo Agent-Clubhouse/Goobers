@@ -723,8 +723,7 @@ func buildSchedulerDefinitions(
 	stores credentials.StoreResolver,
 	startupProgress func(string),
 ) (*schedulerDefinitions, error) {
-	// Resolve gaggle CI commands on every compilation path, including config
-	// reloads, so preflight and execution see the same effective command.
+	// Resolve gaggle CI commands on every compilation path.
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)

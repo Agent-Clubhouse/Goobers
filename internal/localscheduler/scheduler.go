@@ -982,20 +982,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if s.authCircuitOpen(entryIdentity(entry)) {
 			continue
 		}
-		if entry.DisabledReason != "" {
-			// Disabled workflows/gaggles (#5200) are an operator-configured
-			// permanent stop on new starts. Skip them silently here so they do
-			// not spend polls or emit one tick.skipped per loop; explicit
-			// triggers below still receive a named refusal.
-			continue
-		}
-		if entry.PlacementRefusal != "" {
-			// Refused by the startup constraint solve (#2860, checkpoint 3):
-			// journaled as workflow.refused when the entry was learned, and
-			// refused with the named diagnostic on any explicit Trigger.
-			// Skipped silently here (the auth-circuit idiom) so a permanently
-			// refused workflow neither spends provider polls nor floods the
-			// journal with a tick.skipped every tick.
+		if skipPermanentRefusedEntry(entry) {
 			continue
 		}
 		identity := entryIdentity(entry)
@@ -1179,6 +1166,14 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	if s.afterTick != nil {
 		s.afterTick(ctx)
 	}
+}
+
+func skipPermanentRefusedEntry(entry WorkflowEntry) bool {
+	// Disabled workflows/gaggles (#5200) and workflows refused by the startup
+	// constraint solve (#2860, checkpoint 3) are permanent until config changes.
+	// Skip them silently here so they do not spend polls or flood the journal;
+	// explicit triggers still receive a named refusal through dispatch.
+	return entry.DisabledReason != "" || entry.PlacementRefusal != ""
 }
 
 func (s *Scheduler) orderedGaggles(gaggles []string) []string {
@@ -2470,52 +2465,8 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		return "", false, reason
 	}
 
-	if entry.DisabledReason != "" {
-		reason := ReasonDisabled + ": " + entry.DisabledReason
-		s.journalEvent(journal.Event{
-			Type:     journal.EventTickSkipped,
-			Workflow: entry.Workflow,
-			Gaggle:   entry.Gaggle,
-			Reason:   s.refillRejectionReason(identity, now, triggerReason, reason),
-		})
-		span.Complete(telemetry.OutcomeBlocked, false)
-		return "", false, reason
-	}
-
-	// Checkpoint-3 refusal (#2860, dsl-3.0.md §5): a workflow the startup
-	// constraint solve marked unplaceable on the declared inventory is refused
-	// per run with the solver's named diagnostic — the proportionate
-	// replacement for the boot-kill this ruling removed. Permanent for the
-	// pinned inventory (restart-only, accept-and-pin), so not transient.
-	if entry.PlacementRefusal != "" {
-		reason := ReasonPlacementUnsatisfiable + ": " + entry.PlacementRefusal
-		s.journalEvent(journal.Event{
-			Type:     journal.EventTickSkipped,
-			Workflow: entry.Workflow,
-			Gaggle:   entry.Gaggle,
-			Reason:   s.refillRejectionReason(identity, now, triggerReason, reason),
-		})
-		span.Complete(telemetry.OutcomeBlocked, false)
-		return "", false, reason
-	}
-	// Schedule-time runner-capability match (RRQ-1/#1101): refuse the run
-	// before it can consume an admission slot when the runner does not satisfy
-	// a capability the workflow's gaggle/stages require. This is the runtime,
-	// per-run enforcement of the same invariant checkpoint 1 validates
-	// statically, served from the shared solver's self-runner view (#3506) so
-	// the two can never diverge — a missing claim fails a run to schedule
-	// rather than scheduling it to fail at run. Placement across a
-	// multi-runner inventory is dispatch-time work (#3513); until it lands,
-	// every stage of an admitted run executes on this host, which is exactly
-	// what this self-runner check answers for.
-	if missing := s.selfRunner.MissingCapabilities(entry.RequiredCapabilities); len(missing) > 0 {
-		reason := ReasonMissingCapability + ": " + strings.Join(missing, ", ")
-		s.journalEvent(journal.Event{
-			Type:     journal.EventTickSkipped,
-			Workflow: entry.Workflow,
-			Gaggle:   entry.Gaggle,
-			Reason:   s.refillRejectionReason(identity, now, triggerReason, reason),
-		})
+	if reason, refused := s.permanentDispatchRefusal(entry); refused {
+		s.journalDispatchRefusal(entry, identity, now, triggerReason, reason)
 		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}
@@ -2628,6 +2579,28 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		s.journalEvent(ev)
 	}()
 	return runID, true, ""
+}
+
+func (s *Scheduler) permanentDispatchRefusal(entry WorkflowEntry) (string, bool) {
+	if entry.DisabledReason != "" {
+		return ReasonDisabled + ": " + entry.DisabledReason, true
+	}
+	if entry.PlacementRefusal != "" {
+		return ReasonPlacementUnsatisfiable + ": " + entry.PlacementRefusal, true
+	}
+	if missing := s.selfRunner.MissingCapabilities(entry.RequiredCapabilities); len(missing) > 0 {
+		return ReasonMissingCapability + ": " + strings.Join(missing, ", "), true
+	}
+	return "", false
+}
+
+func (s *Scheduler) journalDispatchRefusal(entry WorkflowEntry, identity WorkflowIdentity, now time.Time, triggerReason, reason string) {
+	s.journalEvent(journal.Event{
+		Type:     journal.EventTickSkipped,
+		Workflow: entry.Workflow,
+		Gaggle:   entry.Gaggle,
+		Reason:   s.refillRejectionReason(identity, now, triggerReason, reason),
+	})
 }
 
 func (s *Scheduler) authCircuitOpen(identity WorkflowIdentity) bool {
