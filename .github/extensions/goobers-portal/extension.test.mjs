@@ -63,7 +63,17 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                 curation: { runs: 0, ready: 0, needsHuman: 0, closed: 0, everRecorded: false },
                 readyPool: {},
             };
+            const costSummary = {
+                provider: "github",
+                scope: "pr",
+                externalId: "5183",
+                since: "2026-01-01T00:00:00Z",
+                until: "2026-01-02T00:00:00Z",
+                pullRequests: [],
+                issues: [],
+            };
             const insightRequests = [];
+            const costRequests = [];
             const daemon = createServer((req, res) => {
                 if (fail) {
                     res.writeHead(503).end();
@@ -74,11 +84,15 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                 if (pathname === "/api/v1/telemetry/stats") {
                     insightRequests.push(Object.fromEntries(parsedUrl.searchParams.entries()));
                 }
+                if (pathname === "/api/v1/telemetry/costs") {
+                    costRequests.push(Object.fromEntries(parsedUrl.searchParams.entries()));
+                }
                 const body = pathname === "/api/v1/instance" ? { name: "remote-instance", fleet, warnings }
                     : pathname === "/api/v1/health" ? { ready: true }
                     : pathname === "/api/v1/gaggles" ? { items: [] }
                     : pathname === "/api/v1/gaggles/core/workflows/implementation" ? workflowDetail
                     : pathname === "/api/v1/telemetry/stats" ? insightStats
+                    : pathname === "/api/v1/telemetry/costs" ? costSummary
                     : pathname === "/api/v1/runs" ? { runs: [] }
                     : {};
                 res.setHeader("Content-Type", "application/json");
@@ -139,9 +153,31 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
                 until: "2026-01-02T00:00:00Z",
             });
 
+            const costResponse = await fetch(
+                `${opened.url}api/cost-summary?source=${encodeURIComponent(source.id)}&provider=github&scope=pr&id=5183&since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z`,
+            );
+            assert.equal(costResponse.status, 200);
+            const costBody = await costResponse.json();
+            assert.equal(costBody.connected, true);
+            assert.deepEqual(costBody.costs, costSummary);
+            assert.deepEqual(costRequests.at(-1), {
+                provider: "github",
+                scope: "pr",
+                id: "5183",
+                since: "2026-01-01T00:00:00Z",
+                until: "2026-01-02T00:00:00Z",
+            });
+
             const missingInsightSource = await fetch(`${opened.url}api/insight-stats`);
             assert.equal(missingInsightSource.status, 200);
             assert.deepEqual(await missingInsightSource.json(), {
+                connected: false,
+                reason: "no source selected",
+            });
+
+            const missingCostSource = await fetch(`${opened.url}api/cost-summary`);
+            assert.equal(missingCostSource.status, 200);
+            assert.deepEqual(await missingCostSource.json(), {
                 connected: false,
                 reason: "no source selected",
             });
@@ -153,6 +189,15 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
             assert.deepEqual(await unsupportedInsight.json(), {
                 connected: false,
                 reason: "Telemetry insights require a running Goobers daemon.",
+            });
+
+            const unsupportedCost = await fetch(
+                `${opened.url}api/cost-summary?source=${encodeURIComponent(actionsSource.id)}&scope=summary`,
+            );
+            assert.equal(unsupportedCost.status, 200);
+            assert.deepEqual(await unsupportedCost.json(), {
+                connected: false,
+                reason: "Cost telemetry requires a running Goobers daemon.",
             });
 
             fleet = { associated: false };
