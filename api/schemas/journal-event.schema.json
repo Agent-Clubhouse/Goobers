@@ -36,6 +36,11 @@
     }
   ],
   "properties": {
+    "workspaceBranchBinding": {
+      "$ref": "workspace-branch-binding.schema.json",
+      "x-conformance": "normative",
+      "description": "Accepted remote target repository, owned ref and immutable starting SHA."
+    },
     "workspaceRevision": {
       "$ref": "workspace-revision.schema.json",
       "description": "Immutable repository and exact commit accepted from a successful deterministic stage.",

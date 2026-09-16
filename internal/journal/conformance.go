@@ -56,8 +56,9 @@ type NormativeEvent struct {
 	// Outputs (event.go's doc comment: fully normative). Encoded rather than
 	// kept as map[string]any so NormativeEvent stays flat and ==-comparable
 	// (a struct containing a map is not comparable at all).
-	Outputs           string
-	WorkspaceRevision string
+	Outputs                string
+	WorkspaceRevision      string
+	WorkspaceBranchBinding string
 
 	// Parallel/branch identity (§6.2). Completeness is a FLATTENED encoding of
 	// the branch completeness record rather than a slice, because
@@ -123,6 +124,10 @@ func projectNormative(e Event) NormativeEvent {
 	if e.WorkspaceRevision != nil {
 		data, _ := json.Marshal(e.WorkspaceRevision)
 		ne.WorkspaceRevision = string(data)
+	}
+	if e.WorkspaceBranchBinding != nil {
+		data, _ := json.Marshal(e.WorkspaceBranchBinding)
+		ne.WorkspaceBranchBinding = string(data)
 	}
 	if e.Ref != nil {
 		ne.RefIntegrity = e.Ref.Integrity
@@ -241,6 +246,9 @@ func (ne NormativeEvent) String() string {
 	)
 	if ne.WorkspaceRevision != "" {
 		text += "|workspaceRevision=" + ne.WorkspaceRevision
+	}
+	if ne.WorkspaceBranchBinding != "" {
+		text += "|workspaceBranchBinding=" + ne.WorkspaceBranchBinding
 	}
 	return text
 }

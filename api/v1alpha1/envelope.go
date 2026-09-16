@@ -25,7 +25,8 @@ import "fmt"
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
 // v1alpha9 adds runner-authored nested-agent authority and ownership fields.
 // v1alpha10 adds deterministic-only immutable selected-revision control.
-const StageContractVersion = "v1alpha10"
+// v1alpha11 adds durable remote workspace branch ownership.
+const StageContractVersion = "v1alpha11"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -128,7 +129,8 @@ type InvocationEnvelope struct {
 	// WorkspaceRevision is the accepted immutable inspection input. RepoRef
 	// remains the configured base for provider operations; this control grants
 	// no source-branch write authority or checkout policy.
-	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
+	WorkspaceRevision      *WorkspaceRevision      `json:"workspaceRevision,omitempty"`
+	WorkspaceBranchBinding *WorkspaceBranchBinding `json:"workspaceBranchBinding,omitempty"`
 	// AdditionalWorkspaces are read-only checkouts of the gaggle's reference
 	// repos (GaggleSpec.AdditionalRepos, MGV-11 #1286): the stage may READ them
 	// for cross-repo context, but no push credential is ever provisioned for
@@ -307,6 +309,8 @@ type ResultEnvelope struct {
 	// a successful deterministic producer. It is separate from scalar outputs,
 	// writable workspaceBranch ownership, and workspace delta artifacts.
 	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
+	// WorkspaceBranchBinding is accepted only from backend establishment.
+	WorkspaceBranchBinding *WorkspaceBranchBinding `json:"workspaceBranchBinding,omitempty"`
 	// Outputs are small, named scalar values downstream stages/gates can consume
 	// directly. Anything larger than a scalar is an artifact, referenced by
 	// pointer — state does not travel through Outputs.
@@ -689,6 +693,11 @@ func (r ResultEnvelope) Validate() error {
 	}
 	if r.WorkspaceRevision != nil {
 		if err := r.WorkspaceRevision.Validate(); err != nil {
+			return err
+		}
+	}
+	if r.WorkspaceBranchBinding != nil {
+		if err := r.WorkspaceBranchBinding.Validate(); err != nil {
 			return err
 		}
 	}

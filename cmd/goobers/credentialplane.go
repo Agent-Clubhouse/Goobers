@@ -57,6 +57,7 @@ const credentialResolutionMarker = "credentials.resolved"
 type credentialGaggleScope struct {
 	Project         apiv1.RepoRef
 	AdditionalRepos []apiv1.RepoRef
+	BranchNamespace string
 }
 
 // credentialPlaneDefinitions is the config-derived snapshot the plane
@@ -85,6 +86,7 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 		defs.Scopes[g.Name] = credentialGaggleScope{
 			Project:         g.Spec.Project,
 			AdditionalRepos: g.Spec.AdditionalRepos,
+			BranchNamespace: g.Spec.BranchNamespace,
 		}
 	}
 	return defs
@@ -193,6 +195,9 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 	if request.WorkspaceRevision != nil {
 		return s.resolveRevisionCheckout(ctx, request, *defs, reader, identity, machine)
 	}
+	if request.WorkspaceBranchBinding != nil {
+		return s.resolveOwnedBranchCheckout(ctx, request, *defs, reader, identity, machine)
+	}
 
 	// The pinned gate-goober state is loaded lazily — only an agentic
 	// reviewer gate needs it — from the same journal the workflow pin came
@@ -208,6 +213,9 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 		return httpapi.CredentialResolveResponse{}, err
 	}
 
+	if err := s.restrictOwnedBranchCredentials(*defs, reader, identity, machine, &profile, &request); err != nil {
+		return httpapi.CredentialResolveResponse{}, err
+	}
 	// Capability gate: a requested capability outside the stage's declared
 	// set is refused with a typed 403 NAMING the capability — the runtime
 	// counterpart of SEC-042's admission check, and §13 item 7's "a stage

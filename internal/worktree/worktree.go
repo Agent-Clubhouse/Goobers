@@ -51,6 +51,9 @@ type CreateOptions struct {
 	// ExpectedSHA enables exact selected-revision acquisition from RepoURL.
 	// BaseRef must equal it; branch acquisition and synchronization are forbidden.
 	ExpectedSHA string
+	// OwnedStartingSHA enables sterile writable materialization. Unlike
+	// ExpectedSHA it retains branch/delta continuity instead of detaching.
+	OwnedStartingSHA string
 	// Branch, if set, is the run branch this worktree checks out (e.g.
 	// "goobers/<workflow>/<run-id>", providers.BranchName). It is created off
 	// BaseRef the first time it is requested and checked out as-is (carrying
@@ -190,6 +193,9 @@ func validRunID(id string) bool {
 // opts.RunID. Two calls with different RunIDs against the same repo may run
 // concurrently and never observe each other's worktree contents.
 func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, retErr error) {
+	if err := validateOwnedStartingSHA(opts.OwnedStartingSHA, opts.Branch, opts.SyncBase); err != nil {
+		return nil, err
+	}
 	if opts.ExpectedSHA != "" {
 		if err := validateRevisionOptions(opts); err != nil {
 			return nil, err
@@ -332,7 +338,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	}()
 
 	partialMirror := m.partialClone && mirrorIsPartial(ctx, repoDir)
-	if opts.ExpectedSHA != "" {
+	if opts.ExpectedSHA != "" || opts.OwnedStartingSHA != "" {
 		if err := m.runRevisionGit(ctx, opts.RepoURL, repoDir, args...); err != nil {
 			return nil, err
 		}
@@ -373,7 +379,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		// prefixes rather than full gitignore-style pattern matching.
 		setArgs := append([]string{"sparse-checkout", "set", "--cone"}, opts.Sparse...)
 		runCheckout := func(args ...string) error {
-			if opts.ExpectedSHA != "" {
+			if opts.ExpectedSHA != "" || opts.OwnedStartingSHA != "" {
 				return m.runRevisionGit(ctx, opts.RepoURL, path, args...)
 			}
 			return runGit(ctx, path, args...)
@@ -388,6 +394,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		checkoutArgs := []string{"checkout", checkoutTarget}
 		if opts.ExpectedSHA != "" {
 			if err := runCheckout("checkout", "--detach", checkoutTarget); err != nil {
+				return nil, err
+			}
+		} else if opts.OwnedStartingSHA != "" {
+			if err := runCheckout(checkoutArgs...); err != nil {
 				return nil, err
 			}
 		} else if partialMirror {

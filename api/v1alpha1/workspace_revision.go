@@ -42,7 +42,7 @@ func ValidateCommitSHA(sha string) error {
 		return fmt.Errorf("commit SHA must contain 40 or 64 lowercase hexadecimal characters")
 	}
 	for _, ch := range sha {
-		if !(ch >= '0' && ch <= '9') && !(ch >= 'a' && ch <= 'f') {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
 			return fmt.Errorf("commit SHA must contain 40 or 64 lowercase hexadecimal characters")
 		}
 	}
@@ -76,7 +76,7 @@ func (r RepositoryIdentity) Validate() error {
 		return fmt.Errorf("repository project is only valid for ADO")
 	}
 	if r.Provider == ProviderGitea && r.URL == "" {
-		return fmt.Errorf("Gitea repository URL is required to identify the service")
+		return fmt.Errorf("gitea repository URL is required to identify the service")
 	}
 	if r.URL != "" {
 		u, err := url.Parse(r.URL)

@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
 )
@@ -830,7 +831,17 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	for key, value := range run.Env {
 		declaredEnv[key] = value
 	}
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
+	stageCapabilities := env.Capabilities
+	passthrough := e.ExtraEnvAllowlist
+	if env.WorkspaceBranchBinding != nil {
+		stageCapabilities, err = workspacebranch.StageCredentialKeys(stageCapabilities, false)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		passthrough = nil
+		injectRunContext = false
+	}
+	stageEnv, err := buildStageEnv(ctx, e.Injector, stageCapabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, passthrough, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
@@ -1443,11 +1454,19 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 // declared result file is meant to carry structured outputs. The reserved typed
 // workspaceRevision control is decoded strictly and never enters scalar outputs.
 func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
+	binding, err := workspacebranch.ResultBinding(data)
+	if err != nil {
+		return err
+	}
+	result.WorkspaceBranchBinding = binding
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil
 	}
 	for k, raw := range m {
+		if k == "workspaceBranchBinding" {
+			continue
+		}
 		if k == "workspaceRevision" {
 			var revision *apiv1.WorkspaceRevision
 			decoder := json.NewDecoder(bytes.NewReader(raw))

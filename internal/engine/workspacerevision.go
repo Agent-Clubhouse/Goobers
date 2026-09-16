@@ -7,12 +7,20 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // Validate before stage.finished: rejected or unsuccessful controls must never
 // become accepted journal authority, including when continueOnError is enabled.
 func acceptWorkspaceRevision(in RunInput, task apiv1.Task, result apiv1.ResultEnvelope) (apiv1.ResultEnvelope, error) {
+	if _, err := workspacebranch.ValidateResult(in.WorkspaceBranchBinding, in.WorkspaceRevision, in.RepoRef,
+		in.BranchNamespace, in.WorkflowName, in.RunID, task, result); err != nil {
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		result.WorkspaceBranchBinding = nil
+	}
 	if result.WorkspaceRevision == nil {
 		return result, nil
 	}
@@ -62,7 +70,7 @@ func validateRevisionPublication(in RunInput, task apiv1.Task, result stageActiv
 }
 
 func ensureSelectedRevisionJournal(ctx workflow.Context, in RunInput, mode apiv1.WorkspaceMode, rec *runJournal) error {
-	if in.WorkspaceRevision == nil || mode != apiv1.WorkspaceRepoReadOnly {
+	if in.WorkspaceBranchBinding == nil && (in.WorkspaceRevision == nil || mode != apiv1.WorkspaceRepoReadOnly) {
 		return nil
 	}
 	if !in.LiveJournal {

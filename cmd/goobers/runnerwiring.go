@@ -294,6 +294,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
+				AdditionalRepos:  additionalRepos,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
 				ScratchDir: deterministicScratchDir,
 			})

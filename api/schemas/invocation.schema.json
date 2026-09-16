@@ -13,6 +13,10 @@
     }
   ],
   "properties": {
+    "workspaceBranchBinding": {
+      "$ref": "workspace-branch-binding.schema.json",
+      "description": "Runner-authored durable ownership; publication is brokered and grants no stage write credential."
+    },
     "workspaceRevision": {
       "description": "Accepted immutable repository/commit inspection input. The configured base repoRef remains the provider-operation target.",
       "$ref": "workspace-revision.schema.json"

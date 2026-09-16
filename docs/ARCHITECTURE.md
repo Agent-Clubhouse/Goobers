@@ -438,7 +438,7 @@ mutable work products:
 |---|---|---|
 | **Configured base** | The gaggle's configured project, with declared additional repositories for read access. Configuration supplies service identity, checkout policy, and credential grants. The writable target remains the configured base. | A stage cannot add a repository or widen credentials by emitting an identity. |
 | **`workspaceRevision`** | A successful deterministic result selects one canonical repository and full lowercase 40- or 64-character commit SHA. The first accepted value establishes the run binding; identical re-emission is idempotent. Optional source/base provenance remains evidence. | No branch rebinding, checkout-policy override, credential selector, writable target change, or source-branch publication. |
-| **`workspaceBranch`** | The separate writable-branch control. A selected SHA does not establish ownership of its source branch. Creating an isolated remote workflow-owned branch from the selection remains #5126 work. | It cannot replace the immutable selection or authorize arbitrary source-branch mutation. |
+| **`workspaceBranch`** | The separate writable-branch control. Explicit `workspace-branch-establish` creates a remote branch in the configured base and journals immutable `workspaceBranchBinding` (repository, ref, starting SHA) before downstream rebinding. Selection alone does not opt ordinary writable workflows into this path. | It cannot replace the immutable selection, redirect established ownership, or authorize source-branch mutation. |
 | **Workspace deltas** | Artifact-backed continuity for the existing writable-workspace path. | They cannot select repository identity or be restored/published by exact-SHA `repo-readonly` stages. |
 
 The API identity is a closed projection of `providers.RepositoryRef`, retaining
@@ -453,6 +453,14 @@ Agent-authored controls are rejected. A failed deterministic result establishes
 nothing. Invalid identities/SHAs, unauthorized repositories, and conflicting
 re-emissions fail closed; none permit fallback to a branch with the same name.
 The [stage contract](stage-contract.md) owns the wire shape and stable error codes.
+
+Owned branches are named `<namespace><workflow>/<run-id>`, never from source-ref
+text. The trusted backend transfers the exact authorized commit with create-only
+protection. Only `workspace-branch-publish` holds repository write credentials:
+it verifies ancestry and compare-and-swaps the owned ref. Authoring stages receive
+no repository publication credential. Local, workerhost, and pod stages retain
+the existing writable-branch and workspace-delta continuity; this does not create
+a source-branch push, automatic merge, or revision PR.
 
 Local exact-SHA `repo-readonly` stages acquire the authorized object, verify that
 it is a commit and that final `HEAD` equals the recorded SHA, and preserve declared

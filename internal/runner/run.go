@@ -31,6 +31,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -889,10 +890,11 @@ type StartInput struct {
 	// mid-run error into an actionable one. Empty imposes no preflight, so a run
 	// that declares no requirement behaves exactly as before. A resumed run
 	// leaves this nil — it already passed preflight at its original Start.
-	RequiredCapabilities []string
-	pinnedWorkspace      *worktree.Worktree
-	pinnedStage          *sync.Mutex
-	workspaceRevision    *apiv1.WorkspaceRevision
+	RequiredCapabilities   []string
+	pinnedWorkspace        *worktree.Worktree
+	pinnedStage            *sync.Mutex
+	workspaceRevision      *apiv1.WorkspaceRevision
+	workspaceBranchBinding *apiv1.WorkspaceBranchBinding
 }
 
 // ToolchainVerifier verifies, on the executing host, that a run's declared
@@ -2051,6 +2053,10 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 			return result, terminal, true, failErr
 		}
 		ws.in.workspaceRevision = selected
+	}
+	if result.WorkspaceBranchBinding != nil {
+		ws.in.workspaceBranchBinding = result.WorkspaceBranchBinding.DeepCopy()
+		ws.workspaceBranch = strings.TrimPrefix(result.WorkspaceBranchBinding.Ref, "refs/heads/")
 	}
 
 	ws.lastStage, ws.lastResult = t.Name, result
@@ -4281,6 +4287,9 @@ type taskFrame struct {
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
 	jr, in, t := tf.jr, tf.in, tf.t
+	if branch != 0 && workspacebranch.BackendKind(t.Inputs) {
+		return apiv1.ResultEnvelope{}, nil, codedStageFailure(workspacerevision.CodeConflict, fmt.Errorf("remote branch operations must execute outside parallel branches"))
+	}
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
 	// Both admission checks run here, before any workspace or credential
@@ -4542,6 +4551,16 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 				result.WorkspaceRevision = nil
 			}
 		}
+		if branch != 0 && result.WorkspaceBranchBinding != nil {
+			return apiv1.ResultEnvelope{}, nil, codedStageFailure(workspacerevision.CodeConflict, fmt.Errorf("remote branch establishment is not allowed in parallel branches"))
+		}
+		if _, err := workspacebranch.ValidateResult(in.workspaceBranchBinding, in.workspaceRevision, in.RepoRef,
+			r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID, t, result); err != nil {
+			return apiv1.ResultEnvelope{}, nil, err
+		}
+		if result.Status != apiv1.ResultSuccess {
+			result.WorkspaceBranchBinding = nil
+		}
 		outputs := result.Outputs
 		if result.Status == apiv1.ResultFailure && t.ContinueOnError {
 			outputs = nil
@@ -4550,7 +4569,8 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result),
 			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
-			WorkspaceRevision: result.WorkspaceRevision,
+			WorkspaceRevision:      result.WorkspaceRevision,
+			WorkspaceBranchBinding: result.WorkspaceBranchBinding.DeepCopy(),
 			// Carried so reconstructStageOutputs can restore each stage's grade
 			// on resume; without it a resumed run would fail inputsFrom
 			// admission that a live run admits (TBH-4).
@@ -4976,6 +4996,9 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	}
 	if fanIn != nil && t.Name == fanIn.spec.Join {
 		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	}
+	if err := workspacebranch.ValidateKind(t, env.Inputs); err != nil {
+		return apiv1.ResultEnvelope{}, nil, nil, errors.Join(err, workspace.Remove(ctx))
 	}
 
 	switch t.Type {
@@ -5559,20 +5582,21 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 			gateBaseBranch = "main"
 		}
 		env = apiv1.InvocationEnvelope{
-			TaskID:            in.RunID + ":" + g.Name,
-			InstanceID:        in.instanceID,
-			WorkflowID:        in.Machine.Def.Name,
-			RunID:             in.RunID,
-			TriggerRef:        in.Trigger.Ref,
-			Gaggle:            in.Gaggle,
-			BranchNamespace:   r.branchNamespaceFor(in.Gaggle),
-			BaseBranch:        gateBaseBranch,
-			Goal:              "gate: " + g.Name,
-			RepoRef:           in.RepoRef.EnvelopeRef(),
-			WorkspaceRevision: in.workspaceRevision.DeepCopy(),
-			Item:              in.Item,
-			Limits:            gateLimits,
-			ContextPointers:   append([]apiv1.ContextPointer(nil), upstream...),
+			TaskID:                 in.RunID + ":" + g.Name,
+			InstanceID:             in.instanceID,
+			WorkflowID:             in.Machine.Def.Name,
+			RunID:                  in.RunID,
+			TriggerRef:             in.Trigger.Ref,
+			Gaggle:                 in.Gaggle,
+			BranchNamespace:        r.branchNamespaceFor(in.Gaggle),
+			BaseBranch:             gateBaseBranch,
+			Goal:                   "gate: " + g.Name,
+			RepoRef:                in.RepoRef.EnvelopeRef(),
+			WorkspaceRevision:      in.workspaceRevision.DeepCopy(),
+			WorkspaceBranchBinding: in.workspaceBranchBinding.DeepCopy(),
+			Item:                   in.Item,
+			Limits:                 gateLimits,
+			ContextPointers:        append([]apiv1.ContextPointer(nil), upstream...),
 		}
 	} else {
 		var wt *worktree.Worktree
@@ -6126,9 +6150,18 @@ func (w *stageWorkspace) Remove(ctx context.Context) error {
 // buildEnvelope provisions an isolated repository worktree or empty scratch
 // directory and builds one stage attempt's invocation envelope.
 func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer, workspaceMode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (apiv1.InvocationEnvelope, *stageWorkspace, error) {
+	ownedWritable := in.workspaceBranchBinding != nil && (workspaceMode == "" || workspaceMode.IsWritableRepo())
+	if ownedWritable && (syncBase || "refs/heads/"+workspaceBranch != in.workspaceBranchBinding.Ref) {
+		return apiv1.InvocationEnvelope{}, nil, &workspacerevision.Error{Code: workspacerevision.CodeConflict, Message: "owned workspace cannot change branch or synchronize base"}
+	}
 	workspace, err := r.createStageWorkspace(ctx, in, stageName, workspaceMode, syncBase, workspaceBranch)
 	if err != nil {
 		return apiv1.InvocationEnvelope{}, nil, err
+	}
+	if ownedWritable {
+		if err := worktree.VerifyOwnedWorkspace(ctx, workspace.path, *in.workspaceBranchBinding); err != nil {
+			return apiv1.InvocationEnvelope{}, nil, errors.Join(err, workspace.Remove(ctx))
+		}
 	}
 	if workspaceMode == apiv1.WorkspaceScratch && slices.Contains(capabilities, string(capability.ContentsRead)) {
 		workspace.additional, err = r.provisionAdditionalCheckouts(ctx, in, stageName)
@@ -6147,26 +6180,27 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		baseBranch = "main"
 	}
 	env := apiv1.InvocationEnvelope{
-		TaskID:               in.RunID + ":" + stageName,
-		InstanceID:           in.instanceID,
-		WorkflowID:           in.Machine.Def.Name,
-		RunID:                in.RunID,
-		TriggerRef:           in.Trigger.Ref,
-		Gaggle:               in.Gaggle,
-		BranchNamespace:      r.branchNamespaceFor(in.Gaggle),
-		BaseBranch:           baseBranch,
-		Goal:                 goal,
-		GooberDigest:         in.GooberDigest,
-		Workspace:            workspace.path,
-		RepoRef:              in.RepoRef.EnvelopeRef(),
-		WorkspaceRevision:    in.workspaceRevision.DeepCopy(),
-		AdditionalWorkspaces: additionalWorkspaces(workspace),
-		CheckoutCones:        checkoutCones(workspace),
-		Item:                 in.Item,
-		ContextPointers:      upstream,
-		Capabilities:         capabilities,
-		Limits:               limits,
-		Inputs:               inputs,
+		TaskID:                 in.RunID + ":" + stageName,
+		InstanceID:             in.instanceID,
+		WorkflowID:             in.Machine.Def.Name,
+		RunID:                  in.RunID,
+		TriggerRef:             in.Trigger.Ref,
+		Gaggle:                 in.Gaggle,
+		BranchNamespace:        r.branchNamespaceFor(in.Gaggle),
+		BaseBranch:             baseBranch,
+		Goal:                   goal,
+		GooberDigest:           in.GooberDigest,
+		Workspace:              workspace.path,
+		RepoRef:                in.RepoRef.EnvelopeRef(),
+		WorkspaceRevision:      in.workspaceRevision.DeepCopy(),
+		WorkspaceBranchBinding: in.workspaceBranchBinding.DeepCopy(),
+		AdditionalWorkspaces:   additionalWorkspaces(workspace),
+		CheckoutCones:          checkoutCones(workspace),
+		Item:                   in.Item,
+		ContextPointers:        upstream,
+		Capabilities:           capabilities,
+		Limits:                 limits,
+		Inputs:                 inputs,
 	}
 	return env, workspace, nil
 }
@@ -6307,6 +6341,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			// wearing the PR's branch name. Fail loudly instead.
 			RequireExistingBranch: workspaceBranch != "",
 			AcquireRemoteBranch:   workspaceBranch != "",
+			OwnedStartingSHA:      ownedBranchStartingSHA(in.workspaceBranchBinding),
 			Sparse:                sparse,
 		})
 		if err != nil {
@@ -6359,11 +6394,16 @@ func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase
 	if workspaceBranch != "" {
 		branch = workspaceBranch
 	}
+	ownedStartingSHA := ""
+	if in.workspaceBranchBinding != nil {
+		ownedStartingSHA = in.workspaceBranchBinding.StartingSHA
+	}
 	if err := in.pinnedWorkspace.PreparePinned(ctx, worktree.PinnedPrepareOptions{
 		BaseRef:               baseRef,
 		Branch:                branch,
 		SyncBase:              syncBase,
 		RequireExistingBranch: workspaceBranch != "",
+		OwnedStartingSHA:      ownedStartingSHA,
 	}); err != nil {
 		return fmt.Errorf("prepare pinned workspace: %w", err)
 	}

@@ -9,6 +9,10 @@
     "status"
   ],
   "properties": {
+    "workspaceBranchBinding": {
+      "$ref": "workspace-branch-binding.schema.json",
+      "description": "Durable remote branch ownership emitted only by the trusted establishment operation."
+    },
     "workspaceRevision": {
       "description": "Immutable run workspace binding, honored only from successful deterministic task results. It grants no branch, checkout-policy, or credential authority.",
       "$ref": "workspace-revision.schema.json"

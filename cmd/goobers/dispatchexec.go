@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -526,6 +527,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	}
 	stageArtifacts := recordStageArtifactsTyped(ctx, stderr, streams, mediaTypes)
 	var selectedRevision *apiv1.WorkspaceRevision
+	var branchBinding *apiv1.WorkspaceBranchBinding
 	// Lift the declared result file into Outputs, exactly as the local
 	// executor does. WITHOUT THIS a pod-executed stage surrenders only stdout,
 	// so a gate reading an output key finds nothing and evaluates its FAILURE
@@ -539,6 +541,9 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		case rerr == nil:
 			var err error
 			selectedRevision, err = podResultWorkspaceRevision(data)
+			if err == nil {
+				branchBinding, err = workspacebranch.ResultBinding(data)
+			}
 			if err != nil {
 				result := podWorkspaceFailure("result_file_invalid", err)
 				result.Artifacts, result.Metrics = stageArtifacts, stageMetrics
@@ -589,12 +594,13 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 			}
 		}
 		return apiv1.ResultEnvelope{
-			Status:            apiv1.ResultSuccess,
-			WorkspaceRevision: selectedRevision,
-			Outputs:           outputs,
-			Artifacts:         stageArtifacts,
-			Metrics:           stageMetrics,
-			Summary:           "stage completed",
+			Status:                 apiv1.ResultSuccess,
+			WorkspaceRevision:      selectedRevision,
+			WorkspaceBranchBinding: branchBinding,
+			Outputs:                outputs,
+			Artifacts:              stageArtifacts,
+			Metrics:                stageMetrics,
+			Summary:                "stage completed",
 		}
 	}
 
@@ -819,6 +825,14 @@ func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential
 	if err != nil {
 		return nil, err
 	}
+	if binding, _, bindingErr := podWorkspaceBranch(); bindingErr != nil {
+		return nil, bindingErr
+	} else if binding != nil {
+		capabilities, err = workspacebranch.StageCredentialKeys(capabilities, true)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if len(capabilities) == 0 {
 		return nil, nil
 	}
@@ -852,6 +866,16 @@ func stageDeclaredCapabilities() ([]string, error) {
 // when the stage already declares a repo-shaped capability — the checkout uses
 // that one, and minting a second would be pointless.
 func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+	binding, checkout, err := podWorkspaceBranch()
+	if err != nil {
+		return nil, err
+	}
+	if binding != nil && checkout != nil {
+		client := &dispatcher.CredentialResolveClient{
+			BaseURL: os.Getenv(dispatcher.EnvDaemonAPI), Token: os.Getenv(dispatcher.EnvPodToken),
+		}
+		return client.ResolveBranchCheckout(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), binding)
+	}
 	revision, _, err := podWorkspaceRevision()
 	if err != nil {
 		return nil, err

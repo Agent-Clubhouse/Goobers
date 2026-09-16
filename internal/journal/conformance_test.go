@@ -102,6 +102,13 @@ func TestConformanceViewCapturesFullNormativeFieldSet(t *testing.T) {
 			}
 			return e
 		}},
+		{"WorkspaceBranchBinding", func(e Event) Event {
+			e.WorkspaceBranchBinding = &apiv1.WorkspaceBranchBinding{
+				Repository: apiv1.RepositoryIdentity{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+				Ref:        "refs/heads/goobers/workflow/run", StartingSHA: strings.Repeat("a", 40),
+			}
+			return e
+		}},
 		{"Artifacts presence", func(e Event) Event { e.Artifacts = nil; return e }},
 		{"RefDigest", func(e Event) Event { r := *e.Ref; r.Digest = "sha256:cccc"; e.Ref = &r; return e }},
 		{"Ref.Integrity", func(e Event) Event { r := *e.Ref; r.Integrity = apiv1.IntegrityUnapproved; e.Ref = &r; return e }},

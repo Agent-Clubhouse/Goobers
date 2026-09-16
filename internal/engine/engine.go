@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
 )
@@ -75,7 +76,8 @@ type RunInput struct {
 	RepoRef                apiv1.RepoRef      `json:"repoRef"`
 	// WorkspaceRevision is immutable workflow state, reconstructed from the
 	// pinned input and successful deterministic activity results on replay.
-	WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
+	WorkspaceRevision      *apiv1.WorkspaceRevision      `json:"workspaceRevision,omitempty"`
+	WorkspaceBranchBinding *apiv1.WorkspaceBranchBinding `json:"workspaceBranchBinding,omitempty"`
 	// AdditionalRepos pins configured source authorization, never stage grants.
 	AdditionalRepos []apiv1.RepoRef `json:"additionalRepos,omitempty"`
 	// PartialClone pins the instance materialization policy for pod transport.
@@ -461,6 +463,14 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
+	if in.WorkspaceBranchBinding != nil {
+		if _, err := workspacebranch.Accept(nil, in.WorkspaceBranchBinding, in.WorkspaceRevision, in.RepoRef,
+			in.BranchNamespace, in.WorkflowName, in.RunID, true, true); err != nil {
+			return RunResult{}, err
+		}
+		in.WorkspaceBranchBinding = in.WorkspaceBranchBinding.DeepCopy()
+		workspaceBranch = strings.TrimPrefix(in.WorkspaceBranchBinding.Ref, "refs/heads/")
+	}
 	if in.WorkspaceRevision != nil {
 		if _, err := workspacerevision.Resolve(*in.WorkspaceRevision, in.RepoRef, in.AdditionalRepos); err != nil {
 			return RunResult{}, err
@@ -542,6 +552,13 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			}
 			if res.WorkspaceRevision != nil {
 				in.WorkspaceRevision = res.WorkspaceRevision.DeepCopy()
+			}
+			if res.WorkspaceBranchBinding != nil {
+				in.WorkspaceBranchBinding = res.WorkspaceBranchBinding.DeepCopy()
+				workspaceBranch = strings.TrimPrefix(res.WorkspaceBranchBinding.Ref, "refs/heads/")
+				if err := rec.emitPending(ctx); err != nil {
+					return RunResult{}, err
+				}
 			}
 			// Keyed on the PRE-rebind binding on purpose: the rebind below
 			// applies from the NEXT stage on, and this stage's commits were made
@@ -929,6 +946,10 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 }
 
 func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, taskDispatches map[string]int, rec *runJournal) (apiv1.ResultEnvelope, error) {
+	if workspacebranch.BackendKind(t.Inputs) && !in.LiveJournal {
+		return apiv1.ResultEnvelope{}, classifySeamError(&workspacerevision.Error{Code: workspacerevision.CodeInvalid,
+			Message: "remote workspace branch operations require live durable journaling"})
+	}
 	if in.WorkspaceRevision != nil && !writableWorkspace(t.EffectiveWorkspace()) {
 		workspaceBranch, workspaceDelta = "", ""
 	}
@@ -1005,6 +1026,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		}
 		env.Inputs[inputKey] = v
 	}
+	if err := workspacebranch.ValidateKind(t, env.Inputs); err != nil {
+		return apiv1.ResultEnvelope{}, classifySeamError(err)
+	}
 	// Mode-3 routing (#3588): a stage whose PINNED placement resolved to a
 	// non-self runner dispatches through ActDispatchStage on its pinned
 	// per-(gaggle × runner-type) queue (architecture D9, subsuming the
@@ -1014,7 +1038,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// pinned placement, or one pinned to self, takes the arms below exactly
 	// as before this branch existed (zero-declaration invariance,
 	// architecture §11 item 1).
-	if placement, remote := remotePlacementFor(in, t.Name); remote {
+	if placement, remote := remotePlacementFor(in, t.Name); remote && !workspacebranch.BackendKind(t.Inputs) {
 		if err := ensureSelectedRevisionJournal(ctx, in, t.EffectiveWorkspace(), rec); err != nil {
 			return apiv1.ResultEnvelope{}, err
 		}
@@ -1288,25 +1312,26 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		baseBranch = "main"
 	}
 	return apiv1.InvocationEnvelope{
-		TaskID:            in.RunID + ":" + stateName,
-		InstanceID:        in.InstanceID,
-		WorkflowID:        in.WorkflowName,
-		RunID:             in.RunID,
-		TriggerRef:        in.TriggerRef,
-		Gaggle:            in.Gaggle,
-		BranchNamespace:   in.BranchNamespace,
-		BaseBranch:        baseBranch,
-		Goal:              goal,
-		Goober:            goober,
-		GooberDigest:      in.GooberDigest,
-		RepoRef:           in.RepoRef.EnvelopeRef(),
-		WorkspaceRevision: in.WorkspaceRevision.DeepCopy(),
-		CheckoutCones:     invocationCheckoutCones(in, false),
-		Item:              in.Item,
-		ContextPointers:   upstream,
-		Capabilities:      capabilities,
-		Limits:            limits,
-		Inputs:            inputs,
+		TaskID:                 in.RunID + ":" + stateName,
+		InstanceID:             in.InstanceID,
+		WorkflowID:             in.WorkflowName,
+		RunID:                  in.RunID,
+		TriggerRef:             in.TriggerRef,
+		Gaggle:                 in.Gaggle,
+		BranchNamespace:        in.BranchNamespace,
+		BaseBranch:             baseBranch,
+		Goal:                   goal,
+		Goober:                 goober,
+		GooberDigest:           in.GooberDigest,
+		RepoRef:                in.RepoRef.EnvelopeRef(),
+		WorkspaceRevision:      in.WorkspaceRevision.DeepCopy(),
+		WorkspaceBranchBinding: in.WorkspaceBranchBinding.DeepCopy(),
+		CheckoutCones:          invocationCheckoutCones(in, false),
+		Item:                   in.Item,
+		ContextPointers:        upstream,
+		Capabilities:           capabilities,
+		Limits:                 limits,
+		Inputs:                 inputs,
 	}
 }
 

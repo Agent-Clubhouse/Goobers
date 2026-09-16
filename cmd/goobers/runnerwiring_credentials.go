@@ -162,6 +162,22 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		additionalBindings = append(additionalBindings, credentials.RepoBinding{Owner: owner, Name: r.Name})
 	}
 	grants = append(grants, credentials.AdditionalReadGrants(bindings, additionalBindings, string(capability.ContentsRead))...)
+	// Backend-only target grants never inherit daemon identity or generic
+	// capability overrides. They are not stage-declarable credential keys.
+	for _, binding := range bindings {
+		if binding.Owner == gaggleOwner && binding.Name == gaggleName && binding.TokenRef != "" {
+			for _, operation := range []string{string(capability.ContentsRead), string(capability.RepoPush)} {
+				key := credentials.RepoScopedCapability(operation, gaggleOwner, gaggleName)
+				found := false
+				for _, grant := range grants {
+					found = found || grant.Capability == key
+				}
+				if !found {
+					grants = append(grants, credentials.Grant{Capability: key, Ref: binding.TokenRef})
+				}
+			}
+		}
+	}
 	return resolver, grants, nil
 }
 

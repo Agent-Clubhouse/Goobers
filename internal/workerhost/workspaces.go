@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/internal/workspacedelta"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
@@ -69,7 +70,25 @@ func (p *WorktreeWorkspaces) log() io.Writer {
 }
 
 // Provision implements engine.WorkspaceProvisioner.
-func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRequest) (engine.Workspace, error) {
+func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRequest) (workspace engine.Workspace, err error) {
+	if binding := req.WorkspaceBranchBinding; binding != nil && (req.Mode == "" || req.Mode.IsWritableRepo()) {
+		if _, err := workspacebranch.Accept(nil, binding, req.WorkspaceRevision, p.ConfiguredBase,
+			req.BranchNamespace, req.Workflow, req.RunID, true, true); err != nil {
+			return nil, err
+		}
+		if req.SyncBase || "refs/heads/"+req.WorkspaceBranch != binding.Ref {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeConflict, Message: "owned workspace cannot change branch or synchronize base"}
+		}
+		req.RepoRef = p.ConfiguredBase
+		defer func() {
+			if err == nil && workspace != nil {
+				if verifyErr := worktree.VerifyOwnedWorkspace(ctx, workspace.Path(), *binding); verifyErr != nil {
+					err = errors.Join(verifyErr, workspace.Remove(ctx))
+					workspace = nil
+				}
+			}
+		}()
+	}
 	if req.WorkspaceRevision != nil && req.Mode == apiv1.WorkspaceRepoReadOnly {
 		return p.provisionRevision(ctx, req)
 	}
@@ -164,6 +183,7 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 			SyncBase:              req.SyncBase,
 			RequireExistingBranch: req.WorkspaceBranch != "",
 			AcquireRemoteBranch:   req.WorkspaceBranch != "",
+			OwnedStartingSHA:      ownedStartingSHA(req.WorkspaceBranchBinding),
 			Sparse:                sparseCones(req.RepoRef.Checkout),
 		})
 		if err != nil {
@@ -190,6 +210,13 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 	default:
 		return nil, fmt.Errorf("workerhost: unknown workspace mode %q for stage %q", req.Mode, req.Stage)
 	}
+}
+
+func ownedStartingSHA(binding *apiv1.WorkspaceBranchBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return binding.StartingSHA
 }
 
 func (p *WorktreeWorkspaces) provisionRevision(ctx context.Context, req engine.WorkspaceRequest) (engine.Workspace, error) {

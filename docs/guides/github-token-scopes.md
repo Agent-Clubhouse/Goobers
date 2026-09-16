@@ -115,6 +115,39 @@ anonymous retry or a fallback to another repository's credential. Each minted
 value is registered with the scrubber before returning, and resolution is
 audited without recording secret values.
 
+### Owned selected-revision branch credentials
+
+The explicit `workspace-branch-establish` and `workspace-branch-publish`
+deterministic kinds require declared `repo:push`, but that declaration selects a
+trusted backend operation; it does not inject a repository write token into a
+stage. Configure repository-qualified source `contents:read` and base
+`repo:push` grants. Missing grants or failed configured authentication fail
+closed: no daemon identity, generic publication grant, or other repository token
+is substituted. An explicitly configured public source may use anonymous read.
+Repository-qualified grant keys must be unambiguous: configurations that reuse
+the same owner/project/name credential key across different services are refused
+rather than sending one service's token to another.
+
+The backend alone receives the base write credential and restricts publication
+to the generated, durably owned ref. Agentic stages have repository read/write
+credentials removed; owned shell stages declaring raw `repo:push` are refused
+and must use the publication broker instead. Noncredential `repo:read` still
+describes workspace access. Implicit repository/MCP credentials and ambient
+credential passthrough are not granted by ownership.
+
+Owned pod checkout requests carry the exact journaled `workspaceBranchBinding`.
+The credential service checks the pinned writable stage and durable ownership,
+then returns only base read access under `workspace-branch:checkout`. This key
+is consumed by provisioning and never passed to authoring. The authenticated
+run-scoped pod identity cannot recover broad publication credentials by naming
+the earlier establishment or publication stage. An explicit empty credential
+list authorizes anonymous checkout; missing/null lists and errors do not.
+
+These guarantees concern Goobers-issued credentials, not OS-level isolation from
+a user's independently available credentials; existing local-tier containment
+limitations still apply. Direct source pushes, revision PRs, and automatic
+merges are not provided by these operations.
+
 ### `daemonIdentity`: one distinct bot identity for authored PRs/reviews/merges
 
 The `github:pr:review` row above already recommends sourcing that one

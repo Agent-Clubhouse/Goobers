@@ -30,7 +30,8 @@ type WorkspaceRequest struct {
 	WorkspaceBranch string
 	// WorkspaceRevision binds readonly acquisition independently of writable
 	// branch/delta continuity. Scratch stages do not acquire it.
-	WorkspaceRevision *apiv1.WorkspaceRevision
+	WorkspaceRevision      *apiv1.WorkspaceRevision
+	WorkspaceBranchBinding *apiv1.WorkspaceBranchBinding
 	// Checkout is configured materialization policy, never producer authority.
 	Checkout *apiv1.CheckoutSpec
 	// RepoRef is the repository a repo-mode workspace is provisioned from.

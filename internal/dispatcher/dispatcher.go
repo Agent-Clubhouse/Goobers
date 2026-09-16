@@ -417,10 +417,12 @@ type Attempt struct {
 	// makes the in-pod executor check the repository out before running the
 	// command; scratch (or empty) leaves it an empty directory, which is what
 	// every pod-executed stage got before pod-side checkout existed.
-	Workspace         string
-	WorkspaceRevision *apiv1.WorkspaceRevision
-	PartialClone      bool
-	Checkout          *apiv1.CheckoutSpec
+	Workspace              string
+	WorkspaceRevision      *apiv1.WorkspaceRevision
+	WorkspaceBranchBinding *apiv1.WorkspaceBranchBinding
+	BranchNamespace        string
+	PartialClone           bool
+	Checkout               *apiv1.CheckoutSpec
 	// WorkspaceRepository is the configured base authority supplied by the driver.
 	WorkspaceRepository apiv1.RepoRef
 	// Agentic marks a stage the pod executes by invoking a goober through its

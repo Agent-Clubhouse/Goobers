@@ -367,6 +367,15 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return r.failTerminal(ctx, in.RunID, jr, ws.in.RepoRef, "", 0, err)
 	}
 	ws.in.workspaceRevision = revision
+	binding, err := RestoredWorkspaceBranchBinding(events, ws.in.Machine, ws.in.RepoRef, r.cfg.AdditionalRepos,
+		r.branchNamespaceFor(ws.in.Gaggle), ws.in.RunID)
+	if err != nil {
+		return r.failTerminal(ctx, in.RunID, jr, ws.in.RepoRef, "", 0, err)
+	}
+	ws.in.workspaceBranchBinding = binding
+	if binding != nil {
+		ws.workspaceBranch = strings.TrimPrefix(binding.Ref, "refs/heads/")
+	}
 
 	startState, err := f.resolveStartState(rd, in.Machine)
 	if err != nil {
@@ -1302,11 +1311,12 @@ func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.Res
 			errInfo = &apiv1.ErrorInfo{Code: e.Error.Code, Message: e.Error.Message}
 		}
 		return e.Stage, apiv1.ResultEnvelope{
-			Status:            apiv1.ResultStatus(e.Status),
-			Outputs:           e.Outputs,
-			Artifacts:         artifactPointersFrom(e.Artifacts),
-			Error:             errInfo,
-			WorkspaceRevision: e.WorkspaceRevision,
+			Status:                 apiv1.ResultStatus(e.Status),
+			Outputs:                e.Outputs,
+			Artifacts:              artifactPointersFrom(e.Artifacts),
+			Error:                  errInfo,
+			WorkspaceRevision:      e.WorkspaceRevision,
+			WorkspaceBranchBinding: e.WorkspaceBranchBinding.DeepCopy(),
 		}, true
 	}
 	return "", apiv1.ResultEnvelope{}, false

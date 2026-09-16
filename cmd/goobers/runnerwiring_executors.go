@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/providers"
 	connectorapi "github.com/goobers/goobers/telemetryconnector/v1alpha1"
 )
@@ -365,6 +366,7 @@ type deterministicExecutorInput struct {
 	ProjectConfigured   bool
 	ConfiguredProject   instance.RepoRef
 	GaggleProject       apiv1.RepoRef
+	AdditionalRepos     []apiv1.RepoRef
 	ProviderQuota       *localscheduler.ProviderQuotaState
 	ArtifactRecorder    runner.ArtifactRecorder
 	SecretRegistrar     runner.SecretRegistrar
@@ -436,6 +438,13 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	}
 
 	kinds := executor.NewKindRegistry()
+	branchBackend := &workspaceBranchExecutor{input: input, injector: injector}
+	if err := kinds.Register(workspacebranch.KindEstablish, branchBackend); err != nil {
+		return nil, err
+	}
+	if err := kinds.Register(workspacebranch.KindPublish, branchBackend); err != nil {
+		return nil, err
+	}
 	if err := kinds.Register(executor.KindShell, shell); err != nil {
 		return nil, err
 	}

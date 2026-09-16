@@ -34,6 +34,12 @@ func decodePodRevisionJSON(raw string, target any) error {
 
 func podWorkspaceRevision() (*apiv1.WorkspaceRevision, *dispatcher.WorkspaceCheckout, error) {
 	raw, transport := os.Getenv(dispatcher.EnvWorkspaceRevision), os.Getenv(dispatcher.EnvWorkspaceCheckout)
+	if raw == "" && os.Getenv(dispatcher.EnvWorkspaceBranchBinding) != "" {
+		if _, _, err := podWorkspaceBranch(); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, nil
+	}
 	if raw == "" && transport == "" {
 		return nil, nil, nil
 	}

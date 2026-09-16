@@ -26,6 +26,9 @@ const defaultCredentialTimeout = 30 * time.Second
 // never a stage-declarable capability or a base-repository credential.
 const WorkspaceRevisionCheckoutCapability = "workspace-revision:checkout"
 
+// WorkspaceBranchCheckoutCapability is consumed only by owned pod provisioning.
+const WorkspaceBranchCheckoutCapability = "workspace-branch:checkout"
+
 // defaultCredentialRetryDeadline bounds the WHOLE resolve loop — across
 // attempts — when the caller sets no RetryDeadline of its own (#3809).
 //
@@ -123,7 +126,7 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 	if len(capabilities) == 0 {
 		return nil, nil
 	}
-	return c.resolve(ctx, runID, stage, capabilities, nil)
+	return c.resolve(ctx, runID, stage, capabilities, nil, nil)
 }
 
 // ResolveCheckout asks the daemon to reauthorize the selected source using the
@@ -133,7 +136,7 @@ func (c *CredentialResolveClient) ResolveCheckout(ctx context.Context, runID, st
 	if revision == nil {
 		return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "selected revision checkout requires identity"}
 	}
-	creds, err := c.resolve(ctx, runID, stage, nil, revision)
+	creds, err := c.resolve(ctx, runID, stage, nil, revision, nil)
 	if err == nil {
 		if creds == nil {
 			return nil, &workspacerevision.Error{Code: workspacerevision.CodeUnauthorized,
@@ -166,7 +169,7 @@ func (c *CredentialResolveClient) ResolveCheckout(ctx context.Context, runID, st
 	return nil, &workspacerevision.Error{Code: code, Message: "selected source credential could not be resolved", Cause: err}
 }
 
-func (c *CredentialResolveClient) resolve(ctx context.Context, runID, stage string, capabilities []string, revision *apiv1.WorkspaceRevision) ([]MintedCredential, error) {
+func (c *CredentialResolveClient) resolve(ctx context.Context, runID, stage string, capabilities []string, revision *apiv1.WorkspaceRevision, binding *apiv1.WorkspaceBranchBinding) ([]MintedCredential, error) {
 	base := strings.TrimRight(c.BaseURL, "/")
 	if base == "" {
 		return nil, errors.New("dispatcher: credential client has no base URL")
@@ -175,11 +178,12 @@ func (c *CredentialResolveClient) resolve(ctx context.Context, runID, stage stri
 		return nil, fmt.Errorf("dispatcher: credential resolve requires run and stage (got run %q stage %q)", runID, stage)
 	}
 	body, err := json.Marshal(struct {
-		RunID             string                   `json:"runId"`
-		Stage             string                   `json:"stage"`
-		Capabilities      []string                 `json:"capabilities,omitempty"`
-		WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
-	}{RunID: runID, Stage: stage, Capabilities: capabilities, WorkspaceRevision: revision})
+		RunID                  string                        `json:"runId"`
+		Stage                  string                        `json:"stage"`
+		Capabilities           []string                      `json:"capabilities,omitempty"`
+		WorkspaceRevision      *apiv1.WorkspaceRevision      `json:"workspaceRevision,omitempty"`
+		WorkspaceBranchBinding *apiv1.WorkspaceBranchBinding `json:"workspaceBranchBinding,omitempty"`
+	}{RunID: runID, Stage: stage, Capabilities: capabilities, WorkspaceRevision: revision, WorkspaceBranchBinding: binding})
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: encode credential resolve request: %w", err)
 	}

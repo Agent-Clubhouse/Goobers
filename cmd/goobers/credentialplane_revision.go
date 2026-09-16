@@ -53,6 +53,13 @@ func (s *daemonCredentialService) resolveRevisionCheckout(ctx context.Context, r
 	if err != nil {
 		return refuse(http.StatusForbidden, workspacerevision.CodeUnauthorized, "selected repository is not authorized for this run")
 	}
+	return s.resolveWorkspaceCheckoutGrant(ctx, request, scope, source, identity, checkoutKey)
+}
+
+func (s *daemonCredentialService) resolveWorkspaceCheckoutGrant(ctx context.Context, request httpapi.CredentialResolveRequest, scope credentialGaggleScope, source apiv1.RepoRef, identity journal.RunIdentity, checkoutKey string) (httpapi.CredentialResolveResponse, error) {
+	refuse := func(status int, code, message string) (httpapi.CredentialResolveResponse, error) {
+		return httpapi.CredentialResolveResponse{}, credentialPlaneError(status, code, message)
+	}
 
 	// Even the base repository uses its repository-qualified read grant.
 	// Generic capability overrides and daemon write credentials are not fallback

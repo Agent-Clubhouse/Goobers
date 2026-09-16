@@ -51,6 +51,7 @@ type PinnedPrepareOptions struct {
 	Branch                string
 	RequireExistingBranch bool
 	SyncBase              bool
+	OwnedStartingSHA      string
 }
 
 // PinnedResetOptions identifies the workspace to tear down and re-materialize.
@@ -554,6 +555,9 @@ func finishPinnedPreparation(ctx context.Context, pinDir string, opts PinnedOpti
 // PreparePinned selects the branch and optional base synchronization requested
 // by a stage after the caller has serialized access to the pinned workspace.
 func (wt *Worktree) PreparePinned(ctx context.Context, opts PinnedPrepareOptions) error {
+	if err := validateOwnedStartingSHA(opts.OwnedStartingSHA, opts.Branch, opts.SyncBase); err != nil {
+		return err
+	}
 	if !wt.pinned {
 		return fmt.Errorf("worktree: prepare pinned called for non-pinned workspace")
 	}
@@ -576,24 +580,39 @@ func (wt *Worktree) PreparePinned(ctx context.Context, opts PinnedPrepareOptions
 	if err != nil {
 		return err
 	}
+	materialize := func(args ...string) error {
+		if opts.OwnedStartingSHA != "" {
+			return wt.manager.runRevisionGit(ctx, wt.repoURL, wt.Path, args...)
+		}
+		return runGit(ctx, wt.Path, args...)
+	}
 	switch {
 	case existing:
-		if err := runGit(ctx, wt.Path, "checkout", "--force", opts.Branch); err != nil {
+		if err := materialize("checkout", "--force", opts.Branch); err != nil {
 			return fmt.Errorf("worktree: checkout pinned branch: %w", err)
 		}
 	case opts.RequireExistingBranch:
 		return fmt.Errorf("worktree: branch %q does not exist in pinned workspace for run %s", opts.Branch, wt.RunID)
 	default:
-		if err := runGit(ctx, wt.Path, "checkout", "-b", opts.Branch, baseRef); err != nil {
+		if err := materialize("checkout", "-b", opts.Branch, baseRef); err != nil {
 			return fmt.Errorf("worktree: create pinned branch: %w", err)
 		}
 	}
-	if err := runGit(ctx, wt.Path, "reset", "--hard", "HEAD"); err != nil {
+	if err := materialize("reset", "--hard", "HEAD"); err != nil {
 		return fmt.Errorf("worktree: reset pinned stage workspace: %w", err)
 	}
 	startRef, err := gitOutput(ctx, wt.Path, "rev-parse", "HEAD")
 	if err != nil {
 		return err
+	}
+	if opts.OwnedStartingSHA != "" {
+		if err := wt.preparePinnedOwnedBranch(ctx, opts, baseRef, startRef); err != nil {
+			return err
+		}
+		startRef, err = gitOutput(ctx, wt.Path, "rev-parse", "HEAD")
+		if err != nil {
+			return err
+		}
 	}
 	if opts.SyncBase && existing {
 		if mergeErr := runGit(ctx, wt.Path, "merge", "--ff", "--no-edit", baseRef); mergeErr != nil {

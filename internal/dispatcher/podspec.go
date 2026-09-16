@@ -194,8 +194,9 @@ const (
 	EnvWorkspaceDelta = "GOOBERS_WORKSPACE_DELTA"
 	// EnvWorkspaceRevision is selected identity; EnvWorkspaceCheckout is
 	// separately configuration-authorized transport and materialization policy.
-	EnvWorkspaceRevision = "GOOBERS_WORKSPACE_REVISION"
-	EnvWorkspaceCheckout = "GOOBERS_WORKSPACE_CHECKOUT"
+	EnvWorkspaceRevision      = "GOOBERS_WORKSPACE_REVISION"
+	EnvWorkspaceBranchBinding = "GOOBERS_WORKSPACE_BRANCH_BINDING"
+	EnvWorkspaceCheckout      = "GOOBERS_WORKSPACE_CHECKOUT"
 	// EnvWorkspaceBranch carries the run's REBOUND workspace branch (#392) — the
 	// branch the in-pod checkout must clone instead of the one it would derive
 	// from workflow + run id. Stamped only when a stage actually rebound it
@@ -345,7 +346,7 @@ var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
-	EnvWorkspaceRevision, EnvWorkspaceCheckout,
+	EnvWorkspaceRevision, EnvWorkspaceCheckout, EnvWorkspaceBranchBinding,
 	EnvStageSyncBase, EnvCheckoutCapability,
 	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
 }

@@ -394,6 +394,10 @@ func classifySeamError(err error) error {
 // read-only stage reads the pinned base by definition (the same gate the pod
 // arm applies in dispatchstage.go).
 func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch, workspaceDelta string) (Workspace, error) {
+	ownedWritable := env.WorkspaceBranchBinding != nil && writableWorkspace(mode)
+	if ownedWritable && (syncBase || "refs/heads/"+workspaceBranch != env.WorkspaceBranchBinding.Ref) {
+		return nil, &workspacerevision.Error{Code: workspacerevision.CodeConflict, Message: "owned workspace cannot change branch or synchronize base"}
+	}
 	if env.WorkspaceRevision != nil && mode == apiv1.WorkspaceRepoReadOnly &&
 		(syncBase || workspaceBranch != "" || workspaceDelta != "") {
 		return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid,
@@ -409,18 +413,19 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		}
 	}
 	ws, err := a.Workspaces.Provision(ctx, WorkspaceRequest{
-		RunID:             env.RunID,
-		Stage:             strings.TrimPrefix(env.TaskID, env.RunID+":"),
-		Gaggle:            env.Gaggle,
-		Workflow:          env.WorkflowID,
-		BranchNamespace:   env.BranchNamespace,
-		WorkspaceBranch:   workspaceBranch,
-		WorkspaceRevision: env.WorkspaceRevision.DeepCopy(),
-		Checkout:          checkoutFromEnvelope(*env),
-		RepoRef:           env.RepoRef,
-		Mode:              mode,
-		SyncBase:          syncBase,
-		WorkspaceDelta:    workspaceDelta,
+		RunID:                  env.RunID,
+		Stage:                  strings.TrimPrefix(env.TaskID, env.RunID+":"),
+		Gaggle:                 env.Gaggle,
+		Workflow:               env.WorkflowID,
+		BranchNamespace:        env.BranchNamespace,
+		WorkspaceBranch:        workspaceBranch,
+		WorkspaceRevision:      env.WorkspaceRevision.DeepCopy(),
+		WorkspaceBranchBinding: env.WorkspaceBranchBinding.DeepCopy(),
+		Checkout:               checkoutFromEnvelope(*env),
+		RepoRef:                env.RepoRef,
+		Mode:                   mode,
+		SyncBase:               syncBase,
+		WorkspaceDelta:         workspaceDelta,
 	})
 	if err != nil {
 		var revisionErr *workspacerevision.Error

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/workspace-branch-binding.schema.json",
+  "title": "WorkspaceBranchBinding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repository", "ref", "startingSha"],
+  "properties": {
+    "repository": {
+      "$ref": "repository-identity.schema.json",
+      "description": "Configured base repository that owns the writable remote ref; never the selected fork's publication authority."
+    },
+    "ref": {
+      "type": "string",
+      "pattern": "^refs/heads/[^\\s~^:?*\\[\\\\]+$",
+      "description": "Full remote refs/heads ref generated solely from the configured namespace, workflow, and run identity."
+    },
+    "startingSha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "description": "Immutable full lowercase commit object ID at establishment, not the mutable current branch tip."
+    }
+  }
+}

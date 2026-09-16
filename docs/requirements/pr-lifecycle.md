@@ -57,6 +57,30 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   `../design/v0/pr-remediation-capability.md` (PRR: brief gatherers beyond
   `gather-pr-context`, declared remediation policy, taxonomy split).
 
+## Selected-revision owned branches
+
+The explicit branch-establishment primitive is independent of the existing
+remediation loop: selection alone never changes an ordinary writable workflow.
+It always establishes a remote branch in the configured base repository,
+named `<namespace><workflow>/<run-id>` independently of source branch text.
+The initial selected SHA is immutable ownership evidence even after work
+advances the branch.
+
+Same-repository creation and sterile exact fork-object transfer both use
+create-only ref protection. Matching existing refs are idempotent; conflicting
+tips are refused without overwriting. Target repository, full ref, and initial
+SHA are durably journaled before downstream `workspaceBranch` continuity.
+Crash recovery after creation but before journaling verifies the same remote
+object rather than selecting a new branch or repolling the source.
+
+Publication uses the trusted owned-ref broker, not a write token handed to an
+authoring stage. It requires descent from the initial SHA and observed remote
+tip and uses an expected-tip lease. This primitive does not push to the original
+source branch, merge automatically, or open a revision PR. Final lifecycle
+cleanup and reference workflow orchestration remain #5127 work.
+See [selected-revision workspaces](../design/selected-revision-workspaces.md)
+and [stage primitives](../reference/workflow-primitives/stage-commands.md#owned-remote-branch-operations).
+
 ## Requirements
 
 ### Provider applicability

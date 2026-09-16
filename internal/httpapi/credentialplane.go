@@ -52,6 +52,9 @@ const MaxCredentialCapabilityBytes = 128
 // exported to the stage's command environment.
 const WorkspaceRevisionCheckoutCapability = "workspace-revision:checkout"
 
+// WorkspaceBranchCheckoutCapability grants read access only to owned provisioning.
+const WorkspaceBranchCheckoutCapability = "workspace-branch:checkout"
+
 // CredentialResolveRequest asks the credential plane for the calling stage's
 // credentials. RunID and Stage identify which stage of which run is asking;
 // the service verifies Stage against the run's pinned workflow definition, so
@@ -62,10 +65,11 @@ const WorkspaceRevisionCheckoutCapability = "workspace-revision:checkout"
 // did not declare is refused with a typed 403 naming the capability — nothing
 // materializes for an undeclared capability.
 type CredentialResolveRequest struct {
-	RunID             string                   `json:"runId"`
-	Stage             string                   `json:"stage"`
-	Capabilities      []string                 `json:"capabilities,omitempty"`
-	WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
+	RunID                  string                        `json:"runId"`
+	Stage                  string                        `json:"stage"`
+	Capabilities           []string                      `json:"capabilities,omitempty"`
+	WorkspaceRevision      *apiv1.WorkspaceRevision      `json:"workspaceRevision,omitempty"`
+	WorkspaceBranchBinding *apiv1.WorkspaceBranchBinding `json:"workspaceBranchBinding,omitempty"`
 }
 
 // MintedCredential is one resolved credential value. ExpiresAt is present
@@ -153,6 +157,12 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 			if err := input.WorkspaceRevision.Validate(); err != nil {
 				writeError(w, http.StatusBadRequest, workspacerevision.CodeInvalid, err.Error())
 				return
+			}
+			if input.WorkspaceBranchBinding != nil {
+				if err := input.WorkspaceBranchBinding.Validate(); err != nil || input.WorkspaceRevision != nil {
+					writeError(w, http.StatusBadRequest, workspacerevision.CodeInvalid, "invalid or contradictory workspace checkout controls")
+					return
+				}
 			}
 		}
 		if len(input.Capabilities) > MaxCredentialResolveCapabilities {

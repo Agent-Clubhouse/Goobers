@@ -102,6 +102,46 @@ read-only delta exclusion. Selected pod consumers require live journaling:
 acceptance is durably acknowledged before dispatch, so the checkout credential
 service can verify the run's selected authority rather than trust its request.
 
+## Owned remote branch control
+
+Stage contract `v1alpha11` adds optional, closed
+`workspaceBranchBinding: {repository, ref, startingSha}` to invocation, result,
+and normative `stage.finished` envelopes. `ref` is a full `refs/heads/` ref;
+`startingSha` is the immutable full selected commit ID, not the current tip.
+Only the explicit deterministic `inputs.kind: workspace-branch-establish`
+backend may establish this control. Result files promote it as typed control,
+never an arbitrary scalar; agentic and other deterministic producers are refused.
+
+Establishment requires an already accepted selection, `repo:push`, a scratch
+workspace, and no `syncBase`. The trusted host generates
+`<namespace><workflow>/<run-id>` in the configured base repository. It verifies
+and transfers the exact configured-source commit using sterile Git and
+expected-old-zero protection. An existing identical tip is idempotent; a
+different tip is non-retryable `workspace_revision_conflict`.
+
+The runner durably records repository/ref/starting SHA before exposing scalar
+`workspaceBranch` to downstream consumers. Local full-history resume and
+Temporal state preserve ownership without repolling the source. A crash after
+remote creation but before recording retries the same create-only operation and
+verifies the matching remote object. Temporal requires live journaling for these
+backend operations and acknowledges the ownership record before dispatch.
+
+Owned writable stages use the existing base-repository workspaces and deltas,
+with branch and starting-commit ancestry checks. They cannot redirect
+`workspaceBranch` or synchronize the base. Selected `repo-readonly` stages remain
+detached inspection stages. Selection alone does not change ordinary writable
+workflows or legacy scalar branch rebinding.
+
+`inputs.kind: workspace-branch-publish` is the separate trusted publication
+broker. It requires durable ownership, `repo:push`, an explicit writable
+workspace, and no `syncBase`. It imports the exact local commit into sterile Git,
+requires descent from both the immutable root and current remote tip, and
+compare-and-swaps only the owned ref. Broad write credentials stay in the
+backend, never in stage Git configuration or authoring/agent environments.
+Neither operation runs inside an authoring pod or a writable parallel branch.
+See [stage primitives](reference/workflow-primitives/stage-commands.md#owned-remote-branch-operations)
+for configuration.
+
 ## How a stage gets its input
 
 The runner hands the stage an `InvocationEnvelope`:

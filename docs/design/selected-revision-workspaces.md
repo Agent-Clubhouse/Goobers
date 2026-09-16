@@ -1,12 +1,12 @@
 # Selected-revision workspaces
 
-> Status: approved — local, Temporal/workerhost, and pod inspection delivered; writable-sandbox and lifecycle milestones remain.
+> Status: approved — local, Temporal/workerhost, pod inspection, and owned remote branches delivered; lifecycle milestone remains.
 > Owner: @brandiv
 > Area: runtime / repository workspaces
 > Tracking: #4157, #5121, #5122, #5123, #5124, #5125, #5126, #5127
-> Delivered-by: #5121, #5122, #5123, #5124, #5125
-> Pending-delivery: #5126, #5127
-> Scope-delta: Typed state, local resume, Temporal replay, workerhost, and pod exact-SHA inspection are delivered. Isolated remote writable branches and lifecycle/conformance/reference workflows remain separate milestones.
+> Delivered-by: #5121, #5122, #5123, #5124, #5125, #5126
+> Pending-delivery: #5127
+> Scope-delta: Typed state, exact-SHA inspection, and remote owned-branch establishment/publication are delivered across local, workerhost, and pod execution. Final lifecycle/conformance/reference workflows remain a separate milestone.
 
 ## Purpose and authority
 
@@ -23,7 +23,7 @@ Four states remain distinct:
 |---|---|---|
 | Configured base and additional repositories | Configuration | Authorized repository access and materialization policy; the base remains the writable target. |
 | Selected revision | Successful deterministic producer, then immutable run history | Exact repository/commit inspection input with optional provenance. |
-| `workspaceBranch` | Existing writable-workspace ownership flow | Writable branch continuity; it never grants ownership of a selected source branch. |
+| `workspaceBranch` | Existing writable-workspace flow, constrained by typed ownership after explicit establishment | Writable branch continuity; immutable `workspaceBranchBinding` records the configured target, generated ref, and starting SHA. Neither grants ownership of a selected source branch. |
 | Workspace delta artifacts | Existing writable-workspace flow | Mutable work-product continuity, not repository-routing authority. |
 
 The identity is losslessly convertible to `providers.RepositoryRef`: provider,
@@ -162,17 +162,54 @@ anonymous access is reserved for explicitly configured public sources without a
 credential. See [pod dispatch](goobernetes-dispatcher.md) and
 [credential guidance](../guides/github-token-scopes.md#selected-revision-checkout-credentials).
 
-## Pending writable and lifecycle milestones
+## Delivered isolated remote writable branch — #5126
 
-### Isolated remote writable branch — #5126
+The deterministic kinds `workspace-branch-establish` and
+`workspace-branch-publish` execute in the trusted host backend, including when
+ordinary stages use pod placement. Establishment requires a prior selection,
+scratch workspace, declared `repo:push`, and separately resolved configured
+source-read/base-write grants. Neither operation permits `syncBase`, dynamic
+kind substitution, or parallel-branch execution.
 
-Writable iteration targets only the configured base repository, never the source
-branch. The planned path creates a remote workflow-owned branch at the selected
-commit with create-only/expected-SHA semantics. Fork objects require sterile exact
-object transfer. Journal repository, owned ref, and starting SHA before emitting
-`workspaceBranch`; later publication may update only that owned branch.
+`internal/workspacebranch.Expected` generates only
+`refs/heads/<namespace><workflow>/<run-id>` in the configured base.
+`internal/worktree.EstablishRemoteBranch` fetches the exact authorized SHA into
+sterile temporary Git state, verifies commit type and exact identity, and pushes
+that object with expected-old-zero protection. This also covers source-only fork
+objects. Matching existing refs are verified idempotent success; different tips
+are stable non-retryable conflicts. No source-ref lookup or fallback occurs.
 
-### Lifecycle and conformance — #5127
+The typed `workspaceBranchBinding` control is closed and immutable. Local and
+Temporal acceptance journal target identity, full ref, and starting SHA before
+downstream scalar `workspaceBranch` adoption. Full-history resume verifies the
+pinned producer and source authorization; live Temporal journal acknowledgment
+precedes pod dispatch. A crash between remote creation and journaling retries the
+same operation and verifies the matching target object even if the source is no
+longer available. The current branch tip is not the immutable starting SHA.
+
+Ordinary/pinned local workspaces and workerhost/pod workspace deltas retain their
+existing continuity mechanisms. Owned writable acquisition checks attached branch
+and ancestry and preserves configured base sparse/partial policy. Read-only
+selected stages still discard all changes. Merely selecting a revision does not
+opt legacy writable workflows into ownership or credential restrictions.
+
+`PublishRemoteBranch` imports the exact local commit without trusting stage
+remotes, push refspecs, hooks, or Git configuration for authority. It verifies
+descent from the immutable starting SHA and current owned remote tip, then
+compare-and-swaps only the owned ref. The backend's repository write credentials
+never enter authoring/agent stages. Owned pod checkout gets only server-verified
+base read access under `workspace-branch:checkout`; generic requests cannot
+recover write credentials by impersonating another stage in the run.
+
+Evidence: real bare-remote create/rediscovery/conflict and exact fork tests,
+source-ref preservation and missing-grant refusals; ordinary/pinned local
+continuity and resume; live Temporal ownership-before-consumption and journal
+projection; worker-to-pod-to-fresh-worker delta/broker integration with full,
+partial, and sparse policy; HTTP checkout response validation and actual harness
+credential non-injection. See the [stage primitives](../reference/workflow-primitives/stage-commands.md#owned-remote-branch-operations)
+and [credential guidance](../guides/github-token-scopes.md#owned-selected-revision-branch-credentials).
+
+## Pending lifecycle and conformance — #5127
 
 Complete expected-SHA cleanup, contention outcomes, crash/restart reconciliation,
 authoring diagnostics, cross-substrate conformance, and reference inspection/

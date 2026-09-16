@@ -32,6 +32,29 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
 - **Authorized interactivity:** portal runtime actions (gate approvals, run intervention)
   are access-controlled per the ladder — local trust, optional OIDC, then Entra RBAC.
 
+## Owned selected-revision publication
+
+Explicit selected-revision branch establishment preserves the configured base
+as the only writable repository. The backend derives the full remote ref from
+namespace/workflow/run identity, verifies the exact source commit, and uses
+create-only protection. Journaled repository/ref/starting SHA, not scalar
+outputs or stage Git configuration, is the subsequent publication authority.
+
+Source read and base write grants are separately repository-qualified and fail
+closed. Raw publication credentials remain in sterile trusted-backend Git
+processes. Authoring/agent stages receive no Goobers-issued repository write
+credential; owned shell workflows publish through `workspace-branch-publish`,
+which verifies ancestry and leases only the owned ref. Pod provisioning receives
+base read access only after the server validates durable ownership and the
+pinned writable stage, and never forwards it to authoring.
+
+Ownership cannot authorize an undeclared capability or broaden a run-scoped pod
+identity by impersonating its establishment stage. These credential boundaries
+do not replace the tier-specific OS containment model above. Direct source
+pushes, automatic merge, and revision PR creation are excluded. See
+[credential guidance](../guides/github-token-scopes.md#owned-selected-revision-branch-credentials)
+for grants and anonymous-source behavior.
+
 ## Requirements
 
 ### Local-tier baseline (tiers 1–2)

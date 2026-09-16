@@ -6,6 +6,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
@@ -17,6 +18,18 @@ type WorkspaceCheckout struct {
 }
 
 func selectedWorkspaceCheckout(cfg Config, attempt Attempt) (*WorkspaceCheckout, error) {
+	if binding := attempt.WorkspaceBranchBinding; binding != nil && apiv1.WorkspaceMode(attempt.Workspace).IsWritableRepo() {
+		if _, err := workspacebranch.Accept(nil, binding, &apiv1.WorkspaceRevision{CommitSHA: binding.StartingSHA},
+			attempt.WorkspaceRepository, attempt.BranchNamespace, attempt.Workflow, attempt.RunID, true, true); err != nil {
+			return nil, err
+		}
+		if binding.Ref != "refs/heads/"+attempt.WorkspaceBranch || attempt.SyncBase {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeConflict, Message: "owned workspace cannot change branch or synchronize base"}
+		}
+		repo := attempt.WorkspaceRepository
+		repo.Checkout = attempt.Checkout
+		return &WorkspaceCheckout{Repository: repo, PartialClone: attempt.PartialClone}, nil
+	}
 	if attempt.WorkspaceRevision == nil {
 		return nil, nil
 	}
@@ -46,15 +59,30 @@ func selectedWorkspaceCheckout(cfg Config, attempt Attempt) (*WorkspaceCheckout,
 func workspaceRevisionEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	// Render entrypoints validate before calling stageEnv.
 	checkout, _ := selectedWorkspaceCheckout(cfg, attempt)
+	binding := ""
+	if attempt.WorkspaceBranchBinding != nil {
+		data, _ := json.Marshal(attempt.WorkspaceBranchBinding)
+		binding = string(data)
+	}
 	if checkout == nil {
 		return []corev1.EnvVar{
+			{Name: EnvWorkspaceBranchBinding, Value: literalPodEnv(binding)},
 			{Name: EnvWorkspaceRevision, Value: ""},
 			{Name: EnvWorkspaceCheckout, Value: ""},
 		}
 	}
 	revision, _ := json.Marshal(attempt.WorkspaceRevision)
 	transport, _ := json.Marshal(checkout)
+	if attempt.WorkspaceBranchBinding != nil && apiv1.WorkspaceMode(attempt.Workspace).IsWritableRepo() {
+		return []corev1.EnvVar{
+			{Name: EnvWorkspaceBranchBinding, Value: literalPodEnv(binding)},
+			{Name: EnvWorkspaceRevision, Value: ""},
+			{Name: EnvWorkspaceCheckout, Value: literalPodEnv(string(transport))},
+			{Name: EnvCheckoutCapability, Value: ""},
+		}
+	}
 	return []corev1.EnvVar{
+		{Name: EnvWorkspaceBranchBinding, Value: literalPodEnv(binding)},
 		{Name: EnvWorkspaceRevision, Value: literalPodEnv(string(revision))},
 		{Name: EnvWorkspaceCheckout, Value: literalPodEnv(string(transport))},
 		// Explicit empty shadows image/EnvFrom writable provisioning controls.

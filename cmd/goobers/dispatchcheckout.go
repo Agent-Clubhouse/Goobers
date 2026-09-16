@@ -55,6 +55,13 @@ var checkoutCloneURL = runner.DefaultRepoCloneURL
 // declared a repo workspace. It is a no-op for scratch, which keeps the
 // pre-checkout behaviour byte-identical for stages that never needed it.
 func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential) error {
+	binding, ownedCheckout, err := podWorkspaceBranch()
+	if err != nil {
+		return err
+	}
+	if binding != nil && ownedCheckout != nil {
+		return checkoutOwnedBranch(ctx, dir, stderr, creds, binding, *ownedCheckout)
+	}
 	revision, checkout, err := podWorkspaceRevision()
 	if err != nil {
 		return err

@@ -88,6 +88,44 @@ inputs:
 Their complete input and output contracts are documented in
 [Tasks and stages](tasks-and-stages.md#deterministic-stage-kind-ci-poll).
 
+## Owned remote branch operations
+
+These explicit deterministic kinds execute in the trusted local/worker backend,
+not as shell commands or inside authoring pods. As with other kind-dispatched
+tasks, `run.command` is a nonexecuted schema placeholder; there is no standalone
+CLI command to invoke from an agent:
+
+```yaml
+- name: establish
+  type: deterministic
+  goal: Establish an isolated remote branch at the selected commit.
+  capabilities: ["repo:push"]
+  inputs:
+    kind: workspace-branch-establish
+  run:
+    command: ["true"]
+    workspace: scratch
+  next: author
+```
+
+The selector must already have emitted a trusted `workspaceRevision`. The
+operation uses only configured source-read and base-write grants. It generates
+the remote base-repository branch and emits typed `workspaceBranchBinding` plus
+scalar `workspaceBranch`; the runner journals ownership before rebinding.
+The kind must be static, not supplied through `inputsFrom` or an experiment.
+
+After authoring and validation, use a separate deterministic task with
+`inputs.kind: workspace-branch-publish`, `capabilities: ["repo:push"]`,
+`run.command: ["true"]`, and `run.workspace: repo`. Both operations forbid
+`syncBase`; run them outside parallel branches. Authoring tasks commit locally
+without repository credentials, then existing workspace deltas carry those
+commits to the broker. Replace shell `push-branch`/`push-remediated` stages with
+this broker only in workflows that explicitly establish ownership.
+
+The broker never pushes to the source branch, opens a revision PR, or merges.
+See the [stage contract](../../stage-contract.md#owned-remote-branch-control)
+for exact-object, conflict, journal, and crash-recovery semantics.
+
 ## Capability and policy-action admission
 
 A built-in command may require:

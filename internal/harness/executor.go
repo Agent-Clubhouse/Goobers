@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workspacebranch"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -485,7 +486,17 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 	var creds *credentials.Set
 	var err error
-	if envEffectivePolicy != nil {
+	if env.WorkspaceBranchBinding != nil {
+		keys := env.Capabilities
+		if envEffectivePolicy != nil {
+			keys = envEffectivePolicy.PlatformPolicy.Credentials
+		}
+		keys, err = workspacebranch.StageCredentialKeys(keys, true)
+		if err != nil {
+			return Outcome{}, nil, nil, err
+		}
+		creds, err = e.injector.MaterializeRestricted(ctx, keys)
+	} else if envEffectivePolicy != nil {
 		creds, err = e.injector.MaterializeRestricted(ctx, envEffectivePolicy.PlatformPolicy.Credentials)
 	} else {
 		creds, err = e.injector.Materialize(ctx, env.Capabilities)

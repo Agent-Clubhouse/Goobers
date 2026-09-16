@@ -6,8 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/santhosh-tekuri/jsonschema/v5"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func TestWorkspaceRevisionResultSchema(t *testing.T) {

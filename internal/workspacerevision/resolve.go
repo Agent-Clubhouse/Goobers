@@ -53,8 +53,7 @@ func matches(identity apiv1.RepositoryIdentity, configured apiv1.RepoRef) bool {
 		return false
 	}
 	nameMatches := strings.EqualFold(identity.Name, configured.Name)
-	if !nameMatches && !(identity.Provider == apiv1.ProviderADO && identity.ID != "" &&
-		strings.EqualFold(identity.ID, configured.Name)) {
+	if !nameMatches && (identity.Provider != apiv1.ProviderADO || identity.ID == "" || !strings.EqualFold(identity.ID, configured.Name)) {
 		return false
 	}
 	service, prefix, ok := configuredService(configured)

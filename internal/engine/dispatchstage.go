@@ -603,6 +603,13 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// from two different readings of one declaration.
 	needsRepoContext := false
 	workspace := apiv1.EffectiveWorkspace(input.Workspace, input.Run)
+	attempt.WorkspaceBranchBinding = input.Envelope.WorkspaceBranchBinding.DeepCopy()
+	attempt.BranchNamespace = input.Envelope.BranchNamespace
+	if attempt.WorkspaceBranchBinding != nil {
+		attempt.WorkspaceRepository = input.Envelope.RepoRef
+		attempt.Checkout = input.Checkout
+		attempt.PartialClone = input.PartialClone
+	}
 	if workspace != "" {
 		attempt.Workspace = string(workspace)
 	}
@@ -657,7 +664,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// the stage's environment, so a stage does not gain repository authority by
 	// needing a working tree. The worker has always behaved this way — it
 	// provisions worktrees with instance credentials, not the stage's.
-	if workspace.IsRepoBacked() && attempt.WorkspaceRevision == nil && !declaresRepoCapability(attempt.Capabilities) {
+	if workspace.IsRepoBacked() && attempt.WorkspaceRevision == nil && attempt.WorkspaceBranchBinding == nil && !declaresRepoCapability(attempt.Capabilities) {
 		attempt.CheckoutCapability = string(capability.RepoPush)
 	}
 	needsRepoContext = workspace.IsRepoBacked() || (input.Run != nil && workspace == "")
