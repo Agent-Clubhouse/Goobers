@@ -335,6 +335,11 @@ async function openCanvas(page: Page) {
   return errors;
 }
 
+async function selectSource(page: Page, id: string) {
+  await page.getByRole("button", { name: "Goobers source" }).click();
+  await page.locator(`.source-picker-option[data-id="${id}"] .source-picker-option-select`).click();
+}
+
 async function observeRunNowResponses(page: Page) {
   await page.evaluate(() => {
     let settled = 0;
@@ -500,7 +505,7 @@ test("canvas ignores late run responses after switching sources", async ({ page 
   const request = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/run");
   await page.getByRole("button", { name: "Open Run id", exact: true }).click();
   await request;
-  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+  await selectSource(page, sources[1].id);
   await expect(page.locator("#source-context")).toHaveText("Instance two");
   const response = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/run");
   release();
@@ -553,7 +558,7 @@ test("workflow run now prompts only when force is required", async ({ page }) =>
   expect(requests.map((request) => request.force ?? false)).toEqual([false, true]);
   await expect(page.locator("#workflow-run-status")).toHaveText("Triggered implementation (forced-run)");
   await expect(page.getByRole("tab", { name: "Workflows", exact: true })).toHaveAttribute("aria-selected", "true");
-  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+  await selectSource(page, sources[1].id);
   await expect(page.locator("#source-context")).toHaveText("Instance two");
   await expect(page.locator("#workflow-run-status")).toBeEmpty();
   expect(errors).toEqual([]);
@@ -612,7 +617,7 @@ for (const outcome of ["success", "rejected", "budget", "json-error"]) {
     await page.getByRole("tab", { name: "Workflows", exact: true }).click();
     await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
     await expect.poll(() => requests.length).toBe(1);
-    await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+    await selectSource(page, sources[1].id);
     await expect(page.locator("#source-context")).toHaveText("Instance two");
     release();
     await expect(page.locator("html")).toHaveAttribute("data-run-now-settled", "1");
@@ -653,9 +658,9 @@ for (const outcome of ["success", "rejected", "budget", "json-error"]) {
     await page.getByRole("tab", { name: "Workflows", exact: true }).click();
     await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
     await expect.poll(() => releases.length).toBe(1);
-    await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+    await selectSource(page, sources[1].id);
     await expect(page.locator("#source-context")).toHaveText("Instance two");
-    await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[0].id);
+    await selectSource(page, sources[0].id);
     await expect(page.locator("#source-context")).toHaveText("Instance one");
     await page.getByRole("button", { name: "Run implementation now", exact: true }).click();
     await expect.poll(() => releases.length).toBe(2);
@@ -740,7 +745,7 @@ test("canvas refreshes snapshots on live events after switching sources", async 
       contentType: "text/event-stream",
       body: 'data: {"type":"snapshot.changed"}\n\n',
     }));
-  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+  await selectSource(page, sources[1].id);
   await expect(page.locator("#source-context")).toHaveText("Live event snapshot");
   await expect(page.locator("#error")).toBeEmpty();
   expect(errors).toEqual([]);
@@ -788,6 +793,7 @@ test("connecting a source clears the previous run and closes the source form", a
   await expect(page.getByRole("tab", { name: "Summary", exact: true })).toBeVisible();
   await page.route("http://canvas.test/api/add-source", (route) =>
     route.fulfill({ json: { id: sources[1].id } }));
+  await page.getByRole("button", { name: "Goobers source" }).click();
   await page.getByRole("button", { name: "Connect a source", exact: false }).click();
   await page.locator("#remote-url").fill(sources[1].value);
   await page.getByRole("button", { name: "Add remote", exact: true }).click();
@@ -831,11 +837,11 @@ test("canvas hides Fleet association when switching to an unassociated source", 
   const errors = await openCanvas(page);
   const link = page.getByRole("link", { name: /Open Fleet portal/ });
   await expect(link).toBeVisible();
-  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+  await selectSource(page, sources[1].id);
   await expect(page.locator("#source-context")).toHaveText("Instance two");
   await expect(link).toHaveCount(0);
   await expect(page.locator("#fleet-panel")).toBeHidden();
-  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[0].id);
+  await selectSource(page, sources[0].id);
   await expect(link).toHaveAttribute("href", "https://fleet.example.com/");
   expect(errors).toEqual([]);
 });
@@ -946,7 +952,7 @@ test("Work Items discards late detail responses and resets filters when the sour
   }).click();
   await expect(page.locator("#work-item-status")).toHaveText("Loading\u2026");
 
-  await page.getByRole("combobox", { name: "Goobers source" }).selectOption(sources[1].id);
+  await selectSource(page, sources[1].id);
   release();
   await expect(page.locator("#source-context")).toHaveText("Instance two");
   await expect(page.getByRole("searchbox", { name: "Search work items" })).toHaveValue("");

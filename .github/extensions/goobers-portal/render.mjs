@@ -1670,7 +1670,72 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     margin-bottom: 12px;
   }
   .fleet-panel[hidden] { display: none; }
-  #source-select { max-width: min(100%, 360px); }
+  .source-picker { position: relative; }
+  .source-picker-trigger {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: min(100%, 360px);
+  }
+  .source-picker-trigger span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .source-picker-caret { font-size: 11px; }
+  .source-picker-menu {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: max(100%, 280px);
+    max-width: min(90vw, 420px);
+    background: var(--background-color-default, #fff);
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px #0003;
+    padding: 6px;
+  }
+  #source-picker-list {
+    max-height: 260px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .source-picker-option {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .source-picker-option-select {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    padding: 6px 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .source-picker-option-select:hover { background: var(--background-color-muted, #f6f8fa); }
+  .source-picker-option.is-selected .source-picker-option-select { font-weight: 600; }
+  .source-picker-option-remove {
+    border: 0;
+    background: transparent;
+    color: var(--text-color-muted, #656d76);
+    padding: 4px 6px;
+    border-radius: 6px;
+  }
+  .source-picker-option-remove:hover { color: var(--true-color-red, #cf222e); background: var(--background-color-muted, #f6f8fa); }
+  .source-picker-connect {
+    width: 100%;
+    margin-top: 6px;
+    text-align: left;
+  }
+  #source-picker-list:empty { display: none; }
   .muted { color: var(--text-color-muted, #656d76); }
   .cards {
     display: grid;
@@ -1913,7 +1978,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     main { padding: 10px; }
     table { display: block; overflow-x: auto; white-space: nowrap; }
     .toolbar { width: 100%; }
-    #source-select { flex: 1; min-width: 0; }
+    .source-picker { flex: 1; min-width: 0; }
     .waterfall-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
     .graph-toolbar { flex-wrap: wrap; }
     .graph-help { width: 100%; }
@@ -1991,13 +2056,6 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     border-radius: 6px;
     overflow-wrap: anywhere;
   }
-  .remove-source-button {
-    border: 0;
-    background: transparent;
-    color: var(--text-color-muted, #656d76);
-    padding: 4px 6px;
-  }
-  .remove-source-button:hover { color: var(--true-color-red, #cf222e); }
   dialog {
     width: min(680px, calc(100vw - 32px));
     max-height: calc(100vh - 48px);
@@ -2458,15 +2516,27 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <option value="light">Light theme</option>
       <option value="dark">Dark theme</option>
     </select>
-    <select id="source-select" aria-label="Goobers source"><option value="">No sources yet</option></select>
-    <button id="remove-source" type="button" class="remove-source-button" title="Remove this local instance" aria-label="Remove this local instance" hidden>&#10005;</button>
+    <div class="source-picker">
+      <button id="source-picker-trigger" type="button" class="source-picker-trigger"
+        aria-haspopup="listbox" aria-expanded="false" aria-controls="source-picker-menu" aria-label="Goobers source">
+        <span id="source-picker-label">No sources yet</span>
+        <span class="source-picker-caret" aria-hidden="true">&#9662;</span>
+      </button>
+      <div id="source-picker-menu" class="source-picker-menu" role="listbox" aria-label="Goobers source" hidden>
+        <div id="source-picker-list"></div>
+        <button id="connect-source-button" type="button" class="source-picker-connect">+ Connect a source&hellip;</button>
+      </div>
+    </div>
+    <!-- Internal state store only: kept in sync with the picker above and driven
+         by the same change event the rest of the app already listens on. Hidden
+         from both layout and the accessibility tree; the picker is the real UI. -->
+    <select id="source-select" hidden><option value="">No sources yet</option></select>
     <input id="run-jump" type="text" placeholder="Run ID" aria-label="Jump to a run" style="max-width: 180px;" />
     <button id="run-jump-button" type="button">Jump</button>
     <button id="refresh">Refresh</button>
   </div>
 </header>
 <main id="main-content" tabindex="-1">
-  <button id="connect-source-button" type="button">+ Connect a source&hellip;</button>
   <dialog id="connect-source-dialog" aria-label="Connect a source">
     <div class="dialog-header">
       <h2>Connect a source</h2>
@@ -3132,6 +3202,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       }));
   }
 
+  let lastSources = [];
+  const sourcePickerTrigger = document.getElementById("source-picker-trigger");
+  const sourcePickerMenu = document.getElementById("source-picker-menu");
+  const sourcePickerList = document.getElementById("source-picker-list");
+  const sourcePickerLabel = document.getElementById("source-picker-label");
+
   async function loadSources() {
     const [res, selectedRes] = await Promise.all([
       fetch("/api/sources"),
@@ -3139,11 +3215,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     ]);
     const [data, selected] = await Promise.all([res.json(), selectedRes.json()]);
     const sources = data.sources || [];
+    lastSources = sources;
     const prevValue = sourceSelect.value;
     sourceSelect.innerHTML = "";
     if (sources.length === 0) {
       sourceSelect.innerHTML = '<option value="">No sources yet</option>';
-      updateRemoveSourceButton();
+      renderSourcePicker();
       return null;
     }
     for (const s of sources) {
@@ -3156,26 +3233,104 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     if (prevValue && sources.some((s) => s.id === prevValue)) {
       sourceSelect.value = prevValue;
-      updateRemoveSourceButton();
+      renderSourcePicker();
       return prevValue;
     }
     if (selected.sourceId && sources.some((s) => s.id === selected.sourceId)) {
       sourceSelect.value = selected.sourceId;
-      updateRemoveSourceButton();
+      renderSourcePicker();
       return selected.sourceId;
     }
     const firstConnected = sources.find((s) => s.connected);
     sourceSelect.value = (firstConnected || sources[0]).id;
-    updateRemoveSourceButton();
+    renderSourcePicker();
     return sourceSelect.value;
   }
 
-  function updateRemoveSourceButton() {
-    const removeButton = document.getElementById("remove-source");
-    if (!removeButton) return;
-    const kind = sourceSelect.selectedOptions[0]?.dataset.kind;
-    removeButton.hidden = !sourceSelect.value || kind !== "local";
+  function openSourcePicker() {
+    sourcePickerMenu.hidden = false;
+    sourcePickerTrigger.setAttribute("aria-expanded", "true");
   }
+
+  function closeSourcePicker() {
+    sourcePickerMenu.hidden = true;
+    sourcePickerTrigger.setAttribute("aria-expanded", "false");
+  }
+
+  async function removeSourceById(id, label) {
+    if (!window.confirm("Remove " + label + " from known sources?")) return;
+    try {
+      const response = await fetch("/api/remove-source", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) throw new Error(result.error || "Could not remove source.");
+      await loadSources();
+      await changeSource();
+    } catch (err) {
+      errorEl.textContent = portalRequestError(err);
+    }
+  }
+
+  function renderSourcePicker() {
+    sourcePickerList.innerHTML = "";
+    for (const s of lastSources) {
+      const label = s.label || s.value;
+      const dot = s.connected ? "\u25cf" : "\u25cb";
+      const row = document.createElement("div");
+      row.className = "source-picker-option";
+      row.setAttribute("role", "option");
+      row.dataset.id = s.id;
+      const isSelected = s.id === sourceSelect.value;
+      row.setAttribute("aria-selected", String(isSelected));
+      if (isSelected) row.classList.add("is-selected");
+      const selectButton = document.createElement("button");
+      selectButton.type = "button";
+      selectButton.className = "source-picker-option-select";
+      selectButton.textContent = dot + " " + label + " (" + s.kind + ")";
+      selectButton.addEventListener("click", () => {
+        sourceSelect.value = s.id;
+        sourceSelect.dispatchEvent(new Event("change"));
+        closeSourcePicker();
+      });
+      row.appendChild(selectButton);
+      if (s.kind === "local") {
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "source-picker-option-remove";
+        removeButton.title = "Remove " + label;
+        removeButton.setAttribute("aria-label", "Remove " + label);
+        removeButton.textContent = "\u2715";
+        removeButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void removeSourceById(s.id, label);
+        });
+        row.appendChild(removeButton);
+      }
+      sourcePickerList.appendChild(row);
+    }
+    const selected = lastSources.find((s) => s.id === sourceSelect.value);
+    sourcePickerLabel.textContent = selected
+      ? (selected.connected ? "\u25cf" : "\u25cb") + " " + (selected.label || selected.value) + " (" + selected.kind + ")"
+      : "No sources yet";
+  }
+
+  sourcePickerTrigger.addEventListener("click", () => {
+    if (sourcePickerMenu.hidden) openSourcePicker(); else closeSourcePicker();
+  });
+  document.addEventListener("click", (event) => {
+    if (sourcePickerMenu.hidden) return;
+    if (sourcePickerMenu.contains(event.target) || sourcePickerTrigger.contains(event.target)) return;
+    closeSourcePicker();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !sourcePickerMenu.hidden) {
+      closeSourcePicker();
+      sourcePickerTrigger.focus();
+    }
+  });
 
   function renderSnapshot(data) {
     errorEl.textContent = "";
@@ -5412,7 +5567,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     reconnectAttemptCount = 0;
     workflowDetailCache.clear();
     if (eventSource) eventSource.close();
-    updateRemoveSourceButton();
+    renderSourcePicker();
     await loadSnapshot();
     connectLiveEvents();
   }
@@ -5539,30 +5694,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   const connectSourceDialog = document.getElementById("connect-source-dialog");
   document.getElementById("connect-source-button").addEventListener("click", () => {
+    closeSourcePicker();
     connectSourceDialog.showModal();
   });
   document.getElementById("connect-source-close").addEventListener("click", () => {
     connectSourceDialog.close();
-  });
-
-  document.getElementById("remove-source").addEventListener("click", async () => {
-    const option = sourceSelect.selectedOptions[0];
-    if (!option || !option.value) return;
-    const label = option.textContent.replace(/^[\u25cf\u25cb]\s*/, "");
-    if (!window.confirm("Remove " + label + " from known sources?")) return;
-    try {
-      const response = await fetch("/api/remove-source", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: option.value }),
-      });
-      const result = await response.json();
-      if (!response.ok || result.error) throw new Error(result.error || "Could not remove source.");
-      await loadSources();
-      await changeSource();
-    } catch (err) {
-      errorEl.textContent = portalRequestError(err);
-    }
   });
 
   const discoverStatusEl = document.getElementById("discover-local-status");
