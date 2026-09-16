@@ -95,6 +95,41 @@ describe("LiveDataController", () => {
     leader.stop();
   });
 
+  it("synchronizes live status when a follower joins after the leader connected", async () => {
+    vi.stubGlobal("BroadcastChannel", TestBroadcastChannel);
+    const leader = new LiveDataController(
+      new ScriptedClient([() => Promise.resolve(new ControlledEventStream())]),
+      { ...testConfig, crossTabEnabled: true },
+      { cursorScope: "late-follower" },
+    );
+    const followerClient = new ScriptedClient([]);
+    const follower = new LiveDataController(
+      followerClient,
+      { ...testConfig, crossTabEnabled: true },
+      { cursorScope: "late-follower" },
+    );
+    leader.subscribe(["instance"], vi.fn().mockResolvedValue(true));
+    follower.subscribe(["instance"], vi.fn().mockResolvedValue(true));
+
+    leader.start();
+    await settle();
+    expect(leader.freshness).toBe("connected");
+
+    follower.start();
+    await settle();
+
+    expect(followerClient.requests).toHaveLength(0);
+    expect(follower.freshness).toBe("connected");
+    expect(follower.liveUpdateDetails).toMatchObject({
+      transport: "sse",
+      shared: true,
+      consecutiveFailures: 0,
+    });
+
+    follower.stop();
+    leader.stop();
+  });
+
   it("keeps reconnecting without polling when the host disables polling", async () => {
     const client = new ScriptedClient([
       () => Promise.reject(new Error("stream offline")),
@@ -112,6 +147,36 @@ describe("LiveDataController", () => {
     await vi.advanceTimersByTimeAsync(350);
     expect(controller.freshness).toBe("reconnecting");
     expect(refresh).not.toHaveBeenCalled();
+    controller.stop();
+  });
+
+  it("reports the active retry attempt, failure, and next reconnect time", async () => {
+    const controller = new LiveDataController(
+      new ScriptedClient([() => Promise.reject(new TypeError("stream offline"))]),
+      { ...testConfig, pollingEnabled: false },
+    );
+
+    controller.start();
+    await settle();
+
+    expect(controller.freshness).toBe("reconnecting");
+    expect(controller.lastSSEFailure).toEqual({
+      cause: "stream-error",
+      endpoint: "/api/v1/events",
+      result: "TypeError",
+    });
+    expect(controller.liveUpdateDetails).toMatchObject({
+      transport: "sse",
+      consecutiveFailures: 1,
+      lastFailure: {
+        cause: "stream-error",
+        endpoint: "/api/v1/events",
+        result: "TypeError",
+      },
+    });
+    expect(controller.liveUpdateDetails.lastFailureAt).toBeTypeOf("number");
+    expect(controller.liveUpdateDetails.nextReconnectAt).toBeGreaterThan(Date.now());
+
     controller.stop();
   });
 
