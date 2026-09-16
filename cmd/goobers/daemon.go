@@ -1660,8 +1660,13 @@ func (s *trackedStarter) RegisterDispatch() func() {
 // retried later without blocking daemon readiness; all other cleanup failures
 // remain fatal.
 func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
-	resumed, warned, _, err = resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg)
-	return resumed, warned, err
+	outcome, err := resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg, nil)
+	if err != nil {
+		return outcome.Resumed, outcome.Warned, err
+	}
+	// This one-shot path has no readiness to protect, so its terminal
+	// finalizations stay synchronous and fatal, exactly as before #5199.
+	return outcome.Resumed, outcome.Warned, finalizeTerminalCandidates(outcome.Terminal, log, watermarks, nil)
 }
 
 func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*workflow.Machine, string) {
@@ -1671,12 +1676,16 @@ func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*
 	return current, "current-config"
 }
 
-func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, guards *engineRunGuards, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup, recoveryRunDirs ...[]string) (resumed []string, warned []string, reattached []string, err error) {
+func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, guards *engineRunGuards, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup, progress resumeProgressFunc, recoveryRunDirs ...[]string) (outcome resumeOutcome, err error) {
 	candidates, err := recoveryRunCandidates(ctx, l, recoveryRunDirs...)
 	if err != nil {
-		return nil, nil, nil, err
+		return resumeOutcome{}, err
 	}
+	outcome.Total = len(candidates)
+	defer outcome.report(progress)
 	for _, dir := range candidates {
+		outcome.Examined++
+		outcome.report(progress)
 		runsDir := filepath.Dir(dir)
 		runName := filepath.Base(dir)
 		rd, err := journal.OpenRead(dir)
@@ -1684,7 +1693,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			if errors.Is(err, journal.ErrNotRunDirectory) {
 				continue
 			}
-			return resumed, warned, reattached, fmt.Errorf("open run journal %q: %w", runName, err)
+			return outcome, fmt.Errorf("open run journal %q: %w", runName, err)
 		}
 		id, err := rd.Identity()
 		if err != nil {
@@ -1706,39 +1715,18 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		if phase, err := rd.Phase(); err == nil {
 			switch phase {
 			case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-				var finalizeErr error
-				if rn != nil {
-					finalizeErr = rn.FinalizeTerminal(id.RunID, phase)
-				} else {
-					manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
-					if managerErr != nil {
-						finalizeErr = managerErr
-					} else {
-						finalizeErr = finalizeTerminalRun(runLayout, log, manager, id.RunID)
-					}
-				}
-				if finalizeErr != nil {
-					if !errors.Is(finalizeErr, worktree.ErrCleanupDeferred) {
-						return resumed, warned, reattached, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
-					}
-					if log != nil {
-						if err := log.Append(journal.Event{
-							Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
-							Error: &journal.ErrorDetail{
-								Code:    "terminal_cleanup_deferred",
-								Message: fmt.Sprintf("terminal cleanup deferred for retry: %v", finalizeErr),
-							},
-						}); err != nil {
-							return resumed, warned, reattached, fmt.Errorf("journal deferred terminal cleanup for run %q: %w", id.RunID, err)
-						}
-					}
-				}
-				// #2190: a run that resumed here and was already terminal
-				// took a different path than a normal terminal run's
-				// telemetryingest.RunTelemetry call below (line ~1080) — it
-				// never recorded its intake watermark, so the read model
-				// never discovered it advanced.
-				telemetryingest.RunIntake(watermarks, runLayout, id.RunID, log)
+				// #5199: a terminal run has nothing to RESUME, and its
+				// cleanup is not what scheduling waits on. Finalization is
+				// the expensive half of this loop — a worktree FinalizeRun,
+				// a claim-ledger release, and a full recovery-inventory read
+				// per run — so it is collected and run after readiness
+				// instead of ahead of it. The concurrency slot is released
+				// here, synchronously: ReconcileRunDirs seeded one for every
+				// candidate moments ago, and a scheduler that believes those
+				// slots are still held cannot dispatch anything.
+				outcome.Terminal = append(outcome.Terminal, terminalFinalization{
+					layout: runLayout, runsDir: runsDir, runner: rn, identity: id, phase: phase,
+				})
 				release(id.RunID, id.Workflow)
 				continue // terminal: nothing to resume
 			}
@@ -1753,7 +1741,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		// push-branch / merge-pr attempts, one journal. The daemon's job
 		// here is not to drive the run but to stop pretending it can.
 		if id.EngineDriven() {
-			reattached = append(reattached, id.RunID)
+			outcome.Reattached = append(outcome.Reattached, id.RunID)
 			if log != nil {
 				if err := log.Append(journal.Event{
 					Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
@@ -1764,7 +1752,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 						"driver": string(id.Driver),
 					},
 				}); err != nil {
-					return resumed, warned, reattached, fmt.Errorf("journal engine re-attachment for run %q: %w", id.RunID, err)
+					return outcome, fmt.Errorf("journal engine re-attachment for run %q: %w", id.RunID, err)
 				}
 			}
 			// Deliberately outside wg and outside the runner registry: see
@@ -1785,7 +1773,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
 		machine, ok := machines[identity]
 		if rn == nil || !ok {
-			warned = append(warned, id.RunID)
+			outcome.Warned = append(outcome.Warned, id.RunID)
 			if log != nil {
 				code := "resume_unresolvable_workflow"
 				message := fmt.Sprintf("run %q references unknown workflow %q — recover with `goobers run abort %s`", id.RunID, id.Workflow, id.RunID)
@@ -1809,7 +1797,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		repoRef := repoRefs[identity]
 		gooberDigest := gooberDigests[identity]
 
-		resumed = append(resumed, id.RunID)
+		outcome.Resumed = append(outcome.Resumed, id.RunID)
 		if log != nil {
 			if err := log.Append(journal.Event{
 				Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
@@ -1821,7 +1809,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					"workflowDefinitionSource": machineSource,
 				},
 			}); err != nil {
-				return resumed, warned, reattached, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)
+				return outcome, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)
 			}
 		}
 		wg.Add(1)
@@ -1862,7 +1850,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			}
 		}(id.RunID, id.Gaggle, id.Workflow, gooberDigest, rn, runLayout, untrack)
 	}
-	return resumed, warned, reattached, nil
+	return outcome, nil
 }
 
 // buildReadModelIfNeeded performs the first-start or migration-triggered build

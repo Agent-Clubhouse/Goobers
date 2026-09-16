@@ -1395,12 +1395,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, reattached, err := resumeStartupRuns(ctx, l, setup, engineGuards, sched, &wg, recoveryRunDirs, tracker, stdout)
+	resumeResult, err := resumeStartupRuns(ctx, l, setup, engineGuards, sched, &wg, recoveryRunDirs, tracker, stdout)
 	if err != nil {
 		return daemonStartupFailure(ctx, err, func() {
 			pf(stderr, "error: %v\n", err)
 		})
 	}
+	resumed, warned, reattached := resumeResult.Resumed, resumeResult.Warned, resumeResult.Reattached
 	for _, runID := range resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
 	}
@@ -1439,6 +1440,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// inventory finished. Its duration scales with genuinely recoverable work,
 	// so a kubelet startupProbe against /readyz must still allow enough time
 	// for those runs, not for retained terminal history.
+	//
+	// #5199 made that claim true rather than aspirational: candidates that
+	// turn out to be already terminal are finalized below, after this gate
+	// and after readiness, because nothing about a finished run's cleanup is
+	// a precondition for scheduling. Their concurrency slots were already
+	// released during the pass, so the scheduler is not waiting on them
+	// either.
 	resumeComplete.Store(true)
 	logGateFlip(stdout, processStart, "resumeComplete")
 
@@ -1797,6 +1805,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	terminalCleanupRetryCtx, stopTerminalCleanupRetry := context.WithCancel(context.Background())
 	defer stopTerminalCleanupRetry()
 	terminalCleanupRetryDone := startTerminalCleanupRetry(terminalCleanupRetryCtx, cleanupRetries, terminalCleanupRetryErrors, readyNow)
+	// #5199: the terminal half of crash-resume, off the critical path. Same
+	// shape as the sweeps around it — a goroutine that reports through the
+	// concurrency-safe instance journal and never writes to stdout.
+	startupTerminalFinalizeDone := startStartupTerminalFinalize(
+		setup, resumeResult.Terminal,
+		newSweepErrorReporter(setup.InstanceLog, "startup_terminal_finalize_failed"),
+	)
 	startupMergedPRCostSweepDone := mergedPRCostSweeps.startDeferred(ctx, readyNow)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", root, len(setup.Entries), apiServer.Scheme(), apiServer.Address(), httpapi.Prefix)
 	if webhookServer != nil {
@@ -1937,6 +1952,7 @@ daemonLoop:
 		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
 	stopClaimAdminSweep()
 	stopTerminalCleanupRetry()
+	<-startupTerminalFinalizeDone
 	<-terminalCleanupRetryDone
 	runTerminalCleanupRetryFinal(cleanupRetries, terminalCleanupRetryErrors, readyNow)
 	if !drainResult.forced {

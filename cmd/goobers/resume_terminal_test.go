@@ -278,17 +278,31 @@ func TestResumeScanFinalizesTerminalRunFromRemovedGaggle(t *testing.T) {
 	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	var released []string
-	resumed, warned, _, err := resumeInterruptedRunsWithRunners(
+	outcome, err := resumeInterruptedRunsWithRunners(
 		context.Background(), l, setup.Runners, nil, setup.RunnerRegistry, nil, setup.Machines, setup.GooberDigests, setup.RepoRefs,
 		setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks,
-		func(_ string, workflow string) { released = append(released, workflow) }, &wg,
+		func(_ string, workflow string) { released = append(released, workflow) }, &wg, nil,
 		[]string{filepath.Join(removed.RunsDir(), runID)},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	resumed, warned := outcome.Resumed, outcome.Warned
 	if len(resumed) != 0 || len(warned) != 0 {
 		t.Fatalf("resumed=%v warned=%v, want neither for terminal run", resumed, warned)
+	}
+	if len(outcome.Terminal) != 1 || outcome.Terminal[0].identity.RunID != runID {
+		t.Fatalf("terminal candidates = %+v, want the one terminal run deferred for finalization", outcome.Terminal)
+	}
+	// #5199: the pass itself must not have finalized it. Scheduling waits on
+	// this pass; a finished run's cleanup is not something it should wait for.
+	if marked, err := journal.ActiveRunDirs(removed.RunsDir()); err != nil || len(marked) != 1 {
+		t.Fatalf("crash-resume finalized a terminal run on the critical path: marked=%v err=%v", marked, err)
+	}
+	// The daemon hands these to a background goroutine after readiness; this
+	// test drives them directly.
+	if err := finalizeTerminalCandidates(outcome.Terminal, setup.InstanceLog, setup.Watermarks, nil); err != nil {
+		t.Fatalf("finalize terminal candidates: %v", err)
 	}
 	if len(released) != 1 || released[0] != "default-implement" {
 		t.Fatalf("released = %v, want terminal workflow slot released once", released)
