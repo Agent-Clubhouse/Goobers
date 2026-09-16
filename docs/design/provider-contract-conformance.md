@@ -6,7 +6,7 @@
 > extension CONF-10 #2499. Reconciled 2026-09-06 by #2061/#2179.
 > Driving epic: #2061 (hero: ADO end-to-end). Related: #2026, #2050, #2059, #2064.
 > Author: state-of-repo review follow-up, 2026-07-31.
-> Delivered-by: #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499
+> Delivered-by: #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499, #5122
 
 > **§1 is the 2026-07-31 problem statement, kept as the record of why this
 > design exists. Do not read it as current state.** Its three gaps are closed:
@@ -98,6 +98,65 @@ This mirrors two existing, proven patterns: host `SupportMatrix` (#862, release-
 
 - Calling an undeclared capability returns `providers.ErrUnsupported{Provider, Capability}` from a dispatch shim — providers never see the call, so per-provider "return an error" stubs (today's `ado.go` pattern) are deleted rather than multiplied.
 - **Fail-closed is the only legal gap behavior.** A gate that consults an unsupported read (`backlog.blockers` on a provider without it) must treat the answer as "unknown → do not proceed," fixing the #2059 class structurally: the fail-open path becomes unrepresentable because the gate sees `ErrUnsupported`, not a zero value.
+
+### 3.4 Selected-revision repository identity (#5122)
+
+`providers.RepositoryRef` is the canonical provider-layer identity for both
+the PR's **base** repository and its **source/head** repository. Its fields are
+`provider`, `owner`, `project`, `name`, `id`, and `url`; owner/name alone do not
+distinguish repositories across providers, ADO projects, or self-hosted services.
+`apiv1.RepositoryIdentity` is a lossless, identity-only projection, converted by
+`RepositoryRef.RepositoryIdentity()` and `RepositoryRefFromIdentity()`. Neither
+type carries branch policy, checkout policy, or a credential selector.
+
+Both `PullRequestSummary` and `PullRequestPollResult` preserve
+`headRepository` and `baseRepository` with the same snapshot's head/base SHAs:
+
+| Identity field | GitHub | Gitea | Azure DevOps |
+|---|---|---|---|
+| Source payload | `head.repo` | `head.repo` | `forkSource.repository` for a fork; otherwise `repository` |
+| Base payload | `base.repo` | `base.repo` | `repository` |
+| `provider` | `github` | `gitea` | `ado` |
+| `owner` | `owner.login` | `owner.login` | Configured organization |
+| `project` | Empty | Empty | Repository `project.name`, or its project ID when no name is supplied |
+| `name` / `id` | Repository `name` / numeric `id` serialized as a string | Same | Repository `name` / immutable repository `id` |
+| `url` | Repository `html_url` | Repository `html_url` | `webUrl`, then `remoteUrl`, then repository REST `url`; configured service/organization/project/repository URL when absent |
+| Head / base SHA | `head.sha` / `base.sha` | Same | `lastMergeSourceCommit.commitId` / `lastMergeTargetCommit.commitId` |
+
+ADO URL userinfo is removed: an organization username in a clone URL is not
+identity or credential authority. An absent fork repository is **not** a
+same-repository fallback. A fork's missing project is not filled from the base
+project. Same-repository PRs serialize identical source/base identities when
+the provider supplies the same repository payload.
+
+**Selection contract.** Deterministic `pr-select` emits the typed
+`workspaceRevision` control alongside its existing scalar outputs:
+`repository` plus the selected `commitSha`, with `sourceRef`, `sourceId`,
+`baseRepository`, and `baseSha` as provenance. The runner admits it into
+`ResultEnvelope.workspaceRevision`; see [the stage contract](../stage-contract.md).
+Repository identity plus the full commit SHA is the checkout binding.
+`head`, `base`, and `sourceRef` remain display/provenance metadata: a same-named
+branch in another repository, a moving branch tip, or a missing source cannot
+substitute for the selected commit. ADO selection updates source identity and
+SHA together from its policy poll rather than mixing an older list identity
+with a newer polled SHA.
+
+**Authorization contract.** The selected source must match the run's
+configuration-declared base or additional repositories through
+`internal/workspacerevision.Resolve`. Missing, ambiguous, contradictory, or
+undeclared access fails closed. The selector does not receive the run's
+additional-repository grants, so authorization belongs to runner admission,
+before workspace acquisition. PR payloads cannot add a repository grant,
+broaden credentials, or override the configured transport. Acquisition uses
+the resolver's **configured** reference, not a URL or ID chosen by a stage.
+Configuration currently has no separate immutable repository-ID field:
+preserved IDs are evidence, not new routing authority; offline name/host
+authorization does not itself verify a provider's name-to-ID association.
+
+This extends existing `pr.list`/`pr.poll` response data, not the capability set.
+Fixture coverage lives in `providers/repository_identity_test.go`,
+`providers/pullrequest_repository_test.go`, and
+`cmd/goobers/prselect_revision_test.go`.
 
 ## 4. The landing contract (drives ADO to completion)
 

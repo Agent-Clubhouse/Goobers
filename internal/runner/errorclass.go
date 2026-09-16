@@ -102,6 +102,10 @@ func classifyDispatchFailure(err error) (string, telemetry.ErrorClass) {
 // separating the three owners git's uniform exit 128 hides: the credential
 // (infra_git), the network (infra_net), and the host (infra_workspace).
 func provisionFailureCode(err error) string {
+	var coded stageCodedError
+	if errors.As(err, &coded) && coded.StageErrorCode() != "" {
+		return coded.StageErrorCode()
+	}
 	switch worktree.ClassifyProvisionError(err) {
 	case worktree.TierNetwork:
 		return errCodeInfraNet

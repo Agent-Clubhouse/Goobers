@@ -6,13 +6,14 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/providers"
 )
 
-// Existing selection outputs remain strings. Only the explicitly named,
-// versioned report extension may be an object; arbitrary objects still fail.
+// Existing selection outputs remain strings. Only the named report and typed
+// workspace control extensions may be objects; arbitrary objects still fail.
 func decodePRSelectionTestResult(data []byte, target *map[string]string) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -27,6 +28,16 @@ func decodePRSelectionTestResult(data []byte, target *map[string]string) error {
 			return fmt.Errorf("invalid queue report version/counts: %+v", report)
 		}
 		delete(raw, "queueEligibility")
+	}
+	if control, ok := raw["workspaceRevision"]; ok {
+		var revision apiv1.WorkspaceRevision
+		if err := json.Unmarshal(control, &revision); err != nil {
+			return err
+		}
+		if err := revision.Repository.Validate(); err != nil {
+			return err
+		}
+		delete(raw, "workspaceRevision")
 	}
 	*target = make(map[string]string, len(raw))
 	for key, value := range raw {

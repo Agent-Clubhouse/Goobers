@@ -612,6 +612,11 @@ func (wt *Worktree) PreparePinned(ctx context.Context, opts PinnedPrepareOptions
 	}
 	wt.Branch = opts.Branch
 	wt.startRef = startRef
+	// A writable stage takes custody again only after discard-only revision
+	// state has been cleaned by handoffPinnedState above.
+	if err := wt.clearPinnedRevisionCustody(ctx, opts.BaseRef); err != nil {
+		return err
+	}
 	return nil
 }
 

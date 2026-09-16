@@ -83,6 +83,7 @@ func commentMutationRef(provider ProviderKind, repo RepositoryRef, comment restC
 // restRepository is the repository payload both backends embed in a pull
 // request's head/base branch.
 type restRepository struct {
+	ID      int64      `json:"id"`
 	Name    string     `json:"name"`
 	HTMLURL string     `json:"html_url"`
 	Owner   githubUser `json:"owner"`
@@ -253,6 +254,14 @@ func repositoryRef(kind ProviderKind, repo *restRepository) *RepositoryRef {
 		Provider: kind,
 		Owner:    repo.Owner.Login,
 		Name:     repo.Name,
+		ID:       repositoryNumericID(repo.ID),
 		URL:      repo.HTMLURL,
 	}
+}
+
+func repositoryNumericID(id int64) string {
+	if id == 0 {
+		return ""
+	}
+	return strconv.FormatInt(id, 10)
 }

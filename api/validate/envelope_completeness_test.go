@@ -221,7 +221,16 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 
 func completeResultEnvelope() apiv1.ResultEnvelope {
 	artifact := completeArtifactPointer("artifacts/implement/result.json")
+	repository := apiv1.RepositoryIdentity{
+		Provider: apiv1.ProviderADO, Owner: "org", Project: "project", Name: "repo",
+		ID: "repository-id", URL: "https://dev.azure.com/org/project/_git/repo",
+	}
 	return apiv1.ResultEnvelope{
+		WorkspaceRevision: &apiv1.WorkspaceRevision{
+			Repository: repository, CommitSHA: strings.Repeat("a", 40),
+			SourceRef: "refs/heads/topic", SourceID: "123",
+			BaseRepository: &repository, BaseSHA: strings.Repeat("b", 40),
+		},
 		Status:     apiv1.ResultFailure,
 		Outputs:    map[string]interface{}{"attempt": 1},
 		Artifacts:  []apiv1.ArtifactPointer{artifact},
@@ -363,6 +372,7 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 // DataSchema is the field that fixture would have caught before it shipped.
 func completeJournalEvent() journal.Event {
 	return journal.Event{
+		WorkspaceRevision:   completeResultEnvelope().WorkspaceRevision,
 		Schema:              "goobers.dev/journal/event/v1",
 		Seq:                 1,
 		Type:                journal.EventSpanRecorded,

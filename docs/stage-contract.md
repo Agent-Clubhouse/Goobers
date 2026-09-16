@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha9` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha10` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -61,6 +61,37 @@ Constraints:
   the emitting one onward, and is recovered from the journal on resume, so a
   crash mid-chain does not silently revert the rest of the run to the default
   branch.
+
+## Selected revision control
+
+`ResultEnvelope.workspaceRevision` is a typed control, separate from scalar
+`outputs`. A successful deterministic task may establish one immutable
+repository identity and full commit SHA for the run. An identical re-emission
+is idempotent; a different value fails with `workspace_revision_conflict`.
+Agentic results cannot establish or change this authority. Establish selection
+before entering a parallel group.
+
+For deterministic commands using a declared result file, the top-level
+`workspaceRevision` object is promoted into the typed result control, not into
+scalar outputs. Unknown control fields and malformed revisions fail closed.
+
+The repository projection includes provider, service URL, owner, project, name,
+and provider ID, but never a branch, checkout policy, or credential selector.
+The source must match the configured project or an explicitly declared
+`additionalRepos` entry. Source-ref and PR identifiers are provenance only;
+neither is resolved to choose the checkout. The accepted typed value is recorded
+in `stage.finished`, and resume reconstructs it from the entire journal without
+repolling the PR, including when a stage is rerun.
+
+Subsequent `repo-readonly` stages acquire that exact source commit, verify its
+object type and detached `HEAD`, and discard repository changes at teardown.
+They cannot use `workspaceBranch`, `syncBase`, or workspace deltas. Disposable
+worktrees can coexist at the same SHA. Pinned execution holds the whole-run
+lease and resets and cleans its serialized checkout before and after each
+selected-revision stage, including ignored/untracked files and local commits.
+Declared additional repositories retain their independent disposable read-only
+checkouts alongside the pinned primary checkout. Declared sparse cones and
+partial-clone policy remain materialization controls, not result authority.
 
 ## How a stage gets its input
 

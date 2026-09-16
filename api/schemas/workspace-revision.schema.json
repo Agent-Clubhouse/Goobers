@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/workspace-revision.schema.json",
+  "title": "WorkspaceRevision",
+  "description": "Immutable run-scoped repository and exact commit binding. Only successful deterministic task results can establish it; identical re-emission is idempotent and replacement fails closed. Accepted history preserves the exact binding for replay without resolving moving refs. Its absence in older histories preserves configured-base behavior. The binding does not replace configured writable-base identity, establish workspaceBranch ownership, or carry workspace deltas.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repository", "commitSha"],
+  "properties": {
+    "repository": {
+      "description": "Canonical selected repository identity, subject to configuration authorization before acquisition.",
+      "$ref": "repository-identity.schema.json"
+    },
+    "commitSha": {
+      "description": "Full lowercase SHA-1 or SHA-256 Git commit object ID; never a branch or abbreviated SHA.",
+      "$ref": "#/$defs/sha"
+    },
+    "sourceRef": {
+      "description": "Optional source-ref display provenance. Never resolved for checkout or used as publication authority.",
+      "type": "string"
+    },
+    "sourceId": {
+      "description": "Optional source or pull-request identifier for provenance.",
+      "type": "string"
+    },
+    "baseRepository": {
+      "description": "Optional canonical base repository for base-relative evidence; does not change the configured writable target.",
+      "$ref": "repository-identity.schema.json"
+    },
+    "baseSha": {
+      "description": "Optional full lowercase base commit object ID for base-relative evidence.",
+      "$ref": "#/$defs/sha"
+    }
+  },
+  "$defs": {
+    "sha": {
+      "description": "A full lowercase Git SHA-1 or SHA-256 object ID.",
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    }
+  }
+}

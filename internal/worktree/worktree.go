@@ -48,6 +48,9 @@ type CreateOptions struct {
 	// BaseRef is the pinned ref (branch, tag, or commit sha) to branch or
 	// check out from. Required.
 	BaseRef string
+	// ExpectedSHA enables exact selected-revision acquisition from RepoURL.
+	// BaseRef must equal it; branch acquisition and synchronization are forbidden.
+	ExpectedSHA string
 	// Branch, if set, is the run branch this worktree checks out (e.g.
 	// "goobers/<workflow>/<run-id>", providers.BranchName). It is created off
 	// BaseRef the first time it is requested and checked out as-is (carrying
@@ -156,10 +159,11 @@ type Worktree struct {
 	// blobs (Diff against a base whose blobs were never checked out) is a
 	// remote operation needing the credential environment and transient-
 	// failure classification, exactly like Create's own checkout.
-	partialMirror bool
-	pinned        bool
-	repoDir       string
-	assetGuard    bool
+	partialMirror  bool
+	pinned         bool
+	repoDir        string
+	assetGuard     bool
+	revisionSparse []string
 }
 
 // HeadSHA returns the commit currently checked out in this worktree.
@@ -186,6 +190,11 @@ func validRunID(id string) bool {
 // opts.RunID. Two calls with different RunIDs against the same repo may run
 // concurrently and never observe each other's worktree contents.
 func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, retErr error) {
+	if opts.ExpectedSHA != "" {
+		if err := validateRevisionOptions(opts); err != nil {
+			return nil, err
+		}
+	}
 	if opts.RunID == "" {
 		return nil, fmt.Errorf("worktree: RunID is required")
 	}
@@ -210,7 +219,13 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		return nil, fmt.Errorf("worktree: AcquireRemoteBranch requires RequireExistingBranch")
 	}
 
-	repoDir, err := m.WorkingCopy(ctx, opts.RepoURL)
+	var repoDir string
+	var err error
+	if opts.ExpectedSHA != "" {
+		repoDir, err = m.exactRevisionWorkingCopy(ctx, opts.RepoURL, opts.ExpectedSHA)
+	} else {
+		repoDir, err = m.WorkingCopy(ctx, opts.RepoURL)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -293,6 +308,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		CreatedAt:        time.Now(),
 		Status:           statusActive,
 	}
+	if opts.ExpectedSHA != "" {
+		mk.SelectedRevisionSHA = opts.ExpectedSHA
+		mk.RevisionSparse = append([]string(nil), opts.Sparse...)
+	}
 	// Persist ownership before git creates the directory so a crash during
 	// worktree add never leaves an opaque hash that cleanup cannot resolve.
 	ownershipPath := m.ownershipPath(key, directory)
@@ -313,7 +332,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	}()
 
 	partialMirror := m.partialClone && mirrorIsPartial(ctx, repoDir)
-	if partialMirror {
+	if opts.ExpectedSHA != "" {
+		if err := m.runRevisionGit(ctx, opts.RepoURL, repoDir, args...); err != nil {
+			return nil, err
+		}
+	} else if partialMirror {
 		// Materializing a tree from a blobless mirror fetches missing blobs
 		// from the promisor remote mid-checkout (#646), so this one nominally
 		// local operation is a remote one: it needs the same credential
@@ -349,7 +372,13 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		// patterns are out of scope, #649): a plain, fast set of directory
 		// prefixes rather than full gitignore-style pattern matching.
 		setArgs := append([]string{"sparse-checkout", "set", "--cone"}, opts.Sparse...)
-		if err := runGit(ctx, path, setArgs...); err != nil {
+		runCheckout := func(args ...string) error {
+			if opts.ExpectedSHA != "" {
+				return m.runRevisionGit(ctx, opts.RepoURL, path, args...)
+			}
+			return runGit(ctx, path, args...)
+		}
+		if err := runCheckout(setArgs...); err != nil {
 			return nil, fmt.Errorf("worktree: configure sparse checkout for run %s: %w", opts.RunID, err)
 		}
 		// The actual materialization: --no-checkout above left the working
@@ -357,12 +386,21 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		// sparse-checkout already configured, populates only the declared
 		// cones plus root-level files instead of the full tree.
 		checkoutArgs := []string{"checkout", checkoutTarget}
-		if partialMirror {
+		if opts.ExpectedSHA != "" {
+			if err := runCheckout("checkout", "--detach", checkoutTarget); err != nil {
+				return nil, err
+			}
+		} else if partialMirror {
 			if err := m.runRemoteGit(ctx, opts.RepoURL, path, checkoutArgs...); err != nil {
 				return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
 			}
 		} else if err := runGit(ctx, path, checkoutArgs...); err != nil {
 			return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
+		}
+	}
+	if opts.ExpectedSHA != "" {
+		if err := verifyRevisionHEAD(ctx, path, opts.ExpectedSHA); err != nil {
+			return nil, err
 		}
 	}
 	if opts.SyncBase && existingBranch {

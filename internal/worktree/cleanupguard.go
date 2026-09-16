@@ -103,7 +103,18 @@ func (m *Manager) prepareCleanup(ctx context.Context, path, worktreeID, ownerRun
 }
 
 func (m *Manager) prepareMarkerCleanup(ctx context.Context, path, worktreeID string, mk marker) error {
+	if err := discardMarkerRevision(ctx, path, mk); err != nil {
+		return err
+	}
 	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+}
+
+func discardMarkerRevision(ctx context.Context, path string, mk marker) error {
+	if mk.SelectedRevisionSHA == "" {
+		return nil
+	}
+	wt := &Worktree{Path: path, pinned: true, revisionSparse: mk.RevisionSparse}
+	return wt.ResetPinnedRevision(ctx, mk.SelectedRevisionSHA)
 }
 
 func (m *Manager) prepareMarkerCleanupWithRetention(ctx context.Context, key, path, markerPath, worktreeID string, mk marker) error {
@@ -124,6 +135,9 @@ func (m *Manager) prepareMarkerCleanupWithRetention(ctx context.Context, key, pa
 func (m *Manager) prepareMarkerExit(ctx context.Context, path, worktreeID string, mk marker, keep bool) error {
 	if !keep {
 		return m.prepareMarkerCleanup(ctx, path, worktreeID, mk)
+	}
+	if err := discardMarkerRevision(ctx, path, mk); err != nil {
+		return err
 	}
 	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }

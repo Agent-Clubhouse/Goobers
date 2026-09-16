@@ -4,10 +4,12 @@
 > architecture assumed by earlier specs and code. Where an older spec or code path
 > contradicts this document, this document wins and the spec/code carries a status
 > banner pointing here.
-> Last updated: 2026-09-06 · Descriptive/prescriptive status re-annotated
+> Last updated: 2026-09-15 · Descriptive/prescriptive status re-annotated
 > 2026-09-06: §4–§7 (as amended) describe shipped, verified behavior of the local
 > runner, except the capability namespace rule in §5, which is prescriptive
-> pending its atomic migration. The remaining V1 work identified in §12 is
+> pending its atomic migration. §5.1 distinguishes delivered local selected-revision
+> work from pending distributed and writable-sandbox integration.
+> The remaining V1 work identified in §12 is
 > prescriptive roadmap — mandated, not yet built.
 >
 > §3.2, §10 and §12's V2 entry are **no longer wholly prescriptive.** The
@@ -91,6 +93,11 @@ execution. Two runners implement the same contract:
   history down into the same run-journal format** (§4) so the portal, telemetry,
   Tutor, and operators see one shape everywhere. Raw Temporal mechanics (replay,
   task queues, worker lifecycle) are never part of the product surface.
+- Selected-revision workflow state and replay are a **pending integration**
+  under #5124, not implied by the existing Temporal substrate. Its contract
+  requires reconstructing the accepted immutable binding from history, including
+  legacy histories with no binding; it must never repoll a provider or resolve a
+  moving ref on replay. See [the selected-revision design](design/selected-revision-workspaces.md).
 - Brings durable long waits (multi-day human gates), schedules at scale, and
   per-gaggle worker isolation. **Child workflows** remain a **tier-3 DSL extension**: a
   definition that uses them is tier-3-only until the local runner implements them
@@ -253,6 +260,13 @@ Rules:
   exception is secret remediation: `goobers journal redact` replaces a leaked blob
   and appends a redaction event recording the old→new digests, so even the exception
   leaves a trace.
+- **Selected revisions are event state, not metadata edits.** The local runner
+  records an accepted typed `workspaceRevision` on the successful deterministic
+  `stage.finished` event. It is normative orchestration data, not a `runner.*`
+  annotation or scalar output. Resume reconstructs the identical binding by event
+  replay; `run.yaml` remains immutable. Older events without the field establish
+  no binding and retain configured-base behavior. A different later binding is a
+  non-retryable `workspace_revision_conflict`, never a new selection (§5.1).
 - **Content digests** on inputs and artifacts make runs comparable and make those
   files tamper-evident (the event log itself is trusted-at-rest at tiers 1–2; hash
   chaining is a tier-2+ option, not a baseline claim).
@@ -321,7 +335,9 @@ Contract rules:
   contract.
 - A repository may instead opt into a node-local **pinned workspace** at
   `workcopies/<repo-key>/pin`. Pinned mode and per-stage worktrees are mutually
-  exclusive. One FIFO lease covers the entire run across all gaggles targeting
+  exclusive for the primary workspace; configured additional read-only worktrees
+  may coexist with the pinned primary and have independent teardown.
+  One FIFO lease covers the entire run across all gaggles targeting
   that repository, so their stages cannot interleave. The pinned directory is
   outside the per-run `runs/` namespace and is structurally excluded from
   worktree retention.
@@ -411,6 +427,47 @@ Contract rules:
   of opening a provider-side blocker issue, because parking, releasing, and
   reporting are all reachable from local state that the repo:push-scoped run
   stages already own.
+
+### 5.1 Repository state has four distinct authorities
+
+The selected-revision contract (#4157, local delivery #5121–#5123) separates
+repository identity, immutable inspection input, writable branch ownership, and
+mutable work products:
+
+| State | Authority and meaning | What it does not authorize |
+|---|---|---|
+| **Configured base** | The gaggle's configured project, with declared additional repositories for read access. Configuration supplies service identity, checkout policy, and credential grants. The writable target remains the configured base. | A stage cannot add a repository or widen credentials by emitting an identity. |
+| **`workspaceRevision`** | A successful deterministic result selects one canonical repository and full lowercase 40- or 64-character commit SHA. The first accepted value establishes the run binding; identical re-emission is idempotent. Optional source/base provenance remains evidence. | No branch rebinding, checkout-policy override, credential selector, writable target change, or source-branch publication. |
+| **`workspaceBranch`** | The separate writable-branch control. A selected SHA does not establish ownership of its source branch. Creating an isolated remote workflow-owned branch from the selection remains #5126 work. | It cannot replace the immutable selection or authorize arbitrary source-branch mutation. |
+| **Workspace deltas** | Artifact-backed continuity for the existing writable-workspace path. | They cannot select repository identity or be restored/published by exact-SHA `repo-readonly` stages. |
+
+The API identity is a closed projection of `providers.RepositoryRef`, retaining
+provider, owner, ADO project, repository name/native ID, and service URL without
+branch, checkout, or credentials. Authorization compares against the configured
+project/additional repositories and returns configuration, never a stage-authored
+access reference. Native IDs are preserved as evidence; a configuration that names
+a repository but carries no native ID cannot authenticate an arbitrary claimed ID
+offline. The claimed ID must not replace configured routing.
+
+Agent-authored controls are rejected. A failed deterministic result establishes
+nothing. Invalid identities/SHAs, unauthorized repositories, and conflicting
+re-emissions fail closed; none permit fallback to a branch with the same name.
+The [stage contract](stage-contract.md) owns the wire shape and stable error codes.
+
+Local exact-SHA `repo-readonly` stages acquire the authorized object, verify that
+it is a commit and that final `HEAD` equals the recorded SHA, and preserve declared
+partial-clone/sparse-checkout policy. They do not synchronize the configured base,
+restore workspace deltas, or publish source changes. Pinned execution holds the
+whole-run lease and resets/cleans before and after each such stage; this is a
+deliberate exception to ordinary pinned build-state retention described above.
+
+**Delivery boundary:** local binding, journal replay, provider source identity,
+and ordinary/pinned exact-SHA inspection are delivered in the local milestone.
+Temporal/workerhost parity (#5124), pod parity (#5125), remote isolated writable
+branches (#5126), and lifecycle/conformance/reference workflows (#5127) remain
+pending. The [owning design](design/selected-revision-workspaces.md) records that
+partial-delivery ledger; this local capability is not a claim of completed
+cross-substrate support.
 
 ## 6. Instance anatomy (local runner)
 

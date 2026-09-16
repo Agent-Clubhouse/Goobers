@@ -36,6 +36,11 @@
     }
   ],
   "properties": {
+    "workspaceRevision": {
+      "$ref": "workspace-revision.schema.json",
+      "description": "Immutable repository and exact commit accepted from a successful deterministic stage.",
+      "x-conformance": "normative"
+    },
     "schema": {
       "description": "Versioned envelope id. A reader branches on this; a newer version is read leniently (unknown fields/types tolerated).",
       "const": "goobers.dev/journal/event/v1",

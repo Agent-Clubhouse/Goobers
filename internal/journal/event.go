@@ -407,6 +407,9 @@ type Event struct {
 	// lastResult, or a gate's subject) being lost to an in-memory-only value
 	// a crash wipes. Normative.
 	Outputs map[string]any `json:"outputs,omitempty"`
+	// WorkspaceRevision records accepted deterministic workspace authority.
+	// It is normative and independent of scalar outputs and branch continuity.
+	WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
 	// Artifacts mirrors a stage.finished ResultEnvelope's Artifacts — the
 	// pointers this attempt produced — for the same reconstruction reason as
 	// Outputs. Each entry's Digest and Integrity are normative;

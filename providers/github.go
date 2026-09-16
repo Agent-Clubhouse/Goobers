@@ -423,8 +423,9 @@ type githubPullRequestDetail struct {
 		Repo *restRepository `json:"repo"`
 	} `json:"head"`
 	Base struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string          `json:"ref"`
+		SHA  string          `json:"sha"`
+		Repo *restRepository `json:"repo"`
 	} `json:"base"`
 }
 

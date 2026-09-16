@@ -95,6 +95,13 @@ func TestConformanceViewCapturesFullNormativeFieldSet(t *testing.T) {
 		{"Name", func(e Event) Event { e.Name = "other.txt"; return e }},
 		{"Outputs", func(e Event) Event { e.Outputs = map[string]any{"summary": "different", "count": float64(2)}; return e }},
 		{"Outputs presence", func(e Event) Event { e.Outputs = nil; return e }},
+		{"WorkspaceRevision", func(e Event) Event {
+			e.WorkspaceRevision = &apiv1.WorkspaceRevision{
+				Repository: apiv1.RepositoryIdentity{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+				CommitSHA:  strings.Repeat("a", 40),
+			}
+			return e
+		}},
 		{"Artifacts presence", func(e Event) Event { e.Artifacts = nil; return e }},
 		{"RefDigest", func(e Event) Event { r := *e.Ref; r.Digest = "sha256:cccc"; e.Ref = &r; return e }},
 		{"Ref.Integrity", func(e Event) Event { r := *e.Ref; r.Integrity = apiv1.IntegrityUnapproved; e.Ref = &r; return e }},

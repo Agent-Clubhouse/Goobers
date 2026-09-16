@@ -557,6 +557,7 @@ type PullRequestPollResult struct {
 	// the correct branch).
 	HeadBranch     string         `json:"headBranch,omitempty"`
 	HeadRepository *RepositoryRef `json:"headRepository,omitempty"`
+	BaseRepository *RepositoryRef `json:"baseRepository,omitempty"`
 	HeadSHA        string         `json:"headSha,omitempty"`
 	BaseSHA        string         `json:"baseSha,omitempty"`
 	// BaseBranch is the target branch name (e.g. "main") — distinct from
@@ -943,6 +944,10 @@ type PullRequestSummary struct {
 	Base               string   `json:"base"`
 	HeadSHA            string   `json:"headSha"`
 	BaseSHA            string   `json:"baseSha"`
+	// Repository identities accompany the same snapshot's SHAs; branch names
+	// alone cannot identify a fork or authorize access to it.
+	HeadRepository *RepositoryRef `json:"headRepository,omitempty"`
+	BaseRepository *RepositoryRef `json:"baseRepository,omitempty"`
 	// MergeSHA is the landed commit GitHub reports for a merged PR. It is
 	// empty for open/unmerged PRs and providers that do not expose one.
 	MergeSHA   string     `json:"mergeSha,omitempty"`

@@ -362,6 +362,11 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 
 	f := r.newResumeFrame(jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
 	ws := f.ws
+	revision, err := r.restoreWorkspaceRevision(events, ws.in)
+	if err != nil {
+		return r.failTerminal(ctx, in.RunID, jr, ws.in.RepoRef, "", 0, err)
+	}
+	ws.in.workspaceRevision = revision
 
 	startState, err := f.resolveStartState(rd, in.Machine)
 	if err != nil {
@@ -1297,10 +1302,11 @@ func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.Res
 			errInfo = &apiv1.ErrorInfo{Code: e.Error.Code, Message: e.Error.Message}
 		}
 		return e.Stage, apiv1.ResultEnvelope{
-			Status:    apiv1.ResultStatus(e.Status),
-			Outputs:   e.Outputs,
-			Artifacts: artifactPointersFrom(e.Artifacts),
-			Error:     errInfo,
+			Status:            apiv1.ResultStatus(e.Status),
+			Outputs:           e.Outputs,
+			Artifacts:         artifactPointersFrom(e.Artifacts),
+			Error:             errInfo,
+			WorkspaceRevision: e.WorkspaceRevision,
 		}, true
 	}
 	return "", apiv1.ResultEnvelope{}, false

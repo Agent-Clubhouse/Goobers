@@ -31,6 +31,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -891,6 +892,7 @@ type StartInput struct {
 	RequiredCapabilities []string
 	pinnedWorkspace      *worktree.Worktree
 	pinnedStage          *sync.Mutex
+	workspaceRevision    *apiv1.WorkspaceRevision
 }
 
 // ToolchainVerifier verifies, on the executing host, that a run's declared
@@ -2041,6 +2043,14 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	if err != nil {
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, err)
 		return result, terminal, true, failErr
+	}
+	if result.WorkspaceRevision != nil {
+		selected, selectErr := r.acceptWorkspaceRevision(ws.in, t, result)
+		if selectErr != nil {
+			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, selectErr)
+			return result, terminal, true, failErr
+		}
+		ws.in.workspaceRevision = selected
 	}
 
 	ws.lastStage, ws.lastResult = t.Name, result
@@ -4452,6 +4462,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 				shouldRetry = infrastructureFailures < DefaultMaxInfrastructureAttempts
 				nextRetryClass = journal.AttemptInfra
 			}
+			var nonRetryable interface{ NonRetryable() bool }
+			if errors.As(dispatchErr, &nonRetryable) && nonRetryable.NonRetryable() {
+				shouldRetry = false
+			}
 			// The event's Error.Code stays the generic executor_error: it is
 			// the conformance-normative marker for "this attempt failed
 			// before it could report a result", and the attempt-boundary
@@ -4517,6 +4531,17 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// bare scalars that cannot carry a label of their own (TBH-4).
 		result.Integrity = producedIntegrity(t, in.Item, upstream,
 			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
+		if result.WorkspaceRevision != nil {
+			if branch != 0 && in.workspaceRevision == nil {
+				return apiv1.ResultEnvelope{}, nil, codedStageFailure(workspacerevision.CodeConflict, fmt.Errorf("workspace revision must be established before parallel execution"))
+			}
+			if _, err := r.acceptWorkspaceRevision(in, t, result); err != nil {
+				return apiv1.ResultEnvelope{}, nil, err
+			}
+			if result.Status != apiv1.ResultSuccess {
+				result.WorkspaceRevision = nil
+			}
+		}
 		outputs := result.Outputs
 		if result.Status == apiv1.ResultFailure && t.ContinueOnError {
 			outputs = nil
@@ -4525,6 +4550,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result),
 			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
+			WorkspaceRevision: result.WorkspaceRevision,
 			// Carried so reconstructStageOutputs can restore each stage's grade
 			// on resume; without it a resumed run would fail inputsFrom
 			// admission that a live run admits (TBH-4).
@@ -5967,6 +5993,7 @@ type stageWorkspace struct {
 	// treating a pruned path as unexpectedly deleted.
 	sparse  []string
 	release func()
+	reset   func(context.Context) error
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -6044,6 +6071,9 @@ func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
 }
 
 func (w *stageWorkspace) finishDispatch(ctx context.Context, preserve bool) error {
+	if w.reset != nil {
+		return w.Remove(ctx)
+	}
 	if !preserve {
 		return w.Remove(ctx)
 	}
@@ -6065,6 +6095,10 @@ func (w *stageWorkspace) Remove(ctx context.Context) error {
 	// independent worktrees off their own mirrors, so a failure to remove one must
 	// not block removing the primary worktree. Best-effort: collect the first error.
 	var firstErr error
+	if w.reset != nil {
+		firstErr = w.reset(ctx)
+		w.reset = nil
+	}
 	for _, a := range w.additional {
 		if a.worktree == nil {
 			continue
@@ -6165,6 +6199,9 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		}
 		return createOwnedScratch(r.cfg.ScratchDir, r.cfg.RunsDir, in.RunID)
 	case apiv1.WorkspaceRepoReadOnly:
+		if in.workspaceRevision != nil {
+			return r.createRevisionWorkspace(ctx, in, stageName, syncBase, workspaceBranch)
+		}
 		if in.pinnedWorkspace != nil {
 			if syncBase {
 				return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
@@ -6334,9 +6371,6 @@ func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase
 func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal, in *StartInput) (*worktree.PinnedLease, error) {
 	if !r.cfg.PinnedWorkspace {
 		return nil, nil
-	}
-	if len(r.cfg.AdditionalRepos) > 0 {
-		return nil, fmt.Errorf("runner: pinned project workspaces cannot provision additional repository worktrees")
 	}
 	r.pinnedMu.Lock()
 	owned := r.pinnedRuns[in.RunID]

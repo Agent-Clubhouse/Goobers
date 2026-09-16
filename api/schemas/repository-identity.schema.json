@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/repository-identity.schema.json",
+  "title": "RepositoryIdentity",
+  "description": "Provider-neutral canonical repository identity. Branches, checkout policy, and credential selectors are not authority carried by this control.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["provider", "owner", "name"],
+  "properties": {
+    "provider": {
+      "description": "Repository service provider.",
+      "enum": ["github", "ado", "gitea"]
+    },
+    "owner": {
+      "description": "Repository owner or Azure DevOps organization.",
+      "$ref": "#/$defs/component"
+    },
+    "project": {
+      "description": "Azure DevOps project, required for ADO and absent for other providers.",
+      "$ref": "#/$defs/component"
+    },
+    "name": {
+      "description": "Repository name.",
+      "$ref": "#/$defs/component"
+    },
+    "id": {
+      "description": "Provider-native repository ID retained as identity evidence, never a credential selector.",
+      "$ref": "#/$defs/component"
+    },
+    "url": {
+      "description": "Repository HTTP(S) URL identifying the service, without credentials, query, or fragment. Required for self-hosted Gitea.",
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://[^/?#@\\s]+(?:/[^?#\\s]*)?$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"provider": {"const": "ado"}}},
+      "then": {"required": ["project"]},
+      "else": {"not": {"required": ["project"]}}
+    },
+    {
+      "if": {"properties": {"provider": {"const": "gitea"}}},
+      "then": {"required": ["url"]}
+    }
+  ],
+  "$defs": {
+    "component": {
+      "description": "Nonempty identity component without path separators, control characters, or surrounding whitespace.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\s/\\\\|\u0000-\u001f\u007f-\u009f](?:[^/\\\\|\u0000-\u001f\u007f-\u009f]*[^\\s/\\\\|\u0000-\u001f\u007f-\u009f])?$",
+      "not": {"enum": [".", ".."]}
+    }
+  }
+}

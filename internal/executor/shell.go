@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -1192,7 +1193,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 					}
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-					mergeResultFileOutputs(&result, data)
+					if err := mergeResultFileOutputs(&result, data); err != nil {
+						return apiv1.ResultEnvelope{}, err
+					}
 					code, message, retryable := consumeErrorOutputs(result.Outputs)
 					if code != "" {
 						if message == "" {
@@ -1255,7 +1258,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 				}
 				result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-				mergeResultFileOutputs(&result, data)
+				if err := mergeResultFileOutputs(&result, data); err != nil {
+					return apiv1.ResultEnvelope{}, err
+				}
 			case os.IsNotExist(rerr):
 				result.Status = apiv1.ResultFailure
 				result.Error = missingResultFileError(resultFile, exitCode, waitErr, errBytes)
@@ -1435,18 +1440,43 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 // result.Outputs — see InputResultFile's doc comment. data that isn't JSON,
 // or isn't a flat object, is silently left alone: the artifact/presence-check
 // contract InputResultFile already provides holds either way, and not every
-// declared result file is meant to carry structured outputs.
-func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) {
-	var m map[string]interface{}
+// declared result file is meant to carry structured outputs. The reserved typed
+// workspaceRevision control is decoded strictly and never enters scalar outputs.
+func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(data, &m); err != nil {
-		return
+		return nil
 	}
-	for k, v := range m {
+	for k, raw := range m {
+		if k == "workspaceRevision" {
+			var revision *apiv1.WorkspaceRevision
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&revision); err != nil {
+				return &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "invalid workspaceRevision result control", Cause: err}
+			}
+			if revision == nil {
+				return &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "workspaceRevision must be an object"}
+			}
+			if err := revision.Validate(); err != nil {
+				return &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "invalid workspaceRevision result control", Cause: err}
+			}
+			result.WorkspaceRevision = revision
+			continue
+		}
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return fmt.Errorf("executor: decode result output %q: %w", k, err)
+		}
 		switch v.(type) {
 		case string, float64, bool:
+			if result.Outputs == nil {
+				result.Outputs = make(map[string]any)
+			}
 			result.Outputs[k] = v
 		}
 	}
+	return nil
 }
 
 func exitCodeOf(err error) int {

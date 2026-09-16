@@ -24,7 +24,8 @@ import "fmt"
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
 // v1alpha9 adds runner-authored nested-agent authority and ownership fields.
-const StageContractVersion = "v1alpha9"
+// v1alpha10 adds deterministic-only immutable selected-revision control.
+const StageContractVersion = "v1alpha10"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -298,6 +299,10 @@ const (
 type ResultEnvelope struct {
 	// Status is the terminal status of the stage.
 	Status ResultStatus `json:"status"`
+	// WorkspaceRevision establishes immutable run workspace identity only from
+	// a successful deterministic producer. It is separate from scalar outputs,
+	// writable workspaceBranch ownership, and workspace delta artifacts.
+	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
 	// Outputs are small, named scalar values downstream stages/gates can consume
 	// directly. Anything larger than a scalar is an artifact, referenced by
 	// pointer — state does not travel through Outputs.
@@ -676,6 +681,11 @@ func (r ResultEnvelope) Validate() error {
 	if r.Transcript != nil {
 		if err := r.Transcript.Validate(); err != nil {
 			return fmt.Errorf("result transcript: %w", err)
+		}
+	}
+	if r.WorkspaceRevision != nil {
+		if err := r.WorkspaceRevision.Validate(); err != nil {
+			return err
 		}
 	}
 	return nil

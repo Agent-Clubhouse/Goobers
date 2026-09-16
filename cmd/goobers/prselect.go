@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -73,7 +74,9 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
 	"selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared\n" +
-	"result file. Exit codes: 0 = selected (or no-work), 1 = business error,\n" +
+	"result file, plus workspaceRevision with the source repository and exact\n" +
+	"head SHA. Repository access still requires configuration authorization.\n" +
+	"Exit codes: 0 = selected (or no-work), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
 
 func runPRSelect(args []string, stdout, stderr io.Writer) int {
@@ -334,6 +337,11 @@ func completePRSelection(
 		return writePRQueueNoWork(stdout, stderr, "every eligible PR is already claimed by another run", report)
 	}
 	selected := *claimed
+	revision, err := selectedPRWorkspaceRevision(selected, repo)
+	if err != nil {
+		pf(stderr, "error: selected PR workspace revision: %v\n", err)
+		return 1
+	}
 	advisoryMode := authorScope == authorScopeAny && !isOwnPullRequest(selected.Author, selected.Head, headPrefixes, expectedAuthorLogin)
 	if advisoryMode {
 		if err := recordPRSelectAdvisory(root, repo, selected, now); err != nil {
@@ -363,6 +371,7 @@ func completePRSelection(
 		"maxEligibleWaitSeconds": strconv.FormatInt(int64(fairness.MaxWait/time.Second), 10),
 		"starvedEligiblePRsCsv":  joinPRNumbers(fairness.Starved),
 		"eligibilityPolicy":      mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity),
+		"workspaceRevision":      revision,
 	}
 	if report != nil {
 		result["queueEligibility"] = report
@@ -387,6 +396,38 @@ func completePRSelection(
 		noneIfEmpty(joinPRNumbers(fairness.Starved)),
 	)
 	return 0
+}
+
+// selectedPRWorkspaceRevision preserves provider-observed identity and commit
+// together. The runner validates and authorizes this control against the run's
+// declared repositories; neither a branch name nor PR content grants access.
+func selectedPRWorkspaceRevision(pr providers.PullRequestSummary, base providers.RepositoryRef) (apiv1.WorkspaceRevision, error) {
+	if pr.HeadRepository == nil {
+		return apiv1.WorkspaceRevision{}, fmt.Errorf("PR #%d has no accessible source repository identity", pr.Number)
+	}
+	if pr.BaseRepository != nil {
+		base = *pr.BaseRepository
+	}
+	sourceIdentity := pr.HeadRepository.RepositoryIdentity()
+	baseIdentity := base.RepositoryIdentity()
+	if err := sourceIdentity.Validate(); err != nil {
+		return apiv1.WorkspaceRevision{}, err
+	}
+	if err := baseIdentity.Validate(); err != nil {
+		return apiv1.WorkspaceRevision{}, err
+	}
+	if pr.HeadSHA == "" {
+		return apiv1.WorkspaceRevision{}, fmt.Errorf("PR #%d has no head commit SHA", pr.Number)
+	}
+	sourceID := pr.ID
+	if sourceID == "" {
+		sourceID = strconv.Itoa(pr.Number)
+	}
+	return apiv1.WorkspaceRevision{
+		Repository: sourceIdentity, CommitSHA: pr.HeadSHA,
+		SourceRef: pr.Head, SourceID: sourceID,
+		BaseRepository: &baseIdentity, BaseSHA: pr.BaseSHA,
+	}, nil
 }
 
 func pullRequestsForSelection(
@@ -904,6 +945,16 @@ func pullRequestsForSelectionADO(
 			return nil, nil, fmt.Errorf("read pull request #%d checks: %w", pr.Number, err)
 		}
 		pr.CheckState = poll.CheckState
+		// A later policy poll may observe a different fork or head commit.
+		// Replace the identity and SHA as one snapshot, never mix list and poll.
+		if poll.HeadSHA != "" {
+			pr.HeadSHA = poll.HeadSHA
+			pr.HeadRepository = poll.HeadRepository
+			pr.Head = poll.HeadBranch
+			pr.BaseSHA = poll.BaseSHA
+			pr.BaseRepository = poll.BaseRepository
+			pr.Base = poll.BaseBranch
+		}
 		// ADO's ListPullRequests only returns active PRs but leaves Summary.State
 		// empty; the eligibility filter gates on State=="open", so take the live
 		// open/merged/abandoned mapping PollPullRequest already computed.
@@ -939,6 +990,8 @@ func adoSelectionCandidate(ctx context.Context, provider adoSelectProvider, repo
 		Base:               poll.BaseBranch,
 		HeadSHA:            poll.HeadSHA,
 		BaseSHA:            poll.BaseSHA,
+		HeadRepository:     poll.HeadRepository,
+		BaseRepository:     poll.BaseRepository,
 		Draft:              poll.Draft,
 		Labels:             poll.Labels,
 		CheckState:         poll.CheckState,

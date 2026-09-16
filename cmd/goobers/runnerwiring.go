@@ -158,9 +158,6 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 	configuredProject, projectConfigured := configuredRepoForProject(cfg, gaggleProject)
 	pinned := projectConfigured && configuredProject.Pinned()
-	if pinned && len(additionalRepos) > 0 {
-		return runner.Config{}, nil, fmt.Errorf("VER: pinned workspace for %s/%s cannot be combined with additional repository worktrees", gaggleProject.Owner, gaggleProject.Name)
-	}
 	workcopiesRoot := l.WorkcopiesDir()
 	if pinned {
 		workcopiesRoot = l.WorkcopiesBaseDir()

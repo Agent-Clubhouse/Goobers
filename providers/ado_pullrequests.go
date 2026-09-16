@@ -172,6 +172,8 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		BaseBranch:         strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
 		HeadSHA:            pr.LastMergeSourceCommit.CommitID,
 		BaseSHA:            pr.LastMergeTargetCommit.CommitID,
+		HeadRepository:     p.pullRequestHeadRepository(pr.adoPullRequest, req.Repository),
+		BaseRepository:     p.pullRequestRepository(pr.Repository, req.Repository),
 		Body:               pr.Description,
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
 		URL:                prURL,
@@ -425,6 +427,8 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			Base:               strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
 			HeadSHA:            pr.LastMergeSourceCommit.CommitID,
 			BaseSHA:            pr.LastMergeTargetCommit.CommitID,
+			HeadRepository:     p.pullRequestHeadRepository(pr, req.Repository),
+			BaseRepository:     p.pullRequestRepository(pr.Repository, req.Repository),
 			Draft:              pr.IsDraft,
 			Labels:             labels,
 			CheckState:         CheckStatePending,
@@ -519,20 +523,25 @@ type adoPullRequest struct {
 	LastMergeSourceCommit adoCommitRef  `json:"lastMergeSourceCommit"`
 	LastMergeTargetCommit adoCommitRef  `json:"lastMergeTargetCommit"`
 	Links                 adoPRLinks    `json:"_links"`
+	Repository            adoRepository `json:"repository"`
+	ForkSource            *adoForkRef   `json:"forkSource,omitempty"`
+}
+
+type adoForkRef struct {
+	Name       string         `json:"name"`
+	ObjectID   string         `json:"objectId"`
+	Repository *adoRepository `json:"repository"`
 }
 
 type adoPullRequestsResponse struct {
 	Value []adoPullRequest `json:"value"`
 }
 
-// adoPullRequestDetail extends adoPullRequest with the fields a single-PR GET
-// returns that a list does not: description, reviewers (for review-decision
-// mapping), and the repository/project identity needed to key policy
-// evaluations.
+// adoPullRequestDetail extends the shared list/poll repository snapshot with
+// description and merge-completion metadata returned by a single-PR GET.
 type adoPullRequestDetail struct {
 	adoPullRequest
-	Description string        `json:"description"`
-	Repository  adoRepository `json:"repository"`
+	Description string `json:"description"`
 	// MergeStatus/MergeID/LastMergeCommit/CompletionOptions/
 	// AutoCompleteSetBy back the landing surfaces (CONF-3 #2076, design
 	// doc §4): MergeStatus is the completion job's own outcome
@@ -575,9 +584,62 @@ func adoRequestedReviewerNames(reviewers []adoReviewer) []string {
 }
 
 type adoRepository struct {
-	ID      string     `json:"id"`
-	Name    string     `json:"name"`
-	Project adoProject `json:"project"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Project   adoProject `json:"project"`
+	URL       string     `json:"url"`
+	RemoteURL string     `json:"remoteUrl"`
+	WebURL    string     `json:"webUrl"`
+}
+
+func (p *ADOProvider) pullRequestHeadRepository(pr adoPullRequest, base RepositoryRef) *RepositoryRef {
+	if pr.ForkSource != nil {
+		// A missing fork repository is not evidence of a same-repository PR.
+		if pr.ForkSource.Repository == nil {
+			return nil
+		}
+		return p.pullRequestRepository(*pr.ForkSource.Repository, RepositoryRef{})
+	}
+	return p.pullRequestRepository(pr.Repository, base)
+}
+
+func (p *ADOProvider) pullRequestRepository(repo adoRepository, fallback RepositoryRef) *RepositoryRef {
+	ref := fallback
+	ref.Provider = ProviderADO
+	if repo.ID != "" {
+		ref.ID = repo.ID
+	}
+	if repo.Name != "" {
+		ref.Name = repo.Name
+	}
+	if repo.Project.Name != "" {
+		ref.Project = repo.Project.Name
+	} else if repo.Project.ID != "" {
+		ref.Project = repo.Project.ID
+	}
+	if ref.Project == "" && fallback.Name != "" {
+		ref.Project = p.project(fallback)
+	}
+	if ref.Owner == "" {
+		ref.Owner = p.Organization
+	}
+	switch {
+	case repo.WebURL != "":
+		ref.URL = repo.WebURL
+	case repo.RemoteURL != "":
+		ref.URL = repo.RemoteURL
+	case repo.URL != "":
+		ref.URL = repo.URL
+	case ref.URL == "":
+		ref.URL, _ = joinURL(p.BaseURL, p.Organization, ref.Project, "_git", ref.Name)
+	}
+	// ADO clone URLs may include an organization username. Identity never
+	// carries URL userinfo, which is not repository or credential authority.
+	if parsed, err := url.Parse(ref.URL); err == nil && parsed.User != nil {
+		parsed.User = nil
+		ref.URL = parsed.String()
+	}
+	return &ref
 }
 
 type adoProject struct {

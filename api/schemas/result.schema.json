@@ -9,6 +9,10 @@
     "status"
   ],
   "properties": {
+    "workspaceRevision": {
+      "description": "Immutable run workspace binding, honored only from successful deterministic task results. It grants no branch, checkout-policy, or credential authority.",
+      "$ref": "workspace-revision.schema.json"
+    },
     "status": {
       "type": "string",
       "enum": [

@@ -219,6 +219,24 @@ cannot expand it.
 left a viable committed diff. Use the default `fail` behavior when partial
 committed work is not a valid result.
 
+### Choose stateless inspection or committed continuity
+
+Use `workspace: repo-readonly` after a deterministic PR selector when a task
+needs the exact selected source commit but must not share repository changes.
+The typed `workspaceRevision` result pins repository identity and SHA; a branch
+name is only display metadata. The source must be the configured project or a
+declared additional repository. A missing object or authorization fails rather
+than substituting the configured base.
+
+Each disposable inspection gets an independent detached worktree. In pinned
+mode the run holds its lease and resets and cleans the serialized checkout
+before and after inspection, including untracked files and local commits.
+Neither mode shares repository changes or supports `workspaceBranch`,
+`syncBase`, or workspace deltas. Choose writable `repo` for iterative editing
+and testing of earlier stages' commits; selecting a revision does not by itself
+establish a writable branch. See the
+[exact-revision inspection example](../reference/workflow-primitives/tasks-and-stages.md#exact-revision-inspection).
+
 ## 6. Turn review into an agentic gate
 
 The starter template uses an agentic task for a simple advisory review. A

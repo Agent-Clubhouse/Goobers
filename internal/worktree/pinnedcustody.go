@@ -47,6 +47,10 @@ func (m *Manager) handoffPinnedState(ctx context.Context, key, expectedOwner str
 	if expectedOwner != "" && owner.OwnerRunID != expectedOwner {
 		return fmt.Errorf("%w: pinned custody owner mismatch", ErrCleanupDeferred)
 	}
+	if owner.SelectedRevisionSHA != "" {
+		wt := &Worktree{Path: path, pinned: true, revisionSparse: owner.RevisionSparse}
+		return wt.ResetPinnedRevision(ctx, owner.SelectedRevisionSHA)
+	}
 	// Missing legacy ownership is passed explicitly to the guard, which may
 	// refuse cleanup. Never substitute the next run's identity for old work.
 	return m.preparePreservedTarget(ctx, CleanupTarget{

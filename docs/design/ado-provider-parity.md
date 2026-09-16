@@ -7,7 +7,7 @@
 > Reconciled 2026-09-06 by #2061/#2179.
 > Driving epic: #2061 (ADO end-to-end). Builds on `docs/design/provider-contract-conformance.md`
 > (the capability model) and `docs/design/v0/pr-lifecycle-loop.md` (the stage contract).
-> Delivered-by: #2745
+> Delivered-by: #2745, #5122
 
 ## 1. Context
 
@@ -165,6 +165,38 @@ dependency: **the ADO run-branch namespace must appear in the gaggle's head pref
 otherwise a goobers-authored ADO PR is misclassified as third-party, enters advisory mode,
 and never merges — even though every provider call succeeds.
 
+#### Source/fork repository identity (#5122)
+
+ADO list and poll results now populate `HeadRepository` and `BaseRepository`.
+The base comes from the PR's `repository`; a fork source comes from
+`forkSource.repository`, otherwise the source is the base repository.
+Both carry provider, organization, project, repository name, immutable
+repository ID, and the repository's service URL. URL selection prefers
+`webUrl`, then `remoteUrl`, then repository REST `url`, with a configured
+service URL fallback; URL userinfo is never preserved as authority.
+Self-hosted service/collection URLs and cross-project forks remain distinct.
+
+Selection carries the policy poll's repository identities and
+`lastMergeSourceCommit.commitId` together, replacing an older list snapshot
+as a unit. The typed `workspaceRevision.repository` plus `commitSha` is the
+authoritative selected source; source/target branch names are display
+metadata, not permission to resolve a different repository or moving ref.
+An inaccessible or missing `forkSource.repository` fails selection rather
+than silently substituting the base. Fork project identity must not be
+inferred from the base project.
+
+The source must be authorized by the run's configuration-declared repository
+access before checkout. A PR's source URL or repository ID cannot select
+credentials or introduce an additional-repository grant. See
+[the provider identity and authorization contract](provider-contract-conformance.md#34-selected-revision-repository-identity-5122)
+for the full field mapping and the current configuration/native-ID limitation.
+
+This closes the missing source-identity gap, not all ADO parity gaps:
+branch-policy evaluations remain the check-state oracle, reviewer identity
+remains provider-specific, and the unsupported sibling/native-review paths
+below remain unchanged. Source-identity propagation does not enable source
+branch mutation, shared post-merge branch cleanup, or a new PR publication path.
+
 ### 6.2 `apply-verdict` — escalate-and-park routing
 
 ADO has neither a native changes-requested review to submit nor GitHub's sticky-comment /
@@ -218,11 +250,12 @@ provider-neutral.
 
 The GitHub-only helpers (Tutor change classification, merged-branch cleanup) require the
 concrete GitHub provider and stay nil / gated off on ADO. ADO `PollPullRequest` leaves
-`Labels`, `CommentsSince`, `MergeableState`, and `HeadRepository` empty, with deliberate
+`Labels`, `CommentsSince`, and `MergeableState` empty, with deliberate
 consequences: the label opt-out conjuncts never fire (the ADO merge path carries no PR
 opt-out labels); the advisory-check bypass never applies, so the decision falls through to
 the conservative `CheckState == Passing` gate (correct and safe); and branch cleanup is
-skipped (no head-repository to act on). The merge-commit message on ADO is assembled
+skipped by the provider-specific gate, even though head-repository identity is
+now available. The merge-commit message on ADO is assembled
 directly from the PR title plus the body's closing references, rather than from a verdict
 comment.
 
@@ -278,9 +311,10 @@ updated in place via the composite comment id.
   branch, the merge-queue eviction remediation, and the post-merge sibling fan-out / unpark
   set. On ADO these route to PR-native surfaces (labels, status, threads) instead.
 - **Empty poll fields on ADO.** `PollPullRequest` leaves `Labels`, `CommentsSince`,
-  `MergeableState`, and `HeadRepository` empty. Each empty field has a deliberate,
+  and `MergeableState` empty. Each empty field has a deliberate,
   documented consequence (§6.3): opt-out conjuncts inert, advisory bypass inert (conservative
-  gate wins), branch cleanup skipped.
+  gate wins). `HeadRepository` and `BaseRepository` are populated; shared branch
+  cleanup remains independently gated off for ADO.
 - **advisoryMode misfire.** The ADO run-branch namespace must be present in the gaggle's
   head prefixes, or a goobers-authored ADO PR is misclassified and never merges (§6.1).
 - **Identity strings differ by surface.** The thread/verdict transport uses **displayName**

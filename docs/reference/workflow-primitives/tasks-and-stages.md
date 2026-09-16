@@ -39,6 +39,38 @@ Ordinary commands use the implicit `shell` deterministic-stage kind. A command
 whose executable is `goobers` may invoke only the admitted built-in commands in
 [Stage commands](stage-commands.md).
 
+### Exact-revision inspection
+
+A successful deterministic selector such as `pr-select` can return the typed
+`workspaceRevision` result control. Subsequent `workspace: repo-readonly`
+tasks use its configuration-authorized source repository and full commit SHA,
+not the displayed source branch or the configured base branch:
+
+```yaml
+- name: inspect-selected
+  type: deterministic
+  goal: Inspect the exact selected commit without sharing repository changes.
+  workspace: repo-readonly
+  run:
+    command: ["git", "show", "--stat", "HEAD"]
+  next: "@complete"
+```
+
+The selector must run first and establish selection before a parallel group.
+The accepted identity is immutable and journaled; resume does not repoll the PR.
+Declare a fork/source repository in the gaggle's `additionalRepos` and its
+credentials in instance configuration before selecting it. A result cannot
+introduce credentials or a new repository grant.
+
+Read-only workspaces have writable filesystems for inspection and builds, but
+discard local commits and filesystem changes after each stage. Pinned execution
+uses the same serialized checkout under its run lease and resets/cleans before
+and after each selected-revision stage. Do not combine this mode with
+`workspaceBranch`, `syncBase`, or workspace deltas. For cumulative committed
+changes, use writable `repo` continuity instead; selected revision alone does
+not create a writable branch. See the
+[selected revision contract](../../stage-contract.md#selected-revision-control).
+
 ## Task type: `agentic`
 
 Invokes a named Goober through its configured harness.

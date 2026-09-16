@@ -1153,7 +1153,7 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 		for _, num := range sortedPRKeys(s.prs) {
 			pr := s.prs[num]
 			if (state == "all" || pr.state == state) && (base == "" || pr.base == base) {
-				out = append(out, prDetailJSON(pr))
+				out = append(out, s.prDetailJSON(pr))
 			}
 		}
 		if perPage, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && perPage > 0 {
@@ -1200,7 +1200,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 	}
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
-		writeFakeJSON(w, prDetailJSON(pr))
+		writeFakeJSON(w, s.prDetailJSON(pr))
 	case len(parts) == 2 && parts[1] == "reviews" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(pr.reviews))
 		for _, review := range pr.reviews {
@@ -1381,7 +1381,7 @@ func prJSON(pr *fakePR) map[string]interface{} {
 
 // prDetailJSON is the ListPullRequests shape (issue #359): draft flag,
 // labels, and head/base ref+sha, none of which prJSON's open-pr shape needs.
-func prDetailJSON(pr *fakePR) map[string]interface{} {
+func (s *fakeGitHubServer) prDetailJSON(pr *fakePR) map[string]interface{} {
 	labels := make([]map[string]string, 0, len(pr.labels))
 	for _, l := range pr.labels {
 		labels = append(labels, map[string]string{"name": l})
@@ -1394,12 +1394,16 @@ func prDetailJSON(pr *fakePR) map[string]interface{} {
 	for _, reviewer := range pr.requestedReviewers {
 		requestedReviewers = append(requestedReviewers, map[string]string{"login": reviewer})
 	}
+	repo := map[string]interface{}{
+		"id": 1, "name": s.repo, "owner": map[string]string{"login": s.owner},
+		"html_url": s.server.URL + "/" + s.owner + "/" + s.repo,
+	}
 	return map[string]interface{}{
 		"number": pr.number, "html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
 		"state": pr.state, "merged": pr.merged, "draft": pr.draft,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
-		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
-		"base":                map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
+		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA, "repo": repo},
+		"base":                map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA, "repo": repo},
 		"user":                map[string]string{"login": pr.author},
 		"assignees":           assignees,
 		"requested_reviewers": requestedReviewers,

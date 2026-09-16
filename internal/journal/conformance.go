@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -55,7 +56,8 @@ type NormativeEvent struct {
 	// Outputs (event.go's doc comment: fully normative). Encoded rather than
 	// kept as map[string]any so NormativeEvent stays flat and ==-comparable
 	// (a struct containing a map is not comparable at all).
-	Outputs string
+	Outputs           string
+	WorkspaceRevision string
 
 	// Parallel/branch identity (§6.2). Completeness is a FLATTENED encoding of
 	// the branch completeness record rather than a slice, because
@@ -117,6 +119,10 @@ func projectNormative(e Event) NormativeEvent {
 		BranchStatus: e.BranchStatus,
 		Completeness: encodeCompleteness(e.Completeness),
 		Outputs:      encodeOutputs(e.Outputs),
+	}
+	if e.WorkspaceRevision != nil {
+		data, _ := json.Marshal(e.WorkspaceRevision)
+		ne.WorkspaceRevision = string(data)
 	}
 	if e.Ref != nil {
 		ne.RefIntegrity = e.Ref.Integrity
@@ -224,7 +230,7 @@ func isContextManifestArtifact(e Event) bool {
 func (ne NormativeEvent) String() string {
 	ext := fmt.Sprintf("%s:%s:%s", ne.ExternalRefProvider, ne.ExternalRefKind, ne.ExternalRefID)
 	redaction := fmt.Sprintf("%s:%s->%s:%s", ne.RedactionTarget, ne.RedactionOldDigest, ne.RedactionNewDigest, ne.RedactionReason)
-	return fmt.Sprintf(
+	text := fmt.Sprintf(
 		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|action=%s|decision=%s|rationale=%s|addendum=%s|gate=%s|verdict=%s|target=%s|complete=%t|escalated=%t|status=%s|disposition=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s|outputs=%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
 		ne.Actor, ne.Action, ne.Decision, ne.Rationale, ne.InstructionAddendum,
@@ -233,6 +239,10 @@ func (ne NormativeEvent) String() string {
 		ne.Integrity, ne.MinimumIntegrity, ext, ne.ErrorCode, redaction,
 		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness, ne.Outputs,
 	)
+	if ne.WorkspaceRevision != "" {
+		text += "|workspaceRevision=" + ne.WorkspaceRevision
+	}
+	return text
 }
 
 // MonotonicSeq reports whether events' Seq values are exactly 1..N with no
