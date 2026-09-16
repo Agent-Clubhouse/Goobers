@@ -110,7 +110,7 @@ test("telemetry insights render unavailable values and measured zeroes", () => {
 });
 
 test("telemetry insights keep sub-second durations distinct from zero", () => {
-    const html = renderTelemetryInsights({ durationMillis: 250 });
+    const html = renderTelemetryInsights({ executionMillis: 250 });
     assert.match(html, /250ms/);
 });
 

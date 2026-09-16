@@ -582,20 +582,26 @@ test("run event items auto-load small artifacts and require a button for large/u
 // renders milliseconds rather than a rounded "0s", which is the difference
 // between a useful number and one that reads as "instant".
 test("telemetry insights render sub-second durations in milliseconds", () => {
-    const html = renderTelemetryInsights({
-        startedAt: "2026-08-28T10:00:00.000Z",
-        finishedAt: "2026-08-28T10:00:00.250Z",
-    });
+    const html = renderTelemetryInsights({ executionMillis: 250 });
     assert.match(html, /250ms/);
-    assert.doesNotMatch(html, /Run duration<\/div><div class="value">0s/);
+    assert.doesNotMatch(html, /Execution time<\/div><div class="value">0s/);
 });
 
 test("telemetry insights render multi-second durations in seconds", () => {
+    const html = renderTelemetryInsights({ executionMillis: 12000 });
+    assert.match(html, /12s/);
+});
+
+// "Run duration" and "Repasses" already appear in the Summary tab; the
+// Telemetry insights section should not repeat them.
+test("telemetry insights omit Run duration and Repasses, which the Summary tab already shows", () => {
     const html = renderTelemetryInsights({
         startedAt: "2026-08-28T10:00:00Z",
         finishedAt: "2026-08-28T10:00:12Z",
+        repassCount: 2,
     });
-    assert.match(html, /12s/);
+    assert.doesNotMatch(html, />Run duration</);
+    assert.doesNotMatch(html, />Repasses</);
 });
 
 // ---- Insights tab ----

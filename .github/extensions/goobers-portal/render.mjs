@@ -655,14 +655,15 @@ export function renderTelemetryInsights(run = {}) {
         return Math.round(value / 1000) + "s";
     };
     const formatMeasure = (measure) => measure.value === 0 ? "0 " + measure.unit : measure.value.toLocaleString() + " " + measure.unit;
+    // "Run duration" and "Repasses" already appear in the Summary tab's KV
+    // grid (renderRunDetailSummary); omit them here so this section adds
+    // only the drill-down breakdown the Summary tab doesn't cover.
     const durationRows = [
-        ["Run duration", formatDuration(insights.duration.totalMillis)],
         ["Queue wait", formatDuration(insights.duration.queueMillis)],
         ["Execution time", formatDuration(insights.duration.executionMillis)],
     ];
     const countRows = [
         ["Failures", insights.counts.failures === null ? "Unknown" : String(insights.counts.failures)],
-        ["Repasses", insights.counts.repasses === null ? "Unknown" : String(insights.counts.repasses)],
     ];
     const rows = (items) => items.map(([label, value]) =>
         '<div class="kv"><div class="label">' + escapeAssociationHtml(label) + '</div><div class="value">' + escapeAssociationHtml(value) + "</div></div>",
