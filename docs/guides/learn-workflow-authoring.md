@@ -145,6 +145,20 @@ readiness:
 See [Trigger primitives](../reference/workflow-primitives/triggers.md) for
 manual, schedule, backlog-item, signal, and webhook parameters.
 
+### Temporarily stop new starts without deleting triggers
+
+To pause a workflow without editing its schedule or backlog trigger, set:
+
+```yaml
+spec:
+  enabled: false
+```
+
+Omitting the field, setting it to `null`, or setting it back to `true` re-enables new
+starts. Existing runs keep their pinned definitions and continue normally. The Portal
+shows disabled workflows and their parent gaggle greyed out but still clickable so you
+can inspect or re-enable them without losing navigation.
+
 ## 4. Add a deterministic built-in stage
 
 The first state claims one trusted backlog item:
