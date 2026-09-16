@@ -837,7 +837,7 @@ func normalizeMetric(metric *metricspb.Metric) {
 	case *metricspb.Metric_Gauge:
 		normalizeNumberPoints(data.Gauge.DataPoints)
 	case *metricspb.Metric_Histogram:
-		normalizeHistogramPoints(data.Histogram.DataPoints)
+		normalizeHistogramPoints(metric.Name, data.Histogram.DataPoints)
 	}
 }
 
@@ -856,11 +856,28 @@ func normalizeNumberPoints(points []*metricspb.NumberDataPoint) {
 	})
 }
 
-func normalizeHistogramPoints(points []*metricspb.HistogramDataPoint) {
+func normalizeHistogramPoints(metricName string, points []*metricspb.HistogramDataPoint) {
 	for _, point := range points {
 		sortKeyValues(point.Attributes)
 		point.StartTimeUnixNano = 0
 		point.TimeUnixNano = 0
+		// RecordWorkcopyUsage creates and completes this standalone scheduler
+		// span around the measurement call, so its duration is deliberately
+		// wall-clock based. Preserve the point's schema and count in the wire
+		// fixture without making the golden file depend on runner timing.
+		if metricName == MetricStageDuration && attributesContain(point.Attributes, map[string]string{
+			AttrStage: "workcopy-create",
+		}) {
+			point.Sum = proto.Float64(0)
+			point.Min = proto.Float64(0)
+			point.Max = proto.Float64(0)
+			for i := range point.BucketCounts {
+				point.BucketCounts[i] = 0
+			}
+			if len(point.BucketCounts) > 0 {
+				point.BucketCounts[0] = point.Count
+			}
+		}
 		for _, exemplar := range point.Exemplars {
 			sortKeyValues(exemplar.FilteredAttributes)
 			exemplar.TimeUnixNano = 0
