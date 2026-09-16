@@ -2046,17 +2046,9 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, err)
 		return result, terminal, true, failErr
 	}
-	if result.WorkspaceRevision != nil {
-		selected, selectErr := r.acceptWorkspaceRevision(ws.in, t, result)
-		if selectErr != nil {
-			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, selectErr)
-			return result, terminal, true, failErr
-		}
-		ws.in.workspaceRevision = selected
-	}
-	if result.WorkspaceBranchBinding != nil {
-		ws.in.workspaceBranchBinding = result.WorkspaceBranchBinding.DeepCopy()
-		ws.workspaceBranch = strings.TrimPrefix(result.WorkspaceBranchBinding.Ref, "refs/heads/")
+	if err := r.applyTaskWorkspaceResult(ws, t, result); err != nil {
+		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, err)
+		return result, terminal, true, failErr
 	}
 
 	ws.lastStage, ws.lastResult = t.Name, result
@@ -4287,40 +4279,10 @@ type taskFrame struct {
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
 	jr, in, t := tf.jr, tf.in, tf.t
-	if branch != 0 && workspacebranch.BackendKind(t.Inputs) {
-		return apiv1.ResultEnvelope{}, nil, codedStageFailure(workspacerevision.CodeConflict, fmt.Errorf("remote branch operations must execute outside parallel branches"))
-	}
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
-	// Both admission checks run here, before any workspace or credential
-	// provisioning below. contextFrom-selected pointers are graded by
-	// ValidateInputIntegrity; inputsFrom values are bare scalars whose only
-	// provenance is the stage that produced them, so they are graded separately
-	// against the same minimum. Checking only the former let a stage exclude an
-	// unapproved producer's artifact with contextFrom and still import that
-	// producer's provider-authored text through inputsFrom (TBH-4).
-	integrityErr := apiv1.ValidateInputIntegrity(in.Item, upstream, t.MinimumIntegrity)
-	if integrityErr == nil {
-		integrityErr = apiv1.ValidateResolvedInputIntegrity(
-			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn), t.MinimumIntegrity)
-	}
-	if err := integrityErr; err != nil {
-		admission := &apiv1.IntegrityAdmissionError{}
-		if !errors.As(err, &admission) {
-			return apiv1.ResultEnvelope{}, nil, err
-		}
-		if appendErr := jr.Append(journal.Event{
-			Type:             journal.EventError,
-			Stage:            t.Name,
-			Integrity:        admission.Actual,
-			MinimumIntegrity: admission.Minimum,
-			Error: &journal.ErrorDetail{
-				Code: apiv1.IntegrityAdmissionErrorCode, Message: admission.Error(),
-			},
-		}); appendErr != nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal integrity refusal for %q: %w", t.Name, appendErr)
-		}
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: refuse stage %q: %w", t.Name, admission)
+	if err := validateTaskAdmission(tf, branch); err != nil {
+		return apiv1.ResultEnvelope{}, nil, err
 	}
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
@@ -4540,26 +4502,9 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// bare scalars that cannot carry a label of their own (TBH-4).
 		result.Integrity = producedIntegrity(t, in.Item, upstream,
 			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
-		if result.WorkspaceRevision != nil {
-			if branch != 0 && in.workspaceRevision == nil {
-				return apiv1.ResultEnvelope{}, nil, codedStageFailure(workspacerevision.CodeConflict, fmt.Errorf("workspace revision must be established before parallel execution"))
-			}
-			if _, err := r.acceptWorkspaceRevision(in, t, result); err != nil {
-				return apiv1.ResultEnvelope{}, nil, err
-			}
-			if result.Status != apiv1.ResultSuccess {
-				result.WorkspaceRevision = nil
-			}
-		}
-		if branch != 0 && result.WorkspaceBranchBinding != nil {
-			return apiv1.ResultEnvelope{}, nil, codedStageFailure(workspacerevision.CodeConflict, fmt.Errorf("remote branch establishment is not allowed in parallel branches"))
-		}
-		if _, err := workspacebranch.ValidateResult(in.workspaceBranchBinding, in.workspaceRevision, in.RepoRef,
-			r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID, t, result); err != nil {
+		result, err := r.validateTaskWorkspaceResult(in, t, branch, result)
+		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, err
-		}
-		if result.Status != apiv1.ResultSuccess {
-			result.WorkspaceBranchBinding = nil
 		}
 		outputs := result.Outputs
 		if result.Status == apiv1.ResultFailure && t.ContinueOnError {
@@ -4571,6 +4516,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
 			WorkspaceRevision:      result.WorkspaceRevision,
 			WorkspaceBranchBinding: result.WorkspaceBranchBinding.DeepCopy(),
+			WorkspaceBranchTip:     result.WorkspaceBranchTip,
 			// Carried so reconstructStageOutputs can restore each stage's grade
 			// on resume; without it a resumed run would fail inputsFrom
 			// admission that a live run admits (TBH-4).
@@ -4826,7 +4772,6 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, cleanup func(bool) error, err error) {
 	jr, in, ex, t := tf.jr, tf.in, tf.ex, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
-	completed, fanIn := tf.completed, tf.fanIn
 	workspaceBranch, branchRecorded := tf.workspaceBranch, tf.branchRecorded
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
@@ -4976,26 +4921,8 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 	}
 
-	for inputKey, outputKey := range t.InputsFrom {
-		if v, ok, branchRef, absent := resolveBranchInput(outputKey, in.Machine, completed, fanIn); branchRef {
-			if ok {
-				env.Inputs[inputKey] = v
-			} else if absent {
-				delete(env.Inputs, inputKey)
-			} else {
-				return apiv1.ResultEnvelope{}, nil, nil, branchInputsFromError(t.Name, inputKey, outputKey)
-			}
-			continue
-		}
-		qualified := workflow.SupportsStageQualifiedInputs(in.Machine)
-		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualified)
-		if !ok {
-			return apiv1.ResultEnvelope{}, nil, nil, inputsFromError(t.Name, inputKey, outputKey, completed, qualified)
-		}
-		env.Inputs[inputKey] = v
-	}
-	if fanIn != nil && t.Name == fanIn.spec.Join {
-		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	if err := resolveTaskEnvelopeInputs(env.Inputs, tf); err != nil {
+		return apiv1.ResultEnvelope{}, nil, nil, err
 	}
 	if err := workspacebranch.ValidateKind(t, env.Inputs); err != nil {
 		return apiv1.ResultEnvelope{}, nil, nil, errors.Join(err, workspace.Remove(ctx))
@@ -5577,27 +5504,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		return gate.Result{}, err, nil
 	}
 	if g.Evaluator == apiv1.EvaluatorAutomated {
-		gateBaseBranch := in.RepoRef.Branch
-		if gateBaseBranch == "" {
-			gateBaseBranch = "main"
-		}
-		env = apiv1.InvocationEnvelope{
-			TaskID:                 in.RunID + ":" + g.Name,
-			InstanceID:             in.instanceID,
-			WorkflowID:             in.Machine.Def.Name,
-			RunID:                  in.RunID,
-			TriggerRef:             in.Trigger.Ref,
-			Gaggle:                 in.Gaggle,
-			BranchNamespace:        r.branchNamespaceFor(in.Gaggle),
-			BaseBranch:             gateBaseBranch,
-			Goal:                   "gate: " + g.Name,
-			RepoRef:                in.RepoRef.EnvelopeRef(),
-			WorkspaceRevision:      in.workspaceRevision.DeepCopy(),
-			WorkspaceBranchBinding: in.workspaceBranchBinding.DeepCopy(),
-			Item:                   in.Item,
-			Limits:                 gateLimits,
-			ContextPointers:        append([]apiv1.ContextPointer(nil), upstream...),
-		}
+		env = r.automatedGateEnvelope(in, g, gateLimits, upstream)
 	} else {
 		var wt *worktree.Worktree
 		// An agentic gate's reviewer runs a real goober subprocess, so — unlike
@@ -6235,68 +6142,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		}
 		return createOwnedScratch(r.cfg.ScratchDir, r.cfg.RunsDir, in.RunID)
 	case apiv1.WorkspaceRepoReadOnly:
-		if in.workspaceRevision != nil {
-			return r.createRevisionWorkspace(ctx, in, stageName, syncBase, workspaceBranch)
-		}
-		if in.pinnedWorkspace != nil {
-			if syncBase {
-				return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
-			}
-			if workspaceBranch != "" {
-				return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
-			}
-			in.pinnedStage.Lock()
-			if err := r.preparePinnedStage(ctx, in, false, ""); err != nil {
-				in.pinnedStage.Unlock()
-				return nil, err
-			}
-			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
-			if err != nil {
-				in.pinnedStage.Unlock()
-				return nil, err
-			}
-			return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, additional: additional, release: in.pinnedStage.Unlock}, nil
-		}
-		// A detached checkout at the pinned base revision: no branch name, so
-		// two of these can coexist for one run. That is the whole point —
-		// every writable repo workspace is created on ONE run branch and git
-		// refuses to check one branch out in two worktrees, so concurrent
-		// repo-backed branch stages would otherwise collide outright
-		// (docs/design/static-fan-out-fan-in.md §6.5).
-		if syncBase {
-			return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
-		}
-		if workspaceBranch != "" {
-			return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
-		}
-		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
-		if err != nil {
-			return nil, err
-		}
-		baseRef := in.RepoRef.Branch
-		if baseRef == "" {
-			baseRef = "main"
-		}
-		sparse := sparseCones(in.RepoRef.Checkout)
-		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
-			RepoURL:    repoURL,
-			RunID:      in.RunID + "-" + stageName,
-			OwnerRunID: in.RunID,
-			BaseRef:    baseRef,
-			// Branch deliberately empty — a detached checkout, the same shape
-			// provisionAdditionalCheckouts already uses for reference repos.
-			Branch: "",
-			Sparse: sparse,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create read-only worktree: %w", err)
-		}
-		additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
-		if err != nil {
-			_ = wt.Remove(ctx, worktree.RemoveOptions{})
-			return nil, err
-		}
-		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional, sparse: sparse}, nil
+		return r.createReadOnlyWorkspace(ctx, in, stageName, syncBase, workspaceBranch)
 	case "", apiv1.WorkspaceRepo:
 		if in.pinnedWorkspace != nil {
 			in.pinnedStage.Lock()

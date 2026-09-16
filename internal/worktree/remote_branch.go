@@ -35,17 +35,26 @@ type RemoteBranchOptions struct {
 // remote ref. Its only persistent mutation is the generated target ref; neither
 // source refs nor local stage repositories are ever modified.
 func EstablishRemoteBranch(ctx context.Context, opts RemoteBranchOptions) (err error) {
-	return transferRemoteBranch(ctx, opts, "")
+	return transferRemoteBranch(ctx, opts, "", nil)
 }
 
 // PublishRemoteBranch imports stage commits into a sterile backend repository,
 // verifies ancestry, and compare-and-swaps only the durably owned remote ref.
 // The stage's Git config and hooks never receive target credentials.
 func PublishRemoteBranch(ctx context.Context, opts RemoteBranchOptions, workspace string) error {
+	_, err := PublishRemoteBranchTip(ctx, opts, workspace)
+	return err
+}
+
+// PublishRemoteBranchTip returns only the exact object acknowledged by the
+// compare-and-swap operation, never a subsequent moving-ref observation.
+func PublishRemoteBranchTip(ctx context.Context, opts RemoteBranchOptions, workspace string) (string, error) {
 	if workspace == "" {
-		return revisionFailure(workspacerevision.CodeInvalid, "publication requires a workspace", nil)
+		return "", revisionFailure(workspacerevision.CodeInvalid, "publication requires a workspace", nil)
 	}
-	return transferRemoteBranch(ctx, opts, workspace)
+	var tip string
+	err := transferRemoteBranch(ctx, opts, workspace, &tip)
+	return tip, err
 }
 
 // VerifyOwnedWorkspace checks continuity without resolving any moving source
@@ -77,7 +86,7 @@ func validateOwnedStartingSHA(sha, branch string, syncBase bool) error {
 	return nil
 }
 
-func transferRemoteBranch(ctx context.Context, opts RemoteBranchOptions, workspace string) (err error) {
+func transferRemoteBranch(ctx context.Context, opts RemoteBranchOptions, workspace string, published *string) (err error) {
 	if err := opts.Binding.Validate(); err != nil {
 		return revisionFailure(workspacerevision.CodeInvalid, "invalid remote ownership", err)
 	}
@@ -97,13 +106,7 @@ func transferRemoteBranch(ctx context.Context, opts RemoteBranchOptions, workspa
 	source := sterileBranchEnv(dir, script, opts.SourceRead)
 	target := sterileBranchEnv(dir, script, opts.TargetWrite)
 	run := func(env []string, args ...string) (string, error) {
-		prefix := []string{"--no-replace-objects", "--no-lazy-fetch", "-c", "credential.helper=",
-			"-c", "http.followRedirects=false", "-c", "protocol.allow=never",
-			"-c", "protocol.https.allow=always", "-c", "protocol.http.allow=always",
-			"-c", "protocol.file.allow=always", "-c", "fetch.recurseSubmodules=false",
-			"-c", "submodule.recurse=false"}
-		out, err := rawGitOutput(ctx, dir, env, append(prefix, args...)...)
-		return strings.TrimSpace(string(out)), err
+		return remoteBranchGit(ctx, dir, env, args...)
 	}
 	format := "sha1"
 	if len(opts.Binding.StartingSHA) == 64 {
@@ -113,47 +116,114 @@ func transferRemoteBranch(ctx context.Context, opts RemoteBranchOptions, workspa
 		return revisionFailure(workspacerevision.CodeAcquisition, "initialize sterile transfer repository", err)
 	}
 	readTip := func() (string, error) {
-		out, err := run(target, "ls-remote", "--refs", "--", opts.TargetURL, opts.Binding.Ref)
-		if err != nil {
-			return "", revisionFailure(workspacerevision.CodeAcquisition, "inspect remote workspace branch", err)
-		}
-		if out == "" {
-			return "", nil
-		}
-		fields := strings.Fields(out)
-		if len(fields) != 2 || fields[1] != opts.Binding.Ref || apiv1.ValidateCommitSHA(fields[0]) != nil {
-			return "", revisionFailure(workspacerevision.CodeSHAMismatch, "remote returned a substituted ref", nil)
-		}
-		return fields[0], nil
+		return readRemoteBranchTip(run, target, opts.TargetURL, opts.Binding.Ref)
 	}
 	tip, err := readTip()
 	if err != nil {
 		return err
 	}
-	sha := opts.Binding.StartingSHA
-	if workspace == "" && tip != "" && tip != sha {
-		return revisionFailure(workspacerevision.CodeConflict, "remote workspace branch already points to another commit", nil)
+	fetch, err := remoteBranchSource(ctx, opts, workspace, tip, local, source, target)
+	if err != nil {
+		return err
 	}
-	fetchURL, fetchEnv := opts.SourceURL, source
-	if workspace != "" {
-		if tip == "" {
-			return revisionFailure(workspacerevision.CodeConflict, "owned remote branch disappeared before publication", nil)
-		}
-		out, readErr := rawGitOutput(ctx, workspace, local, "--no-replace-objects", "--no-lazy-fetch",
-			"-c", "safe.directory="+workspace, "rev-parse", "--verify", "HEAD")
-		sha = strings.TrimSpace(string(out))
-		if readErr != nil || apiv1.ValidateCommitSHA(sha) != nil {
-			return revisionFailure(workspacerevision.CodeSHAMismatch, "publication has no exact commit", readErr)
-		}
-		fetchURL, fetchEnv = workspace, local
-	} else if tip == sha {
-		// Reconcile a crash after create, without requiring the source still
-		// to serve the object. Verify the target object before recording it.
-		fetchURL, fetchEnv = opts.TargetURL, target
-	}
-	if _, err := run(fetchEnv, "fetch", "--no-tags", "--no-recurse-submodules", "--", fetchURL, sha); err != nil {
+	sha := fetch.sha
+	if _, err := run(fetch.env, "fetch", "--no-tags", "--no-recurse-submodules", "--", fetch.url, sha); err != nil {
 		return revisionFailure(workspacerevision.CodeAcquisition, "fetch exact authorized commit", err)
 	}
+	if err := verifyTransferredCommit(run, local, sha); err != nil {
+		return err
+	}
+	expectedOld := ""
+	if workspace != "" {
+		if err := verifyPublicationAncestry(run, local, target, opts, tip, sha); err != nil {
+			return err
+		}
+		expectedOld = tip
+	}
+	if tip == sha {
+		if published != nil {
+			*published = sha
+		}
+		return nil
+	}
+	_, pushErr := run(target, "push", "--porcelain", "--no-verify",
+		"--force-with-lease="+opts.Binding.Ref+":"+expectedOld, "--", opts.TargetURL, sha+":"+opts.Binding.Ref)
+	// A lost response or a concurrent identical creator is success. A
+	// conflicting creator is never overwritten, even if push failed oddly.
+	tip, err = readTip()
+	if err != nil {
+		return err
+	}
+	if tip == sha {
+		if published != nil {
+			*published = sha
+		}
+		return nil
+	}
+	if tip != "" && (workspace == "" || tip != expectedOld) {
+		return revisionFailure(workspacerevision.CodeConflict, "remote workspace branch creation lost its lease", nil)
+	}
+	return revisionFailure(workspacerevision.CodeAcquisition, "remote workspace branch update did not complete", pushErr)
+}
+
+type branchTransferGit func(env []string, args ...string) (string, error)
+
+func verifyPublicationAncestry(run branchTransferGit, local, target []string, opts RemoteBranchOptions, tip, sha string) error {
+	if _, err := run(target, "fetch", "--no-tags", "--no-recurse-submodules", "--", opts.TargetURL, tip); err != nil {
+		return revisionFailure(workspacerevision.CodeAcquisition, "acquire current owned branch tip", err)
+	}
+	for _, ancestor := range []string{opts.Binding.StartingSHA, tip} {
+		if _, err := run(local, "merge-base", "--is-ancestor", ancestor, sha); err != nil {
+			return revisionFailure(workspacerevision.CodeConflict, "publication must descend from both starting SHA and current owned tip", err)
+		}
+	}
+	return nil
+}
+
+func readRemoteBranchTip(run branchTransferGit, env []string, url, ref string) (string, error) {
+	out, err := run(env, "ls-remote", "--refs", "--", url, ref)
+	if err != nil {
+		return "", revisionFailure(workspacerevision.CodeAcquisition, "inspect remote workspace branch", err)
+	}
+	if out == "" {
+		return "", nil
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 2 || fields[1] != ref || apiv1.ValidateCommitSHA(fields[0]) != nil {
+		return "", revisionFailure(workspacerevision.CodeSHAMismatch, "remote returned a substituted ref", nil)
+	}
+	return fields[0], nil
+}
+
+type branchTransferSource struct {
+	url, sha string
+	env      []string
+}
+
+func remoteBranchSource(ctx context.Context, opts RemoteBranchOptions, workspace, tip string, local, source, target []string) (branchTransferSource, error) {
+	fetch := branchTransferSource{url: opts.SourceURL, sha: opts.Binding.StartingSHA, env: source}
+	if workspace == "" && tip != "" && tip != fetch.sha {
+		return fetch, revisionFailure(workspacerevision.CodeConflict, "remote workspace branch already points to another commit", nil)
+	}
+	if workspace != "" {
+		if tip == "" {
+			return fetch, revisionFailure(workspacerevision.CodeConflict, "owned remote branch disappeared before publication", nil)
+		}
+		out, err := rawGitOutput(ctx, workspace, local, "--no-replace-objects", "--no-lazy-fetch",
+			"-c", "safe.directory="+workspace, "rev-parse", "--verify", "HEAD")
+		fetch.sha = strings.TrimSpace(string(out))
+		if err != nil || apiv1.ValidateCommitSHA(fetch.sha) != nil {
+			return fetch, revisionFailure(workspacerevision.CodeSHAMismatch, "publication has no exact commit", err)
+		}
+		fetch.url, fetch.env = workspace, local
+	} else if tip == fetch.sha {
+		// Rediscovery verifies the target object even if the source no longer serves it.
+		fetch.url, fetch.env = opts.TargetURL, target
+	}
+	return fetch, nil
+}
+
+func verifyTransferredCommit(run branchTransferGit, local []string, sha string) error {
 	fetched, err := run(local, "rev-parse", "--verify", "FETCH_HEAD")
 	if err != nil || fetched != sha {
 		return revisionFailure(workspacerevision.CodeSHAMismatch, "source supplied another object", err)
@@ -169,36 +239,17 @@ func transferRemoteBranch(ctx context.Context, opts RemoteBranchOptions, workspa
 	if err != nil || commit != sha {
 		return revisionFailure(workspacerevision.CodeSHAMismatch, "transferred commit identity differs", err)
 	}
-	expectedOld := ""
-	if workspace != "" {
-		if _, err := run(target, "fetch", "--no-tags", "--no-recurse-submodules", "--", opts.TargetURL, tip); err != nil {
-			return revisionFailure(workspacerevision.CodeAcquisition, "acquire current owned branch tip", err)
-		}
-		for _, ancestor := range []string{opts.Binding.StartingSHA, tip} {
-			if _, err := run(local, "merge-base", "--is-ancestor", ancestor, sha); err != nil {
-				return revisionFailure(workspacerevision.CodeConflict, "publication must descend from both starting SHA and current owned tip", err)
-			}
-		}
-		expectedOld = tip
-	}
-	if tip == sha {
-		return nil
-	}
-	_, pushErr := run(target, "push", "--porcelain", "--no-verify",
-		"--force-with-lease="+opts.Binding.Ref+":"+expectedOld, "--", opts.TargetURL, sha+":"+opts.Binding.Ref)
-	// A lost response or a concurrent identical creator is success. A
-	// conflicting creator is never overwritten, even if push failed oddly.
-	tip, err = readTip()
-	if err != nil {
-		return err
-	}
-	if tip == sha {
-		return nil
-	}
-	if tip != "" && (workspace == "" || tip != expectedOld) {
-		return revisionFailure(workspacerevision.CodeConflict, "remote workspace branch creation lost its lease", nil)
-	}
-	return revisionFailure(workspacerevision.CodeAcquisition, "remote workspace branch update did not complete", pushErr)
+	return nil
+}
+
+func remoteBranchGit(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	prefix := []string{"--no-replace-objects", "--no-lazy-fetch", "-c", "credential.helper=",
+		"-c", "http.followRedirects=false", "-c", "protocol.allow=never",
+		"-c", "protocol.https.allow=always", "-c", "protocol.http.allow=always",
+		"-c", "protocol.file.allow=always", "-c", "fetch.recurseSubmodules=false",
+		"-c", "submodule.recurse=false"}
+	out, err := rawGitOutput(ctx, dir, env, append(prefix, args...)...)
+	return strings.TrimSpace(string(out)), err
 }
 
 func sterileBranchEnv(home, script string, access RemoteBranchAccess) []string {

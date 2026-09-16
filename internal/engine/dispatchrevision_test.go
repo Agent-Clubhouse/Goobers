@@ -54,9 +54,27 @@ func TestDispatchStageSelectedRevisionAttempt(t *testing.T) {
 		if got.WorkspaceRevision == selected {
 			t.Fatal("attempt aliases selected workflow state")
 		}
-		input.WorkspaceBranch = "same-name"
-		if _, err := activities.DispatchStage(context.Background(), input); err == nil || !strings.Contains(err.Error(), workspacerevision.CodeConflict) {
-			t.Fatalf("selected branch override error=%v", err)
+		if got.Checkout == input.Checkout || &got.Checkout.Sparse[0] == &input.Checkout.Sparse[0] {
+			t.Fatal("attempt aliases checkout policy")
+		}
+		for _, control := range []string{"branch", "delta", "syncBase"} {
+			conflicting := input
+			run := *input.Run
+			conflicting.Run = &run
+			switch control {
+			case "branch":
+				conflicting.WorkspaceBranch = "same-name"
+			case "delta":
+				conflicting.WorkspaceDelta = "sha256:delta"
+			case "syncBase":
+				conflicting.Run.SyncBase = true
+			}
+			if _, err := activities.DispatchStage(context.Background(), conflicting); err == nil || !strings.Contains(err.Error(), workspacerevision.CodeConflict) {
+				t.Fatalf("selected %s override error=%v", control, err)
+			}
+		}
+		if attempts, _ := fake.recorded(); len(attempts) != 1 {
+			t.Fatalf("conflicting controls reached dispatcher: %d attempts", len(attempts))
 		}
 	}
 }

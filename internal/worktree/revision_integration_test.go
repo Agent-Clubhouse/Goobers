@@ -4,6 +4,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,18 @@ func revisionSource(t *testing.T) (string, string) {
 	runTestGit(t, source, "config", "uploadpack.allowFilter", "true")
 	runTestGit(t, source, "config", "uploadpack.allowAnySHA1InWant", "true")
 	return source, strings.TrimSpace(runTestGit(t, source, "rev-parse", "HEAD"))
+}
+
+func TestIntegrationExactRevisionVerificationRefusals(t *testing.T) {
+	source, sha := revisionSource(t)
+	for _, expected := range []string{strings.Repeat("f", 40), sha} {
+		// Even the exact object on an attached branch is not a detached inspection.
+		err := verifyRevisionHEAD(context.Background(), source, expected)
+		var refusal *workspacerevision.Error
+		if !errors.As(err, &refusal) || refusal.Code != workspacerevision.CodeSHAMismatch {
+			t.Fatalf("mismatched or attached HEAD accepted: %v", err)
+		}
+	}
 }
 
 func TestIntegrationExactRevisionMaterialization(t *testing.T) {

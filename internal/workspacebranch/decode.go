@@ -30,3 +30,23 @@ func ResultBinding(data []byte) (*apiv1.WorkspaceBranchBinding, error) {
 	}
 	return binding, nil
 }
+
+// ResultTip decodes the reserved acknowledgment separately from ordinary outputs.
+func ResultTip(data []byte) (string, error) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil {
+		return "", nil
+	}
+	raw, exists := fields["workspaceBranchTip"]
+	if !exists {
+		return "", nil
+	}
+	var tip string
+	if err := json.Unmarshal(raw, &tip); err != nil {
+		return "", &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "invalid workspaceBranchTip control", Cause: err}
+	}
+	if err := apiv1.ValidateCommitSHA(tip); err != nil {
+		return "", &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "invalid workspaceBranchTip control", Cause: err}
+	}
+	return tip, nil
+}

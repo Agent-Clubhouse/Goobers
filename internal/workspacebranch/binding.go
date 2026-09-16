@@ -53,6 +53,10 @@ func Expected(base apiv1.RepoRef, revision *apiv1.WorkspaceRevision, namespace, 
 	if err := binding.Validate(); err != nil {
 		return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: err.Error()}
 	}
+	if _, sameBase := workspacerevision.Resolve(*revision, base, nil); sameBase == nil &&
+		strings.TrimPrefix(revision.SourceRef, "refs/heads/") == strings.TrimPrefix(binding.Ref, "refs/heads/") {
+		return nil, &workspacerevision.Error{Code: workspacerevision.CodeConflict, Message: "owned target collides with the selected source branch"}
+	}
 	return binding, nil
 }
 
@@ -83,6 +87,14 @@ func ValidateResult(current *apiv1.WorkspaceBranchBinding, revision *apiv1.Works
 		task.Type == apiv1.TaskDeterministic && task.Inputs["kind"] == KindEstablish, result.Status == apiv1.ResultSuccess)
 	if err != nil {
 		return nil, err
+	}
+	if result.WorkspaceBranchTip != "" {
+		if binding == nil || task.Type != apiv1.TaskDeterministic || task.Inputs["kind"] != KindPublish {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeUnauthorized, Message: "only the trusted publication stage may acknowledge a remote tip"}
+		}
+		if err := apiv1.ValidateCommitSHA(result.WorkspaceBranchTip); err != nil {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "invalid published workspace tip", Cause: err}
+		}
 	}
 	if binding != nil && result.Status == apiv1.ResultSuccess {
 		if value, exists := result.Outputs["workspaceBranch"]; exists && value != strings.TrimPrefix(binding.Ref, "refs/heads/") {

@@ -237,6 +237,20 @@ and testing of earlier stages' commits; selecting a revision does not by itself
 establish a writable branch. See the
 [exact-revision inspection example](../reference/workflow-primitives/tasks-and-stages.md#exact-revision-inspection).
 
+For a stateful sandbox, place a static deterministic
+`workspace-branch-establish` task after selection, with scratch workspace and
+`repo:push`. Every writable path must pass through establishment. Use serial
+`repo` stages for editing and review of cumulative commits, then a separate
+`workspace-branch-publish` task with writable workspace and `repo:push`.
+Do not give authoring stages publication credentials or insert selected
+`repo-readonly` stages after ownership establishment.
+
+The generated branch always belongs to the configured base, never the PR source.
+The publisher journals its exact tip, and terminal cleanup deletes only that
+durably acknowledged tip. A changed tip or missing evidence preserves the branch.
+See the opt-in [reference workflows](../../reference-workflows/README.md#selected-revision-examples)
+and [cross-substrate matrix](../design/selected-revision-workspaces.md#cross-substrate-conformance-matrix).
+
 ## 6. Turn review into an agentic gate
 
 The starter template uses an agentic task for a simple advisory review. A

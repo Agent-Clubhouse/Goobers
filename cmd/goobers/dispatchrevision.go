@@ -81,18 +81,10 @@ func checkoutSelectedRevision(ctx context.Context, dir string, creds []dispatche
 	if _, err := os.Lstat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
 		return podRevisionFailure(workspacerevision.CodeAcquisition, "selected checkout requires a fresh repository directory", err)
 	}
-	// Business-stage credentials are never a substitute for the source-scoped
-	// checkout grant, even when they happen to be able to read the fork.
-	var selected []dispatcher.MintedCredential
-	for _, cred := range creds {
-		if cred.Capability == dispatcher.WorkspaceRevisionCheckoutCapability {
-			selected = append(selected, cred)
-		}
+	selected, err := selectedSourceCheckoutCredentials(creds)
+	if err != nil {
+		return err
 	}
-	if len(selected) != 1 || (selected[0].Value == "") != selected[0].Anonymous {
-		return podRevisionFailure(workspacerevision.CodeUnauthorized, "exactly one authorized selected-source checkout grant is required", nil)
-	}
-	selected[0].Capability = "repo:read"
 	sourceURL, err := checkoutCloneURL(checkout.Repository)
 	if err != nil {
 		return podRevisionFailure(workspacerevision.CodeInvalid, "invalid configured source transport", err)
@@ -160,6 +152,22 @@ func checkoutSelectedRevision(ctx context.Context, dir string, creds []dispatche
 		return podRevisionFailure(workspacerevision.CodeAcquisition, "materialize selected commit", err)
 	}
 	return git.verifyHEAD(ctx, revision.CommitSHA)
+}
+
+func selectedSourceCheckoutCredentials(creds []dispatcher.MintedCredential) ([]dispatcher.MintedCredential, error) {
+	// Business-stage credentials are never a substitute for the source-scoped
+	// checkout grant, even when they happen to be able to read the fork.
+	var selected []dispatcher.MintedCredential
+	for _, cred := range creds {
+		if cred.Capability == dispatcher.WorkspaceRevisionCheckoutCapability {
+			selected = append(selected, cred)
+		}
+	}
+	if len(selected) != 1 || (selected[0].Value == "") != selected[0].Anonymous {
+		return nil, podRevisionFailure(workspacerevision.CodeUnauthorized, "exactly one authorized selected-source checkout grant is required", nil)
+	}
+	selected[0].Capability = "repo:read"
+	return selected, nil
 }
 
 // A fresh template-free repository and isolated config make every undeclared

@@ -9,6 +9,11 @@
     "status"
   ],
   "properties": {
+    "workspaceBranchTip": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "description": "Exact owned tip acknowledged by the trusted publication backend."
+    },
     "workspaceBranchBinding": {
       "$ref": "workspace-branch-binding.schema.json",
       "description": "Durable remote branch ownership emitted only by the trusted establishment operation."

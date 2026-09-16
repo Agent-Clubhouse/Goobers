@@ -6,7 +6,7 @@ func CheckStageContracts(def Definition) []string {
 	if err != nil {
 		return []string{err.Error()}
 	}
-	return interpreter.checkStageContracts(def)
+	return append(interpreter.checkStageContracts(def), CheckWorkspaceAuthority(def)...)
 }
 
 // CheckStageContractWarnings reports non-breaking stage contract findings.

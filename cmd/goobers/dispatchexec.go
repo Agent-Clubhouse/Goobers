@@ -330,36 +330,8 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// The working directory IS the workspace (podspec stamps WorkingDir), so
 	// checking out into "." is what puts the stage's command inside the tree.
 	// The checkout may use a credential the stage itself never receives.
-	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
-	if checkoutErr != nil {
-		return podWorkspaceFailure("credential_resolve_failed", checkoutErr)
-	}
-	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
-		// A genuine syncBase base-merge conflict is classified exactly as the
-		// self arms classify it (#813, internal/engine/activities.go's
-		// RunDeterministic and internal/runner/run.go): a business failure
-		// `failure-class` routes into remediation, not a dispatch error that
-		// burns the implementation repass budget re-deriving the same
-		// rejected diff. Checked BEFORE the generic fail-closed branch below,
-		// which would otherwise swallow it as workspace_provision_failed/
-		// non-retryable and misroute the run regardless of placement.
-		var conflict *worktree.BaseSyncConflictError
-		if errors.As(err, &conflict) {
-			return apiv1.ResultEnvelope{
-				Status:  apiv1.ResultFailure,
-				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
-				Error: &apiv1.ErrorInfo{
-					Code:      runner.BaseSyncConflictErrorCode,
-					Message:   err.Error(),
-					Retryable: true,
-				},
-			}
-		}
-		// Fail closed and NAME the workspace: a stage whose repo never arrived
-		// would otherwise run against an empty directory and fail somewhere far
-		// away — a missing Makefile, a missing test file — with an error that
-		// says nothing about provisioning.
-		return podWorkspaceFailure("workspace_provision_failed", err)
+	if failure := provisionDeclaredStageWorkspace(ctx, stderr, creds); failure != nil {
+		return *failure
 	}
 	// The STAGE's git needs the same exemption: it runs in the same
 	// differently-owned workspace, and real workflows commit and push from it.
@@ -526,8 +498,6 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		}
 	}
 	stageArtifacts := recordStageArtifactsTyped(ctx, stderr, streams, mediaTypes)
-	var selectedRevision *apiv1.WorkspaceRevision
-	var branchBinding *apiv1.WorkspaceBranchBinding
 	// Lift the declared result file into Outputs, exactly as the local
 	// executor does. WITHOUT THIS a pod-executed stage surrenders only stdout,
 	// so a gate reading an output key finds nothing and evaluates its FAILURE
@@ -535,21 +505,15 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// the gate read no `verdict` key, and the run took the fail path three
 	// times before exhausting its repass budget. The run "completed" with the
 	// wrong control flow and nothing reported an error.
+	stageResult := apiv1.ResultEnvelope{Outputs: outputs, Artifacts: stageArtifacts, Metrics: stageMetrics}
 	if resultFile != "" {
 		data, rerr := resultData, resultErr
 		switch {
 		case rerr == nil:
-			var err error
-			selectedRevision, err = podResultWorkspaceRevision(data)
-			if err == nil {
-				branchBinding, err = workspacebranch.ResultBinding(data)
+			stageResult = promoteDeclaredStageResult(stageResult, data)
+			if stageResult.Status == apiv1.ResultFailure {
+				return stageResult
 			}
-			if err != nil {
-				result := podWorkspaceFailure("result_file_invalid", err)
-				result.Artifacts, result.Metrics = stageArtifacts, stageMetrics
-				return result
-			}
-			mergeResultFileOutputs(outputs, data)
 		case os.IsNotExist(rerr) && runErr == nil && !timedOut:
 			// A stage that succeeded but did not write its declared result
 			// file is a FAILURE, same as locally: the declaration is a
@@ -595,8 +559,9 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		}
 		return apiv1.ResultEnvelope{
 			Status:                 apiv1.ResultSuccess,
-			WorkspaceRevision:      selectedRevision,
-			WorkspaceBranchBinding: branchBinding,
+			WorkspaceRevision:      stageResult.WorkspaceRevision,
+			WorkspaceBranchBinding: stageResult.WorkspaceBranchBinding,
+			WorkspaceBranchTip:     stageResult.WorkspaceBranchTip,
 			Outputs:                outputs,
 			Artifacts:              stageArtifacts,
 			Metrics:                stageMetrics,
@@ -650,6 +615,61 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		Summary:   message,
 		Error:     &apiv1.ErrorInfo{Code: code, Message: message},
 	}
+}
+
+func provisionDeclaredStageWorkspace(ctx context.Context, stderr io.Writer, creds []dispatcher.MintedCredential) *apiv1.ResultEnvelope {
+	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
+	if checkoutErr != nil {
+		result := podWorkspaceFailure("credential_resolve_failed", checkoutErr)
+		return &result
+	}
+	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
+		// A genuine syncBase base-merge conflict is classified exactly as the
+		// self arms classify it (#813, internal/engine/activities.go's
+		// RunDeterministic and internal/runner/run.go): a business failure
+		// `failure-class` routes into remediation, not a dispatch error that
+		// burns the implementation repass budget re-deriving the same
+		// rejected diff. Checked BEFORE the generic fail-closed branch below,
+		// which would otherwise swallow it as workspace_provision_failed/
+		// non-retryable and misroute the run regardless of placement.
+		var conflict *worktree.BaseSyncConflictError
+		if errors.As(err, &conflict) {
+			return &apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+				Error: &apiv1.ErrorInfo{
+					Code:      runner.BaseSyncConflictErrorCode,
+					Message:   err.Error(),
+					Retryable: true,
+				},
+			}
+		}
+		// Fail closed and NAME the workspace: a stage whose repo never arrived
+		// would otherwise run against an empty directory and fail somewhere far
+		// away — a missing Makefile, a missing test file — with an error that
+		// says nothing about provisioning.
+		result := podWorkspaceFailure("workspace_provision_failed", err)
+		return &result
+	}
+	return nil
+}
+
+func promoteDeclaredStageResult(result apiv1.ResultEnvelope, data []byte) apiv1.ResultEnvelope {
+	var err error
+	result.WorkspaceRevision, err = podResultWorkspaceRevision(data)
+	if err == nil {
+		result.WorkspaceBranchBinding, err = workspacebranch.ResultBinding(data)
+	}
+	if err == nil {
+		result.WorkspaceBranchTip, err = workspacebranch.ResultTip(data)
+	}
+	if err != nil {
+		failure := podWorkspaceFailure("result_file_invalid", err)
+		failure.Artifacts, failure.Metrics = result.Artifacts, result.Metrics
+		return failure
+	}
+	mergeResultFileOutputs(result.Outputs, data)
+	return result
 }
 
 // consumeErrorOutputs reads the well-known typed-failure keys a command sets in
@@ -709,6 +729,9 @@ func mergeResultFileOutputs(outputs map[string]interface{}, data []byte) {
 		return
 	}
 	for key, value := range parsed {
+		if key == "workspaceBranchTip" {
+			continue
+		}
 		switch value.(type) {
 		case string, float64, bool:
 			outputs[key] = value

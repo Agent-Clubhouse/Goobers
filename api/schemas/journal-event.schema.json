@@ -36,6 +36,12 @@
     }
   ],
   "properties": {
+    "workspaceBranchTip": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "x-conformance": "normative",
+      "description": "Durable expected tip for compare-and-delete cleanup."
+    },
     "workspaceBranchBinding": {
       "$ref": "workspace-branch-binding.schema.json",
       "x-conformance": "normative",

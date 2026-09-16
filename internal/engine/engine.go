@@ -462,20 +462,9 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	contextRejected := map[string]int{}
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
-	var workspaceBranch string
-	if in.WorkspaceBranchBinding != nil {
-		if _, err := workspacebranch.Accept(nil, in.WorkspaceBranchBinding, in.WorkspaceRevision, in.RepoRef,
-			in.BranchNamespace, in.WorkflowName, in.RunID, true, true); err != nil {
-			return RunResult{}, err
-		}
-		in.WorkspaceBranchBinding = in.WorkspaceBranchBinding.DeepCopy()
-		workspaceBranch = strings.TrimPrefix(in.WorkspaceBranchBinding.Ref, "refs/heads/")
-	}
-	if in.WorkspaceRevision != nil {
-		if _, err := workspacerevision.Resolve(*in.WorkspaceRevision, in.RepoRef, in.AdditionalRepos); err != nil {
-			return RunResult{}, err
-		}
-		in.WorkspaceRevision = in.WorkspaceRevision.DeepCopy()
+	workspaceBranch, err := initializeWorkspaceAuthority(&in)
+	if err != nil {
+		return RunResult{}, err
 	}
 	// The workspace continuity record (continuity.go, #3803/#3767): every
 	// workspace-delta publication so far, keyed by producing stage. A pod is
@@ -550,19 +539,10 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			if terr != nil {
 				return RunResult{}, terr
 			}
-			if res.WorkspaceRevision != nil {
-				in.WorkspaceRevision = res.WorkspaceRevision.DeepCopy()
+			workspaceBranch, err = recordWorkspaceAuthority(ctx, &in, res, workspaceBranch, rec)
+			if err != nil {
+				return RunResult{}, err
 			}
-			if res.WorkspaceBranchBinding != nil {
-				in.WorkspaceBranchBinding = res.WorkspaceBranchBinding.DeepCopy()
-				workspaceBranch = strings.TrimPrefix(res.WorkspaceBranchBinding.Ref, "refs/heads/")
-				if err := rec.emitPending(ctx); err != nil {
-					return RunResult{}, err
-				}
-			}
-			// Keyed on the PRE-rebind binding on purpose: the rebind below
-			// applies from the NEXT stage on, and this stage's commits were made
-			// on the branch it was handed.
 			continuity = recordPublication(ctx, t, published, continuity, workspaceBranch, rec)
 			if res.Status == apiv1.ResultFailure && t.ContinueOnError {
 				// Outputs from a tolerated failure are discarded so downstream
@@ -574,14 +554,9 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			recordCompletedStage(completed, t, res)
 			pointers = append(pointers, contextPointersFor(t.Name, res.Artifacts)...)
 			lastStage, lastResult = t.Name, res
-			if res.Status != apiv1.ResultFailure || !t.ContinueOnError {
-				branch, err := selectedWorkspaceBranch(t, res, in.BranchNamespace)
-				if err != nil {
-					return RunResult{}, fmt.Errorf("stage %q selected workspace branch: %w", t.Name, err)
-				}
-				if branch != "" {
-					workspaceBranch = branch
-				}
+			workspaceBranch, err = nextWorkspaceBranch(t, res, in.BranchNamespace, workspaceBranch)
+			if err != nil {
+				return RunResult{}, err
 			}
 			logger.Info("task complete", "task", t.Name, "status", res.Status)
 			// #3374: a stage that claims DEPENDENCY_NOT_MET without having

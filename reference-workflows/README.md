@@ -24,8 +24,8 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **11 goobers and 14 workflows**.
-<!-- reference-inventory: goobers=11 workflows=14 -->
+The shipped tree loads **11 goobers and 16 workflows**.
+<!-- reference-inventory: goobers=11 workflows=16 -->
 
 | Goober role | Purpose |
 |---|---|
@@ -53,10 +53,42 @@ The shipped tree loads **11 goobers and 14 workflows**.
 | `parked-item-report` | Reports parked remediation candidates for human review; schedule disabled by default. |
 | `pr-remediation` | Rebases or fixes managed PRs from CI and review evidence. |
 | `quality-sprint` | Runs parallel quality audits and nominates findings. |
+| `selected-revision-inspection` | Manually inspects an exact authorized PR source commit in stateless read-only workspaces. |
+| `selected-revision-sandbox` | Manually demonstrates two isolated commits, protected publication, and conditional terminal cleanup. |
 | `self-update` | Stages an operator-requested Goobers binary update. |
 | `test-suite-quality` | Detects recurring flaky tests and nominates fix or bounded quarantine proposals. |
 | `tutor` | Diagnoses run evidence and proposes confined config changes. |
 | `work-nomination` | Nominates repository work from telemetry and repo signals. |
+
+## Selected-revision examples
+
+Both selected-revision schedules are disabled by default. After completing the
+regular-instance setup, target a disposable repository you control and explicitly
+declare any fork in the gaggle's `additionalRepos`. Configure source-specific
+read credentials (or explicit public access) and, for the sandbox example, the
+base repository's write grant. The example selectors retain the existing
+`pr-select` capability/policy contract; sandbox authoring tasks have no publication
+credentials.
+
+```sh
+goobers validate --source-tree ./reference-workflows
+goobers run --gaggle goobers selected-revision-inspection <instance-root>
+goobers run --gaggle goobers selected-revision-sandbox <instance-root>
+goobers trace <run-id> <instance-root>
+```
+
+Inspection records the exact selected commit without sharing modifications.
+Sandbox establishment creates a generated remote branch in the configured base,
+two separate stages add harmless empty commits, and the trusted publisher records
+its exact acknowledged tip. Terminal cleanup conditionally deletes that branch.
+Never expect the sample branch to remain after a successful terminal cleanup;
+inspect the trace and artifacts instead. A changed tip or ambiguous ownership is
+preserved with a typed cleanup outcome, not force-deleted. Neither example opens
+a revision PR, mutates the source branch, or merges.
+
+These are manual opt-in examples, not deployment commands to run against the
+live self-hosting repository. For substrate/materialization and crash-recovery
+details, see the [selected-revision design](../docs/design/selected-revision-workspaces.md).
 
 ## Optional parked-item report
 
@@ -222,7 +254,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 14 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 16 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to

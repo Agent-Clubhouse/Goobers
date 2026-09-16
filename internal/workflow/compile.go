@@ -315,6 +315,15 @@ func WithPreviewFeatures(enabled bool) Option {
 
 // Compile dispatches a pinned definition to its versioned interpreter.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
+	for _, task := range def.Spec.Tasks {
+		if task.Inputs["kind"] != "workspace-branch-establish" && task.Inputs["kind"] != "workspace-branch-publish" {
+			continue
+		}
+		if problems := CheckWorkspaceAuthority(def); len(problems) > 0 {
+			return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+		}
+		break
+	}
 	if problems := CheckOutbox(def); len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}

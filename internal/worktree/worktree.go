@@ -193,36 +193,8 @@ func validRunID(id string) bool {
 // opts.RunID. Two calls with different RunIDs against the same repo may run
 // concurrently and never observe each other's worktree contents.
 func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, retErr error) {
-	if err := validateOwnedStartingSHA(opts.OwnedStartingSHA, opts.Branch, opts.SyncBase); err != nil {
+	if err := normalizeCreateOptions(&opts); err != nil {
 		return nil, err
-	}
-	if opts.ExpectedSHA != "" {
-		if err := validateRevisionOptions(opts); err != nil {
-			return nil, err
-		}
-	}
-	if opts.RunID == "" {
-		return nil, fmt.Errorf("worktree: RunID is required")
-	}
-	// opts.RunID is joined into this worktree's path and marker key below —
-	// it must never itself be able to escape those directories (#244).
-	if !validRunID(opts.RunID) {
-		return nil, fmt.Errorf("worktree: RunID %q must be a single path segment (no \"..\", no \"/\")", opts.RunID)
-	}
-	if opts.OwnerRunID == "" {
-		opts.OwnerRunID = opts.RunID
-	}
-	if !validRunID(opts.OwnerRunID) {
-		return nil, fmt.Errorf("worktree: OwnerRunID %q must be a single path segment (no \"..\", no \"/\")", opts.OwnerRunID)
-	}
-	if opts.BaseRef == "" {
-		return nil, fmt.Errorf("worktree: BaseRef is required")
-	}
-	if opts.SyncBase && opts.Branch == "" {
-		return nil, fmt.Errorf("worktree: SyncBase requires Branch")
-	}
-	if opts.AcquireRemoteBranch && !opts.RequireExistingBranch {
-		return nil, fmt.Errorf("worktree: AcquireRemoteBranch requires RequireExistingBranch")
 	}
 
 	var repoDir string
@@ -374,38 +346,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
 	if sparse {
-		// Cone mode only, per the design (path-list "legacy" sparse-checkout
-		// patterns are out of scope, #649): a plain, fast set of directory
-		// prefixes rather than full gitignore-style pattern matching.
-		setArgs := append([]string{"sparse-checkout", "set", "--cone"}, opts.Sparse...)
-		runCheckout := func(args ...string) error {
-			if opts.ExpectedSHA != "" || opts.OwnedStartingSHA != "" {
-				return m.runRevisionGit(ctx, opts.RepoURL, path, args...)
-			}
-			return runGit(ctx, path, args...)
-		}
-		if err := runCheckout(setArgs...); err != nil {
-			return nil, fmt.Errorf("worktree: configure sparse checkout for run %s: %w", opts.RunID, err)
-		}
-		// The actual materialization: --no-checkout above left the working
-		// directory empty, so this checkout is what populates it — and, with
-		// sparse-checkout already configured, populates only the declared
-		// cones plus root-level files instead of the full tree.
-		checkoutArgs := []string{"checkout", checkoutTarget}
-		if opts.ExpectedSHA != "" {
-			if err := runCheckout("checkout", "--detach", checkoutTarget); err != nil {
-				return nil, err
-			}
-		} else if opts.OwnedStartingSHA != "" {
-			if err := runCheckout(checkoutArgs...); err != nil {
-				return nil, err
-			}
-		} else if partialMirror {
-			if err := m.runRemoteGit(ctx, opts.RepoURL, path, checkoutArgs...); err != nil {
-				return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
-			}
-		} else if err := runGit(ctx, path, checkoutArgs...); err != nil {
-			return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
+		if err := m.materializeSparseWorktree(ctx, path, checkoutTarget, opts, partialMirror); err != nil {
+			return nil, err
 		}
 	}
 	if opts.ExpectedSHA != "" {

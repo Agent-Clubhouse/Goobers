@@ -25,8 +25,9 @@ import "fmt"
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
 // v1alpha9 adds runner-authored nested-agent authority and ownership fields.
 // v1alpha10 adds deterministic-only immutable selected-revision control.
-// v1alpha11 adds durable remote workspace branch ownership.
-const StageContractVersion = "v1alpha11"
+// v1alpha11 adds immutable remote workspace-branch ownership.
+// v1alpha12 adds durable publication-tip evidence for conditional cleanup.
+const StageContractVersion = "v1alpha12"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -311,6 +312,8 @@ type ResultEnvelope struct {
 	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
 	// WorkspaceBranchBinding is accepted only from backend establishment.
 	WorkspaceBranchBinding *WorkspaceBranchBinding `json:"workspaceBranchBinding,omitempty"`
+	// WorkspaceBranchTip is the exact remote commit acknowledged by the publisher.
+	WorkspaceBranchTip string `json:"workspaceBranchTip,omitempty"`
 	// Outputs are small, named scalar values downstream stages/gates can consume
 	// directly. Anything larger than a scalar is an artifact, referenced by
 	// pointer — state does not travel through Outputs.
@@ -700,6 +703,9 @@ func (r ResultEnvelope) Validate() error {
 		if err := r.WorkspaceBranchBinding.Validate(); err != nil {
 			return err
 		}
+	}
+	if r.WorkspaceBranchTip != "" {
+		return ValidateCommitSHA(r.WorkspaceBranchTip)
 	}
 	return nil
 }

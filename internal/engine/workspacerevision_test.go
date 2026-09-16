@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
@@ -27,6 +28,71 @@ func selectedRevisionFixture() *apiv1.WorkspaceRevision {
 	return &apiv1.WorkspaceRevision{
 		Repository: apiv1.RepositoryIdentity{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
 		CommitSHA:  strings.Repeat("a", 40), SourceRef: "moving-branch", SourceID: "pr:42",
+	}
+}
+
+func TestWorkspaceRevisionInitialAuthority(t *testing.T) {
+	in := runInput("initial-authority", linearSpec())
+	selected := selectedRevisionFixture()
+	binding, err := workspacebranch.Expected(in.RepoRef, selected, in.BranchNamespace, in.WorkflowName, in.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.WorkspaceRevision, in.WorkspaceBranchBinding = selected, binding
+	branch, err := initializeWorkspaceAuthority(&in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != strings.TrimPrefix(binding.Ref, "refs/heads/") ||
+		!reflect.DeepEqual(in.WorkspaceRevision, selected) ||
+		!reflect.DeepEqual(in.WorkspaceBranchBinding, binding) {
+		t.Fatalf("initial authority changed: branch=%q, input=%+v", branch, in)
+	}
+	if in.WorkspaceRevision == selected || in.WorkspaceBranchBinding == binding {
+		t.Fatal("workflow authority aliases the pinned input")
+	}
+	in.WorkspaceBranchBinding.Ref = "refs/heads/unowned"
+	if _, err := initializeWorkspaceAuthority(&in); err == nil {
+		t.Fatal("invalid initial ownership accepted")
+	}
+	in.WorkspaceBranchBinding = nil
+	in.WorkspaceRevision.Repository.Owner = "unauthorized"
+	if _, err := initializeWorkspaceAuthority(&in); workspaceRevisionErrorCode(err) != workspacerevision.CodeUnauthorized {
+		t.Fatalf("unauthorized initial revision accepted: %v", err)
+	}
+}
+
+func TestWorkspaceBranchNextBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   apiv1.ResultStatus
+		tolerate bool
+		output   any
+		want     string
+		wantErr  bool
+	}{
+		{name: "absent", status: apiv1.ResultSuccess, want: "goobers/current"},
+		{name: "empty", status: apiv1.ResultSuccess, output: " ", want: "goobers/current"},
+		{name: "rebind", status: apiv1.ResultSuccess, output: " goobers/next ", want: "goobers/next"},
+		{name: "failed", status: apiv1.ResultFailure, output: "goobers/next", want: "goobers/next"},
+		{name: "tolerated failure", status: apiv1.ResultFailure, tolerate: true, output: 42, want: "goobers/current"},
+		{name: "invalid output", status: apiv1.ResultSuccess, output: 42, wantErr: true},
+		{name: "invalid namespace", status: apiv1.ResultSuccess, output: "unowned/next", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := apiv1.Task{Name: "select", Type: apiv1.TaskDeterministic, ContinueOnError: tc.tolerate}
+			result := apiv1.ResultEnvelope{Status: tc.status}
+			if tc.output != nil {
+				result.Outputs = map[string]any{"workspaceBranch": tc.output}
+			}
+			got, err := nextWorkspaceBranch(task, result, "goobers/", "goobers/current")
+			if (err != nil) != tc.wantErr || got != tc.want {
+				t.Fatalf("next binding = %q, %v; want %q, error=%v", got, err, tc.want, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), `stage "select" selected workspace branch:`) {
+				t.Fatalf("missing stage diagnostic: %v", err)
+			}
+		})
 	}
 }
 

@@ -615,18 +615,8 @@ func (wt *Worktree) PreparePinned(ctx context.Context, opts PinnedPrepareOptions
 		}
 	}
 	if opts.SyncBase && existing {
-		if mergeErr := runGit(ctx, wt.Path, "merge", "--ff", "--no-edit", baseRef); mergeErr != nil {
-			resolved, resolveErr := resolveBaseSyncConflict(ctx, wt.Path)
-			if !resolved {
-				if resolveErr != nil {
-					mergeErr = errors.Join(mergeErr, resolveErr)
-				}
-				conflictingFiles, inspectErr := mergeConflictFiles(ctx, wt.Path)
-				cleanupErr := runGit(context.WithoutCancel(ctx), wt.Path, "merge", "--abort")
-				return baseSyncFailure(CreateOptions{
-					RunID: wt.RunID, BaseRef: opts.BaseRef, Branch: opts.Branch,
-				}, mergeErr, conflictingFiles, inspectErr, cleanupErr)
-			}
+		if err := wt.syncPinnedBase(ctx, opts, baseRef); err != nil {
+			return err
 		}
 	}
 	wt.Branch = opts.Branch
@@ -637,6 +627,25 @@ func (wt *Worktree) PreparePinned(ctx context.Context, opts PinnedPrepareOptions
 		return err
 	}
 	return nil
+}
+
+func (wt *Worktree) syncPinnedBase(ctx context.Context, opts PinnedPrepareOptions, baseRef string) error {
+	mergeErr := runGit(ctx, wt.Path, "merge", "--ff", "--no-edit", baseRef)
+	if mergeErr == nil {
+		return nil
+	}
+	resolved, resolveErr := resolveBaseSyncConflict(ctx, wt.Path)
+	if resolved {
+		return nil
+	}
+	if resolveErr != nil {
+		mergeErr = errors.Join(mergeErr, resolveErr)
+	}
+	conflictingFiles, inspectErr := mergeConflictFiles(ctx, wt.Path)
+	cleanupErr := runGit(context.WithoutCancel(ctx), wt.Path, "merge", "--abort")
+	return baseSyncFailure(CreateOptions{
+		RunID: wt.RunID, BaseRef: opts.BaseRef, Branch: opts.Branch,
+	}, mergeErr, conflictingFiles, inspectErr, cleanupErr)
 }
 
 func fetchPinnedWorkspaceRefs(ctx context.Context, pinDir string) error {

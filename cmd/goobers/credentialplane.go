@@ -198,7 +198,10 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 	if request.WorkspaceBranchBinding != nil {
 		return s.resolveOwnedBranchCheckout(ctx, request, *defs, reader, identity, machine)
 	}
+	return s.resolveStageCredentialsForRun(ctx, request, *defs, reader, identity, machine)
+}
 
+func (s *daemonCredentialService) resolveStageCredentialsForRun(ctx context.Context, request httpapi.CredentialResolveRequest, defs credentialPlaneDefinitions, reader *journal.Reader, identity journal.RunIdentity, machine *workflow.Machine) (httpapi.CredentialResolveResponse, error) {
 	// The pinned gate-goober state is loaded lazily — only an agentic
 	// reviewer gate needs it — from the same journal the workflow pin came
 	// from, mirroring how the task path reaches the pinned workflow.
@@ -206,14 +209,14 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 	if loadGateCapabilities == nil {
 		loadGateCapabilities = runner.PinnedGateGooberCapabilities
 	}
-	profile, err := stageCredentialProfile(machine, *defs, request.Stage, func() (map[string][]string, bool, error) {
+	profile, err := stageCredentialProfile(machine, defs, request.Stage, func() (map[string][]string, bool, error) {
 		return loadGateCapabilities(reader, identity)
 	})
 	if err != nil {
 		return httpapi.CredentialResolveResponse{}, err
 	}
 
-	if err := s.restrictOwnedBranchCredentials(*defs, reader, identity, machine, &profile, &request); err != nil {
+	if err := s.restrictOwnedBranchCredentials(defs, reader, identity, machine, &profile, &request); err != nil {
 		return httpapi.CredentialResolveResponse{}, err
 	}
 	// Capability gate: a requested capability outside the stage's declared
@@ -239,6 +242,10 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 		}
 	}
 
+	return s.materializeStageCredentialResponse(ctx, request, defs, identity, profile, requested)
+}
+
+func (s *daemonCredentialService) materializeStageCredentialResponse(ctx context.Context, request httpapi.CredentialResolveRequest, defs credentialPlaneDefinitions, identity journal.RunIdentity, profile stageProfile, requested []string) (httpapi.CredentialResolveResponse, error) {
 	// external-telemetry's connector secret (#4341): the ONE connector this
 	// stage's pinned inputs.connector names, resolved here rather than
 	// through the ordinary grant-injector below — a connector's auth ref

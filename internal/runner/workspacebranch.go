@@ -22,7 +22,7 @@ func RestoredWorkspaceBranchBinding(events []journal.Event, machine *workflow.Ma
 	var binding *apiv1.WorkspaceBranchBinding
 	in := StartInput{Machine: machine, RepoRef: base}
 	for _, event := range events {
-		if event.WorkspaceBranchBinding != nil && (event.Type != journal.EventStageFinished || event.Branch != 0) {
+		if (event.WorkspaceBranchBinding != nil || event.WorkspaceBranchTip != "") && (event.Type != journal.EventStageFinished || event.Branch != 0) {
 			return nil, fmt.Errorf("remote workspace ownership must be recorded on a serial stage result")
 		}
 		if event.Type != journal.EventStageFinished {
@@ -30,7 +30,7 @@ func RestoredWorkspaceBranchBinding(events []journal.Event, machine *workflow.Ma
 		}
 		task, ok := machine.Task(event.Stage)
 		if !ok {
-			if event.WorkspaceBranchBinding != nil || event.WorkspaceRevision != nil {
+			if event.WorkspaceBranchBinding != nil || event.WorkspaceRevision != nil || event.WorkspaceBranchTip != "" {
 				return nil, fmt.Errorf("workspace control has no pinned producer")
 			}
 			continue
@@ -38,6 +38,7 @@ func RestoredWorkspaceBranchBinding(events []journal.Event, machine *workflow.Ma
 		result := apiv1.ResultEnvelope{
 			Status: apiv1.ResultStatus(event.Status), Outputs: event.Outputs,
 			WorkspaceRevision: event.WorkspaceRevision, WorkspaceBranchBinding: event.WorkspaceBranchBinding,
+			WorkspaceBranchTip: event.WorkspaceBranchTip,
 		}
 		selected, err := acceptWorkspaceRevision(in, task, result, additional)
 		if err != nil {

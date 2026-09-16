@@ -231,6 +231,7 @@ func completeResultEnvelope() apiv1.ResultEnvelope {
 		WorkspaceBranchBinding: &apiv1.WorkspaceBranchBinding{
 			Repository: repository, Ref: "refs/heads/goobers/workflow/run", StartingSHA: strings.Repeat("a", 40),
 		},
+		WorkspaceBranchTip: strings.Repeat("b", 40),
 		WorkspaceRevision: &apiv1.WorkspaceRevision{
 			Repository: repository, CommitSHA: strings.Repeat("a", 40),
 			SourceRef: "refs/heads/topic", SourceID: "123",
@@ -379,6 +380,7 @@ func completeJournalEvent() journal.Event {
 	return journal.Event{
 		WorkspaceRevision:      completeResultEnvelope().WorkspaceRevision,
 		WorkspaceBranchBinding: completeResultEnvelope().WorkspaceBranchBinding,
+		WorkspaceBranchTip:     completeResultEnvelope().WorkspaceBranchTip,
 		Schema:                 "goobers.dev/journal/event/v1",
 		Seq:                    1,
 		Type:                   journal.EventSpanRecorded,

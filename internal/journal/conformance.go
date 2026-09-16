@@ -59,6 +59,7 @@ type NormativeEvent struct {
 	Outputs                string
 	WorkspaceRevision      string
 	WorkspaceBranchBinding string
+	WorkspaceBranchTip     string
 
 	// Parallel/branch identity (§6.2). Completeness is a FLATTENED encoding of
 	// the branch completeness record rather than a slice, because
@@ -129,6 +130,7 @@ func projectNormative(e Event) NormativeEvent {
 		data, _ := json.Marshal(e.WorkspaceBranchBinding)
 		ne.WorkspaceBranchBinding = string(data)
 	}
+	ne.WorkspaceBranchTip = e.WorkspaceBranchTip
 	if e.Ref != nil {
 		ne.RefIntegrity = e.Ref.Integrity
 		if !isContextManifestArtifact(e) {
@@ -249,6 +251,9 @@ func (ne NormativeEvent) String() string {
 	}
 	if ne.WorkspaceBranchBinding != "" {
 		text += "|workspaceBranchBinding=" + ne.WorkspaceBranchBinding
+	}
+	if ne.WorkspaceBranchTip != "" {
+		text += "|workspaceBranchTip=" + ne.WorkspaceBranchTip
 	}
 	return text
 }

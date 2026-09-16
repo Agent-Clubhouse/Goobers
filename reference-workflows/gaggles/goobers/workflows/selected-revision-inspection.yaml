@@ -1,0 +1,37 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: selected-revision-inspection
+spec:
+  gaggle: goobers
+  displayName: Stateless selected revision inspection
+  triggers:
+    - type: schedule
+      schedule: "0 0 * * *"
+      enabled: false
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+  start: select
+  tasks:
+    - name: select
+      type: deterministic
+      goal: Select an eligible PR and bind its exact authorized source revision.
+      run:
+        command: ["goobers", "pr-select"]
+        workspace: scratch
+      inputs:
+        authorScope: any
+        allowPendingChecks: "true"
+        resultFile: selected-pr.json
+      capabilities: [github:pr:write]
+      policyActions: [flag-foundation-coupling]
+      next: inspect
+    - name: inspect
+      type: deterministic
+      goal: Record the selected commit without sharing repository mutations.
+      run:
+        command: ["git", "show", "--stat", "--oneline", "HEAD"]
+        workspace: repo-readonly
+      capabilities: [repo:read]

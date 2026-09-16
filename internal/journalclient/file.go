@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -347,6 +348,14 @@ func (f *FileCrossRun) BranchOwnership(ctx context.Context, req BranchOwnershipR
 	if err != nil {
 		return unreadable(fmt.Sprintf("read owning run %s events: %v", req.TargetRunID, err))
 	}
+	required, err := ownedWorkspaceCleanupRequired(reader, id, events, req.Branch)
+	if err != nil {
+		return unreadable(err.Error())
+	}
+	if required {
+		return BranchOwnershipResponse{Reason: "owned-workspace-cleanup-required",
+			Detail: "remote workspace branches require durable expected-tip terminal cleanup"}, nil
+	}
 	owned := false
 	var terminalAt time.Time
 	for _, event := range events {
@@ -371,6 +380,35 @@ func (f *FileCrossRun) BranchOwnership(ctx context.Context, req BranchOwnershipR
 	return BranchOwnershipResponse{Owner: &BranchOwnership{
 		Workflow: req.Workflow, RunID: req.TargetRunID, StartedAt: id.StartedAt, TerminalAt: terminalAt, Phase: string(phase),
 	}}, nil
+}
+
+func ownedWorkspaceCleanupRequired(reader *journal.Reader, id journal.RunIdentity, events []journal.Event, branch string) (bool, error) {
+	for _, input := range id.Inputs {
+		if input.Name != journal.PinnedWorkflowDefinitionInputName {
+			continue
+		}
+		data, err := reader.ArtifactBytes(input.Ref)
+		if err != nil {
+			return false, fmt.Errorf("owning workflow pin could not be read: %w", err)
+		}
+		var definition struct {
+			Spec apiv1.WorkflowSpec `json:"spec"`
+		}
+		if err := json.Unmarshal(data, &definition); err != nil {
+			return false, fmt.Errorf("owning workflow pin could not be decoded: %w", err)
+		}
+		for _, task := range definition.Spec.Tasks {
+			if strings.HasPrefix(task.Inputs["kind"], "workspace-branch-") {
+				return true, nil
+			}
+		}
+	}
+	for _, event := range events {
+		if event.WorkspaceBranchBinding != nil && event.WorkspaceBranchBinding.Ref == "refs/heads/"+branch {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // terminalBranchOwnershipPhase mirrors reconcile-branches's own

@@ -411,6 +411,7 @@ type Event struct {
 	// It is normative and independent of scalar outputs and branch continuity.
 	WorkspaceRevision      *apiv1.WorkspaceRevision      `json:"workspaceRevision,omitempty"`
 	WorkspaceBranchBinding *apiv1.WorkspaceBranchBinding `json:"workspaceBranchBinding,omitempty"`
+	WorkspaceBranchTip     string                        `json:"workspaceBranchTip,omitempty"`
 	// Artifacts mirrors a stage.finished ResultEnvelope's Artifacts — the
 	// pointers this attempt produced — for the same reconstruction reason as
 	// Outputs. Each entry's Digest and Integrity are normative;

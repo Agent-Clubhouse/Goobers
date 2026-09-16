@@ -59,6 +59,16 @@ properties are structural consequences of pinned execution. Per-stage
 specific than the repository defaults. A deterministic stage can override the
 MSBuild setting through its own `run.env`.
 
+The warm-cache clean policy applies to writable `repo` stages, not inspection.
+`repo-readonly` always detaches and resets/cleans before and after each stage,
+including ignored build products and local inspection commits. With a selected
+revision it verifies the configured source's exact SHA; without one it preserves
+the prior committed baseline without advancing the writable branch. In both cases
+the whole-run lease serializes access. Use writable `repo` for committed state
+shared between stages. Fork acquisition retains configured partial/sparse policy;
+it does not enable LFS, submodule recursion, or custom filters. See
+[selected-revision workspaces](../design/selected-revision-workspaces.md).
+
 Windows operators should also follow the
 [Windows large-repo runbook](windows-large-repo-runbook.md) for Defender/Dev
 Drive setup, build-process cleanup, and the exact environment-isolation

@@ -498,6 +498,7 @@ func stageFinishedEvent(stage string, attempt int, class journal.AttemptClass, r
 		Outputs: outputs, Artifacts: journalRefsFrom(result.Artifacts),
 		WorkspaceRevision:      result.WorkspaceRevision.DeepCopy(),
 		WorkspaceBranchBinding: result.WorkspaceBranchBinding.DeepCopy(),
+		WorkspaceBranchTip:     result.WorkspaceBranchTip,
 		Runner:                 runnerFacts,
 		// Mirrors the local runner's stage.finished: the produced provenance is
 		// normative, so it must appear identically in both journals (TBH-4).

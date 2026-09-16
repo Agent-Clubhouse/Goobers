@@ -2,6 +2,8 @@ package engine
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -10,6 +12,57 @@ import (
 	"github.com/goobers/goobers/internal/workspacebranch"
 	"github.com/goobers/goobers/internal/workspacerevision"
 )
+
+func initializeWorkspaceAuthority(in *RunInput) (string, error) {
+	var branch string
+	if in.WorkspaceBranchBinding != nil {
+		if _, err := workspacebranch.Accept(nil, in.WorkspaceBranchBinding, in.WorkspaceRevision, in.RepoRef,
+			in.BranchNamespace, in.WorkflowName, in.RunID, true, true); err != nil {
+			return "", err
+		}
+		in.WorkspaceBranchBinding = in.WorkspaceBranchBinding.DeepCopy()
+		branch = strings.TrimPrefix(in.WorkspaceBranchBinding.Ref, "refs/heads/")
+	}
+	if in.WorkspaceRevision != nil {
+		if _, err := workspacerevision.Resolve(*in.WorkspaceRevision, in.RepoRef, in.AdditionalRepos); err != nil {
+			return "", err
+		}
+		in.WorkspaceRevision = in.WorkspaceRevision.DeepCopy()
+	}
+	return branch, nil
+}
+
+// Called after runTask accepts and journals controls, before recording continuity.
+// Keep the ownership acknowledgment here so replay schedules the same commands.
+func recordWorkspaceAuthority(ctx workflow.Context, in *RunInput, result apiv1.ResultEnvelope, branch string, rec *runJournal) (string, error) {
+	if result.WorkspaceRevision != nil {
+		in.WorkspaceRevision = result.WorkspaceRevision.DeepCopy()
+	}
+	if result.WorkspaceBranchBinding != nil {
+		in.WorkspaceBranchBinding = result.WorkspaceBranchBinding.DeepCopy()
+		branch = strings.TrimPrefix(result.WorkspaceBranchBinding.Ref, "refs/heads/")
+		if err := rec.emitPending(ctx); err != nil {
+			return "", err
+		}
+	}
+	return branch, nil
+}
+
+// Legacy scalar rebinding applies only after this stage's continuity is recorded:
+// its commits belong to the branch it was handed, not the next stage's binding.
+func nextWorkspaceBranch(task apiv1.Task, result apiv1.ResultEnvelope, namespace, current string) (string, error) {
+	if result.Status == apiv1.ResultFailure && task.ContinueOnError {
+		return current, nil
+	}
+	branch, err := selectedWorkspaceBranch(task, result, namespace)
+	if err != nil {
+		return "", fmt.Errorf("stage %q selected workspace branch: %w", task.Name, err)
+	}
+	if branch == "" {
+		return current, nil
+	}
+	return branch, nil
+}
 
 // Validate before stage.finished: rejected or unsuccessful controls must never
 // become accepted journal authority, including when continueOnError is enabled.
@@ -20,6 +73,7 @@ func acceptWorkspaceRevision(in RunInput, task apiv1.Task, result apiv1.ResultEn
 	}
 	if result.Status != apiv1.ResultSuccess {
 		result.WorkspaceBranchBinding = nil
+		result.WorkspaceBranchTip = ""
 	}
 	if result.WorkspaceRevision == nil {
 		return result, nil

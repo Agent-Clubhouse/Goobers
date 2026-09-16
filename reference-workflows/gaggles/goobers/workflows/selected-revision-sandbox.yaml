@@ -1,0 +1,70 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: selected-revision-sandbox
+spec:
+  gaggle: goobers
+  displayName: Isolated selected revision experiment
+  triggers:
+    - type: schedule
+      schedule: "0 0 * * *"
+      enabled: false
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+  start: select
+  tasks:
+    - name: select
+      type: deterministic
+      goal: Select an authorized exact source revision without rebinding its branch.
+      run:
+        command: ["goobers", "pr-select"]
+        workspace: scratch
+      inputs:
+        authorScope: any
+        allowPendingChecks: "true"
+        resultFile: selected-pr.json
+      capabilities: [github:pr:write]
+      policyActions: [flag-foundation-coupling]
+      next: establish
+    - name: establish
+      type: deterministic
+      goal: Establish the generated remote branch in the configured base repository.
+      run:
+        command: ["goobers"]
+        workspace: scratch
+      inputs:
+        kind: workspace-branch-establish
+      capabilities: [repo:push]
+      next: first-iteration
+    - name: first-iteration
+      type: deterministic
+      goal: Commit one harmless experiment locally without publication credentials.
+      run:
+        command: ["git", "-c", "user.name=Goobers", "-c", "user.email=goobers@users.noreply.github.com", "commit", "--allow-empty", "-m", "First isolated experiment"]
+        workspace: repo
+      next: second-iteration
+    - name: second-iteration
+      type: deterministic
+      goal: Build a second commit on the first stage's committed state.
+      run:
+        command: ["git", "-c", "user.name=Goobers", "-c", "user.email=goobers@users.noreply.github.com", "commit", "--allow-empty", "-m", "Second isolated experiment"]
+        workspace: repo
+      next: inspect-iterations
+    - name: inspect-iterations
+      type: deterministic
+      goal: Record both commits before publishing through the trusted backend.
+      run:
+        command: ["git", "log", "--oneline", "-3"]
+        workspace: repo
+      next: publish
+    - name: publish
+      type: deterministic
+      goal: Publish only to the owned branch and durably acknowledge its exact tip.
+      run:
+        command: ["goobers"]
+        workspace: repo
+      inputs:
+        kind: workspace-branch-publish
+      capabilities: [repo:push]

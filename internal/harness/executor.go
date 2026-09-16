@@ -484,37 +484,9 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}
-	var creds *credentials.Set
-	var err error
-	if env.WorkspaceBranchBinding != nil {
-		keys := env.Capabilities
-		if envEffectivePolicy != nil {
-			keys = envEffectivePolicy.PlatformPolicy.Credentials
-		}
-		keys, err = workspacebranch.StageCredentialKeys(keys, true)
-		if err != nil {
-			return Outcome{}, nil, nil, err
-		}
-		creds, err = e.injector.MaterializeRestricted(ctx, keys)
-	} else if envEffectivePolicy != nil {
-		creds, err = e.injector.MaterializeRestricted(ctx, envEffectivePolicy.PlatformPolicy.Credentials)
-	} else {
-		creds, err = e.injector.Materialize(ctx, env.Capabilities)
-	}
+	creds, err := e.materializeStageCredentials(ctx, env, envEffectivePolicy)
 	if err != nil {
-		// A credential-materialization failure is an infrastructure fault at
-		// stage-environment build time, not evidence about the work (#3361):
-		// typed with its own code (executor.StageFailure, so telemetry rows
-		// carry credential_unavailable/infra instead of executor_error/
-		// unknown) AND marked via the invoke.InfrastructureFailure seam, so
-		// the runner retries on the bounded infrastructure budget (journal
-		// AttemptClass "infra") instead of consuming the stage's policy
-		// attempts — at attempt budgets of 1, the old classification turned a
-		// transient provider 403 into a terminal work failure.
-		return Outcome{}, nil, nil, invoke.InfrastructureFailure(executor.StageFailure(
-			telemetry.ErrCodeCredentialUnavailable,
-			fmt.Errorf("harness: materialize credentials: %w", err),
-		))
+		return Outcome{}, nil, nil, err
 	}
 	contextPaths, err := e.materializeContext(env)
 	if err != nil {
@@ -776,6 +748,42 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return out, transcript, nil, invoke.InfrastructureFailure(err)
 	}
 	return out, transcript, nil, nil
+}
+
+func (e *Executor) materializeStageCredentials(ctx context.Context, env apiv1.InvocationEnvelope, effectivePolicy *apiv1.ChildExecutionPolicy) (*credentials.Set, error) {
+	var creds *credentials.Set
+	var err error
+	if env.WorkspaceBranchBinding != nil {
+		keys := env.Capabilities
+		if effectivePolicy != nil {
+			keys = effectivePolicy.PlatformPolicy.Credentials
+		}
+		keys, err = workspacebranch.StageCredentialKeys(keys, true)
+		if err != nil {
+			return nil, err
+		}
+		creds, err = e.injector.MaterializeRestricted(ctx, keys)
+	} else if effectivePolicy != nil {
+		creds, err = e.injector.MaterializeRestricted(ctx, effectivePolicy.PlatformPolicy.Credentials)
+	} else {
+		creds, err = e.injector.Materialize(ctx, env.Capabilities)
+	}
+	if err != nil {
+		// A credential-materialization failure is an infrastructure fault at
+		// stage-environment build time, not evidence about the work (#3361):
+		// typed with its own code (executor.StageFailure, so telemetry rows
+		// carry credential_unavailable/infra instead of executor_error/
+		// unknown) AND marked via the invoke.InfrastructureFailure seam, so
+		// the runner retries on the bounded infrastructure budget (journal
+		// AttemptClass "infra") instead of consuming the stage's policy
+		// attempts — at attempt budgets of 1, the old classification turned a
+		// transient provider 403 into a terminal work failure.
+		return nil, invoke.InfrastructureFailure(executor.StageFailure(
+			telemetry.ErrCodeCredentialUnavailable,
+			fmt.Errorf("harness: materialize credentials: %w", err),
+		))
+	}
+	return creds, nil
 }
 
 func classifyHarnessRunError(runErr, wrapped error) error {

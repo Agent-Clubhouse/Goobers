@@ -133,9 +133,8 @@ func TestOwnedBranchLocalContinuityAndResume(t *testing.T) {
 								if head := strings.TrimSpace(gitOutput(t, env.Workspace, "rev-parse", "HEAD")); head != authored {
 									t.Fatal("authoring continuity lost")
 								}
-								if err := worktree.PublishRemoteBranch(ctx, opts, env.Workspace); err != nil {
-									return apiv1.ResultEnvelope{}, err
-								}
+								tip, err := worktree.PublishRemoteBranchTip(ctx, opts, env.Workspace)
+								return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, WorkspaceBranchTip: tip}, err
 							}
 							return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 						}}, nil
@@ -155,6 +154,24 @@ func TestOwnedBranchLocalContinuityAndResume(t *testing.T) {
 				}
 				if tip := strings.TrimSpace(gitOutput(t, "", "--git-dir="+repo, "rev-parse", binding.Ref)); tip != authored {
 					t.Fatal("remote publication missing")
+				}
+				reader, err := journal.OpenRead(filepath.Join(runs, id))
+				if err != nil {
+					t.Fatal(err)
+				}
+				events, err := reader.Events()
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, event := range events {
+					found = found || event.Stage == "publish" && event.WorkspaceBranchTip == authored
+				}
+				if !found {
+					t.Fatal("exact publication tip was not durably journaled")
+				}
+				if _, err := RestoredWorkspaceBranchBinding(events, machine, base, nil, "", id); err != nil {
+					t.Fatalf("publication evidence did not restore: %v", err)
 				}
 				if source := strings.TrimSpace(gitOutput(t, "", "--git-dir="+repo, "rev-parse", rebindBranch)); source != sha {
 					t.Fatal("source branch mutated")

@@ -110,6 +110,7 @@ func TestConformanceViewCapturesFullNormativeFieldSet(t *testing.T) {
 			return e
 		}},
 		{"Artifacts presence", func(e Event) Event { e.Artifacts = nil; return e }},
+		{"WorkspaceBranchTip", func(e Event) Event { e.WorkspaceBranchTip = strings.Repeat("a", 40); return e }},
 		{"RefDigest", func(e Event) Event { r := *e.Ref; r.Digest = "sha256:cccc"; e.Ref = &r; return e }},
 		{"Ref.Integrity", func(e Event) Event { r := *e.Ref; r.Integrity = apiv1.IntegrityUnapproved; e.Ref = &r; return e }},
 		{"Artifacts[0].Digest", func(e Event) Event {

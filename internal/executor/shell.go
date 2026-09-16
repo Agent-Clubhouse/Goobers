@@ -811,39 +811,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 
 	registry, scrubber := journal.DefaultScrubber()
-	// Only a stage whose command IS the goobers CLI receives the run's
-	// operational identity (GOOBERS_RUN_ID etc.). A stage that runs the
-	// project's own build/test suite (local-ci's `make ci` → `go test ./...`)
-	// must not inherit it, or — in a self-hosting project — the runner's live
-	// run env leaks into its own test suite (#322). This is the same
-	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
-	// the goobers-CLI-stage-ness of a stage is what decides both.
-	//
-	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that
-	// WRAPS the goobers CLI in another process (command[0] names the
-	// wrapper, not "goobers") but still needs the same context its nested
-	// invocation does — declared per-stage rather than guessed from argv[0].
-	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
-	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
-	for key, value := range e.DefaultEnv {
-		declaredEnv[key] = value
-	}
-	for key, value := range run.Env {
-		declaredEnv[key] = value
-	}
-	stageCapabilities := env.Capabilities
-	passthrough := e.ExtraEnvAllowlist
-	if env.WorkspaceBranchBinding != nil {
-		stageCapabilities, err = workspacebranch.StageCredentialKeys(stageCapabilities, false)
-		if err != nil {
-			return apiv1.ResultEnvelope{}, err
-		}
-		passthrough = nil
-		injectRunContext = false
-	}
-	stageEnv, err := buildStageEnv(ctx, e.Injector, stageCapabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, passthrough, additionalRepoPaths(env.AdditionalWorkspaces))
+	stageEnv, injectRunContext, err := e.buildInvocationStageEnv(ctx, env, run, command, registry)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
+		return apiv1.ResultEnvelope{}, err
 	}
 	stageEnv = append(stageEnv, commandEnv...)
 	if injectRunContext {
@@ -1459,12 +1429,16 @@ func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
 		return err
 	}
 	result.WorkspaceBranchBinding = binding
+	result.WorkspaceBranchTip, err = workspacebranch.ResultTip(data)
+	if err != nil {
+		return err
+	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil
 	}
 	for k, raw := range m {
-		if k == "workspaceBranchBinding" {
+		if k == "workspaceBranchBinding" || k == "workspaceBranchTip" {
 			continue
 		}
 		if k == "workspaceRevision" {
@@ -1496,6 +1470,45 @@ func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
 		}
 	}
 	return nil
+}
+
+func (e *ShellExecutor) buildInvocationStageEnv(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, command []string, registrar credentials.SecretRegistrar) ([]string, bool, error) {
+	// Only a stage whose command IS the goobers CLI receives the run's
+	// operational identity (GOOBERS_RUN_ID etc.). A stage that runs the
+	// project's own build/test suite (local-ci's `make ci` → `go test ./...`)
+	// must not inherit it, or — in a self-hosting project — the runner's live
+	// run env leaks into its own test suite (#322). This is the same
+	// command[0]=="goobers" discriminator the SelfBin substitution uses:
+	// the goobers-CLI-stage-ness of a stage is what decides both.
+	//
+	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that
+	// WRAPS the goobers CLI in another process (command[0] names the
+	// wrapper, not "goobers") but still needs the same context its nested
+	// invocation does — declared per-stage rather than guessed from argv[0].
+	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
+	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
+	for key, value := range e.DefaultEnv {
+		declaredEnv[key] = value
+	}
+	for key, value := range run.Env {
+		declaredEnv[key] = value
+	}
+	stageCapabilities := env.Capabilities
+	passthrough := e.ExtraEnvAllowlist
+	if env.WorkspaceBranchBinding != nil {
+		var err error
+		stageCapabilities, err = workspacebranch.StageCredentialKeys(stageCapabilities, false)
+		if err != nil {
+			return nil, false, err
+		}
+		passthrough = nil
+		injectRunContext = false
+	}
+	stageEnv, err := buildStageEnv(ctx, e.Injector, stageCapabilities, registrar, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, passthrough, additionalRepoPaths(env.AdditionalWorkspaces))
+	if err != nil {
+		return nil, false, fmt.Errorf("executor: build stage environment: %w", err)
+	}
+	return stageEnv, injectRunContext, nil
 }
 
 func exitCodeOf(err error) int {

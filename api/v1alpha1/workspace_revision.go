@@ -78,13 +78,18 @@ func (r RepositoryIdentity) Validate() error {
 	if r.Provider == ProviderGitea && r.URL == "" {
 		return fmt.Errorf("gitea repository URL is required to identify the service")
 	}
-	if r.URL != "" {
-		u, err := url.Parse(r.URL)
-		if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") ||
-			u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
-			r.URL != strings.TrimSpace(r.URL) {
-			return fmt.Errorf("repository URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
-		}
+	return validateRepositoryIdentityURL(r.URL)
+}
+
+func validateRepositoryIdentityURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") ||
+		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
+		value != strings.TrimSpace(value) {
+		return fmt.Errorf("repository URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
 	}
 	return nil
 }

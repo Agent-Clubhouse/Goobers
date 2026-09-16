@@ -76,18 +76,19 @@ func (e *workspaceBranchExecutor) Run(ctx context.Context, env apiv1.InvocationE
 		SourceURL: sourceURL, TargetURL: targetURL, Binding: *binding,
 		SourceRead: read, TargetWrite: write, TempDir: e.input.ScratchDir,
 	}
+	var publishedTip string
 	if kind == workspacebranch.KindPublish {
 		if env.WorkspaceBranchBinding == nil || !run.Workspace.IsWritableRepo() || run.SyncBase {
 			return refuse("publication requires durable branch ownership and a writable workspace without syncBase")
 		}
-		err = worktree.PublishRemoteBranch(ctx, opts, env.Workspace)
+		publishedTip, err = worktree.PublishRemoteBranchTip(ctx, opts, env.Workspace)
 	} else {
 		err = worktree.EstablishRemoteBranch(ctx, opts)
 	}
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
-	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
+	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, WorkspaceBranchTip: publishedTip}
 	if kind == workspacebranch.KindEstablish {
 		result.WorkspaceBranchBinding = binding
 		result.Outputs = map[string]any{runner.WorkspaceBranchOutput: strings.TrimPrefix(binding.Ref, "refs/heads/")}

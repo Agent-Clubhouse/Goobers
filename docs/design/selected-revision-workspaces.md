@@ -126,7 +126,7 @@ stable classified failures.
 Read-only revision requests carry neither `WorkspaceBranch` nor `WorkspaceDelta`,
 never sync base, and publish no delta. Explicit contradictory requests fail
 closed. Scratch selectors do not acquire a selected checkout, and existing
-writable continuity remains independent pending the sandbox milestone.
+writable continuity remains independent unless explicit sandbox establishment runs.
 
 Checked-in Temporal histories predating the field replay with the new workflow.
 The real-server E2 replay fixture set includes selection and identical
@@ -209,14 +209,115 @@ partial, and sparse policy; HTTP checkout response validation and actual harness
 credential non-injection. See the [stage primitives](../reference/workflow-primitives/stage-commands.md#owned-remote-branch-operations)
 and [credential guidance](../guides/github-token-scopes.md#owned-selected-revision-branch-credentials).
 
-## Pending lifecycle and conformance — #5127
+## Terminal lifecycle and recovery
 
-Complete expected-SHA cleanup, contention outcomes, crash/restart reconciliation,
-authoring diagnostics, cross-substrate conformance, and reference inspection/
-isolated-iteration workflows. Only after these obligations and the distributed
-milestones land may the full #4157 design be marked implemented. Direct source
-branch mutation, automatic merging, and a revision PR into the original source
-branch remain outside this design.
+The immutable `workspaceBranchBinding.startingSha` proves the root of ownership;
+the separate typed `workspaceBranchTip` proves the exact last acknowledged
+publication. The trusted publisher returns the object it actually transferred,
+not a moving ref read after publication. Local and Temporal `stage.finished`
+records carry this evidence; result-file promotion reserves it from scalar
+outputs and acceptance rejects arbitrary producers.
+
+The shared terminal preparer covers completion, failure, abort, and restart
+recovery. It reconstructs the full pinned history and reauthorizes the configured
+base repository. Cleanup uses sterile Git, the base's repository-qualified write
+grant, a bounded timeout, and
+`--force-with-lease=<owned-ref>:<durable-expected-tip>`. It never deletes the source
+ref, derives authority from source text, or retries using a freshly observed tip.
+If the generated target equals known same-repository source-ref provenance,
+establishment refuses the collision even when native-ID representations differ.
+
+| Typed cleanup outcome | Meaning |
+|---|---|
+| `workspace_branch_deleted` | The owned expected tip was deleted, including a reconciled lost response. |
+| `workspace_branch_already_absent` | Repeated cleanup has nothing left to delete. |
+| `workspace_branch_tip_changed` | Another writer advanced/replaced the ref; preserve it. |
+| `workspace_branch_ownership_missing` | No durable binding or no known publication lease; preserve it. |
+| `workspace_branch_ownership_invalid` | Pinned producer, identity, or history validation failed; preserve and report the error. |
+| `workspace_branch_cleanup_failed` | Authorization, transport, or deletion failed; report the error without inventing success. |
+
+Before publication the lease is the immutable starting SHA. A crash after remote
+creation but before journaling retries create-only establishment and verifies
+the identical ref. A crash after publication but before recording its tip leaves
+the old lease: cleanup preserves the advanced branch. A successful old publisher
+record without a typed tip makes the lease unknown. A crash after deletion but
+before recording its outcome converges to already absent. Audit failures are
+returned, not hidden; cleanup may already have succeeded and can safely repeat.
+
+Local cleanup annotations go to the live run journal before `run.finished`.
+Engine terminal hooks annotate the instance log because the engine's completed
+run journal must still equal its normative projection. Legacy namespace-based
+reconciliation refuses sandbox runs using their pinned definition or typed
+ownership, including a crash before ownership acknowledgment; it cannot
+manufacture a cleanup lease from the current remote tip.
+
+## Authoring and materialization boundaries
+
+Validation rejects branch/delta/`syncBase` inputs for selected read-only work,
+typed authority supplied through scalar inputs, invalid trusted backend kinds,
+and sandbox writable work not dominated by establishment on every reachable
+path. Sandbox authority and writable work remain serial; distributed static
+fan-out/fan-in is still outside this feature. Runtime authorization checks
+dynamically selected sources against configuration; a source unknown until a
+selector runs cannot be proven authorized solely by static validation.
+
+`repo-readonly` never carries inspection changes to another stage, including
+legacy pinned execution without a selected revision. It detaches at the prior
+committed baseline and resets/cleans inspection commits, ignored files, and
+untracked products before and after exposure, without advancing the prior
+writable branch. Ordinary writable `repo` behavior and declared clean policy
+remain unchanged. Use committed writable continuity when build/test/review
+stages need to observe earlier edits.
+
+Full, partial (`blob:none`), and sparse policy come from configuration on local
+disposable, local pinned, workerhost, and pod paths. Partial plus sparse tests
+verify excluded blobs are not materialized, rather than merely checking flags.
+Gitlinks remain unexpanded, LFS files remain pointers, and undeclared
+clean/smudge/process filters, submodule recursion, hooks, and fsmonitor remain
+inert. A selected commit cannot introduce credentials or authorize another
+repository through these mechanisms.
+
+Read-only is a repository-continuity contract, not a read-only filesystem or an
+OS sandbox. In particular, native local execution does not contain a malicious
+same-user process from other host files or credentials. Existing isolation
+requirements still apply. Providers may refuse exact-SHA acquisition for objects
+their Git endpoint does not serve; this is a classified acquisition failure, not
+permission to fetch a branch or substitute an identity.
+
+## Cross-substrate conformance matrix
+
+The matrix names executable evidence, not an exhaustive Cartesian product.
+Shared Git/authority tests cover common failure paths; substrate tests verify
+transport and classification at their actual boundaries.
+
+| Dimension | Local disposable | Local pinned | Workerhost / Temporal | Pod |
+|---|---|---|---|---|
+| Same repository / fork | `TestSelectedRevisionLocalRunAndResume`, `TestSelectedRevisionForkWorkspacesCoexist` | Same runner tests in pinned mode; `TestIntegrationPinnedRevisionDiscardAndCustody` | `TestIntegrationWorkerSelectedRevisionMaterializationAndRetry` | `TestIntegrationPodWorkspaceRevisionMaterialization` |
+| Full / partial / sparse | `TestIntegrationExactRevisionMaterialization` | `TestIntegrationPinnedRevisionDiscardAndCustody` (full and partial+sparse) | Materialization-and-retry test across policy combinations | Pod materialization test across policy combinations |
+| Missing grant / object / non-commit | `TestIntegrationExactRevisionRejectsUnavailableAndNonCommit`, `TestIntegrationExactRevisionPreservesAuthorizationRefusal` | Shared exact-object acquisition and pinned custody tests | `TestIntegrationWorkerSelectedRevisionFailureParity`, `TestSelectedRevisionRefusesInvalidRequestsBeforeGit` | `TestIntegrationPodWorkspaceRevisionRefusals`, `TestPodWorkspaceRevisionNoDeltaOrCredentialFallback` |
+| SHA mismatch / branch substitution | `TestIntegrationExactRevisionVerificationRefusals`, `TestExactRevisionOptionsFailClosed`, exact HEAD checks after moving the source branch | Same exact verification; detached reset/custody checks | Shared verifier plus failure-classification and moving-branch retry tests | Exact HEAD checks, parsing refusals, `TestPodWorkspaceRevisionFailureRetryability` |
+| Retry / resume / replay | Local run/resume and immutable-control tests | Local run/resume in pinned mode | `TestWorkspaceRevisionWorkflowRetryAndContinuity`, `TestWorkspaceRevisionRecordedLegacyHistories` | `TestDispatchOneTransportsSelectedRevisionAndLegacyPayloads`, worker-to-pod continuity test |
+| Independent inspections | `TestSelectedRevisionParallelBranchesReceiveIndependentTrees`, `TestIntegrationExactRevisionParallelCoexistence` | Serialized by whole-run lease, not parallel checkouts | Independent worker materialization; distributed static parallels not implemented | Independent pod checkouts; distributed static parallels not implemented |
+| Writable commit continuity | `TestOwnedBranchLocalContinuityAndResume` | Same test in pinned mode | `TestOwnedBranchWorkflowDurabilityAndContinuity` | `TestIntegrationOwnedBranchWorkerPodDeltaAndBroker` (worker -> pod -> fresh worker) |
+| Create / conflict / source preservation | `TestIntegrationRemoteBranchEstablishmentAndPublication`, `TestIntegrationRemoteBranchRefusals` | Same trusted backend, independent of checkout custody | Same trusted backend | Establish/publish execute in host backend, not in authoring pod |
+| Cleanup lease loss / crash / ambiguity | `TestIntegrationRemoteBranchCleanupLeaseAndRecovery`, `TestIntegrationOwnedWorkspaceTerminalCleanup` | Same terminal coordinator and durable evidence | Same terminal coordinator; instance-log audit preserves run-journal conformance | Same coordinator after pod result acknowledgment; no pod-owned deletion |
+
+`TestOwnedBranchSourceCollisionAndTipAuthority`,
+`TestOwnedBranchResultFilePromotion`, `TestDispatchExecOwnedBranchTipPromotion`,
+schema completeness, and journal conformance cover the final typed publication
+field. `TestWorkspaceAuthorityDiagnostics` covers control-flow bypass and
+parallel misuse. The terminal integration test exercises the actual trusted
+backend, pinned journal, legacy sweep exclusion, and shared terminal callback.
+`TestLegacyPinnedReadonlyPreservesOnlyWritableCommits` exercises real runner
+callbacks across writable -> read-only -> read-only -> writable stages, while
+`TestRemoteBranchCleanupRefusesMissingAuthority` covers missing grants and
+malformed cleanup leases without contacting a remote.
+
+The opt-in [reference workflows](../../reference-workflows/README.md#selected-revision-examples)
+demonstrate stateless inspection and two committed isolated iterations followed
+by explicit publication and terminal cleanup. Source-tree validation loads both.
+Direct source mutation, revision-PR creation, automatic merge, and automatic
+publication without an explicit broker stage are not implemented.
 
 ## Validation and documentation maintenance
 
@@ -228,11 +329,10 @@ go test ./api/validate -run '^TestSchemaBackedEnvelopeCompleteness$'
 go vet ./api/v1alpha1 ./api/schemas ./internal/workspacerevision
 ```
 
-The local milestone additionally exercises provider identity/selection, runner
-trust and resume, journal conformance, ordinary/pinned same-repository and fork
-checkout, materialization policy, and exact-object refusal paths. Subsequent
-milestones must extend these tests rather than treating local coverage as evidence
-of distributed parity.
+The conformance matrix above distinguishes real Git execution, workflow tests,
+and shared coordinator coverage. No credentialed GitHub/ADO/Gitea deployment is
+implied by fixture validation. Tests use local remotes, provider fixtures, actual
+workerhost/pod provisioning functions, and recorded Temporal histories.
 
 Keep this ledger, Architecture §5.1, the stage contract, and schemas synchronized.
 Regenerate the design index with `go run ./test/designstatus -write` after ledger

@@ -15,12 +15,10 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // dispatchstage.go is the mode-3 engine cutover (#3588): the seam through
@@ -603,33 +601,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// from two different readings of one declaration.
 	needsRepoContext := false
 	workspace := apiv1.EffectiveWorkspace(input.Workspace, input.Run)
-	attempt.WorkspaceBranchBinding = input.Envelope.WorkspaceBranchBinding.DeepCopy()
-	attempt.BranchNamespace = input.Envelope.BranchNamespace
-	if attempt.WorkspaceBranchBinding != nil {
-		attempt.WorkspaceRepository = input.Envelope.RepoRef
-		attempt.Checkout = input.Checkout
-		attempt.PartialClone = input.PartialClone
-	}
 	if workspace != "" {
 		attempt.Workspace = string(workspace)
 	}
-	if workspace == apiv1.WorkspaceRepoReadOnly {
-		selected, err := workspacerevision.Accept(input.Envelope.WorkspaceRevision, input.WorkspaceRevision, true, true)
-		if err != nil {
-			return stageActivityResult{}, classifySeamError(err)
-		}
-		attempt.WorkspaceRevision = selected.DeepCopy()
-		attempt.WorkspaceRepository = input.Envelope.RepoRef
-		attempt.PartialClone = input.PartialClone
-		if input.Checkout != nil {
-			policy := *input.Checkout
-			policy.Sparse = append([]string(nil), policy.Sparse...)
-			attempt.Checkout = &policy
-		}
-		if selected != nil && (input.WorkspaceBranch != "" || input.WorkspaceDelta != "" || (input.Run != nil && input.Run.SyncBase)) {
-			return stageActivityResult{}, classifySeamError(&workspacerevision.Error{Code: workspacerevision.CodeConflict,
-				Message: "selected-revision repo-readonly cannot use branch, delta or syncBase"})
-		}
+	if err := stampDispatchWorkspaceAuthority(&attempt, input, workspace); err != nil {
+		return stageActivityResult{}, err
 	}
 	// What earlier stages committed (#3763). Only meaningful for a workspace
 	// the pod can commit into; handing it to a scratch or read-only stage
@@ -652,20 +628,6 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// carries no DeterministicRun and therefore never syncs base, matching
 		// the local runner (dispatchTask reads t.Run.SyncBase).
 		attempt.SyncBase = input.Run != nil && input.Run.SyncBase
-	}
-	// A repo workspace has to be CLONED, and cloning a private repository needs
-	// a credential. The pod used to take that from the stage's declared
-	// business capabilities, so provisioning silently depended on the stage
-	// happening to declare a repo-shaped one — open-pr declares
-	// provider:pr:write alone and could not run in a pod at all (#3770).
-	//
-	// Naming it here rather than widening the stage's capabilities keeps the
-	// two separate: the pod mints this for the checkout and never exports it to
-	// the stage's environment, so a stage does not gain repository authority by
-	// needing a working tree. The worker has always behaved this way — it
-	// provisions worktrees with instance credentials, not the stage's.
-	if workspace.IsRepoBacked() && attempt.WorkspaceRevision == nil && attempt.WorkspaceBranchBinding == nil && !declaresRepoCapability(attempt.Capabilities) {
-		attempt.CheckoutCapability = string(capability.RepoPush)
 	}
 	needsRepoContext = workspace.IsRepoBacked() || (input.Run != nil && workspace == "")
 	// Gating the stamp on input.Run != nil would defeat needsRepoContext for the

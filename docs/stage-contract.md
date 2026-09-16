@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha10` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha12` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -141,6 +141,22 @@ backend, never in stage Git configuration or authoring/agent environments.
 Neither operation runs inside an authoring pod or a writable parallel branch.
 See [stage primitives](reference/workflow-primitives/stage-commands.md#owned-remote-branch-operations)
 for configuration.
+
+Stage contract `v1alpha12` adds optional `workspaceBranchTip` to successful
+publication results and normative `stage.finished` records. It is the exact
+full commit ID acknowledged by the trusted publisher, not a later remote
+observation, scalar output, or replacement for immutable `startingSha`.
+Only the pinned deterministic publication operation can emit it, and failed
+results retain no tip authority. Old histories may omit it.
+
+Terminal cleanup reconstructs ownership and the last acknowledged tip from the
+full verified history. Before any publication, the expected tip is `startingSha`.
+A successful old publication without typed tip evidence makes cleanup ambiguous.
+Deletion uses an expected-tip lease: absent refs are idempotent success; changed
+tips, missing evidence, or invalid ownership are preserved with a typed outcome.
+A crash after publication but before journaling cannot authorize deletion of the
+new tip. Legacy namespace sweeps cannot substitute current-tip observations for
+this evidence. See [lifecycle and conformance](design/selected-revision-workspaces.md#terminal-lifecycle-and-recovery).
 
 ## How a stage gets its input
 

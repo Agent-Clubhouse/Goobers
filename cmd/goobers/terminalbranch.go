@@ -110,7 +110,10 @@ func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, projec
 		return nil, err
 	}
 	return func(runID string, phase journal.RunPhase, annotate terminalAnnotator) error {
-		branchErr := finalizeTerminalBranch(l.RunsDir(), runID, annotate, repo, deleteBranch)
+		handled, branchErr := finalizeOwnedWorkspaceBranch(l, cfg, project, registrar, stores, runID, annotate)
+		if !handled {
+			branchErr = finalizeTerminalBranch(l.RunsDir(), runID, annotate, repo, deleteBranch)
+		}
 		labelErr := labelAbortedRunPR(l.RunsDir(), runID, phase, annotate, repo, labelAbortedPR)
 		return errors.Join(branchErr, labelErr)
 	}, nil

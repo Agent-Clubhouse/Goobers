@@ -1317,6 +1317,7 @@ func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.Res
 			Error:                  errInfo,
 			WorkspaceRevision:      e.WorkspaceRevision,
 			WorkspaceBranchBinding: e.WorkspaceBranchBinding.DeepCopy(),
+			WorkspaceBranchTip:     e.WorkspaceBranchTip,
 		}, true
 	}
 	return "", apiv1.ResultEnvelope{}, false
