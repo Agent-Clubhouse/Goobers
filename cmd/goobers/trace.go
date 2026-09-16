@@ -116,7 +116,6 @@ func runTraceWithFactories(
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
 	}
-
 	l := instance.NewLayout(root)
 	runID, err := resolveRunID(l, runID)
 	if errors.Is(err, iofs.ErrNotExist) {
@@ -154,7 +153,6 @@ func runTraceWithFactories(
 		}
 		return 0
 	}
-
 	ledger, err := reads.RunEvents(ctx, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -173,7 +171,6 @@ func runTraceWithFactories(
 			}
 			return 0
 		}
-
 		detail, err = reads.GetRun(ctx, runID)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
