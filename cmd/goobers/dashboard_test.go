@@ -1056,6 +1056,44 @@ func TestDashboardBindsWhileAttachingAndStopsCleanly(t *testing.T) {
 	}
 }
 
+func TestDashboardAttachesWhileDaemonRecoveryIsRunning(t *testing.T) {
+	root := initDemo(t)
+	daemon := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != httpapi.HealthPath {
+			http.NotFound(response, request)
+			return
+		}
+		if err := json.NewEncoder(response).Encode(readservice.Health{
+			APIVersion:    readservice.APIVersion,
+			SchemaVersion: readservice.SchemaVersion,
+			Ready:         false,
+			Healthy:       true,
+			Startup: &readservice.StartupStatus{
+				Phase: "orphan-run-prune",
+				Since: time.Now().Add(-time.Minute),
+			},
+		}); err != nil {
+			t.Errorf("encode health response: %v", err)
+		}
+	}))
+	defer daemon.Close()
+
+	target, err := waitForDashboardDaemon(
+		context.Background(),
+		instance.NewLayout(root),
+		"http",
+		strings.TrimPrefix(daemon.URL, "http://"),
+		time.Second,
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.String() != daemon.URL {
+		t.Fatalf("target = %q, want %q", target, daemon.URL)
+	}
+}
+
 func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
