@@ -823,13 +823,25 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 		t.Fatalf("transcript = %q", out.Transcript)
 	}
 
-	// The command contains PromptFlag + prompt text + extras. On Windows the
+	// The command contains PromptFlag=prompt text plus extras. On Windows the
 	// base command is the PowerShell npm shim rather than bare "copilot".
-	promptIndex := slices.Index(runner.lastReq.Command, defaultPromptFlag)
-	if promptIndex < 0 || promptIndex+1 >= len(runner.lastReq.Command) {
+	//
+	// Instructions open with YAML frontmatter in every real goober, and a
+	// prompt passed as its own argument starting with "---" is read by the
+	// CLI as options, not as the flag's value (#5197). No argv element may
+	// carry prompt text except the one bound to the prompt flag.
+	for i, arg := range runner.lastReq.Command {
+		if strings.HasPrefix(arg, defaultPromptFlag+"=") {
+			continue
+		}
+		if strings.Contains(arg, "You are a coder.") {
+			t.Fatalf("prompt text leaked into argv[%d] = %q, which a CLI may parse as flags", i, arg)
+		}
+	}
+	promptText, ok := copilotPromptArgValue(runner.lastReq.Command)
+	if !ok {
 		t.Fatalf("unexpected command: %v", runner.lastReq.Command)
 	}
-	promptText := runner.lastReq.Command[promptIndex+1]
 	if !strings.Contains(promptText, "You are a coder.") {
 		t.Fatalf("prompt missing instructions: %q", promptText)
 	}
@@ -1053,11 +1065,10 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			if tc.externalMCP && slices.Contains(runner.lastReq.Command, "--disable-builtin-mcps") {
 				t.Fatalf("declared GitHub group was disabled by external MCP isolation: %v", runner.lastReq.Command)
 			}
-			promptIndex := slices.Index(runner.lastReq.Command, defaultPromptFlag)
-			if promptIndex < 0 || promptIndex+1 >= len(runner.lastReq.Command) {
+			prompt, ok := copilotPromptArgValue(runner.lastReq.Command)
+			if !ok {
 				t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
 			}
-			prompt := runner.lastReq.Command[promptIndex+1]
 			if !strings.Contains(prompt, "return your result as the entire final response") ||
 				strings.Contains(prompt, "write your result as JSON to") {
 				t.Fatalf("tool-constrained prompt does not use response completion: %q", prompt)
@@ -1223,11 +1234,11 @@ func TestCopilotAdapterConstrainedTranscriptUsesSentPrompt(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("transcript events = %#v, want user and assistant events", events)
 	}
-	promptIndex := slices.Index(runner.lastReq.Command, defaultPromptFlag)
-	if promptIndex < 0 || promptIndex+1 >= len(runner.lastReq.Command) {
+	sentPrompt, ok := copilotPromptArgValue(runner.lastReq.Command)
+	if !ok {
 		t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
 	}
-	if events[0].Role != "user" || events[0].Content != runner.lastReq.Command[promptIndex+1] {
+	if events[0].Role != "user" || events[0].Content != sentPrompt {
 		t.Fatalf("transcript prompt = %#v, want exact command prompt", events[0])
 	}
 	if !strings.Contains(events[0].Content, "return your result as the entire final response") ||
@@ -1426,11 +1437,11 @@ func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing
 	if !firstOK || !secondOK || firstSession != secondSession {
 		t.Fatalf("recovery did not resume the initial session: first=%q second=%q", firstSession, secondSession)
 	}
-	promptIndex := slices.Index(calls[1].Command, defaultPromptFlag)
-	if promptIndex < 0 || promptIndex+1 >= len(calls[1].Command) {
+	prompt, ok := copilotPromptArgValue(calls[1].Command)
+	if !ok {
 		t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
 	}
-	if prompt := calls[1].Command[promptIndex+1]; !strings.Contains(prompt, "entire response") ||
+	if !strings.Contains(prompt, "entire response") ||
 		!strings.Contains(prompt, "without returning the mandatory completion") {
 		t.Fatalf("recovery prompt = %q", prompt)
 	}
@@ -1523,11 +1534,10 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 			if !firstOK || !secondOK || firstSession != secondSession {
 				t.Fatalf("recovery did not resume the initial session: first=%q second=%q", firstSession, secondSession)
 			}
-			promptIndex := slices.Index(calls[1].Command, defaultPromptFlag)
-			if promptIndex < 0 || promptIndex+1 >= len(calls[1].Command) {
+			recoveryPrompt, ok := copilotPromptArgValue(calls[1].Command)
+			if !ok {
 				t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
 			}
-			recoveryPrompt := calls[1].Command[promptIndex+1]
 			if !strings.Contains(recoveryPrompt, tc.completionPath) ||
 				!strings.Contains(recoveryPrompt, "ended without writing the mandatory completion file") {
 				t.Fatalf("recovery prompt = %q", recoveryPrompt)
@@ -2960,5 +2970,35 @@ func TestCopilotResolveConfigUnverifiedAllowsCapabilityGatedOptions(t *testing.T
 				t.Fatalf("ResolveConfig = %v, want nil (capability unknown, not unsupported)", err)
 			}
 		})
+	}
+}
+
+// copilotPromptArgValue returns the prompt the adapter actually sent. The
+// prompt is bound to its flag in one argv element (`-p=<text>`) so that no
+// prompt content can be reparsed as flags — see copilotPromptArg.
+func copilotPromptArgValue(command []string) (string, bool) {
+	for _, arg := range command {
+		if value, ok := strings.CutPrefix(arg, defaultPromptFlag+"="); ok {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+// Every goober body opens with YAML frontmatter, so the rendered prompt starts
+// with "---". Passed as its own argument, Copilot CLI 1.0.85 reads that as
+// options and refuses the invocation with "Invalid command format" and exit 1,
+// before the model is reached — which failed EVERY implementation run's
+// implement stage on the goobernetes cluster (#5197). The prompt must stay
+// bound to its flag.
+func TestCopilotPromptWithLeadingDashesStaysBoundToItsFlag(t *testing.T) {
+	prompt := "---\nrole: implementer\n---\n\n# Implementer\n"
+	arg := copilotPromptArg(defaultPromptFlag, prompt)
+	if !strings.HasPrefix(arg, defaultPromptFlag+"=") {
+		t.Fatalf("prompt argument is not bound to its flag: %q", arg)
+	}
+	got, ok := copilotPromptArgValue([]string{"copilot", arg, "--silent"})
+	if !ok || got != prompt {
+		t.Fatalf("prompt did not round-trip: %q, %v", got, ok)
 	}
 }
