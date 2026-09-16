@@ -68,6 +68,128 @@ spec:
       next: "@abort"
 `
 
+const drainClaimRecoveryWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: drain-claim-recovery
+spec:
+  gaggle: example
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: implementer
+      goal: Delegate stale-claim recovery after graceful shutdown begins.
+      capabilities:
+        - repo:push
+        - agent:model
+`
+
+func TestDaemonDrainServesDelegatedClaimRecovery(t *testing.T) {
+	root := initAcceptanceDemo(t)
+	setAPIListenAddress(t, root, freeLoopbackAddress(t))
+	l := instance.NewLayout(root)
+	writeFixture(t, filepath.Join(root, "config", "gaggles", "example", "workflows", "drain-claim-recovery.yaml"), drainClaimRecoveryWorkflowYAML)
+
+	previousSweepInterval := delegationSweepInterval
+	delegationSweepInterval = 5 * time.Millisecond
+	t.Cleanup(func() { delegationSweepInterval = previousSweepInterval })
+
+	stageStarted := make(chan struct{})
+	recoverClaims := make(chan struct{})
+	stageCompleted := make(chan error, 1)
+	previousAdapter := newAgenticAdapter
+	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+			close(stageStarted)
+			<-recoverClaims
+			if err := recoverStageClaims(l, time.Now()); err != nil {
+				stageCompleted <- err
+				return err
+			}
+			err := harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status:  apiv1.ResultSuccess,
+				Summary: "fixture delegated recovery completed during daemon drain",
+			})
+			stageCompleted <- err
+			return err
+		}}
+	}
+	t.Cleanup(func() { newAgenticAdapter = previousAdapter })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stdout := newDaemonOutput()
+	var stderr bytes.Buffer
+	daemonDone := make(chan int, 1)
+	go func() { daemonDone <- runUpContext(ctx, []string{"--quiet", root}, stdout, &stderr) }()
+
+	select {
+	case <-stdout.started:
+	case code := <-daemonDone:
+		t.Fatalf("daemon exited before startup: code=%d stderr=%q", code, stderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("daemon did not start")
+	}
+
+	requestID, err := writeTriggerRequestContext(context.Background(), l.SchedulerDir(), "", "drain-claim-recovery")
+	if err != nil {
+		t.Fatalf("write trigger request: %v", err)
+	}
+	runID, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
+	if err != nil {
+		t.Fatalf("trigger run: %v", err)
+	}
+	select {
+	case <-stageStarted:
+	case <-time.After(30 * time.Second):
+		t.Fatal("agentic stage did not start")
+	}
+
+	cancel()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(stdout.String(), "shutting down: draining") {
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon did not begin draining: stdout=%q stderr=%q", stdout.String(), stderr.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(recoverClaims)
+
+	select {
+	case err := <-stageCompleted:
+		if err != nil {
+			t.Fatalf("delegated claim recovery: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("agentic stage did not complete delegated claim recovery")
+	}
+	select {
+	case code := <-daemonDone:
+		if code != 0 {
+			t.Fatalf("daemon exit code=%d stderr=%q", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not drain")
+	}
+
+	waitForInstanceRunFinished(t, l.SchedulerDir(), runID, journal.PhaseCompleted)
+	entries, err := os.ReadDir(filepath.Join(l.SchedulerDir(), pendingClaimsDir))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read pending claim requests: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), claimAdminRequestSuffix) {
+			t.Fatalf("pending claim request remained after drain: %s", entry.Name())
+		}
+	}
+}
+
 func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a POSIX git shim to inject a worktree removal failure")

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -143,17 +142,41 @@ func podWorkspaceNeedsRecovery(ctx context.Context, repository, baseRef string) 
 // and fall back to the remote-tracking ref checkoutRepoWorkspace fetches for
 // exactly this purpose. internal/recovery deliberately runs no git transport
 // of its own (see recoveryGitIO's doc comment), so by the time this runs the
-// ref must already be resolvable locally; neither candidate resolving means
-// a checkout-time bug, not something recovery can repair after the fact.
+// ref must already be resolvable locally.
+//
+// The probe goes through podGit, not a bare exec.Command, for the reason
+// workspaceGitCommand documents: /workspace is not owned by the container
+// user, so git without the safe.directory exemption refuses the repository
+// outright with "detected dubious ownership" and exit 128. A bare probe
+// therefore fails for EVERY candidate no matter which refs exist — and
+// discarding its stderr reported that as the base branch being missing.
+// MEASURED: reproduced at uid mismatch; #5162 and #5180 both chased a ref
+// that was present the whole time.
+//
+// Hence the exit-status discrimination: only exit 1, rev-parse's "no such
+// ref", may advance to the next candidate or fall through to the "not
+// resolvable" verdict. Any other status is git failing to answer the
+// question, and is surfaced with git's own message rather than being
+// silently recast as an absent ref.
 func resolveRecoveryBaseRef(ctx context.Context, repository, base string) (string, error) {
 	for _, candidate := range []string{"refs/heads/" + base, "refs/remotes/origin/" + base} {
-		probe := exec.CommandContext(ctx, "git", "-C", repository, "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
-		probe.Stdout, probe.Stderr = io.Discard, io.Discard
-		if probe.Run() == nil {
+		_, err := (podGit{}).Output(ctx, repository, "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
+		if err == nil {
 			return candidate, nil
+		}
+		if !gitRefAbsent(err) {
+			return "", fmt.Errorf("probe recovery base ref %s: %w", candidate, err)
 		}
 	}
 	return "", fmt.Errorf("recovery base branch %q is not resolvable in this checkout", base)
+}
+
+// gitRefAbsent reports whether a `rev-parse --verify --quiet` failure means
+// the ref is simply not there (exit 1) rather than git having refused to run
+// at all (exit 128: dubious ownership, not a repository, corrupt index).
+func gitRefAbsent(err error) bool {
+	exitErr := new(exec.ExitError)
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
 }
 
 // resolveRecoveryBaseRefWithFetch is resolveRecoveryBaseRef plus one retry: a

@@ -1041,6 +1041,393 @@ export function renderInsightPanel(stats, scope, windowValue) {
     return outcomeHtml + curationHtml + creditHtml + usageHtml + trendHtml + stagesHtml;
 }
 
+const COST_MAX_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+
+export function costSummaryRequestParams(windowValue, now = new Date()) {
+    const until = now.toISOString();
+    const durationMs = INSIGHT_WINDOW_MS[windowValue] || COST_MAX_WINDOW_MS;
+    return {
+        scope: "summary",
+        since: new Date(now.getTime() - durationMs).toISOString(),
+        until,
+    };
+}
+
+export function costLookupRequestParams(kind, provider, id, windowValue, now = new Date()) {
+    const range = costSummaryRequestParams(windowValue, now);
+    return {
+        provider,
+        scope: kind === "issue" ? "issue" : "pr",
+        id,
+        since: range.since,
+        until: range.until,
+    };
+}
+
+function costAmountByUnit(amounts, unit) {
+    return (amounts || []).find((amount) => amount.unit === unit);
+}
+
+function formatCostAmount(amount) {
+    if (!amount) return "Unmeasured";
+    const suffix = amount.estimated ? " est." : "";
+    if (amount.unit === "usd") return "$" + Number(amount.value || 0).toFixed(2) + suffix;
+    if (amount.unit === "aiCredits") return Number(amount.value || 0).toLocaleString("en-US") + " credits" + suffix;
+    if (amount.unit === "premiumRequests") return Number(amount.value || 0).toLocaleString("en-US") + " premium requests" + suffix;
+    return String(amount.value) + " " + String(amount.unit || "units") + suffix;
+}
+
+function costAggregateNativeLabel(aggregate) {
+    const amounts = aggregate?.nativeTotals || [];
+    if (!amounts.length) return "Unmeasured";
+    return amounts.map(formatCostAmount).join(" / ");
+}
+
+function costAggregateNormalizedLabel(aggregate) {
+    const usd = costAmountByUnit(aggregate?.normalizedTotals, "usd");
+    return formatCostAmount(usd || (aggregate?.normalizedTotals || [])[0]);
+}
+
+function costAggregateComparableValue(aggregate) {
+    const usd = costAmountByUnit(aggregate?.nativeTotals, "usd") ?? costAmountByUnit(aggregate?.normalizedTotals, "usd");
+    const aiCredits = costAmountByUnit(aggregate?.normalizedTotals, "aiCredits") ?? costAmountByUnit(aggregate?.nativeTotals, "aiCredits");
+    return {
+        usd: usd?.value ?? null,
+        aiCredits: aiCredits?.value ?? null,
+        fallback: (aggregate?.nativeTotals || [])[0]?.value ?? (aggregate?.normalizedTotals || [])[0]?.value ?? 0,
+    };
+}
+
+function costCoverageLabel(coverage = {}) {
+    const measuredRuns = coverage.measuredRuns ?? 0;
+    const totalRuns = coverage.totalRuns ?? 0;
+    const measuredAttempts = coverage.measuredAttempts ?? 0;
+    const totalAttempts = coverage.totalAttempts ?? 0;
+    const completeness = coverage.complete ? "complete" : coverage.lowerBound ? "lower bound" : "partial";
+    return measuredRuns + "/" + totalRuns + " runs, " + measuredAttempts + "/" + totalAttempts + " attempts · " + completeness;
+}
+
+export function deriveExternalCostRows(result = {}) {
+    return [
+        ...(result.pullRequests || []),
+        ...(result.issues || []),
+    ].map((aggregate) => ({
+        key: [aggregate.provider, aggregate.externalKind, aggregate.repository || "", aggregate.externalId].join("|"),
+        label: (aggregate.externalKind === "issue" ? "Issue" : "PR") + " #" + aggregate.externalId,
+        provider: aggregate.provider || result.provider || "provider",
+        repository: aggregate.repository || "",
+        externalKind: aggregate.externalKind,
+        externalId: aggregate.externalId,
+        url: aggregate.url || "",
+        native: costAggregateNativeLabel(aggregate),
+        normalized: costAggregateNormalizedLabel(aggregate),
+        coverage: costCoverageLabel(aggregate.coverage),
+        lowerBound: Boolean(aggregate.coverage?.lowerBound),
+        models: (aggregate.models || []).map((model) =>
+            model.model + " · " + insightFormatSamples(model.measuredAttempts) + " · " +
+            costAggregateNormalizedLabel(model),
+        ),
+        runs: (aggregate.runs || []).map((run) => run.runId).filter(Boolean),
+        comparable: costAggregateComparableValue(aggregate),
+    }));
+}
+
+function compareExternalCostRows(a, b) {
+    if (a.comparable.usd != null || b.comparable.usd != null) {
+        return (b.comparable.usd ?? -Infinity) - (a.comparable.usd ?? -Infinity);
+    }
+    if (a.comparable.aiCredits != null || b.comparable.aiCredits != null) {
+        return (b.comparable.aiCredits ?? -Infinity) - (a.comparable.aiCredits ?? -Infinity);
+    }
+    return (b.comparable.fallback - a.comparable.fallback) || a.label.localeCompare(b.label);
+}
+
+function renderCostSummarySection(stats, scope) {
+    const usage = insightUsageForScope(stats, scope);
+    if (!usage) {
+        return '<section class="content-section"><h3>Cost summary</h3>' +
+            '<p class="inline-empty">No measured AI usage for this scope in the selected window.</p></section>';
+    }
+    const rows = [
+        ["Scope", insightScopeLabel(scope)],
+        ["Attempts", String(usage.totalAttempts ?? 0)],
+        ["AI cost total", insightFormatCost(usage.costUSD)],
+        ["AI cost P50 / P95", insightFormatCost(usage.p50CostUSD) + " / " + insightFormatCost(usage.p95CostUSD)],
+        ["Token P50 / P95", insightFormatTokens(usage.p50Tokens) + " / " + insightFormatTokens(usage.p95Tokens)],
+        ["Measured samples", insightFormatSamples(usage.costSamples)],
+        ["Retry waste", (usage.retryWasteAttempts || 0) === 0
+            ? "No retry waste"
+            : usage.retryWasteAttempts + " attempts · " + insightFormatCost(usage.retryWasteCostUSD) + " · " + insightFormatTokens(usage.retryWasteTokens)],
+    ];
+    const items = rows.map(([label, value]) =>
+        '<div class="kv"><div class="label">' + escapeAssociationHtml(label) +
+            '</div><div class="value">' + escapeAssociationHtml(value) + "</div></div>",
+    ).join("");
+    return '<section class="content-section"><h3>Cost summary</h3>' +
+        '<p class="section-description">Measured attempts only; unreported runner usage remains unmeasured.</p>' +
+        '<div class="kv-grid">' + items + "</div></section>";
+}
+
+function renderCostTrendSection(stats, scope, windowValue) {
+    return '<section class="content-section"><h3>Cost trend</h3>' +
+        renderInsightTrendSection(stats, scope, windowValue) + "</section>";
+}
+
+function renderInstanceCostRollupSection(stats, scope, windowValue) {
+    if (scope.kind !== "instance") return "";
+    const rows = (stats.gaggles || [])
+        .map((gaggle) => ({
+            gaggle: gaggle.gaggle,
+            usage: (stats.usage || []).find((item) => item.scope === "gaggle" && item.gaggle === gaggle.gaggle),
+        }))
+        .filter((entry) => (entry.usage?.costSamples || 0) > 0)
+        .sort((a, b) => (b.usage?.costUSD || 0) - (a.usage?.costUSD || 0));
+    if (!rows.length) {
+        return '<section class="content-section"><h3>Cost by gaggle</h3>' +
+            '<p class="inline-empty">No gaggle has a measured AI cost in this window.</p></section>';
+    }
+    const body = rows.map(({ gaggle, usage }) =>
+        "<tr><td>" + escapeAssociationHtml(gaggle) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatCost(usage.costUSD)) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatCost(usage.p50CostUSD)) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatCost(usage.p95CostUSD)) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatSamples(usage.costSamples)) + "</td></tr>",
+    ).join("");
+    return '<section class="content-section"><h3>Cost by gaggle</h3>' +
+        '<p class="section-description">All gaggles · ' + escapeAssociationHtml(windowValue === "all" ? "all time" : windowValue) + "</p>" +
+        '<div class="table-scroll"><table><thead><tr><th>Gaggle</th><th>Total</th><th>P50</th><th>P95</th><th>Samples</th></tr></thead>' +
+        "<tbody>" + body + "</tbody></table></div></section>";
+}
+
+function renderExternalCostBreakdownSection(costs, lookupCosts) {
+    const renderRows = (items) => items.map((row) => {
+        const href = safeAssociationUrl(row.url);
+        const label = href
+            ? '<a href="' + escapeAssociationHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escapeAssociationHtml(row.label) + "</a>"
+            : "<strong>" + escapeAssociationHtml(row.label) + "</strong>";
+        const visibleModels = row.models.slice(0, 3);
+        const modelOverflow = row.models.length > visibleModels.length ? " +" + (row.models.length - visibleModels.length) + " more" : "";
+        const modelLabel = visibleModels.join("; ") + modelOverflow;
+        return '<tr><td>' + label + '<div class="muted">' + escapeAssociationHtml(row.repository || row.provider) + "</div></td>" +
+            "<td>" + escapeAssociationHtml(row.provider) + "</td>" +
+            "<td>" + escapeAssociationHtml(row.native) + "</td>" +
+            "<td>" + escapeAssociationHtml(row.normalized) + "</td>" +
+            '<td class="' + (row.lowerBound ? "cost-coverage-warning" : "muted") + '">' + escapeAssociationHtml(row.coverage) + "</td>" +
+            "<td>" + escapeAssociationHtml(row.runs.length) + "</td>" +
+            "<td>" + escapeAssociationHtml(modelLabel || "Unmeasured") + "</td></tr>";
+    }).join("");
+    const lookupRows = lookupCosts ? deriveExternalCostRows(lookupCosts).sort(compareExternalCostRows) : [];
+    const lookupHtml = lookupCosts
+        ? '<h4>Lookup result</h4>' + (lookupRows.length
+            ? '<div class="table-scroll"><table><thead><tr><th>Work item</th><th>Provider</th><th>Provider-native</th><th>Normalized estimate</th><th>Coverage</th><th>Runs</th><th>Models</th></tr></thead><tbody>' +
+                renderRows(lookupRows) + "</tbody></table></div>"
+            : '<p class="inline-empty">No attributed costs match that pull request or issue in this window.</p>')
+        : "";
+    if (!costs) {
+        return '<section class="content-section"><h3>Cost by pull request and issue</h3>' +
+            '<p class="inline-empty">Attributed pull request and issue costs could not be loaded; selected-scope cost summary remains available.</p>' +
+            lookupHtml + "</section>";
+    }
+    const allRows = deriveExternalCostRows(costs)
+        .sort(compareExternalCostRows);
+    const rows = allRows.slice(0, 25);
+    const overflow = allRows.length > rows.length
+        ? '<p class="muted">+' + (allRows.length - rows.length) + " more work items.</p>"
+        : "";
+    if (!rows.length) {
+        return '<section class="content-section"><h3>Cost by pull request and issue</h3>' +
+            '<p class="inline-empty">No pull request or issue cost was attributed in this window.</p>' + lookupHtml + "</section>";
+    }
+    const bounded = costs.scope === "summary" && costs.since && costs.until
+        ? '<p class="usage-description">Attribution is instance-wide and uses exact recorded usage from ' +
+            escapeAssociationHtml(insightFormatBucketLabel(costs.since, costs.until)) +
+            (costs.boundedAllTime ? " (all-time attribution is capped at 90 days)." : ".") +
+            "</p>"
+        : '<p class="usage-description">Attribution is instance-wide regardless of the selected operational scope.</p>';
+    return '<section class="content-section"><h3>Cost by pull request and issue</h3>' +
+        '<p class="section-description">Exact recorded usage by external work item, sorted by comparable cost where available; lower-bound rows have incomplete cost coverage.</p>' +
+        bounded +
+        '<div class="table-scroll"><table><thead><tr><th>Work item</th><th>Provider</th><th>Provider-native</th><th>Normalized estimate</th><th>Coverage</th><th>Runs</th><th>Models</th></tr></thead><tbody>' +
+        renderRows(rows) + "</tbody></table></div>" + overflow + lookupHtml + "</section>";
+}
+
+export function renderCostPanel(stats, costs, scope, windowValue, lookupCosts = null) {
+    if (!stats && !costs && !lookupCosts) {
+        return '<p class="inline-empty">No cost telemetry loaded yet.</p>';
+    }
+    const statsUnavailable = stats
+        ? ""
+        : '<section class="content-section"><h3>Cost summary</h3>' +
+            '<p class="inline-empty">Selected-scope usage, trend, and instance rollup are unavailable; attributed work-item costs remain available.</p></section>';
+    const summaryHtml = stats ? renderCostSummarySection(stats, scope) : statsUnavailable;
+    const trendHtml = stats ? renderCostTrendSection(stats, scope, windowValue) : "";
+    const rollupHtml = stats ? renderInstanceCostRollupSection(stats, scope, windowValue) : "";
+    const externalHtml = renderExternalCostBreakdownSection(costs, lookupCosts);
+    return summaryHtml + trendHtml + rollupHtml + externalHtml;
+}
+
+export function workItemLabel(repository, externalId) {
+    return repository ? repository + "#" + externalId : "#" + externalId;
+}
+
+export function humanizeWorkItemOperation(operation) {
+    const value = String(operation || "").trim();
+    if (!value) return "Provider action";
+    return value.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+export function formatWorkItemTimestamp(value) {
+    if (!value) return "\u2014";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) || date.getUTCFullYear() < 1970 ? "\u2014" : date.toLocaleString();
+}
+
+export function formatWorkItemCost(cost) {
+    if (!cost) return "Not attributed";
+    if (cost.costUSD !== undefined && cost.costUSD !== null) {
+        return new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency: "USD",
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 4,
+        }).format(cost.costUSD);
+    }
+    if (cost.nanoAIU !== undefined && cost.nanoAIU !== null) {
+        return new Intl.NumberFormat("en-US").format(cost.nanoAIU) + " nano-AIU";
+    }
+    return "Not measured";
+}
+
+export function filterWorkItems(items, gaggle, search) {
+    const query = String(search || "").trim().toLocaleLowerCase();
+    return (items || []).filter((item) => {
+        if (gaggle && item.gaggle !== gaggle) return false;
+        if (!query) return true;
+        return [
+            workItemLabel(item.repository, item.externalId),
+            item.repository,
+            item.externalId,
+        ].some((value) => String(value || "").toLocaleLowerCase().includes(query));
+    });
+}
+
+export function renderWorkItemList(page, gaggle = "", search = "") {
+    if (!page) return '<p class="inline-empty">No work items loaded yet.</p>';
+    const items = filterWorkItems(page.items, gaggle, search);
+    if (!items.length) {
+        return '<p class="inline-empty">No confirmed provider actions match this filter.' +
+            (page.hasMore ? " Only the 200 most recently actioned work items are searched." : "") +
+            "</p>";
+    }
+    const rows = items.map((item) => {
+        const identity = workItemLabel(item.repository, item.externalId);
+        const typeLabel = item.kind === "pr" ? "pull request" : "issue";
+        return '<button type="button" class="work-item-row" data-work-item-provider="' +
+            escapeAssociationHtml(item.provider || "") + '" data-work-item-repository="' +
+            escapeAssociationHtml(item.repository || "") + '" data-work-item-kind="' +
+            escapeAssociationHtml(item.kind || "") + '" data-work-item-id="' +
+            escapeAssociationHtml(item.externalId || "") + '" aria-label="Open ' +
+            escapeAssociationHtml(item.kind === "pr" ? "PR" : "issue") + " #" +
+            escapeAssociationHtml(item.externalId || "") + " in " +
+            escapeAssociationHtml(item.repository || "unknown repository") + '">' +
+            '<span class="work-item-identity"><strong>' + escapeAssociationHtml(identity) +
+            '</strong><small>' + escapeAssociationHtml(item.provider || "provider") + " \u00b7 " +
+            escapeAssociationHtml(typeLabel) + "</small></span>" +
+            '<span><strong>' + escapeAssociationHtml(humanizeWorkItemOperation(item.lastOperation)) +
+            '</strong><small>' + escapeAssociationHtml(formatWorkItemTimestamp(item.lastActionAt)) +
+            "</small></span>" +
+            '<span><strong>' + escapeAssociationHtml(item.workflow || "Unknown") +
+            '</strong><small>' + escapeAssociationHtml(item.gaggle || "No gaggle recorded") +
+            "</small></span>" +
+            '<strong class="work-item-action-count">' + escapeAssociationHtml(item.actionCount ?? 0) +
+            '</strong><span aria-hidden="true">\u203a</span></button>';
+    }).join("");
+    const overflow = page.hasMore
+        ? '<p class="muted work-item-overflow">Showing the 200 most recently actioned work items.</p>'
+        : "";
+    return '<div class="work-items-list" role="group" aria-label="Work items">' + rows + "</div>" + overflow;
+}
+
+export function renderWorkItemDetail(item, actionType = "all") {
+    if (!item) return '<p class="inline-empty">No work item detail loaded yet.</p>';
+    const identity = workItemLabel(item.repository, item.externalId);
+    const typeLabel = item.kind === "pr" ? "pull request" : "issue";
+    const itemHref = safeAssociationUrl(item.url);
+    const headingLink = itemHref
+        ? '<a class="actions-run-link" href="' + escapeAssociationHtml(itemHref) +
+            '" target="_blank" rel="noopener noreferrer">Open ' +
+            escapeAssociationHtml(typeLabel) + " \u2197</a>"
+        : "";
+    const relatedLinks = (item.relatedPullRequests || []).map((related) => {
+        const href = safeAssociationUrl(related.url);
+        if (!href) return "";
+        return '<a class="actions-run-link" href="' + escapeAssociationHtml(href) +
+            '" target="_blank" rel="noopener noreferrer" aria-label="Open related PR ' +
+            escapeAssociationHtml(workItemLabel(related.repository, related.externalId)) +
+            '">Related PR ' + escapeAssociationHtml(workItemLabel(related.repository, related.externalId)) +
+            " \u2197</a>";
+    }).filter(Boolean).join("");
+    const actions = item.actions || [];
+    const actionTypes = [...new Set(actions.map((action) => action.operation).filter(Boolean))]
+        .sort((left, right) => humanizeWorkItemOperation(left).localeCompare(humanizeWorkItemOperation(right)));
+    const options = ['<option value="all">All actions</option>'].concat(actionTypes.map((operation) =>
+        '<option value="' + escapeAssociationHtml(operation) + '"' +
+        (operation === actionType ? " selected" : "") + ">" +
+        escapeAssociationHtml(humanizeWorkItemOperation(operation)) + "</option>",
+    )).join("");
+    const visibleActions = actionType === "all"
+        ? actions
+        : actions.filter((action) => action.operation === actionType);
+    const actionRows = visibleActions.map((action) =>
+        '<div class="work-item-action-row" role="row">' +
+        '<span role="cell"><strong>' + escapeAssociationHtml(humanizeWorkItemOperation(action.operation)) +
+        '</strong><small>Sequence ' + escapeAssociationHtml(action.sequence ?? "") + "</small></span>" +
+        '<span role="cell"><strong>' + escapeAssociationHtml(action.gaggle || "Unknown gaggle") +
+        '</strong><small>' + escapeAssociationHtml(action.workflow || "Workflow unavailable") + "</small></span>" +
+        '<span role="cell">' + escapeAssociationHtml(action.runStatus
+            ? humanizeWorkItemOperation(action.runStatus)
+            : "Unknown") + "</span>" +
+        '<time role="cell" datetime="' + escapeAssociationHtml(action.occurredAt || "") + '">' +
+        escapeAssociationHtml(formatWorkItemTimestamp(action.occurredAt)) + "</time>" +
+        '<span role="cell"><button type="button" class="table-link" data-work-item-run="' +
+        escapeAssociationHtml(action.runId || "") + '">View run</button></span></div>',
+    ).join("");
+    const emptyActions = visibleActions.length
+        ? ""
+        : '<p class="inline-empty" role="status">No actions match this type.</p>';
+    const lowerBound = item.cost?.lowerBound
+        ? '<small class="cost-coverage-warning">Lower bound; some usage is unmeasured.</small>'
+        : "";
+    const coverage = item.cost
+        ? '<small>' + escapeAssociationHtml(
+            (item.cost.measuredRuns ?? 0) + "/" + (item.cost.totalRuns ?? 0) + " runs \u00b7 " +
+            (item.cost.measuredAttempts ?? 0) + "/" + (item.cost.totalAttempts ?? 0) + " attempts",
+        ) + "</small>"
+        : "";
+    const truncated = item.truncated
+        ? '<p class="muted work-item-overflow">Showing the 200 most recent actions.</p>'
+        : "";
+    return '<div class="work-item-detail">' +
+        '<button type="button" class="back" id="work-item-back">\u2190 Back to Work Items</button>' +
+        '<div class="work-item-detail-heading"><div><p class="muted">' +
+        escapeAssociationHtml(item.provider || "provider") + " " + escapeAssociationHtml(typeLabel) +
+        ' activity</p><h2>' + escapeAssociationHtml(identity) + "</h2></div>" +
+        '<div class="work-item-heading-links">' + headingLink + relatedLinks + "</div></div>" +
+        '<div class="cards work-item-summary-cards"><div class="card"><div class="label">Confirmed actions</div>' +
+        '<div class="value">' + escapeAssociationHtml(actions.length) + "</div></div>" +
+        '<div class="card"><div class="label">Attributed cost to date</div><div class="value">' +
+        escapeAssociationHtml(formatWorkItemCost(item.cost)) + "</div>" + coverage + lowerBound + "</div></div>" +
+        '<div class="filters-bar work-item-action-filters"><label>Action type ' +
+        '<select id="work-item-action-type" aria-label="Filter actions by type">' + options +
+        "</select></label></div>" +
+        '<div class="work-item-actions" role="table" aria-label="Action history for ' +
+        escapeAssociationHtml(identity) + '"><div class="work-item-action-header" role="row">' +
+        '<span role="columnheader">Action</span><span role="columnheader">Gaggle / workflow</span>' +
+        '<span role="columnheader">Status</span><span role="columnheader">Time</span>' +
+        '<span role="columnheader">Run</span></div>' + actionRows + emptyActions + "</div>" +
+        truncated + "</div>";
+}
+
 export function renderHtml(instanceId, themePreference = "system", persistedFilters = {}) {
   const initialFilters = JSON.stringify(persistedFilters).replaceAll("<", "\\u003c");
     return `<!doctype html>
@@ -1123,11 +1510,72 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   .source-context { display: flex; gap: 8px 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
   #source-context { font-weight: 600; overflow-wrap: anywhere; }
   .section-description { margin: 0 0 12px; color: var(--text-color-muted, #656d76); }
+  .cost-coverage-warning { color: var(--true-color-yellow, #9a6700); }
   .table-link { padding: 0; border: 0; background: transparent; color: var(--true-color-blue, #0969da); text-align: left; }
   .table-link:hover { background: transparent; text-decoration: underline; }
   .sort-button { border: 0; padding: 0; background: transparent; color: inherit; }
   .table-scroll { max-width: 100%; overflow-x: auto; }
   .table-scroll table { white-space: nowrap; }
+  .work-items-list {
+    display: grid;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .work-item-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 2fr) minmax(160px, 1.2fr) minmax(170px, 1.2fr) 70px 20px;
+    gap: 10px;
+    align-items: center;
+    width: 100%;
+    border: 0;
+    border-bottom: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 0;
+    padding: 10px 12px;
+    text-align: left;
+  }
+  .work-item-row:last-child { border-bottom: 0; }
+  .work-item-row span { min-width: 0; }
+  .work-item-row strong,
+  .work-item-row small { display: block; overflow-wrap: anywhere; }
+  .work-item-row small { color: var(--text-color-muted, #656d76); }
+  .work-item-action-count { text-align: center; }
+  .work-item-overflow { margin: 10px 0 0; }
+  .work-item-detail-heading,
+  .work-item-heading-links {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+  }
+  .work-item-detail-heading h2,
+  .work-item-detail-heading p { margin: 0; }
+  .work-item-heading-links { justify-content: flex-end; }
+  .work-item-summary-cards { margin-top: 14px; }
+  .work-item-summary-cards small { display: block; margin-top: 4px; }
+  .work-item-actions {
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .work-item-action-header,
+  .work-item-action-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 1.25fr) minmax(160px, 1.25fr) minmax(90px, .7fr) minmax(150px, 1fr) 70px;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 11px;
+  }
+  .work-item-action-header {
+    color: var(--text-color-muted, #656d76);
+    background: var(--border-color-default, #d0d7de22);
+    font-size: 12px;
+  }
+  .work-item-action-row { border-top: 1px solid var(--border-color-default, #d0d7de); }
+  .work-item-action-row strong,
+  .work-item-action-row small { display: block; overflow-wrap: anywhere; }
+  .work-item-action-row small { color: var(--text-color-muted, #656d76); }
   .toolbar > *, .add-form > * { max-width: 100%; }
   .fleet-panel {
     display: flex;
@@ -1387,6 +1835,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     .waterfall-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
     .graph-toolbar { flex-wrap: wrap; }
     .graph-help { width: 100%; }
+    .work-item-row,
+    .work-item-action-header,
+    .work-item-action-row { grid-template-columns: minmax(0, 1fr); }
+    .work-item-action-header { display: none; }
   }
   @media (max-width: 900px) {
     .stage-definition-layout { grid-template-columns: minmax(0, 1fr); }
@@ -1903,7 +2355,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <button id="dashboard-tab-attention" role="tab" data-tab="attention" aria-controls="dashboard-panel-attention">Overview</button>
       <button id="dashboard-tab-workflows" role="tab" data-tab="workflows" aria-controls="dashboard-panel-workflows">Workflows</button>
       <button id="dashboard-tab-runs" role="tab" data-tab="runs" aria-controls="dashboard-panel-runs">Runs</button>
+      <button id="dashboard-tab-work-items" role="tab" data-tab="work-items" aria-controls="dashboard-panel-work-items">Work Items</button>
       <button id="dashboard-tab-insights" role="tab" data-tab="insights" aria-controls="dashboard-panel-insights">Insights</button>
+      <button id="dashboard-tab-cost" role="tab" data-tab="cost" aria-controls="dashboard-panel-cost">Cost</button>
     </div>
     <section id="dashboard-panel-attention" role="tabpanel" aria-labelledby="dashboard-tab-attention">
       <div id="needs-you" aria-labelledby="needs-you-heading">
@@ -1996,6 +2450,27 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         <button id="runs-load-more" type="button" style="display:none">Load more</button>
       </div>
     </section>
+    <section id="dashboard-panel-work-items" role="tabpanel" aria-labelledby="dashboard-tab-work-items" hidden>
+      <h2>Work Items</h2>
+      <p class="section-description">Pull requests and issues that Goobers changed through a provider operation.</p>
+      <div id="work-item-list-controls">
+        <div class="filters-bar" id="work-item-kind-filters" role="group" aria-label="Work item type">
+          <button type="button" data-work-item-kind-filter="" aria-pressed="true">All</button>
+          <button type="button" data-work-item-kind-filter="pr" aria-pressed="false">Pull requests</button>
+          <button type="button" data-work-item-kind-filter="issue" aria-pressed="false">Issues</button>
+          <label>Gaggle
+            <select id="work-item-gaggle" aria-label="Filter work items by gaggle">
+              <option value="">All gaggles</option>
+            </select>
+          </label>
+          <label>Find work item
+            <input id="work-item-search" type="search" aria-label="Search work items" placeholder="Repository or number" />
+          </label>
+        </div>
+      </div>
+      <div id="work-item-status" class="muted" role="status"></div>
+      <div id="work-item-content"></div>
+    </section>
     <section id="dashboard-panel-insights" role="tabpanel" aria-labelledby="dashboard-tab-insights" hidden>
       <h2>Insights</h2>
       <p class="section-description">Aggregate telemetry across runs: success/failure, cost and usage, curation health, and cost trend.</p>
@@ -2007,6 +2482,28 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       </div>
       <div id="insight-status" class="muted" role="status"></div>
       <div id="insight-content"></div>
+    </section>
+    <section id="dashboard-panel-cost" role="tabpanel" aria-labelledby="dashboard-tab-cost" hidden>
+      <h2>Cost</h2>
+      <p class="section-description">Instance spend, selected-scope AI cost, retry waste, and attributed pull request and issue costs.</p>
+      <div class="filters-bar" id="cost-filters">
+        <select id="cost-scope" aria-label="Cost scope" title="Select instance, gaggle, or workflow scope">
+          <option value="instance">Instance</option>
+        </select>
+        <select id="cost-window" aria-label="Cost time window" title="Select time window"></select>
+      </div>
+      <div class="filters-bar" id="cost-lookup-filters" aria-label="External cost lookup">
+        <select id="cost-lookup-kind" aria-label="External cost type">
+          <option value="pr">Pull request</option>
+          <option value="issue">Issue</option>
+        </select>
+        <input id="cost-lookup-provider" aria-label="External cost provider" placeholder="Provider (github)" value="github" />
+        <input id="cost-lookup-id" aria-label="External cost ID" placeholder="PR or issue ID" />
+        <button id="cost-lookup-run" type="button">Lookup</button>
+        <button id="cost-lookup-clear" type="button">Clear</button>
+      </div>
+      <div id="cost-status" class="muted" role="status"></div>
+      <div id="cost-content"></div>
     </section>
   </div>
   <div id="run-view">
@@ -2097,6 +2594,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const expandedAttention = new Set();
   let activeDashboardTab = "attention";
   let activeRunTab = "summary";
+  let runOrigin = "runs";
   let selectedRunId = "";
   let runRequestSequence = 0;
   let snapshotRequestSequence = 0;
@@ -2141,7 +2639,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const panel = root.querySelector("#" + tab.getAttribute("aria-controls"));
       if (panel) panel.hidden = !active;
     }
-    if (root === dashboardEl) activeDashboardTab = selected.dataset.tab;
+    if (root === dashboardEl) {
+      activeDashboardTab = selected.dataset.tab;
+      if (activeDashboardTab === "work-items") void loadWorkItems();
+      if (activeDashboardTab === "insights") void loadInsights();
+      if (activeDashboardTab === "cost") void loadCost();
+    }
     else if (root === runContentEl) activeRunTab = selected.dataset.tab;
     else if (root.matches(".stage-definition-panel")) activeStageInspectorView = selected.dataset.tab;
     if (focus) selected.focus();
@@ -2912,6 +3415,14 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     insightScopeSelect.innerHTML = options.join("");
     if ([...insightScopeSelect.options].some((o) => o.value === prevValue)) insightScopeSelect.value = prevValue;
+    populateCostScopeOptionsFromHtml(options, prevValue);
+  }
+
+  function populateCostScopeOptionsFromHtml(options, preferredValue) {
+    if (!costScopeSelect) return;
+    const prevValue = costScopeSelect.value || preferredValue;
+    costScopeSelect.innerHTML = options.join("");
+    if ([...costScopeSelect.options].some((o) => o.value === prevValue)) costScopeSelect.value = prevValue;
   }
 
   function currentFilters() {
@@ -3252,6 +3763,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const INSIGHT_WINDOWS = ${JSON.stringify(INSIGHT_WINDOWS)};
   const INSIGHT_WINDOW_MS = ${JSON.stringify(INSIGHT_WINDOW_MS)};
   const INSIGHT_TREND_BUCKET_COUNTS = ${JSON.stringify(INSIGHT_TREND_BUCKET_COUNTS)};
+  const COST_MAX_WINDOW_MS = ${COST_MAX_WINDOW_MS};
   const insightScopeSelect = document.getElementById("insight-scope");
   const insightWindowSelect = document.getElementById("insight-window");
   const insightStatusEl = document.getElementById("insight-status");
@@ -3295,9 +3807,288 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
   }
 
-  document.getElementById("dashboard-tab-insights").addEventListener("click", () => void loadInsights());
   insightScopeSelect.addEventListener("change", () => void loadInsights());
   insightWindowSelect.addEventListener("change", () => void loadInsights());
+
+  // ---- Cost tab: selected-scope spend and external attribution ----
+  const costScopeSelect = document.getElementById("cost-scope");
+  const costWindowSelect = document.getElementById("cost-window");
+  const costStatusEl = document.getElementById("cost-status");
+  const costContentEl = document.getElementById("cost-content");
+  const costLookupKind = document.getElementById("cost-lookup-kind");
+  const costLookupProvider = document.getElementById("cost-lookup-provider");
+  const costLookupId = document.getElementById("cost-lookup-id");
+  const costLookupRun = document.getElementById("cost-lookup-run");
+  const costLookupClear = document.getElementById("cost-lookup-clear");
+  let costRequestSequence = 0;
+  let costLookup = null;
+
+  costWindowSelect.innerHTML = INSIGHT_WINDOWS.map((w) => '<option value="' + escapeHtml(w.value) + '">' + escapeHtml(w.label) + "</option>").join("");
+  costWindowSelect.value = "7d";
+
+  function resetCostForNewSource() {
+    ++costRequestSequence;
+    costScopeSelect.value = "instance";
+    costWindowSelect.value = "7d";
+    costLookup = null;
+    costLookupId.value = "";
+    costStatusEl.textContent = "";
+    costContentEl.innerHTML = "";
+  }
+
+  async function fetchCostSummary(sourceId, params) {
+    const response = await fetch("/api/cost-summary?" + new URLSearchParams({ source: sourceId, ...params }).toString());
+    const data = await response.json();
+    if (!data.connected) throw new Error(data.reason || "Could not load cost telemetry.");
+    return data.costs;
+  }
+
+  async function loadCost() {
+    const sourceId = sourceSelect.value;
+    if (!sourceId) return;
+    const scope = parseInsightScope(costScopeSelect.value);
+    const windowValue = costWindowSelect.value;
+    const requestSequence = ++costRequestSequence;
+    costStatusEl.textContent = "Loading…";
+    try {
+      const statsParams = insightRequestParams(scope, windowValue);
+      const [statsResponse, costResult] = await Promise.all([
+        fetch("/api/insight-stats?" + new URLSearchParams({ source: sourceId, ...statsParams }).toString())
+          .then((res) => res.json())
+          .then((stats) => ({ ok: true, stats }))
+          .catch((error) => ({ ok: false, error })),
+        fetchCostSummary(sourceId, costSummaryRequestParams(windowValue))
+          .then((costs) => ({ ok: true, costs }))
+          .catch((error) => ({ ok: false, error })),
+      ]);
+      if (requestSequence !== costRequestSequence || sourceId !== sourceSelect.value) return;
+      const costs = costResult.ok ? { ...costResult.costs, boundedAllTime: windowValue === "all" } : null;
+      const warnings = [];
+      if (!costResult.ok) warnings.push("Attributed costs unavailable: " + portalRequestError(costResult.error));
+      const stats = statsResponse.ok && statsResponse.stats.connected ? statsResponse.stats.stats : null;
+      if (!statsResponse.ok) {
+        warnings.push("Selected-scope cost telemetry unavailable: " + portalRequestError(statsResponse.error));
+      } else if (!statsResponse.stats.connected) {
+        warnings.push(statsResponse.stats.reason || "Selected-scope cost telemetry is unavailable.");
+      }
+      let lookupCosts = null;
+      if (costLookup) {
+        try {
+          lookupCosts = await fetchCostSummary(
+            sourceId,
+            costLookupRequestParams(costLookup.kind, costLookup.provider, costLookup.id, windowValue),
+          );
+        } catch (error) {
+          warnings.push("Lookup unavailable: " + portalRequestError(error));
+        }
+        if (requestSequence !== costRequestSequence || sourceId !== sourceSelect.value) return;
+      }
+      costStatusEl.textContent = warnings.join(" ");
+      costContentEl.innerHTML = renderCostPanel(stats, costs, scope, windowValue, lookupCosts);
+    } catch (err) {
+      if (requestSequence !== costRequestSequence || sourceId !== sourceSelect.value) return;
+      costStatusEl.textContent = portalRequestError(err);
+      costContentEl.innerHTML = "";
+    }
+  }
+
+  costScopeSelect.addEventListener("change", () => void loadCost());
+  costWindowSelect.addEventListener("change", () => void loadCost());
+  costLookupRun.addEventListener("click", () => {
+    const id = costLookupId.value.trim();
+    const provider = costLookupProvider.value.trim();
+    if (!id || !provider) {
+      costStatusEl.textContent = "Provider and ID are required for cost lookup.";
+      return;
+    }
+    costLookup = { kind: costLookupKind.value === "issue" ? "issue" : "pr", provider, id };
+    void loadCost();
+  });
+  costLookupClear.addEventListener("click", () => {
+    costLookup = null;
+    costLookupId.value = "";
+    void loadCost();
+  });
+
+  // ---- Work Items tab: bounded provider-action index and detail ----
+  const workItemListControlsEl = document.getElementById("work-item-list-controls");
+  const workItemStatusEl = document.getElementById("work-item-status");
+  const workItemContentEl = document.getElementById("work-item-content");
+  const workItemGaggleSelect = document.getElementById("work-item-gaggle");
+  const workItemSearchInput = document.getElementById("work-item-search");
+  const workItemKindButtons = [...document.querySelectorAll("[data-work-item-kind-filter]")];
+  let workItemKind = "";
+  let workItemRequestSequence = 0;
+  let lastWorkItemPage = null;
+  let selectedWorkItem = null;
+  let workItemActionType = "all";
+  const workItemDetailCache = new Map();
+
+  function workItemCacheKey(sourceId, item) {
+    return [sourceId, item.provider, item.repository, item.kind, item.externalId].join("|");
+  }
+
+  function updateWorkItemKindButtons() {
+    for (const button of workItemKindButtons) {
+      const selected = button.dataset.workItemKindFilter === workItemKind;
+      button.setAttribute("aria-pressed", String(selected));
+    }
+  }
+
+  function populateWorkItemGaggles(items) {
+    const previous = workItemGaggleSelect.value;
+    const options = [...new Set((items || []).map((item) => item.gaggle).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right));
+    workItemGaggleSelect.innerHTML = '<option value="">All gaggles</option>' +
+      options.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + "</option>").join("");
+    workItemGaggleSelect.value = options.includes(previous) ? previous : "";
+  }
+
+  function bindWorkItemList() {
+    workItemContentEl.querySelectorAll("[data-work-item-provider]").forEach((button) => {
+      button.addEventListener("click", () => void openWorkItem({
+        provider: button.dataset.workItemProvider,
+        repository: button.dataset.workItemRepository,
+        kind: button.dataset.workItemKind,
+        externalId: button.dataset.workItemId,
+      }));
+    });
+  }
+
+  function renderCurrentWorkItemList() {
+    selectedWorkItem = null;
+    workItemListControlsEl.hidden = false;
+    workItemContentEl.innerHTML = renderWorkItemList(
+      lastWorkItemPage,
+      workItemGaggleSelect.value,
+      workItemSearchInput.value,
+    );
+    bindWorkItemList();
+  }
+
+  function bindWorkItemDetail() {
+    document.getElementById("work-item-back")?.addEventListener("click", () => {
+      ++workItemRequestSequence;
+      workItemStatusEl.textContent = "";
+      renderCurrentWorkItemList();
+      document.querySelector("[data-work-item-provider]")?.focus();
+    });
+    document.getElementById("work-item-action-type")?.addEventListener("change", (event) => {
+      workItemActionType = event.target.value;
+      workItemContentEl.innerHTML = renderWorkItemDetail(selectedWorkItem, workItemActionType);
+      bindWorkItemDetail();
+      document.getElementById("work-item-action-type")?.focus();
+    });
+    workItemContentEl.querySelectorAll("[data-work-item-run]").forEach((button) =>
+      button.addEventListener("click", () => void openRun(button.dataset.workItemRun, "work-items")));
+  }
+
+  function showWorkItemDetail(item) {
+    selectedWorkItem = item;
+    workItemActionType = "all";
+    workItemListControlsEl.hidden = true;
+    workItemStatusEl.textContent = "";
+    workItemContentEl.innerHTML = renderWorkItemDetail(item, workItemActionType);
+    bindWorkItemDetail();
+    document.getElementById("work-item-back")?.focus();
+  }
+
+  async function openWorkItem(identity) {
+    const sourceId = sourceSelect.value;
+    if (!sourceId) return;
+    const requestSequence = ++workItemRequestSequence;
+    const cacheKey = workItemCacheKey(sourceId, identity);
+    workItemListControlsEl.hidden = true;
+    workItemStatusEl.textContent = "Loading\u2026";
+    workItemContentEl.innerHTML = "";
+    try {
+      let item = workItemDetailCache.get(cacheKey);
+      if (!item) {
+        const params = new URLSearchParams({
+          source: sourceId,
+          provider: identity.provider,
+          repository: identity.repository,
+          kind: identity.kind,
+          id: identity.externalId,
+        });
+        const response = await fetch("/api/work-item-detail?" + params.toString());
+        const data = await response.json();
+        if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+        if (!data.connected) throw new Error(data.reason || "Could not load work item detail.");
+        item = data.workItem;
+        workItemDetailCache.set(cacheKey, item);
+      }
+      if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+      showWorkItemDetail(item);
+    } catch (error) {
+      if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+      selectedWorkItem = null;
+      workItemStatusEl.textContent = portalRequestError(error);
+      workItemContentEl.innerHTML = '<button type="button" class="back" id="work-item-error-back">\u2190 Back to Work Items</button>';
+      document.getElementById("work-item-error-back")?.addEventListener("click", () => {
+        ++workItemRequestSequence;
+        workItemStatusEl.textContent = "";
+        renderCurrentWorkItemList();
+      });
+      document.getElementById("work-item-error-back")?.focus();
+    }
+  }
+
+  function resetWorkItemsForNewSource() {
+    ++workItemRequestSequence;
+    workItemKind = "";
+    lastWorkItemPage = null;
+    selectedWorkItem = null;
+    workItemActionType = "all";
+    workItemDetailCache.clear();
+    workItemGaggleSelect.innerHTML = '<option value="">All gaggles</option>';
+    workItemSearchInput.value = "";
+    workItemListControlsEl.hidden = false;
+    workItemStatusEl.textContent = "";
+    workItemContentEl.innerHTML = "";
+    updateWorkItemKindButtons();
+  }
+
+  async function loadWorkItems() {
+    const sourceId = sourceSelect.value;
+    if (!sourceId) return;
+    const requestSequence = ++workItemRequestSequence;
+    selectedWorkItem = null;
+    workItemListControlsEl.hidden = false;
+    workItemStatusEl.textContent = "Loading\u2026";
+    workItemContentEl.innerHTML = "";
+    try {
+      const params = new URLSearchParams({ source: sourceId, limit: "200" });
+      if (workItemKind) params.set("kind", workItemKind);
+      const response = await fetch("/api/work-items?" + params.toString());
+      const data = await response.json();
+      if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+      if (!data.connected) {
+        workItemStatusEl.textContent = data.reason || "Could not load work items.";
+        return;
+      }
+      lastWorkItemPage = data.workItems || { items: [], hasMore: false };
+      populateWorkItemGaggles(lastWorkItemPage.items);
+      workItemStatusEl.textContent = "";
+      renderCurrentWorkItemList();
+    } catch (error) {
+      if (requestSequence !== workItemRequestSequence || sourceId !== sourceSelect.value) return;
+      workItemStatusEl.textContent = portalRequestError(error);
+      workItemContentEl.innerHTML = "";
+    }
+  }
+
+  for (const button of workItemKindButtons) {
+    button.addEventListener("click", () => {
+      const nextKind = button.dataset.workItemKindFilter;
+      if (nextKind === workItemKind) return;
+      workItemKind = nextKind;
+      updateWorkItemKindButtons();
+      void loadWorkItems();
+    });
+  }
+  workItemGaggleSelect.addEventListener("change", renderCurrentWorkItemList);
+  workItemSearchInput.addEventListener("input", renderCurrentWorkItemList);
 
   // ---- Run detail view ----
   const runViewEl = document.getElementById("run-view");
@@ -3838,6 +4629,35 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const renderInsightStageSection = ${renderInsightStageSection.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderInsightPanel = ${renderInsightPanel.toString()};
+  const costSummaryRequestParams = ${costSummaryRequestParams.toString()};
+  const costLookupRequestParams = ${costLookupRequestParams.toString()};
+  const costAmountByUnit = ${costAmountByUnit.toString()};
+  const formatCostAmount = ${formatCostAmount.toString()};
+  const costAggregateNativeLabel = ${costAggregateNativeLabel.toString()};
+  const costAggregateNormalizedLabel = ${costAggregateNormalizedLabel.toString()};
+  const costAggregateComparableValue = ${costAggregateComparableValue.toString()};
+  const costCoverageLabel = ${costCoverageLabel.toString()};
+  const deriveExternalCostRows = ${deriveExternalCostRows.toString()};
+  const compareExternalCostRows = ${compareExternalCostRows.toString()};
+  const renderCostSummarySection = ${renderCostSummarySection.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderCostTrendSection = ${renderCostTrendSection.toString()};
+  const renderInstanceCostRollupSection = ${renderInstanceCostRollupSection.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderExternalCostBreakdownSection = ${renderExternalCostBreakdownSection.toString()
+        .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderCostPanel = ${renderCostPanel.toString()};
+  const workItemLabel = ${workItemLabel.toString()};
+  const humanizeWorkItemOperation = ${humanizeWorkItemOperation.toString()};
+  const formatWorkItemTimestamp = ${formatWorkItemTimestamp.toString()};
+  const formatWorkItemCost = ${formatWorkItemCost.toString()};
+  const filterWorkItems = ${filterWorkItems.toString()};
+  const renderWorkItemList = ${renderWorkItemList.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderWorkItemDetail = ${renderWorkItemDetail.toString()
+        .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
 
   function externalRefsFrom(events) {
     const refs = [];
@@ -3996,7 +4816,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     });
   }
 
-  async function openRun(runId) {
+  async function openRun(runId, origin = "runs") {
     const sourceId = sourceSelect.value;
     if (!sourceId) {
       errorEl.textContent = "Choose a source before opening a run.";
@@ -4005,6 +4825,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     }
     const requestSequence = ++runRequestSequence;
     const isNewRun = selectedRunId !== runId;
+    runOrigin = origin;
+    document.getElementById("run-back").textContent =
+      runOrigin === "work-items" ? "Back to Work Items" : "Back to runs";
     selectedRunId = runId;
     if (isNewRun) {
       activeRunTab = "summary";
@@ -4110,6 +4933,13 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     activeStageInspectorView = "fields";
     runViewEl.style.display = "none";
     dashboardEl.style.display = "block";
+    if (runOrigin === "work-items") {
+      const actionButton = [...workItemContentEl.querySelectorAll("[data-work-item-run]")]
+        .find((button) => button.dataset.workItemRun === previousRunId);
+      actionButton?.focus();
+      syncViewUrl();
+      return;
+    }
     activateInternalTab(dashboardEl, "runs", true);
     const row = [...runsBody.querySelectorAll("[data-run-id]")].find((row) => row.dataset.runId === previousRunId);
     row?.querySelector(".table-link")?.focus();
@@ -4118,7 +4948,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   async function loadSnapshot() {
     const sourceId = sourceSelect.value;
-    if (snapshotSourceId !== sourceId) {
+    const sourceChanged = snapshotSourceId !== sourceId;
+    if (sourceChanged) {
       ++sourceSelectionEpoch;
       workflowRunRequests.clear();
       updateFleetPanel({});
@@ -4147,6 +4978,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         syncViewUrl();
         setFreshnessState("Loading");
         resetInsightsForNewSource();
+        resetCostForNewSource();
+        resetWorkItemsForNewSource();
       }
       snapshotSourceId = sourceId;
     }
@@ -4162,7 +4995,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     try {
       const data = await fetchSnapshot();
       if (sourceId !== sourceSelect.value || requestSequence !== snapshotRequestSequence) return;
-      if (data) renderSnapshot(data);
+      if (data) {
+        renderSnapshot(data);
+        if (sourceChanged && activeDashboardTab === "insights") void loadInsights();
+        if (sourceChanged && activeDashboardTab === "cost") void loadCost();
+        if (sourceChanged && activeDashboardTab === "work-items") void loadWorkItems();
+      }
     } catch (err) {
       if (sourceId !== sourceSelect.value || requestSequence !== snapshotRequestSequence) return;
       errorEl.textContent = portalRequestError(err);
@@ -4278,7 +5116,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   document.getElementById("refresh").addEventListener("click", () => {
     workflowDetailCache.clear();
-    void refreshAll();
+    workItemDetailCache.clear();
+    void refreshAll().then(() => {
+      if (activeDashboardTab === "work-items") void loadWorkItems();
+    });
   });
   async function changeSource() {
     liveConnectionEstablished = false;

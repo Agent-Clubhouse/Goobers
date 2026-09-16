@@ -4,8 +4,11 @@ import test from "node:test";
 import {
     interventionCapability,
     interventionIdempotencyKey,
+    loadCostSummary,
     loadInsightStats,
     loadRuns,
+    loadWorkItemDetail,
+    loadWorkItems,
     loadWorkflowDetail,
     requireDurableInterventionResult,
     runStageIntervention,
@@ -127,6 +130,141 @@ test("insight stats omit the query string entirely when no options are given", a
 test("insight stats require daemon mode", async () => {
     await assert.rejects(loadInsightStats({ mode: "standalone" }, {}), /running Goobers daemon/);
     await assert.rejects(loadInsightStats({ mode: "actions" }, {}), /running Goobers daemon/);
+});
+
+test("cost summary builds a query from only telemetry cost option keys", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push({ url, options });
+        return Response.json({ scope: "pr", pullRequests: [], issues: [] });
+    };
+    try {
+        const costs = await loadCostSummary(
+            { mode: "daemon", baseUrl: "http://daemon", token: "test-token" },
+            {
+                provider: "github",
+                scope: "pr",
+                id: "5183",
+                since: "2026-01-01T00:00:00Z",
+                until: "2026-01-02T00:00:00Z",
+                gaggle: "ignored",
+                empty: "",
+            },
+        );
+        const url = new URL(requests[0].url);
+        assert.equal(url.origin + url.pathname, "http://daemon/api/v1/telemetry/costs");
+        assert.deepEqual([...url.searchParams.entries()].sort(), [
+            ["id", "5183"],
+            ["provider", "github"],
+            ["scope", "pr"],
+            ["since", "2026-01-01T00:00:00Z"],
+            ["until", "2026-01-02T00:00:00Z"],
+        ]);
+        assert.equal(requests[0].options.headers.Authorization, "Bearer test-token");
+        assert.deepEqual(costs.pullRequests, []);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("cost summary omits the query string entirely when no options are given", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url) => {
+        requests.push(url);
+        return Response.json({ scope: "summary", pullRequests: [], issues: [] });
+    };
+    try {
+        await loadCostSummary({ mode: "daemon", baseUrl: "http://daemon" });
+        assert.equal(requests[0], "http://daemon/api/v1/telemetry/costs");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("cost summary requires daemon mode", async () => {
+    await assert.rejects(loadCostSummary({ mode: "standalone" }, {}), /running Goobers daemon/);
+    await assert.rejects(loadCostSummary({ mode: "actions" }, {}), /running Goobers daemon/);
+});
+
+test("work item list forwards only daemon-supported filters", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push({ url, options });
+        return Response.json({ items: [], hasMore: false });
+    };
+    try {
+        const page = await loadWorkItems(
+            { mode: "daemon", baseUrl: "http://daemon", token: "test-token" },
+            { provider: "github", kind: "issue", limit: 200, gaggle: "ignored", search: "ignored" },
+        );
+        const url = new URL(requests[0].url);
+        assert.equal(url.origin + url.pathname, "http://daemon/api/v1/work-items");
+        assert.deepEqual([...url.searchParams.entries()].sort(), [
+            ["kind", "issue"],
+            ["limit", "200"],
+            ["provider", "github"],
+        ]);
+        assert.equal(requests[0].options.headers.Authorization, "Bearer test-token");
+        assert.deepEqual(page, { items: [], hasMore: false });
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("work item list omits the query string when no options are defined", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url) => {
+        requests.push(url);
+        return Response.json({ items: [], hasMore: false });
+    };
+    try {
+        await loadWorkItems({ mode: "daemon", baseUrl: "http://daemon" });
+        assert.equal(requests[0], "http://daemon/api/v1/work-items");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("work item detail encodes identity and sends repository as a query parameter", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push({ url, options });
+        return Response.json({ provider: "github enterprise", repository: "acme/core repo", kind: "pr", externalId: "42/7", actions: [] });
+    };
+    try {
+        const detail = await loadWorkItemDetail(
+            { mode: "daemon", baseUrl: "http://daemon", token: "test-token" },
+            "github enterprise",
+            "acme/core repo",
+            "pr",
+            "42/7",
+        );
+        const url = new URL(requests[0].url);
+        assert.equal(
+            url.origin + url.pathname,
+            "http://daemon/api/v1/work-items/github%20enterprise/pr/42%2F7",
+        );
+        assert.equal(url.searchParams.get("repository"), "acme/core repo");
+        assert.equal(requests[0].options.headers.Authorization, "Bearer test-token");
+        assert.equal(detail.externalId, "42/7");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("work item reads require daemon mode", async () => {
+    for (const mode of ["standalone", "actions"]) {
+        await assert.rejects(loadWorkItems({ mode }), /running Goobers daemon/);
+        await assert.rejects(
+            loadWorkItemDetail({ mode }, "github", "acme/app", "pr", "42"),
+            /running Goobers daemon/,
+        );
+    }
 });
 
 test("daemon run summaries hydrate associated issue refs from run events", async () => {

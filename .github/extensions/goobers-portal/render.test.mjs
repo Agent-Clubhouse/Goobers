@@ -10,7 +10,14 @@ import {
 } from "./configuration-warnings.mjs";
 import {
     formatRunDetailTime,
+    filterWorkItems,
+    formatWorkItemCost,
+    formatWorkItemTimestamp,
+    humanizeWorkItemOperation,
     INSIGHT_WINDOWS,
+    costLookupRequestParams,
+    costSummaryRequestParams,
+    deriveExternalCostRows,
     insightPreviousWindowRange,
     insightRequestParams,
     insightScopeApiParams,
@@ -28,6 +35,7 @@ import {
     renderFleetPortalLink,
     renderGooberChip,
     renderInsightPanel,
+    renderCostPanel,
     renderRunDetailSummary,
     renderRunEventItems,
     renderOperatorPanel,
@@ -36,6 +44,9 @@ import {
     renderStageDefinitionInspector,
     renderStageInspectorStatus,
     renderTransitions,
+    renderWorkItemDetail,
+    renderWorkItemList,
+    workItemLabel,
 } from "./render.mjs";
 
 test("causal diagnosis renders attempts and escaped failure breadcrumbs", () => {
@@ -840,4 +851,407 @@ test("the browser script inlines every Insights helper and render function", () 
         assert.match(page, new RegExp("const " + name + " = "), `${name} was not inlined into the browser script`);
     }
     assert.ok(!page.includes("escapeAssociationHtml"), "escapeAssociationHtml leaked into the Insights panel");
+});
+
+// ---- Cost tab ----
+
+test("cost request params use the selected window and bound all-time attribution to 90 days", () => {
+    const now = new Date("2026-01-08T00:00:00Z");
+    assert.deepEqual(costSummaryRequestParams("7d", now), {
+        scope: "summary",
+        since: "2026-01-01T00:00:00.000Z",
+        until: "2026-01-08T00:00:00.000Z",
+    });
+    assert.deepEqual(costSummaryRequestParams("all", now), {
+        scope: "summary",
+        since: "2025-10-10T00:00:00.000Z",
+        until: "2026-01-08T00:00:00.000Z",
+    });
+});
+
+test("cost lookup params map PR and issue lookups to telemetry cost scopes", () => {
+    const now = new Date("2026-01-08T00:00:00Z");
+    assert.deepEqual(costLookupRequestParams("pr", "github", "5183", "24h", now), {
+        provider: "github",
+        scope: "pr",
+        id: "5183",
+        since: "2026-01-07T00:00:00.000Z",
+        until: "2026-01-08T00:00:00.000Z",
+    });
+    assert.equal(costLookupRequestParams("issue", "ado", "42", "24h", now).scope, "issue");
+});
+
+const COST_STATS_FIXTURE = {
+    gaggles: [{ gaggle: "core" }, { gaggle: "extra" }],
+    runs: [{ gaggle: "core", workflow: "implementation" }],
+    stages: [],
+    usage: [
+        {
+            scope: "instance", totalAttempts: 20, costUSD: 15.5, p50CostUSD: 0.7,
+            p95CostUSD: 1.8, costSamples: 18, p50Tokens: 1200, p95Tokens: 4400,
+            retryWasteAttempts: 2, retryWasteCostUSD: 1.25, retryWasteTokens: 900,
+        },
+        {
+            scope: "gaggle", gaggle: "core", totalAttempts: 12, costUSD: 10,
+            p50CostUSD: 0.6, p95CostUSD: 1.4, costSamples: 10, p50Tokens: 1000, p95Tokens: 3000,
+            retryWasteAttempts: 1, retryWasteCostUSD: 0.5, retryWasteTokens: 400,
+        },
+    ],
+    trend: [
+        {
+            since: "2026-01-01T00:00:00Z",
+            until: "2026-01-02T00:00:00Z",
+            usage: [{ scope: "instance", costUSD: 7, p50Tokens: 800, costSamples: 8 }],
+        },
+        {
+            since: "2026-01-02T00:00:00Z",
+            until: "2026-01-03T00:00:00Z",
+            usage: [{ scope: "instance", costUSD: 8.5, p50Tokens: 900, costSamples: 10 }],
+        },
+    ],
+    trendPrevious: {
+        usage: [{ scope: "instance", costUSD: 5 }],
+    },
+};
+
+const COST_RESULT_FIXTURE = {
+    provider: "github",
+    scope: "summary",
+    since: "2026-01-01T00:00:00Z",
+    until: "2026-01-08T00:00:00Z",
+    pullRequests: [
+        {
+            provider: "github",
+            repository: "Agent-Clubhouse/Goobers",
+            url: "https://github.com/Agent-Clubhouse/Goobers/pull/5183",
+            externalKind: "pr",
+            externalId: "5183",
+            nativeTotals: [{ unit: "usd", value: 4.2, estimated: false }],
+            normalizedTotals: [{ unit: "aiCredits", value: 420, estimated: false }],
+            coverage: { totalRuns: 2, measuredRuns: 2, totalAttempts: 3, measuredAttempts: 3, complete: true, lowerBound: false },
+            models: [
+                {
+                    model: "gpt-test",
+                    measuredAttempts: 3,
+                    nativeTotals: [{ unit: "usd", value: 4.2, estimated: false }],
+                    normalizedTotals: [{ unit: "aiCredits", value: 420, estimated: false }],
+                },
+            ],
+            runs: [{ runId: "run-1" }, { runId: "run-2" }],
+        },
+    ],
+    issues: [
+        {
+            provider: "github",
+            externalKind: "issue",
+            externalId: "99",
+            nativeTotals: [{ unit: "aiCredits", value: 12, estimated: true }],
+            normalizedTotals: [{ unit: "usd", value: 1.5, estimated: true }],
+            coverage: { totalRuns: 2, measuredRuns: 1, totalAttempts: 4, measuredAttempts: 2, complete: false, lowerBound: true },
+            models: [],
+            runs: [{ runId: "run-3" }],
+        },
+    ],
+};
+
+test("deriveExternalCostRows normalizes PR and issue cost aggregates", () => {
+    const rows = deriveExternalCostRows(COST_RESULT_FIXTURE);
+    assert.deepEqual(rows.map((row) => row.label), ["PR #5183", "Issue #99"]);
+    assert.equal(rows[0].native, "$4.20");
+    assert.equal(rows[1].native, "12 credits est.");
+    assert.equal(rows[1].lowerBound, true);
+    assert.deepEqual(rows[0].runs, ["run-1", "run-2"]);
+});
+
+test("renderCostPanel renders summary, trend, instance rollup, external breakdown, and lookup result", () => {
+    const lookup = { ...COST_RESULT_FIXTURE, scope: "pr", externalId: "5183", issues: [] };
+    const html = renderCostPanel(COST_STATS_FIXTURE, COST_RESULT_FIXTURE, { kind: "instance" }, "7d", lookup);
+    assert.match(html, /Cost summary/);
+    assert.match(html, /\$15\.50/);
+    assert.match(html, /Cost trend/);
+    assert.match(html, /Cost by gaggle/);
+    assert.match(html, /core/);
+    assert.match(html, /Cost by pull request and issue/);
+    assert.match(html, /PR #5183/);
+    assert.match(html, /Issue #99/);
+    assert.match(html, /Lookup result/);
+    assert.match(html, /lower bound/);
+    assert.match(html, /Attribution is instance-wide/);
+});
+
+test("renderCostPanel orders mixed native and normalized costs by comparable USD value", () => {
+    const html = renderCostPanel(COST_STATS_FIXTURE, {
+        pullRequests: [{
+            provider: "github",
+            externalKind: "pr",
+            externalId: "400",
+            nativeTotals: [{ unit: "usd", value: 400, estimated: false }],
+            normalizedTotals: [{ unit: "aiCredits", value: 40000, estimated: false }],
+            coverage: { totalRuns: 1, measuredRuns: 1, totalAttempts: 1, measuredAttempts: 1, complete: true, lowerBound: false },
+            models: [],
+            runs: [],
+        }],
+        issues: [{
+            provider: "github",
+            externalKind: "issue",
+            externalId: "1",
+            nativeTotals: [{ unit: "aiCredits", value: 12, estimated: true }],
+            normalizedTotals: [{ unit: "usd", value: 0.01, estimated: true }],
+            coverage: { totalRuns: 1, measuredRuns: 1, totalAttempts: 1, measuredAttempts: 1, complete: true, lowerBound: false },
+            models: [],
+            runs: [],
+        }],
+    }, { kind: "instance" }, "7d");
+    assert.ok(html.indexOf("PR #400") < html.indexOf("Issue #1"));
+});
+
+test("renderCostPanel hides instance rollup outside instance scope and renders empty states", () => {
+    const scoped = renderCostPanel(COST_STATS_FIXTURE, { pullRequests: [], issues: [] }, { kind: "gaggle", gaggle: "core" }, "all");
+    assert.doesNotMatch(scoped, /Cost by gaggle/);
+    assert.match(scoped, /bounded time window/);
+    assert.match(scoped, /No pull request or issue cost was attributed/);
+
+    const empty = renderCostPanel(null, null, { kind: "instance" }, "7d");
+    assert.match(empty, /No cost telemetry loaded yet/);
+
+    const costsOnly = renderCostPanel(null, COST_RESULT_FIXTURE, { kind: "instance" }, "7d");
+    assert.match(costsOnly, /Selected-scope usage, trend, and instance rollup are unavailable/);
+    assert.match(costsOnly, /PR #5183/);
+
+    const lookupOnly = renderCostPanel(null, null, { kind: "instance" }, "7d", { ...COST_RESULT_FIXTURE, pullRequests: [], scope: "issue" });
+    assert.match(lookupOnly, /Attributed pull request and issue costs could not be loaded/);
+    assert.match(lookupOnly, /Lookup result/);
+    assert.match(lookupOnly, /Issue #99/);
+});
+
+test("renderCostPanel escapes hostile external cost payloads", () => {
+    const hostile = {
+        pullRequests: [{
+            provider: "github",
+            repository: HOSTILE,
+            url: "javascript:alert(1)",
+            externalKind: "pr",
+            externalId: HOSTILE,
+            nativeTotals: [],
+            normalizedTotals: [],
+            coverage: { totalRuns: 0, measuredRuns: 0, totalAttempts: 0, measuredAttempts: 0, complete: false, lowerBound: false },
+            models: [{ model: HOSTILE, measuredAttempts: 1, normalizedTotals: [] }],
+            runs: [{ runId: HOSTILE }],
+        }],
+        issues: [],
+    };
+    const html = renderCostPanel(COST_STATS_FIXTURE, hostile, { kind: "instance" }, "7d");
+    assert.doesNotMatch(html, /<img src=x/);
+    assert.doesNotMatch(html, /javascript:alert/);
+    assert.match(html, /&lt;img/);
+});
+
+test("renderCostPanel makes bounded all-time attribution explicit", () => {
+    const html = renderCostPanel(
+        COST_STATS_FIXTURE,
+        { ...COST_RESULT_FIXTURE, boundedAllTime: true },
+        { kind: "instance" },
+        "all",
+    );
+    assert.match(html, /all-time attribution is capped at 90 days/);
+});
+
+test("renderCostPanel caps external rows and per-row model details", () => {
+    const manyModels = Array.from({ length: 5 }, (_, index) => ({
+        model: "model-" + index,
+        measuredAttempts: 1,
+        nativeTotals: [],
+        normalizedTotals: [{ unit: "aiCredits", value: index + 1, estimated: false }],
+    }));
+    const manyRows = Array.from({ length: 30 }, (_, index) => ({
+        provider: "github",
+        externalKind: "pr",
+        externalId: String(index + 1),
+        nativeTotals: [{ unit: "usd", value: index, estimated: false }],
+        normalizedTotals: [{ unit: "aiCredits", value: index, estimated: false }],
+        coverage: { totalRuns: 1, measuredRuns: 1, totalAttempts: 1, measuredAttempts: 1, complete: true, lowerBound: false },
+        models: index === 29 ? manyModels : [],
+        runs: [],
+    }));
+    const html = renderCostPanel(COST_STATS_FIXTURE, { pullRequests: manyRows, issues: [] }, { kind: "instance" }, "7d");
+    assert.match(html, /\+5 more work items/);
+    assert.match(html, /model-0/);
+    assert.match(html, /\+2 more/);
+    assert.doesNotMatch(html, /PR #1</);
+});
+
+test("renderHtml includes Cost tab controls and inlines every Cost helper", () => {
+    const page = renderHtml("inst-1");
+    assert.match(page, /dashboard-tab-cost/);
+    assert.match(page, /id="cost-lookup-id"/);
+    for (const name of [
+        "costSummaryRequestParams", "costLookupRequestParams", "deriveExternalCostRows",
+        "renderCostPanel",
+    ]) {
+        assert.match(page, new RegExp("const " + name + " = "), `${name} was not inlined into the browser script`);
+    }
+    assert.ok(!page.includes("escapeAssociationHtml"), "escapeAssociationHtml leaked into the Cost panel");
+});
+
+// ---- Work Items tab ----
+
+const WORK_ITEM_PAGE_FIXTURE = {
+    items: [{
+        provider: "github",
+        repository: "acme/app",
+        kind: "pr",
+        externalId: "42",
+        actionCount: 2,
+        lastOperation: "request-review",
+        lastActionAt: "2026-09-15T00:00:00Z",
+        lastRunId: "run-2",
+        gaggle: "core",
+        workflow: "implementation",
+    }, {
+        provider: "github",
+        repository: "acme/service",
+        kind: "issue",
+        externalId: "77",
+        actionCount: 1,
+        lastOperation: "comment",
+        lastActionAt: "2026-09-14T00:00:00Z",
+        lastRunId: "run-1",
+        gaggle: "tools",
+        workflow: "triage",
+    }],
+    hasMore: true,
+};
+
+const WORK_ITEM_DETAIL_FIXTURE = {
+    provider: "github",
+    repository: "acme/app",
+    kind: "pr",
+    externalId: "42",
+    url: "https://github.com/acme/app/pull/42",
+    cost: {
+        costUSD: 1.25,
+        totalRuns: 2,
+        measuredRuns: 1,
+        totalAttempts: 3,
+        measuredAttempts: 2,
+        lowerBound: true,
+    },
+    relatedPullRequests: [{
+        provider: "github",
+        repository: "acme/app",
+        kind: "pr",
+        externalId: "43",
+        url: "https://github.com/acme/app/pull/43",
+    }],
+    actions: [{
+        runId: "run-2",
+        sequence: 9,
+        operation: "merge",
+        occurredAt: "2026-09-15T00:00:00Z",
+        gaggle: "core",
+        workflow: "merge-review",
+        runStatus: "completed",
+    }, {
+        runId: "run-1",
+        sequence: 4,
+        operation: "comment",
+        occurredAt: "2026-09-14T00:00:00Z",
+        gaggle: "core",
+        workflow: "implementation",
+        runStatus: "completed",
+    }],
+    truncated: true,
+};
+
+test("work item helpers format labels, operations, costs, and local filters", () => {
+    assert.equal(workItemLabel("acme/app", "42"), "acme/app#42");
+    assert.equal(workItemLabel("", "42"), "#42");
+    assert.equal(humanizeWorkItemOperation("request-review"), "Request Review");
+    assert.equal(humanizeWorkItemOperation(""), "Provider action");
+    assert.equal(formatWorkItemCost({ costUSD: 1.25 }), "$1.25");
+    assert.equal(formatWorkItemCost({ nanoAIU: 1200 }), "1,200 nano-AIU");
+    assert.equal(formatWorkItemCost(null), "Not attributed");
+    assert.equal(formatWorkItemTimestamp("0001-01-01T00:00:00Z"), "\u2014");
+    assert.deepEqual(
+        filterWorkItems(WORK_ITEM_PAGE_FIXTURE.items, "core", "app#42").map((item) => item.externalId),
+        ["42"],
+    );
+    assert.deepEqual(filterWorkItems(WORK_ITEM_PAGE_FIXTURE.items, "tools", "77").map((item) => item.externalId), ["77"]);
+});
+
+test("renderWorkItemList renders rows, metadata, overflow, and explicit empty states", () => {
+    const html = renderWorkItemList(WORK_ITEM_PAGE_FIXTURE);
+    assert.match(html, /Open PR #42 in acme\/app/);
+    assert.match(html, /Request Review/);
+    assert.match(html, /implementation/);
+    assert.match(html, /Showing the 200 most recently actioned work items/);
+    assert.match(
+        renderWorkItemList(WORK_ITEM_PAGE_FIXTURE, "missing"),
+        /No confirmed provider actions match.*Only the 200 most recently actioned work items are searched/,
+    );
+    assert.match(renderWorkItemList(null), /No work items loaded yet/);
+});
+
+test("renderWorkItemDetail renders cost coverage, related links, action filtering, and truncation", () => {
+    const html = renderWorkItemDetail(WORK_ITEM_DETAIL_FIXTURE, "comment");
+    assert.match(html, /acme\/app#42/);
+    assert.match(html, /\$1\.25/);
+    assert.match(html, /Lower bound; some usage is unmeasured/);
+    assert.match(html, /1\/2 runs/);
+    assert.match(html, /Open pull request/);
+    assert.match(html, /Related PR acme\/app#43/);
+    assert.match(html, /Action history for acme\/app#42/);
+    assert.match(html, />Comment</);
+    assert.doesNotMatch(html, /<strong>Merge<\/strong>/);
+    assert.match(html, /data-work-item-run="run-1"/);
+    assert.match(html, /Showing the 200 most recent actions/);
+    assert.match(renderWorkItemDetail(WORK_ITEM_DETAIL_FIXTURE, "missing"), /No actions match this type/);
+});
+
+test("work item renderers escape hostile values and reject unsafe links", () => {
+    const hostilePage = {
+        items: [{
+            provider: HOSTILE,
+            repository: HOSTILE,
+            kind: "issue",
+            externalId: HOSTILE,
+            actionCount: 1,
+            lastOperation: HOSTILE,
+            gaggle: HOSTILE,
+            workflow: HOSTILE,
+        }],
+        hasMore: false,
+    };
+    const list = renderWorkItemList(hostilePage);
+    assert.doesNotMatch(list, /<img src=x/);
+    assert.match(list, /&lt;img/);
+
+    const detail = renderWorkItemDetail({
+        ...WORK_ITEM_DETAIL_FIXTURE,
+        repository: HOSTILE,
+        externalId: HOSTILE,
+        url: "javascript:alert(1)",
+        relatedPullRequests: [{
+            repository: HOSTILE,
+            externalId: HOSTILE,
+            url: "javascript:alert(2)",
+        }],
+        actions: [{ ...WORK_ITEM_DETAIL_FIXTURE.actions[0], operation: HOSTILE }],
+    });
+    assert.doesNotMatch(detail, /<img src=x|javascript:alert/);
+    assert.match(detail, /&lt;img/);
+});
+
+test("renderHtml includes Work Items controls and inlines every Work Items helper", () => {
+    const page = renderHtml("inst-1");
+    assert.match(page, /dashboard-tab-work-items/);
+    assert.match(page, /id="work-item-search"/);
+    assert.match(page, /id="work-item-content"/);
+    for (const name of [
+        "workItemLabel", "humanizeWorkItemOperation", "formatWorkItemTimestamp",
+        "formatWorkItemCost", "filterWorkItems", "renderWorkItemList", "renderWorkItemDetail",
+    ]) {
+        assert.match(page, new RegExp("const " + name + " = "), `${name} was not inlined into the browser script`);
+    }
+    assert.ok(!page.includes("escapeAssociationHtml"), "escapeAssociationHtml leaked into the Work Items panel");
 });

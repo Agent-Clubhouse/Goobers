@@ -1542,7 +1542,13 @@ type StorageThresholds struct {
 	WarningFloorPercent  float64
 	CriticalFloorBytes   int64
 	CriticalFloorPercent float64
-	CheckInterval        time.Duration
+	// CriticalFloorDerived reports that CriticalFloorBytes came from the
+	// recovery archive bound rather than an explicit operator setting.
+	CriticalFloorDerived bool
+	// WarningFloorDerived reports that WarningFloorBytes came from the
+	// recovery archive bound rather than an explicit operator setting.
+	WarningFloorDerived bool
+	CheckInterval       time.Duration
 }
 
 // ResolveStorageThresholds resolves the effective tiered low-disk thresholds,
@@ -1596,6 +1602,8 @@ func (c RunConditions) ResolveStorageThresholds(recovery RecoverySnapshotConfig)
 		WarningFloorPercent:  warningPercent,
 		CriticalFloorBytes:   criticalBytes,
 		CriticalFloorPercent: criticalPercent,
+		CriticalFloorDerived: cfg.CriticalFloorBytes <= 0,
+		WarningFloorDerived:  cfg.WarningFloorBytes <= 0 && cfg.CriticalFloorBytes <= 0,
 		CheckInterval:        interval,
 	}
 }

@@ -25,7 +25,10 @@ import {
     loadRunArtifact,
     loadRunTranscript,
     loadRuns,
+    loadCostSummary,
     loadInsightStats,
+    loadWorkItemDetail,
+    loadWorkItems,
     openEventStream,
     setWorkflowEnabled,
     triggerWorkflowNow,
@@ -181,6 +184,94 @@ async function insightStatsFor(sourceId, options) {
     } catch (err) {
         logEvent("insight_stats_load_failed", {
             sourceId,
+            kind: source.kind,
+            mode: resolved.mode,
+            error: err.message || String(err),
+        });
+        return { connected: false, reason: err.message || String(err) };
+    }
+}
+
+async function costSummaryFor(sourceId, options) {
+    const known = await listKnownSources();
+    const source = known.find((s) => s.id === sourceId);
+    if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
+    const resolved = await resolveSource(source);
+    if (!resolved.ok) {
+        logEvent("source_resolution_failed", {
+            sourceId,
+            kind: source.kind,
+            error: resolved.reason,
+        });
+        return { connected: false, reason: resolved.reason };
+    }
+
+    try {
+        const costs = await loadCostSummary(resolved, options);
+        return { connected: true, costs };
+    } catch (err) {
+        logEvent("cost_summary_load_failed", {
+            sourceId,
+            kind: source.kind,
+            mode: resolved.mode,
+            error: err.message || String(err),
+        });
+        return { connected: false, reason: err.message || String(err) };
+    }
+}
+
+async function workItemsFor(sourceId, options) {
+    const known = await listKnownSources();
+    const source = known.find((s) => s.id === sourceId);
+    if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
+    const resolved = await resolveSource(source);
+    if (!resolved.ok) {
+        logEvent("source_resolution_failed", {
+            sourceId,
+            kind: source.kind,
+            error: resolved.reason,
+        });
+        return { connected: false, reason: resolved.reason };
+    }
+
+    try {
+        const workItems = await loadWorkItems(resolved, options);
+        return { connected: true, workItems };
+    } catch (err) {
+        logEvent("work_items_load_failed", {
+            sourceId,
+            kind: source.kind,
+            mode: resolved.mode,
+            error: err.message || String(err),
+        });
+        return { connected: false, reason: err.message || String(err) };
+    }
+}
+
+async function workItemDetailFor(sourceId, provider, repository, kind, externalId) {
+    const known = await listKnownSources();
+    const source = known.find((s) => s.id === sourceId);
+    if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
+    const resolved = await resolveSource(source);
+    if (!resolved.ok) {
+        logEvent("source_resolution_failed", {
+            sourceId,
+            kind: source.kind,
+            error: resolved.reason,
+        });
+        return { connected: false, reason: resolved.reason };
+    }
+
+    try {
+        const workItem = await loadWorkItemDetail(resolved, provider, repository, kind, externalId);
+        return { connected: true, workItem };
+    } catch (err) {
+        logEvent("work_item_detail_load_failed", {
+            sourceId,
+            provider,
+            repository,
+            workItemKind: kind,
+            externalId,
             kind: source.kind,
             mode: resolved.mode,
             error: err.message || String(err),
@@ -477,6 +568,60 @@ async function startServer(instanceId) {
                     if (value) options[key] = value;
                 }
                 const data = await insightStatsFor(sourceId, options);
+                res.setHeader("Content-Type", "application/json; charset=utf-8");
+                res.end(JSON.stringify(data));
+                return;
+            }
+            if (url.pathname === "/api/cost-summary") {
+                const sourceId = url.searchParams.get("source");
+                if (!sourceId) {
+                    res.setHeader("Content-Type", "application/json; charset=utf-8");
+                    res.end(JSON.stringify({ connected: false, reason: "no source selected" }));
+                    return;
+                }
+                const options = {};
+                for (const key of ["provider", "scope", "id", "since", "until"]) {
+                    const value = url.searchParams.get(key);
+                    if (value) options[key] = value;
+                }
+                const data = await costSummaryFor(sourceId, options);
+                res.setHeader("Content-Type", "application/json; charset=utf-8");
+                res.end(JSON.stringify(data));
+                return;
+            }
+            if (url.pathname === "/api/work-items") {
+                const sourceId = url.searchParams.get("source");
+                if (!sourceId) {
+                    res.setHeader("Content-Type", "application/json; charset=utf-8");
+                    res.end(JSON.stringify({ connected: false, reason: "no source selected" }));
+                    return;
+                }
+                const options = {};
+                for (const key of ["provider", "kind", "limit"]) {
+                    const value = url.searchParams.get(key);
+                    if (value) options[key] = value;
+                }
+                const data = await workItemsFor(sourceId, options);
+                res.setHeader("Content-Type", "application/json; charset=utf-8");
+                res.end(JSON.stringify(data));
+                return;
+            }
+            if (url.pathname === "/api/work-item-detail") {
+                const sourceId = url.searchParams.get("source");
+                const provider = url.searchParams.get("provider");
+                const repository = url.searchParams.get("repository");
+                const kind = url.searchParams.get("kind");
+                const externalId = url.searchParams.get("id");
+                if (!sourceId || !provider || !repository || !kind || !externalId) {
+                    res.statusCode = 400;
+                    res.setHeader("Content-Type", "application/json; charset=utf-8");
+                    res.end(JSON.stringify({
+                        connected: false,
+                        reason: "source, provider, repository, kind, and id are required",
+                    }));
+                    return;
+                }
+                const data = await workItemDetailFor(sourceId, provider, repository, kind, externalId);
                 res.setHeader("Content-Type", "application/json; charset=utf-8");
                 res.end(JSON.stringify(data));
                 return;

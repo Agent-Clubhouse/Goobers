@@ -1,0 +1,2914 @@
+{
+  "schema": "goobers.dev/telemetry/metric-compatibility-fixtures/v1",
+  "scenarios": [
+    {
+      "name": "all-metrics-temporality-and-terminal-paths",
+      "description": "One force-flushed OTLP export exercising every metric instrument, repeated terminal calls, and active-work zeroing across success, failure, cancellation, and shutdown paths.",
+      "requests": [
+        {
+          "resource_metrics": [
+            {
+              "resource": {
+                "attributes": [
+                  {
+                    "key": "deployment.environment",
+                    "value": {
+                      "string_value": "test"
+                    }
+                  },
+                  {
+                    "key": "goobers.build.commit",
+                    "value": {
+                      "string_value": "compatibility-fixture"
+                    }
+                  },
+                  {
+                    "key": "goobers.fixture",
+                    "value": {
+                      "string_value": "metric-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.instance.id",
+                    "value": {
+                      "string_value": "daemon-all-metrics"
+                    }
+                  },
+                  {
+                    "key": "service.name",
+                    "value": {
+                      "string_value": "telemetry-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.version",
+                    "value": {
+                      "string_value": "v1.0.0"
+                    }
+                  }
+                ]
+              },
+              "scope_metrics": [
+                {
+                  "scope": {
+                    "name": "github.com/goobers/goobers/internal/telemetry"
+                  },
+                  "metrics": [
+                    {
+                      "name": "goobers.escalations",
+                      "description": "Stages and gates escalated to a human.",
+                      "unit": "{escalation}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.gate.decision",
+                                "value": {
+                                  "string_value": "escalated"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "review"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "gate"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "2"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.gate.decisions",
+                      "description": "Evaluated gate decisions.",
+                      "unit": "{decision}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.gate.decision",
+                                "value": {
+                                  "string_value": "escalated"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "review"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "gate"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.journal.appends_dropped",
+                      "description": "Explicitly best-effort instance-journal appends that failed.",
+                      "unit": "{event}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.journal.redactions_total",
+                      "description": "Scrub events that removed secret material, separated by layer.",
+                      "unit": "{event}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "layer",
+                                "value": {
+                                  "string_value": "pattern"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.recovery.restore.failures",
+                      "description": "Recovery bundle restore failures, by reason.",
+                      "unit": "{failure}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.recovery.reason",
+                                "value": {
+                                  "string_value": "base_missing"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.recovery.snapshot.bytes",
+                      "description": "Emitted recovery snapshot bundle size.",
+                      "unit": "By",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.recovery.format",
+                                "value": {
+                                  "string_value": "delta"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 4096,
+                            "bucket_counts": [
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 4096,
+                            "max": 4096
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.recovery.format",
+                                "value": {
+                                  "string_value": "full"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 1048576,
+                            "bucket_counts": [
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "1"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 1048576,
+                            "max": 1048576
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.recovery.snapshot.fallback",
+                      "description": "Recovery captures that fell back to a full bundle, by reason.",
+                      "unit": "{capture}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.recovery.reason",
+                                "value": {
+                                  "string_value": "no_base_ref"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.recovery.snapshot.format",
+                      "description": "Recovery snapshot bundle captures by format selected.",
+                      "unit": "{capture}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.recovery.format",
+                                "value": {
+                                  "string_value": "delta"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.recovery.format",
+                                "value": {
+                                  "string_value": "full"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.run.duration",
+                      "description": "Workflow run duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 5,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 5,
+                            "max": 5
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.run.outcomes",
+                      "description": "Finished workflow runs by outcome.",
+                      "unit": "{run}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.stage.duration",
+                      "description": "Workflow stage duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.attempt.kind",
+                                "value": {
+                                  "string_value": "policy"
+                                }
+                              },
+                              {
+                                "key": "goobers.model",
+                                "value": {
+                                  "string_value": "gpt-5.4"
+                                }
+                              },
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "success-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "agentic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 2,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 2,
+                            "max": 2
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.gate.decision",
+                                "value": {
+                                  "string_value": "escalated"
+                                }
+                              },
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "escalated"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "review"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "gate"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 1,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 1,
+                            "max": 1
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "blocked"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "cancelled-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "deterministic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 1,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 1,
+                            "max": 1
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "failure"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "failed-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "deterministic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 2,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 2,
+                            "max": 2
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "workcopy-create"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "scheduler"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "instance"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 0,
+                            "bucket_counts": [
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 0,
+                            "max": 0
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "unset"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "shutdown"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "scheduler"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 0,
+                            "bucket_counts": [
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 0,
+                            "max": 0
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.stage.metric.value",
+                      "description": "Stage-emitted metrics.jsonl values.",
+                      "unit": "1",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.attempt.kind",
+                                "value": {
+                                  "string_value": "policy"
+                                }
+                              },
+                              {
+                                "key": "goobers.metric.name",
+                                "value": {
+                                  "string_value": "files.changed"
+                                }
+                              },
+                              {
+                                "key": "goobers.metric.unit",
+                                "value": {
+                                  "string_value": "{file}"
+                                }
+                              },
+                              {
+                                "key": "goobers.model",
+                                "value": {
+                                  "string_value": "gpt-5.4"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "success-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "agentic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 4,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 4,
+                            "max": 4
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.stage.outcomes",
+                      "description": "Finished workflow stages by outcome.",
+                      "unit": "{stage}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.attempt.kind",
+                                "value": {
+                                  "string_value": "policy"
+                                }
+                              },
+                              {
+                                "key": "goobers.model",
+                                "value": {
+                                  "string_value": "gpt-5.4"
+                                }
+                              },
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "success-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "agentic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.gate.decision",
+                                "value": {
+                                  "string_value": "escalated"
+                                }
+                              },
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "escalated"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "review"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "gate"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "blocked"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "cancelled-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "deterministic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "failure"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "failed-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "deterministic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "workcopy-create"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "scheduler"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "instance"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "unset"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "shutdown"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "scheduler"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.stage.retries",
+                      "description": "Stage attempts beyond the first.",
+                      "unit": "{attempt}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.attempt.kind",
+                                "value": {
+                                  "string_value": "policy"
+                                }
+                              },
+                              {
+                                "key": "goobers.model",
+                                "value": {
+                                  "string_value": "gpt-5.4"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "success-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "agentic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.storage.free_bytes",
+                      "description": "Most recent free-space sample of the filesystem containing the instance root.",
+                      "unit": "By",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "as_int": "1024"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "goobers.storage.health.tier_changes",
+                      "description": "Tiered low-disk protection tier transitions, tagged by the tier entered.",
+                      "unit": "{transition}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.storage.tier",
+                                "value": {
+                                  "string_value": "warning"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.work.active",
+                      "description": "In-flight runs and stages.",
+                      "unit": "{span}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "gate"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "run"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "scheduler"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "scheduler"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "instance"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "task"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.workcopy.disk.usage",
+                      "description": "Aggregate apparent bytes of managed workcopies.",
+                      "unit": "By",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.storage.operation",
+                                "value": {
+                                  "string_value": "create"
+                                }
+                              }
+                            ],
+                            "as_int": "8192"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "goobers.worktree.disk.usage",
+                      "description": "Apparent bytes of one managed worktree.",
+                      "unit": "By",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.storage.operation",
+                                "value": {
+                                  "string_value": "create"
+                                }
+                              }
+                            ],
+                            "as_int": "2048"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "force-flush-then-periodic",
+      "description": "A force flush immediately exports pending cumulative metrics, and the later periodic collection re-emits the same stream without resetting or double-counting it.",
+      "requests": [
+        {
+          "resource_metrics": [
+            {
+              "resource": {
+                "attributes": [
+                  {
+                    "key": "deployment.environment",
+                    "value": {
+                      "string_value": "test"
+                    }
+                  },
+                  {
+                    "key": "goobers.build.commit",
+                    "value": {
+                      "string_value": "compatibility-fixture"
+                    }
+                  },
+                  {
+                    "key": "goobers.fixture",
+                    "value": {
+                      "string_value": "metric-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.instance.id",
+                    "value": {
+                      "string_value": "daemon-flush-periodic"
+                    }
+                  },
+                  {
+                    "key": "service.name",
+                    "value": {
+                      "string_value": "telemetry-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.version",
+                    "value": {
+                      "string_value": "v1.0.0"
+                    }
+                  }
+                ]
+              },
+              "scope_metrics": [
+                {
+                  "scope": {
+                    "name": "github.com/goobers/goobers/internal/telemetry"
+                  },
+                  "metrics": [
+                    {
+                      "name": "goobers.run.duration",
+                      "description": "Workflow run duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 3,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 3,
+                            "max": 3
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.run.outcomes",
+                      "description": "Finished workflow runs by outcome.",
+                      "unit": "{run}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.stage.duration",
+                      "description": "Workflow stage duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "periodic-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "deterministic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 1,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 1,
+                            "max": 1
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.stage.outcomes",
+                      "description": "Finished workflow stages by outcome.",
+                      "unit": "{stage}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "periodic-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "deterministic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.work.active",
+                      "description": "In-flight runs and stages.",
+                      "unit": "{span}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "run"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "task"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource_metrics": [
+            {
+              "resource": {
+                "attributes": [
+                  {
+                    "key": "deployment.environment",
+                    "value": {
+                      "string_value": "test"
+                    }
+                  },
+                  {
+                    "key": "goobers.build.commit",
+                    "value": {
+                      "string_value": "compatibility-fixture"
+                    }
+                  },
+                  {
+                    "key": "goobers.fixture",
+                    "value": {
+                      "string_value": "metric-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.instance.id",
+                    "value": {
+                      "string_value": "daemon-flush-periodic"
+                    }
+                  },
+                  {
+                    "key": "service.name",
+                    "value": {
+                      "string_value": "telemetry-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.version",
+                    "value": {
+                      "string_value": "v1.0.0"
+                    }
+                  }
+                ]
+              },
+              "scope_metrics": [
+                {
+                  "scope": {
+                    "name": "github.com/goobers/goobers/internal/telemetry"
+                  },
+                  "metrics": [
+                    {
+                      "name": "goobers.run.duration",
+                      "description": "Workflow run duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 3,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 3,
+                            "max": 3
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.run.outcomes",
+                      "description": "Finished workflow runs by outcome.",
+                      "unit": "{run}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.stage.duration",
+                      "description": "Workflow stage duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "periodic-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "deterministic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 1,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 1,
+                            "max": 1
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.stage.outcomes",
+                      "description": "Finished workflow stages by outcome.",
+                      "unit": "{stage}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage",
+                                "value": {
+                                  "string_value": "periodic-task"
+                                }
+                              },
+                              {
+                                "key": "goobers.stage.type",
+                                "value": {
+                                  "string_value": "deterministic"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.work.active",
+                      "description": "In-flight runs and stages.",
+                      "unit": "{span}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "run"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "task"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "daemon-restart-new-cumulative-stream",
+      "description": "Two daemon processes export the same cumulative instruments with stable resource identity except for a new service.instance.id, so cumulative-to-delta consumers can treat the restart as a new stream.",
+      "requests": [
+        {
+          "resource_metrics": [
+            {
+              "resource": {
+                "attributes": [
+                  {
+                    "key": "deployment.environment",
+                    "value": {
+                      "string_value": "test"
+                    }
+                  },
+                  {
+                    "key": "goobers.build.commit",
+                    "value": {
+                      "string_value": "compatibility-fixture"
+                    }
+                  },
+                  {
+                    "key": "goobers.fixture",
+                    "value": {
+                      "string_value": "metric-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.instance.id",
+                    "value": {
+                      "string_value": "daemon-before-restart"
+                    }
+                  },
+                  {
+                    "key": "service.name",
+                    "value": {
+                      "string_value": "telemetry-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.version",
+                    "value": {
+                      "string_value": "v1.0.0"
+                    }
+                  }
+                ]
+              },
+              "scope_metrics": [
+                {
+                  "scope": {
+                    "name": "github.com/goobers/goobers/internal/telemetry"
+                  },
+                  "metrics": [
+                    {
+                      "name": "goobers.run.duration",
+                      "description": "Workflow run duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 5,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 5,
+                            "max": 5
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.run.outcomes",
+                      "description": "Finished workflow runs by outcome.",
+                      "unit": "{run}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.work.active",
+                      "description": "In-flight runs and stages.",
+                      "unit": "{span}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "run"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource_metrics": [
+            {
+              "resource": {
+                "attributes": [
+                  {
+                    "key": "deployment.environment",
+                    "value": {
+                      "string_value": "test"
+                    }
+                  },
+                  {
+                    "key": "goobers.build.commit",
+                    "value": {
+                      "string_value": "compatibility-fixture"
+                    }
+                  },
+                  {
+                    "key": "goobers.fixture",
+                    "value": {
+                      "string_value": "metric-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.instance.id",
+                    "value": {
+                      "string_value": "daemon-after-restart"
+                    }
+                  },
+                  {
+                    "key": "service.name",
+                    "value": {
+                      "string_value": "telemetry-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.version",
+                    "value": {
+                      "string_value": "v1.0.0"
+                    }
+                  }
+                ]
+              },
+              "scope_metrics": [
+                {
+                  "scope": {
+                    "name": "github.com/goobers/goobers/internal/telemetry"
+                  },
+                  "metrics": [
+                    {
+                      "name": "goobers.run.duration",
+                      "description": "Workflow run duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 7,
+                            "bucket_counts": [
+                              "0",
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 7,
+                            "max": 7
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.run.outcomes",
+                      "description": "Finished workflow runs by outcome.",
+                      "unit": "{run}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.work.active",
+                      "description": "In-flight runs and stages.",
+                      "unit": "{span}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "run"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "collector-restart-recovery",
+      "description": "The daemon keeps working while the OTLP collector is down, the first export after collector recovery succeeds again, and later work keeps extending the same cumulative stream without changing the existing best-effort availability contract.",
+      "requests": [
+        {
+          "resource_metrics": [
+            {
+              "resource": {
+                "attributes": [
+                  {
+                    "key": "deployment.environment",
+                    "value": {
+                      "string_value": "test"
+                    }
+                  },
+                  {
+                    "key": "goobers.build.commit",
+                    "value": {
+                      "string_value": "compatibility-fixture"
+                    }
+                  },
+                  {
+                    "key": "goobers.fixture",
+                    "value": {
+                      "string_value": "metric-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.instance.id",
+                    "value": {
+                      "string_value": "daemon-collector-restart"
+                    }
+                  },
+                  {
+                    "key": "service.name",
+                    "value": {
+                      "string_value": "telemetry-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.version",
+                    "value": {
+                      "string_value": "v1.0.0"
+                    }
+                  }
+                ]
+              },
+              "scope_metrics": [
+                {
+                  "scope": {
+                    "name": "github.com/goobers/goobers/internal/telemetry"
+                  },
+                  "metrics": [
+                    {
+                      "name": "goobers.run.duration",
+                      "description": "Workflow run duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "1",
+                            "sum": 1,
+                            "bucket_counts": [
+                              "0",
+                              "1",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 1,
+                            "max": 1
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.run.outcomes",
+                      "description": "Finished workflow runs by outcome.",
+                      "unit": "{run}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.work.active",
+                      "description": "In-flight runs and stages.",
+                      "unit": "{span}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "run"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource_metrics": [
+            {
+              "resource": {
+                "attributes": [
+                  {
+                    "key": "deployment.environment",
+                    "value": {
+                      "string_value": "test"
+                    }
+                  },
+                  {
+                    "key": "goobers.build.commit",
+                    "value": {
+                      "string_value": "compatibility-fixture"
+                    }
+                  },
+                  {
+                    "key": "goobers.fixture",
+                    "value": {
+                      "string_value": "metric-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.instance.id",
+                    "value": {
+                      "string_value": "daemon-collector-restart"
+                    }
+                  },
+                  {
+                    "key": "service.name",
+                    "value": {
+                      "string_value": "telemetry-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.version",
+                    "value": {
+                      "string_value": "v1.0.0"
+                    }
+                  }
+                ]
+              },
+              "scope_metrics": [
+                {
+                  "scope": {
+                    "name": "github.com/goobers/goobers/internal/telemetry"
+                  },
+                  "metrics": [
+                    {
+                      "name": "goobers.run.duration",
+                      "description": "Workflow run duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "2",
+                            "sum": 2,
+                            "bucket_counts": [
+                              "0",
+                              "2",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 1,
+                            "max": 1
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.run.outcomes",
+                      "description": "Finished workflow runs by outcome.",
+                      "unit": "{run}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "2"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.work.active",
+                      "description": "In-flight runs and stages.",
+                      "unit": "{span}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "run"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource_metrics": [
+            {
+              "resource": {
+                "attributes": [
+                  {
+                    "key": "deployment.environment",
+                    "value": {
+                      "string_value": "test"
+                    }
+                  },
+                  {
+                    "key": "goobers.build.commit",
+                    "value": {
+                      "string_value": "compatibility-fixture"
+                    }
+                  },
+                  {
+                    "key": "goobers.fixture",
+                    "value": {
+                      "string_value": "metric-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.instance.id",
+                    "value": {
+                      "string_value": "daemon-collector-restart"
+                    }
+                  },
+                  {
+                    "key": "service.name",
+                    "value": {
+                      "string_value": "telemetry-compatibility"
+                    }
+                  },
+                  {
+                    "key": "service.version",
+                    "value": {
+                      "string_value": "v1.0.0"
+                    }
+                  }
+                ]
+              },
+              "scope_metrics": [
+                {
+                  "scope": {
+                    "name": "github.com/goobers/goobers/internal/telemetry"
+                  },
+                  "metrics": [
+                    {
+                      "name": "goobers.run.duration",
+                      "description": "Workflow run duration.",
+                      "unit": "s",
+                      "histogram": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "count": "3",
+                            "sum": 3,
+                            "bucket_counts": [
+                              "0",
+                              "3",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0",
+                              "0"
+                            ],
+                            "explicit_bounds": [
+                              0,
+                              5,
+                              10,
+                              25,
+                              50,
+                              75,
+                              100,
+                              250,
+                              500,
+                              750,
+                              1000,
+                              2500,
+                              5000,
+                              7500,
+                              10000
+                            ],
+                            "min": 1,
+                            "max": 1
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    },
+                    {
+                      "name": "goobers.run.outcomes",
+                      "description": "Finished workflow runs by outcome.",
+                      "unit": "{run}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.outcome",
+                                "value": {
+                                  "string_value": "success"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "3"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.work.active",
+                      "description": "In-flight runs and stages.",
+                      "unit": "{span}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.span.kind",
+                                "value": {
+                                  "string_value": "run"
+                                }
+                              },
+                              {
+                                "key": "goobers.workflow",
+                                "value": {
+                                  "string_value": "compatibility-workflow"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
