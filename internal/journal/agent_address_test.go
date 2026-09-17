@@ -180,6 +180,27 @@ func TestResolveAgentAddress(t *testing.T) {
 			t.Fatalf("resolved status = %s, want malformed", resolved.Status)
 		}
 	})
+
+	t.Run("collided live address is unreachable", func(t *testing.T) {
+		top := agentLifecycleEvent(now, "copilot:implement", "", runID, "implement", 1, AgentWaiting, AgentUsage{})
+		top.Seq = 2
+		nested := agentLifecycleEvent(now.Add(time.Second), "copilot:implement", "parent", runID, "implement", 1, AgentStarted, AgentUsage{})
+		nested.Seq = 3
+		events := []Event{
+			{Type: EventStageStarted, Seq: 1, Stage: "implement", Attempt: 1},
+			top,
+			nested,
+		}
+		resolved, err := ResolveAgentAddress(events, runID, AgentAddress{
+			RunID: runID, Stage: "implement", Attempt: 1, AgentID: encodeJournalAgentToken("copilot:implement", 1),
+		}.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.Status != AgentAddressUnreachable {
+			t.Fatalf("resolved status = %s, want unreachable", resolved.Status)
+		}
+	})
 }
 
 func TestAddressableAgentsExcludeUnaddressableAndAreRunScoped(t *testing.T) {
@@ -244,6 +265,48 @@ func TestAddressableAgentsExcludeUnaddressableAndAreRunScoped(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"copilot:implement", "worker-1"}) {
 		t.Fatalf("addressable agents = %v", got)
+	}
+}
+
+func TestAddressableAgentsExcludeCollidedLiveAddresses(t *testing.T) {
+	root := t.TempDir()
+	identity := testIdentity()
+	identity.RunID = "0af7651916cd43dd8448eb211c80319c"
+	run, err := Create(root, identity, nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
+	for _, event := range []Event{
+		{Type: EventStageStarted, Stage: "implement", Attempt: 1},
+		agentLifecycleEvent(now, "copilot:implement", "", identity.RunID, "implement", 1, AgentWaiting, AgentUsage{}),
+		agentLifecycleEvent(now.Add(time.Second), "copilot:implement", "parent", identity.RunID, "implement", 1, AgentStarted, AgentUsage{}),
+		agentLifecycleEvent(now.Add(2*time.Second), "worker-1", "copilot:implement", identity.RunID, "implement", 1, AgentStarted, AgentUsage{}),
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reader, err := OpenRead(filepath.Join(root, identity.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := reader.AddressableAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("addressable agents = %+v, want only the unique live address", agents)
+	}
+	token, err := parseJournalAgentToken(agents[0].Address.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token.rawAgent != "worker-1" {
+		t.Fatalf("enumerated raw agent = %q, want worker-1", token.rawAgent)
 	}
 }
 

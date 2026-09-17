@@ -206,6 +206,21 @@ func TestResolveAgentAddressReportsMalformedAndHistorical(t *testing.T) {
 	if got.Kind != AgentResolutionHistorical || got.Address == nil || got.Address.RunID != "run-other" {
 		t.Fatalf("historical resolution = %+v", got)
 	}
+
+	malformedForeign := AgentAddress{
+		Schema:  AgentAddressSchema,
+		RunID:   "run-other",
+		Stage:   "implement",
+		Attempt: 1,
+		Agent:   "not-a-token",
+	}
+	got, err = service.ResolveAgentAddress(context.Background(), "run-live", malformedForeign.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != AgentResolutionMalformed || got.Address == nil || got.Address.RunID != "run-other" {
+		t.Fatalf("malformed foreign-run resolution = %+v", got)
+	}
 }
 
 func TestResolveAgentAddressResolvesLiveTopLevelAndNestedAgents(t *testing.T) {
