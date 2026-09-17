@@ -71,9 +71,8 @@ type stageDispatch struct {
 	Surrenders dispatcher.SurrenderPlane
 	Queues     []string
 	// Sweeper is the SAME *dispatcher.Dispatcher as Dispatcher, named through
-	// the narrow sweep interface. Two fields rather than a type assertion so
-	// the wiring says out loud that the current boot sweep can select only pods
-	// stamped with THIS dispatcher's owner label.
+	// the narrow sweep interface. Two fields rather than a type assertion make
+	// the boot and worker-lifetime reconciliation wiring explicit.
 	Sweeper stageOrphanSweeper
 }
 
@@ -109,9 +108,8 @@ var newStageDispatcher = dispatcher.New
 // store — see dispatcher/surrender.go), which keeps one operator-provided
 // volume backing both planes.
 // owner is this worker's dispatcher identity (its hostname; in-cluster, its
-// pod name): stamped on every pod it creates and used by the current boot
-// sweep. It is stable across a process restart inside one worker pod and
-// distinct between workers, but changes when a rollout replaces that pod.
+// pod name), stamped on every pod as rollout-scoped diagnostic provenance.
+// The durable identity read from instanceRoot scopes orphan sweeps.
 // seams is the worker's own config-snapshot store, shared so the mode-3 kit
 // writer resolves a stage pod's kit through the SAME current-plus-retained
 // config trees the self-execution path resolves against (#3884). Nil disables
@@ -124,12 +122,16 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 		return stageDispatch{}, fmt.Errorf("stage dispatch: a surrender plane is required — pass --blob-store")
 	}
 	if strings.TrimSpace(owner) == "" {
-		return stageDispatch{}, fmt.Errorf("stage dispatch: a dispatcher owner identity is required to stamp the label selected by the current boot sweep")
+		return stageDispatch{}, fmt.Errorf("stage dispatch: a dispatcher owner identity is required for pod provenance")
 	}
 	l := instance.NewLayout(instanceRoot)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: load instance config: %w", err)
+	}
+	instanceID, err := instance.ReadRootIdentity(l.Root)
+	if err != nil {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: read instance identity: %w", err)
 	}
 	blobEndpoint := os.Getenv("GOOBERS_BLOB_ENDPOINT")
 	signed, err := validateStageDispatchConfig(cfg, daemonAPI, blobEndpoint)
@@ -195,6 +197,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 		// dispatch explicitly instead of creating a pod that would find no kit.
 		KitWriter:        agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
 		GaggleNamespaces: gaggleNamespaces,
+		InstanceID:       instanceID,
 		Owner:            owner,
 		EmbeddedCommit:   build.Commit,
 		EmbeddedVersion:  build.Version,

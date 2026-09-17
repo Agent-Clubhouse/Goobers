@@ -22,6 +22,7 @@ import (
 func testConfig() Config {
 	return Config{
 		GaggleNamespaces: map[string]string{"alpha": "gaggle-alpha"},
+		InstanceID:       "0123456789abcdef0123456789abcdef",
 		Owner:            "goobers-worker-0",
 		EmbeddedCommit:   "0123456789abcdef0123456789abcdef01234567",
 		EmbeddedVersion:  "v0.1.0",
@@ -1152,9 +1153,9 @@ func TestPodSpecOmitsTheBranchStampsWhenNothingWasDeclared(t *testing.T) {
 }
 
 // Decision 003's worker-hygiene graft, the stamp half: every dispatcher-created
-// stage pod carries the owner label its creator's orphan sweep scopes itself
-// to, plus the VERBATIM attempt identity that sweep needs to ADDRESS the
-// attempt on the engine.
+// stage pod carries the stable instance scope and creating-worker provenance,
+// plus the VERBATIM attempt identity the sweep needs to ADDRESS the attempt on
+// the engine.
 //
 // The labels cannot serve as that address. sanitizeNameSegment lowercases,
 // maps every non-alphanumeric rune to '-' and truncates at 63, so it is not
@@ -1177,6 +1178,9 @@ func TestRenderPodStampsOwnerAndVerbatimIdentity(t *testing.T) {
 	}
 	if got := pod.Labels[LabelOwner]; got != "goobers-worker-7" {
 		t.Fatalf("%s = %q, want the creating worker's identity", LabelOwner, got)
+	}
+	if got := pod.Labels[LabelInstance]; got != cfg.InstanceID {
+		t.Fatalf("%s = %q, want durable instance identity %q", LabelInstance, got, cfg.InstanceID)
 	}
 	if got := pod.Annotations[AnnotationRunID]; got != attempt.RunID {
 		t.Fatalf("%s = %q, want the verbatim run id %q", AnnotationRunID, got, attempt.RunID)
@@ -1238,6 +1242,9 @@ func TestRenderFromTemplateStampsOwnerAndVerbatimIdentity(t *testing.T) {
 	}
 	if got := pod.Labels[LabelOwner]; got != "goobers-worker-7" {
 		t.Fatalf("%s = %q on the template path", LabelOwner, got)
+	}
+	if got := pod.Labels[LabelInstance]; got != cfg.InstanceID {
+		t.Fatalf("%s = %q on the template path, want %q", LabelInstance, got, cfg.InstanceID)
 	}
 	if pod.Annotations[AnnotationRunID] != attempt.RunID || pod.Annotations[AnnotationStage] != attempt.Stage ||
 		pod.Annotations[AnnotationOwningWorkflowID] != attempt.OwningWorkflowID {
