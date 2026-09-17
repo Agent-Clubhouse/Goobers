@@ -262,6 +262,11 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 	if err := p.requireWorkItemScope(project); err != nil {
 		return WorkItem{}, err
 	}
+	// #5245: refuse declared graph edges before any mutation, rather than
+	// creating the item and dropping them.
+	if err := checkCreateWorkItemGraphFields(req); err != nil {
+		return WorkItem{}, err
+	}
 	if strings.TrimSpace(req.Title) == "" {
 		return WorkItem{}, fmt.Errorf("work item title is required")
 	}
