@@ -57,16 +57,19 @@ func (w *workerSeams) publishWorkerRecovery(ctx context.Context, manager *worktr
 	if err != nil {
 		return err
 	}
-	recoveryCfg := cfg.Retention.RecoveryEffective()
+	root, err := prepareRecoveryInventory(w.root)
+	if err != nil {
+		return err
+	}
+	publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: w.scrubber}
+	// One resolution rule for every writer into this shared inventory (#5092).
+	recoveryCfg, origin := resolveRecoveryPolicy(layout, cfg)
+	journalRecoveryPolicyFallback(publication, origin, recoveryCfg, root)
 	retainWindow, err := recoveryCfg.RetainWindowEffective()
 	if err != nil {
 		return err
 	}
 	evict := recoveryEvictFunc(layout, cfg, manager, key)
-	root, err := prepareRecoveryInventory(w.root)
-	if err != nil {
-		return err
-	}
 	baseRef, err := recoveryCleanupBaseRef(target)
 	if err != nil {
 		return err
@@ -82,7 +85,6 @@ func (w *workerSeams) publishWorkerRecovery(ctx context.Context, manager *worktr
 			return publisher.PublishArchive(ctx, claims[0].ItemID, record, archive)
 		},
 	}
-	publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: w.scrubber}
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return err
 	}

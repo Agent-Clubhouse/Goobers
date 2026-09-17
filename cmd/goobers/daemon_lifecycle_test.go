@@ -540,13 +540,14 @@ spec:
 		t.Fatal(err)
 	}
 
-	resumed, warned, _, err := resumeInterruptedRunsWithRunners(
+	outcome, err := resumeInterruptedRunsWithRunners(
 		context.Background(), layout, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, nil, setup.Machines,
-		setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg,
+		setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	resumed, warned := outcome.Resumed, outcome.Warned
 	if len(warned) != 0 || len(resumed) != 1 || resumed[0] != runID {
 		t.Fatalf("resumed=%v warned=%v, want [%s] and no warnings", resumed, warned, runID)
 	}

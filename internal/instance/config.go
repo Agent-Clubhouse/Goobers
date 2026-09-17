@@ -1725,6 +1725,15 @@ type RetentionConfig struct {
 	Recovery *RecoverySnapshotConfig `json:"recovery,omitempty" yaml:"recovery,omitempty"`
 }
 
+// RecoveryConfigured reports whether a recovery section was declared at all,
+// which RecoveryEffective below deliberately cannot distinguish from one
+// declaring the default values. A path that must use the operator's real
+// policy — every writer into the instance-wide recovery inventory — needs
+// that distinction to tell "the operator chose 128" from "this config never
+// carried the section", the exact confusion #5092 spent five cap increases
+// on.
+func (c RetentionConfig) RecoveryConfigured() bool { return c.Recovery != nil }
+
 // RecoveryEffective resolves the configured recovery-snapshot policy,
 // including an omitted section.
 func (c RetentionConfig) RecoveryEffective() RecoverySnapshotConfig {

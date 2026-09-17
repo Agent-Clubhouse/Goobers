@@ -46,9 +46,9 @@ func TestStartupRecoveryRunDirsIgnoresRetainedTerminalHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var examined int
-	runDirs, err := startupRecoveryRunDirs(context.Background(), layout, store, func(count int, _ bool) {
-		examined = count
+	var counts startupInventoryCounts
+	runDirs, err := startupRecoveryRunDirs(context.Background(), layout, store, func(seen startupInventoryCounts) {
+		counts = seen
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -56,8 +56,8 @@ func TestStartupRecoveryRunDirsIgnoresRetainedTerminalHistory(t *testing.T) {
 	if len(runDirs) != 1 || runDirs[0] != activeDir {
 		t.Fatalf("recovery inventory = %v, want only %s", runDirs, activeDir)
 	}
-	if examined != 1 {
-		t.Fatalf("reported examined=%d, want 1 non-terminal candidate rather than 4001 retained directories", examined)
+	if counts.Marked+counts.Discovered != 1 {
+		t.Fatalf("reported %s, want 1 non-terminal candidate rather than 4001 retained directories", counts)
 	}
 }
 

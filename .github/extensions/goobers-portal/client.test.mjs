@@ -7,6 +7,7 @@ import {
     loadCostSummary,
     loadInsightStats,
     loadRuns,
+    loadSnapshot,
     loadWorkItemDetail,
     loadWorkItems,
     loadWorkflowDetail,
@@ -35,6 +36,26 @@ test("multi-value filters fan out daemon queries and merge unique runs", async (
         assert.equal(requests.length, 2);
         assert.deepEqual(result.runs.map((run) => run.id), ["failed", "running"]);
         assert.equal(result.cursor, "");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("daemon snapshots identify their source mode", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+        const pathname = new URL(url).pathname;
+        const body = pathname === "/api/v1/health" ? { ready: true }
+            : pathname === "/api/v1/instance" ? { name: "daemon" }
+            : pathname === "/api/v1/gaggles" ? { items: [] }
+            : pathname === "/api/v1/runs" ? { runs: [] }
+            : pathname === "/api/v1/portal/config" ? { capabilities: {} }
+            : {};
+        return Response.json(body);
+    };
+    try {
+        const snapshot = await loadSnapshot({ mode: "daemon", baseUrl: "http://daemon" });
+        assert.equal(snapshot.mode, "daemon");
     } finally {
         globalThis.fetch = originalFetch;
     }

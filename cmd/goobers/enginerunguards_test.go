@@ -241,7 +241,7 @@ func TestResumeScanReattachesEngineDrivenRunInsteadOfResumingIt(t *testing.T) {
 
 	var released []string
 	var releasedMu sync.Mutex
-	resumed, warned, reattached, err := resumeInterruptedRunsWithRunners(
+	outcome, err := resumeInterruptedRunsWithRunners(
 		ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, guards,
 		setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog,
 		setup.Telemetry, setup.RollupDB, setup.Watermarks,
@@ -251,9 +251,10 @@ func TestResumeScanReattachesEngineDrivenRunInsteadOfResumingIt(t *testing.T) {
 			releasedMu.Unlock()
 			sched.ReleaseReconciled(runID, workflowName)
 		},
-		&wg,
+		&wg, nil,
 		recoveryRunDirs,
 	)
+	resumed, warned, reattached := outcome.Resumed, outcome.Warned, outcome.Reattached
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,12 +352,13 @@ func TestResumeScanStillResumesRunnerDrivenRun(t *testing.T) {
 	}
 
 	fake := &fakeEngineWorkflows{}
-	resumed, warned, reattached, err := resumeInterruptedRunsWithRunners(
+	outcome, err := resumeInterruptedRunsWithRunners(
 		ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, &engineRunGuards{client: fake},
 		setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog,
-		setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg,
+		setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg, nil,
 		recoveryRunDirs,
 	)
+	resumed, warned, reattached := outcome.Resumed, outcome.Warned, outcome.Reattached
 	if err != nil {
 		t.Fatal(err)
 	}

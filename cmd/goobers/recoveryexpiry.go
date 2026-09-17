@@ -25,7 +25,17 @@ import (
 // destroying recovery snapshots underneath it.
 func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, dryRun bool, stdout, stderr io.Writer) error {
 	root := filepath.Join(layout.Root, "recovery")
-	entries, err := recovery.ReadInventory(ctx, root, setup.Config.Retention.RecoveryEffective().MaxSnapshotsEffective())
+	// #5092: the sweep that RECLAIMS capacity must read the same cap the
+	// writers enforce. Reading at a smaller one refuses with "inventory is
+	// full" and reclaims nothing, so the inventory only ever grows.
+	policy, origin := resolveRecoveryPolicy(layout, setup.Config)
+	// setup.InstanceLog is a typed nil on the retention CLI path, which an
+	// interface-valued nil check cannot see — take the address of a live log
+	// only when there is one.
+	if setup.InstanceLog != nil {
+		journalRecoveryPolicyFallback(setup.InstanceLog, origin, policy, root)
+	}
+	entries, err := recovery.ReadInventory(ctx, root, policy.MaxSnapshotsEffective())
 	if err != nil {
 		return err
 	}
@@ -42,7 +52,7 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	}
 	var failures error
 	for _, entry := range entries {
-		err := retireExpiredRecoveryEntry(ctx, root, setup, managers, runsByRoot, entry, operatorEvents, dryRun, stdout)
+		err := retireExpiredRecoveryEntry(ctx, root, setup, policy, managers, runsByRoot, entry, operatorEvents, dryRun, stdout)
 		if err != nil {
 			pf(stderr, "warning: recovery retention failed run=%q ref=%q: %v\n", entry.Record.RunID, entry.Record.Ref, err)
 			failures = errors.Join(failures, err)
@@ -72,12 +82,11 @@ func prioritizeAbandonedRecovery(entries []recovery.InventoryEntry, operatorEven
 	return append(prioritized, remaining...), nil
 }
 
-func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, operatorEvents []journal.Event, dryRun bool, stdout io.Writer) error {
+func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, recoveryCfg instance.RecoverySnapshotConfig, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, operatorEvents []journal.Event, dryRun bool, stdout io.Writer) error {
 	manager, runDir, err := recoveryRetentionOwner(entry.Record.RunID, managers, runsByRoot)
 	if err != nil {
 		return err
 	}
-	recoveryCfg := setup.Config.Retention.RecoveryEffective()
 	retainWindow, err := recoveryCfg.RetainWindowEffective()
 	if err != nil {
 		return err
