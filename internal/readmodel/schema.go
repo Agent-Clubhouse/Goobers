@@ -695,4 +695,28 @@ UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
 	`
 UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
 `,
+	// v22: give every runs root its own durable forward-repair position.
+	//
+	// The original cursor ordered the corpus by (root, run ID), so repair had to
+	// exhaust one gaggle before another received any forward budget. A large or
+	// continuously growing first root could therefore keep later gaggles stale
+	// indefinitely. Keep the singleton row for global reverse progress and
+	// aggregate cycle freshness, and split only the forward positions by root.
+	// Seed the root repair was already walking so an upgrade resumes instead of
+	// throwing away proven progress.
+	`
+CREATE TABLE IF NOT EXISTS sweep_root_cursor (
+	root                    TEXT PRIMARY KEY,
+	after_name              TEXT NOT NULL DEFAULT '',
+	cycle_started_at        TEXT,
+	last_cycle_completed_at TEXT,
+	entries_this_cycle      INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO sweep_root_cursor (
+	root, after_name, cycle_started_at, last_cycle_completed_at, entries_this_cycle
+)
+SELECT root, after_name, cycle_started_at, last_cycle_completed_at, entries_this_cycle
+FROM sweep_cursor
+WHERE root <> '';
+`,
 }
