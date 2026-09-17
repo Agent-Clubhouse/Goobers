@@ -190,18 +190,18 @@ func (s *Local) ResolveAgentAddress(ctx context.Context, selectedRunID, raw stri
 			Detail: err.Error(),
 		}, nil
 	}
-	if address.RunID != selectedRunID {
-		return AgentResolution{
-			Kind:    AgentResolutionHistorical,
-			Address: &address,
-			Detail:  fmt.Sprintf("address names run %q, selected run is %q", address.RunID, selectedRunID),
-		}, nil
-	}
 	if _, err := parseAddressAgent(address.Agent); err != nil {
 		return AgentResolution{
 			Kind:    AgentResolutionMalformed,
 			Address: &address,
 			Detail:  err.Error(),
+		}, nil
+	}
+	if address.RunID != selectedRunID {
+		return AgentResolution{
+			Kind:    AgentResolutionHistorical,
+			Address: &address,
+			Detail:  fmt.Sprintf("address names run %q, selected run is %q", address.RunID, selectedRunID),
 		}, nil
 	}
 	run, err := s.openRun(selectedRunID)

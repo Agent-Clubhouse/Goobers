@@ -129,6 +129,7 @@ type attemptSpan struct {
 }
 
 type agentAddressRecord struct {
+	identity   string
 	address    AgentAddress
 	agent      AgentProvenance
 	startedSeq uint64
@@ -136,8 +137,9 @@ type agentAddressRecord struct {
 }
 
 type agentAddressSnapshot struct {
-	known              map[string]agentAddressRecord
+	known              map[string][]agentAddressRecord
 	live               map[string]AddressableAgent
+	collisions         map[string]int
 	latestStartByStage map[string]uint64
 }
 
@@ -193,19 +195,30 @@ func ResolveAgentAddress(events []Event, runID, raw string) (AgentResolution, er
 	token, _ := parseJournalAgentToken(address.AgentID)
 	key := address.String()
 	if phase == PhaseRunning {
+		if snapshot.collisions[key] > 1 {
+			return result, nil
+		}
 		if live, ok := snapshot.live[key]; ok {
 			result.Status = AgentAddressLive
 			result.Agent = &live.Agent
 			return result, nil
 		}
 	}
-	record, ok := snapshot.known[key]
-	if !ok {
+	records := snapshot.known[key]
+	if len(records) == 0 {
 		result.Status = AgentAddressHistorical
 		return result, nil
 	}
 	if snapshot.latestStartByStage[address.Stage] > token.startedSeq {
 		result.Status = AgentAddressStale
+		return result, nil
+	}
+	record, matches, ok := selectAgentAddressRecord(records, token.startedSeq)
+	if !ok {
+		result.Status = AgentAddressHistorical
+		return result, nil
+	}
+	if matches > 1 {
 		return result, nil
 	}
 	result.Agent = &record.agent
@@ -250,7 +263,7 @@ func (r *Reader) ResolveAgentAddress(raw string) (AgentResolution, error) {
 func buildAgentAddressSnapshot(events []Event, runID string) (agentAddressSnapshot, error) {
 	filtered := latestPodAgentEvents(events)
 	spansByStage, latestStartByStage := collectAttemptSpans(filtered)
-	known := make(map[string]agentAddressRecord)
+	known := make(map[string][]agentAddressRecord)
 	for _, event := range filtered {
 		if event.Type != EventAgentLifecycle || event.Agent == nil || event.Agent.RunID != runID {
 			continue
@@ -270,26 +283,33 @@ func buildAgentAddressSnapshot(events []Event, runID string) (agentAddressSnapsh
 		}
 		key := address.String()
 		record := agentAddressRecord{
+			identity:   agentAddressIdentity(*event.Agent, span.startedSeq),
 			address:    address,
 			agent:      *event.Agent,
 			startedSeq: span.startedSeq,
 			finished:   span.finishedSeq != 0,
 		}
-		current, ok := known[key]
-		if !ok || newerAgentEvent(event.Agent, &current.agent) {
-			known[key] = record
-		}
+		known[key] = mergeAgentAddressRecord(known[key], record)
 	}
 	live := make(map[string]AddressableAgent, len(known))
-	for key, record := range known {
-		if latestStartByStage[record.address.Stage] != record.startedSeq || record.finished || agentTerminal(record.agent.Lifecycle) {
-			continue
+	collisions := make(map[string]int, len(known))
+	for key, records := range known {
+		candidates := make([]agentAddressRecord, 0, len(records))
+		for _, record := range records {
+			if latestStartByStage[record.address.Stage] != record.startedSeq || record.finished || agentTerminal(record.agent.Lifecycle) {
+				continue
+			}
+			candidates = append(candidates, record)
 		}
-		live[key] = AddressableAgent{Address: record.address, Agent: record.agent}
+		collisions[key] = len(candidates)
+		if len(candidates) == 1 {
+			live[key] = AddressableAgent{Address: candidates[0].address, Agent: candidates[0].agent}
+		}
 	}
 	return agentAddressSnapshot{
 		known:              known,
 		live:               live,
+		collisions:         collisions,
 		latestStartByStage: latestStartByStage,
 	}, nil
 }
@@ -372,6 +392,47 @@ func parseJournalAgentToken(token string) (journalAgentToken, error) {
 		return journalAgentToken{}, fmt.Errorf("journal: invalid empty agent-address agent identity")
 	}
 	return journalAgentToken{startedSeq: startedSeq, rawAgent: string(rawBytes)}, nil
+}
+
+func mergeAgentAddressRecord(records []agentAddressRecord, next agentAddressRecord) []agentAddressRecord {
+	for i := range records {
+		if records[i].identity != next.identity {
+			continue
+		}
+		if newerAgentEvent(&next.agent, &records[i].agent) {
+			records[i] = next
+		}
+		return records
+	}
+	return append(records, next)
+}
+
+func selectAgentAddressRecord(records []agentAddressRecord, startedSeq uint64) (agentAddressRecord, int, bool) {
+	var (
+		selected agentAddressRecord
+		matches  int
+	)
+	for _, record := range records {
+		if record.startedSeq != startedSeq {
+			continue
+		}
+		if matches == 0 || newerAgentEvent(&record.agent, &selected.agent) {
+			selected = record
+		}
+		matches++
+	}
+	return selected, matches, matches > 0
+}
+
+func agentAddressIdentity(agent AgentProvenance, startedSeq uint64) string {
+	parent := agent.ParentID
+	if parent == "" {
+		parent = "\x00"
+	}
+	return strconv.FormatUint(startedSeq, 10) +
+		"\x00" + agent.ID +
+		"\x00" + parent +
+		"\x00" + strconv.FormatBool(agent.Worker)
 }
 
 func agentTerminal(lifecycle AgentLifecycle) bool {
