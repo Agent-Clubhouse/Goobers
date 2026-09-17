@@ -529,6 +529,8 @@ type telemetryParityReader struct {
 	*readservice.Telemetry
 }
 
+var _ readservice.Reader = (*telemetryParityReader)(nil)
+
 func (r *telemetryParityReader) Health(context.Context) (readservice.Health, error) {
 	return readservice.Health{Ready: true}, nil
 }
@@ -551,6 +553,14 @@ func (r *telemetryParityReader) RunEvents(context.Context, string) (readservice.
 
 func (r *telemetryParityReader) StageAttempts(context.Context, string, string) (readservice.AttemptList, error) {
 	return readservice.AttemptList{}, readservice.ErrNotFound
+}
+
+func (r *telemetryParityReader) AddressableAgents(context.Context, string) ([]readservice.AddressableAgent, error) {
+	return nil, readservice.ErrNotFound
+}
+
+func (r *telemetryParityReader) ResolveAgentAddress(context.Context, string, string) (readservice.AgentResolution, error) {
+	return readservice.AgentResolution{}, readservice.ErrNotFound
 }
 
 func (r *telemetryParityReader) Artifact(context.Context, string, string) (readservice.ArtifactContent, error) {

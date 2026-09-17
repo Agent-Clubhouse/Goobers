@@ -66,6 +66,8 @@ type fakeReader struct {
 	lastPage       readservice.PageRequest
 }
 
+var _ readservice.Reader = (*fakeReader)(nil)
+
 type fakeAuthenticator struct {
 	principal *Principal
 	err       error
