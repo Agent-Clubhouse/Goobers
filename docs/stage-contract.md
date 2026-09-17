@@ -35,6 +35,92 @@ by convention:
 - `outputs` on the result envelope accepts **scalars only**; anything larger is
   an artifact, referenced by pointer. State cannot be smuggled through `outputs`.
 
+## Scalar binding: `outputs` and `inputsFrom` (#5247)
+
+Scalar binding is **already supported** and is the mechanism for passing small
+control values between stages. `outputs` and `inputsFrom` carry those values;
+`contextFrom` is a *different* contract that selects artifact/verdict context.
+Neither is a substitute for the other, and `contextFrom` is **not** a required
+structured scalar input.
+
+A producer emits scalars on its result envelope; a consumer names, per input,
+which upstream output to bind:
+
+~~~yaml
+- name: plan                      # producer
+  run:
+    command: ["goobers", "plan"]
+  expectedOutputs:
+    - prTitle
+    - attempt
+
+- name: build                     # intermediate stage, also a producer
+  run:
+    command: ["make", "build"]
+  expectedOutputs:
+    - sha
+
+- name: open-pr                   # consumer
+  run:
+    command: ["goobers", "open-pr"]
+  inputsFrom:
+    title: plan.prTitle           # stage-qualified: names `plan` explicitly
+    head: sha                     # bare key: the IMMEDIATELY PRECEDING stage
+~~~
+
+### Which stage a value comes from
+
+The resolution rule is deliberately conservative
+(`internal/runner.resolveInputsFrom`):
+
+> The value is a **stage-qualified** reference only when the segment before the
+> first dot names a stage that has **actually produced outputs in this run**.
+> Otherwise the **entire string** is treated as a bare output key.
+
+- A **bare key** resolves against the immediately preceding stage only.
+- A **stage-qualified** key (`<stage>.<key>`) resolves against that stage.
+- A **legacy dotted key** — an output literally named `a.b` — keeps working,
+  because `a` is not a stage. This fallthrough is why the rule is ordered this
+  way, and stage names may not contain a dot, so there is no ambiguity to
+  escape and no escaping syntax to invent.
+- Stage-qualified resolution requires a workflow version that supports it
+  (`workflow.SupportsStageQualifiedInputs`); under an older version every value
+  is a bare key, exactly as before.
+
+The fallthrough has one sharp edge worth knowing: a dotted value whose prefix
+is **not** a stage that ran silently degrades into a whole-key lookup. If that
+key does not exist either, the stage fails closed — and the diagnostic says so
+explicitly rather than reporting only "not found".
+
+### Missing and invalid bindings
+
+`inputsFrom` is a **contract, not a hint**: an unresolvable reference fails the
+stage closed rather than silently omitting the input. Three diagnostics, each
+naming the keys that *were* available:
+
+| Situation | Message |
+|---|---|
+| Qualified reference to a stage that ran but did not emit the key | names the stage and what it *did* emit |
+| Dotted reference whose prefix is not a stage that ran | says the value was treated as a single output key, and names the preceding stage's keys |
+| Bare key not found | names the preceding stage's keys |
+
+Every one of them reports **keys only, never values**. An author needs to know
+what they could have bound; a diagnostic that printed the values would leak an
+entire upstream result into a message that lands in journals, PR comments and
+logs.
+
+The local runner and the Temporal engine share these messages through one
+exported function rather than each phrasing its own, so the same failure cannot
+be explained one way on one substrate and differently on the other.
+
+### Scalars are not artifacts
+
+`outputs` accepts **scalars only** — anything larger is an artifact, referenced
+by pointer, and state cannot be smuggled through `outputs`. Binding a *typed
+artifact* to a consumer-local name, with the producer attempt and digest that
+produced it, is a separate contract tracked by #4771/#5089 and is **not**
+implemented by `inputsFrom`.
+
 ## Well-known outputs
 
 Most `outputs` keys mean whatever the consuming gate or downstream stage's
