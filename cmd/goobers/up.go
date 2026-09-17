@@ -1481,20 +1481,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 		workflowSourceAppTokens = minted
 	}
-	var sourceReconcileMu sync.Mutex
-	var sourceRevision string
-	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
-		sourceReconcileMu.Lock()
-		defer sourceReconcileMu.Unlock()
-		var resp applyResponse
-		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, workflowSourceAppTokens, setup.SharedRegistry, setup.SecretStores)
-			if syncErr != nil {
-				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
-				return resp
-			}
-			resp.Revision = revision
+	var sourceApplier *workflowSourceApplier
+	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+		sourceApplier = &workflowSourceApplier{
+			root: root, source: *source, appTokens: workflowSourceAppTokens, setup: setup, reloader: reloader,
 		}
+	}
+	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
+		if sourceApplier != nil {
+			return sourceApplier.Apply(applyCtx, now)
+		}
+		var resp applyResponse
 		applied, oldDigest, newDigest, rejected, reloadErr := reloader.pollOnce(now)
 		resp.Applied = applied
 		resp.OldDigest = oldDigest
@@ -1502,8 +1499,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		resp.Rejected = rejected
 		if reloadErr != nil {
 			resp.Error = reloadErr.Error()
-		} else if resp.Revision != "" {
-			sourceRevision = resp.Revision
 		}
 		return resp
 	}
@@ -1728,37 +1723,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// local ref watcher provides low-latency wakeups.
 	configDone := make(chan error, 1)
 	configLoopEnabled := *watchConfig
-	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+	if sourceApplier != nil {
 		configLoopEnabled = true
 		sourceLoop := &configSourceReconciler{
-			source: *source,
-			errors: newSweepErrorReporter(setup.InstanceLog, "config_reconcile_failed"),
-			wake:   sourceReconcileWake,
-			reconcile: func(reconcileCtx context.Context, now time.Time) error {
-				sourceReconcileMu.Lock()
-				defer sourceReconcileMu.Unlock()
-				revision, changed, _, syncErr := instance.SyncGitWorkflowSourceIfChanged(
-					reconcileCtx,
-					root,
-					*source,
-					sourceRevision,
-					workflowSourceAppTokens,
-					setup.SharedRegistry,
-					setup.SecretStores,
-				)
-				if syncErr != nil {
-					return fmt.Errorf("sync workflow source: %w", syncErr)
-				}
-				if !changed {
-					return nil
-				}
-				_, _, _, _, reloadErr := reloader.pollOnce(now)
-				if reloadErr != nil {
-					return reloadErr
-				}
-				sourceRevision = revision
-				return nil
-			},
+			source:    sourceApplier.source,
+			errors:    newSweepErrorReporter(setup.InstanceLog, "config_reconcile_failed"),
+			wake:      sourceReconcileWake,
+			reconcile: sourceApplier.Reconcile,
 		}
 		go func() { configDone <- sourceLoop.Run(ctx) }()
 	} else if *watchConfig {

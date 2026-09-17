@@ -136,10 +136,26 @@ func (r *configReloader) Run(ctx context.Context) error {
 // success/failure, so an on-demand caller (goobers apply, #459) can
 // distinguish "nothing changed," "applied," and "rejected: <message>."
 func (r *configReloader) pollOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error) {
+	return r.pollOnceMode(now, false)
+}
+
+// pollSourceOnce forces validation even when the candidate digest equals the
+// last rejected source digest. A rejected source tree is restored on disk, so
+// a later explicit `goobers apply` can install the same revision again; without
+// this reset poll would mistake that candidate for an already-observed no-op
+// and leave its unapplied bytes live (#5164).
+func (r *configReloader) pollSourceOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error) {
+	return r.pollOnceMode(now, true)
+}
+
+func (r *configReloader) pollOnceMode(now time.Time, forceSourceValidation bool) (applied bool, oldDigest, newDigest, rejected string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	oldDigest = r.appliedDigest
 	r.lastRejectionMessage = ""
+	if forceSourceValidation {
+		r.observedDigest = ""
+	}
 	if pollErr := r.poll(now); pollErr != nil {
 		return false, oldDigest, oldDigest, "", pollErr
 	}
@@ -147,6 +163,18 @@ func (r *configReloader) pollOnce(now time.Time) (applied bool, oldDigest, newDi
 		return true, oldDigest, r.appliedDigest, "", nil
 	}
 	return false, oldDigest, oldDigest, r.lastRejectionMessage, nil
+}
+
+// refreshRestoredSource republishes live status and retries the rendered
+// config mirror after a rejected source candidate has been rolled back. It
+// deliberately preserves observedDigest/rejectedDigest: status continues to
+// name the rejected generation even though stages once again see the applied
+// tree on disk.
+func (r *configReloader) refreshRestoredSource(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshConfigMirror(context.Background())
+	r.publishReloadStatus(now)
 }
 
 // workflowSource returns the config-relative source file the currently
