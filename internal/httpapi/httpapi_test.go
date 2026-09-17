@@ -41,11 +41,14 @@ type fakeReader struct {
 	run            readservice.RunDetail
 	events         readservice.EventList
 	attempts       readservice.AttemptList
+	addressable    []readservice.AddressableAgent
+	resolution     readservice.AgentResolution
 	artifact       readservice.ArtifactContent
 	transcript     readservice.TranscriptContent
 	options        readservice.RunListOptions
 	runID          string
 	stage          string
+	address        string
 	digest         string
 	seq            uint64
 	instance       readservice.Instance
@@ -144,6 +147,17 @@ func (f *fakeReader) StageAttempts(_ context.Context, runID, stage string) (read
 	f.runID = runID
 	f.stage = stage
 	return f.attempts, f.err
+}
+
+func (f *fakeReader) AddressableAgents(_ context.Context, runID string) ([]readservice.AddressableAgent, error) {
+	f.runID = runID
+	return f.addressable, f.err
+}
+
+func (f *fakeReader) ResolveAgentAddress(_ context.Context, runID, address string) (readservice.AgentResolution, error) {
+	f.runID = runID
+	f.address = address
+	return f.resolution, f.err
 }
 
 func (f *fakeReader) Artifact(_ context.Context, runID, digest string) (readservice.ArtifactContent, error) {
