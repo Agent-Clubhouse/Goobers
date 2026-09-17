@@ -630,6 +630,71 @@ func TestSweepRefreshesAProjectedRowWhoseJournalWentTerminal(t *testing.T) {
 	}
 }
 
+// A large first gaggle must not hold every later gaggle behind its entire
+// history. Each Step still observes the global batch budget, but a root that
+// fills its share yields the next tick to the next root with its own durable
+// position. This is the multi-gaggle failure from #5308.
+func TestSweepRotatesAcrossRootsBeforeLargeRootIsExhausted(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	largeRoot := t.TempDir()
+	staleRoot := t.TempDir()
+	for i := 0; i < 12; i++ {
+		if err := os.Mkdir(filepath.Join(largeRoot, fmt.Sprintf("%032x", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runID := fmt.Sprintf("%032x", 100)
+	dir := writeRunningRun(t, staleRoot, runID)
+	if err := store.UpsertRun(ctx, readmodel.Projection{Run: readmodel.RunRow{
+		RunID: runID, Gaggle: "beta", Workflow: "merge-review",
+		Phase: journal.PhaseRunning, StartedAt: time.Now().UTC(),
+	}}); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+	finishRun(t, dir, journal.PhaseCompleted)
+
+	sweeper := New(store, store, nil, Options{
+		RunsDirs: []string{largeRoot, staleRoot}, BatchSize: 4,
+	})
+	for step := 1; step <= 2; step++ {
+		if err := sweeper.Step(ctx); err != nil {
+			t.Fatalf("step %d: %v", step, err)
+		}
+	}
+
+	row, ok, err := store.GetRun(ctx, runID)
+	if err != nil || !ok {
+		t.Fatalf("stale-root row missing: found=%v err=%v", ok, err)
+	}
+	if row.Phase != journal.PhaseCompleted {
+		t.Fatalf("second root phase = %q, want completed; first root monopolized repair", row.Phase)
+	}
+
+	cursors, err := store.SweepRootCursors(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byRoot := make(map[string]readmodel.SweepRootCursor, len(cursors))
+	for _, cursor := range cursors {
+		byRoot[cursor.Root] = cursor
+	}
+	if byRoot[largeRoot].AfterName == "" {
+		t.Fatal("large root lost its durable position when repair yielded")
+	}
+	if byRoot[staleRoot].LastCycleCompletedAt.IsZero() {
+		t.Fatal("second root received no independent cursor or completed cycle")
+	}
+	global, err := store.SweepCursor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !global.LastCycleCompletedAt.IsZero() {
+		t.Fatal("global cycle completed before every configured root completed")
+	}
+}
+
 // A row that is genuinely running is re-checked and left alone: the refresh
 // must not manufacture a terminal state for a run that has not reached one.
 func TestSweepLeavesAGenuinelyRunningRowAlone(t *testing.T) {
