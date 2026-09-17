@@ -31,6 +31,8 @@ import (
 // handler just needs a non-nil reader to construct.
 type stubReadService struct{}
 
+var _ readservice.Reader = (*stubReadService)(nil)
+
 func (stubReadService) Health(context.Context) (readservice.Health, error) {
 	return readservice.Health{}, nil
 }
