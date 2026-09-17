@@ -160,7 +160,11 @@ func appendMalformedForeignLifecycle(t *testing.T, runDir, foreignRunID string, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close events file: %v", err)
+		}
+	}()
 	if _, err := file.Write(append(line, '\n')); err != nil {
 		t.Fatal(err)
 	}
