@@ -2,13 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/localscheduler"
 )
 
 // agentModelCredentialResolver builds a resolver for the instance's
@@ -87,16 +93,43 @@ var preflightHarnesses = preflightAgenticHarnesses
 
 type harnessPreflightInfo map[apiv1.Harness]harness.PreflightInfo
 
+// harnessPreflightFailures is deliberately workflow-scoped. The daemon can
+// turn these failures into permanent admission refusals while continuing to
+// serve workflows that do not depend on the broken harness. Callers that have
+// no sibling-workflow boundary (the engine worker) may still treat the error
+// as fatal at their own, narrower scope.
+type harnessPreflightFailures struct {
+	Refusals map[localscheduler.WorkflowIdentity]string
+}
+
+func (e *harnessPreflightFailures) Error() string {
+	identities := make([]localscheduler.WorkflowIdentity, 0, len(e.Refusals))
+	for identity := range e.Refusals {
+		identities = append(identities, identity)
+	}
+	sort.Slice(identities, func(i, j int) bool {
+		if identities[i].Gaggle != identities[j].Gaggle {
+			return identities[i].Gaggle < identities[j].Gaggle
+		}
+		return identities[i].Workflow < identities[j].Workflow
+	})
+	parts := make([]string, 0, len(identities))
+	for _, identity := range identities {
+		parts = append(parts, fmt.Sprintf("workflow %q (gaggle %q): %s", identity.Workflow, identity.Gaggle, e.Refusals[identity]))
+	}
+	return strings.Join(parts, "; ")
+}
+
 // preflightAgenticHarnesses preflights every distinct harness an agentic task
-// or reviewer gate references, failing closed on the first unusable one
-// (missing binary, non-responsive, signed out, or missing a version) with that
-// harness's own actionable message. Deterministic-only workflows reference no
-// harness and are skipped.
+// or reviewer gate references. An unusable harness (missing binary,
+// non-responsive, signed out, or missing a version) fails closed for every
+// workflow that references it, while other harnesses are still checked and
+// deterministic-only workflows remain unaffected.
 //
 // Wired into daemon startup (buildSchedulerSetup, shared by `goobers up` and
-// `goobers run`) so a missing/broken harness is caught before any worktree,
-// claim, or run-journal side effect — not several stages in, as a burned
-// agentic attempt with the root cause buried in a harness transcript (#238).
+// `goobers run`) so a missing/broken harness becomes a visible workflow
+// admission refusal before any worktree, claim, or run side effect — not a
+// burned attempt with the cause buried in a harness transcript (#238, #5163).
 // The adapter (via adapterFor) carries the auth probe and the instance's
 // configured environment passthrough, so startup checks the same ambient auth
 // environment as a dispatched run and the operator's harnessCommand override
@@ -121,21 +154,45 @@ func harnessModelCredentialResolver(cfg *instance.Config, stores credentials.Sto
 }
 
 func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, environment harness.EnvironmentConfig, harnessCommand map[string][]string, credentialFor modelCredentialFor) (harnessPreflightInfo, error) {
-	seen := map[apiv1.Harness]bool{}
-	info := make(harnessPreflightInfo)
-	preflight := func(wfName, stageName, gooberName string) error {
+	type harnessUse struct {
+		identity localscheduler.WorkflowIdentity
+		stage    string
+	}
+	uses := make(map[apiv1.Harness][]harnessUse)
+	order := make([]apiv1.Harness, 0)
+	addUse := func(wf apiv1.Workflow, stageName, gooberName string) {
 		spec, ok := goobers[gooberName]
 		if !ok {
-			return nil
+			return
 		}
 		h := spec.Harness
 		if h == "" {
 			h = apiv1.HarnessCopilot
 		}
-		if seen[h] {
-			return nil
+		if _, seen := uses[h]; !seen {
+			order = append(order, h)
 		}
-		seen[h] = true
+		uses[h] = append(uses[h], harnessUse{
+			identity: localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name},
+			stage:    stageName,
+		})
+	}
+	for _, wf := range workflows {
+		for _, task := range wf.Spec.Tasks {
+			if task.Type == apiv1.TaskAgentic {
+				addUse(wf, task.Name, task.Goober)
+			}
+		}
+		for _, gate := range wf.Spec.Gates {
+			if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil {
+				addUse(wf, gate.Name, gate.Agentic.Goober)
+			}
+		}
+	}
+
+	info := make(harnessPreflightInfo)
+	failures := &harnessPreflightFailures{Refusals: make(map[localscheduler.WorkflowIdentity]string)}
+	for _, h := range order {
 		// Resolve the credential FOR THIS HARNESS. Startup previously resolved
 		// once with an empty harness and reused it, so an instance whose
 		// agent:model grant was scoped to claude-code preflighted
@@ -145,43 +202,83 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 		if credentialFor != nil {
 			resolved, err := credentialFor(h)
 			if err != nil {
-				return fmt.Errorf("workflow %q stage %q: agent:model credential for harness %q: %w", wfName, stageName, h, err)
+				for _, use := range uses[h] {
+					failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, but its agent:model credential could not be resolved: %v", use.stage, h, err))
+				}
+				continue
 			}
 			modelCredential = resolved
 		}
 		adapter, err := harnessAdapterFor(h, environment, harnessCommand, modelCredential)
 		if err != nil {
-			return fmt.Errorf("workflow %q stage %q: %w", wfName, stageName, err)
+			for _, use := range uses[h] {
+				failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, but its adapter could not be configured: %v", use.stage, h, err))
+			}
+			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
 		result, err := adapter.Preflight(ctx)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("workflow %q stage %q harness preflight: %w", wfName, stageName, err)
+			for _, use := range uses[h] {
+				failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, whose startup preflight failed: %v", use.stage, h, err))
+			}
+			continue
 		}
 		if result.Version == "" {
-			return fmt.Errorf("workflow %q stage %q harness preflight: %s returned no version", wfName, stageName, adapter.Name())
+			for _, use := range uses[h] {
+				failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, whose startup preflight returned no version", use.stage, h))
+			}
+			continue
 		}
 		info[h] = result
-		return nil
 	}
-	for _, wf := range workflows {
-		for _, task := range wf.Spec.Tasks {
-			if task.Type != apiv1.TaskAgentic {
-				continue
-			}
-			if err := preflight(wf.Name, task.Name, task.Goober); err != nil {
-				return nil, err
-			}
-		}
-		for _, gate := range wf.Spec.Gates {
-			if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil {
-				continue
-			}
-			if err := preflight(wf.Name, gate.Name, gate.Agentic.Goober); err != nil {
-				return nil, err
-			}
-		}
+	if len(failures.Refusals) > 0 {
+		return info, failures
 	}
 	return info, nil
+}
+
+func appendHarnessRefusal(existing, next string) string {
+	if existing == "" {
+		return next
+	}
+	return existing + "; " + next
+}
+
+// preflightDaemonHarnesses converts the shared preflight's structured error
+// into daemon admission state. Keeping that policy at this boundary lets the
+// worker continue treating the same error as fatal at its own narrower scope.
+func preflightDaemonHarnesses(
+	goobers map[string]apiv1.GooberSpec,
+	workflows []apiv1.Workflow,
+	environment harness.EnvironmentConfig,
+	harnessCommand map[string][]string,
+	credentialFor modelCredentialFor,
+	warnings io.Writer,
+) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+	info, err := preflightHarnesses(goobers, workflows, environment, harnessCommand, credentialFor)
+	refusals := make(map[localscheduler.WorkflowIdentity]string)
+	if err == nil {
+		return info, refusals, nil
+	}
+	var failures *harnessPreflightFailures
+	if !errors.As(err, &failures) {
+		return nil, nil, err
+	}
+	for identity, reason := range failures.Refusals {
+		refusals[identity] = reason
+	}
+	for _, identity := range sortedWorkflowIdentities(refusals) {
+		_, _ = fmt.Fprintf(warnings, "warning: workflow %q (gaggle %q) is refused because a required harness is unavailable: %s\n",
+			identity.Workflow, identity.Gaggle, refusals[identity])
+	}
+	return info, refusals, nil
+}
+
+func preflightSchedulerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+	return preflightDaemonHarnesses(
+		goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
+		harnessModelCredentialResolver(cfg, stores), os.Stderr,
+	)
 }
