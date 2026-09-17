@@ -86,6 +86,10 @@ func appendAgenticStageStart(t *testing.T, run *journal.Run, clock *fixtureClock
 }
 
 func appendAgentLifecycle(t *testing.T, run *journal.Run, clock *fixtureClock, runID string, attempt int, id string, lifecycle journal.AgentLifecycle) {
+	appendAgentLifecycleWithParent(t, run, clock, runID, attempt, id, "coder", true, lifecycle)
+}
+
+func appendAgentLifecycleWithParent(t *testing.T, run *journal.Run, clock *fixtureClock, runID string, attempt int, id, parentID string, worker bool, lifecycle journal.AgentLifecycle) {
 	t.Helper()
 	clock.advance(time.Second)
 	at := clock.now
@@ -97,8 +101,8 @@ func appendAgentLifecycle(t *testing.T, run *journal.Run, clock *fixtureClock, r
 			RunID:     runID,
 			Stage:     "implement",
 			Attempt:   attempt,
-			ParentID:  "coder",
-			Worker:    true,
+			ParentID:  parentID,
+			Worker:    worker,
 			Lifecycle: lifecycle,
 			StartedAt: at,
 			UpdatedAt: at,
@@ -398,6 +402,35 @@ func TestAddressableAgentsExcludeUnaddressableCollisions(t *testing.T) {
 	}
 	if resolution.Kind != AgentResolutionUnaddressable {
 		t.Fatalf("colliding resolution = %+v", resolution)
+	}
+}
+
+func TestAddressableAgentsExcludeNestedCollisionsAcrossNormalizedProvenance(t *testing.T) {
+	service, layout, def := agentAddressService(t)
+	runID := "run-nested-collision"
+	run, clock := createAgentAddressRun(t, layout, def, runID, time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC))
+	startedSeq := appendAgenticStageStart(t, run, clock, 1)
+	appendAgentLifecycleWithParent(t, run, clock, runID, 1, "worker-1", "coder", true, journal.AgentWaiting)
+	appendAgentLifecycleWithParent(t, run, clock, runID, 1, "worker-1", "reviewer", true, journal.AgentWaiting)
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := service.AddressableAgents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Kind != AgentAddressTopLevel {
+		t.Fatalf("addressable agents = %+v, want only the top-level agent after nested collision", got)
+	}
+
+	colliding := agentAddressFor(runID, "implement", 1, "worker-1", startedSeq)
+	resolution, err := service.ResolveAgentAddress(context.Background(), runID, colliding.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Kind != AgentResolutionUnaddressable {
+		t.Fatalf("colliding nested resolution = %+v", resolution)
 	}
 }
 
