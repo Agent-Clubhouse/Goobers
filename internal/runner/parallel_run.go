@@ -663,7 +663,7 @@ func (r *Runner) runParallelBranch(
 				firstClass = ""
 				resumeAccounting = nil
 			}
-			if err != nil {
+			if err = taskDispatchError(task.Name, stageResult, err); err != nil {
 				result.status, result.err = journal.BranchFailed, err
 				return result
 			}

@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -8,8 +10,57 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
+
+type oversizedOutboxDeterministic struct {
+	rec   ArtifactRecorder
+	calls int
+}
+
+func (d *oversizedOutboxDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.calls++
+	if strings.HasSuffix(env.TaskID, ":after") {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	evidence := filepath.Join(env.Workspace, "evidence")
+	if err := os.MkdirAll(evidence, 0o755); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	for name, size := range map[string]int64{
+		"largest.trx": 40 << 20,
+		"second.trx":  30 << 20,
+	} {
+		file, err := os.OpenFile(filepath.Join(evidence, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		err = file.Truncate(size)
+		closeErr := file.Close()
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		if closeErr != nil {
+			return apiv1.ResultEnvelope{}, closeErr
+		}
+	}
+	ref, err := d.rec.RecordArtifact("comparison-result.json", []byte(`{"verdict":"failed"}`))
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Summary: "comparison failed",
+		Error:   &apiv1.ErrorInfo{Code: "comparison_failed", Message: "51 shared failures"},
+		Outputs: map[string]interface{}{"verdict": "failed"},
+		Artifacts: []apiv1.ArtifactPointer{{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size, Integrity: ref.Integrity,
+		}},
+		Metrics: map[string]float64{"exitCode": 1},
+	}, nil
+}
 
 func writeWorkspaceFile(t *testing.T, root, rel, content string) {
 	t.Helper()
@@ -180,8 +231,19 @@ func TestCollectOutboxFilesEnforcesAggregateByteLimit(t *testing.T) {
 	writeWorkspaceFile(t, root, "a.bin", big)
 	writeWorkspaceFile(t, root, "b.bin", big)
 
-	if _, err := collectOutboxFiles(root, []string{"a.bin", "b.bin"}); err == nil {
+	_, err := collectOutboxFiles(root, []string{"a.bin", "b.bin"})
+	if err == nil {
 		t.Fatal("collectOutboxFiles over the aggregate byte limit succeeded, want an error")
+	}
+	for _, want := range []string{
+		"67108866 bytes across 2 files",
+		"67108864-byte aggregate limit",
+		"a.bin (33554433 bytes)",
+		"b.bin (33554433 bytes)",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
 	}
 }
 
@@ -316,5 +378,97 @@ func TestRunnerExportOutboxNoOpWithoutDeclaration(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(runsDir, "run-outbox-noop", "artifacts", "outbox")); !os.IsNotExist(err) {
 		t.Fatalf("expected no outbox directory, stat err = %v", err)
+	}
+}
+
+func TestOversizedOutboxPreservesCommandOutcomeAndFailsWorkflow(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "validate",
+		Tasks: []apiv1.Task{
+			{
+				Name: "validate", Type: apiv1.TaskDeterministic, Goal: "compare",
+				Run:    &apiv1.DeterministicRun{Command: []string{"compare"}},
+				Outbox: []string{"evidence"}, ContinueOnError: true, Next: "after",
+			},
+			{Name: "after", Type: apiv1.TaskDeterministic, Goal: "must not run", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "outbox-failure", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+
+	var executor *oversizedOutboxDeterministic
+	r, runsDir := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		executor = &oversizedOutboxDeterministic{rec: rec}
+		return executor, nil
+	}, nil)
+	const runID = "run-outbox-too-large"
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseFailed || result.FailureCode != outboxExportFailureCode {
+		t.Fatalf("result = %+v, want terminal outbox export failure", result)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1; continueOnError must not advance after missing evidence", executor.calls)
+	}
+
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var annotation, finished *journal.Event
+	for i := range events {
+		event := &events[i]
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == outboxExportFailureAnnotation {
+			annotation = event
+		}
+		if event.Type == journal.EventStageFinished && event.Stage == "validate" {
+			finished = event
+		}
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
+			t.Fatalf("post-command export failure was misreported as executor_error: %+v", event)
+		}
+	}
+	if annotation == nil {
+		t.Fatal("missing command/outbox outcome annotation")
+	}
+	if annotation.Stage != "validate" || annotation.Attempt != 1 || annotation.Runner["commandStatus"] != "failure" ||
+		annotation.Runner["commandErrorCode"] != "comparison_failed" || annotation.Runner["outboxEvidenceState"] != "missing" {
+		t.Fatalf("annotation = %+v", annotation)
+	}
+	diagnosticJSON, err := json.Marshal(annotation.Runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"outboxAggregateBytes":73400320`,
+		`"outboxAggregateByteLimit":67108864`,
+		`"path":"evidence/largest.trx","size":41943040`,
+		`"commandArtifactCount":1`,
+		`"commandExitCode":1`,
+	} {
+		if !strings.Contains(string(diagnosticJSON), want) {
+			t.Errorf("annotation JSON %s missing %s", diagnosticJSON, want)
+		}
+	}
+	if finished == nil || finished.Status != string(apiv1.ResultFailure) || finished.Error == nil ||
+		finished.Error.Code != outboxExportFailureCode || len(finished.Artifacts) != 1 || finished.Outputs["verdict"] != "failed" {
+		t.Fatalf("stage.finished = %+v, want export failure plus preserved command evidence", finished)
+	}
+	if _, err := os.Stat(filepath.Join(runsDir, runID, "artifacts", "outbox", "validate")); !os.IsNotExist(err) {
+		t.Fatalf("oversized outbox was partially published: %v", err)
 	}
 }

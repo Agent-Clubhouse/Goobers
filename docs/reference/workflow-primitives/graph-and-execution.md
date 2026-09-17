@@ -81,7 +81,24 @@ agentic stages emit through their executors/harnesses.
 
 Exports declared workspace-relative files or directories into the durable run
 journal. Paths that escape the workspace fail closed. Missing declared paths
-are skipped.
+are skipped. One attempt may export at most 200 files and 64 MiB in aggregate.
+The runner measures the complete candidate set before reading or publishing it,
+so a rejected oversized batch is never partially accepted.
+
+Outbox collection happens after the command reports its result. If collection
+fails, the journal preserves that command status/error in an
+`outbox.export.failed` runner annotation on the same stage and attempt, then
+records a normal failed `stage.finished` with error code
+`outbox_export_failed`. The workflow fails even when the task declares
+`continueOnError`: promised evidence that was not durably recorded cannot be
+treated as a successful or tolerated result. Size failures include the
+effective limits, measured file count and aggregate bytes, and the three
+largest observed files.
+
+For large validation corpora, export a compact manifest containing each
+outcome plus stable hashes and explicit omission/truncation markers. Put raw
+logs in durable artifact storage and reference them from that manifest; a
+runner-local path alone is not portable evidence.
 
 ## Placement primitive: `runsOn` (DSL 3.0)
 

@@ -2038,8 +2038,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, t.Name, ws.steps); stalled {
 		return result, stalledResult, true, stalledErr
 	}
-	if err != nil {
-		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, err)
+	if terminal, failed, failErr := r.finishTaskDispatchFailure(ctx, ws, t, result, err); failed {
 		return result, terminal, true, failErr
 	}
 
@@ -2065,6 +2064,22 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 		}
 	}
 	return result, Result{}, false, nil
+}
+
+// finishTaskDispatchFailure applies the fail-closed boundary after runTask.
+// A dispatch error is terminal as before. A required outbox export failure is
+// also terminal, but keeps its distinct stage error and the command outcome
+// already recorded by finalizeOutbox rather than becoming executor_error.
+func (r *Runner) finishTaskDispatchFailure(ctx context.Context, ws *walkState, t apiv1.Task, result apiv1.ResultEnvelope, dispatchErr error) (Result, bool, error) {
+	if dispatchErr != nil {
+		terminal, err := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, dispatchErr)
+		return terminal, true, err
+	}
+	if isOutboxExportFailure(result) {
+		terminal, err := r.finishStageFailure(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, result.Error)
+		return terminal, true, err
+	}
+	return Result{}, false, nil
 }
 
 func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gate.Result, bool, Result, bool, error) {
@@ -3583,6 +3598,23 @@ type taskTransition struct {
 	result apiv1.ResultEnvelope
 }
 
+// preTaskOutcome handles failure modes that must bypass ordinary workflow
+// routing. It is shared by live execution and recovery: stage.finished is the
+// durable source for both context-inspection retries and outbox evidence loss.
+func (r *Runner) preTaskOutcome(ctx context.Context, ws *walkState, t apiv1.Task, result apiv1.ResultEnvelope) (string, Result, bool, error, bool) {
+	if isContextNotInspectedResult(result) {
+		// runTask validates before stage.finished is journaled, so the retry
+		// reason survives a crash and is available as the prior result.
+		ws.retryInstructionAddendum = ContextNotInspectedAddendum(result.Error.Message)
+		return t.Name, Result{}, true, nil, true
+	}
+	if isOutboxExportFailure(result) {
+		terminal, err := r.finishStageFailure(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, result.Error)
+		return "", terminal, false, err, true
+	}
+	return "", Result{}, false, nil, false
+}
+
 func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition taskTransition) (next string, res Result, advance bool, err error) {
 	jr, in := ws.jr, ws.in
 	runID, machine, repoRef, item := in.RunID, in.Machine, in.RepoRef, in.Item
@@ -3591,11 +3623,8 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		return "", stalledResult, false, stalledErr
 	}
 
-	if isContextNotInspectedResult(result) {
-		// runTask validates before stage.finished is journaled, so the retry
-		// reason survives a crash and is available as the prior result.
-		ws.retryInstructionAddendum = ContextNotInspectedAddendum(result.Error.Message)
-		return t.Name, Result{}, true, nil
+	if next, res, advance, err, handled := r.preTaskOutcome(ctx, ws, t, result); handled {
+		return next, res, advance, err
 	}
 
 	switch result.Status {
@@ -4517,10 +4546,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// bare scalars that cannot carry a label of their own (TBH-4).
 		result.Integrity = producedIntegrity(t, in.Item, upstream,
 			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
-		outputs := result.Outputs
-		if result.Status == apiv1.ResultFailure && t.ContinueOnError {
-			outputs = nil
-		}
+		outputs := stageFinishedOutputs(result, t.ContinueOnError)
 		if err := jr.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result),
@@ -4972,9 +4998,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		mutations, issues = readMutationSidecar(env.Workspace)
 		err = errors.Join(err, recordMutationSidecarIssues(jr, t.Name, attempt, class, issues))
 		if err == nil {
-			if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
-				err = outboxErr
-			}
+			result, err = r.finalizeOutbox(jr, env.Workspace, t, attempt, class, result)
 		}
 		if configuredExperiment(t) {
 			if recordErr := recordBanditResult(experiment, in, assignment, experimentWindow, experimentObservations, result, jr); recordErr != nil {
@@ -4996,9 +5020,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		result, err = agentInvocation.Invoke(ctx, env)
 		if err == nil {
-			if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
-				err = outboxErr
-			}
+			result, err = r.finalizeOutbox(jr, env.Workspace, t, attempt, class, result)
 		}
 		if err == nil && class == journal.AttemptInfra && result.Status == apiv1.ResultNoWork &&
 			*infraFailedAttemptCommittedWork && workspace.worktree != nil {
@@ -5041,7 +5063,8 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		if err != nil && t.OnTimeout == apiv1.TaskOnTimeoutSalvage && invoke.IsTimeout(err) {
 			if salvaged, ok := r.salvageTimeout(ctx, jr, in, t, workspace, attempt, class, err); ok {
 				salvaged = withSalvagedDiagnostics(salvaged, result)
-				if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
+				salvaged, outboxErr := r.finalizeOutbox(jr, env.Workspace, t, attempt, class, salvaged)
+				if outboxErr != nil {
 					return apiv1.ResultEnvelope{}, nil, nil, outboxErr
 				}
 				return salvaged, nil, nil, nil
