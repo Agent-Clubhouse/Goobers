@@ -1813,6 +1813,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		heartbeatDone = done
 		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), sched.WorkflowCount, tail, tailErr, heartbeatInterval, updatePendingState, done)
 	}
+	// #5244: the durable six-hour service-health record, separate from the fast
+	// informational heartbeat above and NOT gated on --quiet — that flag
+	// silences stdout chatter, while this is diagnostic evidence an operator
+	// reads back from the instance log later.
+	serviceHealthDone := make(chan struct{})
+	go emitServiceHealth(ctx, root, currentDaemon, setup.InstanceLog, serviceHealthInterval, nil, serviceHealthDone)
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error
@@ -1932,6 +1938,7 @@ daemonLoop:
 	if heartbeatDone != nil {
 		<-heartbeatDone
 	}
+	<-serviceHealthDone
 	if fleetConnectorStarted && fleetConnectorDone != nil {
 		select {
 		case connectorErr := <-fleetConnectorDone:
