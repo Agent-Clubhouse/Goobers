@@ -269,7 +269,7 @@ func addressableRunSnapshot(run runRead) (runAgentSnapshot, error) {
 			Lifecycle: string(event.Agent.Lifecycle),
 		}
 		record := addressRecord{
-			identity:   "nested\x00" + strconv.FormatUint(attempt.StartedSeq, 10) + "\x00" + event.Agent.ID,
+			identity:   nestedAddressIdentity(*event.Agent, attempt.StartedSeq),
 			agent:      agent,
 			startedSeq: attempt.StartedSeq,
 			updatedAt:  event.Agent.UpdatedAt,
@@ -491,6 +491,18 @@ func agentAddressFor(runID, stage string, attempt int, rawAgent string, startedS
 		Attempt: attempt,
 		Agent:   encodeAddressAgent(rawAgent, startedSeq),
 	}
+}
+
+func nestedAddressIdentity(agent journal.AgentProvenance, startedSeq uint64) string {
+	parent := agent.ParentID
+	if parent == "" {
+		parent = "\x00"
+	}
+	return "nested\x00" +
+		strconv.FormatUint(startedSeq, 10) +
+		"\x00" + agent.ID +
+		"\x00" + parent +
+		"\x00" + strconv.FormatBool(agent.Worker)
 }
 
 func mergeAddressRecord(records []addressRecord, next addressRecord) []addressRecord {
