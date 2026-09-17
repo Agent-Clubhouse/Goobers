@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/coordination"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
@@ -472,6 +473,9 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 		return nil, err
 	}
 	if err := kinds.Register(executor.KindExternalTelemetry, telemetryQuery); err != nil {
+		return nil, err
+	}
+	if err := kinds.Register(coordination.WorkflowKind, &coordinationKindExecutor{input: input, reconcile: reconcileCoordinate}); err != nil {
 		return nil, err
 	}
 	return executor.NewTaskExecutor(kinds)

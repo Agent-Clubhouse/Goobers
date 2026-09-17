@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/coordination"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/journal"
@@ -92,6 +93,9 @@ const (
 // anywhere, so every schedule silently ran in whatever the host process's
 // local zone happened to be).
 type Config struct {
+	// Coordination is explicit operator-owned authority for local, manual
+	// cross-repository reconciliation. It never enables schedules or runs.
+	Coordination *coordination.Configuration `json:"coordination,omitempty" yaml:"coordination,omitempty"`
 	// Cost controls external cost publication by default. Gaggles may override
 	// it; omitted or null enabled preserves the built-in enabled behavior.
 	Cost       *apiv1.CostReporting `json:"cost,omitempty" yaml:"cost,omitempty"`
@@ -2408,6 +2412,9 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
 	if err := c.validateBaseConfig(); err != nil {
+		return err
+	}
+	if err := c.validateCoordination(); err != nil {
 		return err
 	}
 

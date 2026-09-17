@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/coordination"
 )
 
 // Stage-contract analysis (issue #900). These checks target a specific,
@@ -34,6 +35,9 @@ import (
 // those problems are reported field-by-field by the validator, and walking a
 // broken graph only cascades misleading messages.
 func CheckStageContracts(def Definition) []string {
+	if err := coordination.ValidateWorkflow(def.Spec); err != nil {
+		return []string{err.Error()}
+	}
 	m, buildProblems := newMachineForCheck(def)
 	if len(buildProblems) > 0 {
 		return buildProblems

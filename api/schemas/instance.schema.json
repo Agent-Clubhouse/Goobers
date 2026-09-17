@@ -17,6 +17,42 @@
     }
   ],
   "properties": {
+    "coordination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gaggles"],
+      "description": "Opt-in authority for the local coordinate command and operator-approved native manual workflows. Configuration starts nothing, grants no agent credentials, and leaves additionalRepos read-only. GitHub.com only; all repositories match exact configured repos. Maintainers approve canonical plan, evidence and workflow-spec SHA-256 digests.",
+      "properties": {
+        "gaggles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "parentRepo", "targets"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+              "parentRepo": { "$ref": "#/$defs/coordinationRepo" },
+              "targets": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["repository", "approval"],
+                  "properties": {
+                    "repository": { "$ref": "#/$defs/coordinationRepo" },
+                    "approval": { "const": "reviewed-plan" }
+                  }
+                }
+              },
+              "approvedPlans": { "$ref": "#/$defs/coordinationApprovals" },
+              "approvedEvidence": { "$ref": "#/$defs/coordinationApprovals" },
+              "approvedWorkflows": { "$ref": "#/$defs/coordinationApprovals" }
+            }
+          }
+        }
+      }
+    },
     "cost": {
       "type": "object",
       "description": "Instance default for external cost publication; local usage accounting remains active.",
@@ -224,6 +260,22 @@
     }
   },
   "$defs": {
+    "coordinationRepo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "owner", "name"],
+      "properties": {
+        "provider": { "const": "github" },
+        "owner": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+        "baseUrl": { "const": "", "description": "Omit for github.com. Enterprise hosts are not supported by coordination v1." }
+      }
+    },
+    "coordinationApprovals": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+      "additionalProperties": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+    },
     "tokenRef": {
       "description": "Where a credential is READ FROM — never the value itself (CFG-009, SEC-010). Exactly one source per ref: an environment variable name, a file path, a macOS Keychain service name, a secret in a declared secretStores entry, or one explicitly selected GitHub CLI account. An inline secret value is rejected at load.",
       "type": "object",

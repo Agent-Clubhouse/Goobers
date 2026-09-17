@@ -20,6 +20,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Config-repo PR validation gate](config-pr-validation-gate.md)
 - [Copilot hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
 - [Configure cost publication](cost-publication.md)
+- [Guide: Reviewed cross-repository coordination](cross-repository-coordination.md)
 - [Custom deterministic stage cookbook](custom-stage-cookbook.md)
 - [Daemon readiness and trigger progress](daemon-readiness.md)
 - [Diagnostics bundle](diagnostics-bundle.md)
