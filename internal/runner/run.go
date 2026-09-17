@@ -4972,7 +4972,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		qualified := workflow.SupportsStageQualifiedInputs(in.Machine)
 		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualified)
 		if !ok {
-			return apiv1.ResultEnvelope{}, nil, nil, inputsFromError(t.Name, inputKey, outputKey, completed, qualified)
+			return apiv1.ResultEnvelope{}, nil, nil, inputsFromError(t.Name, inputKey, outputKey, upstreamResult, completed, qualified)
 		}
 		env.Inputs[inputKey] = v
 	}
