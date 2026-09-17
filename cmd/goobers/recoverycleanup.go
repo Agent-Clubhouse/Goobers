@@ -27,7 +27,7 @@ func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanup
 	}
 	return func(manager *worktree.Manager) {
 		callback := recoveryCleanupHandler(layout, cfg, cleanupRoot, identities, scrubber, false, manager, tel)
-		_ = manager.SetCleanupGuard("recovery", callback)
+		_ = manager.SetCleanupGuard("recovery", classifyRecoveryCapacityGuard(callback))
 	}, nil
 }
 
@@ -182,7 +182,7 @@ func recoveryCleanupBaseRef(target worktree.CleanupTarget) (string, error) {
 // Resolve configuration only when an actual owned worktree needs cleanup, so
 // already-clean runs can still release claims even with unavailable config.
 func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Manager) error {
-	return manager.SetCleanupGuard("recovery", func(ctx context.Context, target worktree.CleanupTarget) error {
+	return manager.SetCleanupGuard("recovery", classifyRecoveryCapacityGuard(func(ctx context.Context, target worktree.CleanupTarget) error {
 		cfg, err := instance.LoadConfig(layout.ConfigFile())
 		if err != nil {
 			return fmt.Errorf("load recovery configuration before cleanup: %w", err)
@@ -197,7 +197,7 @@ func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Mana
 		}
 		callback := recoveryCleanupHandler(layout, cfg, manager.Root, identities, journal.NewRegistryScrubber(), true, manager, nil)
 		return callback(ctx, target)
-	})
+	}))
 }
 
 func prepareRecoveryInventory(instanceRoot string) (string, error) {
