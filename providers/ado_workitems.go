@@ -306,7 +306,7 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 	if err := p.doPatch(ctx, http.MethodPost, endpoint, patch, &out); err != nil {
 		return WorkItem{}, err
 	}
-	p.recordMutation(ctx, "issue", strconv.Itoa(out.ID), "create")
+	p.recordMutation(ctx, "issue", strconv.Itoa(out.ID), "create", req.Repository)
 	return p.mapADOWorkItem(ctx, req.Repository, out)
 }
 
@@ -383,7 +383,7 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	if req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed {
 		operation = "close"
 	}
-	p.recordMutation(ctx, "issue", req.ID, operation)
+	p.recordMutation(ctx, "issue", req.ID, operation, req.Repository)
 	updated, err := p.mapADOWorkItem(ctx, req.Repository, out)
 	if err != nil {
 		return WorkItem{}, err
@@ -466,7 +466,7 @@ func (p *ADOProvider) CreateWorkItemComment(ctx context.Context, repo Repository
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": body}, &comment); err != nil {
 		return Comment{}, err
 	}
-	p.recordMutation(ctx, "issue", id, "comment")
+	p.recordMutation(ctx, "issue", id, "comment", repo)
 	return mapADOComment(comment), nil
 }
 
@@ -540,7 +540,7 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 			return WorkItem{}, err
 		}
 		mutated = true
-		p.recordMutation(ctx, "issue", req.ID, "update")
+		p.recordMutation(ctx, "issue", req.ID, "update", req.Repository)
 	}
 	if req.Comment != "" {
 		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
@@ -656,7 +656,7 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 			}
 			return WorkItem{}, patchErr
 		}
-		p.recordMutation(ctx, "issue", id, "claim")
+		p.recordMutation(ctx, "issue", id, "claim", repo)
 		return p.mapADOWorkItem(ctx, repo, out)
 	}
 	return WorkItem{}, fmt.Errorf("update claim label on work item %s after revision conflicts: %w", id, conflict)
