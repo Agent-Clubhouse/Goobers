@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -55,7 +54,7 @@ func runRecoveryAbandon(args []string, stdout, stderr io.Writer) int {
 }
 
 func abandonRecoveryRecord(ctx context.Context, layout instance.Layout, runID, ref, digest string) error {
-	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), 128)
+	entries, _, err := readConfiguredRecoveryInventory(ctx, layout)
 	if err != nil {
 		return err
 	}

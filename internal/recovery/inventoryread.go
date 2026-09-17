@@ -10,6 +10,12 @@ import (
 	"slices"
 )
 
+// MaxInventoryEntries is the largest inventory that recovery publication and
+// readers accept. It is also the independent structural ceiling for recovery
+// observations reconstructed from journals. Operator policy may choose any
+// smaller bound through retention.recovery.maxSnapshots.
+const MaxInventoryEntries = 10000
+
 // InventoryEntry is validated metadata in its identity-bound reservation.
 // It is not evidence of archive integrity; import must still verify the bundle.
 type InventoryEntry struct {
@@ -52,7 +58,7 @@ func ReadInventoryTolerant(ctx context.Context, root string, maxEntries int) ([]
 }
 
 func readInventory(ctx context.Context, root string, maxEntries int, tolerant bool) ([]InventoryEntry, []UnreadableEntry, error) {
-	if maxEntries <= 0 || maxEntries > 10000 {
+	if maxEntries <= 0 || maxEntries > MaxInventoryEntries {
 		return nil, nil, fmt.Errorf("invalid recovery inventory read limit")
 	}
 	if err := ctx.Err(); err != nil {

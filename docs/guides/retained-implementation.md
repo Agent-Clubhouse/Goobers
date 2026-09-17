@@ -75,3 +75,10 @@ refused, the failure names the observed count, the limit, and the root:
 `recovery inventory is full: 130 of 128 slots used in /var/lib/goobers/recovery`.
 A refused cleanup preserves its source: the worktree stays on disk and is
 retried, so a full inventory costs disk and retries, never evidence.
+
+If the inventory already contains more entries than the configured cap, do
+not delete recovery directories by hand. Temporarily raise
+`retention.recovery.maxSnapshots` above the current inventory size, retry the
+inspection or exact `recovery-abandon` operation, and let configured retention
+remove only records whose ownership and retention checks succeed. Inventory
+overflow returns no partial result and never removes existing records.

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,7 +14,9 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // writeRecoveryPolicyInstance writes a minimal instance.yaml, optionally
@@ -178,4 +183,113 @@ func TestRecoveryCleanupRequestUsesConfiguredInventoryCap(t *testing.T) {
 	if len(log.events) != 0 {
 		t.Fatalf("configured resolution journaled %d events; want none", len(log.events))
 	}
+}
+
+func TestConfiguredRecoveryReadersObserveAndAbandonAboveLegacyBound(t *testing.T) {
+	layout := writeRecoveryPolicyInstance(t, 500)
+	now := time.Now().UTC()
+	var target recovery.Record
+	for i := range 129 {
+		record := seedPolicyRecoveryRecord(t, layout, i, now)
+		if i == 128 {
+			target = record
+		}
+	}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		Schema: journal.RunSchema, RunID: target.RunID, Workflow: "implementation", WorkflowVersion: 1, StartedAt: now.Add(-time.Hour),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events, limit, err := recoveryRunEvents(layout)(context.Background(), target.RunID)
+	if err != nil || limit != 500 || len(events) != 1 {
+		t.Fatalf("observation above legacy bound: events=%d limit=%d err=%v", len(events), limit, err)
+	}
+	if err := abandonRecoveryRecord(context.Background(), layout, target.RunID, target.Ref, target.PatchDigest); err != nil {
+		t.Fatalf("abandonment above legacy bound: %v", err)
+	}
+	operatorEvents, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	abandoned, err := recovery.ExplicitlyAbandoned(operatorEvents, target)
+	if err != nil || !abandoned {
+		t.Fatalf("abandonment not recorded: abandoned=%t err=%v", abandoned, err)
+	}
+}
+
+func TestRecoveryInventoryAcceptsConfiguredCapacityAndFailsClosedOnOverflow(t *testing.T) {
+	layout := writeRecoveryPolicyInstance(t, 500)
+	now := time.Now().UTC()
+	for i := range 500 {
+		seedPolicyRecoveryRecord(t, layout, i, now)
+	}
+	entries, limit, err := readConfiguredRecoveryInventory(context.Background(), layout)
+	if err != nil || limit != 500 || len(entries) != 500 {
+		t.Fatalf("exact configured capacity: entries=%d limit=%d err=%v", len(entries), limit, err)
+	}
+	seedPolicyRecoveryRecord(t, layout, 500, now)
+	entries, limit, err = readConfiguredRecoveryInventory(context.Background(), layout)
+	if !errors.Is(err, recovery.ErrInventoryFull) || entries != nil || limit != 500 {
+		t.Fatalf("genuine overflow: entries=%d limit=%d err=%v", len(entries), limit, err)
+	}
+	for _, guidance := range []string{"left untouched", "raise retention.recovery.maxSnapshots", "instead of deleting"} {
+		if !strings.Contains(err.Error(), guidance) {
+			t.Fatalf("overflow guidance %q does not contain %q", err, guidance)
+		}
+	}
+	root := filepath.Join(layout.Root, "recovery")
+	dirs, readErr := os.ReadDir(root)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	preserved := 0
+	for _, dir := range dirs {
+		if !dir.IsDir() {
+			continue
+		}
+		if _, readErr := recovery.ReadRecord(filepath.Join(root, dir.Name(), recovery.RecordFileName)); readErr != nil {
+			t.Fatalf("overflow damaged %s: %v", dir.Name(), readErr)
+		}
+		preserved++
+	}
+	if preserved != 501 {
+		t.Fatalf("overflow preserved %d records, want 501", preserved)
+	}
+}
+
+func seedPolicyRecoveryRecord(t *testing.T, layout instance.Layout, index int, now time.Time) recovery.Record {
+	t.Helper()
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
+	runID := fmt.Sprintf("capacity-%03d", index)
+	snapshot := fmt.Sprintf("%040x", index+1)
+	ref, err := recovery.RefForSnapshot(runID, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := recovery.Record{
+		Version: 1, RunID: runID, RepositoryKey: repo.CanonicalKey(), Ref: ref,
+		BaseSHA: strings.Repeat("a", 40), SnapshotSHA: snapshot,
+		PatchDigest: "sha256:" + strings.Repeat("b", 64), ArchiveDigest: "sha256:" + strings.Repeat("c", 64),
+		ArchiveBytes: 1, CreatedAt: now, RetainUntil: now.Add(time.Hour),
+	}
+	key := sha256.Sum256([]byte(record.RepositoryKey + "\x00" + record.RunID + "\x00" + record.SnapshotSHA))
+	directory := filepath.Join(layout.Root, "recovery", fmt.Sprintf("%x", key))
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, recovery.BundleFileName), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := recovery.PublishRecord(filepath.Join(directory, recovery.RecordFileName), record); err != nil {
+		t.Fatal(err)
+	}
+	return record
 }

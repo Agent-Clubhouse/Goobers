@@ -13,7 +13,19 @@ import (
 // RecordsFromEvents reads host-written observations from one run's journal.
 // Stage-originated emissions carry emitKey and cannot assert archive custody.
 // A later observation may extend, but never shorten or replace, the same ref.
+// The structural ceiling matches the largest inventory publication supports;
+// callers applying a smaller operator policy should use
+// RecordsFromEventsBounded.
 func RecordsFromEvents(events []journal.Event, runID string) ([]Record, error) {
+	return RecordsFromEventsBounded(events, runID, MaxInventoryEntries)
+}
+
+// RecordsFromEventsBounded reconstructs at most maxRecords distinct recovery
+// records. Overflow fails closed without returning a partial observation set.
+func RecordsFromEventsBounded(events []journal.Event, runID string, maxRecords int) ([]Record, error) {
+	if maxRecords <= 0 || maxRecords > MaxInventoryEntries {
+		return nil, fmt.Errorf("invalid recovery observation limit")
+	}
 	records := make(map[string]Record)
 	for _, event := range events {
 		if event.Type != journal.EventRunnerAnnotation || event.Runner["operation"] != "recovery-retained" {
@@ -41,7 +53,7 @@ func RecordsFromEvents(events []journal.Event, runID string) ([]Record, error) {
 			}
 		}
 		records[key] = record
-		if len(records) > 128 {
+		if len(records) > maxRecords {
 			return nil, fmt.Errorf("recovery observations exceed inventory bound")
 		}
 	}

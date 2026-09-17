@@ -20,7 +20,10 @@ func reapConfiguredRecovery(ctx context.Context, layout instance.Layout, cfg ins
 	if !cfg.EnabledEffective() && !cfg.DryRun {
 		return nil
 	}
-	results, err := recovery.ReapRetired(ctx, filepath.Join(layout.Root, "recovery"), 128, !dryRun)
+	policy, _ := resolveRecoveryPolicy(layout, &instance.Config{Retention: cfg})
+	limit := policy.MaxSnapshotsEffective()
+	results, err := recovery.ReapRetired(ctx, filepath.Join(layout.Root, "recovery"), limit, !dryRun)
+	err = recoveryInventoryReadError(err, limit)
 	for _, result := range results {
 		switch {
 		case result.Err != nil:
