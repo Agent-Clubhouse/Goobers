@@ -1755,6 +1755,40 @@ Open the run's PR — or, on a repass through this stage, find and update
 the PR it already opened (idempotent: the run's branch name is stable
 across repasses, providers.BranchName). Writes prNumber/pull-request-url
 to the declared result file for a downstream stage's Task.InputsFrom.
+
+Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's
+stable branch), base (default GOOBERS_BASE_BRANCH, else "main"),
+resultFile, timeout. PR metadata is configured through these workflow
+inputs — there are no --title/--body flags — and a stage may bind them
+from an upstream stage's declared output with inputsFrom rather than a
+static value:
+
+    - name: open-pr
+      run:
+        command: ["goobers", "open-pr"]
+      inputs:
+        resultFile: "pr-result.json"
+      inputsFrom:
+        # bare key = the immediately preceding stage's output;
+        # "plan.prTitle" would name an earlier stage explicitly.
+        title: prTitle
+
+Title precedence: an explicitly set non-empty title wins; otherwise the
+claimed item's title, recovered from the run journal (so it survives a
+resume or repass); otherwise the generic "Automated implementation". An
+empty value is not an override — every empty input falls back.
+
+Body precedence: an explicitly set non-empty body is used as given and
+bypasses structured rendering; otherwise a structured body is rendered
+from the run journal's recorded review and local-CI evidence; otherwise a
+generic one-line body. A claimed item still augments an unstructured body
+— explicit or generic — with a "Fixes #<id>" back-reference, so explicit
+body text does not cost the issue linkage. The structured body carries
+its own linkage and is never appended to.
+
+A workflow that claims no item, or whose journal holds no recognized
+review/local-CI evidence, therefore gets generic metadata unless it sets
+these inputs. That is the fallback working, not a missing feature.
 Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.
 
 ### override
