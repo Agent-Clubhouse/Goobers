@@ -20,7 +20,7 @@ func TestJournalEventMirrorFieldSet(t *testing.T) {
 		"decision", "disposition", "gaggle", "instructionAddendum", "integrity",
 		"minimumIntegrity", "notificationReceipt", "notificationRequest",
 		"operatorMessageAcknowledgement", "operatorMessageOutcome", "operatorMessageRequest",
-		"parallel", "peerMessage", "rationale", "skipCount",
+		"parallel", "peerMessage", "progress", "rationale", "skipCount",
 	}
 	want := append(jsonFields(reflect.TypeOf(journalEvent{})), intentionallyUnmirrored...)
 	sort.Strings(want)
