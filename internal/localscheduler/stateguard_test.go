@@ -69,36 +69,37 @@ func TestSecondDaemonTripsStateOwnershipError(t *testing.T) {
 
 // TestStateOwnerSurvivesTransientFirstWriteFailure is the claim-before-write
 // regression: stamp() must not commit the claimed generation until the
-// guarded write lands. A transient first-write failure (here: an unwritable
-// scheduler directory, standing in for ENOSPC/EIO) followed by a successful
+// guarded write lands. A transient first-write failure followed by a successful
 // retry must not poison later writes with a false ErrStateSeized.
 func TestStateOwnerSurvivesTransientFirstWriteFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("write-failure induction via directory permissions does not work as root")
-	}
 	dir := t.TempDir()
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 	identity := WorkflowIdentity{Gaggle: "g", Workflow: "w"}
 	evaluations := map[WorkflowIdentity]time.Time{identity: time.Now().UTC()}
 	owner := newStateOwner()
-
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
+	transientErr := errors.New("injected atomic write failure")
+	writes := 0
+	writeFile := func(path string, data []byte, perm os.FileMode) error {
+		writes++
+		if writes == 1 {
+			return transientErr
+		}
+		return os.WriteFile(path, data, perm)
 	}
-	if err := writeTriggerEvaluations(dir, owner, evaluations); err == nil {
-		t.Fatal("write into an unwritable scheduler directory must fail")
+
+	if err := writeTriggerEvaluationsWithWriter(dir, owner, evaluations, writeFile); !errors.Is(err, transientErr) {
+		t.Fatalf("first write error = %v, want injected failure", err)
 	} else if errors.Is(err, ErrStateSeized) {
 		t.Fatalf("transient write failure surfaced as ErrStateSeized: %v", err)
 	}
-	if err := os.Chmod(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
 
-	if err := writeTriggerEvaluations(dir, owner, evaluations); err != nil {
+	if err := writeTriggerEvaluationsWithWriter(dir, owner, evaluations, writeFile); err != nil {
 		t.Fatalf("retry after a transient write failure: %v", err)
 	}
-	if err := writeTriggerEvaluations(dir, owner, evaluations); err != nil {
+	if err := writeTriggerEvaluationsWithWriter(dir, owner, evaluations, writeFile); err != nil {
 		t.Fatalf("write after a recovered transient failure: %v", err)
+	}
+	if writes != 3 {
+		t.Fatalf("atomic writes = %d, want failed write plus two successful writes", writes)
 	}
 }
 
