@@ -347,8 +347,21 @@ func (db *DB) RelatedPullRequests(
 	return items, nil
 }
 
+// workItemURL builds an entity URL, or — when externalID is empty — the URL
+// PREFIX shared by every entity of that kind in that repository.
+//
+// The empty-id prefix form is load-bearing, not an accident: RelatedPullRequests
+// calls workItemURL(provider, repository, "pr", "") and uses the result as a
+// SQL LIKE prefix. Rejecting an empty id here would silently return no related
+// pull requests at all, so the contract is stated rather than left implicit.
 func workItemURL(provider, repository, kind, externalID string) string {
-	if !strings.EqualFold(provider, "github") || strings.TrimSpace(repository) == "" {
+	if strings.TrimSpace(repository) == "" {
+		return ""
+	}
+	if strings.EqualFold(provider, "ado") {
+		return adoWorkItemURL(repository, kind, externalID)
+	}
+	if !strings.EqualFold(provider, "github") {
 		return ""
 	}
 	segment := "issues"
@@ -359,17 +372,82 @@ func workItemURL(provider, repository, kind, externalID string) string {
 	return base + externalID
 }
 
+// adoWorkItemURL reconstructs an Azure DevOps entity URL from the identity the
+// receipt carried (#5266).
+//
+// A work item is project-scoped ("<org>/<project>"), while a pull request is
+// repository-scoped ("<org>/<project>/<repo>") because PR numbering is per
+// repository. A repository identity that does not have the segments its kind
+// requires yields "" rather than a guess: #5266 requires that a historical
+// unknown identity stay explicitly unknown.
+func adoWorkItemURL(repository, kind, externalID string) string {
+	parts := strings.Split(strings.Trim(repository, "/"), "/")
+	base := "https://dev.azure.com/"
+	if kind == "pr" {
+		if len(parts) != 3 {
+			return ""
+		}
+		// "<org>/<project>/_git/<repo>/pullrequest/<id>" — the _git segment is
+		// part of the served path, and adoRepositoryIdentity reads identity back
+		// off it, so omitting it here would make the builder and the reader
+		// describe different entities.
+		return base + parts[0] + "/" + parts[1] + "/_git/" + parts[2] + "/pullrequest/" + externalID
+	}
+	if len(parts) != 2 {
+		return ""
+	}
+	return base + strings.Join(parts, "/") + "/_workitems/edit/" + externalID
+}
+
+// workItemRepository derives a work item's repository identity from the URL its
+// receipt carried.
+//
+// #5266: this understood only GitHub URLs, so every ADO row reported an unknown
+// repository even once its receipt carried a URL — which is also why equal
+// numeric ids across ADO projects could not be told apart in the UI. An
+// unrecognized host or shape still returns "": an identity that cannot be read
+// off the evidence stays explicitly unknown rather than being inferred.
 func workItemRepository(provider, rawURL string) string {
-	if !strings.EqualFold(provider, "github") {
-		return ""
-	}
 	parsed, err := url.Parse(rawURL)
-	if err != nil || !strings.EqualFold(parsed.Hostname(), "github.com") {
+	if err != nil {
 		return ""
 	}
+	host := parsed.Hostname()
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if strings.EqualFold(provider, "ado") {
+		return adoRepositoryIdentity(parts)
+	}
+	if !strings.EqualFold(provider, "github") || !strings.EqualFold(host, "github.com") {
+		return ""
+	}
 	if len(parts) < 4 || (parts[2] != "issues" && parts[2] != "pull") {
 		return ""
 	}
 	return parts[0] + "/" + parts[1]
+}
+
+// adoRepositoryIdentity reads "<org>/<project>" off a work-item URL and
+// "<org>/<project>/<repo>" off a pull-request URL, matching the scoping
+// adoWorkItemURL writes so the two round-trip.
+//
+// The host is deliberately not constrained to dev.azure.com: an ADO Server
+// installation is self-hosted on an arbitrary host, and rejecting those would
+// reintroduce the unknown-identity bug for exactly the deployments that cannot
+// use the cloud hostname. The path shape is what identifies the entity.
+func adoRepositoryIdentity(parts []string) string {
+	for i, part := range parts {
+		switch part {
+		case "_workitems":
+			// <org>/<project>/_workitems/edit/<id>
+			if i == 2 {
+				return parts[0] + "/" + parts[1]
+			}
+		case "_git":
+			// <org>/<project>/_git/<repo>/pullrequest/<id>
+			if i == 2 && len(parts) >= 6 && parts[4] == "pullrequest" {
+				return parts[0] + "/" + parts[1] + "/" + parts[3]
+			}
+		}
+	}
+	return ""
 }
