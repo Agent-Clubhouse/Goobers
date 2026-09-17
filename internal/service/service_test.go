@@ -259,6 +259,9 @@ func TestWindowsScheduledTaskInstallUsesCurrentUserAndLogonTrigger(t *testing.T)
 		"-NoProfile", "-NonInteractive", "Register-ScheduledTask",
 		"New-ScheduledTaskTrigger -AtLogOn", "New-ScheduledTaskPrincipal",
 		"-LogonType Interactive", "-RunLevel Limited", "__service-supervise",
+		"New-ScheduledTaskSettingsSet", "-RestartCount 3",
+		"-RestartInterval (New-TimeSpan -Minutes 1)",
+		"-ExecutionTimeLimit ([TimeSpan]::Zero)", "-Settings $settings",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("create command = %q, missing %q", args, want)
