@@ -201,7 +201,8 @@ func (m *Manager) InstallTask(ctx context.Context) (Status, error) {
 		`$ErrorActionPreference='Stop'; $action=New-ScheduledTaskAction -Execute %s -Argument %s; `+
 			`$trigger=New-ScheduledTaskTrigger -AtLogOn -User %s; `+
 			`$principal=New-ScheduledTaskPrincipal -UserId %s -LogonType Interactive -RunLevel Limited; `+
-			`Register-ScheduledTask -TaskPath %s -TaskName %s -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null`,
+			`$settings=New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero); `+
+			`Register-ScheduledTask -TaskPath %s -TaskName %s -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null`,
 		quotePowerShellLiteral(m.config.Executable),
 		quotePowerShellLiteral(arguments),
 		quotePowerShellLiteral(m.config.UserName),
