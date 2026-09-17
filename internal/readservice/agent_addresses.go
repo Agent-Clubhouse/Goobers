@@ -279,10 +279,18 @@ func addressableRunSnapshot(run runRead) (runAgentSnapshot, error) {
 	}
 
 	candidates := make(map[string][]AddressableAgent)
+	collisions := make(map[string]int, len(known))
 	for key, records := range known {
+		latest, ok := latestByStage[records[0].agent.Address.Stage]
+		if !ok {
+			continue
+		}
 		for _, record := range records {
-			latest, ok := latestByStage[record.agent.Address.Stage]
-			if !ok || latest.StartedSeq != record.startedSeq || latest.Status != "running" {
+			if latest.StartedSeq != record.startedSeq {
+				continue
+			}
+			collisions[key]++
+			if latest.Status != "running" {
 				continue
 			}
 			if record.agent.Kind == AgentAddressNested && !agentLifecycleLive(record.agent.Lifecycle) {
@@ -293,10 +301,8 @@ func addressableRunSnapshot(run runRead) (runAgentSnapshot, error) {
 	}
 
 	live := make(map[string]AddressableAgent, len(candidates))
-	collisions := make(map[string]int, len(candidates))
 	for key, agents := range candidates {
-		collisions[key] = len(agents)
-		if len(agents) == 1 {
+		if collisions[key] == 1 && len(agents) == 1 {
 			live[key] = agents[0]
 		}
 	}
@@ -354,6 +360,13 @@ func (s runAgentSnapshot) resolve(address AgentAddress) AgentResolution {
 			Kind:    AgentResolutionStale,
 			Address: &address,
 			Detail:  fmt.Sprintf("stage %q advanced to a later visit", address.Stage),
+		}
+	}
+	if collisions := s.collisions[key]; collisions > 1 {
+		return AgentResolution{
+			Kind:    AgentResolutionUnaddressable,
+			Address: &address,
+			Detail:  "multiple agents in the latest visit share this address",
 		}
 	}
 	for _, record := range records {
