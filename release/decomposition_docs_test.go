@@ -19,7 +19,7 @@ func TestDecompositionRepositoryBoundaryDocumentation(t *testing.T) {
 		"repository-qualified IDs are not a supported plan syntax",
 		"`additionalRepos` supplies declared reference content",
 		"separate repo-owning implementation workflows",
-		"../guides/arbitrary-repo-onboarding.md#scale-out-with-more-gaggles-and-repositories",
+		"../guides/arbitrary-repo-onboarding.md#10-scale-out-with-more-gaggles-and-repositories",
 	} {
 		if !strings.Contains(design, want) {
 			t.Errorf("decomposition design missing %q", want)

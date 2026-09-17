@@ -151,7 +151,7 @@ separate repo-owning implementation workflows today. Any workflow that governs
 dependencies across those repositories is additional product work, not behavior
 provided by this decomposition plan.
 
-See [Scale out with more gaggles and repositories](../guides/arbitrary-repo-onboarding.md#scale-out-with-more-gaggles-and-repositories)
+See [Scale out with more gaggles and repositories](../guides/arbitrary-repo-onboarding.md#10-scale-out-with-more-gaggles-and-repositories)
 for the supported one-gaggle-per-repository layout.
 
 ### 3.2 Stage contracts
