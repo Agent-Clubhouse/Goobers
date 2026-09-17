@@ -156,6 +156,24 @@ func isOutboxExportFailure(result apiv1.ResultEnvelope) bool {
 	return result.Error != nil && result.Error.Code == outboxExportFailureCode
 }
 
+// taskDispatchError normalizes an outbox collection failure onto the same
+// branch-failure path as a dispatch error without misreporting it as an
+// executor_error. The command and export outcomes were already journaled by
+// runTask before this boundary.
+func taskDispatchError(stage string, result apiv1.ResultEnvelope, dispatchErr error) error {
+	if dispatchErr != nil || !isOutboxExportFailure(result) {
+		return dispatchErr
+	}
+	return codedStageFailure(outboxExportFailureCode, fmt.Errorf("stage %q: %s", stage, result.Error.Message))
+}
+
+func stageFinishedOutputs(result apiv1.ResultEnvelope, continueOnError bool) map[string]interface{} {
+	if result.Status == apiv1.ResultFailure && continueOnError && !isOutboxExportFailure(result) {
+		return nil
+	}
+	return result.Outputs
+}
+
 func mirrorOutbox(runDir, configuredRoot string, refs []journal.Ref) error {
 	root, err := expandOutboxMirrorRoot(configuredRoot)
 	if err != nil {

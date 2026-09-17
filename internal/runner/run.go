@@ -1778,13 +1778,6 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			if done || err != nil {
 				return terminal, err
 			}
-			// A declared outbox is part of the stage's evidence contract. Its
-			// collection failure is never a branch-local/tolerated failure: the
-			// command outcome remains in the attempt annotation, but the workflow
-			// fails because the promised evidence is unavailable.
-			if ws.parallel != nil && isOutboxExportFailure(result) {
-				return r.finishStageFailure(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, result.Error)
-			}
 
 			if ws.parallel != nil {
 				switch result.Status {
@@ -2045,8 +2038,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, t.Name, ws.steps); stalled {
 		return result, stalledResult, true, stalledErr
 	}
-	if err != nil {
-		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, err)
+	if terminal, failed, failErr := r.finishTaskDispatchFailure(ctx, ws, t, result, err); failed {
 		return result, terminal, true, failErr
 	}
 
@@ -2072,6 +2064,22 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 		}
 	}
 	return result, Result{}, false, nil
+}
+
+// finishTaskDispatchFailure applies the fail-closed boundary after runTask.
+// A dispatch error is terminal as before. A required outbox export failure is
+// also terminal, but keeps its distinct stage error and the command outcome
+// already recorded by finalizeOutbox rather than becoming executor_error.
+func (r *Runner) finishTaskDispatchFailure(ctx context.Context, ws *walkState, t apiv1.Task, result apiv1.ResultEnvelope, dispatchErr error) (Result, bool, error) {
+	if dispatchErr != nil {
+		terminal, err := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, dispatchErr)
+		return terminal, true, err
+	}
+	if isOutboxExportFailure(result) {
+		terminal, err := r.finishStageFailure(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, result.Error)
+		return terminal, true, err
+	}
+	return Result{}, false, nil
 }
 
 func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gate.Result, bool, Result, bool, error) {
@@ -3590,6 +3598,23 @@ type taskTransition struct {
 	result apiv1.ResultEnvelope
 }
 
+// preTaskOutcome handles failure modes that must bypass ordinary workflow
+// routing. It is shared by live execution and recovery: stage.finished is the
+// durable source for both context-inspection retries and outbox evidence loss.
+func (r *Runner) preTaskOutcome(ctx context.Context, ws *walkState, t apiv1.Task, result apiv1.ResultEnvelope) (string, Result, bool, error, bool) {
+	if isContextNotInspectedResult(result) {
+		// runTask validates before stage.finished is journaled, so the retry
+		// reason survives a crash and is available as the prior result.
+		ws.retryInstructionAddendum = ContextNotInspectedAddendum(result.Error.Message)
+		return t.Name, Result{}, true, nil, true
+	}
+	if isOutboxExportFailure(result) {
+		terminal, err := r.finishStageFailure(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, result.Error)
+		return "", terminal, false, err, true
+	}
+	return "", Result{}, false, nil, false
+}
+
 func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition taskTransition) (next string, res Result, advance bool, err error) {
 	jr, in := ws.jr, ws.in
 	runID, machine, repoRef, item := in.RunID, in.Machine, in.RepoRef, in.Item
@@ -3598,11 +3623,8 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		return "", stalledResult, false, stalledErr
 	}
 
-	if isContextNotInspectedResult(result) {
-		// runTask validates before stage.finished is journaled, so the retry
-		// reason survives a crash and is available as the prior result.
-		ws.retryInstructionAddendum = ContextNotInspectedAddendum(result.Error.Message)
-		return t.Name, Result{}, true, nil
+	if next, res, advance, err, handled := r.preTaskOutcome(ctx, ws, t, result); handled {
+		return next, res, advance, err
 	}
 
 	switch result.Status {
@@ -3675,10 +3697,6 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
 		return "", res, false, err
 	case apiv1.ResultFailure:
-		if isOutboxExportFailure(result) {
-			res, err = r.finishStageFailure(ctx, runID, jr, repoRef, t.Name, steps, result.Error)
-			return "", res, false, err
-		}
 		// #712: notify before any routing decision below — a rate-limited
 		// stage failure means "the scheduler should stop dispatching more
 		// provider-dependent runs until reset", which is true regardless of
@@ -4528,10 +4546,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// bare scalars that cannot carry a label of their own (TBH-4).
 		result.Integrity = producedIntegrity(t, in.Item, upstream,
 			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
-		outputs := result.Outputs
-		if result.Status == apiv1.ResultFailure && t.ContinueOnError && !isOutboxExportFailure(result) {
-			outputs = nil
-		}
+		outputs := stageFinishedOutputs(result, t.ContinueOnError)
 		if err := jr.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result),
