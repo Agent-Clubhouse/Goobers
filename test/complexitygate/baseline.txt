@@ -13,7 +13,7 @@
 # !body-length-cap <lines>
 # !body-length\t<path>\t<symbol>\t<lines>
 # !body-length-justification\t<path>\t<symbol>\t<target>\t<why>
-!ratchet-budget 187
+!ratchet-budget 186
 api/validate/validate.go	(*index).checkWorkflow	57
 cmd/goobers/applyverdict.go	runApplyVerdict	83
 cmd/goobers/daemon.go	buildSchedulerDefinitions	52
@@ -67,7 +67,7 @@ internal/workflow/v_3_0/compile.go	admissionProblems	62
 internal/workflow/v_3_0/features.go	addTaskFeatures	48
 internal/worktree/pinned.go	(*Manager).AcquirePinned	44
 internal/worktree/pinned.go	(*Manager).preparePinned	44
-internal/worktree/worktree.go	(*Manager).Create	51
+internal/worktree/worktree.go	(*Manager).Create	50
 providers/ado_workitems.go	(*ADOProvider).ListWorkItems	47
 test/nophonehome/main.go	tokenizeScript	45
 !body-length-cap 200
@@ -92,7 +92,8 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	cmd/goobers/status.go	runRunTable	383
 !body-length	cmd/goobers/telemetryquery.go	runTelemetryQuery	206
 !body-length	cmd/goobers/trace.go	runTraceWithFactories	225
-!body-length	cmd/goobers/up.go	runUpContextWithForce	1636
+!body-length-justification	cmd/goobers/up.go	runUpContextWithForce	1639	#5235 registers the bounded co-brand asset handler on the daemon API
+!body-length	cmd/goobers/up.go	runUpContextWithForce	1639
 !body-length	cmd/goobers/validate.go	runValidateConfig	269
 !body-length	cmd/goobers/worker.go	runWorker	274
 !body-length	internal/apicontract/wire.go	newWireFixtures	776
@@ -114,13 +115,13 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	internal/runner/run.go	(*Runner).dispatchTask	275
 !body-length	internal/runner/run.go	(*Runner).evaluateGate	254
 !body-length	internal/runner/run.go	(*Runner).runTask	284
-!body-length	internal/runner/run.go	(*Runner).taskOutcome	290
+!body-length	internal/runner/run.go	(*Runner).taskOutcome	289
 !body-length	internal/runner/run.go	(*Runner).walk	417
 !body-length	internal/telemetry/rollup/ingest.go	insertEvents	222
 !body-length-justification	internal/workflow/v_2_0/features.go	currentFeatures	225	#4810 registers the codex harness feature id in the v2 feature list
 !body-length	internal/workflow/v_2_0/features.go	currentFeatures	225
 !body-length-justification	internal/workflow/v_3_0/features.go	currentFeatures	247	#4810 registers the codex harness feature id in the v3 feature list
 !body-length	internal/workflow/v_3_0/features.go	currentFeatures	247
-!body-length	internal/worktree/worktree.go	(*Manager).Create	239
+!body-length	internal/worktree/worktree.go	(*Manager).Create	237
 !body-length	release/docs.go	adaptInstalledOnboarding	233
-!body-length	test/ci/main.go	checks	298
+!body-length	test/ci/main.go	checks	267
