@@ -273,8 +273,12 @@ continuing.
 
 ## 7. Gate deterministic CI
 
-A failed task normally terminates the run before a gate can inspect it.
-`continueOnError: true` keeps the failure visible and advances to its gate:
+A failed task whose `next` state is a gate advances to that gate without
+`continueOnError`. The failure remains unresolved while the gate classifies it:
+the gate must route it to remediation or another explicit terminal path, and a
+failure that is not cleared still fails the workflow. This is the normal CI and
+review pattern because it preserves the failed task's scalar outputs and result
+artifact for qualified downstream consumers.
 
 ```yaml
 - name: local-ci
@@ -285,26 +289,40 @@ A failed task normally terminates the run before a gate can inspect it.
     syncBase: true
   retry:
     maxAttempts: 1
-  continueOnError: true
   next: local-ci-gate
 ```
 
-The automated gate reads the normalized status of `local-ci`:
+The automated gate reads the normalized status and error classification of
+`local-ci`:
 
 ```yaml
 - name: local-ci-gate
   evaluator: automated
   automated:
-    check: status-equals
-    params:
-      equals: success
+    check: failure-class
   branches:
     pass: push-branch
     fail: implement
+    infra: "@abort"
 ```
 
 The gate receives the preceding result's `status`, error classification, and
 scalar outputs. It does not read the preceding stage's result file directly.
+After a failure branch, a deterministic consumer may bind a preserved scalar
+with a qualified `inputsFrom` entry such as
+`validationState: local-ci.validationState`; the full result remains available
+as a journal artifact/context pointer.
+
+`continueOnError: true` means something narrower: the failure is deliberately
+best-effort, its scalar outputs are discarded, and execution advances to
+`next`. Use it for work such as an optional notification whose failure must not
+fail the workflow. Do not use it merely to reach a failure gate, and do not use
+it when a later state requires the failed task's outputs.
+
+Run `goobers examples show implementation` for a complete executable workflow
+using this pattern: its `local-ci` task advances directly to the
+`failure-class` gate without `continueOnError`.
+
 See [Gate evaluator and check primitives](../reference/workflow-primitives/gates-and-checks.md)
 for every check's parameters and required branches.
 
