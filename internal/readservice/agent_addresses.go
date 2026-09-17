@@ -519,6 +519,7 @@ func mergeAddressRecord(records []addressRecord, next addressRecord) []addressRe
 }
 
 func filterRunAgentEvents(events []journal.Event, runID string) ([]journal.Event, error) {
+	events = journal.LatestPodAgentEvents(events)
 	filtered := make([]journal.Event, 0, len(events))
 	for _, event := range events {
 		if event.Type != journal.EventAgentLifecycle || event.Agent == nil || event.Agent.RunID != runID {
