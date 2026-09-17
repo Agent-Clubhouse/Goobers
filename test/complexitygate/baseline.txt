@@ -88,7 +88,6 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length-justification	cmd/goobers/runnerwiring.go	buildRunnerConfig	278	#4962 threads the applied config digest into each deterministic executor
 !body-length	cmd/goobers/runnerwiring.go	buildRunnerConfig	278
 !body-length	cmd/goobers/runtime_capabilities.go	init	762
-!body-length	cmd/goobers/stalledruns.go	sweepStalledRuns	213
 !body-length-justification	cmd/goobers/status.go	runRunTable	383	#4873 adds storageHealth to the JSON status output alongside journalHealth
 !body-length	cmd/goobers/status.go	runRunTable	383
 !body-length	cmd/goobers/telemetryquery.go	runTelemetryQuery	206

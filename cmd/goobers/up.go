@@ -36,6 +36,7 @@ import (
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/winsvc"
@@ -1283,19 +1284,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			setup.LegacyRunner,
 			engineGuards,
 			setup.InstanceLog,
-			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
-				// The stalled run's gaggle is only knowable from its runs-tree
-				// scope; cleanup must target that gaggle's own repo (#2692).
-				project, err := terminalGaggleProject(runLayout)
-				if err != nil {
-					return nil, err
-				}
-				prepare, err := buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
-				if err != nil {
-					return nil, err
-				}
-				return prepare.runnerPreparer(), nil
-			},
+			stalledSweepDependencies(setup),
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
 			now,
@@ -2090,6 +2079,32 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 	})
 	<-done
 	return daemonDrainResult{forced: true, terminated: terminated}
+}
+
+// stalledSweepDependencies is the daemon-owned wiring the stalled-run sweep
+// needs when it has to terminalize a run no live Runner owns.
+func stalledSweepDependencies(setup *schedulerSetup) *stalledSweepDeps {
+	return &stalledSweepDeps{
+		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
+			// The stalled run's gaggle is only knowable from its runs-tree
+			// scope; cleanup must target that gaggle's own repo (#2692).
+			project, err := terminalGaggleProject(runLayout)
+			if err != nil {
+				return nil, err
+			}
+			prepare, err := buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
+			if err != nil {
+				return nil, err
+			}
+			return prepare.runnerPreparer(), nil
+		},
+		// The same observer the daemon's own runner carries (daemon.go's
+		// runnerCfg.JournalAdvanced), so a run this sweep terminalizes reaches
+		// the read model exactly as one that finishes under a live runner does.
+		// Without it the terminal append records no intake watermark and the
+		// projector never re-reads the run (#5278).
+		JournalAdvanced: telemetryingest.RunIntakeObserver(setup.Watermarks, setup.InstanceLog),
+	}
 }
 
 func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localscheduler.Option) *localscheduler.Scheduler {

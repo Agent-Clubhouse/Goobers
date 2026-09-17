@@ -20,7 +20,6 @@ var bodyLengthSeedCeilings = map[string]int{
 	"cmd/goobers/reconcilebranches.go\treconcileRemoteBranches":        245,
 	"cmd/goobers/runnerwiring.go\tbuildRunnerConfig":                   278,
 	"cmd/goobers/runtime_capabilities.go\tinit":                        762,
-	"cmd/goobers/stalledruns.go\tsweepStalledRuns":                     213,
 	"cmd/goobers/status.go\trunRunTable":                               383,
 	"cmd/goobers/telemetryquery.go\trunTelemetryQuery":                 206,
 	"cmd/goobers/trace.go\trunTraceWithFactories":                      225,
