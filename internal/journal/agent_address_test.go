@@ -378,7 +378,7 @@ func TestResolveAgentAddressMarksEarlierVisitsStale(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer run.Close()
+			defer func() { _ = run.Close() }()
 			now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
 			start := Event{Type: EventStageStarted, Stage: "work", Attempt: 1}
 			if err := run.Append(start); err != nil {
