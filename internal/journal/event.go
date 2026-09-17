@@ -174,8 +174,10 @@ const (
 	EventTickSkipped EventType = "tick.skipped"
 	// EventWorkflowStarved records a workflow crossing the scheduler's
 	// consecutive shared-pool skip threshold (SkipCount set), or a scheduled
-	// workflow whose trigger has gone silent for a multiple of its own
-	// schedule interval (#1868; SkipCount unset).
+	// workflow that has gone a multiple of its own schedule interval without
+	// producing a run (SkipCount unset) — either because its trigger went
+	// silent (#1868) or because it kept firing into a capacity refusal that
+	// never cleared (#5277).
 	EventWorkflowStarved EventType = "workflow.starved"
 	// EventWorkflowRefused records a workflow the startup constraint solve
 	// marked unplaceable on the instance's declared runners: inventory

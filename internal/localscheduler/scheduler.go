@@ -282,6 +282,13 @@ type Scheduler struct {
 	// consecutivePoolSkips ages workflows that were due and otherwise ready
 	// but could not enter the shared instance concurrency pool.
 	consecutivePoolSkips map[WorkflowIdentity]int
+	// capacityRefusals tracks, per workflow, how long dispatch has been
+	// refused for capacity that is supposed to be about to exist. See
+	// recordDispatchOutcome and journalTriggerStalls (#5277).
+	capacityRefusals map[WorkflowIdentity]capacityRefusal
+	// capacityStarvedNotified bounds journalCapacityStarvation to one event per
+	// episode, the way triggerStallNotified does for #1868.
+	capacityStarvedNotified map[WorkflowIdentity]bool
 	// triggerStallNotified marks workflows already reported as having a
 	// silently stalled schedule trigger (#1868), so each stall episode
 	// journals one workflow.starved event instead of one per tick.
@@ -475,30 +482,32 @@ func WithTargetedPRValidator(validate func(context.Context, WorkflowEntry, int) 
 // a restart; a freshly-created instance can skip it (everything starts empty).
 func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Scheduler {
 	s := &Scheduler{
-		workflows:             make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
-		conditions:            NewConditions(),
-		log:                   log,
-		now:                   time.Now,
-		after:                 time.After,
-		demandPollTimeout:     demandPollTimeout,
-		triggers:              make(map[WorkflowIdentity]TriggerState),
-		reconciledRuns:        make(map[string]WorkflowIdentity),
-		admittedRuns:          make(map[string]runAdmission),
-		backlogLastCheck:      make(map[WorkflowIdentity]time.Time),
-		refillLastCheck:       make(map[WorkflowIdentity]time.Time),
-		idleBackoffs:          make(map[WorkflowIdentity][]idleBackoffState),
-		webhookBackoffs:       make(map[WorkflowIdentity]idleBackoffState),
-		pendingScheduleDemand: make(map[WorkflowIdentity]scheduledDemand),
-		consecutivePoolSkips:  make(map[WorkflowIdentity]int),
-		triggerStallNotified:  make(map[WorkflowIdentity]bool),
-		quotaResumePacing:     make(map[apiv1.Provider]bool),
-		authCircuits:          make(map[WorkflowIdentity]struct{}),
-		refillBlockedUntil:    make(map[WorkflowIdentity]time.Time),
-		refillBackoff:         30 * time.Second,
-		refillBackoffJitter:   5 * time.Second,
-		refillRandN:           rand.Int64N,
-		wake:                  make(chan struct{}, 1),
-		stateOwner:            newStateOwner(),
+		workflows:               make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
+		conditions:              NewConditions(),
+		log:                     log,
+		now:                     time.Now,
+		after:                   time.After,
+		demandPollTimeout:       demandPollTimeout,
+		triggers:                make(map[WorkflowIdentity]TriggerState),
+		reconciledRuns:          make(map[string]WorkflowIdentity),
+		admittedRuns:            make(map[string]runAdmission),
+		backlogLastCheck:        make(map[WorkflowIdentity]time.Time),
+		refillLastCheck:         make(map[WorkflowIdentity]time.Time),
+		idleBackoffs:            make(map[WorkflowIdentity][]idleBackoffState),
+		webhookBackoffs:         make(map[WorkflowIdentity]idleBackoffState),
+		pendingScheduleDemand:   make(map[WorkflowIdentity]scheduledDemand),
+		consecutivePoolSkips:    make(map[WorkflowIdentity]int),
+		capacityRefusals:        make(map[WorkflowIdentity]capacityRefusal),
+		capacityStarvedNotified: make(map[WorkflowIdentity]bool),
+		triggerStallNotified:    make(map[WorkflowIdentity]bool),
+		quotaResumePacing:       make(map[apiv1.Provider]bool),
+		authCircuits:            make(map[WorkflowIdentity]struct{}),
+		refillBlockedUntil:      make(map[WorkflowIdentity]time.Time),
+		refillBackoff:           30 * time.Second,
+		refillBackoffJitter:     5 * time.Second,
+		refillRandN:             rand.Int64N,
+		wake:                    make(chan struct{}, 1),
+		stateOwner:              newStateOwner(),
 	}
 	s.writeTriggerState = func(schedulerDir string, evaluations map[WorkflowIdentity]time.Time) error {
 		return writeTriggerEvaluations(schedulerDir, s.stateOwner, evaluations)
@@ -1136,6 +1145,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					scheduleIndexes = candidate.scheduleIndexes
 				}
 				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes, false, false, "")
+				s.recordDispatchOutcome(entryIdentity(candidate.entry), admitted, reason, now)
 				if admitted {
 					if kind == journal.TriggerSchedule && candidate.scheduleDemand {
 						s.consumePendingScheduleDemand(candidate.entry)
@@ -1168,6 +1178,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	// Evaluated after dispatch so a trigger that fired this tick has already
 	// refreshed its baseline and is never reported as stalled.
 	s.journalTriggerStalls(entries, now)
+	s.journalCapacityStarvation(entries, now)
 	if s.afterTick != nil {
 		s.afterTick(ctx)
 	}
