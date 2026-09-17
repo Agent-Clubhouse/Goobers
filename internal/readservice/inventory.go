@@ -134,6 +134,7 @@ const (
 type Gaggle struct {
 	Name           string                  `json:"name"`
 	DisplayName    string                  `json:"displayName"`
+	Enabled        bool                    `json:"enabled"`
 	Status         DefinitionStatus        `json:"status"`
 	Project        apiv1.RepoRef           `json:"project"`
 	Backlog        apiv1.BacklogRef        `json:"backlog"`
@@ -246,6 +247,7 @@ type WorkflowSummary struct {
 	EngineFallback *readmodel.EngineFallback `json:"engineFallback,omitempty"`
 	Identity       WorkflowReference         `json:"identity"`
 	DisplayName    string                    `json:"displayName"`
+	Enabled        bool                      `json:"enabled"`
 	Purpose        string                    `json:"purpose"`
 	Triggers       []apiv1.Trigger           `json:"triggers"`
 	Readiness      apiv1.ReadinessConditions `json:"readiness"`
@@ -492,6 +494,7 @@ func (s *Local) gagglesUnannotated(ctx context.Context, request PageRequest) (Ga
 		item := Gaggle{
 			Name:           def.Name,
 			DisplayName:    displayName(def.Spec.DisplayName, def.Name),
+			Enabled:        definitionEnabled(def.Spec.Enabled),
 			Status:         DefinitionStatusConfigured,
 			Project:        def.Spec.Project,
 			Backlog:        def.Spec.Backlog,
@@ -850,6 +853,7 @@ func (s *Local) workflowSummary(
 	return WorkflowSummary{
 		Identity:    WorkflowReference{Gaggle: def.Spec.Gaggle, Name: def.Name},
 		DisplayName: displayName(def.Spec.DisplayName, def.Name),
+		Enabled:     definitionEnabled(def.Spec.Enabled),
 		Purpose:     purpose,
 		Triggers:    triggers,
 		Readiness:   readiness,
@@ -993,6 +997,10 @@ func displayName(configured, fallback string) string {
 		return configured
 	}
 	return fallback
+}
+
+func definitionEnabled(value *bool) bool {
+	return value == nil || *value
 }
 
 func sortedStrings(values []string) []string {

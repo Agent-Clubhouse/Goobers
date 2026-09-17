@@ -129,12 +129,17 @@ function GooberGroup({
       <button
         aria-controls={contentId}
         aria-expanded={expanded}
-        className="goober-group-summary"
+        className={`goober-group-summary${inventory.gaggle.enabled ? "" : " definition-disabled"}`}
         onClick={() => setExpanded((current) => !current)}
         type="button"
       >
         <span>
-          <strong>{inventory.gaggle.displayName}</strong>
+          <span className="definition-nameplate">
+            <strong>{inventory.gaggle.displayName}</strong>
+            {!inventory.gaggle.enabled && (
+              <span className="definition-disabled-badge">Disabled</span>
+            )}
+          </span>
           <code>{inventory.gaggle.name}</code>
         </span>
         <span className="goober-group-summary-meta">

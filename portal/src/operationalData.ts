@@ -735,6 +735,7 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
 export interface GaggleSummary {
   name: string;
   displayName: string;
+  enabled: boolean;
   status: Gaggle["status"];
 }
 
@@ -771,6 +772,7 @@ export function useGaggleList(client: DaemonClient): GaggleListQuery {
         const loaded = gaggles.map((gaggle) => ({
           name: gaggle.name,
           displayName: gaggle.displayName,
+          enabled: gaggle.enabled,
           status: gaggle.status,
         }));
         if (signal.aborted) {
@@ -1502,6 +1504,7 @@ function gaggleDefinition(gaggle: Gaggle): GaggleDefinition {
   return {
     name: gaggle.name,
     displayName: gaggle.displayName,
+    enabled: gaggle.enabled,
     status: gaggle.status,
     project: gaggle.project,
     backlog: gaggle.backlog,
@@ -1515,6 +1518,7 @@ function workflowDefinition(workflow: WorkflowSummary): WorkflowDefinitionSummar
   return {
     identity: workflow.identity,
     displayName: workflow.displayName,
+    enabled: workflow.enabled,
     purpose: workflow.purpose,
     triggers: workflow.triggers,
     readiness: workflow.readiness,

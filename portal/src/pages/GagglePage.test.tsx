@@ -17,6 +17,7 @@ describe("gaggle reachability (#2531)", () => {
     const coreLink = within(sidebarGaggles).getByRole("link", {
       name: "Open gaggle Core product",
     });
+    expect(coreLink).toHaveClass("definition-disabled");
     expect(coreLink).toHaveAttribute("href", "#/gaggle/core");
 
     await userEvent.click(coreLink);
@@ -52,6 +53,7 @@ describe("gaggle view summary (#2531)", () => {
     expect(
       within(goobers).getByText("Implements claimed backlog items end to end."),
     ).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Implementation/ })).toHaveClass("definition-disabled");
 
     const active = screen.getByRole("region", { name: "Core product active runs" });
     expect(within(active).getByText(/01JZ441DAEMONAPI/)).toBeInTheDocument();

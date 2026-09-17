@@ -95,6 +95,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.enabled",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
       "name": "gaggle.spec.isolation.identityRef",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -768,6 +773,11 @@
       "name": "workflow.spec.docsRoots",
       "stability": "ga",
       "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.enabled",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
     },
     {
       "name": "workflow.spec.gaggle",

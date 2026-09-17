@@ -34,6 +34,8 @@ var schemaLeafExceptions = map[string]string{
 	// The public registry and TestCostPublicationFeatureIsIndependentOfWorkflowPin
 	// cover its registration and availability across supported workflow pins.
 	"gaggle.spec.cost.enabled": "binary-layer publication policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.enabled":      "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.enabled":    "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
 
 	// Identity envelope: fixed document identity and k8s-style metadata are not
 	// DSL capabilities and are expected to stay excepted.

@@ -723,8 +723,7 @@ func buildSchedulerDefinitions(
 	stores credentials.StoreResolver,
 	startupProgress func(string),
 ) (*schedulerDefinitions, error) {
-	// Resolve gaggle CI commands on every compilation path, including config
-	// reloads, so preflight and execution see the same effective command.
+	// Resolve gaggle CI commands on every compilation path.
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)
@@ -1026,6 +1025,7 @@ func buildSchedulerDefinitions(
 			// Only runner-driven entries execute on the scheduler's self host.
 			// Engine-selected entries enforce capabilities per pinned stage.
 			RequiredCapabilities: selections[identity].schedulerSelfCapabilities(requiredCaps),
+			DisabledReason:       resolveDisabledReason(gagglesByName[wf.Spec.Gaggle], wf),
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
 			// above found this workflow unplaceable on the declared inventory
 			// AND the entry is runner-driven — an engine-selected entry's
@@ -1385,6 +1385,16 @@ func configuredGaggleNames(set *instance.ConfigSet) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func resolveDisabledReason(gaggle apiv1.Gaggle, wf *apiv1.Workflow) string {
+	if gaggle.Spec.Enabled != nil && !*gaggle.Spec.Enabled {
+		return fmt.Sprintf("gaggle %q is disabled (spec.enabled=false)", gaggle.Name)
+	}
+	if wf != nil && wf.Spec.Enabled != nil && !*wf.Spec.Enabled {
+		return fmt.Sprintf("workflow %q is disabled (spec.enabled=false)", wf.Name)
+	}
+	return ""
 }
 
 // SchedulerOptions returns the localscheduler.Option slice reflecting this

@@ -108,7 +108,7 @@ func AllFeatures() []Feature {
 	for _, feature := range v30.AllFeatures() {
 		merge(v30Feature(feature))
 	}
-	features = append(features, costPublicationFeature())
+	features = append(features, binaryLayerFeatures()...)
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
 	})
@@ -130,7 +130,15 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	if err != nil {
 		return nil, err
 	}
-	return interpreter.featuresForWorkflow(def)
+	features, err := interpreter.featuresForWorkflow(def)
+	if err != nil {
+		return nil, err
+	}
+	if def.Spec.Enabled != nil {
+		features = append(features, binaryLayerFeature("workflow.spec.enabled"))
+		sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
+	}
+	return features, nil
 }
 
 // FeatureDefinitionsByDSLVersion collapses workflow definitions into one
@@ -187,18 +195,31 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 		return nil, err
 	}
 	if spec.Cost != nil {
-		features = append(features, costPublicationFeature())
+		features = append(features, binaryLayerFeature("gaggle.spec.cost.enabled"))
+	}
+	if spec.Enabled != nil {
+		features = append(features, binaryLayerFeature("gaggle.spec.enabled"))
+	}
+	if spec.Cost != nil || spec.Enabled != nil {
 		sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	}
 	return features, nil
 }
 
-// Cost publication is a binary-level provider policy, not an interpreter
-// operation. Register it here so supported workflow pins share the setting
-// without changing a frozen interpreter's executable contract.
-func costPublicationFeature() Feature {
+// binaryLayerFeatures are daemon/provider policies, not interpreter operations.
+// Register them here so supported workflow pins share the setting without
+// changing a frozen interpreter's executable contract.
+func binaryLayerFeatures() []Feature {
+	return []Feature{
+		binaryLayerFeature("gaggle.spec.cost.enabled"),
+		binaryLayerFeature("gaggle.spec.enabled"),
+		binaryLayerFeature("workflow.spec.enabled"),
+	}
+}
+
+func binaryLayerFeature(id FeatureID) Feature {
 	return Feature{
-		ID: "gaggle.spec.cost.enabled", Level: SupportGA, SinceVersion: "v0.4.0",
+		ID: id, Level: SupportGA, SinceVersion: "v0.4.0",
 		History: []SupportTransition{{Level: SupportGA, SinceVersion: "v0.4.0"}},
 		DSLVersions: []DSLFeatureSupport{
 			{Version: "2.0", Level: SupportGA},

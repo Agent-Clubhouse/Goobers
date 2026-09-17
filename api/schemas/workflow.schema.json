@@ -19,6 +19,10 @@
       "properties": {
         "gaggle": { "type": "string", "minLength": 1, "examples": ["example"], "description": "Name of the gaggle this workflow belongs to." },
         "displayName": { "type": "string", "description": "Human-facing workflow name shown in the portal." },
+        "enabled": {
+          "type": ["boolean", "null"],
+          "description": "Selects whether new runs may start for this workflow. Defaults to true; null or omitted means true (enabled). Setting false disables new run starts for this workflow without changing its schedule or backlog configuration."
+        },
         "triggers": {
           "type": "array",
           "description": "Conditions that may start a run once readiness checks also pass. A manual trigger must be the only trigger.",

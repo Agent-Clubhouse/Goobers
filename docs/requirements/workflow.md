@@ -85,6 +85,11 @@ everything a goober does happens inside a workflow, at every deployment tier.
   (`ARCHITECTURE.md §4`), not a feature of any particular engine: each run records
   the definition version it started on (`run.yaml`) and completes on that version;
   definition changes affect only new runs (no mid-flight mutation). *(All tiers)*
+- **WF-017 (MAY/MUST):** A Workflow MAY declare `spec.enabled`. Omitted or null means
+  enabled by default. When it is explicitly `false`, the scheduler MUST NOT start new
+  runs for that workflow, while its schedule/backlog declarations remain intact and
+  any already-started runs finish normally. *(All tiers; local runner shipped, tier-3
+  parity required by `WF-016`'s versioned runner contract)*
 
 ### Execution semantics
 - **WF-020 (MUST):** The engine contract is the **deterministic step-machine over the
@@ -207,6 +212,10 @@ These govern shipped primitives that had no requirement of their own (#4521).
 - Invokes → **Goobers** (for agentic tasks).
 - Belongs to → a **Gaggle**.
 - Emits → a **run journal** per run, projected into the **Telemetry** store.
+
+Operational note: `spec.enabled: false` affects only NEW starts. The workflow remains
+addressable in operator surfaces so it can be inspected and re-enabled without editing
+its trigger topology.
 
 ## Open questions
 

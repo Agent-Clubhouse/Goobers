@@ -31,6 +31,13 @@ const (
 	// config (a runner's claimed set is static), so it must not be treated as
 	// transient.
 	ReasonMissingCapability = "conditions: missing-capability"
+	// ReasonDisabled prefixes the refusal of a workflow or gaggle whose
+	// author-facing spec.enabled declaration is false (#5200). Like the other
+	// permanent-condition prefixes, dispatch appends the named disabled
+	// diagnostic so the journal and TriggerRejectedError explain which config
+	// object blocked the start. This refusal is permanent until config
+	// changes, so the scheduler must not treat it as transient.
+	ReasonDisabled = "conditions: disabled"
 	// ReasonPlacementUnsatisfiable prefixes the refusal of a workflow the
 	// boot-time constraint solve marked unplaceable on the declared runners:
 	// inventory (dsl-3.0.md §5 checkpoint 3, #2860: the workflow is refused

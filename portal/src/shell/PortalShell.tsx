@@ -359,9 +359,7 @@ function GaggleNav({
             <a
               aria-current={activeGaggle === gaggle.name ? "page" : undefined}
               aria-label={`Open gaggle ${gaggle.displayName}`}
-              className={
-                activeGaggle === gaggle.name ? "nav-item nav-item-active" : "nav-item"
-              }
+              className={`${activeGaggle === gaggle.name ? "nav-item nav-item-active" : "nav-item"}${gaggle.enabled ? "" : " definition-disabled"}`}
               href={routeHash({ page: "gaggle", id: gaggle.name })}
               onClick={(event) => {
                 event.preventDefault();
