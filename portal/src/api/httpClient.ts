@@ -76,6 +76,7 @@ const clientRoutes = {
   readiness: apiRoutes.readiness,
   instance: apiRoutes.instance,
   portalConfig: apiRoutes.portalConfig,
+  portalAsset: apiRoutes.portalAsset,
   gaggles: apiRoutes.gaggles,
   gaggleGoobers: apiRoutes.gaggleGoobers,
   gaggleWorkflows: apiRoutes.gaggleWorkflows,
