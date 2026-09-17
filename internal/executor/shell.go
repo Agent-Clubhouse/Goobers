@@ -791,7 +791,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{}, err
 	}
 	defer cleanup()
-	timeout, err := e.timeoutFor(env)
+	resolvedTimeout, err := e.resolveTimeout(env)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
@@ -903,7 +903,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	runCtx, cancel := context.WithTimeout(ctx, resolvedTimeout.Duration)
 	defer cancel()
 
 	// Substitute the running daemon's own binary for a bare "goobers" token: the
@@ -1046,7 +1046,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	outBytes := scrubber.Scrub(stdout.Bytes())
 	errBytes := scrubber.Scrub(stderr.Bytes())
 
-	result := apiv1.ResultEnvelope{Outputs: map[string]interface{}{}, Metrics: map[string]float64{}}
+	result := newStageResult(resolvedTimeout)
 	if networkIsolationMarker != "" {
 		// #2034: a non-empty marker means this network:none stage did NOT
 		// actually run isolated (the Windows escape hatch fired) — visible
@@ -1088,13 +1088,13 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		if StageInvokesProviderBuiltin(command) {
 			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("timeout", fmt.Errorf(
 				"executor: provider stage %q exceeded timeout %s: %w",
-				command[1], timeout, context.DeadlineExceeded,
+				command[1], resolvedTimeout.Describe(), context.DeadlineExceeded,
 			)))
 		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
 			Code:      "timeout",
-			Message:   fmt.Sprintf("stage exceeded timeout %s", timeout),
+			Message:   fmt.Sprintf("stage exceeded timeout %s", resolvedTimeout.Describe()),
 			Retryable: true,
 		}
 		result.Summary = "stage timed out and was killed"
@@ -1388,23 +1388,6 @@ func lastNonEmptyLine(data []byte) string {
 		}
 	}
 	return ""
-}
-
-func (e *ShellExecutor) timeoutFor(env apiv1.InvocationEnvelope) (time.Duration, error) {
-	if env.Limits.MaxDurationSeconds > 0 {
-		return time.Duration(env.Limits.MaxDurationSeconds) * time.Second, nil
-	}
-	if s := stringInput(env, InputTimeout); s != "" {
-		d, err := time.ParseDuration(s)
-		if err != nil {
-			return 0, fmt.Errorf("executor: invalid %s input %q: %w", InputTimeout, s, err)
-		}
-		return d, nil
-	}
-	if e.DefaultTimeout > 0 {
-		return e.DefaultTimeout, nil
-	}
-	return DefaultTimeout, nil
 }
 
 func (e *ShellExecutor) maxOutputFor(env apiv1.InvocationEnvelope) (int64, error) {

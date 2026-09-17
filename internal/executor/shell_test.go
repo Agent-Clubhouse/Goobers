@@ -513,11 +513,11 @@ func TestShellExecutor_TypedTimeoutOverridesLegacyInput(t *testing.T) {
 	env.Limits.MaxDurationSeconds = 7
 	env.Inputs = map[string]interface{}{InputTimeout: "2m"}
 
-	got, err := exec.timeoutFor(env)
+	resolved, err := exec.resolveTimeout(env)
 	if err != nil {
-		t.Fatalf("timeoutFor: %v", err)
+		t.Fatalf("resolveTimeout: %v", err)
 	}
-	if got != 7*time.Second {
+	if got := resolved.Duration; got != 7*time.Second {
 		t.Fatalf("timeout = %s, want 7s from invocation limits", got)
 	}
 }
@@ -529,30 +529,30 @@ func TestShellExecutor_ConfiguredDefaultTimeoutIsOnlyAFloor(t *testing.T) {
 	exec, _ := newTestExecutor(t, nil)
 
 	unconfigured := baseEnvelope(t)
-	got, err := exec.timeoutFor(unconfigured)
+	resolved, err := exec.resolveTimeout(unconfigured)
 	if err != nil {
-		t.Fatalf("timeoutFor: %v", err)
+		t.Fatalf("resolveTimeout: %v", err)
 	}
-	if got != DefaultTimeout {
+	if got := resolved.Duration; got != DefaultTimeout {
 		t.Fatalf("timeout = %s, want the built-in %s when nothing is configured", got, DefaultTimeout)
 	}
 
 	exec.DefaultTimeout = 25 * time.Minute
-	got, err = exec.timeoutFor(unconfigured)
+	resolved, err = exec.resolveTimeout(unconfigured)
 	if err != nil {
-		t.Fatalf("timeoutFor: %v", err)
+		t.Fatalf("resolveTimeout: %v", err)
 	}
-	if got != 25*time.Minute {
+	if got := resolved.Duration; got != 25*time.Minute {
 		t.Fatalf("timeout = %s, want the configured baseline 25m", got)
 	}
 
 	declared := baseEnvelope(t)
 	declared.Limits.MaxDurationSeconds = 90
-	got, err = exec.timeoutFor(declared)
+	resolved, err = exec.resolveTimeout(declared)
 	if err != nil {
-		t.Fatalf("timeoutFor: %v", err)
+		t.Fatalf("resolveTimeout: %v", err)
 	}
-	if got != 90*time.Second {
+	if got := resolved.Duration; got != 90*time.Second {
 		t.Fatalf("timeout = %s, want the stage's own 90s to win over the configured baseline", got)
 	}
 }
