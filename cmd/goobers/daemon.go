@@ -511,6 +511,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}); err != nil {
 		return nil, err
 	}
+	reportStartupProgress(options.startupProgress, "scheduler claims recovered")
 
 	// #712: shared with the Scheduler via SchedulerOptions below — see
 	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
@@ -741,6 +742,7 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
+	reportStartupProgress(startupProgress, "compiling workflow machines")
 	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		l.ConfigDir(), set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
 		true, modelCredential,
@@ -751,10 +753,12 @@ func buildSchedulerDefinitions(
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
+	reportStartupProgress(startupProgress, "preflighting agentic harnesses")
 	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, modelCredential)
 	if err != nil {
 		return nil, err
 	}
+	reportStartupProgress(startupProgress, "agentic harnesses ready")
 	repoRefs, err := repoRefsByWorkflow(set)
 	if err != nil {
 		return nil, err
