@@ -94,6 +94,11 @@ type WorkflowEntry struct {
 	// their per-run capability check below stays their only refusal path,
 	// byte-identical to previous releases.
 	PlacementRefusal string
+	// HarnessRefusal, when non-empty, marks only this workflow unavailable
+	// because a harness it references failed startup preflight. It is a
+	// permanent condition for the current configuration/startup snapshot;
+	// sibling workflows remain eligible (#5163).
+	HarnessRefusal string
 	// DisabledReason, when non-empty, marks this workflow or its gaggle
 	// disabled by spec.enabled=false (#5200): refused before admission with
 	// this named diagnostic, while in-flight runs finish normally.
@@ -508,7 +513,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		s.triggers[identity] = ts
 		s.idleBackoffs[identity] = make([]idleBackoffState, len(e.Schedules))
 	}
-	s.journalPlacementRefusals(entries)
+	s.journalStartupRefusals(entries)
 	return s
 }
 
@@ -1169,11 +1174,11 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 }
 
 func skipPermanentRefusedEntry(entry WorkflowEntry) bool {
-	// Disabled workflows/gaggles (#5200) and workflows refused by the startup
-	// constraint solve (#2860, checkpoint 3) are permanent until config changes.
-	// Skip them silently here so they do not spend polls or flood the journal;
+	// Disabled workflows/gaggles (#5200), broken harness dependencies (#5163),
+	// and startup placement refusals (#2860) are permanent until config changes.
+	// Skip them silently so they do not spend polls or flood the journal;
 	// explicit triggers still receive a named refusal through dispatch.
-	return entry.DisabledReason != "" || entry.PlacementRefusal != ""
+	return entry.DisabledReason != "" || entry.HarnessRefusal != "" || entry.PlacementRefusal != ""
 }
 
 func (s *Scheduler) orderedGaggles(gaggles []string) []string {
@@ -1275,7 +1280,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	// Re-record refusals for the accepted configuration: the config.reloaded
 	// event above marks the boundary, so a status reader always sees the
 	// refusals current for the configuration now in force (#2860).
-	s.journalPlacementRefusals(entries)
+	s.journalStartupRefusals(entries)
 	evaluations := make(map[WorkflowIdentity]time.Time, len(triggers))
 	for identity, state := range triggers {
 		evaluations[identity] = state.LastEval
@@ -2585,6 +2590,9 @@ func (s *Scheduler) permanentDispatchRefusal(entry WorkflowEntry) (string, bool)
 	if entry.DisabledReason != "" {
 		return ReasonDisabled + ": " + entry.DisabledReason, true
 	}
+	if entry.HarnessRefusal != "" {
+		return ReasonHarnessUnavailable + ": " + entry.HarnessRefusal, true
+	}
 	if entry.PlacementRefusal != "" {
 		return ReasonPlacementUnsatisfiable + ": " + entry.PlacementRefusal, true
 	}
@@ -2755,22 +2763,25 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 	return minPoll
 }
 
-// journalPlacementRefusals records one workflow.refused event per entry the
-// startup constraint solve marked unplaceable (#2860, dsl-3.0.md §5
-// checkpoint 3). Called when the scheduler learns a configuration — New and
-// Reload — so the instance journal and `goobers status` name every refusal
-// without waiting for a dispatch attempt. Best-effort like every other
-// decision record (the refusal is enforced by dispatch regardless).
-func (s *Scheduler) journalPlacementRefusals(entries []WorkflowEntry) {
+// journalStartupRefusals records one workflow.refused event per entry that
+// startup marked unavailable, whether from the placement solve (#2860) or a
+// required harness's preflight (#5163). Called when the scheduler learns a
+// configuration — New and Reload — so the instance journal and `goobers
+// status` name every refusal without waiting for a dispatch attempt.
+func (s *Scheduler) journalStartupRefusals(entries []WorkflowEntry) {
 	for _, entry := range entries {
-		if entry.PlacementRefusal == "" {
+		reason := entry.HarnessRefusal
+		if reason == "" {
+			reason = entry.PlacementRefusal
+		}
+		if reason == "" {
 			continue
 		}
 		s.journalEvent(journal.Event{
 			Type:     journal.EventWorkflowRefused,
 			Workflow: entry.Workflow,
 			Gaggle:   entry.Gaggle,
-			Reason:   entry.PlacementRefusal,
+			Reason:   reason,
 		})
 	}
 }
