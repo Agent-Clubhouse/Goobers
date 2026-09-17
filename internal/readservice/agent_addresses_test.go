@@ -442,6 +442,38 @@ func TestAddressableAgentsExcludeNestedCollisionsAcrossNormalizedProvenance(t *t
 	}
 }
 
+func TestCollidedLatestVisitAddressesStayUnaddressableAfterOneTargetEnds(t *testing.T) {
+	service, layout, def := agentAddressService(t)
+	runID := "run-ended-collision"
+	run, clock := createAgentAddressRun(t, layout, def, runID, time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC))
+	startedSeq := appendAgenticStageStart(t, run, clock, 1)
+	appendAgentLifecycle(t, run, clock, runID, 1, "coder", journal.AgentWaiting)
+	appendAgentLifecycleWithParent(t, run, clock, runID, 1, "coder", "reviewer", true, journal.AgentWaiting)
+	appendAgentLifecycleWithParent(t, run, clock, runID, 1, "coder", "reviewer", true, journal.AgentCompleted)
+
+	agents, err := service.AddressableAgents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsAddress(agents, agentAddressFor(runID, "implement", 1, "coder", startedSeq).String()) {
+		t.Fatalf("addressable agents = %+v, want collided latest-visit address excluded after one target ends", agents)
+	}
+
+	finishAgenticStage(t, run, clock, 1)
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	colliding := agentAddressFor(runID, "implement", 1, "coder", startedSeq)
+	resolution, err := service.ResolveAgentAddress(context.Background(), runID, colliding.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Kind != AgentResolutionUnaddressable {
+		t.Fatalf("ended collision resolution = %+v", resolution)
+	}
+}
+
 func TestAddressableAgentsRejectsMalformedRunID(t *testing.T) {
 	service, _, _ := agentAddressService(t)
 	_, err := service.AddressableAgents(context.Background(), "..\\escape")
