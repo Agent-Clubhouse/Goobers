@@ -783,7 +783,7 @@ func (r *Runner) runParallelBranch(
 				if appendErr := branchJournal.Append(journal.Event{
 					Type:  journal.EventError,
 					Gate:  g.Name,
-					Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
+					Error: workspaceCleanupErrorDetail(removeErr),
 				}); appendErr != nil {
 					result.status, result.err = journal.BranchFailed, appendErr
 					return result

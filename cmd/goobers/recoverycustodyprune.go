@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 )
 
@@ -29,7 +27,7 @@ func openRecoveryCustodyPruneGuard(layout instance.Layout, dryRun bool) (func(re
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), 128)
+	entries, _, err := readConfiguredRecoveryInventory(ctx, layout)
 	if err != nil {
 		return nil, noop, err
 	}
