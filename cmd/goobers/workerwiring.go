@@ -266,11 +266,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if err != nil {
 		return nil, fmt.Errorf("worker: secret stores: %w", err)
 	}
-	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, "")
-	if err != nil {
-		return nil, fmt.Errorf("worker: agent:model credential: %w", err)
-	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, modelCredential)
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
 	if err != nil {
 		return nil, fmt.Errorf("worker: harness preflight: %w", err)
 	}
