@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/secretstore"
 )
@@ -160,8 +161,22 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 	if err != nil {
 		return nil, fmt.Errorf("derive credential grants: %w", err)
 	}
-	wireGrants := make([]agentickit.Grant, 0, len(grants))
-	for _, g := range grants {
+	// Resolve harness scoping BEFORE the claim check crosses into the pod.
+	// Besides making the plane's plain `agent:model` response line up with the
+	// kit's capability->ref map, this is the least-authority shape: a Copilot
+	// pod never receives even the reference for a Claude Code credential (or
+	// vice versa). buildGooberCredentialGrants is deliberately idempotent, so
+	// the shared executor constructor can safely scope this already-bound set
+	// once more in the pod.
+	harnessName := spec.Harness
+	if harnessName == "" {
+		harnessName = apiv1.HarnessCopilot
+	}
+	credentialKeys := append([]string(nil), spec.Capabilities...)
+	credentialKeys = append(credentialKeys, mcpconfig.BYOCredentialKeys(spec.MCPServers)...)
+	selectedGrants := buildGooberCredentialGrants(env.Goober, string(harnessName), credentialKeys, grants)
+	wireGrants := make([]agentickit.Grant, 0, len(selectedGrants))
+	for _, g := range selectedGrants {
 		// Shape only — Ref names where a credential lives, never its value.
 		wireGrants = append(wireGrants, agentickit.Grant{Goober: g.Goober, Capability: g.Capability, Ref: g.Ref})
 	}

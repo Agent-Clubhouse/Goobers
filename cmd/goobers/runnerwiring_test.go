@@ -3046,6 +3046,20 @@ func TestBuildGooberCredentialGrantsHarnessPrecedence(t *testing.T) {
 	}
 }
 
+func TestBuildGooberCredentialGrantsIsIdempotentForSelectedGoober(t *testing.T) {
+	selected := buildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, []credentials.Grant{
+		{Capability: credentials.HarnessScopedCapability("agent:model", "copilot"), Ref: "copilot-ref"},
+		{Capability: credentials.HarnessScopedCapability("agent:model", "claude-code"), Ref: "claude-ref"},
+	})
+	again := buildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, selected)
+	if len(again) != 1 || again[0].Goober != "worker" || again[0].Capability != "agent:model" || again[0].Ref != "copilot-ref" {
+		t.Fatalf("re-scoped grants = %+v, want the already-selected plain grant", again)
+	}
+	if got := buildGooberCredentialGrants("sibling", "copilot", []string{"agent:model"}, selected); len(got) != 0 {
+		t.Fatalf("sibling reached worker-bound grant: %+v", got)
+	}
+}
+
 // --- #312: escalation-notifier wiring ---
 
 type escTestRegistrar struct{ registered [][]byte }
