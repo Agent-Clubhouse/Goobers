@@ -67,6 +67,12 @@ func (stubReadService) RunEvents(context.Context, string) (readservice.EventList
 func (stubReadService) StageAttempts(context.Context, string, string) (readservice.AttemptList, error) {
 	return readservice.AttemptList{}, nil
 }
+func (stubReadService) AddressableAgents(context.Context, string) ([]readservice.AddressableAgent, error) {
+	return nil, nil
+}
+func (stubReadService) ResolveAgentAddress(context.Context, string, string) (readservice.AgentResolution, error) {
+	return readservice.AgentResolution{}, nil
+}
 func (stubReadService) Artifact(context.Context, string, string) (readservice.ArtifactContent, error) {
 	return readservice.ArtifactContent{}, nil
 }
