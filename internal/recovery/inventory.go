@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/goobers/goobers/internal/platform/durability"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
@@ -16,6 +17,23 @@ import (
 // ErrInventoryFull refuses new recovery state without evicting existing
 // evidence. Cleanup must preserve its source when allocation fails.
 var ErrInventoryFull = errors.New("recovery inventory is full")
+
+// inventoryLockWait bounds how long an operation waits for the shared
+// inventory lock before giving up.
+//
+// Every holder of this lock does a short, bounded piece of work — reserve a
+// directory, read the roster, retire or reap one entry — so contention is
+// measured in milliseconds and a brief wait resolves it. Failing on the FIRST
+// collision instead cost the goobernetes cloud instance a full day of work:
+// a missed acquisition aborted a worktree finalize, which left a stalled run
+// un-terminalizable, which wedged a maxConcurrentRuns:1 lane permanently, so
+// backlog-curation stopped promoting and the instance had nothing claimable
+// while every health signal stayed green (#5272).
+//
+// The wait is deliberately short. It is here to absorb collisions, not to
+// paper over a holder that has genuinely wedged: past this bound the caller
+// still gets ErrHeld and can report contention honestly.
+const inventoryLockWait = 5 * time.Second
 
 // EvictFunc attempts to free at least one inventory slot when reservation
 // finds the inventory full, and reports whether it freed anything. It is

@@ -2,6 +2,7 @@ package lock
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const (
@@ -133,5 +135,73 @@ func assertLockAcquirable(t *testing.T, path string) {
 	}
 	if err := held.Release(); err != nil {
 		t.Fatalf("release reacquired lock: %v", err)
+	}
+}
+
+// A brief holder must NOT fail the caller. This is the case that cost the
+// goobernetes cloud instance a day: TryAcquire lost one collision, a worktree
+// finalize aborted, a stalled run could never be terminalized, and a
+// maxConcurrentRuns:1 lane wedged permanently (#5272).
+func TestAcquireWithinWaitsOutABriefHolder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "contended.lock")
+	held, err := TryAcquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		_ = held.Release()
+		close(released)
+	}()
+
+	start := time.Now()
+	handle, err := AcquireWithin(context.Background(), path, 5*time.Second)
+	if err != nil {
+		t.Fatalf("AcquireWithin gave up on a holder that released after 60ms: %v", err)
+	}
+	t.Cleanup(func() { _ = handle.Release() })
+	<-released
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Fatalf("acquired in %s — before the holder released, so the lock was not exclusive", elapsed)
+	}
+}
+
+// The wait is bounded, not infinite: a holder that never releases must still
+// surface as contention rather than hanging the caller forever.
+func TestAcquireWithinStillRefusesAWedgedHolder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wedged.lock")
+	held, err := TryAcquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Release() })
+
+	start := time.Now()
+	if _, err := AcquireWithin(context.Background(), path, 120*time.Millisecond); !errors.Is(err, ErrHeld) {
+		t.Fatalf("error = %v, want ErrHeld so the caller can report contention", err)
+	}
+	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
+		t.Fatalf("returned after %s — did not wait out its own bound", elapsed)
+	}
+}
+
+// Cancellation beats the bound, so a shutting-down daemon is not held up.
+func TestAcquireWithinHonorsContextCancellation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "canceled.lock")
+	held, err := TryAcquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Release() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
+	start := time.Now()
+	if _, err := AcquireWithin(ctx, path, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("ignored cancellation for %s", elapsed)
 	}
 }

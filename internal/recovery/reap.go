@@ -37,7 +37,7 @@ func ReapRetired(ctx context.Context, root string, maxEntries int, deleteFiles b
 	if err != nil || !before.IsDir() {
 		return nil, fmt.Errorf("recovery inventory must be a real directory")
 	}
-	lock, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
+	lock, err := platformlock.AcquireWithin(ctx, filepath.Join(root, ".inventory.lock"), inventoryLockWait)
 	if err != nil {
 		return nil, err
 	}

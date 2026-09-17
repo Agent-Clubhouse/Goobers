@@ -34,7 +34,7 @@ func RetireSnapshot(ctx context.Context, root string, expected Record, unpin fun
 	if err != nil || !info.IsDir() {
 		return "", fmt.Errorf("recovery inventory must be a real directory")
 	}
-	lock, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
+	lock, err := platformlock.AcquireWithin(ctx, filepath.Join(root, ".inventory.lock"), inventoryLockWait)
 	if err != nil {
 		return "", err
 	}

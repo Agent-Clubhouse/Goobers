@@ -67,7 +67,7 @@ func readInventory(ctx context.Context, root string, maxEntries int, tolerant bo
 	if err != nil || !before.IsDir() {
 		return nil, nil, fmt.Errorf("recovery inventory must be a real directory")
 	}
-	handle, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
+	handle, err := platformlock.AcquireWithin(ctx, filepath.Join(root, ".inventory.lock"), inventoryLockWait)
 	if err != nil {
 		return nil, nil, err
 	}
