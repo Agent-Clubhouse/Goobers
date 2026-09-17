@@ -309,3 +309,60 @@ func TestCopilotPreflightSatisfiedByFileRefOnlyCredential(t *testing.T) {
 		t.Fatalf("sign-in probe env should carry the file-ref credential; got %v", runner.authProbeEnv)
 	}
 }
+
+// #5163: startup resolved the agent:model credential ONCE with an empty
+// harness and reused it for every harness. An instance whose grant is scoped
+// to claude-code (#5148) therefore preflighted `claude auth status` with no
+// token, got loggedIn:false, and — because a failing preflight is fatal —
+// took the whole daemon down in a crash loop, while `goobers validate
+// --check-harness` on the running daemon resolved the same grant correctly.
+//
+// The preflight must ask for the credential PER HARNESS.
+func TestPreflightResolvesCredentialPerHarness(t *testing.T) {
+	orig := harnessAdapterFor
+	t.Cleanup(func() { harnessAdapterFor = orig })
+
+	var sawCredential []string
+	harnessAdapterFor = func(_ apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, credential func(context.Context) (string, error)) (harness.Adapter, error) {
+		token := ""
+		if credential != nil {
+			token, _ = credential(context.Background())
+		}
+		sawCredential = append(sawCredential, token)
+		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{}}, nil
+	}
+
+	goobers := map[string]apiv1.GooberSpec{
+		"writer":   {Harness: apiv1.HarnessCopilot},
+		"reviewer": {Harness: apiv1.HarnessClaudeCode},
+	}
+	workflows := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{
+		{Name: "write", Type: apiv1.TaskAgentic, Goober: "writer"},
+		{Name: "review", Type: apiv1.TaskAgentic, Goober: "reviewer"},
+	}}}}
+
+	askedFor := map[apiv1.Harness]int{}
+	credentialFor := func(h apiv1.Harness) (func(ctx context.Context) (string, error), error) {
+		askedFor[h]++
+		return func(context.Context) (string, error) { return "token-for-" + string(h), nil }, nil
+	}
+
+	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, credentialFor); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if askedFor[apiv1.HarnessCopilot] != 1 || askedFor[apiv1.HarnessClaudeCode] != 1 {
+		t.Fatalf("credential not resolved once per harness: %v", askedFor)
+	}
+	// Each adapter must receive ITS OWN harness's credential. Resolving once
+	// and reusing is exactly the defect.
+	want := map[string]bool{"token-for-copilot": true, "token-for-claude-code": true}
+	for _, token := range sawCredential {
+		if !want[token] {
+			t.Fatalf("adapter received a credential not scoped to its harness: %q (saw %v)", token, sawCredential)
+		}
+		delete(want, token)
+	}
+	if len(want) != 0 {
+		t.Fatalf("a harness never received its own credential; missing %v (saw %v)", want, sawCredential)
+	}
+}

@@ -752,7 +752,7 @@ func buildSchedulerDefinitions(
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, modelCredential)
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
 	if err != nil {
 		return nil, err
 	}
