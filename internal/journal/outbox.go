@@ -41,10 +41,13 @@ const (
 	MaxOutboxBytesPerAttempt = 64 << 20 // 64 MiB
 )
 
-// ExportOutbox durably exports files declared by a stage attempt into
-// runs/<id>/artifacts/outbox/<stage>/attempt-<N>/<relative path>, scrubbing
-// each and recording an artifact.recorded event per file before a single
-// checkpoint. Every path is re-validated for containment against the
+// ExportOutbox durably exports files declared by a stage execution into
+// runs/<id>/artifacts/outbox/<stage>/attempt-<N>/occurrence-<S>/<relative
+// path>, where S is the immutable sequence of the batch's first artifact
+// event. The occurrence distinguishes gate repasses, which legitimately reuse
+// attempt 1, while the attempt still distinguishes infrastructure retries.
+// Each file is scrubbed and recorded before a single checkpoint. Every path is
+// re-validated for containment against the
 // outbox root regardless of any validation the caller already performed
 // against the stage workspace (#1552's prior escalation: a "recovery"
 // code path that skipped re-validation permitted traversal). An empty
@@ -80,6 +83,11 @@ func (r *Run) exportOutbox(branch int, stage string, attempt int, class AttemptC
 			stage, attempt, len(files), MaxOutboxFilesPerAttempt,
 		)
 	}
+	// A retry attempt is not an execution identity: gate repasses re-enter the
+	// same task at attempt 1. r.seq is protected by r.mu and restored when a
+	// journal opens, so this batch identity remains unique across repasses,
+	// retries, and process recovery (#5218).
+	occurrence := r.seq + 1
 
 	type prepared struct {
 		relPath string // sanitized, relative to the outbox root
@@ -106,7 +114,7 @@ func (r *Run) exportOutbox(branch int, stage string, attempt int, class AttemptC
 				stage, attempt, MaxOutboxBytesPerAttempt,
 			)
 		}
-		dest := path.Join(dirArtifacts, dirOutbox, stage, fmt.Sprintf("attempt-%d", attempt), relPath)
+		dest := path.Join(dirArtifacts, dirOutbox, stage, fmt.Sprintf("attempt-%d", attempt), fmt.Sprintf("occurrence-%d", occurrence), relPath)
 		if _, err := containedBlobPath(r.dir, dest); err != nil {
 			return nil, fmt.Errorf("journal: outbox destination for %q: %w", f.RelPath, err)
 		}
