@@ -890,6 +890,64 @@ attempt is a new journal entry, never overwritten history (§5). A business
 `failure`/`blocked` result is never retried by `Task.Retry`; it is handled
 per the table above.
 
+**Deterministic stage execution deadline — resolution and visibility (#5265).**
+A deterministic (shell) stage's execution deadline resolves through
+`internal/executor.(*ShellExecutor).resolveTimeout`, which is the single
+resolution point. Highest precedence first:
+
+1. `limits.maxDurationSeconds`, **when positive**.
+2. `inputs.timeout`, when present and non-empty, parsed as a Go duration
+   (`10m`, `90s`). This is the legacy surface.
+3. The runner default (`ShellExecutor.DefaultTimeout`, which the instance's
+   configured stage timeout resolves into), when positive.
+4. The built-in `internal/executor.DefaultTimeout` (10m).
+
+The ten-minute value is a **fallback, not a universal hard cap**: it applies
+only when no surface above it supplied a value.
+
+Note that this ordering is the **opposite** of the agentic one documented below
+for the task-level value versus `limits`: here `limits.maxDurationSeconds` wins
+over the stage's own `inputs.timeout`, whereas an agentic task's
+`timeoutSeconds` wins over `limits`. That divergence is why a bare duration was
+not enough to act on, and why the effective value is now reported together with
+its **source**.
+
+Three different zeros exist in this area and they do **not** mean the same
+thing. All three are preserved:
+
+| Setting | Zero means |
+| --- | --- |
+| `limits.maxDurationSeconds: 0` | **Unset** — falls through to the next surface. |
+| `inputs.timeout: "0s"` | **Expires immediately** — honored as written. |
+| task `timeoutSeconds: 0` | **Rejected** before it reaches an executor. |
+
+An *empty* `inputs.timeout` string is **absent**, not zero, so it falls
+through — that is what stops an unset value threaded through `inputsFrom` from
+becoming an instant deadline. An unparseable duration fails the stage closed
+rather than silently falling back to a default.
+
+Every deterministic stage result publishes the effective deadline and where it
+came from, on **every** outcome rather than only on a timeout (an operator
+asking which clock governs a stage most needs the answer from one that
+succeeded):
+
+- `outputs.timeoutSeconds` — the effective deadline, in seconds.
+- `outputs.timeoutSource` — one of `limits.maxDurationSeconds`,
+  `inputs.timeout`, `runner default`, `built-in default`.
+
+Both timeout diagnostics name the source too, so `stage exceeded timeout 10m`
+now reads `stage exceeded timeout 10m0s (from built-in default)`.
+
+Queue/admission deadlines are **not** part of this resolution: they bound how
+long a stage may wait to *start*, not how long it may *run*, and are reported
+separately.
+
+An explicit "no Goobers-imposed execution deadline" (infinite) mode is **not**
+implemented; #5265 tracks it as a versioned authoring-surface change that also
+needs engine/pod conformance, since a substrate that imposes a non-removable
+deadline must refuse it explicitly rather than advertise infinity and silently
+apply a finite limit.
+
 **Agentic session timeout & `Task.OnTimeout` (#724).** An agentic stage's
 harness session is bounded by a wall-clock timeout. The default is 30m
 (`internal/harness.DefaultTimeout`), and it **is** DSL-configurable: a task's
