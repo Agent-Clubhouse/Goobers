@@ -102,7 +102,7 @@ func (r *Runner) finalizeOutbox(jr executionJournal, workspaceRoot string, t api
 		return commandResult, nil
 	}
 	if err := recordOutboxExportFailure(jr, t, attempt, class, commandResult, exportErr); err != nil {
-		return commandResult, fmt.Errorf("record outbox export failure after %w: %v", exportErr, err)
+		return commandResult, fmt.Errorf("record outbox export failure: %w", errors.Join(exportErr, err))
 	}
 	return outboxExportFailureResult(commandResult, exportErr), nil
 }
