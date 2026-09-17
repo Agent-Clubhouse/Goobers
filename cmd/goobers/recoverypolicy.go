@@ -1,12 +1,44 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 )
+
+// readConfiguredRecoveryInventory is the single strict reader for the
+// instance-wide inventory. It resolves the operator's policy at the point of
+// use so raising maxSnapshots unblocks a live daemon without a restart.
+func readConfiguredRecoveryInventory(ctx context.Context, layout instance.Layout) ([]recovery.InventoryEntry, int, error) {
+	policy, origin := resolveRecoveryPolicy(layout, nil)
+	limit := policy.MaxSnapshotsEffective()
+	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), limit)
+	if err != nil {
+		err = recoveryInventoryReadError(err, limit)
+		if origin.LoadErr != nil {
+			err = fmt.Errorf("recovery policy resolved from %s because instance configuration is unavailable: %w", origin.Source, errors.Join(origin.LoadErr, err))
+		}
+		return nil, limit, err
+	}
+	return entries, limit, nil
+}
+
+// recoveryInventoryReadError keeps an oversized inventory fail-closed while
+// giving an operator a path that does not delete or bypass retained evidence.
+func recoveryInventoryReadError(err error, limit int) error {
+	if !errors.Is(err, recovery.ErrInventoryFull) {
+		return err
+	}
+	return fmt.Errorf(
+		"%w; retained evidence was left untouched: temporarily raise retention.recovery.maxSnapshots above the current inventory size, retry the operation, then use recovery-abandon or configured retention instead of deleting recovery files manually (configured maxSnapshots=%d)",
+		err, limit,
+	)
+}
 
 // Every recovery-snapshot policy resolution names where it came from, so a
 // path that governs the instance-wide inventory can never disagree with the

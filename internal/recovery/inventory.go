@@ -44,7 +44,7 @@ func publishToInventory(ctx context.Context, repository, root string, cleanupRoo
 	if err := prepared.validateSnapshot(); err != nil {
 		return Record{}, "", err
 	}
-	if maxSnapshots <= 0 || maxSnapshots > 10000 || maxArchiveBytes <= 0 {
+	if maxSnapshots <= 0 || maxSnapshots > MaxInventoryEntries || maxArchiveBytes <= 0 {
 		return Record{}, "", fmt.Errorf("invalid recovery inventory limits")
 	}
 	if err := requireIndependentArchive(root, append([]string{repository}, cleanupRoots...), len(cleanupRoots) > 0); err != nil {

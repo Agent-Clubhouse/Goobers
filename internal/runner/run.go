@@ -425,7 +425,9 @@ type Config struct {
 	// RecoveryEvents supplies verified retained-state observations after a
 	// successful workspace cleanup. The active writer copies them into this
 	// run's journal so later local and remote stages can read the same evidence.
-	RecoveryEvents func(context.Context, string) ([]journal.Event, error)
+	// The returned integer is the effective inventory capacity used for the
+	// scan, and bounds the observation set without imposing a second policy.
+	RecoveryEvents func(context.Context, string) ([]journal.Event, int, error)
 	// InstanceID is pinned into each new run, never inferred during replay.
 	InstanceID string
 	// NewDeterministic constructs this run's deterministic-task executor
@@ -2140,10 +2142,10 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 	if removeErr != nil {
 		if appendErr := ws.jr.Append(journal.Event{
 			Type: journal.EventError, Gate: g.Name,
-			Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
+			Error: workspaceCleanupErrorDetail(removeErr),
 		}); appendErr != nil {
 			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
-				fmt.Errorf("runner: journal worktree removal error for gate %q: %w", g.Name, appendErr))
+				fmt.Errorf("runner: journal workspace cleanup diagnostic for gate %q: %w", g.Name, appendErr))
 			return gr, false, terminal, true, failErr
 		}
 	}
@@ -4218,9 +4220,9 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 		// failures the same way.
 		if err := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
-			Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
+			Error: workspaceCleanupErrorDetail(removeErr),
 		}); err != nil {
-			return fmt.Errorf("runner: journal worktree removal error for %q: %w", stage, err)
+			return fmt.Errorf("runner: journal workspace cleanup diagnostic for %q: %w", stage, err)
 		}
 	}
 	return heartbeatErr
@@ -4241,9 +4243,9 @@ func completeTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage s
 	if cleanupErr != nil {
 		if err := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
-			Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: cleanupErr.Error()},
+			Error: workspaceCleanupErrorDetail(cleanupErr),
 		}); err != nil {
-			return fmt.Errorf("runner: journal worktree removal error for %q: %w", stage, errors.Join(err, cleanupErr))
+			return fmt.Errorf("runner: journal workspace cleanup diagnostic for %q: %w", stage, errors.Join(err, cleanupErr))
 		}
 	}
 	return nil

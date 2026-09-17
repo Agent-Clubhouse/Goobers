@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"io"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -54,7 +53,7 @@ func runRecoveryView(ctx context.Context, layout instance.Layout, runID string, 
 }
 
 func loadRecoveryViews(ctx context.Context, layout instance.Layout, now time.Time) (map[string]*recoveryView, error) {
-	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), 128)
+	entries, _, err := readConfiguredRecoveryInventory(ctx, layout)
 	if err != nil {
 		return nil, err
 	}
@@ -118,12 +117,7 @@ func recoveryInventoryOccupancy(ctx context.Context, layout instance.Layout) (us
 	// The same resolution every writer into this inventory uses (#5092), so
 	// what `goobers status` reports and what a cleanup is refused against
 	// cannot be two different numbers for the same directory.
-	policy, origin := resolveRecoveryPolicy(layout, nil)
-	if origin.LoadErr != nil {
-		return 0, 0, time.Time{}, origin.LoadErr
-	}
-	limit = policy.MaxSnapshotsEffective()
-	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), limit)
+	entries, limit, err := readConfiguredRecoveryInventory(ctx, layout)
 	if err != nil {
 		return 0, limit, time.Time{}, err
 	}

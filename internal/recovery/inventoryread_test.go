@@ -13,7 +13,7 @@ import (
 
 func seedInventoryRecord(t *testing.T, root string, record Record) string {
 	t.Helper()
-	directory, err := reserveSnapshotDirectory(root, inventoryDirectoryName(record), 10)
+	directory, err := reserveSnapshotDirectory(root, inventoryDirectoryName(record), MaxInventoryEntries)
 	if err != nil {
 		t.Fatal(err)
 	}
