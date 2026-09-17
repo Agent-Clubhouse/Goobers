@@ -3,11 +3,12 @@ package worktree
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
+	"time"
 )
 
 // CleanupRetryOptions bounds one prompt retry pass. After is an opaque cursor
@@ -16,6 +17,18 @@ import (
 type CleanupRetryOptions struct {
 	After string
 	Limit int
+	// PassBudget bounds the WHOLE pass — discovery and attempts together —
+	// rather than any single operation within it (#5264). Individual cleanup
+	// subprocesses are already bounded (#92dc5e4b7a), but that does not bound
+	// a pass across a large retained population, which is what could delay
+	// startup and preparation indefinitely. Zero means unbounded, preserving
+	// the previous behavior for any caller that does not opt in.
+	PassBudget time.Duration
+	// DiscoveryLimit caps how many durable records one pass READS while looking
+	// for candidates. Zero derives a default from Limit.
+	DiscoveryLimit int
+	// Clock is a test seam for PassBudget. Nil means time.Now.
+	Clock func() time.Time
 }
 
 // CleanupRetryReport describes one bounded pass over the durable
@@ -25,6 +38,19 @@ type CleanupRetryReport struct {
 	Attempted int
 	Removed   []ReapResult
 	Warnings  []ReapWarning
+	// Examined counts durable records this pass read while discovering
+	// candidates — the progress report #5264 asks for, so an operator can see a
+	// pass doing work even when it removed nothing.
+	Examined int
+	// Elapsed is the whole pass's measured duration.
+	Elapsed time.Duration
+	// Deferred reports that the pass stopped before exhausting its attempt
+	// limit, and DeferralReason says why. A deferred pass has NOT completed the
+	// queue: reporting that honestly is the point, because presenting a
+	// truncated pass as a finished cleanup is what would let a large retained
+	// population look healthy while never draining.
+	Deferred       bool
+	DeferralReason CleanupDeferralReason
 }
 
 type cleanupRetryCandidate struct {
@@ -45,57 +71,144 @@ func (m *Manager) RetryCleanupPending(ctx context.Context, opts CleanupRetryOpti
 	if opts.Limit <= 0 {
 		return CleanupRetryReport{}, fmt.Errorf("worktree: cleanup retry limit must be positive")
 	}
-	candidates, warnings, err := m.cleanupRetryCandidates(ctx, opts.Limit)
-	report := CleanupRetryReport{Warnings: warnings}
-	if err != nil || len(candidates) == 0 {
+	budget := newPassBudget(opts.Clock, opts.PassBudget)
+	discovery, err := m.cleanupRetryCandidates(ctx, opts, budget)
+	report := CleanupRetryReport{
+		Warnings: discovery.warnings,
+		Examined: discovery.examined,
+		Elapsed:  budget.elapsed(),
+	}
+	if err != nil || len(discovery.candidates) == 0 {
+		m.noteCleanupDeferral(&report, discovery.reason, budget)
 		return report, err
 	}
 
-	start := sort.Search(len(candidates), func(i int) bool {
-		return candidates[i].token > opts.After
-	})
-	if start == len(candidates) {
-		start = 0
-	}
-	attempts := opts.Limit
-	if attempts > len(candidates) {
-		attempts = len(candidates)
-	}
+	attempts := min(opts.Limit, len(discovery.candidates))
+	reason := discovery.reason
 	for i := 0; i < attempts; i++ {
 		if err := ctx.Err(); err != nil {
+			report.Elapsed = budget.elapsed()
+			m.noteCleanupDeferral(&report, reason, budget)
 			return report, err
 		}
-		candidate := candidates[(start+i)%len(candidates)]
+		// The whole-pass budget is checked BEFORE starting each attempt, never
+		// mid-attempt: a cleanup that has begun holds the repository lock and
+		// has durable records mid-transition, so abandoning it partway is how a
+		// record pair would be left disagreeing. Bounding the pass means
+		// declining to start more work, not interrupting work in flight.
+		if budget.exhausted() {
+			// Keep the EARLIEST reason. If discovery already deferred, that is
+			// the root cause worth reporting — the pass never saw all the
+			// pending work — and relabeling it here would hide that behind the
+			// downstream symptom.
+			if reason == CleanupDeferralNone {
+				reason = CleanupDeferralBudgetAttempts
+			}
+			break
+		}
+		candidate := discovery.candidates[i]
 		// Advance before attempting. A permanently blocked candidate therefore
 		// cannot starve later pending work across passes.
 		report.Next = candidate.token
 		report.Attempted++
 		removed, warning := m.retryCleanupPendingOne(ctx, candidate)
 		if warning != nil {
-			report.Warnings = append(report.Warnings, ReapWarning{Path: candidate.markerPath, Err: warning})
+			report.Warnings = append(report.Warnings, ReapWarning{
+				Path: candidate.markerPath, Err: warning, Class: classifyCleanupWarning(warning),
+			})
 			continue
 		}
 		if removed != nil {
 			report.Removed = append(report.Removed, *removed)
 		}
 	}
+	report.Elapsed = budget.elapsed()
+	m.noteCleanupDeferral(&report, reason, budget)
 	return report, nil
 }
 
-func (m *Manager) cleanupRetryCandidates(ctx context.Context, warningLimit int) ([]cleanupRetryCandidate, []ReapWarning, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+// noteCleanupDeferral records why a pass stopped short, as a report field and as
+// a warning so a caller that only aggregates warnings still surfaces it.
+func (m *Manager) noteCleanupDeferral(report *CleanupRetryReport, reason CleanupDeferralReason, budget *passBudget) {
+	if reason == CleanupDeferralNone {
+		return
 	}
+	report.Deferred = true
+	report.DeferralReason = reason
+	report.Warnings = append(report.Warnings, ReapWarning{
+		Path: m.Root,
+		Err:  errors.New(deferralMessage(reason, report.Examined, report.Attempted, budget.elapsed())),
+	})
+}
+
+// cleanupRetryCandidates discovers pending candidates under a bound.
+//
+// Before #5264 this read EVERY durable record under Root on every pass and only
+// then applied opts.Limit to the attempts. With a large retained population
+// (#5214: 1,590 terminal worktrees) that made the scan itself the cost, on a
+// path that startup and stale-preparation both wait behind — so the pass could
+// not be bounded by bounding attempts alone.
+//
+// The scan is now ordered and cursor-resuming, which is what makes truncating
+// it safe. Records are enumerated in token order (os.ReadDir sorts, and the
+// token is repoKey + "/" + markerFile, so the whole walk ascends), tokens at or
+// before opts.After are skipped WITHOUT being read, and the scan stops once it
+// has enough forward work to fill the pass. A truncated scan therefore still
+// makes forward progress rather than re-reading the same prefix every pass.
+//
+// Fairness is preserved by wrapping: if the forward scan reaches the end of the
+// tree without filling the pass, a second phase collects the records at or
+// before the cursor. Without that, a cursor parked near the end of the
+// population would leave the earlier records unattempted indefinitely.
+//
+// What is bounded is durable-record READS, which is the I/O this exists to cap.
+// Directory entries are still enumerated to locate those records; bounding that
+// too would need a separate index of pending records, which is not in scope
+// here. Stating the distinction is deliberate — a bound that is described as
+// total but is not would be the more expensive kind of wrong.
+func (m *Manager) cleanupRetryCandidates(ctx context.Context, opts CleanupRetryOptions, budget *passBudget) (cleanupDiscovery, error) {
+	var discovery cleanupDiscovery
+	if err := ctx.Err(); err != nil {
+		return discovery, err
+	}
+	limit := discoveryLimitFor(opts)
 	repos, err := os.ReadDir(m.Root)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, nil
+			return discovery, nil
 		}
-		return nil, nil, fmt.Errorf("worktree: list root %s for cleanup retry: %w", m.Root, err)
+		return discovery, fmt.Errorf("worktree: list root %s for cleanup retry: %w", m.Root, err)
 	}
-	var candidates []cleanupRetryCandidate
-	var warnings []ReapWarning
-	suppressedWarnings := 0
+
+	// Phase 1 takes the records strictly after the cursor; phase 2 wraps to the
+	// ones at or before it, and only runs if phase 1 completed without
+	// truncating. Running phase 2 after a truncated phase 1 would re-read the
+	// prefix the cursor exists to skip.
+	forward, err := m.scanCleanupMarkers(ctx, &discovery, repos, opts.After, true, limit, budget)
+	if err != nil {
+		return discovery, err
+	}
+	if forward && len(discovery.candidates) < limit && opts.After != "" {
+		if _, err := m.scanCleanupMarkers(ctx, &discovery, repos, opts.After, false, limit, budget); err != nil {
+			return discovery, err
+		}
+	}
+	return discovery, nil
+}
+
+// scanCleanupMarkers walks the marker tree once, collecting pending candidates
+// on one side of the cursor. It reports whether it finished the walk (true) as
+// opposed to stopping on a bound, so the caller can decide whether wrapping is
+// safe.
+func (m *Manager) scanCleanupMarkers(
+	ctx context.Context,
+	discovery *cleanupDiscovery,
+	repos []os.DirEntry,
+	after string,
+	forward bool,
+	limit int,
+	budget *passBudget,
+) (bool, error) {
 	for _, repo := range repos {
 		if !repo.IsDir() {
 			continue
@@ -107,44 +220,49 @@ func (m *Manager) cleanupRetryCandidates(ctx context.Context, warningLimit int) 
 			if os.IsNotExist(err) {
 				continue
 			}
-			return candidates, warnings, fmt.Errorf("worktree: list markers for cleanup retry %s: %w", key, err)
+			return false, fmt.Errorf("worktree: list markers for cleanup retry %s: %w", key, err)
 		}
 		for _, entry := range entries {
 			if err := ctx.Err(); err != nil {
-				return candidates, warnings, err
+				return false, err
 			}
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 				continue
 			}
+			token := key + "/" + entry.Name()
+			// Side selection happens before the read: skipping is the cheap
+			// operation, and doing it here is what keeps a resumed pass from
+			// paying the cost of the prefix it already processed.
+			if forward != (token > after) {
+				continue
+			}
+			if len(discovery.candidates) >= limit {
+				discovery.reason = CleanupDeferralDiscoveryLimit
+				return false, nil
+			}
+			if budget.exhausted() {
+				discovery.reason = CleanupDeferralBudgetDiscovery
+				return false, nil
+			}
 			markerPath := filepath.Join(markersDir, entry.Name())
+			discovery.examined++
 			mk, err := readMarker(markerPath)
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
 				}
-				if len(warnings) < warningLimit {
-					warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
-				} else {
-					suppressedWarnings++
-				}
+				discovery.addWarning(limit, markerPath, fmt.Errorf("%w: %w", errCleanupRecordInvalid, err))
 				continue
 			}
 			if mk.Status != statusCleanupPending {
 				continue
 			}
-			candidates = append(candidates, cleanupRetryCandidate{
-				token: key + "/" + entry.Name(), key: key, markerPath: markerPath,
+			discovery.candidates = append(discovery.candidates, cleanupRetryCandidate{
+				token: token, key: key, markerPath: markerPath,
 			})
 		}
 	}
-	if suppressedWarnings > 0 {
-		warnings = append(warnings, ReapWarning{
-			Path: m.Root,
-			Err:  fmt.Errorf("worktree: %d additional unreadable cleanup retry markers suppressed", suppressedWarnings),
-		})
-	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].token < candidates[j].token })
-	return candidates, warnings, nil
+	return true, nil
 }
 
 func (m *Manager) retryCleanupPendingOne(ctx context.Context, candidate cleanupRetryCandidate) (*ReapResult, error) {
