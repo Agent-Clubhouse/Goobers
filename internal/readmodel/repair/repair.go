@@ -121,6 +121,7 @@ type Stats struct {
 	SkippedFloor    int
 	SkippedUnpub    int
 	Tombstoned      int
+	Refreshed       int
 	CyclesCompleted int
 	Failures        int
 }
@@ -273,13 +274,16 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 		return err
 	}
 
-	if _, projected, err := s.store.GetRun(ctx, runID); err != nil {
+	if row, projected, err := s.store.GetRun(ctx, runID); err != nil {
 		return err
 	} else if projected {
 		// Already projected. The projector owns keeping it current; repair's job
 		// is discovery, and reprojecting every already-known run would spend the
 		// whole budget on work with a known-empty result.
-		return nil
+		//
+		// One exception, and it is not a budget problem: a row that still claims
+		// `running`. See refreshStaleRunning.
+		return s.refreshStaleRunning(ctx, dir, runID, row)
 	}
 
 	if tombstoned, err := s.store.Tombstoned(ctx, runID); err != nil {
@@ -327,6 +331,77 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 		return err
 	}
 	s.stats.Projected++
+	return nil
+}
+
+// refreshStaleRunning re-projects a row that claims `running` when its journal
+// has in fact reached a terminal event.
+//
+// # Why repair has to do this at all
+//
+// The projector is watermark-driven: a run is re-read only because something
+// recorded intake for it. Everything that appends to a run journal under the
+// daemon carries that observer — except, until #5278, the ad-hoc terminalizer
+// the stalled-run sweep builds for a run no live Runner owns. Its run.finished
+// landed with nobody watching, so no watermark was recorded, so the projector
+// never looked again. And the forward walk above only DISCOVERS unprojected
+// runs, so nothing else ever revisited the row either: it stayed `running`
+// while its journal said otherwise, for as long as the row existed. Four rows
+// on the cloud instance sat that way for up to sixteen days, which is what
+// made the stuck-run population look far worse than it was and hid the three
+// genuinely stalled runs among the false positives.
+//
+// Wiring the observer stops new rows going stale. This heals the ones already
+// stale — including any left by a writer that is still missing its observer,
+// which is the property worth having: the read model converges on the journal
+// without depending on every writer remembering to say so.
+//
+// # Why this does not reopen the budget argument
+//
+// The skip above exists because re-projecting every known run would spend the
+// whole budget re-deriving terminal rows that cannot have changed. This costs
+// one bounded tail read, and only for rows that claim `running` — a handful on
+// any instance, against the tens of thousands of terminal rows that still cost
+// exactly one GetRun. PhaseBounded reads from the END of the journal and stops
+// at the decisive record (#2755), so the common answer comes from the last few
+// kilobytes rather than a full parse.
+//
+// A row that is genuinely running is re-checked each cycle and left alone. That
+// is the correct outcome, not waste: it is also how a row whose run ended
+// without any watermark at all gets noticed.
+func (s *Sweeper) refreshStaleRunning(ctx context.Context, dir, runID string, row readmodel.RunRow) error {
+	if row.Phase != journal.PhaseRunning {
+		return nil
+	}
+	reader, err := journal.OpenRead(dir)
+	if err != nil {
+		// Unreadable is not a disagreement. The reverse walk owns rows whose
+		// journal has gone missing; anything else is for the next cycle.
+		return nil
+	}
+	phase, err := reader.PhaseBounded(ctx)
+	if err != nil {
+		return fmt.Errorf("repair: read phase in %s: %w", dir, err)
+	}
+	if phase == journal.PhaseRunning {
+		return nil
+	}
+	// The journal is terminal and the row is not. §3.2 makes the journal
+	// authoritative, so re-derive the whole row from it rather than patching the
+	// phase column: the terminal event settles finishedAt, currentStage and the
+	// outcome fields together, and a row carrying a terminal phase beside
+	// running-shaped values would be a third state neither source describes.
+	projection, found, err := s.project(dir)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if err := s.writer.UpsertRun(ctx, projection); err != nil {
+		return err
+	}
+	s.stats.Refreshed++
 	return nil
 }
 

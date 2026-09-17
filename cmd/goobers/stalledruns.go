@@ -20,6 +20,42 @@ import (
 
 type stalledTerminalPreparer func(instance.Layout) (runner.TerminalPreparer, error)
 
+// stalledSweepDeps carries the daemon-owned wiring the sweep needs when it has
+// to build its OWN terminalizer — the case where no live Runner owns the run,
+// which is every run left behind by a previous daemon.
+//
+// A struct rather than two more positional parameters: both fields come from
+// the same daemon setup, both are absent outside `up`, and this argument list
+// is already long enough that one more bare `nil` at a call site would say
+// nothing about what was being omitted. A nil *stalledSweepDeps is the
+// no-daemon case and behaves exactly as passing no preparer did.
+type stalledSweepDeps struct {
+	// PrepareTerminal builds the external forge cleanup for a run's gaggle.
+	PrepareTerminal stalledTerminalPreparer
+	// JournalAdvanced is the read-model intake observer (#5278). Without it a
+	// run this sweep terminalizes appends run.finished with nobody watching:
+	// no intake watermark is recorded, so the projector never re-reads the
+	// run, and repair only DISCOVERS unprojected runs — it never refreshes one
+	// it already has. The row stays `running` forever while the journal says
+	// otherwise, which is what manufactured four "stuck for weeks" runs on the
+	// cloud instance and hid the genuinely stalled ones among them.
+	JournalAdvanced func(runID string, seq uint64)
+}
+
+func (d *stalledSweepDeps) prepareTerminal() stalledTerminalPreparer {
+	if d == nil {
+		return nil
+	}
+	return d.PrepareTerminal
+}
+
+func (d *stalledSweepDeps) journalAdvanced() func(string, uint64) {
+	if d == nil {
+		return nil
+	}
+	return d.JournalAdvanced
+}
+
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
@@ -222,6 +258,49 @@ func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Ru
 	return fallback, false
 }
 
+// newStalledTerminalizer builds the Runner the sweep uses to terminalize runs
+// under runsDir that no live Runner owns — every run left behind by a previous
+// daemon, plus any whose owner has already gone away.
+//
+// One per runs directory, cached by the caller: the construction cost is per
+// gaggle, not per run.
+func newStalledTerminalizer(
+	runLayout instance.Layout,
+	runsDir string,
+	log *journal.InstanceLog,
+	deps *stalledSweepDeps,
+	notify runner.TerminalNotifier,
+) (*runner.Runner, error) {
+	var terminalPreparer runner.TerminalPreparer
+	if prepare := deps.prepareTerminal(); prepare != nil {
+		prepared, err := prepare(runLayout)
+		if err != nil {
+			return nil, fmt.Errorf("construct stalled-run terminal preparer for %s: %w", runsDir, err)
+		}
+		terminalPreparer = prepared
+	}
+	manager, err := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
+	if err != nil {
+		return nil, fmt.Errorf("construct stalled-run worktree manager for %s: %w", runsDir, err)
+	}
+	terminalizer, err := runner.New(runner.Config{
+		Worktrees:       manager,
+		RunsDir:         runsDir,
+		PrepareTerminal: terminalPreparer,
+		FinalizeTerminal: func(runID string, _ journal.RunPhase) error {
+			return finalizeTerminalRun(runLayout, log, manager, runID)
+		},
+		NotifyTerminal: notify,
+		// Without this the run.finished this terminalizer appends is invisible
+		// to every derived reader — see stalledSweepDeps.JournalAdvanced.
+		JournalAdvanced: deps.journalAdvanced(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct stalled-run terminalizer for %s: %w", runsDir, err)
+	}
+	return terminalizer, nil
+}
+
 // sweepStalledRuns terminalizes runs whose journals have gone quiet past
 // their pinned stalledRunTimeout (or past maxRunDuration).
 //
@@ -248,7 +327,7 @@ func sweepStalledRuns(
 	fallback *runner.Runner,
 	guards *engineRunGuards,
 	log *journal.InstanceLog,
-	prepare stalledTerminalPreparer,
+	deps *stalledSweepDeps,
 	notify runner.TerminalNotifier,
 	release func(runID, workflow string),
 	now time.Time,
@@ -385,30 +464,9 @@ func sweepStalledRuns(
 		if runRunner == nil {
 			runRunner = terminalizers[runsDir]
 			if runRunner == nil {
-				var terminalPreparer runner.TerminalPreparer
-				if prepare != nil {
-					terminalPreparer, err = prepare(runLayout)
-					if err != nil {
-						sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run terminal preparer for %s: %w", runsDir, err))
-						continue
-					}
-				}
-				manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
-				if managerErr != nil {
-					sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run worktree manager for %s: %w", runsDir, managerErr))
-					continue
-				}
-				runRunner, err = runner.New(runner.Config{
-					Worktrees:       manager,
-					RunsDir:         runsDir,
-					PrepareTerminal: terminalPreparer,
-					FinalizeTerminal: func(runID string, _ journal.RunPhase) error {
-						return finalizeTerminalRun(runLayout, log, manager, runID)
-					},
-					NotifyTerminal: notify,
-				})
+				runRunner, err = newStalledTerminalizer(runLayout, runsDir, log, deps, notify)
 				if err != nil {
-					sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run terminalizer for %s: %w", runsDir, err))
+					sweepErrs = append(sweepErrs, err)
 					continue
 				}
 				terminalizers[runsDir] = runRunner
