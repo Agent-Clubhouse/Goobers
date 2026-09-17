@@ -376,6 +376,14 @@ Use the narrowest channel matching the data:
 | Durable non-repository files | `outbox` |
 | Repository state in DSL 3.0 | `repoFrom` |
 
+Keep outbox exports bounded: each attempt is limited to 200 files and 64 MiB.
+For a large test corpus, export a compact manifest with every logical outcome,
+content hashes, and explicit omission/truncation markers; store the raw corpus
+in durable artifact storage and reference it from the manifest. An oversized
+or otherwise incomplete export fails the workflow after preserving the
+command's own outcome in the run journal—it is not made successful by
+`continueOnError`.
+
 For example, pass the PR number emitted by `open-pr` into a later `ci-poll`
 stage:
 

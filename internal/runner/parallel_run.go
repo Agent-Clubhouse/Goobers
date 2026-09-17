@@ -667,6 +667,11 @@ func (r *Runner) runParallelBranch(
 				result.status, result.err = journal.BranchFailed, err
 				return result
 			}
+			if isOutboxExportFailure(stageResult) {
+				result.status = journal.BranchFailed
+				result.err = codedStageFailure(outboxExportFailureCode, fmt.Errorf("stage %q: %s", task.Name, stageResult.Error.Message))
+				return result
+			}
 			if !replayed {
 				result.pointers = append(result.pointers, produced...)
 				result.artifacts += artifactPointerCount(produced)

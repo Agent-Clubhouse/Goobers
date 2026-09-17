@@ -1778,6 +1778,13 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			if done || err != nil {
 				return terminal, err
 			}
+			// A declared outbox is part of the stage's evidence contract. Its
+			// collection failure is never a branch-local/tolerated failure: the
+			// command outcome remains in the attempt annotation, but the workflow
+			// fails because the promised evidence is unavailable.
+			if ws.parallel != nil && isOutboxExportFailure(result) {
+				return r.finishStageFailure(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, result.Error)
+			}
 
 			if ws.parallel != nil {
 				switch result.Status {
@@ -3668,6 +3675,10 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
 		return "", res, false, err
 	case apiv1.ResultFailure:
+		if isOutboxExportFailure(result) {
+			res, err = r.finishStageFailure(ctx, runID, jr, repoRef, t.Name, steps, result.Error)
+			return "", res, false, err
+		}
 		// #712: notify before any routing decision below — a rate-limited
 		// stage failure means "the scheduler should stop dispatching more
 		// provider-dependent runs until reset", which is true regardless of
@@ -4518,7 +4529,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		result.Integrity = producedIntegrity(t, in.Item, upstream,
 			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
 		outputs := result.Outputs
-		if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+		if result.Status == apiv1.ResultFailure && t.ContinueOnError && !isOutboxExportFailure(result) {
 			outputs = nil
 		}
 		if err := jr.Append(journal.Event{
@@ -4972,9 +4983,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		mutations, issues = readMutationSidecar(env.Workspace)
 		err = errors.Join(err, recordMutationSidecarIssues(jr, t.Name, attempt, class, issues))
 		if err == nil {
-			if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
-				err = outboxErr
-			}
+			result, err = r.finalizeOutbox(jr, env.Workspace, t, attempt, class, result)
 		}
 		if configuredExperiment(t) {
 			if recordErr := recordBanditResult(experiment, in, assignment, experimentWindow, experimentObservations, result, jr); recordErr != nil {
@@ -4996,9 +5005,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		result, err = agentInvocation.Invoke(ctx, env)
 		if err == nil {
-			if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
-				err = outboxErr
-			}
+			result, err = r.finalizeOutbox(jr, env.Workspace, t, attempt, class, result)
 		}
 		if err == nil && class == journal.AttemptInfra && result.Status == apiv1.ResultNoWork &&
 			*infraFailedAttemptCommittedWork && workspace.worktree != nil {
@@ -5041,7 +5048,8 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		if err != nil && t.OnTimeout == apiv1.TaskOnTimeoutSalvage && invoke.IsTimeout(err) {
 			if salvaged, ok := r.salvageTimeout(ctx, jr, in, t, workspace, attempt, class, err); ok {
 				salvaged = withSalvagedDiagnostics(salvaged, result)
-				if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
+				salvaged, outboxErr := r.finalizeOutbox(jr, env.Workspace, t, attempt, class, salvaged)
+				if outboxErr != nil {
 					return apiv1.ResultEnvelope{}, nil, nil, outboxErr
 				}
 				return salvaged, nil, nil, nil
