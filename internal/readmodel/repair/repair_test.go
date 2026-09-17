@@ -70,6 +70,85 @@ func TestSweepDiscoversAnUnprojectedRun(t *testing.T) {
 	}
 }
 
+func TestSweepWalksEveryRunsDir(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	rootOne := filepath.Join(t.TempDir(), "gaggle-one")
+	rootTwo := filepath.Join(t.TempDir(), "gaggle-two")
+	if err := os.MkdirAll(rootOne, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rootTwo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRun(t, rootOne, fmt.Sprintf("%032x", 1))
+	writeRun(t, rootTwo, fmt.Sprintf("%032x", 2))
+
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{rootOne, rootTwo}, BatchSize: 1})
+	for i := 0; i < 4; i++ {
+		if err := sweeper.Step(ctx); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+
+	cursor, err := store.SweepCursor(ctx)
+	if err != nil {
+		t.Fatalf("read sweep cursor: %v", err)
+	}
+	if cursor.Root != rootTwo {
+		t.Fatalf("cursor root = %q, want %q; the sweep stopped after the first runs dir", cursor.Root, rootTwo)
+	}
+	for _, runID := range []string{fmt.Sprintf("%032x", 1), fmt.Sprintf("%032x", 2)} {
+		if _, ok, err := store.GetRun(ctx, runID); err != nil {
+			t.Fatalf("read run %s: %v", runID, err)
+		} else if !ok {
+			t.Fatalf("the sweep did not project run %s from the second runs dir", runID)
+		}
+	}
+}
+
+func TestSweepRefreshesStaleRunningRowsAcrossRunsDirs(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	rootOne := filepath.Join(t.TempDir(), "gaggle-one")
+	rootTwo := filepath.Join(t.TempDir(), "gaggle-two")
+	if err := os.MkdirAll(rootOne, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rootTwo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRun(t, rootOne, fmt.Sprintf("%032x", 1))
+	staleRun := fmt.Sprintf("%032x", 2)
+	writeRun(t, rootTwo, staleRun)
+
+	if err := store.UpsertRun(ctx, readmodel.Projection{Run: readmodel.RunRow{
+		RunID: staleRun, Gaggle: "alpha", Workflow: "wf",
+		Phase: journal.PhaseRunning, Terminal: false,
+		StartedAt: time.Now().UTC(), LastSeq: 1,
+	}}); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{rootOne, rootTwo}, BatchSize: 1})
+	for i := 0; i < 4; i++ {
+		if err := sweeper.Step(ctx); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+
+	row, ok, err := store.GetRun(ctx, staleRun)
+	if err != nil {
+		t.Fatalf("read run after refresh: %v", err)
+	}
+	if !ok {
+		t.Fatal("the stale running row was not re-projected")
+	}
+	if row.Phase != journal.PhaseCompleted {
+		t.Fatalf("stale row phase = %s, want %s; the repair sweep did not refresh a terminal journal in the second runs dir", row.Phase, journal.PhaseCompleted)
+	}
+}
+
 // TestSweepNeverCreatesALockFile is #1924's headline acceptance criterion.
 //
 // The previous reconcile ran on the HTTP list path and reached IngestRun ->
