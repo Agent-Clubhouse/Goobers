@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"github.com/goobers/goobers/internal/platform/durability"
-	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 // ReapResult reports a committed retirement, not a new eligibility decision.
@@ -37,7 +36,7 @@ func ReapRetired(ctx context.Context, root string, maxEntries int, deleteFiles b
 	if err != nil || !before.IsDir() {
 		return nil, fmt.Errorf("recovery inventory must be a real directory")
 	}
-	lock, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
+	lock, err := acquireInventoryLock(ctx, root)
 	if err != nil {
 		return nil, err
 	}

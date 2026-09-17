@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
@@ -88,6 +89,7 @@ func TestReadInventoryRefusesMisfiledRecord(t *testing.T) {
 }
 
 func TestReadInventoryHonorsCancellationAndPublisherLock(t *testing.T) {
+	setInventoryLockWaitForTest(t, time.Millisecond)
 	root := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
