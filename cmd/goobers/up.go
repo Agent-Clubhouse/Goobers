@@ -574,11 +574,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// expired-claim reap — setup's included — a no-op until the renewal set
 	// has been rebuilt from ledger + liveness below.
 	claimRecoveryGate := localscheduler.NewRecoveryGate()
+	schedulerSetupStarted := time.Now()
 	setupOptions := []schedulerSetupOption{
 		withDesktopNotifications(notifications, stderr),
-		withStartupProgress(func(message string) {
-			pf(stdout, "startup: %s\n", message)
-		}),
+		withStartupProgress(newSchedulerSetupProgress(stdout, schedulerSetupStarted, time.Now)),
 		withClaimRecoveryGate(claimRecoveryGate),
 	}
 	if *skipPreflight {
