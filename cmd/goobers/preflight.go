@@ -270,7 +270,7 @@ func preflightDaemonHarnesses(
 		refusals[identity] = reason
 	}
 	for _, identity := range sortedWorkflowIdentities(refusals) {
-		fmt.Fprintf(warnings, "warning: workflow %q (gaggle %q) is refused because a required harness is unavailable: %s\n",
+		_, _ = fmt.Fprintf(warnings, "warning: workflow %q (gaggle %q) is refused because a required harness is unavailable: %s\n",
 			identity.Workflow, identity.Gaggle, refusals[identity])
 	}
 	return info, refusals, nil
