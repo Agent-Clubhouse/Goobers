@@ -150,7 +150,10 @@ state is intentional.
   before any harness process starts. Fresh context drops optional parent item,
   inputs, addenda, and context pointers; inherited context retains them;
   explicit context carries only named pointers and selected envelope sections.
-  The immutable child execution policy is delivered in every mode.
+  The immutable child execution policy is delivered in every mode. Live
+  top-level and adapter-exposed nested agents are addressable within one run by
+  the journal-derived portable address
+  `goobers.dev/journal/agent-address/v1/<run>/<stage>/<attempt>/<agent>`.
 - `item`, `repoRef`, `limits` — the triggering backlog item, target repo, and
   execution bounds. `repoRef` carries repository identity and connection
   fields only: config-side declarations such as `project.checkout` (B2, #649)
