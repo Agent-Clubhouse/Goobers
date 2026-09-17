@@ -109,6 +109,33 @@ func TestSyncGitWorkflowSourceIfChangedLeavesCurrentConfigUntouched(t *testing.T
 	}
 }
 
+func TestPreparedGitWorkflowSourceCanRestoreLastAppliedTree(t *testing.T) {
+	repo := newWorkflowSourceSyncTestRepo(t, "candidate\n")
+	root := t.TempDir()
+	layout := NewLayout(root)
+	if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "last-applied\n")
+	writeWorkflowSourceSyncTestFile(t, layout.ConfigDir(), filepath.Join("gaggles", "example", "gaggle.yaml"), "last-applied-gaggle\n")
+
+	revision, changed, _, swap, err := PrepareGitWorkflowSourceIfChanged(context.Background(), root, WorkflowSource{
+		Kind: WorkflowSourceKindGit, Path: repo,
+	}, "", nil, nil, nil)
+	if err != nil || !changed || revision == "" || swap == nil {
+		t.Fatalf("prepare = revision %q changed=%t swap=%v err=%v", revision, changed, swap != nil, err)
+	}
+	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "candidate\n")
+	if err := swap.Rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "last-applied\n")
+	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), filepath.Join("gaggles", "example", "gaggle.yaml"), "last-applied-gaggle\n")
+	if err := swap.Rollback(); err != nil {
+		t.Fatalf("idempotent rollback: %v", err)
+	}
+}
+
 // TestSyncGitWorkflowSourceRejectsUnsupportedKind pins the guard at this
 // seam: a local-dir workflowSource has nothing to pull, so syncing it is a
 // caller bug, not a silent no-op.

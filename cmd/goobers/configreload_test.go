@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -321,7 +322,7 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 	runGitT(t, sourceRepo, "add", ".")
 	runGitT(t, sourceRepo, "commit", "-m", "valid config")
 	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
-	waitForRunnableWorkflow(t, root, "reconciled-implement")
+	waitForCompletedWorkflow(t, root, "reconciled-implement")
 
 	if err := os.WriteFile(workflowPath, []byte("kind: Workflow\nmetadata: [\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -332,7 +333,51 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 	if rejected.Error == nil || rejected.Error.Code != "config_reload_rejected" {
 		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
 	}
-	waitForRunnableWorkflow(t, root, "reconciled-implement")
+	status := waitForConfigValue(t, "rejected source generation status", func() (readservice.DefinitionReloadStatus, bool) {
+		health := readDaemonHealth(t, address)
+		if health.DefinitionReload == nil {
+			return readservice.DefinitionReloadStatus{}, false
+		}
+		return *health.DefinitionReload, health.DefinitionReload.State == "rejected"
+	})
+	currentDigest, err := configDirectoryDigest(layout.ConfigDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentDigest != status.AppliedDigest || status.ObservedDigest == status.AppliedDigest {
+		t.Fatalf("rejected source restoration: disk=%s status=%+v", currentDigest, status)
+	}
+	// The exact deterministic-stage generation fence that produced #5164's
+	// fleet-wide failures must now accept the restored last-applied tree.
+	t.Setenv(executor.InstanceRootEnvVar, root)
+	t.Setenv(executor.AppliedConfigDigestEnvVar, status.AppliedDigest)
+	if err := enforceAppliedStageConfig(); err != nil {
+		t.Fatalf("restored source still fences deterministic stages: %v", err)
+	}
+	t.Setenv(executor.InstanceRootEnvVar, "")
+	t.Setenv(executor.AppliedConfigDigestEnvVar, "")
+	waitForCompletedWorkflow(t, root, "reconciled-implement")
+
+	// An explicit apply of the same rejected revision must validate and roll
+	// back again, not confuse its digest with the prior observation and leave
+	// the invalid tree installed.
+	code, _, stderr := runArgs(t, "apply", root)
+	if code != 1 || !strings.Contains(stderr, "keeping last-known-good definitions") {
+		t.Fatalf("repeat apply: code=%d stderr=%q", code, stderr)
+	}
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloadRejected, 2)
+	if digest, err := configDirectoryDigest(layout.ConfigDir()); err != nil || digest != status.AppliedDigest {
+		t.Fatalf("repeat rejection left unapplied tree: digest=%s err=%v want=%s", digest, err, status.AppliedDigest)
+	}
+
+	validNext := strings.Replace(valid, "name: reconciled-implement", "name: reconciled-next", 1)
+	if err := os.WriteFile(workflowPath, []byte(validNext), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "valid config after rejection")
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 2)
+	waitForCompletedWorkflow(t, root, "reconciled-next")
 }
 
 func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
@@ -856,6 +901,20 @@ func waitForRunnableWorkflow(t *testing.T, root, workflow string) string {
 			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
 		}
 		return "", false
+	})
+}
+
+func waitForCompletedWorkflow(t *testing.T, root, workflow string) {
+	t.Helper()
+	waitForConfigValue(t, workflow+" to run to completion", func() (struct{}, bool) {
+		code, stdout, stderr := runArgs(t, "run", workflow, root)
+		if code == 0 {
+			return struct{}{}, true
+		}
+		if !strings.Contains(stderr, "unknown workflow") {
+			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
+		}
+		return struct{}{}, false
 	})
 }
 
