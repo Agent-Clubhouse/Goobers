@@ -106,6 +106,7 @@
       "method": "GET",
       "path": "/assets/{path...}",
       "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
       "cost": "bounded",
       "budgetMs": 8000,
       "streaming": false,
