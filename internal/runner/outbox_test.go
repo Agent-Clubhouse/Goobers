@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
@@ -18,6 +19,31 @@ import (
 type oversizedOutboxDeterministic struct {
 	rec   ArtifactRecorder
 	calls int
+}
+
+type repassOutboxDeterministic struct{ calls int }
+
+func (d *repassOutboxDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.calls++
+	data := []byte(`{"execution":` + strconv.Itoa(d.calls) + `}`)
+	path := filepath.Join(env.Workspace, "evidence", "failure.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "validation evidence"}, nil
+}
+
+type repassThenPassGate struct{ calls int }
+
+func (g *repassThenPassGate) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
+	g.calls++
+	if g.calls == 1 {
+		return gate.OutcomeFail, nil
+	}
+	return gate.OutcomePass, nil
 }
 
 func (d *oversizedOutboxDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -284,9 +310,9 @@ func TestRunnerExportOutboxEndToEnd(t *testing.T) {
 		t.Fatalf("exportOutbox: %v", err)
 	}
 
-	want := filepath.Join(runsDir, "run-outbox-e2e", "artifacts", "outbox", "build", "attempt-1", "report.json")
-	if _, err := os.Stat(want); err != nil {
-		t.Fatalf("expected exported outbox file at %s: %v", want, err)
+	matches, err := filepath.Glob(filepath.Join(runsDir, "run-outbox-e2e", "artifacts", "outbox", "build", "attempt-1", "occurrence-*", "report.json"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("exported outbox paths = %v, %v; want one immutable occurrence", matches, err)
 	}
 }
 
@@ -311,12 +337,91 @@ func TestRunnerExportOutboxMirrorsDurableCopy(t *testing.T) {
 		t.Fatalf("exportOutbox: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(mirror, "run-outbox-mirror", "build", "attempt-2", "reports", "report.json"))
+	matches, err := filepath.Glob(filepath.Join(mirror, "run-outbox-mirror", "build", "attempt-2", "occurrence-*", "reports", "report.json"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("mirrored outbox paths = %v, %v; want one immutable occurrence", matches, err)
+	}
+	got, err := os.ReadFile(matches[0])
 	if err != nil {
 		t.Fatalf("read mirrored outbox: %v", err)
 	}
 	if string(got) != `{"token":"scrubbed"}` {
 		t.Fatalf("mirrored content = %q", got)
+	}
+}
+
+// TestRunnerGateRepassPreservesEveryOutboxOccurrence is #5218's end-to-end
+// regression. A gate re-enters the same task, whose attempt counter restarts
+// at 1, and both fixed-name exports must remain readable at their own digest.
+func TestRunnerGateRepassPreservesEveryOutboxOccurrence(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web", Start: "validate",
+		Tasks: []apiv1.Task{{
+			Name: "validate", Type: apiv1.TaskDeterministic, Goal: "write evidence",
+			Workspace: apiv1.WorkspaceRepo,
+			Run:       &apiv1.DeterministicRun{Command: []string{"validate"}},
+			Outbox:    []string{"evidence/failure.json"}, Next: "review",
+		}},
+		Gates: []apiv1.Gate{{
+			Name: "review", Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "scripted"},
+			Branches: map[string]string{
+				gate.OutcomePass: workflow.TerminalComplete,
+				gate.OutcomeFail: "validate",
+			},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "outbox-repass", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	deterministic := &repassOutboxDeterministic{}
+	evaluator := &repassThenPassGate{}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return deterministic, nil
+	}, evaluator)
+	const runID = "run-outbox-repass"
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil || result.Phase != journal.PhaseCompleted {
+		t.Fatalf("Start = %+v, %v; want completed after one repass", result, err)
+	}
+	if deterministic.calls != 2 || evaluator.calls != 2 {
+		t.Fatalf("calls = task:%d gate:%d, want 2/2", deterministic.calls, evaluator.calls)
+	}
+
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refs []journal.Ref
+	for _, event := range events {
+		if event.Type == journal.EventArtifactRecorded && event.Stage == "validate" && event.Name == "outbox/evidence/failure.json" && event.Ref != nil {
+			if event.Attempt != 1 {
+				t.Fatalf("gate-repass export attempt = %d, want 1", event.Attempt)
+			}
+			refs = append(refs, *event.Ref)
+		}
+	}
+	if len(refs) != 2 || refs[0].Path == refs[1].Path {
+		t.Fatalf("outbox refs = %+v, want two distinct occurrence paths", refs)
+	}
+	for i, ref := range refs {
+		data, err := os.ReadFile(filepath.Join(runsDir, runID, filepath.FromSlash(ref.Path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"execution":` + strconv.Itoa(i+1) + `}`
+		if string(data) != want || journal.Digest(data) != ref.Digest {
+			t.Fatalf("historical ref %d = path:%q data:%q digest:%q, want data:%q digest:%q", i+1, ref.Path, data, journal.Digest(data), want, ref.Digest)
+		}
 	}
 }
 

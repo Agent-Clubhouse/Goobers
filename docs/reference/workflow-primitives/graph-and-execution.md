@@ -84,6 +84,9 @@ journal. Paths that escape the workspace fail closed. Missing declared paths
 are skipped. One attempt may export at most 200 files and 64 MiB in aggregate.
 The runner measures the complete candidate set before reading or publishing it,
 so a rejected oversized batch is never partially accepted.
+Durable paths include both the retry attempt and an immutable execution
+occurrence. Gate repasses may reuse attempt 1, but never reuse an occurrence or
+overwrite the bytes referenced by an earlier `artifact.recorded` event.
 
 Outbox collection happens after the command reports its result. If collection
 fails, the journal preserves that command status/error in an

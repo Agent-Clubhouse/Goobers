@@ -377,6 +377,8 @@ Use the narrowest channel matching the data:
 | Repository state in DSL 3.0 | `repoFrom` |
 
 Keep outbox exports bounded: each attempt is limited to 200 files and 64 MiB.
+Each execution is stored under its own immutable occurrence within the attempt,
+so a gate repass that re-enters attempt 1 cannot replace earlier evidence.
 For a large test corpus, export a compact manifest with every logical outcome,
 content hashes, and explicit omission/truncation markers; store the raw corpus
 in durable artifact storage and reference it from the manifest. An oversized

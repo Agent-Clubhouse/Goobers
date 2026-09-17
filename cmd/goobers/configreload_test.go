@@ -194,7 +194,17 @@ spec:
 	stdout := waitForRunnableWorkflow(t, root, "reloaded-implement")
 	runID := runIDFromAcceptedTriggerStdout(t, layout, stdout)
 	mirrored := waitForConfigValue(t, "gaggle outbox mirror after reload", func() ([]byte, bool) {
-		data, err := os.ReadFile(filepath.Join(mirrorPath, runID, "local-ci", "attempt-1", "reports", "report.txt"))
+		matches, err := filepath.Glob(filepath.Join(mirrorPath, runID, "local-ci", "attempt-1", "occurrence-*", "reports", "report.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) == 0 {
+			return nil, false
+		}
+		if len(matches) != 1 {
+			t.Fatalf("gaggle outbox mirror paths = %v, want one immutable occurrence", matches)
+		}
+		data, err := os.ReadFile(matches[0])
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false
 		}
