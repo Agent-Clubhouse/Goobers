@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 
 	"github.com/goobers/goobers/internal/platform/durability"
-	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 // ErrInventoryFull refuses new recovery state without evicting existing
@@ -52,13 +51,13 @@ func publishToInventory(ctx context.Context, repository, root string, cleanupRoo
 		return Record{}, "", err
 	}
 	name := inventoryDirectoryName(prepared)
-	directory, err := lockedReserveSnapshotDirectory(root, name, maxSnapshots)
+	directory, err := lockedReserveSnapshotDirectory(ctx, root, name, maxSnapshots)
 	if errors.Is(err, ErrInventoryFull) {
 		if freed, evictErr := reclaimInventoryCapacity(ctx, root, maxSnapshots, evict); evictErr == nil && freed {
 			if err := ctx.Err(); err != nil {
 				return Record{}, "", err
 			}
-			directory, err = lockedReserveSnapshotDirectory(root, name, maxSnapshots)
+			directory, err = lockedReserveSnapshotDirectory(ctx, root, name, maxSnapshots)
 		}
 	}
 	if err != nil {
@@ -80,8 +79,8 @@ func publishToInventory(ctx context.Context, repository, root string, cleanupRoo
 // reservation attempt itself, so a subsequent eviction attempt (which
 // acquires the same lock through RetireSnapshot/ReapRetired) never deadlocks
 // against it.
-func lockedReserveSnapshotDirectory(root, name string, limit int) (string, error) {
-	handle, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
+func lockedReserveSnapshotDirectory(ctx context.Context, root, name string, limit int) (string, error) {
+	handle, err := acquireInventoryLock(ctx, root)
 	if err != nil {
 		return "", err
 	}

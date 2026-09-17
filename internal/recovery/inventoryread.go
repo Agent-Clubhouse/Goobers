@@ -8,8 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-
-	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 // InventoryEntry is validated metadata in its identity-bound reservation.
@@ -67,7 +65,7 @@ func readInventory(ctx context.Context, root string, maxEntries int, tolerant bo
 	if err != nil || !before.IsDir() {
 		return nil, nil, fmt.Errorf("recovery inventory must be a real directory")
 	}
-	handle, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
+	handle, err := acquireInventoryLock(ctx, root)
 	if err != nil {
 		return nil, nil, err
 	}

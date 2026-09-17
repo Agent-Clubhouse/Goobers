@@ -12,6 +12,7 @@ import (
 )
 
 func TestRetireSnapshotPreservesArchiveAndInventoryBound(t *testing.T) {
+	setInventoryLockWaitForTest(t, time.Millisecond)
 	root := t.TempDir()
 	record := storageTestRecord()
 	directory := seedInventoryRecord(t, root, record)
