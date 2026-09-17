@@ -267,6 +267,49 @@ whose credentials the instance references.
 
 ---
 
+## Service health record (#5244)
+
+Alongside the fast informational heartbeat on stdout (which is unchanged and
+still one minute), the daemon appends a durable `service.health` event to
+`scheduler/events.jsonl` **at startup and every six hours thereafter**, whether
+or not any workflow is running. It answers "what is this instance, running as
+which account, since when" without needing a run to hang the question off — no
+workflow run is fabricated and no artificial long-lived task is held open to
+represent an idle instance.
+
+The record is not silenced by `--quiet`: that flag suppresses stdout chatter,
+while this is evidence read back from the log later.
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | Payload shape version; read it before interpreting the rest. |
+| `observedAt` | When the observation was taken. |
+| `instanceId` | The durable instance identity, or `unknown`. |
+| `identityProblem` | Present only when the identity could not be read, explaining why. |
+| `machineName` | Host name, or `unknown`. |
+| `accountName` | The account the **service** is executing as — not the interactive observer. |
+| `daemonStartedAt` / `processUptimeSeconds` | This process's lifetime. Absent when no daemon identity is available. |
+| `observedUncleanRestarts` | Count of recorded `daemon.dirty_restart` events in the readable window. |
+| `observationWindowStart` | Earliest event actually read — after log rotation this is later than the daemon's start. |
+| `windowCoverage` | `complete` when the history was readable, `unknown` when it was not. |
+
+Two deliberate limits on what the record claims:
+
+- **Zero means a covered empty window.** The restart count is reported *only*
+  when `windowCoverage` is `complete`; an unreadable window omits the field
+  entirely rather than reporting zero, so "none happened" and "nothing was
+  measured" never look alike.
+- **The names do not over-claim.** An unclean restart means the previous lock
+  was not cleanly released, which is not automatically a confirmed crash; and
+  `processUptimeSeconds` is this process's lifetime, not cumulative healthy
+  availability across restarts.
+
+Export of this record to an OpenTelemetry collector is **not** implemented. It
+needs the separately configurable operational-diagnostics stream tracked by
+#5243, whose whole point is that configuring a workflow-journal destination must
+not silently start exporting machine and account labels. The record is local
+evidence until that lands.
+
 ## Dirty restart journal event
 
 Every daemon lifetime appends `daemon.started` and a successful graceful drain
