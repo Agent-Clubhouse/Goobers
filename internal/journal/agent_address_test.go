@@ -310,6 +310,58 @@ func TestAddressableAgentsExcludeCollidedLiveAddresses(t *testing.T) {
 	}
 }
 
+func TestCollidedLatestVisitAddressesStayUnreachableAfterOneTargetEnds(t *testing.T) {
+	root := t.TempDir()
+	identity := testIdentity()
+	identity.RunID = "0af7651916cd43dd8448eb211c80319c"
+	run, err := Create(root, identity, nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
+	if err := run.Append(Event{Type: EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	startedSeq := run.Seq()
+	for _, event := range []Event{
+		agentLifecycleEvent(now, "copilot:implement", "", identity.RunID, "implement", 1, AgentWaiting, AgentUsage{}),
+		agentLifecycleEvent(now.Add(time.Second), "copilot:implement", "parent", identity.RunID, "implement", 1, AgentStarted, AgentUsage{}),
+		agentLifecycleEvent(now.Add(2*time.Second), "copilot:implement", "parent", identity.RunID, "implement", 1, AgentCompleted, AgentUsage{}),
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reader, err := OpenRead(filepath.Join(root, identity.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := reader.AddressableAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("addressable agents = %+v, want collided latest-visit address excluded after one target ends", agents)
+	}
+
+	address := AgentAddress{
+		RunID:   identity.RunID,
+		Stage:   "implement",
+		Attempt: 1,
+		AgentID: encodeJournalAgentToken("copilot:implement", startedSeq),
+	}
+	resolved, err := reader.ResolveAgentAddress(address.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Status != AgentAddressUnreachable {
+		t.Fatalf("resolved = %+v, want unreachable", resolved)
+	}
+}
+
 func TestResolveAgentAddressMarksEarlierVisitsStale(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
