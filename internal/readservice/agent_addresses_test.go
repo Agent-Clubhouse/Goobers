@@ -90,10 +90,14 @@ func appendAgentLifecycle(t *testing.T, run *journal.Run, clock *fixtureClock, r
 }
 
 func appendAgentLifecycleWithParent(t *testing.T, run *journal.Run, clock *fixtureClock, runID string, attempt int, id, parentID string, worker bool, lifecycle journal.AgentLifecycle) {
+	appendAgentLifecycleWithEmitKey(t, run, clock, runID, attempt, id, parentID, worker, lifecycle, "")
+}
+
+func appendAgentLifecycleWithEmitKey(t *testing.T, run *journal.Run, clock *fixtureClock, runID string, attempt int, id, parentID string, worker bool, lifecycle journal.AgentLifecycle, emitKey string) {
 	t.Helper()
 	clock.advance(time.Second)
 	at := clock.now
-	if err := run.Append(journal.Event{
+	event := journal.Event{
 		Type: journal.EventAgentLifecycle,
 		Agent: &journal.AgentProvenance{
 			Schema:    "goobers.dev/journal/agent/v1",
@@ -108,7 +112,11 @@ func appendAgentLifecycleWithParent(t *testing.T, run *journal.Run, clock *fixtu
 			UpdatedAt: at,
 			Fidelity:  journal.AgentFidelityFull,
 		},
-	}); err != nil {
+	}
+	if emitKey != "" {
+		event.Runner = map[string]any{"emitKey": emitKey}
+	}
+	if err := run.Append(event); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -553,6 +561,39 @@ func TestResolveAgentAddressMarksEarlierVisitsStale(t *testing.T) {
 				t.Fatalf("live addresses = %+v, want %q and %q", live, currentTop, currentNested)
 			}
 		})
+	}
+}
+
+func TestAddressableAgentsIgnoreLateOlderPodLifecycleEvents(t *testing.T) {
+	service, layout, def := agentAddressService(t)
+	runID := "run-pod-revisit"
+	run, clock := createAgentAddressRun(t, layout, def, runID, time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC))
+	appendAgenticStageStart(t, run, clock, 1)
+	appendAgentLifecycleWithEmitKey(t, run, clock, runID, 1, "worker-1", "coder", true, journal.AgentWaiting, "pod/1/agent.waiting")
+	finishAgenticStage(t, run, clock, 1)
+	secondSeq := appendAgenticStageStart(t, run, clock, 1)
+	appendAgentLifecycleWithEmitKey(t, run, clock, runID, 1, "worker-1", "coder", true, journal.AgentWaiting, "pod/2/agent.waiting")
+	appendAgentLifecycleWithEmitKey(t, run, clock, runID, 1, "worker-1", "coder", true, journal.AgentCompleted, "pod/1/agent.completed")
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	agents, err := service.AddressableAgents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentTop := agentAddressFor(runID, "implement", 1, "coder", secondSeq).String()
+	currentNested := agentAddressFor(runID, "implement", 1, "worker-1", secondSeq).String()
+	if !containsAddress(agents, currentTop) || !containsAddress(agents, currentNested) {
+		t.Fatalf("addressable agents = %+v, want latest pod addresses %q and %q", agents, currentTop, currentNested)
+	}
+
+	resolution, err := service.ResolveAgentAddress(context.Background(), runID, currentNested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Kind != AgentResolutionResolved || resolution.Agent == nil || resolution.Agent.Lifecycle != string(journal.AgentWaiting) {
+		t.Fatalf("current nested resolution = %+v, want resolved waiting agent from newest pod", resolution)
 	}
 }
 
