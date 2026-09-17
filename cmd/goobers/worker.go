@@ -167,6 +167,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	// Validate mode-3 authority before starting background work or printing
 	// endpoints. Invalid URLs may contain credentials and must never be echoed.
+	var recurringStageSweeper stageOrphanSweeper
 	if *dispatchNamespace != "" {
 		if *instanceRoot == "" {
 			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
@@ -332,9 +333,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// --instance: the runner inventory is what names the queues and the
 		// eligible runners.
 		// The dispatcher's owner identity: this worker's hostname, which
-		// in-cluster is its pod name. It is stamped on every stage pod and is
-		// the scope the orphan sweep below sweeps within, so a sibling
-		// worker's in-flight pods are outside every sweep by construction.
+		// in-cluster is its pod name. It is diagnostic provenance; the durable
+		// instance identity scopes orphan reconciliation across rollouts.
 		owner, oerr := os.Hostname()
 		if oerr != nil {
 			pf(stderr, "error: resolve stage dispatch owner identity: %v\n", oerr)
@@ -347,17 +347,16 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
 		engineRuntime.deps.Surrenders = dispatch.Surrenders
+		recurringStageSweeper = dispatch.Sweeper
 		queues = mergeQueues(queues, dispatch.Queues)
 		pf(stdout, "goobers worker: mode-3 stage dispatch enabled as owner %s, routing each gaggle's stage pods to its own declared isolation.namespace; dispatch queues %s\n",
 			owner, strings.Join(dispatch.Queues, ", "))
-		// Decision 003's worker-hygiene graft, run BEFORE this worker polls
-		// anything: reconcile stage pods carrying this worker pod's owner label,
-		// asking the engine about each one. A rollout changes that label, leaving
-		// the replaced worker's pods outside both this sweep and the replacement's
-		// owner-scoped sweep. A pod whose attempt is still executing is adopted
-		// (left running, its surrender still
-		// lands); only a settled attempt's pod is disposed. Never fatal — see
-		// sweepWorkerStageOrphans.
+		// Before polling, reconcile this instance's pods across worker
+		// generations. A pod whose attempt is
+		// still executing is adopted (left running, its surrender still lands);
+		// only a settled attempt's pod is disposed. Never fatal — see
+		// sweepWorkerStageOrphans. The worker-lifetime loop below rechecks pods
+		// that become terminal after this initial sweep.
 		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)
 	}
 
@@ -374,7 +373,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	ctx, stop := signals.SetupSignalContext()
+	ctx, stop := workerSignalContext(recurringStageSweeper, *hostPort, *namespace, stdout, stderr)
 	defer stop()
 
 	// #4153: the worker's config tree has no live writer, so it can sit
@@ -411,6 +410,18 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "goobers worker: drained cleanly\n")
 	return 0
+}
+
+// workerSignalContext joins recurring reconciliation to the worker's signal
+// lifetime. Cleanup cancels an in-flight sweep and waits for its goroutine so
+// no background writer outlives runWorker's output streams.
+func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string, stdout, stderr io.Writer) (context.Context, func()) {
+	ctx, stop := signals.SetupSignalContext()
+	done := startPeriodicWorkerStageOrphanSweeps(ctx, sweeper, hostPort, namespace, stdout, stderr, workerSweepInterval)
+	return ctx, func() {
+		stop()
+		<-done
+	}
 }
 
 func wireWorkerRuntimeSeams(deps *bootstrap.EngineDeps, seams *workerSeams, scratchRoot string) {

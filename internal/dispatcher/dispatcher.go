@@ -80,21 +80,17 @@ type Config struct {
 	// silently placing a pod in the wrong gaggle's namespace is exactly the
 	// isolation break this map exists to close.
 	GaggleNamespaces map[string]string
+	// InstanceID is the durable identity of the Goobers instance. It scopes
+	// orphan sweeps across worker generations without crossing into another
+	// instance that happens to share a Kubernetes namespace.
+	InstanceID string
 	// Owner identifies THIS dispatcher process among the workers sharing a
-	// namespace. It is stamped on every pod as LabelOwner and is the scope
-	// SweepOrphans sweeps within, so it must be stable across a restart of
-	// the same worker and distinct between workers. The worker wires its
+	// namespace. It is stamped on every pod as LabelOwner for diagnostic
+	// provenance and must be distinct between workers. The worker wires its
 	// hostname — in-cluster, its pod name: stable while the pod lives, unique
-	// per replica.
-	//
-	// A rollout gives the replacement worker a NEW pod name, so stage pods
-	// left by the outgoing one fall outside every later owner-scoped sweep.
-	// activeDeadlineSeconds eventually stops their containers, but does not
-	// delete the retained Pod objects. Deleting a possibly live pod on a guess
-	// is the failure this path is built to avoid.
-	//
-	// Empty stamps no owner label and makes SweepOrphans refuse: an ownerless
-	// fleet cannot be swept safely by one of its members.
+	// per replica. SweepOrphans deliberately does not select by this rollout-
+	// scoped value; it selects the stable InstanceID and deletes only pods
+	// whose owning workflow is positively terminal.
 	Owner string
 	// EmbeddedCommit is this dispatcher binary's embedded commit sha
 	// (internal/version.Commit at wiring) — the left side of the decision-009
@@ -759,8 +755,8 @@ type Report struct {
 	// outcome (a confirmed success or a confirmed PodFailed), so Dispatch's
 	// returned error still reflects the settled result and this field carries
 	// the disposal failure alongside it. Disposed==false means DELETE failed;
-	// activeDeadlineSeconds bounds any remaining execution; the owner-scoped
-	// restart reconcile may delete the Pod object (dispatcher §5).
+	// activeDeadlineSeconds bounds any remaining execution; instance-scoped
+	// reconciliation may delete the Pod object (dispatcher §5).
 	DisposeErr error
 	// QueuedAt and PodStartedAt bound the schedule-to-start wait for
 	// provenance.
@@ -904,7 +900,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// (possibly MUTATING) stage. So record the disposal failure on the report
 	// as the leak signal (Disposed is false for a refused DELETE; accepted
 	// deletion with unconfirmed disappearance sets DisposeErr too). Execution is
-	// bounded by activeDeadlineSeconds; the owner-scoped restart reconcile may
+	// bounded by activeDeadlineSeconds; instance-scoped reconciliation may
 	// delete the retained object (dispatcher §5). The settled path still falls
 	// through: PodFailed → ErrStageFailed, success →
 	// nil. When superviseErr is already non-nil there is no settled outcome to
