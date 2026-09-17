@@ -296,13 +296,16 @@ func buildAgentAddressSnapshot(events []Event, runID string) (agentAddressSnapsh
 	for key, records := range known {
 		candidates := make([]agentAddressRecord, 0, len(records))
 		for _, record := range records {
-			if latestStartByStage[record.address.Stage] != record.startedSeq || record.finished || agentTerminal(record.agent.Lifecycle) {
+			if latestStartByStage[record.address.Stage] != record.startedSeq {
+				continue
+			}
+			collisions[key]++
+			if record.finished || agentTerminal(record.agent.Lifecycle) {
 				continue
 			}
 			candidates = append(candidates, record)
 		}
-		collisions[key] = len(candidates)
-		if len(candidates) == 1 {
+		if collisions[key] == 1 && len(candidates) == 1 {
 			live[key] = AddressableAgent{Address: candidates[0].address, Agent: candidates[0].agent}
 		}
 	}
