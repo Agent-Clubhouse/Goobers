@@ -56,6 +56,7 @@ cannot leave it outside the documented navigation surfaces.
 - [macOS quickstart (tier 1, local)](quickstart-macos.md)
 - [Windows quickstart (tier 1, local)](quickstart-windows.md)
 - [Quickstart lab: disposable issue to pull request](quickstart.md)
+- [Proposed release cadence and mechanics](release-cadence.md)
 - [Releases & packaging](releases.md)
 - [Retained implementation recovery](retained-implementation.md)
 - [Reviewer dispositions](reviewer-dispositions.md)
