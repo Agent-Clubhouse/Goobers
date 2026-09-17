@@ -712,6 +712,7 @@ func TestUpReloadsResolvedGooberContentForNextRun(t *testing.T) {
 		configReloadInterval = previousReloadInterval
 		delegationSweepInterval = previousDelegationInterval
 	})
+	t.Chdir(t.TempDir())
 
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
