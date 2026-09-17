@@ -142,16 +142,6 @@ func TestResolveTimeoutPrecedenceAndSource(t *testing.T) {
 			if resolved.Immediate() != tc.wantImmediate {
 				t.Errorf("Immediate() = %v, want %v", resolved.Immediate(), tc.wantImmediate)
 			}
-			// The bare-value helper must never disagree with the resolution it
-			// delegates to: a reported source describing a different value than
-			// the one enforced would be worse than reporting no source at all.
-			bare, err := e.timeoutFor(env)
-			if err != nil {
-				t.Fatalf("timeoutFor: %v", err)
-			}
-			if bare != resolved.Duration {
-				t.Errorf("timeoutFor = %v, disagrees with resolveTimeout %v", bare, resolved.Duration)
-			}
 		})
 	}
 }

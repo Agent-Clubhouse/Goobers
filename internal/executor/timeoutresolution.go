@@ -71,7 +71,7 @@ func (r ResolvedTimeout) Describe() string {
 
 // resolveTimeout applies the documented precedence for one stage.
 //
-// Precedence, highest first — unchanged from what timeoutFor already did, with
+// Precedence, highest first — unchanged from the behavior this replaced, with
 // the source now carried alongside the value:
 //
 //  1. limits.maxDurationSeconds, when positive. Zero here means UNSET and falls
@@ -103,6 +103,21 @@ func (e *ShellExecutor) resolveTimeout(env apiv1.InvocationEnvelope) (ResolvedTi
 		return ResolvedTimeout{Duration: e.DefaultTimeout, Source: TimeoutSourceRunnerDefault}, nil
 	}
 	return ResolvedTimeout{Duration: DefaultTimeout, Source: TimeoutSourceBuiltinDefault}, nil
+}
+
+// newStageResult builds the stage's result envelope with the resolved deadline
+// already published on it.
+//
+// Construction and publication are one call so that the deadline cannot be
+// reported for some outcomes and not others: there is no envelope-shaped value
+// in Run that has not been through here.
+func newStageResult(resolved ResolvedTimeout) apiv1.ResultEnvelope {
+	result := apiv1.ResultEnvelope{
+		Outputs: map[string]interface{}{},
+		Metrics: map[string]float64{},
+	}
+	publishResolvedTimeout(&result, resolved)
+	return result
 }
 
 // publishResolvedTimeout records the effective deadline on the stage result.

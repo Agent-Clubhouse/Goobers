@@ -795,7 +795,6 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
-	timeout := resolvedTimeout.Duration
 	maxOutput, err := e.maxOutputFor(env)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
@@ -904,7 +903,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	runCtx, cancel := context.WithTimeout(ctx, resolvedTimeout.Duration)
 	defer cancel()
 
 	// Substitute the running daemon's own binary for a bare "goobers" token: the
@@ -1047,12 +1046,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	outBytes := scrubber.Scrub(stdout.Bytes())
 	errBytes := scrubber.Scrub(stderr.Bytes())
 
-	result := apiv1.ResultEnvelope{Outputs: map[string]interface{}{}, Metrics: map[string]float64{}}
-	// #5265: publish which clock governed this stage, on every outcome rather
-	// than only on a timeout — an operator asking which deadline would stop
-	// their stage most needs the answer from one that SUCCEEDED, where no
-	// timeout message ever appears.
-	publishResolvedTimeout(&result, resolvedTimeout)
+	result := newStageResult(resolvedTimeout)
 	if networkIsolationMarker != "" {
 		// #2034: a non-empty marker means this network:none stage did NOT
 		// actually run isolated (the Windows escape hatch fired) — visible
@@ -1092,10 +1086,6 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 
 	if timedOut {
 		if StageInvokesProviderBuiltin(command) {
-			// #5265: name the SOURCE, not just the value. "exceeded timeout
-			// 10m" left an operator unable to tell a built-in fallback from a
-			// value their own workflow or instance config supplied, which is
-			// the difference between where they go to change it.
 			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("timeout", fmt.Errorf(
 				"executor: provider stage %q exceeded timeout %s: %w",
 				command[1], resolvedTimeout.Describe(), context.DeadlineExceeded,
@@ -1398,18 +1388,6 @@ func lastNonEmptyLine(data []byte) string {
 		}
 	}
 	return ""
-}
-
-// timeoutFor reports only the effective duration. The precedence itself lives in
-// resolveTimeout, which also carries the source; this wrapper remains for
-// callers that genuinely need the bare value and keeps a single resolution
-// point, so the value and the reported source can never disagree.
-func (e *ShellExecutor) timeoutFor(env apiv1.InvocationEnvelope) (time.Duration, error) {
-	resolved, err := e.resolveTimeout(env)
-	if err != nil {
-		return 0, err
-	}
-	return resolved.Duration, nil
 }
 
 func (e *ShellExecutor) maxOutputFor(env apiv1.InvocationEnvelope) (int64, error) {
