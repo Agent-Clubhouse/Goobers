@@ -60,6 +60,15 @@ const (
 	// CleanupWarningRecoveryCapacity is a custody handoff refused because
 	// recovery inventory is full. Remediation: free recovery capacity.
 	CleanupWarningRecoveryCapacity CleanupWarningClass = "recovery-capacity"
+	// CleanupWarningRecoveryCapture is a custody handoff refused because the
+	// recovery git subprocess that captures the durable patch/index failed —
+	// a missing ref/object, lock contention, or an unsafe-repository
+	// refusal, as distinct from the inventory simply being full. Remediation
+	// depends on the class recorded in the wrapped recovery.CaptureError:
+	// missing-object and unsafe-repository need operator investigation of
+	// the repository itself; locked is transient contention that clears on
+	// its own. See docs/guides/retained-implementation.md.
+	CleanupWarningRecoveryCapture CleanupWarningClass = "recovery-capture"
 	// CleanupWarningHandoff is a custody handoff deferred for any other reason.
 	// Remediation: inspect that handoff; the worktree stays owned meanwhile.
 	CleanupWarningHandoff CleanupWarningClass = "handoff-deferred"
@@ -84,6 +93,8 @@ func classifyCleanupWarning(err error) CleanupWarningClass {
 		return CleanupWarningRecord
 	case isRecoveryCapacityRefusal(err):
 		return CleanupWarningRecoveryCapacity
+	case isRecoveryCaptureRefusal(err):
+		return CleanupWarningRecoveryCapture
 	case errors.Is(err, ErrCleanupDeferred):
 		return CleanupWarningHandoff
 	case errors.Is(err, syscall.EBUSY), errors.Is(err, syscall.ENOTEMPTY),
@@ -115,6 +126,23 @@ var ErrCleanupRecoveryCapacity = errors.New("worktree cleanup deferred: recovery
 
 func isRecoveryCapacityRefusal(err error) bool {
 	return errors.Is(err, ErrCleanupRecoveryCapacity)
+}
+
+// ErrCleanupRecoveryCapture marks a custody handoff refused because the
+// recovery git capture itself failed (a missing ref/object, lock
+// contention, or an unsafe-repository refusal), as distinct from the
+// inventory being full (ErrCleanupRecoveryCapacity) or the handoff merely
+// still being in progress. #5352: without this, every non-capacity recovery
+// failure flattened into the generic "handoff deferred" class alongside
+// unrelated guards (mutation-receipt handoffs, unknown-base retention),
+// hiding the one class an operator can actually act on.
+//
+// It lives here for the same import-direction reason as
+// ErrCleanupRecoveryCapacity: worktree cannot import internal/recovery.
+var ErrCleanupRecoveryCapture = errors.New("worktree cleanup deferred: recovery capture failed")
+
+func isRecoveryCaptureRefusal(err error) bool {
+	return errors.Is(err, ErrCleanupRecoveryCapture)
 }
 
 // passBudget bounds one whole cleanup pass — discovery and attempts together —
