@@ -20,6 +20,12 @@ func selectIssueRecovery(ctx context.Context, layout instance.Layout, repository
 	if err != nil {
 		return recovery.InventoryEntry{}, err
 	}
+	// Overflow entries are selection candidates on exactly the same terms:
+	// they hold the same identity and the same work, one durability tier down.
+	entries, err = recoveryEntriesWithOverflow(ctx, layout, entries)
+	if err != nil {
+		return recovery.InventoryEntry{}, err
+	}
 	// One history read for the bounded candidate set, never one per snapshot.
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -40,7 +46,7 @@ func selectIssueRecovery(ctx context.Context, layout instance.Layout, repository
 		if !matched {
 			continue
 		}
-		entry.Record, err = recovery.ReadRetainedRecord(entry.RecordPath)
+		entry.Record, err = readRecoveryEntryRecord(entry.RecordPath)
 		if err != nil {
 			return recovery.InventoryEntry{}, err
 		}
@@ -96,7 +102,7 @@ func selectIssueRecovery(ctx context.Context, layout instance.Layout, repository
 // shared with operator abandonment and retirement. Selection's earlier journal
 // read cannot authorize consuming a snapshot abandoned while waiting for it.
 func validateRecoverySelection(layout instance.Layout, selected recovery.InventoryEntry, now time.Time) (recovery.Record, error) {
-	current, err := recovery.ReadRetainedRecord(selected.RecordPath)
+	current, err := readRecoveryEntryRecord(selected.RecordPath)
 	if err != nil {
 		return recovery.Record{}, err
 	}

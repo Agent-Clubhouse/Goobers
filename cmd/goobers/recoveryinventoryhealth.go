@@ -126,7 +126,17 @@ func (g *recoveryInventoryGate) observe(ctx context.Context) *readservice.Recove
 	// same number the next refused cleanup will name.
 	status.Used = len(entries) + len(unreadable)
 	status.Unreadable = len(unreadable)
-	status.State = readservice.ClassifyRecoveryInventory(status.Used, limit)
+	// A failed overflow reading is reported as unavailable rather than as
+	// zero: "no overflow" and "could not tell" must not look alike in the one
+	// place the condition is visible at all.
+	overflow, overflowErr := recoveryOverflowCount(ctx, g.layout)
+	if overflowErr != nil {
+		status.State = readservice.RecoveryInventoryUnavailable
+		status.Error = overflowErr.Error()
+		return status
+	}
+	status.Overflow = overflow
+	status.State = readservice.ClassifyRecoveryInventory(status.Used, limit, overflow)
 	if earliest, ok := earliestRetainUntil(entries); ok {
 		status.EarliestRetainUntil = &earliest
 	}
@@ -194,6 +204,12 @@ func recoveryInventoryWarningMessage(status *readservice.RecoveryInventoryStatus
 	)
 	if status.Unreadable > 0 {
 		message += fmt.Sprintf(" (%d incomplete reservation(s) occupying slots)", status.Unreadable)
+	}
+	if status.Overflow > 0 {
+		// Name what overflow actually costs. It is not the pre-#5370 wedge —
+		// cleanup succeeded — so an operator must not read this as stopped
+		// execution, and must not read it as nothing either.
+		message += fmt.Sprintf("; %d snapshot(s) held as mirror refs without a bundle until capacity frees", status.Overflow)
 	}
 	if status.EarliestRetainUntil != nil {
 		message += fmt.Sprintf("; earliest retention deadline %s", status.EarliestRetainUntil.Format(time.RFC3339))

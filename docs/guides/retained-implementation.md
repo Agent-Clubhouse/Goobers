@@ -83,7 +83,10 @@ instance log as a `recovery-reclaimed` annotation naming one of:
   proven exactly as the merge-based retirement above requires.
 
 An entry holding a real, unique, unlanded patch is never retired to free a
-slot: the cleanup is refused instead, and the worktree is retried. Reservations
+slot: the new capture overflows to the ref tier instead (see
+[Inventory capacity](#inventory-capacity)), or, under
+`retention.recovery.onFull: refuse`, the cleanup is refused and the worktree
+is retried. Reservations
 a scan cannot interpret are skipped, never retired, and reported on the
 instance log as a `recovery_inventory_unreadable` error naming their count and
 directories — they consume capacity that no reclamation path can free.
@@ -124,16 +127,62 @@ all, as `docs/guides/worktree-retention.md` describes.
 
 `goobers status` reports occupancy as `recovery inventory: <used>/<limit>`
 alongside the earliest retention deadline, which is what distinguishes ordinary
-pressure from an inventory wedged behind a retain floor. When a cleanup is
-refused, the failure names the observed count, the limit, and the root:
-`recovery inventory is full: 130 of 128 slots used in /var/lib/goobers/recovery`.
-A refused cleanup preserves its source: the worktree stays on disk and is
-retried, so a full inventory costs disk and retries, never evidence.
+pressure from an inventory wedged behind a retain floor, and appends
+`+<n> overflow` when snapshots are being held at the ref tier described below.
+
+A legitimately full inventory no longer refuses the cleanup. Capacity gates
+bundle publication, never worktree teardown. A snapshot's objects are written
+into the repository - for a linked worktree, the managed mirror - and pinned
+at `refs/goobers/recovery-snapshots/<runID>/<sha>` *before* any inventory slot
+is consulted, so the scarce resource is the bundle directory, not the work.
+Refusing protected nothing and stopped the instance: the cleanup was refused,
+the owning run's branch could not be reacquired, and unrelated runs then failed
+at `create worktree`.
+
+So when a publish finds the inventory full, it runs the whole drain in order -
+reconcile incomplete reservations, reclaim contentless entries, evict landed
+ones - and if that still frees nothing it **overflows** instead of refusing.
+An overflow entry is one directory under `<instance root>/recovery-overflow`
+holding `record.json` alone: the same `Record` schema, the same identity
+fields, no bundle and no archive digest. The cleanup is acknowledged, its
+`RetainedEvent` carries `recoveryOverflow=true`, and the daemon raises the
+exhausted alarm. The tier is uncapped - each entry is a few hundred bytes for
+objects that already exist - and it is one durability step below a bundle:
+restorable while the managed repository keeps the objects, not self-contained.
+
+The periodic retention pass **promotes** overflow entries back to bundles,
+oldest capture first, for as many inventory slots as are free, by republishing
+the record through the ordinary publication path against the managed
+repository that still holds the pin and then deleting the overflow record.
+Promotion is deliberately *not* gated by `retention.dryRun` or the first-enable
+grace window: those exist so a pass that has not yet earned trust reports what
+it would delete instead of deleting it, and promotion deletes nothing
+recoverable. A dry-run pass still prints what it promoted. An entry whose
+objects are no longer in the managed repository is left in place and reported,
+never deleted - the record is the last evidence that the work existed.
+
+`recovery-restore`, `recovery-resume`, `recovery-abandon` and `goobers status`
+treat overflow entries as first-class and mark them `overflow`; a restore from
+one fetches the pinned ref out of the managed repository instead of unbundling
+an archive. Retirement rules - landing proof, explicit abandonment, the retain
+floor, the contentless justifications - apply to an overflow entry exactly as
+to a retained one, and retiring one unpins the ref and deletes the record.
+Nothing is ever discarded for sitting in this tier.
+
+`retention.recovery.onFull` selects the behaviour. The default, `overflow`, is
+the above. `refuse` restores the pre-#5370 fail-closed behaviour: the publish
+fails with `recovery inventory is full: 130 of 128 slots used in
+/var/lib/goobers/recovery`, the cleanup is deferred, and the worktree stays on
+disk to be retried, so a full inventory costs disk and retries, never evidence.
+Only a genuine capture failure - a tree that cannot be read - still defers a
+cleanup under the default, and that blocks one run's branch, never the
+instance.
 
 Occupancy is also reported before it fails anything. The daemon samples the
 inventory on its own cadence and classifies it against the configured cap:
 `healthy` below the high-water mark, `warning` at or above 80% of the cap,
-`exhausted` at or above it, and `unavailable` when the reading itself failed —
+`exhausted` at or above it *or whenever any snapshot is being held at the
+overflow tier*, and `unavailable` when the reading itself failed —
 an unmeasurable inventory is never reported as an empty one. The sample counts
 every reservation directory occupying a slot, including incomplete ones that
 hold no published record, because those count against the cap until they are
@@ -149,8 +198,13 @@ periodic service-health record in the instance log; and a deduplicated warning
 in the instance log. The warning is journalled once when occupancy crosses into
 `warning` (`recovery_inventory_high_water`) and once when it crosses into
 `exhausted` (`recovery_inventory_exhausted`), never per sample. It is re-armed
-only by dropping back below the threshold, and its state is durable, so a
-daemon restart with an unchanged condition does not repeat it.
+only by dropping back below the threshold — and, once overflow has been
+entered, only after the overflow count returns to zero, so the alarm is not
+retracted the moment a single slot frees while work is still waiting at the
+ref tier. Its state is durable, so a daemon restart with an unchanged
+condition does not repeat it. The read model reports the overflow count as
+`recoveryInventory.overflow`, which the portal Overview row renders alongside
+occupancy.
 
 If the inventory already contains more entries than the configured cap, do
 not delete recovery directories by hand. Temporarily raise

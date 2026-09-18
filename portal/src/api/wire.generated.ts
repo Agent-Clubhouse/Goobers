@@ -218,6 +218,7 @@ export const goWireFixtures = {
       "used": 104,
       "limit": 128,
       "unreadable": 2,
+      "overflow": 0,
       "highWaterPercent": 80,
       "earliestRetainUntil": "2026-07-18T12:36:56Z",
       "inventoryRoot": "/instances/fixture/recovery",

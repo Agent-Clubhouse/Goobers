@@ -162,8 +162,27 @@ func recoveryCleanupRequest(layout instance.Layout, cfg *instance.Config, cleanu
 		IdentityTime: captureAt, RetainUntil: captureAt.Add(retainWindow),
 		InventoryRoot: root, CleanupRoots: []string{cleanupRoot},
 		MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(), SkipEmpty: true,
-		EvictFull: recoveryEvictFunc(layout, cfg, manager, key),
+		EvictFull:    recoveryEvictFunc(layout, cfg, manager, key),
+		OverflowRoot: recoveryOverflowRootFor(layout, recoveryCfg),
 	}, nil
+}
+
+// recoveryOverflowRootFor enables the overflow tier unless the operator asked
+// for the pre-#5370 refusal. An empty root is what RetentionRequest reads as
+// "refuse", so there is one representation of the decision rather than a
+// boolean that could disagree with the path.
+func recoveryOverflowRootFor(layout instance.Layout, policy instance.RecoverySnapshotConfig) string {
+	if policy.OnFullEffective() == instance.RecoveryOnFullRefuse {
+		return ""
+	}
+	return recoveryOverflowRoot(layout)
+}
+
+// recoveryOverflowRoot names the overflow tier for an instance. It is a
+// sibling of the inventory, never a directory inside it: an entry inside the
+// inventory would consume the slot the tier exists because there is none of.
+func recoveryOverflowRoot(layout instance.Layout) string {
+	return filepath.Join(layout.Root, recovery.OverflowRootName)
 }
 
 func retainUnknownBase(err error) error {

@@ -171,6 +171,12 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 	recoveryErr := errors.Join(
 		retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, dryRun, stdout, stderr),
 		reapConfiguredRecovery(ctx, l, cfg, dryRun, stdout, stderr),
+		retireExpiredRecoveryOverflow(ctx, l, setup, managers, runsByRoot, dryRun, stdout, stderr),
+		// Promotion runs LAST of the recovery steps, after retirement and the
+		// reap have actually freed slots in this same pass, and is
+		// deliberately outside the dry-run gate: it creates a bundle for
+		// objects that already exist and discards nothing.
+		promoteRecoveryOverflow(ctx, l, setup, managers, stdout, stderr),
 		reconcileIncompleteRecovery(ctx, l, cfg, dryRun, stdout, stderr),
 	)
 	protectedBranches, err := retentionProtectedBranches(runsByRoot, setup)

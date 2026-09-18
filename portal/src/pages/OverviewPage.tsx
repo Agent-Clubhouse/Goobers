@@ -729,6 +729,12 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
           )}
         </strong>
         <span>{recoveryInventoryExplanation(inventory)}</span>
+        {inventory.overflow > 0 && (
+          <span>
+            {inventory.overflow} {inventory.overflow === 1 ? "snapshot" : "snapshots"} held as
+            mirror refs without a bundle until capacity frees
+          </span>
+        )}
         {inventory.unreadable > 0 && (
           <span>
             {inventory.unreadable} incomplete{" "}
