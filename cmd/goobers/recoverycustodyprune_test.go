@@ -23,7 +23,7 @@ import (
 // once it is gone, permanently stranding the record's inventory slot. Once
 // the record is retired, the journal becomes prunable again.
 func TestTelemetryPruneRefusesJournalWithLiveRecoverySnapshot(t *testing.T) {
-	layout := instance.NewLayout(t.TempDir())
+	layout := writeRecoveryPolicyInstance(t, 0)
 	now := time.Now().UTC()
 	runID := "owns-live-snapshot"
 	runDir := createTelemetryRetentionRun(t, layout, runID, now.Add(-48*time.Hour))
@@ -91,7 +91,7 @@ func TestTelemetryPruneRefusesJournalWithLiveRecoverySnapshot(t *testing.T) {
 // scoped per-run: a live recovery record belonging to a DIFFERENT run must
 // not block deletion of a candidate run that owns no record of its own.
 func TestTelemetryPruneIgnoresRecoveryRecordsForOtherRuns(t *testing.T) {
-	layout := instance.NewLayout(t.TempDir())
+	layout := writeRecoveryPolicyInstance(t, 0)
 	now := time.Now().UTC()
 	candidateRunID := "no-recovery-record"
 	runDir := createTelemetryRetentionRun(t, layout, candidateRunID, now.Add(-48*time.Hour))
