@@ -166,7 +166,7 @@ describe("portal foundation", () => {
     expect(screen.queryByText(/durable events from the daemon/)).not.toBeInTheDocument();
   });
 
-  it("opens a run from daemon data with the replay scrubber but no attempt/escalation panels", async () => {
+  it("opens a run from daemon data with the semantic overview and retained forensic tabs", async () => {
     const user = userEvent.setup();
     renderLiveApp();
 
@@ -174,10 +174,12 @@ describe("portal foundation", () => {
     expect(
       await screen.findByRole("heading", { name: "Run 01JZ402DASHBOARD" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What this run did" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Diagnostics" }));
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Journal" }));
+    expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
   it("uses the run's pinned workflow and derives graph state at the selected event", async () => {
@@ -185,10 +187,12 @@ describe("portal foundation", () => {
     renderLiveApp();
 
     await openAttentionRun(user, "01JZ402DASHBOARD");
+    await user.click(await screen.findByRole("tab", { name: "Diagnostics" }));
     expect(
       await screen.findByText("sha256:core", { selector: ".run-graph-pin .mono" }),
     ).toBeInTheDocument();
 
+    await user.click(screen.getByRole("tab", { name: "Journal" }));
     await user.click(
       screen.getByRole("button", { name: /^Select sequence 4:/ }),
     );
