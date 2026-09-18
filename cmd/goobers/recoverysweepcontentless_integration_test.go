@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // TestIntegrationRecoveryExpirySweepAppliesContentlessJustifications is the
@@ -19,6 +20,7 @@ import (
 // recoveryContentlessJustification, never by the sweep's own time-based
 // policy.
 func TestIntegrationRecoveryExpirySweepAppliesContentlessJustifications(t *testing.T) {
+	testdep.Require(t, "git")
 	t.Run("stored-no-diff", testSweepStoredNoDiff)
 	t.Run("bookkeeping-only", testSweepBookkeepingOnly)
 	t.Run("superseded-duplicate", testSweepSupersededDuplicate)
