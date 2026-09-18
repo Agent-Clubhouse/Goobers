@@ -131,6 +131,13 @@ var Notification = map[string]string{
 	"receipt": "notification-receipt.schema.json",
 }
 
+// OperatorMessage maps the durable operator-message lifecycle contracts.
+var OperatorMessage = map[string]string{
+	"request":         "operator-message-request.schema.json",
+	"acknowledgement": "operator-message-acknowledgement.schema.json",
+	"outcome":         "operator-message-outcome.schema.json",
+}
+
 // Entry identifies one embedded schema by its CLI-facing kind and file name.
 type Entry struct {
 	Kind         string
