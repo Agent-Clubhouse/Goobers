@@ -114,6 +114,16 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			OccurredAt: fixedClock()(), Purpose: "completion",
 		}},
 		{Type: EventOperatorMessageRequested, OperatorMessageRequest: ptr(testOperatorMessageRequest("message-1", "message-key"))},
+		{Type: EventOperatorMessageRequested, OperatorMessageRequest: ptr(func() apiv1.OperatorMessageRequest {
+			request := testOperatorMessageRequest("artifact-message-1", "artifact-message-key")
+			request.Content = apiv1.OperatorMessageContent{Artifact: &apiv1.ArtifactPointer{
+				Path:      art.Path,
+				Digest:    art.Digest,
+				MediaType: "text/plain",
+				Size:      art.Size,
+			}}
+			return request
+		}())},
 		{Type: EventOperatorMessageAcknowledged, OperatorMessageAcknowledgement: &apiv1.OperatorMessageAcknowledgement{
 			Schema: apiv1.OperatorMessageAcknowledgementSchema, RequestID: "message-1",
 			IdempotencyKey: "message-key", PrincipalRef: "user:operator",

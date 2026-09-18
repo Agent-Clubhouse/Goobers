@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -19,6 +20,13 @@ var (
 func (r *Run) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error) {
 	if err := request.Validate(); err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
+	}
+	request, err := scrubOperatorMessage(r.scrubber, request)
+	if err != nil {
+		return apiv1.OperatorMessageRecord{}, false, err
+	}
+	if err := request.Validate(); err != nil {
+		return apiv1.OperatorMessageRecord{}, false, fmt.Errorf("operator message: scrubbed request is invalid: %w", err)
 	}
 
 	r.mu.Lock()
@@ -69,9 +77,15 @@ func (r *Run) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1
 
 // AcknowledgeOperatorMessage appends at most one acknowledgement for a request.
 func (r *Run) AcknowledgeOperatorMessage(ack apiv1.OperatorMessageAcknowledgement) (apiv1.OperatorMessageRecord, error) {
-	if ack.Schema != apiv1.OperatorMessageAcknowledgementSchema || ack.RequestID == "" ||
-		ack.IdempotencyKey == "" || ack.PrincipalRef == "" || ack.AcknowledgedAt.IsZero() {
-		return apiv1.OperatorMessageRecord{}, errors.New("operator message: incomplete acknowledgement")
+	if err := ack.Validate(); err != nil {
+		return apiv1.OperatorMessageRecord{}, err
+	}
+	ack, err := scrubOperatorMessage(r.scrubber, ack)
+	if err != nil {
+		return apiv1.OperatorMessageRecord{}, err
+	}
+	if err := ack.Validate(); err != nil {
+		return apiv1.OperatorMessageRecord{}, fmt.Errorf("operator message: scrubbed acknowledgement is invalid: %w", err)
 	}
 
 	r.mu.Lock()
@@ -102,12 +116,18 @@ func (r *Run) AcknowledgeOperatorMessage(ack apiv1.OperatorMessageAcknowledgemen
 
 // CompleteOperatorMessage records the request's terminal delivery disposition.
 func (r *Run) CompleteOperatorMessage(outcome apiv1.OperatorMessageOutcome) (apiv1.OperatorMessageRecord, error) {
-	if outcome.Schema != apiv1.OperatorMessageOutcomeSchema || outcome.RequestID == "" ||
-		outcome.IdempotencyKey == "" || outcome.CompletedAt.IsZero() || !validOperatorMessageOutcome(outcome.Status) {
-		return apiv1.OperatorMessageRecord{}, errors.New("operator message: incomplete terminal outcome")
+	if err := outcome.Validate(); err != nil {
+		return apiv1.OperatorMessageRecord{}, err
 	}
 	if outcome.Request != nil {
 		return apiv1.OperatorMessageRecord{}, errors.New("operator message: accepted-request outcome must not embed a request")
+	}
+	outcome, err := scrubOperatorMessage(r.scrubber, outcome)
+	if err != nil {
+		return apiv1.OperatorMessageRecord{}, err
+	}
+	if err := outcome.Validate(); err != nil {
+		return apiv1.OperatorMessageRecord{}, fmt.Errorf("operator message: scrubbed outcome is invalid: %w", err)
 	}
 
 	r.mu.Lock()
@@ -133,16 +153,6 @@ func (r *Run) CompleteOperatorMessage(outcome apiv1.OperatorMessageOutcome) (api
 	return record, nil
 }
 
-func validOperatorMessageOutcome(status apiv1.OperatorMessageOutcomeStatus) bool {
-	switch status {
-	case apiv1.OperatorMessageDelivered, apiv1.OperatorMessageFailed,
-		apiv1.OperatorMessageRejected, apiv1.OperatorMessageExpired:
-		return true
-	default:
-		return false
-	}
-}
-
 func (r *Run) operatorMessageLocked(idempotencyKey, requestID string) (apiv1.OperatorMessageRecord, error) {
 	records, err := r.operatorMessagesLocked()
 	if err != nil {
@@ -158,6 +168,18 @@ func (r *Run) operatorMessageLocked(idempotencyKey, requestID string) (apiv1.Ope
 		}
 	}
 	return apiv1.OperatorMessageRecord{}, ErrOperatorMessageNotFound
+}
+
+func scrubOperatorMessage[T any](scrubber Scrubber, value T) (T, error) {
+	var scrubbed T
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return scrubbed, fmt.Errorf("operator message: encode for scrubbing: %w", err)
+	}
+	if err := json.Unmarshal(scrubber.Scrub(raw), &scrubbed); err != nil {
+		return scrubbed, fmt.Errorf("operator message: decode scrubbed payload: %w", err)
+	}
+	return scrubbed, nil
 }
 
 func (r *Run) operatorMessagesLocked() ([]apiv1.OperatorMessageRecord, error) {
