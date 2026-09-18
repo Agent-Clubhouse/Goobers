@@ -33,6 +33,33 @@
       "then": {
         "required": ["notificationReceipt"]
       }
+    },
+    {
+      "if": {
+        "properties": { "type": { "description": "Selects the accepted operator-message record.", "const": "operator-message.requested" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["operatorMessageRequest"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "type": { "description": "Selects the operator-message acknowledgement record.", "const": "operator-message.acknowledged" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["operatorMessageAcknowledgement"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "type": { "description": "Selects the terminal operator-message record.", "const": "operator-message.outcome" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["operatorMessageOutcome"]
+      }
     }
   ],
   "properties": {
@@ -76,6 +103,9 @@
         "runner.mutation.recovered",
         "notification.requested",
         "notification.delivery.receipt",
+        "operator-message.requested",
+        "operator-message.acknowledged",
+        "operator-message.outcome",
         "parallel.started",
         "branch.started",
         "branch.finished",
@@ -320,6 +350,21 @@
     "notificationReceipt": {
       "description": "Durable delivery or suppression result. The event is operational output and excluded from workflow conformance.",
       "$ref": "notification-receipt.schema.json",
+      "x-conformance": "excluded"
+    },
+    "operatorMessageRequest": {
+      "description": "Accepted provider-neutral operator message. The event is operational output and excluded from workflow conformance.",
+      "$ref": "operator-message-request.schema.json",
+      "x-conformance": "excluded"
+    },
+    "operatorMessageAcknowledgement": {
+      "description": "Durable operator acknowledgement. The event is operational output and excluded from workflow conformance.",
+      "$ref": "operator-message-acknowledgement.schema.json",
+      "x-conformance": "excluded"
+    },
+    "operatorMessageOutcome": {
+      "description": "Terminal delivery or rejection result. The event is operational output and excluded from workflow conformance.",
+      "$ref": "operator-message-outcome.schema.json",
       "x-conformance": "excluded"
     },
     "agent": {

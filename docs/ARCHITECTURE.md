@@ -282,6 +282,11 @@ Rules:
   `scheduler/events.jsonl` in the instance root (§6), under the same envelope and
   append-only rules — so the portal, telemetry, and Tutor read scheduling history
   the same way they read runs.
+- **Operator messages are reconstructable:** accepted requests, operator
+  acknowledgements, and terminal delivery or rejection outcomes use versioned
+  typed journal records. Requests retain their idempotency key, target, principal,
+  timestamps, purpose, scrubbed inline content or bounded artifact pointer, and
+  selected delivery mode; replay never depends on process-local delivery state.
 
 ## 5. Stages and their contracts
 
