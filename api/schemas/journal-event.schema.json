@@ -241,6 +241,11 @@
       "items": { "$ref": "#/$defs/ref" },
       "x-conformance": "conditional: each entry's digest and integrity are normative, path/size/mediaType are not"
     },
+    "workspaceRevision": {
+      "description": "Verified immutable authority promoted from a successful deterministic stage result.",
+      "$ref": "workspace-revision.schema.json",
+      "x-conformance": "normative"
+    },
     "integrity": {
       "description": "Provenance grade on an input snapshot, artifact, or integrity-admission refusal.",
       "type": "string",

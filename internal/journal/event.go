@@ -425,6 +425,10 @@ type Event struct {
 	// Outputs. Each entry's Digest and Integrity are normative;
 	// Path/Size/MediaType are not (see Ref).
 	Artifacts []Ref `json:"artifacts,omitempty"`
+	// WorkspaceRevision is the verified immutable authority promoted from a
+	// deterministic stage result. It is absent for legacy and non-authoritative
+	// results.
+	WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
 	// Integrity is the provenance grade on an input snapshot, artifact, or
 	// integrity-admission refusal. Normative.
 	Integrity apiv1.Integrity `json:"integrity,omitempty"`

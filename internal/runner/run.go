@@ -31,6 +31,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -4759,6 +4760,15 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 
 		result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
 		result = r.validateDependencyResult(jr, t.Name, result, upstream)
+		if t.Type != apiv1.TaskDeterministic && result.WorkspaceRevision != nil {
+			result.WorkspaceRevision = nil
+			result.Status = apiv1.ResultFailure
+			result.Error = &apiv1.ErrorInfo{
+				Code:    workspacerevision.CodeUnauthorized,
+				Message: "agentic results cannot establish workspace revision authority",
+			}
+			result.Summary = "workspace revision authority is restricted to deterministic stages"
+		}
 		// Provenance flows with the data: what this stage produced is only as
 		// trustworthy as the weakest input it was admitted with. Downstream
 		// stages resolving inputsFrom grade against this, because Outputs are
@@ -4766,10 +4776,17 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		result.Integrity = producedIntegrity(t, in.Item, upstream,
 			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
 		outputs := stageFinishedOutputs(result, t.ContinueOnError)
+		var workspaceRevision *apiv1.WorkspaceRevision
+		if t.Type == apiv1.TaskDeterministic &&
+			result.Status == apiv1.ResultSuccess &&
+			result.WorkspaceRevision != nil {
+			workspaceRevision = result.WorkspaceRevision.DeepCopy()
+		}
 		if err := jr.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result),
 			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
+			WorkspaceRevision: workspaceRevision,
 			// Carried so reconstructStageOutputs can restore each stage's grade
 			// on resume; without it a resumed run would fail inputsFrom
 			// admission that a live run admits (TBH-4).

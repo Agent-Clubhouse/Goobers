@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -50,6 +51,7 @@ type NormativeEvent struct {
 	Name                string
 	Integrity           apiv1.Integrity
 	MinimumIntegrity    apiv1.Integrity
+	WorkspaceRevision   string
 
 	// Outputs is a stable encoding of a stage.finished event's scalar-only
 	// Outputs (event.go's doc comment: fully normative). Encoded rather than
@@ -114,10 +116,12 @@ func projectNormative(e Event) NormativeEvent {
 		Integrity: e.Integrity, MinimumIntegrity: e.MinimumIntegrity,
 		Artifacts: encodeArtifactRefs(e.Artifacts),
 		Parallel:  e.Parallel, BranchName: e.BranchName,
-		BranchStatus: e.BranchStatus,
-		Completeness: encodeCompleteness(e.Completeness),
-		Outputs:      encodeOutputs(e.Outputs),
+		BranchStatus:      e.BranchStatus,
+		Completeness:      encodeCompleteness(e.Completeness),
+		Outputs:           encodeOutputs(e.Outputs),
+		WorkspaceRevision: encodeWorkspaceRevision(e.WorkspaceRevision),
 	}
+
 	if e.Ref != nil {
 		ne.RefIntegrity = e.Ref.Integrity
 		if !isContextManifestArtifact(e) {
@@ -140,6 +144,17 @@ func projectNormative(e Event) NormativeEvent {
 		ne.RedactionReason = e.Redaction.Reason
 	}
 	return ne
+}
+
+func encodeWorkspaceRevision(revision *apiv1.WorkspaceRevision) string {
+	if revision == nil {
+		return ""
+	}
+	data, err := json.Marshal(revision)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // encodeArtifactRefs flattens the normative fields of stage.finished artifact
