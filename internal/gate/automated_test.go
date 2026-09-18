@@ -412,6 +412,28 @@ func TestFailureClass(t *testing.T) {
 			want: OutcomeFail,
 		},
 		{
+			name: "stale managed linter worktree path",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 2; failure: failed to parse file: open C:\goobers\runs\wt-477de6f81fdc8e7507549359\api\v1alpha1\zz_generated.deepcopy.go: The system cannot find the path specified.`,
+				},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "ordinary missing source file stays content failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 2; failure: open C:\repo\api\v1alpha1\zz_generated.deepcopy.go: The system cannot find the path specified.`,
+				},
+			},
+			want: OutcomeFail,
+		},
+		{
 			name: "typed failure keeps its class despite an infra signature",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,
