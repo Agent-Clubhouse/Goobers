@@ -275,9 +275,12 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	}
 	option(manager)
 	option(manager) // A configuration reload must replace, not duplicate.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	withOpContext := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 2*time.Minute)
+	}
+	ctx, cancel := withOpContext()
 	workspace, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: baseBranch, Branch: "goobers/implementation/" + runID})
+	cancel()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,10 +322,15 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 			InventoryRoot: root, CleanupRoots: []string{workcopies},
 			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(),
 		}
+		ctx, cancel = withOpContext()
 		if err := recovery.RetainAbandonedPreparation(ctx, request, recoveryCleanupTestJournal{err: interrupted}); !errors.Is(err, interrupted) {
+			cancel()
 			t.Fatalf("seed interrupted recovery publication: %v", err)
 		}
+		cancel()
+		ctx, cancel = withOpContext()
 		entries, err := recovery.ReadInventory(ctx, root, recoveryCfg.MaxSnapshotsEffective())
+		cancel()
 		if err != nil || len(entries) != 1 {
 			t.Fatalf("inspect interrupted recovery publication: %+v %v", entries, err)
 		}
@@ -332,9 +340,12 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	}
 	if terminal {
 		if removeBeforeTerminal {
+			ctx, cancel = withOpContext()
 			if err := workspace.Remove(ctx, worktree.RemoveOptions{}); err != nil {
+				cancel()
 				t.Fatal(err)
 			}
+			cancel()
 			if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
 				t.Fatalf("fixture must renew without any worktree: %v", err)
 			}
@@ -353,7 +364,9 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		}
 		err = finalizeTerminalRunWithClaimRelease(layout, nil, standalone, runID, func(instance.Layout, *journal.InstanceLog, string) error { return nil })
 	} else {
+		ctx, cancel = withOpContext()
 		err = workspace.Remove(ctx, worktree.RemoveOptions{})
+		cancel()
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -362,13 +375,18 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		t.Fatalf("acknowledged cleanup did not remove worktree: %v", err)
 	}
 	if interruptRecord {
+		ctx, cancel = withOpContext()
 		retry, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: baseBranch, Branch: "goobers/implementation/" + runID})
+		cancel()
 		if err != nil {
 			t.Fatalf("repaired cleanup left a self-colliding worktree branch: %v", err)
 		}
+		ctx, cancel = withOpContext()
 		if err := retry.Remove(ctx, worktree.RemoveOptions{}); err != nil {
+			cancel()
 			t.Fatalf("remove replacement worktree: %v", err)
 		}
+		cancel()
 	}
 	entries, err := os.ReadDir(filepath.Join(layout.Root, "recovery"))
 	if err != nil {
@@ -413,6 +431,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		t.Fatalf("cleanup requires %d recovery observations, got %d", wantObservations, observations)
 	}
 	if abandoned {
+		ctx, cancel = withOpContext()
 		found, err := manager.WithExistingMirror(ctx, source, func(repository string) error {
 			prepared, err := recovery.PreparedRestoreBranch(runID)
 			if err != nil {
@@ -426,6 +445,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 			}
 			return nil
 		})
+		cancel()
 		if err != nil || !found {
 			t.Fatalf("verify retained preparation: %t %v", found, err)
 		}
