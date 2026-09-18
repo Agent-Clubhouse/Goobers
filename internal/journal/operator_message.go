@@ -1,10 +1,13 @@
 package journal
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -14,6 +17,8 @@ var (
 	ErrOperatorMessageTerminal = errors.New("operator message request is terminal")
 )
 
+const scrubbedOperatorMessageIdentifierPrefix = "scrubbed:sha256:"
+
 // AcceptOperatorMessage durably accepts a request, atomically resolving an
 // existing idempotency key to its original record. Expired requests are not
 // accepted; they receive a typed terminal record containing the rejected input.
@@ -21,10 +26,14 @@ func (r *Run) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1
 	if err := request.Validate(); err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
 	}
+	request.RequestID = canonicalOperatorMessageIdentifier(r.scrubber, "request-id", request.RequestID)
+	request.IdempotencyKey = canonicalOperatorMessageIdentifier(r.scrubber, "idempotency-key", request.IdempotencyKey)
+	requestID, idempotencyKey := request.RequestID, request.IdempotencyKey
 	request, err := scrubOperatorMessage(r.scrubber, request)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
 	}
+	request.RequestID, request.IdempotencyKey = requestID, idempotencyKey
 	if err := request.Validate(); err != nil {
 		return apiv1.OperatorMessageRecord{}, false, fmt.Errorf("operator message: scrubbed request is invalid: %w", err)
 	}
@@ -80,10 +89,14 @@ func (r *Run) AcknowledgeOperatorMessage(ack apiv1.OperatorMessageAcknowledgemen
 	if err := ack.Validate(); err != nil {
 		return apiv1.OperatorMessageRecord{}, err
 	}
+	ack.RequestID = canonicalOperatorMessageIdentifier(r.scrubber, "request-id", ack.RequestID)
+	ack.IdempotencyKey = canonicalOperatorMessageIdentifier(r.scrubber, "idempotency-key", ack.IdempotencyKey)
+	requestID, idempotencyKey := ack.RequestID, ack.IdempotencyKey
 	ack, err := scrubOperatorMessage(r.scrubber, ack)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, err
 	}
+	ack.RequestID, ack.IdempotencyKey = requestID, idempotencyKey
 	if err := ack.Validate(); err != nil {
 		return apiv1.OperatorMessageRecord{}, fmt.Errorf("operator message: scrubbed acknowledgement is invalid: %w", err)
 	}
@@ -122,10 +135,14 @@ func (r *Run) CompleteOperatorMessage(outcome apiv1.OperatorMessageOutcome) (api
 	if outcome.Request != nil {
 		return apiv1.OperatorMessageRecord{}, errors.New("operator message: accepted-request outcome must not embed a request")
 	}
+	outcome.RequestID = canonicalOperatorMessageIdentifier(r.scrubber, "request-id", outcome.RequestID)
+	outcome.IdempotencyKey = canonicalOperatorMessageIdentifier(r.scrubber, "idempotency-key", outcome.IdempotencyKey)
+	requestID, idempotencyKey := outcome.RequestID, outcome.IdempotencyKey
 	outcome, err := scrubOperatorMessage(r.scrubber, outcome)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, err
 	}
+	outcome.RequestID, outcome.IdempotencyKey = requestID, idempotencyKey
 	if err := outcome.Validate(); err != nil {
 		return apiv1.OperatorMessageRecord{}, fmt.Errorf("operator message: scrubbed outcome is invalid: %w", err)
 	}
@@ -180,6 +197,15 @@ func scrubOperatorMessage[T any](scrubber Scrubber, value T) (T, error) {
 		return scrubbed, fmt.Errorf("operator message: decode scrubbed payload: %w", err)
 	}
 	return scrubbed, nil
+}
+
+func canonicalOperatorMessageIdentifier(scrubber Scrubber, kind, value string) string {
+	if !strings.HasPrefix(value, scrubbedOperatorMessageIdentifierPrefix) &&
+		bytes.Equal(scrubber.Scrub([]byte(value)), []byte(value)) {
+		return value
+	}
+	sum := sha256.Sum256([]byte("goobers.dev/operator-message/" + kind + "/v1\x00" + value))
+	return fmt.Sprintf("%s%s:%x", scrubbedOperatorMessageIdentifierPrefix, kind, sum)
 }
 
 func (r *Run) operatorMessagesLocked() ([]apiv1.OperatorMessageRecord, error) {
