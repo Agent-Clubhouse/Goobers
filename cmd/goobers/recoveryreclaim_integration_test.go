@@ -253,6 +253,7 @@ func (f *reclaimFixture) instanceLogContains(code string) bool {
 // admits a new publish. Those entries hold no patch bytes at all, so freeing
 // one discards nothing.
 func TestIntegrationRecoveryReclaimsNoDiffEntriesUnderCapacityPressure(t *testing.T) {
+	testdep.Require(t, "git")
 	f := newReclaimFixture(t, 2)
 	f.seed([]reclaimEntry{{runID: "nodiff-a", ageHours: 3}, {runID: "nodiff-b", ageHours: 2}})
 	if err := f.cleanupNewRun("new-run"); err != nil {
@@ -272,6 +273,7 @@ func TestIntegrationRecoveryReclaimsNoDiffEntriesUnderCapacityPressure(t *testin
 // every path it touches is a Goobers stage artifact rather than repository
 // content.
 func TestIntegrationRecoveryReclaimsBookkeepingOnlyEntries(t *testing.T) {
+	testdep.Require(t, "git")
 	f := newReclaimFixture(t, 2)
 	f.seed([]reclaimEntry{
 		{runID: "bookkeeping-a", ageHours: 3, files: map[string]string{"mutations.jsonl": "{\"a\":1}\n"}},
@@ -289,6 +291,7 @@ func TestIntegrationRecoveryReclaimsBookkeepingOnlyEntries(t *testing.T) {
 // identical content retained many times over. The oldest copy is reclaimable
 // because a newer entry protects the same bytes; the newest never is.
 func TestIntegrationRecoveryReclaimsSupersededDuplicate(t *testing.T) {
+	testdep.Require(t, "git")
 	f := newReclaimFixture(t, 3)
 	content := map[string]string{"duplicate.txt": "identical agent work\n"}
 	f.seed([]reclaimEntry{
@@ -317,6 +320,7 @@ func TestIntegrationRecoveryReclaimsSupersededDuplicate(t *testing.T) {
 // whole first-enable grace window. On-demand eviction has no grace window, so
 // the decision takes effect at the moment capacity is needed.
 func TestIntegrationRecoveryReclaimsAbandonedEntryOnDemand(t *testing.T) {
+	testdep.Require(t, "git")
 	f := newReclaimFixture(t, 2)
 	f.seed([]reclaimEntry{
 		{runID: "abandoned-run", ageHours: 4, terminal: true, abandon: true,
@@ -344,6 +348,7 @@ func TestIntegrationRecoveryReclaimsAbandonedEntryOnDemand(t *testing.T) {
 // the cleanup is refused rather than made to fit. Choosing a victim among
 // these is #5096's policy decision, not this hook's.
 func TestIntegrationRecoveryRefusesToReclaimUniqueWork(t *testing.T) {
+	testdep.Require(t, "git")
 	f := newReclaimFixture(t, 2)
 	f.seed([]reclaimEntry{
 		{runID: "unique-a", ageHours: 4, files: map[string]string{"a.txt": "distinct work a\n"}},
@@ -367,6 +372,7 @@ func TestIntegrationRecoveryRefusesToReclaimUniqueWork(t *testing.T) {
 // that caller discarded it, so reservations that consume capacity and that no
 // reclamation path can free stayed invisible.
 func TestIntegrationRecoveryReportsUnreadableReservations(t *testing.T) {
+	testdep.Require(t, "git")
 	f := newReclaimFixture(t, 3)
 	f.seed([]reclaimEntry{{runID: "nodiff-a", ageHours: 3}, {runID: "nodiff-b", ageHours: 2}})
 	// A crashed publish leaves a reservation directory holding only lock
