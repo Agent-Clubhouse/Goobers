@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/providers"
 )
 
 // IngestRun reads a single run directory's journal (run.yaml + events.jsonl)
@@ -407,11 +408,12 @@ func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalE
 	if relationship == "" {
 		relationship = "touched"
 	}
+	repository, itemURL := costWorkItemIdentity(ev)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT OR IGNORE INTO run_cost_attribution
-			(run_id, provider, external_kind, external_id, relationship)
-		VALUES (?, ?, ?, ?, ?)`,
-		runID, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID, relationship); err != nil {
+			(run_id, provider, repository, external_kind, external_id, url, relationship)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		runID, ev.ExternalRef.Provider, repository, ev.ExternalRef.Kind, ev.ExternalRef.ID, nullIfEmpty(itemURL), relationship); err != nil {
 		return fmt.Errorf("rollup: insert cost attribution seq %d: %w", ev.Seq, err)
 	}
 	// An intent relates this run to the PR, but acknowledges only local
@@ -440,10 +442,39 @@ func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalE
 		INSERT INTO provider_mutations (run_id, seq, provider, kind, external_id, url, operation, occurred_at, runner_json)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		runID, ev.Seq, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID,
-		nullIfEmpty(ev.ExternalRef.URL), nullIfEmpty(operationFromRunner(ev.Runner)), formatTime(ev.Time), rj); err != nil {
+		nullIfEmpty(itemURL), nullIfEmpty(operationFromRunner(ev.Runner)), formatTime(ev.Time), rj); err != nil {
 		return fmt.Errorf("rollup: insert provider_mutation seq %d: %w", ev.Seq, err)
 	}
 	return nil
+}
+
+func costWorkItemIdentity(ev journalEvent) (string, string) {
+	itemURL := ev.ExternalRef.URL
+	var receipts struct {
+		MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation"`
+		QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission"`
+		LandingIntent     *providers.LandingIntent     `json:"landingIntent"`
+	}
+	if data, err := json.Marshal(ev.Runner); err == nil {
+		_ = json.Unmarshal(data, &receipts)
+	}
+	itemURL = providers.MutationWorkItemURL(
+		ev.ExternalRef.Provider,
+		ev.ExternalRef.Kind,
+		ev.ExternalRef.ID,
+		itemURL,
+		receipts.MergeConfirmation,
+		receipts.QueueAdmission,
+		receipts.LandingIntent,
+	)
+	repository := workItemRepository(ev.ExternalRef.Provider, itemURL)
+	if repository == "" {
+		repository = workItemRepositoryFromAPI(
+			ev.ExternalRef.Provider,
+			providers.MutationRepositoryAPIURL(receipts.MergeConfirmation, receipts.QueueAdmission, receipts.LandingIntent),
+		)
+	}
+	return repository, itemURL
 }
 
 // Recovered failed/conflicting operations remain journal evidence, not

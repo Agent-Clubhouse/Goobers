@@ -426,6 +426,23 @@ func workItemRepository(provider, rawURL string) string {
 	return parts[0] + "/" + parts[1]
 }
 
+func workItemRepositoryFromAPI(provider, rawURL string) string {
+	if !strings.EqualFold(provider, "github") {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for index := len(parts) - 3; index >= 0; index-- {
+		if parts[index] == "repos" {
+			return parts[index+1] + "/" + parts[index+2]
+		}
+	}
+	return ""
+}
+
 // adoRepositoryIdentity reads "<org>/<project>" off a work-item URL and
 // "<org>/<project>/<repo>" off a pull-request URL, matching the scoping
 // adoWorkItemURL writes so the two round-trip.
