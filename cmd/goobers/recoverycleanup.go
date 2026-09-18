@@ -26,7 +26,7 @@ func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanup
 		return nil, err
 	}
 	return func(manager *worktree.Manager) {
-		callback := recoveryCleanupHandler(layout, cfg, cleanupRoot, identities, scrubber, false, manager, tel)
+		callback := recoveryCleanupHandler(layout, cfg, cleanupRoot, identities, scrubber, manager, tel)
 		_ = manager.SetCleanupGuard("recovery", classifyRecoveryCapacityGuard(callback))
 	}, nil
 }
@@ -52,7 +52,7 @@ func recoveryRepositoryIdentities(cfg *instance.Config, cloneURL func(apiv1.Repo
 	return identities, nil
 }
 
-func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, identities map[string]string, scrubber journal.Scrubber, terminal bool, manager *worktree.Manager, tel *telemetry.Client) func(context.Context, worktree.CleanupTarget) error {
+func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, identities map[string]string, scrubber journal.Scrubber, manager *worktree.Manager, tel *telemetry.Client) func(context.Context, worktree.CleanupTarget) error {
 	return func(ctx context.Context, target worktree.CleanupTarget) error {
 		if tel != nil {
 			ctx = recovery.WithSnapshotObserver(ctx, tel)
@@ -67,16 +67,21 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		if strings.TrimSpace(target.BaseRef) == "" {
 			return recoveryCleanupHistoricalTarget(ctx, layout, cfg, cleanupRoot, scrubber, manager, key, target)
 		}
-		return recoveryCleanupCurrentTarget(ctx, layout, cfg, cleanupRoot, scrubber, terminal, manager, key, target)
+		return recoveryCleanupCurrentTarget(ctx, layout, cfg, cleanupRoot, scrubber, manager, key, target)
 	}
 }
 
-func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, cfg *instance.Config, cleanupRoot string, scrubber journal.Scrubber, terminal bool, manager *worktree.Manager, key string, target worktree.CleanupTarget) error {
+// terminal is read from the owning run's journal, not from which caller
+// installed this guard: a daemon installs the terminal guard the first time any
+// run finalizes, and a guard-carried flag would then send every later stage
+// cleanup of every other, still-running run down the terminal path — skipping
+// the clean-intermediate check below for the rest of the process's life.
+func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, cfg *instance.Config, cleanupRoot string, scrubber journal.Scrubber, manager *worktree.Manager, key string, target worktree.CleanupTarget) error {
 	reader, identity, err := recoveryCleanupRun(layout, target)
 	if err != nil {
 		return err
 	}
-	captureAt, err := recoveryCaptureTime(ctx, reader, identity.StartedAt, terminal)
+	captureAt, terminal, err := recoveryCaptureWindow(ctx, reader, identity.StartedAt)
 	if err != nil {
 		return err
 	}
@@ -208,6 +213,11 @@ func recoveryCleanupBaseRef(target worktree.CleanupTarget) (string, error) {
 // Standalone abort/startup/stall finalizers may construct their own Manager.
 // Resolve configuration only when an actual owned worktree needs cleanup, so
 // already-clean runs can still release claims even with unavailable config.
+//
+// The handler installed here is the same phase-aware one recoveryCleanupOption
+// installs, so replacing a runner manager's existing recovery guard — which
+// every terminal finalization on a long-lived daemon does — is idempotent
+// rather than a switch that pins later cleanups to the terminal path.
 func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Manager) error {
 	return manager.SetCleanupGuard("recovery", classifyRecoveryCapacityGuard(func(ctx context.Context, target worktree.CleanupTarget) error {
 		cfg, err := instance.LoadConfig(layout.ConfigFile())
@@ -222,7 +232,7 @@ func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Mana
 		if err != nil {
 			return err
 		}
-		callback := recoveryCleanupHandler(layout, cfg, manager.Root, identities, journal.NewRegistryScrubber(), true, manager, nil)
+		callback := recoveryCleanupHandler(layout, cfg, manager.Root, identities, journal.NewRegistryScrubber(), manager, nil)
 		return callback(ctx, target)
 	}))
 }
