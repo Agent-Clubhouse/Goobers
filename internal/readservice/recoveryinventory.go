@@ -50,7 +50,13 @@ type RecoveryInventoryStatus struct {
 	Used  int `json:"used"`
 	Limit int `json:"limit"`
 	// Unreadable is the subset of Used that holds no interpretable record.
-	Unreadable       int `json:"unreadable"`
+	Unreadable int `json:"unreadable"`
+	// Overflow counts snapshots held at the ref tier because the inventory
+	// was full when they were captured (#5370). They are NOT part of Used:
+	// they occupy no slot. A non-zero Overflow is what "exhausted" now means
+	// operationally — cleanup succeeded, so nothing is wedged, but this much
+	// work is one durability tier below a bundle until promotion catches up.
+	Overflow         int `json:"overflow"`
 	HighWaterPercent int `json:"highWaterPercent"`
 	// EarliestRetainUntil is when the next slot can be reclaimed by policy.
 	// Absent when the inventory is empty or no deadline could be read: it is
@@ -70,11 +76,17 @@ type RecoveryInventoryStatus struct {
 // ClassifyRecoveryInventory names the occupancy state for used slots against
 // an effective limit. A non-positive limit is unclassifiable rather than
 // silently healthy.
-func ClassifyRecoveryInventory(used, limit int) string {
+//
+// Any work held at the overflow tier is exhaustion, whatever the slot count
+// currently says (#5370). Occupancy can fall back below the cap the moment a
+// slot frees while entries are still waiting at the ref tier, and reporting
+// "healthy" there would retract the alarm before the condition it named had
+// cleared. The alarm therefore re-arms only once overflow returns to zero.
+func ClassifyRecoveryInventory(used, limit, overflow int) string {
 	if limit <= 0 {
 		return RecoveryInventoryUnavailable
 	}
-	if used >= limit {
+	if overflow > 0 || used >= limit {
 		return RecoveryInventoryExhausted
 	}
 	if used*100 >= limit*RecoveryInventoryHighWaterPercent {

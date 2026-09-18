@@ -58,9 +58,16 @@ func abandonRecoveryRecord(ctx context.Context, layout instance.Layout, runID, r
 	if err != nil {
 		return err
 	}
+	// An operator must be able to abandon work that overflowed to the ref
+	// tier exactly as they abandon a bundled snapshot; refusing here would
+	// make the tier a place work goes to become unmanageable.
+	entries, err = recoveryEntriesWithOverflow(ctx, layout, entries)
+	if err != nil {
+		return err
+	}
 	var selected *recovery.InventoryEntry
 	for _, entry := range entries {
-		current, err := recovery.ReadRetainedRecord(entry.RecordPath)
+		current, err := readRecoveryEntryRecord(entry.RecordPath)
 		if err != nil {
 			return err
 		}
@@ -101,7 +108,7 @@ func recordRecoveryAbandonment(ctx context.Context, layout instance.Layout, read
 	if !terminalRunPhase(phase) {
 		return fmt.Errorf("recovery abandonment requires a terminal run")
 	}
-	current, err := recovery.ReadRetainedRecord(selected.RecordPath)
+	current, err := readRecoveryEntryRecord(selected.RecordPath)
 	if err != nil {
 		return err
 	}

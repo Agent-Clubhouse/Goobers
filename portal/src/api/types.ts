@@ -432,6 +432,12 @@ export interface RecoveryInventoryStatus {
   limit: number;
   /** Reservations holding no interpretable record. They still occupy slots. */
   unreadable: number;
+  /**
+   * Snapshots held as pinned mirror refs with no bundle because the inventory
+   * was full when they were captured. They occupy no slot, so they are not
+   * part of `used`, and they are promoted to bundles as capacity frees.
+   */
+  overflow: number;
   highWaterPercent: number;
   earliestRetainUntil?: string;
   inventoryRoot?: string;

@@ -492,6 +492,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         used: 12,
         limit: 128,
         unreadable: 0,
+        overflow: 0,
         highWaterPercent: 80,
         earliestRetainUntil: "2026-08-17T20:00:00Z",
         inventoryRoot: "C:\\Goobers\\instances\\local-dev\\recovery",

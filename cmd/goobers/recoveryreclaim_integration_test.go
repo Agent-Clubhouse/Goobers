@@ -344,9 +344,18 @@ func TestIntegrationRecoveryReclaimsAbandonedEntryOnDemand(t *testing.T) {
 }
 
 // TestIntegrationRecoveryRefusesToReclaimUniqueWork is the safety half of
-// #5354's acceptance: when every retained entry holds a real, unique patch,
-// the cleanup is refused rather than made to fit. Choosing a victim among
-// these is #5096's policy decision, not this hook's.
+// #5354's acceptance, unchanged in what it protects: when every retained entry
+// holds a real, unique, unlanded patch, the hook reclaims NOTHING. Choosing a
+// victim among these is #5096's policy decision, which #5370 closed as
+// won't-do.
+//
+// What #5370 changed is what happens to the capture that found no room. It no
+// longer refuses the cleanup - refusing protected nothing and stopped the
+// instance - it overflows to the ref tier. So this asserts the same invariant
+// from the other side: both retained entries survive untouched, and the new
+// work is retained too, one tier down. The original refusal is still
+// reproduced under onFull: refuse, covered in
+// recoveryoverflow_integration_test.go.
 func TestIntegrationRecoveryRefusesToReclaimUniqueWork(t *testing.T) {
 	testdep.Require(t, "git")
 	f := newReclaimFixture(t, 2)
@@ -354,16 +363,21 @@ func TestIntegrationRecoveryRefusesToReclaimUniqueWork(t *testing.T) {
 		{runID: "unique-a", ageHours: 4, files: map[string]string{"a.txt": "distinct work a\n"}},
 		{runID: "unique-b", ageHours: 3, files: map[string]string{"b.txt": "distinct work b\n"}},
 	})
-	err := f.cleanupNewRun("new-run")
-	if err == nil {
-		t.Fatal("cleanup succeeded although every retained entry held a unique, unlanded patch")
-	}
-	if !strings.Contains(err.Error(), "recovery inventory is full") {
-		t.Fatalf("cleanup failed for an unrelated reason: %v", err)
+	if err := f.cleanupNewRun("new-run"); err != nil {
+		t.Fatalf("cleanup was refused although the capture could overflow: %v", err)
 	}
 	active := f.activeRunIDs()
 	if !active["unique-a"] || !active["unique-b"] {
 		t.Fatal("agent-authored work was discarded to free a slot")
+	}
+	if active["new-run"] {
+		t.Fatal("the new capture took an inventory slot that was not free")
+	}
+	if _, found := f.reclamationJustification("unique-a"); found {
+		t.Fatal("a unique, unlanded entry was reclaimed under capacity pressure")
+	}
+	if overflow := f.overflowRunIDs(); !overflow["new-run"] {
+		t.Fatalf("the new capture was neither retained nor held at the ref tier: %v", overflow)
 	}
 }
 

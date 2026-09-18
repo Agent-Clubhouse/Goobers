@@ -46,7 +46,7 @@ func RestoreSnapshot(ctx context.Context, repository string, record Record, curr
 // restoredSnapshotTree uses a private index for both initial restoration and
 // replay verification. It never changes a branch or the current checkout.
 func restoredSnapshotTree(ctx context.Context, repository string, record Record, currentMain string, maxPatchBytes int64) (string, error) {
-	if err := record.Validate(); err != nil {
+	if err := record.validateRestorable(); err != nil {
 		return "", err
 	}
 	if maxPatchBytes <= 0 || !gitObjectID.MatchString(currentMain) {
