@@ -3,12 +3,12 @@ package executor
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // TestEffectiveResultFile covers both shapes ExcludeStageArtifacts has to
@@ -137,7 +137,7 @@ func initExcludeTestRepo(t *testing.T) string {
 
 func runExcludeTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
