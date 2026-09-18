@@ -57,7 +57,7 @@ func TestRecoverySweepSurvivesUnreadableReservation(t *testing.T) {
 
 	setup := &schedulerSetup{Config: &instance.Config{}}
 	err := retireExpiredRecovery(
-		context.Background(), layout, setup, nil, map[string]string{}, true, io.Discard, io.Discard,
+		context.Background(), layout, setup, nil, map[string]string{}, true, false, false, io.Discard, io.Discard,
 	)
 
 	// The unreadable reservation is reported rather than silently skipped: it
