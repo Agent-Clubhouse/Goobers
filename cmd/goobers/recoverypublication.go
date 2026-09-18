@@ -114,7 +114,7 @@ func (a recoveryPublicationAck) withCurrentRetention(event journal.Event) (journ
 	if err != nil {
 		return journal.Event{}, err
 	}
-	captureAt, err := recoveryCaptureTime(a.ctx, reader, identity.StartedAt, true)
+	captureAt, err := recoveryCaptureTime(a.ctx, reader, identity.StartedAt)
 	if err != nil {
 		return journal.Event{}, err
 	}
