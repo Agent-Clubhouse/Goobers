@@ -626,6 +626,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	configLoaded.Store(true)
 	logGateFlip(stdout, processStart, "configLoaded")
 	storageGate, storageThresholds := startDaemonStorageHealth(setup)
+	// #5343/#4911 AC5: the same reading, sampled on the daemon's own cadence,
+	// feeds the read model AND the deduplicated high-water warning below.
+	recoveryInventory := startDaemonRecoveryInventoryHealth(ctx, l, setup)
 	// #3651: the normal stop path calls this explicitly below so a flush or
 	// close failure fails the command; the defer only covers early returns,
 	// and Shutdown itself runs at most once.
@@ -781,11 +784,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// nothing here. Found by auditing which topologies attach which sources
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
-		ReadModel:          setup.ReadModel,
-		RetentionStats:     setup.RetentionStats,
-		InstanceLogStats:   setup.InstanceLog.Stats,
-		StorageHealthStats: storageGate.Stats,
-		WorkItemLookup:     statusWorkItemLookup(l.Root, setup.Definitions),
+		ReadModel:              setup.ReadModel,
+		RetentionStats:         setup.RetentionStats,
+		InstanceLogStats:       setup.InstanceLog.Stats,
+		StorageHealthStats:     storageGate.Stats,
+		RecoveryInventoryStats: recoveryInventory.Stats,
+		WorkItemLookup:         statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -1630,6 +1634,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}()
 
 	storageHealthTickerDone := startStorageHealthTicker(ctx, setup, storageGate, storageThresholds.CheckInterval)
+	recoveryInventoryTickerDone := startRecoveryInventoryTicker(ctx, l, setup, recoveryInventory, recoveryInventorySampleInterval)
 	mergedPRCostSweeps := startMergedPRCostSweepRuntime(ctx, setup)
 
 	apiReadCacheLockSweepTickerDone := startAPIReadCacheLockSweepTicker(ctx, l)
@@ -1791,7 +1796,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// silences stdout chatter, while this is diagnostic evidence an operator
 	// reads back from the instance log later.
 	serviceHealthDone := make(chan struct{})
-	go emitServiceHealth(ctx, root, currentDaemon, setup.InstanceLog, serviceHealthInterval, nil, serviceHealthDone)
+	go emitServiceHealth(ctx, root, currentDaemon, setup.InstanceLog, recoveryInventory.Stats, serviceHealthInterval, nil, serviceHealthDone)
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error
@@ -1876,6 +1881,7 @@ daemonLoop:
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-storageHealthTickerDone
+	<-recoveryInventoryTickerDone
 	<-startupRetentionSweepDone
 	<-mergedPRCostSweeps.tickerDone
 	<-startupMergedPRCostSweepDone

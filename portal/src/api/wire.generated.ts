@@ -213,6 +213,17 @@ export const goWireFixtures = {
       "criticalFloorBytes": 5368709120,
       "measuredAt": "2026-07-18T12:32:56Z"
     },
+    "recoveryInventory": {
+      "state": "warning",
+      "used": 104,
+      "limit": 128,
+      "unreadable": 2,
+      "highWaterPercent": 80,
+      "earliestRetainUntil": "2026-07-18T12:36:56Z",
+      "inventoryRoot": "/instances/fixture/recovery",
+      "policySource": "instance-config",
+      "observedAt": "2026-07-18T12:32:56Z"
+    },
     "memoryGateEnabled": false,
     "fsyncDisabled": false,
     "fleetEnrolled": false

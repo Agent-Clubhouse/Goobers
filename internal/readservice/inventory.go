@@ -86,6 +86,11 @@ type Instance struct {
 	TelemetryRetention *TelemetryRetentionStatus `json:"telemetryRetention,omitempty"`
 	JournalHealth      *JournalHealthStatus      `json:"journalHealth,omitempty"`
 	StorageHealth      *StorageHealthStatus      `json:"storageHealth,omitempty"`
+	// RecoveryInventory is shared recovery-snapshot occupancy (#5343). A full
+	// inventory halts worktree cleanup and therefore unrelated runs, so it
+	// belongs on the instance summary the portal Overview renders rather than
+	// only in the individual stage failures it eventually causes.
+	RecoveryInventory *RecoveryInventoryStatus `json:"recoveryInventory,omitempty"`
 	// MemoryHighWater, MemoryGateEnabled, and FsyncDisabled surface
 	// GOOBERS_MEMORY_HIGH_WATER and GOOBERS_DISABLE_FSYNC (#4218), settings
 	// that were previously invisible outside the daemon process's own
@@ -435,6 +440,10 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	if s.sources.StorageHealthStats != nil {
 		storageHealth = storageHealthStatus(s.sources.StorageHealthStats())
 	}
+	var recoveryInventory *RecoveryInventoryStatus
+	if s.sources.RecoveryInventoryStats != nil {
+		recoveryInventory = s.sources.RecoveryInventoryStats()
+	}
 	projected, err := s.instanceLog.snapshot(ctx, s.sources.Layout.SchedulerDir())
 	if err != nil {
 		return Instance{}, err
@@ -466,6 +475,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		TelemetryRetention: telemetryRetention,
 		JournalHealth:      journalHealth,
 		StorageHealth:      storageHealth,
+		RecoveryInventory:  recoveryInventory,
 		MemoryHighWater:    memoryHighWater,
 		MemoryGateEnabled:  !memoryGateDisabled,
 		FsyncDisabled:      journal.FsyncDisabled(),

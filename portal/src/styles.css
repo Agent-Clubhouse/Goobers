@@ -1137,6 +1137,37 @@ summary:focus-visible {
   color: var(--danger);
 }
 
+/*
+ * Elevated instance-summary rows (#5343). A capacity condition that halts
+ * unrelated runs has to read as different from the rows around it at a glance,
+ * not only in its wording — the reported failure mode was an Overview that
+ * "remained normal-looking" while stages failed.
+ */
+.instance-summary-row-warning {
+  background: var(--warning-soft);
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.instance-summary-row-warning .result-check {
+  color: var(--warning-ink);
+}
+
+.instance-summary-row-error {
+  background: var(--danger-soft);
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.instance-summary-row-warning .instance-summary-icon-warning {
+  background: color-mix(in srgb, var(--warning) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--warning) 30%, var(--line));
+}
+
+.instance-summary-row-error .instance-summary-icon-warning {
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--line));
+  color: var(--danger);
+}
+
 .content-section {
   margin-top: 44px;
 }

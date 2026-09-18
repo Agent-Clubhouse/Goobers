@@ -76,6 +76,28 @@ refused, the failure names the observed count, the limit, and the root:
 A refused cleanup preserves its source: the worktree stays on disk and is
 retried, so a full inventory costs disk and retries, never evidence.
 
+Occupancy is also reported before it fails anything. The daemon samples the
+inventory on its own cadence and classifies it against the configured cap:
+`healthy` below the high-water mark, `warning` at or above 80% of the cap,
+`exhausted` at or above it, and `unavailable` when the reading itself failed —
+an unmeasurable inventory is never reported as an empty one. The sample counts
+every reservation directory occupying a slot, including incomplete ones that
+hold no published record, because those count against the cap until they are
+reconciled and so appear in the next refusal's numbers. The limit is resolved
+from `instance.yaml` at each sample, so changing `maxSnapshots` is reflected
+without restarting the daemon.
+
+That classification appears in three places: the instance read model
+(`recoveryInventory` on the instance response, which the portal Overview
+renders as a card carrying occupancy, the effective limit, the earliest
+retention deadline and elevated styling for warning and exhaustion); the
+periodic service-health record in the instance log; and a deduplicated warning
+in the instance log. The warning is journalled once when occupancy crosses into
+`warning` (`recovery_inventory_high_water`) and once when it crosses into
+`exhausted` (`recovery_inventory_exhausted`), never per sample. It is re-armed
+only by dropping back below the threshold, and its state is durable, so a
+daemon restart with an unchanged condition does not repeat it.
+
 If the inventory already contains more entries than the configured cap, do
 not delete recovery directories by hand. Temporarily raise
 `retention.recovery.maxSnapshots` above the current inventory size, retry the
