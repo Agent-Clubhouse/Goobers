@@ -67,11 +67,8 @@ func captureTerminalRunBranch(l instance.Layout, wtMgr *worktree.Manager, runID 
 	defer cancel()
 	// Everything below here only runs for a run whose branch was actually
 	// found in a managed mirror, so a failure means real work is at risk.
-	_, err := wtMgr.WithRunBranchCheckout(ctx, branch, func(key, path, tip string) error {
-		return retainTerminalRunBranch(ctx, l, wtMgr, terminalCaptureSite{
-			runID: runID, managedKey: key, events: events, startedAt: startedAt,
-		}, path, tip)
-	})
+	plan := &terminalCapturePlan{ctx: ctx, layout: l, manager: wtMgr, runID: runID, events: events, startedAt: startedAt}
+	_, err := wtMgr.WithRunBranchCheckout(ctx, branch, plan.worthCapturing, plan.publish)
 	return err
 }
 
@@ -97,6 +94,17 @@ func terminalCaptureBranch(l instance.Layout, runID string) (string, []journal.E
 	if err != nil {
 		return "", nil, time.Time{}, false
 	}
+	if journal.PhaseFromEvents(events) == journal.PhaseCompleted {
+		// A run that completed delivered its work through its own outputs —
+		// it pushed its branch, opened its PR, closed its item. The run branch
+		// is emphatically not the last copy of anything, and #5355 is about
+		// runs that end WITHOUT delivering. Capturing here would spend a slot
+		// in a scarce instance-wide inventory, on every successful run, to
+		// protect work nobody will ever restore — crowding out exactly the
+		// failed runs the inventory exists for. It would also pay for a
+		// checkout inside terminal finalization on the hot path.
+		return "", nil, time.Time{}, false
+	}
 	for i := range events {
 		ref := events[i].ExternalRef
 		if ref != nil && ref.Kind == "branch" && ref.ID != "" {
@@ -106,52 +114,75 @@ func terminalCaptureBranch(l instance.Layout, runID string) (string, []journal.E
 	return "", nil, time.Time{}, false
 }
 
-// terminalCaptureSite is what the mirror visit already knows about the run
-// whose branch it found.
-type terminalCaptureSite struct {
-	runID      string
-	managedKey string
-	events     []journal.Event
-	startedAt  time.Time
+// terminalCapturePlan carries what the two phases of one capture share: the
+// run's own evidence going in, and the retention request the decision phase
+// built going out. Splitting the work this way is what keeps the expensive
+// checkout off the path of every terminal run whose branch needs nothing.
+type terminalCapturePlan struct {
+	ctx       context.Context
+	layout    instance.Layout
+	manager   *worktree.Manager
+	runID     string
+	events    []journal.Event
+	startedAt time.Time
+
+	request     recovery.RetentionRequest
+	publication recovery.PublicationJournal
 }
 
-// retainTerminalRunBranch publishes the branch tip through the same Retain path
-// a stage capture uses, from a throwaway detached checkout of that tip.
+// worthCapturing decides, from the bare mirror alone, whether this run branch
+// needs a recovery snapshot — and builds the retention request if it does.
+// Nothing here checks anything out.
 //
-// Two conditions suppress it, in increasing cost order. SkipEmpty (set by
-// recoveryCleanupRequest) drops a capture whose cumulative implementation
-// against the base is empty, which is exactly the "tip carries nothing the base
-// does not" case — expressed as the net difference rather than as SHA equality,
-// so a tip that merely merged or reverted back to the base is also skipped.
-// terminalCaptureCovered then drops a capture whose work an existing retained
-// record already protects.
-func retainTerminalRunBranch(ctx context.Context, l instance.Layout, wtMgr *worktree.Manager, site terminalCaptureSite, path, tip string) error {
-	cfg, err := instance.LoadConfig(l.ConfigFile())
+// Three conditions suppress the capture, in increasing cost order. A branch
+// already contained in its base carries nothing to protect. A branch some
+// record retained for this run was already captured from is protected already.
+// SkipEmpty (set by recoveryCleanupRequest) is the final backstop during
+// publication, for a tip whose cumulative implementation turns out to be empty
+// for a reason the containment test could not see.
+func (p *terminalCapturePlan) worthCapturing(managedKey, mirror, tip string) (bool, error) {
+	cfg, err := instance.LoadConfig(p.layout.ConfigFile())
 	if err != nil {
-		return fmt.Errorf("load terminal recovery configuration: %w", err)
+		return false, fmt.Errorf("load terminal recovery configuration: %w", err)
 	}
-	key, baseRef, ok, err := terminalCaptureIdentity(l, cfg, site.managedKey)
+	key, baseRef, ok, err := terminalCaptureIdentity(p.layout, cfg, managedKey)
 	if err != nil || !ok {
 		// A mirror no configured repository claims cannot be attributed to a
 		// repository identity, and a record without one is unusable. There is
 		// no partial publication to make here.
-		return err
+		return false, err
 	}
-	captureAt, err := recoveryWindowTime(site.events, site.startedAt)
-	if err != nil {
-		return err
+	contained, err := recovery.CommitContainedIn(p.ctx, mirror, tip, baseRef)
+	if err != nil || contained {
+		return false, err
 	}
-	publication := recoveryCleanupJournal{directory: l.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}
-	request, err := recoveryCleanupRequest(l, cfg, wtMgr.Root, wtMgr, key, path, site.runID, captureAt, publication)
+	captureAt, err := recoveryWindowTime(p.events, p.startedAt)
 	if err != nil {
-		return err
+		return false, err
+	}
+	publication := recoveryCleanupJournal{directory: p.layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}
+	// Repository is filled in by publish: the request is built here, where the
+	// policy and inventory resolve once, but the snapshot is captured from the
+	// checkout that only exists if this function says yes.
+	request, err := recoveryCleanupRequest(p.layout, cfg, p.manager.Root, p.manager, key, "", p.runID, captureAt, publication)
+	if err != nil {
+		return false, err
 	}
 	request.BaseRef = baseRef
-	covered, err := terminalCaptureCovered(ctx, request, path, tip)
+	covered, err := terminalCaptureCovered(p.ctx, request, mirror, tip)
 	if err != nil || covered {
-		return err
+		return false, err
 	}
-	_, _, err = recovery.Retain(ctx, request, publication)
+	p.request, p.publication = request, publication
+	return true, nil
+}
+
+// publish captures the branch tip from the throwaway checkout through the same
+// Retain path a stage capture uses.
+func (p *terminalCapturePlan) publish(path, _ string) error {
+	request := p.request
+	request.Repository = path
+	_, _, err := recovery.Retain(p.ctx, request, p.publication)
 	return err
 }
 

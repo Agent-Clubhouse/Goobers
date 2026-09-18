@@ -23,10 +23,19 @@ const terminalCaptureDirectory = "terminal-capture"
 // found a run branch in back to a configured repository identity.
 func RepositoryKey(repoURL string) string { return repoKey(repoURL) }
 
-// WithRunBranchCheckout finds the managed mirror holding branch, visits a
-// temporary detached checkout of that branch's tip under the repository lock,
-// and reports whether any mirror had the branch at all. visit receives the
-// mirror's managed key, the checkout path, and the tip it is detached at.
+// WithRunBranchCheckout finds the managed mirror holding branch and, under the
+// repository lock, offers it to decide. Only if decide says the branch is worth
+// capturing is a temporary detached checkout of its tip materialized and handed
+// to visit. It reports whether any mirror had the branch at all.
+//
+// The two phases exist because materializing a checkout is by far the most
+// expensive thing this path can do — hundreds of milliseconds inside terminal
+// finalization, on every terminal run — while almost every run branch carries
+// nothing that needs protecting. decide answers that from the bare mirror
+// alone: it gets the mirror directory and the tip, so an ancestry test against
+// the base and a coverage test against the inventory both run without checking
+// anything out. A checkout happens only for a branch that is genuinely ahead
+// and genuinely unprotected.
 //
 // It is the terminal-time counterpart to a stage worktree: `git worktree
 // remove` never deletes a branch, so a run whose stage worktrees were all torn
@@ -46,9 +55,9 @@ func RepositoryKey(repoURL string) string { return repoKey(repoURL) }
 // publish recovery for the throwaway checkout it was invoked to produce. This
 // path writes no marker and no ownership record, so no guard, reaper or
 // retention sweep ever sees it as an owned worktree.
-func (m *Manager) WithRunBranchCheckout(ctx context.Context, branch string, visit func(key, path, tip string) error) (bool, error) {
-	if visit == nil {
-		return false, fmt.Errorf("worktree: run-branch checkout requires a visitor")
+func (m *Manager) WithRunBranchCheckout(ctx context.Context, branch string, decide func(key, mirror, tip string) (bool, error), visit func(path, tip string) error) (bool, error) {
+	if decide == nil || visit == nil {
+		return false, fmt.Errorf("worktree: run-branch checkout requires a decision and a visitor")
 	}
 	if err := validRunBranch(branch); err != nil {
 		// A run whose journalled branch name is unusable has nothing this can
@@ -60,7 +69,7 @@ func (m *Manager) WithRunBranchCheckout(ctx context.Context, branch string, visi
 		return false, err
 	}
 	for _, key := range keys {
-		found, err := m.visitRunBranchInMirror(ctx, key, branch, visit)
+		found, err := m.visitRunBranchInMirror(ctx, key, branch, decide, visit)
 		if found || err != nil {
 			return found, err
 		}
@@ -89,7 +98,7 @@ func managedRepositoryKeys(root string) ([]string, error) {
 	return keys, nil
 }
 
-func (m *Manager) visitRunBranchInMirror(ctx context.Context, key, branch string, visit func(key, path, tip string) error) (bool, error) {
+func (m *Manager) visitRunBranchInMirror(ctx context.Context, key, branch string, decide func(key, mirror, tip string) (bool, error), visit func(path, tip string) error) (bool, error) {
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
@@ -106,6 +115,10 @@ func (m *Manager) visitRunBranchInMirror(ctx context.Context, key, branch string
 		// branch simply cannot be shown to be here.
 		return false, nil
 	}
+	capture, err := decide(key, dir, tip)
+	if err != nil || !capture {
+		return true, err
+	}
 	path := filepath.Join(m.Root, key, terminalCaptureDirectory)
 	if err := clearTerminalCapture(ctx, dir, path); err != nil {
 		return true, err
@@ -113,7 +126,7 @@ func (m *Manager) visitRunBranchInMirror(ctx context.Context, key, branch string
 	if err := runGit(ctx, dir, "worktree", "add", "--detach", "--", path, tip); err != nil {
 		return true, fmt.Errorf("worktree: check out run branch %q for terminal recovery: %w", branch, err)
 	}
-	visitErr := visit(key, path, tip)
+	visitErr := visit(path, tip)
 	return true, errors.Join(visitErr, clearTerminalCapture(ctx, dir, path))
 }
 
@@ -133,14 +146,25 @@ func runBranchTip(ctx context.Context, dir, branch string) (string, error) {
 
 // clearTerminalCapture makes the scratch checkout absent and unregistered,
 // whether it is this call's own or one an interrupted earlier capture left
-// behind. Both git steps are best-effort because neither has anything to do in
-// the common case; the directory removal is what must succeed.
+// behind.
+//
+// It deliberately does NOT use `git worktree remove`. That command is the
+// package's ordinary teardown verb for worktrees a run owns, and this scratch
+// tree is not one: borrowing it would make a throwaway checkout
+// indistinguishable from a real removal to anything observing git invocations,
+// and its failure would have to be ignored here to stay harmless — which is
+// exactly the kind of swallowed error this file should not contain. Deleting
+// the directory and pruning is the lower-level equivalent: prune exists to reap
+// registrations whose directories are gone, both steps are checked, and a
+// capture that crashed before cleaning up self-heals on the next pass. Callers
+// hold the per-repo lock, so no concurrent add can race the prune.
 func clearTerminalCapture(ctx context.Context, dir, path string) error {
-	_ = runGit(ctx, dir, "worktree", "remove", "--force", "--", path)
 	if err := os.RemoveAll(path); err != nil {
 		return fmt.Errorf("worktree: remove terminal capture checkout: %w", err)
 	}
-	_ = runGit(ctx, dir, "worktree", "prune")
+	if err := runGit(ctx, dir, "worktree", "prune"); err != nil {
+		return fmt.Errorf("worktree: prune terminal capture registration: %w", err)
+	}
 	return nil
 }
 
