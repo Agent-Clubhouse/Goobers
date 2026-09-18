@@ -6663,6 +6663,323 @@ code,
   max-width: 760px;
 }
 
+.run-detail-tabs {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 4px;
+  margin: 0 0 18px;
+  overflow-x: auto;
+}
+
+.run-detail-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-ui);
+  font-weight: 680;
+  margin-bottom: -1px;
+  min-height: 42px;
+  padding: 8px 14px;
+}
+
+.run-detail-tab:hover {
+  color: var(--ink);
+}
+
+.run-detail-tab-active {
+  border-bottom-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.run-detail-tab:focus-visible {
+  border-radius: 5px 5px 0 0;
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.run-overview {
+  display: grid;
+  gap: 16px;
+}
+
+.run-current-state,
+.run-path-panel,
+.run-stage-history,
+.run-artifacts-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+}
+
+.run-current-state {
+  border-left: 4px solid var(--active);
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+}
+
+.run-current-state-completed {
+  border-left-color: var(--success);
+}
+
+.run-current-state-failed,
+.run-current-state-blocked,
+.run-current-state-aborted,
+.run-current-state-escalated {
+  border-left-color: var(--danger);
+}
+
+.run-current-state-heading {
+  align-items: center;
+  display: flex;
+  gap: 11px;
+}
+
+.run-current-state-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
+.run-current-state-heading p,
+.run-current-state-context,
+.run-current-state-reason,
+.run-current-state-activity {
+  margin: 0;
+}
+
+.run-current-state-heading p {
+  color: var(--muted);
+  font-size: var(--font-label);
+  font-weight: 720;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.run-current-state-heading h2 {
+  font-size: 21px;
+  letter-spacing: -0.025em;
+  margin: 0;
+}
+
+.run-current-state-context {
+  color: var(--muted-strong);
+  font-size: var(--font-ui);
+  font-weight: 680;
+}
+
+.run-current-state-reason {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.run-current-state-activity {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.run-current-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.run-stage-status-mark,
+.run-path-mark {
+  background: var(--active);
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+  height: 9px;
+  width: 9px;
+}
+
+.run-current-state-completed .run-stage-status-mark,
+.run-stage-row-completed .run-stage-status-mark,
+.run-path-step-completed .run-path-mark {
+  background: var(--success);
+}
+
+.run-current-state-failed .run-stage-status-mark,
+.run-current-state-blocked .run-stage-status-mark,
+.run-current-state-aborted .run-stage-status-mark,
+.run-current-state-escalated .run-stage-status-mark,
+.run-stage-row-failed .run-stage-status-mark,
+.run-stage-row-blocked .run-stage-status-mark,
+.run-stage-row-aborted .run-stage-status-mark,
+.run-stage-row-escalated .run-stage-status-mark,
+.run-path-step-failed .run-path-mark,
+.run-path-step-blocked .run-path-mark,
+.run-path-step-aborted .run-path-mark,
+.run-path-step-escalated .run-path-mark {
+  background: var(--danger);
+}
+
+.run-stage-row-skipped .run-stage-status-mark,
+.run-path-step-skipped .run-path-mark {
+  background: var(--muted);
+}
+
+.run-path-panel,
+.run-stage-history,
+.run-artifacts-panel {
+  padding: 18px;
+}
+
+.run-path {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.run-path-step {
+  align-items: center;
+  color: var(--muted-strong);
+  display: inline-flex;
+  font-size: var(--font-meta);
+  font-weight: 650;
+  gap: 7px;
+}
+
+.run-path-step:not(:last-child)::after {
+  color: var(--muted);
+  content: ">";
+  margin: 0 9px;
+}
+
+.run-path-step-running {
+  color: var(--ink);
+}
+
+.run-stage-list,
+.run-artifact-list {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  list-style: none;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.run-stage-row + .run-stage-row,
+.run-artifact-list li + li {
+  border-top: 1px solid var(--line);
+}
+
+.run-stage-row > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 12px minmax(150px, 0.7fr) minmax(260px, 1.5fr) 100px 58px;
+  padding: 13px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.run-stage-row > button:hover,
+.run-artifact-list button:hover {
+  background: var(--surface);
+}
+
+.run-stage-row > button:focus-visible,
+.run-artifact-list button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.run-stage-name,
+.run-stage-result,
+.run-artifact-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.run-stage-name strong,
+.run-stage-result strong,
+.run-artifact-copy strong {
+  font-size: var(--font-ui);
+  overflow-wrap: anywhere;
+}
+
+.run-stage-name small,
+.run-stage-result small,
+.run-artifact-copy small {
+  color: var(--muted);
+  font-size: var(--font-meta);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.run-stage-duration {
+  color: var(--muted-strong);
+  font-size: var(--font-meta);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.run-stage-action {
+  color: var(--accent-ink);
+  font-size: var(--font-label);
+  font-weight: 720;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.run-artifact-list button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 82px minmax(0, 1fr) 96px;
+  padding: 13px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.run-artifact-kind {
+  border-radius: 4px;
+  font-size: var(--font-label);
+  font-weight: 720;
+  padding: 4px 6px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.run-artifact-kind-transcript {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.run-artifact-kind-artifact {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+}
+
+.run-artifact-kind-evidence {
+  background: var(--surface);
+  color: var(--muted-strong);
+}
+
+.run-artifact-technical-note {
+  color: var(--muted);
+  font-size: var(--font-meta);
+  margin: 14px 0 0;
+}
+
 .run-pin {
   max-width: 230px;
   overflow-wrap: anywhere;
@@ -8422,6 +8739,17 @@ code,
     overflow-wrap: anywhere;
   }
 
+  .run-stage-row > button {
+    align-items: start;
+    grid-template-columns: 12px minmax(120px, 0.8fr) minmax(180px, 1.2fr);
+  }
+
+  .run-stage-duration,
+  .run-stage-action {
+    grid-column: 3;
+    text-align: left;
+  }
+
   .workflow-graph-controls {
     display: grid;
     grid-template-columns: repeat(3, auto);
@@ -8569,6 +8897,26 @@ code,
     align-items: start;
     display: grid;
     gap: 8px;
+  }
+
+  .run-stage-row > button,
+  .run-artifact-list button {
+    grid-template-columns: 12px minmax(0, 1fr);
+  }
+
+  .run-stage-name,
+  .run-stage-result,
+  .run-stage-duration,
+  .run-stage-action,
+  .run-artifact-copy,
+  .run-artifact-list .run-stage-action {
+    grid-column: 2;
+    text-align: left;
+  }
+
+  .run-artifact-kind {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .journal-heading-actions {
