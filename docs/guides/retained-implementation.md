@@ -49,6 +49,38 @@ when the retained implementation is deliberately no longer needed. The command
 requires the exact source run, recovery ref, and patch digest; its durable
 operator annotation authorizes the later sweep.
 
+### Reclamation under capacity pressure
+
+When a durable handoff is refused because the inventory is full, on-demand
+reclamation runs before the cleanup fails. It never chooses a victim: it
+retires only an entry it can justify, and records the justification on the
+instance log as a `recovery-reclaimed` annotation naming one of:
+
+- `operator-abandoned` — an explicit `goobers recovery-abandon` decision about
+  that exact record, on a terminal run. Unlike the periodic sweep, this path
+  has no dry-run and no first-enable grace window, so an abandonment frees the
+  slot at the moment the capacity is needed rather than a week later.
+- `stored-no-diff` — the capture's tree matched its base exactly, so the entry
+  holds no patch bytes at all. Captures taken before the empty-diff guard can
+  still be present on an existing instance.
+- `bookkeeping-only` — the retained patch touches only Goobers' own stage
+  outputs (`mutations.jsonl`, `claimed-item.json`, `claimed-items.json` at the
+  repository root, and anything under `.goobers/`), never repository content.
+  The touched paths are read from the managed mirror; if those objects are
+  unavailable the entry is kept.
+- `superseded-duplicate` — a newer retained, non-abandoned entry holds
+  byte-identical content for the same repository and base, so the identical
+  bytes survive the retirement. The newest member of a duplicate set is never
+  retired.
+- `landing-proven` — the retained work is already present on the target branch,
+  proven exactly as the merge-based retirement above requires.
+
+An entry holding a real, unique, unlanded patch is never retired to free a
+slot: the cleanup is refused instead, and the worktree is retried. Reservations
+a scan cannot interpret are skipped, never retired, and reported on the
+instance log as a `recovery_inventory_unreadable` error naming their count and
+directories — they consume capacity that no reclamation path can free.
+
 ## Inventory capacity
 
 The recovery inventory is a single instance-wide directory, `<instance
