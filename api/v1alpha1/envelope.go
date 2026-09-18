@@ -179,6 +179,9 @@ type InvocationEnvelope struct {
 	// It is carried in the mandatory execution envelope so adapters cannot
 	// implement nested-agent behavior from prompt text alone.
 	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty"`
+	// WorkspaceRevision is optional immutable authority established by a
+	// successful deterministic predecessor.
+	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
 }
 
 // ContinuationRequest creates a new run journal linked to a terminal source
@@ -331,6 +334,9 @@ type ResultEnvelope struct {
 	// producer's artifact via contextFrom and still import that producer's
 	// provider-authored text through inputsFrom (TBH-4).
 	Integrity Integrity `json:"integrity,omitempty"`
+	// WorkspaceRevision is promoted only from the top-level deterministic
+	// result control; it is never represented as a scalar output.
+	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
 }
 
 // ErrorInfo describes a stage failure.

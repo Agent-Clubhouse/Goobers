@@ -132,6 +132,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 			Branch:        "main",
 			ConnectionRef: "origin",
 		},
+		WorkspaceRevision: completeWorkspaceRevision(),
 		AdditionalWorkspaces: []apiv1.AdditionalWorkspace{{
 			Name: "reference",
 			Path: "/workspace-reference",
@@ -234,7 +235,25 @@ func completeResultEnvelope() apiv1.ResultEnvelope {
 			Message:   "a retryable failure",
 			Retryable: true,
 		},
-		Integrity: apiv1.IntegrityDerived,
+		Integrity:         apiv1.IntegrityDerived,
+		WorkspaceRevision: completeWorkspaceRevision(),
+	}
+}
+
+func completeWorkspaceRevision() *apiv1.WorkspaceRevision {
+	return &apiv1.WorkspaceRevision{
+		Repository: apiv1.RepositoryIdentity{
+			Provider: apiv1.ProviderGitHub, URL: "https://github.com",
+			Owner: "agent-clubhouse", Project: "project", Name: "goobers", ID: "123",
+		},
+		CommitSHA: strings.Repeat("a", 40),
+		SourceRef: "refs/heads/main",
+		SourceID:  "source-1",
+		BaseRepository: &apiv1.RepositoryIdentity{
+			Provider: apiv1.ProviderGitHub, URL: "https://github.com",
+			Owner: "agent-clubhouse", Project: "project", Name: "goobers", ID: "456",
+		},
+		BaseSHA: strings.Repeat("b", 40),
 	}
 }
 
