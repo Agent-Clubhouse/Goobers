@@ -799,14 +799,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
-	resultFile := stringInput(env, InputResultFile)
-	implicitResultFile := ""
-	if resultFile == "" && StageInvokesGoobersCLI(command) && len(command) > 1 {
-		if defaultResultFile, ok := ProviderStageResultFile(command[1]); ok {
-			resultFile = defaultResultFile
-			implicitResultFile = defaultResultFile
-		}
-	}
+	resultFile, implicitResultFile := effectiveResultFile(env, command)
+	ExcludeStageArtifacts(ctx, env.Workspace, resultFile)
 
 	registry, scrubber := journal.DefaultScrubber()
 	// Only a stage whose command IS the goobers CLI receives the run's

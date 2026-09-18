@@ -68,6 +68,21 @@ a carried configuration or the built-in defaults, journals a
 `recovery_policy_fallback` error naming the limit it is about to enforce and
 the inventory root it applies to.
 
+Harness-owned stage artifacts never occupy a slot. A live stage cleanup
+captures the worktree's tracked changes plus its untracked, non-ignored files,
+so Goobers' own throwaway outputs at the workspace root — a stage's declared
+`resultFile` (or the provider default for a `goobers` subcommand that carries
+one) and the mutation sidecar `mutations.jsonl` — used to be captured as real
+content. A one-line write to either made an otherwise-empty patch non-empty,
+which defeated the empty-patch guard and consumed a retention-floored slot for
+a capture that held no agent-authored work. Those paths are now registered in
+the repository's local `info/exclude` before the stage runs, so git omits them
+from capture and from `git status`, the patch is genuinely empty, and the
+existing guard discards it. A git exclude never applies to a tracked path, so a
+repository that legitimately commits a file of one of those names keeps it
+visible and keeps it captured. An empty untracked selection adds no paths at
+all, as `docs/guides/worktree-retention.md` describes.
+
 `goobers status` reports occupancy as `recovery inventory: <used>/<limit>`
 alongside the earliest retention deadline, which is what distinguishes ordinary
 pressure from an inventory wedged behind a retain floor. When a cleanup is
