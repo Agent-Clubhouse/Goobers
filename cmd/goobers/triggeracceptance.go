@@ -172,6 +172,10 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 		return ctx.Err()
 	}
 	if err != nil {
+		var intervention *httpapi.InterventionError
+		if errors.As(err, &intervention) && intervention.Code == "trigger_capacity" {
+			return s.queue.RetryUnstarted(ctx, record.ID)
+		}
 		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", "scheduler refused the accepted trigger", s.dispatch.now())
 	}
 	return s.queue.RecordDispatch(ctx, record.ID, response.RunID)

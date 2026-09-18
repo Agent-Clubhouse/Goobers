@@ -322,13 +322,18 @@ for arg do
 done
 case " $* " in
 	*" worktree remove --force "*)
-		if [ -d "$last" ]; then
-			if [ ! -e "$GOOBERS_TEST_GIT_REMOVE_FAILED" ]; then
-				: > "$GOOBERS_TEST_GIT_REMOVE_FAILED"
-				exit 1
-			fi
-			rm -f "$GOOBERS_TEST_GIT_REMOVE_FAILED"
-		fi
+		case "$last" in
+			*/terminal-capture) ;;
+			*)
+				if [ -d "$last" ]; then
+					if [ ! -e "$GOOBERS_TEST_GIT_REMOVE_FAILED" ]; then
+						: > "$GOOBERS_TEST_GIT_REMOVE_FAILED"
+						exit 1
+					fi
+					rm -f "$GOOBERS_TEST_GIT_REMOVE_FAILED"
+				fi
+				;;
+		esac
 		;;
 esac
 exec "$GOOBERS_TEST_REAL_GIT" "$@"

@@ -53,16 +53,9 @@ func captureTerminalRunBranch(l instance.Layout, wtMgr *worktree.Manager, runID 
 	if wtMgr == nil {
 		return nil
 	}
-	cfg, err := instance.LoadConfig(l.ConfigFile())
-	if err != nil {
-		return fmt.Errorf("load terminal recovery configuration: %w", err)
-	}
-	if len(cfg.Repos) == 0 {
-		return nil
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	capture, ok, err := planTerminalCapture(ctx, l, cfg, runID)
+	capture, cfg, ok, err := planTerminalCapture(ctx, l, runID)
 	if err != nil || !ok {
 		return err
 	}
@@ -74,43 +67,50 @@ func captureTerminalRunBranch(l instance.Layout, wtMgr *worktree.Manager, runID 
 
 // planTerminalCapture resolves the capture identity from the run's own durable
 // record, reporting ok=false when this run can have nothing to capture.
-func planTerminalCapture(ctx context.Context, l instance.Layout, cfg *instance.Config, runID string) (terminalCapture, bool, error) {
+func planTerminalCapture(ctx context.Context, l instance.Layout, runID string) (terminalCapture, *instance.Config, bool, error) {
 	if _, err := recovery.RefForRun(runID); err != nil {
-		return terminalCapture{}, false, err
+		return terminalCapture{}, nil, false, err
 	}
 	reader, err := journal.OpenReadOnly(filepath.Join(l.RunsDir(), runID))
 	if err != nil {
-		return terminalCapture{}, false, fmt.Errorf("terminal recovery run journal unavailable: %w", err)
+		return terminalCapture{}, nil, false, fmt.Errorf("terminal recovery run journal unavailable: %w", err)
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return terminalCapture{}, false, fmt.Errorf("terminal recovery run identity unavailable: %w", err)
+		return terminalCapture{}, nil, false, fmt.Errorf("terminal recovery run identity unavailable: %w", err)
 	}
 	if identity.RunID != runID || identity.StartedAt.IsZero() {
-		return terminalCapture{}, false, fmt.Errorf("terminal recovery run identity does not match the finalizing run")
+		return terminalCapture{}, nil, false, fmt.Errorf("terminal recovery run identity does not match the finalizing run")
 	}
 	events, err := reader.Events()
 	if err != nil {
-		return terminalCapture{}, false, fmt.Errorf("terminal recovery run evidence unavailable: %w", err)
+		return terminalCapture{}, nil, false, fmt.Errorf("terminal recovery run evidence unavailable: %w", err)
 	}
 	branch := journaledRunBranch(events)
 	if branch == "" {
 		// A run with no recorded branch never had a local run branch to
 		// advance, so there is nothing on the mirror to rescue.
-		return terminalCapture{}, false, nil
+		return terminalCapture{}, nil, false, nil
+	}
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		return terminalCapture{}, nil, false, fmt.Errorf("load terminal recovery configuration: %w", err)
+	}
+	if len(cfg.Repos) == 0 {
+		return terminalCapture{}, cfg, false, nil
 	}
 	captureAt, err := recoveryCaptureTime(ctx, reader, identity.StartedAt, true)
 	if err != nil {
-		return terminalCapture{}, false, err
+		return terminalCapture{}, nil, false, err
 	}
 	repoURL, key, baseRef, err := terminalCaptureRepository(l, cfg)
 	if err != nil {
-		return terminalCapture{}, false, err
+		return terminalCapture{}, nil, false, err
 	}
 	return terminalCapture{
 		repoURL: repoURL, repositoryKey: key, branch: branch,
 		baseRef: baseRef, runID: runID, captureAt: captureAt,
-	}, true, nil
+	}, cfg, true, nil
 }
 
 // terminalCaptureRepository resolves the clone URL, canonical repository key
@@ -194,7 +194,7 @@ func retainTerminalRunBranch(ctx context.Context, l instance.Layout, cfg *instan
 // run protects the branch tip, so terminal capture does not spend a second
 // scarce inventory slot on work that is already published.
 func terminalCaptureCovered(ctx context.Context, request recovery.RetentionRequest, path, tip string) (bool, error) {
-	entries, err := recovery.ReadInventory(ctx, request.InventoryRoot, request.MaxSnapshots)
+	entries, _, err := recovery.ReadInventoryTolerant(ctx, request.InventoryRoot, request.MaxSnapshots)
 	if err != nil {
 		return false, err
 	}

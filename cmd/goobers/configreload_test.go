@@ -323,6 +323,7 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for daemon startup")
 	}
+	waitForSchedulerReady(t, address)
 
 	workflowPath := filepath.Join(sourceRepo, "gaggles", "example", "workflows", "default-implement.yaml")
 	valid := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: reconciled-implement", 1)
@@ -785,6 +786,7 @@ spec:
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for daemon startup")
 	}
+	waitForSchedulerReady(t, address)
 
 	runIdentity := func() journal.RunIdentity {
 		t.Helper()
@@ -856,6 +858,23 @@ func readDaemonHealth(t *testing.T, address string) readservice.Health {
 		t.Fatal(err)
 	}
 	return health
+}
+
+func waitForSchedulerReady(t *testing.T, address string) {
+	t.Helper()
+	client := &http.Client{Timeout: 10 * time.Second}
+	waitForConfigValue(t, "scheduler readiness", func() (struct{}, bool) {
+		response, err := client.Get("http://" + address + httpapi.ReadinessPath)
+		if err != nil {
+			return struct{}{}, false
+		}
+		defer response.Body.Close()
+		var readiness httpapi.ReadinessStatus
+		if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&readiness) != nil {
+			return struct{}{}, false
+		}
+		return struct{}{}, readiness.SchedulerReady
+	})
 }
 
 func waitForConfigValue[T any](t *testing.T, description string, read func() (T, bool)) T {

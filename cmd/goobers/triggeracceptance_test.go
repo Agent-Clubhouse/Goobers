@@ -124,6 +124,42 @@ func TestDurableTriggerAcceptsDuringStartupAndOutlivesRequest(t *testing.T) {
 	}
 }
 
+func TestDurableTriggerRetriesTransientCapacityRefusal(t *testing.T) {
+	dispatch := newDaemonTriggerService()
+	stub := &stubTriggerer{err: &localscheduler.TriggerRejectedError{
+		Workflow: "impl",
+		Reason:   localscheduler.ReasonMaxParallel,
+	}}
+	dispatch.dispatch = stub
+	dispatch.AttachDispatchContext(t.Context())
+	s := acceptedService(t, filepath.Join(t.TempDir(), "accepted.db"), dispatch)
+	request := httpapi.TriggerRequest{Workflow: "impl", RequestID: "delivery", Actor: "operator"}
+	accepted, err := s.Trigger(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	record, err := s.queue.Get(t.Context(), accepted.AcceptanceID, request.Actor)
+	if err != nil || record.State != triggerqueue.Accepted {
+		t.Fatalf("capacity-refused trigger = %+v, %v, want accepted for retry", record, err)
+	}
+
+	stub.err = nil
+	if err := s.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.TriggerStatus(t.Context(), httpapi.TriggerStatusRequest{
+		AcceptanceID: accepted.AcceptanceID,
+		Actor:        request.Actor,
+	})
+	if err != nil || status.State != "dispatching" || status.RunID != "run-1" {
+		t.Fatalf("retried trigger = %+v, %v", status, err)
+	}
+}
+
 func TestDurableTriggerPreservesPodAuthorityAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "accepted.db")
 	dispatch := newDaemonTriggerService().withGaggleContainment(func(gaggle, run string) bool { return gaggle == "own" && run == "pod-run" })
