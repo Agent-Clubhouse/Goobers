@@ -1317,6 +1317,7 @@ type walkState struct {
 	fanIn                *parallelExec
 	workspaceBranch      string
 	branchRecorded       bool
+	reboundRecorded      string
 	humanDecision        *HumanGateDecision
 	gateAttempts         map[string]int
 	repassAttempts       map[string]int
@@ -1438,6 +1439,129 @@ func (r *Runner) recordRunBranch(jr journalAppender, in StartInput) error {
 			CommitSHA: in.WorkspaceBranchSHA,
 		},
 	})
+}
+
+// reboundBranchBoundSHA resolves the commit this stage's workspace was checked
+// out at, for a workspace bound to an existing branch. It must be read BEFORE
+// the stage runs: after it, the branch may carry the stage's own commits, and
+// the whole point of the value is to tell those apart from the pull request's
+// pre-existing ones.
+//
+// An unreadable HEAD reports "" rather than an error. The bound commit only
+// ever narrows what terminal capture protects, so not knowing it must fall
+// back to protecting the branch, never to skipping it.
+func reboundBranchBoundSHA(ctx context.Context, tf taskFrame, workspace *stageWorkspace) string {
+	if tf.workspaceBranch == "" || workspace == nil || workspace.worktree == nil ||
+		workspace.worktree.Branch != tf.workspaceBranch {
+		return ""
+	}
+	sha, err := workspace.worktree.HeadSHA(ctx)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(sha)
+}
+
+// ReboundWorkspaceBranchAnnotation names the runner.annotation event that
+// records a stage workspace bound to an EXISTING branch (WorkspaceBranchOutput,
+// the pr-remediation case). The run's own ref.touched{kind:branch} names the
+// nominal run branch, which a rebound run never advances and terminal branch
+// cleanup deletes as unnecessary; the commits land here instead. Terminal
+// recovery capture reads this annotation so a run that fails before pushing
+// still leaves a retained record of the branch it actually committed on
+// (#5399). The branch name is carried under WorkspaceBranchOutput and the
+// repository under "repository", as the canonical key a recovery record
+// identifies its repository by.
+//
+// Deliberately NOT a second ref.touched{kind:branch}: that shape is the run's
+// nominal branch everywhere it is read — terminal branch cleanup resolves the
+// branch to DELETE from it — and a PR's own branch must never become a
+// deletion candidate.
+const ReboundWorkspaceBranchAnnotation = "workspace.branch.rebound"
+
+// reboundBranchRepository is the Runner-map key carrying the repository
+// identity a rebound branch lives in.
+const reboundBranchRepository = "repository"
+
+// ReboundBranchBoundSHAKey is the Runner-map key carrying the commit a rebound
+// branch was at when this run's first worktree was created on it. Terminal
+// recovery capture needs it to tell the run's own commits from the pull
+// request's existing ones: a rebound branch is ahead of base before this run
+// touches it, so "ahead of base" alone would publish a record of someone
+// else's work for every run that merely bound to a pull request and failed.
+const ReboundBranchBoundSHAKey = "boundSha"
+
+// recordReboundWorkspaceBranch journals branch as a branch this run's
+// worktrees were created on. Called from the stage-dispatch teardown, which is
+// the only place that knows a worktree was really created on the rebound
+// branch, and gated there by the same "this attempt did something" rule the
+// nominal branch recording uses, so a run that rebinds and then fails before
+// provisioning anything records nothing.
+func (r *Runner) recordReboundWorkspaceBranch(jr journalAppender, in StartInput, branch, boundSHA string) error {
+	repository := providers.RepositoryRef{
+		Provider: providers.ProviderKind(in.RepoRef.Provider), URL: in.RepoRef.BaseURL,
+		Owner: in.RepoRef.Owner, Project: in.RepoRef.Project, Name: in.RepoRef.Name,
+	}
+	return jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"annotation":             ReboundWorkspaceBranchAnnotation,
+			WorkspaceBranchOutput:    branch,
+			reboundBranchRepository:  repository.CanonicalKey(),
+			ReboundBranchBoundSHAKey: boundSHA,
+		},
+	})
+}
+
+// journalWorkspaceBranches records the branches this stage's workspace was
+// created on, once the attempt is known to have done something (acted): the
+// run's own branch reference, still deferred until a stage really provisioned
+// a worktree — provenance a schedule- or item-triggered run cannot establish
+// up front — and the rebound branch the run was moved onto, if any.
+func (r *Runner) journalWorkspaceBranches(ctx context.Context, jr journalAppender, tf taskFrame, workspace *stageWorkspace, boundSHA string, acted bool) error {
+	in := tf.in
+	if workspace.worktree == nil || workspace.worktree.Branch == "" || !machineUsesRepo(in.Machine) || !acted {
+		return nil
+	}
+	var errs error
+	if !*tf.branchRecorded {
+		errs = r.journalRunBranch(ctx, jr, in, workspace.worktree)
+		if errs == nil {
+			*tf.branchRecorded = true
+		}
+	}
+	return errors.Join(errs, r.journalReboundBranch(jr, in, tf, workspace.worktree.Branch, boundSHA))
+}
+
+// journalRunBranch records the run's own branch reference from the workspace
+// that provisioned it, stamped with the commit that branch is at.
+func (r *Runner) journalRunBranch(ctx context.Context, jr journalAppender, in StartInput, wt *worktree.Worktree) error {
+	branchSHA, err := wt.HeadSHA(context.WithoutCancel(ctx))
+	if err != nil {
+		return fmt.Errorf("resolve workspace branch %q: %w", wt.Branch, err)
+	}
+	in.WorkspaceBranch = wt.Branch
+	in.WorkspaceBranchSHA = branchSHA
+	if err := r.recordRunBranch(jr, in); err != nil {
+		return fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
+	}
+	return nil
+}
+
+// journalReboundBranch records checkedOut when it is the run-scoped rebinding
+// this stage was provisioned against and no earlier stage recorded it already.
+// A stage on the run's own nominal branch records nothing here: that branch is
+// already in the journal as ref.touched{kind:branch}.
+func (r *Runner) journalReboundBranch(jr journalAppender, in StartInput, tf taskFrame, checkedOut, boundSHA string) error {
+	if tf.workspaceBranch == "" || tf.reboundRecorded == nil ||
+		checkedOut != tf.workspaceBranch || *tf.reboundRecorded == checkedOut {
+		return nil
+	}
+	if err := r.recordReboundWorkspaceBranch(jr, in, checkedOut, boundSHA); err != nil {
+		return fmt.Errorf("runner: journal rebound workspace branch for %q: %w", in.RunID, err)
+	}
+	*tf.reboundRecorded = checkedOut
+	return nil
 }
 
 func deferRunBranchProvenance(kind journal.TriggerKind) bool {
@@ -2029,6 +2153,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 				upstream: upstreamPointers, upstreamResult: ws.lastResult,
 				completed: ws.completed, fanIn: ws.fanIn,
 				workspaceBranch: ws.workspaceBranch, branchRecorded: &ws.branchRecorded,
+				reboundRecorded: &ws.reboundRecorded,
 			},
 			branch, startAttempt, firstClass, instructionAddendum,
 			taskRerun, infraFailedAttemptCommittedWork, resumeAccounting,
@@ -4298,6 +4423,12 @@ type taskFrame struct {
 	fanIn           *parallelExec
 	workspaceBranch string
 	branchRecorded  *bool
+	// reboundRecorded is the rebound branch already journaled through
+	// ReboundWorkspaceBranchAnnotation, so the sticky rebinding is recorded
+	// once rather than once per stage. A run that rebinds twice records both,
+	// which is exactly what terminal capture has to evaluate. A parallel
+	// branch journals into its own branch journal and so carries its own.
+	reboundRecorded *string
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
@@ -4810,7 +4941,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	jr, in, ex, t := tf.jr, tf.in, tf.ex, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
-	workspaceBranch, branchRecorded := tf.workspaceBranch, tf.branchRecorded
+	workspaceBranch := tf.workspaceBranch
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
@@ -4917,6 +5048,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 			ConfigDigest: in.Machine.Digest(),
 		}, remediation.Options{})
 	}
+	boundSHA := reboundBranchBoundSHA(ctx, tf, workspace)
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation
 	defer func() {
@@ -4927,23 +5059,8 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 				err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
 			}
 		}
-		if workspace.worktree != nil && workspace.worktree.Branch != "" &&
-			!*branchRecorded && machineUsesRepo(in.Machine) &&
-			(err != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0) {
-			branchSHA, headErr := workspace.worktree.HeadSHA(context.WithoutCancel(ctx))
-			if headErr != nil {
-				err = errors.Join(err, fmt.Errorf("resolve workspace branch %q: %w", workspace.worktree.Branch, headErr))
-			} else {
-				branchInput := in
-				branchInput.WorkspaceBranch = workspace.worktree.Branch
-				branchInput.WorkspaceBranchSHA = branchSHA
-				if recordErr := r.recordRunBranch(jr, branchInput); recordErr != nil {
-					err = errors.Join(err, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, recordErr))
-				} else {
-					*branchRecorded = true
-				}
-			}
-		}
+		acted := err != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0
+		err = errors.Join(err, r.journalWorkspaceBranches(ctx, jr, tf, workspace, boundSHA, acted))
 		cleanup = func(preserve bool) error {
 			return r.recordRecoveryAfterCleanup(ctx, jr, in.RunID, workspace.finishDispatch(ctx, preserve))
 		}
