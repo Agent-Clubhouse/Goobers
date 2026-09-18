@@ -231,8 +231,16 @@ func terminalCaptureIdentity(l instance.Layout, cfg *instance.Config, managedKey
 // terminalCaptureCovered reports whether some record already retained for this
 // run protects the branch tip, so terminal capture does not spend a second
 // scarce inventory slot on work that is already published.
+//
+// Read at the structural ceiling, tolerantly: this looks only at the run's OWN
+// records, and a read bounded by the operator cap refused outright on an
+// inventory already holding more entries than the cap, which failed the
+// capture and deferred terminal finalization for every completed run at every
+// startup (#5354). Not finding coverage is the conservative answer — it
+// publishes rather than skipping — so an entry no scan can interpret simply
+// does not count as coverage.
 func terminalCaptureCovered(ctx context.Context, request recovery.RetentionRequest, path, tip string) (bool, error) {
-	entries, err := recovery.ReadInventory(ctx, request.InventoryRoot, request.MaxSnapshots)
+	entries, _, err := recovery.ReadInventoryTolerant(ctx, request.InventoryRoot, recovery.MaxInventoryEntries)
 	if err != nil {
 		return false, err
 	}

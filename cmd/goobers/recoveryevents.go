@@ -10,7 +10,15 @@ import (
 
 func recoveryRunEvents(layout instance.Layout) func(context.Context, string) ([]journal.Event, int, error) {
 	return func(ctx context.Context, runID string) ([]journal.Event, int, error) {
-		entries, limit, err := readConfiguredRecoveryInventory(ctx, layout)
+		// Observation of the run's OWN records, reported as
+		// recovery_observation_failed when it fails. A read bounded by the
+		// operator cap refused on an inventory already holding more entries
+		// than the cap, so cleanup that had already succeeded was reported as
+		// a failure to observe it (#5354). The read is bounded by the
+		// structural ceiling and not by the operator cap it reports back:
+		// that bound is what the caller checks the observation count against,
+		// and it is still the operator's.
+		entries, _, limit, err := observeRecoveryInventory(ctx, layout)
 		if err != nil {
 			return nil, limit, err
 		}
