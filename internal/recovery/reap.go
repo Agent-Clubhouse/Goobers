@@ -22,8 +22,16 @@ type ReapResult struct {
 // removes active snapshots or Git refs. deleteFiles=false only reports candidates.
 // Failed deletions remain bounded inventory entries and are returned as errors
 // as well as per-candidate results, so unattended callers cannot lose failures.
+//
+// maxEntries bounds the caller's declared policy, not the scan. Like
+// ReconcileIncompleteReservations, this enumerates root at the structural
+// ceiling rather than refusing once the directory holds MORE entries than the
+// operator cap — the "130 of 128" shape, in which the READ refuses rather than
+// the reservation. A retired directory keeps its slot until its files are
+// removed, so a reap that refused on the count would leave the eviction that
+// just succeeded unable to free the capacity it was run for (#5354).
 func ReapRetired(ctx context.Context, root string, maxEntries int, deleteFiles bool) ([]ReapResult, error) {
-	if maxEntries <= 0 || maxEntries > 10000 {
+	if maxEntries <= 0 || maxEntries > MaxInventoryEntries {
 		return nil, fmt.Errorf("invalid recovery inventory reap limit")
 	}
 	if err := ctx.Err(); err != nil {
@@ -41,7 +49,7 @@ func ReapRetired(ctx context.Context, root string, maxEntries int, deleteFiles b
 		return nil, err
 	}
 	defer func() { _ = lock.Release() }()
-	names, err := readInventoryNames(root, before, maxEntries)
+	names, err := listReservationNames(root, before)
 	if err != nil {
 		return nil, err
 	}

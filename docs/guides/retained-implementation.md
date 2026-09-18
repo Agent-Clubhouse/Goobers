@@ -244,12 +244,26 @@ condition does not repeat it. The read model reports the overflow count as
 `recoveryInventory.overflow`, which the portal Overview row renders alongside
 occupancy.
 
-If the inventory already contains more entries than the configured cap, do
-not delete recovery directories by hand. Temporarily raise
-`retention.recovery.maxSnapshots` above the current inventory size, retry the
-inspection or exact `recovery-abandon` operation, and let configured retention
-remove only records whose ownership and retention checks succeed. Inventory
-overflow returns no partial result and never removes existing records.
+An inventory can hold more entries than the configured cap — lowering
+`maxSnapshots` on a full inventory produces that state directly, as does the
+historical "130 of 128" wedge. It is observed and reclaimed like any other:
+the cap is a *write* limit, deciding whether another reservation may be
+created, so every reader that exists to reclaim or to observe reads the whole
+directory, bounded only by the structural ceiling, and reports the count
+against the cap (`goobers status` shows `130/128` and the health sample
+classifies it `exhausted`). On-demand reclamation, the retention sweep, the
+retirement reaper, incomplete-reservation reconciliation and overflow
+promotion all run normally on it, so an over-cap inventory drains on its own.
+Raising `retention.recovery.maxSnapshots` is no longer a remedy for it, and
+recovery directories are still never deleted by hand.
+
+The strict, cap-bounded read remains where a caller decides whether it is safe
+to discard work because recovery state appears absent: the exact-record checks
+behind `recovery-abandon`, snapshot selection for restore and resume, the
+publication API, the per-run retained events the read model serves, and the
+guard that refuses to prune a run journal still owned by a live snapshot.
+Those return no partial result and never remove existing records; if one of
+them is refused for a full inventory, raise the cap for that operation.
 
 ### Incomplete reservations
 
