@@ -4015,10 +4015,11 @@ func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, ph
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
 	notifyErr := r.notifyTerminal(jr, runID, phase, finalState)
+	releasePinnedErr := r.releasePinnedWorkspace(runID)
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
-		return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, err)
+		return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, releasePinnedErr, err)
 	}
-	return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr)
+	return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, releasePinnedErr)
 }
 
 func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *journal.Run) error {
@@ -6423,6 +6424,9 @@ func (r *Runner) releasePinnedWorkspace(runID string) error {
 	lease := r.pinnedRuns[runID]
 	delete(r.pinnedRuns, runID)
 	r.pinnedMu.Unlock()
+	if lease == nil {
+		return nil
+	}
 	return lease.Release()
 }
 
