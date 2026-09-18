@@ -45,6 +45,32 @@ import (
 // which grant would be used (never the resolved value) for --check-harness's
 // reporting.
 func agentModelCredentialResolver(cfg *instance.Config, stores credentials.StoreResolver, forHarness apiv1.Harness) (resolve func(ctx context.Context) (string, error), label string, err error) {
+	grant, label := agentModelGrant(cfg, forHarness)
+	if grant == nil {
+		return nil, "", nil
+	}
+	key := agentModelCredentialKey(grant)
+	resolver, err := credentials.NewResolverWithStores(
+		[]credentials.TokenRef{grant.Token.CredentialTokenRef(key)},
+		stores,
+	)
+	if err != nil {
+		return nil, "", err
+	}
+	return func(ctx context.Context) (string, error) {
+		return resolver.Resolve(ctx, key)
+	}, label, nil
+}
+
+// agentModelGrant selects the agent:model grant that would back forHarness,
+// applying the same scoped-over-unscoped precedence buildGooberCredentialGrants
+// uses at run time (#5148). It is shared by the resolver and by the readiness
+// report so the two can never disagree about which grant is in play -- a report
+// describing a different grant than the one that resolves would be worse than
+// no report.
+//
+// Returns a nil grant when none is configured, with an empty label.
+func agentModelGrant(cfg *instance.Config, forHarness apiv1.Harness) (*instance.CredentialGrant, string) {
 	var scoped, unscoped *instance.CredentialGrant
 	for i := range cfg.Credentials {
 		grant := &cfg.Credentials[i]
@@ -57,30 +83,33 @@ func agentModelCredentialResolver(cfg *instance.Config, stores credentials.Store
 			unscoped = grant
 		}
 	}
-	grant := scoped
 	switch {
-	case grant != nil:
-		label = fmt.Sprintf("credentials[] agent:model scoped to harness %q", grant.Harness)
+	case scoped != nil:
+		return scoped, fmt.Sprintf("credentials[] agent:model scoped to harness %q", scoped.Harness)
 	case unscoped != nil:
-		grant = unscoped
-		label = "credentials[] agent:model (unscoped)"
+		return unscoped, "credentials[] agent:model (unscoped)"
 	default:
-		return nil, "", nil
+		return nil, ""
 	}
+}
+
+func agentModelCredentialKey(grant *instance.CredentialGrant) string {
 	key := string(capability.AgentModel)
 	if grant.Harness != "" {
 		key = credentials.HarnessScopedCapability(key, grant.Harness)
 	}
-	resolver, err := credentials.NewResolverWithStores(
-		[]credentials.TokenRef{grant.Token.CredentialTokenRef(key)},
-		stores,
-	)
-	if err != nil {
-		return nil, "", err
+	return key
+}
+
+// agentModelCredentialRef reports the token ref backing forHarness's
+// agent:model grant, for describing its SOURCE without resolving its value
+// (#5261). ok is false when no grant is configured.
+func agentModelCredentialRef(cfg *instance.Config, forHarness apiv1.Harness) (credentials.TokenRef, bool) {
+	grant, _ := agentModelGrant(cfg, forHarness)
+	if grant == nil {
+		return credentials.TokenRef{}, false
 	}
-	return func(ctx context.Context) (string, error) {
-		return resolver.Resolve(ctx, key)
-	}, label, nil
+	return grant.Token.CredentialTokenRef(agentModelCredentialKey(grant)), true
 }
 
 // preflightHarnesses is the seam buildSchedulerSetup calls to preflight agentic
