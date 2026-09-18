@@ -130,6 +130,19 @@ func TestOperatorMessageExpiredRequestIsTypedAndIdempotent(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("outcome events = %d, want 1", count)
 	}
+	records, err := reader.OperatorMessages()
+	if err != nil {
+		t.Fatalf("OperatorMessages: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	replayed := records[0]
+	if replayed.State != apiv1.OperatorMessageState(apiv1.OperatorMessageExpired) ||
+		replayed.Outcome == nil || replayed.Outcome.Status != apiv1.OperatorMessageExpired ||
+		replayed.Outcome.Code != "request_expired" {
+		t.Fatalf("replayed expired record = %#v", replayed)
+	}
 }
 
 func TestOperatorMessageRejectedAndArtifactContentReplay(t *testing.T) {
@@ -160,6 +173,25 @@ func TestOperatorMessageRejectedAndArtifactContentReplay(t *testing.T) {
 	if record.State != apiv1.OperatorMessageState(apiv1.OperatorMessageRejected) ||
 		record.Request.Content.Artifact == nil || record.Request.Content.Artifact.Digest != request.Content.Artifact.Digest {
 		t.Fatalf("rejected artifact record = %#v", record)
+	}
+	reader, err := OpenRead(run.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	records, err := reader.OperatorMessages()
+	if err != nil {
+		t.Fatalf("OperatorMessages: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	replayed := records[0]
+	if replayed.State != apiv1.OperatorMessageState(apiv1.OperatorMessageRejected) ||
+		replayed.Outcome == nil || replayed.Outcome.Status != apiv1.OperatorMessageRejected ||
+		replayed.Outcome.Code != "target_refused" ||
+		replayed.Request.Content.Artifact == nil ||
+		*replayed.Request.Content.Artifact != *request.Content.Artifact {
+		t.Fatalf("replayed rejected artifact record = %#v", replayed)
 	}
 }
 
