@@ -36,20 +36,21 @@ func recoveryOverflowCount(ctx context.Context, layout instance.Layout) (int, er
 // promoteRecoveryOverflow turns overflow entries back into bundles, oldest
 // capture first, for as many free inventory slots as there are.
 //
-// It is NOT gated by retention.dryRun or the first-enable grace window, and
-// that is deliberate rather than an oversight. Those gate deletion: they exist
-// so a pass that has not yet earned an operator's trust reports what it would
-// destroy instead of destroying it. Promotion destroys nothing recoverable —
-// it writes a bundle for objects that already exist and then removes a
-// metadata record whose identity the bundle now carries — and withholding it
-// during a week-long grace window would leave an instance's most recent work
-// at the weaker tier for exactly the week after it was captured. A dry-run
-// pass still says what it promoted, so the pass remains explainable.
+// operatorDryRun is the operator's explicit retention.dryRun preview request,
+// NOT the pass's combined decision — promotion is never held by the
+// first-enable grace window, on the same reasoning #5354 used to carve out
+// contentless retirement and incomplete-reservation reclamation. That window
+// exists so an operator can see state before it is deleted; promotion deletes
+// nothing recoverable (it writes a bundle for objects that already exist, then
+// removes a metadata record whose identity the bundle now carries), so the
+// window has nothing to protect here, and withholding it would leave an
+// instance's most recent work at the weaker tier for exactly the week after it
+// was captured. An operator asking for a preview still gets one.
 //
 // An entry whose mirror no longer holds the ref is left alone and reported:
 // the record is the only remaining evidence that work existed, and deleting
 // it because its objects are gone would discard that evidence as well.
-func promoteRecoveryOverflow(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, stdout, stderr io.Writer) error {
+func promoteRecoveryOverflow(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, operatorDryRun bool, stdout, stderr io.Writer) error {
 	entries, unreadable, err := readConfiguredRecoveryOverflow(ctx, layout)
 	if err != nil {
 		return err
@@ -73,6 +74,11 @@ func promoteRecoveryOverflow(ctx context.Context, layout instance.Layout, setup 
 		}
 		if err := ctx.Err(); err != nil {
 			return errors.Join(failures, err)
+		}
+		if operatorDryRun {
+			pf(stdout, "retention candidate kind=recovery-overflow-promotion run=%q ref=%q\n", entry.Record.RunID, entry.Record.Ref)
+			free--
+			continue
 		}
 		promoted, err := promoteRecoveryOverflowEntry(ctx, layout, setup, managers, policy, entry.Record)
 		if err != nil {

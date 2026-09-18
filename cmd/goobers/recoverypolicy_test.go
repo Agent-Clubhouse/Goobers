@@ -15,7 +15,6 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -167,7 +166,8 @@ func TestRecoveryCleanupRequestUsesConfiguredInventoryCap(t *testing.T) {
 		filepath.Join(layout.Root, "workcopies"),
 		nil,
 		"github.com/goobers/goobers",
-		worktree.CleanupTarget{OwnerRunID: "0123456789abcdef0123456789abcdef", BaseRef: "refs/heads/main"},
+		"",
+		"0123456789abcdef0123456789abcdef",
 		time.Now().UTC(),
 		log,
 	)

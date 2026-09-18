@@ -26,6 +26,26 @@ counts as an entry holding nothing worth keeping; a contentless entry is
 retired even inside the retain-until floor, and the sweep journals the same
 `recovery-reclaimed` annotation the on-demand hook does.
 
+Retention's first-enable grace window (an upgraded instance reports what it
+would delete for seven days before it deletes anything, giving an operator
+time to review real worktrees and archives) does not hold back a contentless
+retirement or an incomplete reservation with no `record.json` at all. Neither
+holds anything an operator could review: a contentless entry has no patch
+bytes worth keeping by definition, and an incomplete reservation has no
+identity to review in the first place. Waiting out the window for these would
+turn "an already-wedged instance heals on upgrade" into "it limps for a week,
+reclaiming one slot per refused publish" — exactly the outage this exists to
+close. Only the operator's own `retention.dryRun` still holds them; every
+other retention action (retain-floor expiry, worktree pruning, merged-branch
+pruning, and landing-proof retirement) keeps observing the grace window as
+before. A pass that deletes either shape while the window is still open says
+so in its output, e.g. `retention deleted rule=stored-no-diff kind=recovery
+... (grace window does not apply: no recoverable content)`.
+
+Overflow promotion (below) follows that same carve-out for the same reason,
+from the other direction: it creates a bundle rather than deleting anything,
+so the window has nothing to protect there either.
+
 Early merge-based retirement requires all of the following:
 
 - A terminal, idle receiving run in the source run's configured run directory,
@@ -95,10 +115,23 @@ directories — they consume capacity that no reclamation path can free.
 
 The recovery inventory is a single instance-wide directory, `<instance
 root>/recovery`. Every writer shares it and every writer counts against one
-cap: each gaggle's live stage cleanup, the startup crash-orphan worktree reap,
-terminal finalization, and archives accepted from remote workers. Startup-reap
-publications are ordinary inventory entries — they are not exempt from the cap
-that gates live-run worktree teardown.
+cap: live stage cleanup that contains uncommitted or otherwise unanchored work,
+abandoned recovery preparations, the startup crash-orphan worktree reap,
+terminal finalization, and archives accepted from remote workers. Ordinary
+nonterminal cleanup does not publish recovery when Git proves the worktree is
+clean and its current commit is unchanged or anchored by a surviving local
+branch. Startup-reap publications are ordinary inventory entries — they are
+not exempt from the cap that gates live-run worktree teardown.
+
+Skipping a clean nonterminal cleanup is only safe because terminal
+finalization captures the run branch itself. A run whose worktrees were all
+removed while it was still running reaches termination with no checkout left
+to capture from, and a local branch is not reachable through any part of the
+recovery contract. Terminal finalization therefore checks out the run branch's
+tip in the managed mirror and publishes it, unless the tip carries nothing the
+base does not or some record already retained for that run was captured from
+that exact commit. Failure to publish is deferred, not skipped: the run stays
+active and finalization is retried.
 
 `retention.recovery.maxSnapshots` in `instance.yaml` sets that cap (128 when
 the section is omitted). It is resolved from `instance.yaml` at the point of
@@ -154,10 +187,15 @@ The periodic retention pass **promotes** overflow entries back to bundles,
 oldest capture first, for as many inventory slots as are free, by republishing
 the record through the ordinary publication path against the managed
 repository that still holds the pin and then deleting the overflow record.
-Promotion is deliberately *not* gated by `retention.dryRun` or the first-enable
-grace window: those exist so a pass that has not yet earned trust reports what
-it would delete instead of deleting it, and promotion deletes nothing
-recoverable. A dry-run pass still prints what it promoted. An entry whose
+Promotion honours the operator's own `retention.dryRun` and is never held by
+the first-enable grace window - the same split the contentless carve-out uses
+above. That window exists so a pass that has not yet earned trust reports what
+it would delete before deleting it, and promotion deletes nothing recoverable:
+it writes a bundle for objects that already exist and then removes a metadata
+record whose identity the bundle now carries. Holding it for a week would
+leave an instance's most recent work at the weaker tier for exactly the week
+after it was captured. An operator asking for a preview still gets one
+(`retention candidate kind=recovery-overflow-promotion ...`). An entry whose
 objects are no longer in the managed repository is left in place and reported,
 never deleted - the record is the last evidence that the work existed.
 
