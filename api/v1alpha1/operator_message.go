@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -11,7 +12,15 @@ const (
 	OperatorMessageAcknowledgementSchema = "goobers.dev/operator-message/acknowledgement/v1"
 	OperatorMessageOutcomeSchema         = "goobers.dev/operator-message/outcome/v1"
 
-	MaxOperatorMessageContentBytes int64 = 1 << 20
+	MaxOperatorMessageContentBytes        int64 = 1 << 20
+	MaxOperatorMessageRequestIDRunes            = 256
+	MaxOperatorMessageIdempotencyKeyRunes       = 256
+	MaxOperatorMessageTargetAddressRunes        = 2048
+	MaxOperatorMessagePrincipalRefRunes         = 512
+	MaxOperatorMessagePurposeRunes              = 256
+	MaxOperatorMessageDeliveryModeRunes         = 128
+	MaxOperatorMessageOutcomeCodeRunes          = 128
+	MaxOperatorMessageOutcomeDetailRunes        = 4096
 )
 
 // OperatorMessageContent contains either scrubbed inline text or a bounded
@@ -44,6 +53,14 @@ func (r OperatorMessageRequest) Validate() error {
 		r.PrincipalRef == "" || r.RequestedAt.IsZero() || r.Purpose == "" || r.DeliveryMode == "" {
 		return errors.New("operator message: request identity, target, principal, timestamp, purpose, and delivery mode are required")
 	}
+	if exceedsRunes(r.RequestID, MaxOperatorMessageRequestIDRunes) ||
+		exceedsRunes(r.IdempotencyKey, MaxOperatorMessageIdempotencyKeyRunes) ||
+		exceedsRunes(r.TargetAddress, MaxOperatorMessageTargetAddressRunes) ||
+		exceedsRunes(r.PrincipalRef, MaxOperatorMessagePrincipalRefRunes) ||
+		exceedsRunes(r.Purpose, MaxOperatorMessagePurposeRunes) ||
+		exceedsRunes(r.DeliveryMode, MaxOperatorMessageDeliveryModeRunes) {
+		return errors.New("operator message: request metadata exceeds size limit")
+	}
 	hasText := r.Content.Text != ""
 	hasArtifact := r.Content.Artifact != nil
 	if hasText == hasArtifact {
@@ -72,6 +89,22 @@ type OperatorMessageAcknowledgement struct {
 	AcknowledgedAt time.Time `json:"acknowledgedAt"`
 }
 
+// Validate enforces the acknowledgement invariants shared by every producer.
+func (a OperatorMessageAcknowledgement) Validate() error {
+	if a.Schema != OperatorMessageAcknowledgementSchema {
+		return fmt.Errorf("operator message: unsupported acknowledgement schema %q", a.Schema)
+	}
+	if a.RequestID == "" || a.IdempotencyKey == "" || a.PrincipalRef == "" || a.AcknowledgedAt.IsZero() {
+		return errors.New("operator message: acknowledgement identity, principal, and timestamp are required")
+	}
+	if exceedsRunes(a.RequestID, MaxOperatorMessageRequestIDRunes) ||
+		exceedsRunes(a.IdempotencyKey, MaxOperatorMessageIdempotencyKeyRunes) ||
+		exceedsRunes(a.PrincipalRef, MaxOperatorMessagePrincipalRefRunes) {
+		return errors.New("operator message: acknowledgement metadata exceeds size limit")
+	}
+	return nil
+}
+
 // OperatorMessageOutcomeStatus is a terminal delivery disposition.
 type OperatorMessageOutcomeStatus string
 
@@ -94,6 +127,41 @@ type OperatorMessageOutcome struct {
 	Code           string                       `json:"code,omitempty"`
 	Detail         string                       `json:"detail,omitempty"`
 	Request        *OperatorMessageRequest      `json:"request,omitempty"`
+}
+
+// Validate enforces the outcome invariants shared by every producer.
+func (o OperatorMessageOutcome) Validate() error {
+	if o.Schema != OperatorMessageOutcomeSchema {
+		return fmt.Errorf("operator message: unsupported outcome schema %q", o.Schema)
+	}
+	if o.RequestID == "" || o.IdempotencyKey == "" || o.CompletedAt.IsZero() || !o.Status.valid() {
+		return errors.New("operator message: outcome identity, timestamp, and status are required")
+	}
+	if exceedsRunes(o.RequestID, MaxOperatorMessageRequestIDRunes) ||
+		exceedsRunes(o.IdempotencyKey, MaxOperatorMessageIdempotencyKeyRunes) ||
+		exceedsRunes(o.Code, MaxOperatorMessageOutcomeCodeRunes) ||
+		exceedsRunes(o.Detail, MaxOperatorMessageOutcomeDetailRunes) {
+		return errors.New("operator message: outcome metadata exceeds size limit")
+	}
+	if o.Request != nil {
+		if err := o.Request.Validate(); err != nil {
+			return fmt.Errorf("operator message: invalid outcome request: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s OperatorMessageOutcomeStatus) valid() bool {
+	switch s {
+	case OperatorMessageDelivered, OperatorMessageFailed, OperatorMessageRejected, OperatorMessageExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+func exceedsRunes(value string, limit int) bool {
+	return utf8.RuneCountInString(value) > limit
 }
 
 // OperatorMessageState is the replayed lifecycle state.

@@ -184,6 +184,59 @@ func TestOperatorMessageJournalScrubsInlineContent(t *testing.T) {
 	}
 }
 
+func TestOperatorMessageScrubSensitiveIdentifiersRemainIdempotent(t *testing.T) {
+	run, _ := newRun(t)
+	defer func() { _ = run.Close() }()
+	secret := "ghp_" + strings.Repeat("a", 36)
+	request := testOperatorMessageRequest("request-"+secret, "key-"+secret)
+
+	record, accepted, err := run.AcceptOperatorMessage(request)
+	if err != nil {
+		t.Fatalf("AcceptOperatorMessage: %v", err)
+	}
+	if !accepted || record.Request.RequestID == request.RequestID ||
+		record.Request.IdempotencyKey == request.IdempotencyKey {
+		t.Fatalf("accepted record did not return scrubbed identifiers: %#v", record.Request)
+	}
+	durableRequest := record.Request
+
+	record, accepted, err = run.AcceptOperatorMessage(request)
+	if err != nil {
+		t.Fatalf("duplicate AcceptOperatorMessage: %v", err)
+	}
+	if accepted || record.Request.RequestID != durableRequest.RequestID {
+		t.Fatalf("duplicate = (%v, %q), want durable request %q", accepted, record.Request.RequestID, durableRequest.RequestID)
+	}
+
+	record, err = run.AcknowledgeOperatorMessage(apiv1.OperatorMessageAcknowledgement{
+		Schema:         apiv1.OperatorMessageAcknowledgementSchema,
+		RequestID:      request.RequestID,
+		IdempotencyKey: request.IdempotencyKey,
+		PrincipalRef:   "operator:acknowledger",
+		AcknowledgedAt: fixedClock()().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("AcknowledgeOperatorMessage: %v", err)
+	}
+	if record.Acknowledgement == nil || record.Acknowledgement.RequestID != durableRequest.RequestID {
+		t.Fatalf("acknowledged record = %#v", record)
+	}
+
+	record, err = run.CompleteOperatorMessage(apiv1.OperatorMessageOutcome{
+		Schema:         apiv1.OperatorMessageOutcomeSchema,
+		RequestID:      request.RequestID,
+		IdempotencyKey: request.IdempotencyKey,
+		CompletedAt:    fixedClock()().Add(2 * time.Minute),
+		Status:         apiv1.OperatorMessageDelivered,
+	})
+	if err != nil {
+		t.Fatalf("CompleteOperatorMessage: %v", err)
+	}
+	if record.Outcome == nil || record.Outcome.RequestID != durableRequest.RequestID {
+		t.Fatalf("completed record = %#v", record)
+	}
+}
+
 func TestOperatorMessageValidationAndTerminalGuards(t *testing.T) {
 	request := testOperatorMessageRequest("invalid-1", "invalid-key")
 	request.Content = apiv1.OperatorMessageContent{}
