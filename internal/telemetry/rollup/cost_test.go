@@ -137,6 +137,37 @@ func TestCostRebuildRestoresAttributionAndUsage(t *testing.T) {
 	}
 }
 
+func TestPullRequestCostsSeparateEqualIDsByRepository(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	for index, repository := range []string{"acme/app", "contoso/web"} {
+		runID := fmt.Sprintf("qualified-run-%d", index)
+		writeCostFixture(t, runsDir, runID, []string{
+			costQualifiedRefEvent(4, fixtureStart.Add(time.Duration(index)*time.Hour), repository, "200", "merge"),
+		}, []costAttemptFixture{{attempt: 1, status: "success", nanoAIU: int64Pointer(int64(10 + index)), model: "gpt-q"}})
+	}
+	db := openTestDB(t, tmp)
+	for index := range 2 {
+		if err := db.IngestRun(context.Background(), filepath.Join(runsDir, fmt.Sprintf("qualified-run-%d", index))); err != nil {
+			t.Fatalf("IngestRun %d: %v", index, err)
+		}
+	}
+
+	prs, err := db.PullRequestCosts(context.Background(), "github")
+	if err != nil {
+		t.Fatalf("PullRequestCosts: %v", err)
+	}
+	if len(prs) != 2 {
+		t.Fatalf("PR aggregates = %#v, want two repository-qualified entries", prs)
+	}
+	if prs[0].Repository != "acme/app" || prs[0].ExternalID != "200" ||
+		prs[0].URL != "https://github.com/acme/app/pull/200" ||
+		prs[1].Repository != "contoso/web" || prs[1].ExternalID != "200" ||
+		prs[1].URL != "https://github.com/contoso/web/pull/200" {
+		t.Fatalf("qualified PR aggregates = %#v", prs)
+	}
+}
+
 func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 	tmp := t.TempDir()
 	db := openTestDB(t, tmp)
@@ -340,6 +371,12 @@ func costRefEvent(seq int, at time.Time, kind, id, operation string) string {
 	return eventLine(seq, at, fmt.Sprintf(
 		`"type":"ref.touched","externalRef":{"provider":"github","kind":%q,"id":%q},"runner":{"operation":%q}`,
 		kind, id, operation))
+}
+
+func costQualifiedRefEvent(seq int, at time.Time, repository, id, operation string) string {
+	return eventLine(seq, at, fmt.Sprintf(
+		`"type":"ref.touched","externalRef":{"provider":"github","kind":"pr","id":%q},"runner":{"operation":%q,"mergeConfirmation":{"repositoryApiUrl":%q,"pullId":%q}}`,
+		id, operation, "https://api.github.com/repos/"+repository, id))
 }
 
 func setIntAttr(attrs map[string]string, key string, value *int64) {

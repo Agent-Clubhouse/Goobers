@@ -4302,12 +4302,13 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 		}
 	}
 	for _, m := range mutations {
+		externalURL := providers.MutationWorkItemURL(m.Provider, m.Kind, m.ID, m.URL, m.MergeConfirmation, m.QueueAdmission, m.LandingIntent)
 		// The external mutation cannot be rolled back, but its projection
 		// must not silently disappear. Stop on a failed append (which may
 		// have torn the log), preserving the other attempt failures too.
 		if err := jr.Append(journal.WithMutationOutcome(journal.Event{
 			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
-			ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL},
+			ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: externalURL},
 			Runner:      providers.MutationReceiptRunnerFields(m.ReceiptID, m.Operation, m.MergeConfirmation, m.QueueAdmission, m.LandingIntent),
 		}, m.RunID, m.Outcome, m.ErrorCode, m.ProviderRunID)); err != nil {
 			return fmt.Errorf("runner: journal provider mutation for %q: %w", stage, errors.Join(err, heartbeatErr, removeErr))
