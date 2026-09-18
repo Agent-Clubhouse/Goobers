@@ -187,53 +187,84 @@ func TestOperatorMessageJournalScrubsInlineContent(t *testing.T) {
 func TestOperatorMessageScrubSensitiveIdentifiersRemainIdempotent(t *testing.T) {
 	run, _ := newRun(t)
 	defer func() { _ = run.Close() }()
-	secret := "ghp_" + strings.Repeat("a", 36)
-	request := testOperatorMessageRequest("request-"+secret, "key-"+secret)
+	firstSecret := "ghp_" + strings.Repeat("a", 36)
+	secondSecret := "ghp_" + strings.Repeat("b", 36)
+	first := testOperatorMessageRequest("request-"+firstSecret, "key-"+firstSecret)
+	second := testOperatorMessageRequest("request-"+secondSecret, "key-"+secondSecret)
 
-	record, accepted, err := run.AcceptOperatorMessage(request)
+	firstRecord, accepted, err := run.AcceptOperatorMessage(first)
 	if err != nil {
-		t.Fatalf("AcceptOperatorMessage: %v", err)
+		t.Fatalf("AcceptOperatorMessage(first): %v", err)
 	}
-	if !accepted || record.Request.RequestID == request.RequestID ||
-		record.Request.IdempotencyKey == request.IdempotencyKey {
-		t.Fatalf("accepted record did not return scrubbed identifiers: %#v", record.Request)
+	if !accepted || firstRecord.Request.RequestID == first.RequestID ||
+		firstRecord.Request.IdempotencyKey == first.IdempotencyKey {
+		t.Fatalf("first accepted record did not return durable identifiers: %#v", firstRecord.Request)
 	}
-	durableRequest := record.Request
 
-	record, accepted, err = run.AcceptOperatorMessage(request)
+	secondRecord, accepted, err := run.AcceptOperatorMessage(second)
+	if err != nil {
+		t.Fatalf("AcceptOperatorMessage(second): %v", err)
+	}
+	if !accepted {
+		t.Fatal("distinct scrub-sensitive key resolved as a duplicate")
+	}
+	if secondRecord.Request.RequestID == firstRecord.Request.RequestID ||
+		secondRecord.Request.IdempotencyKey == firstRecord.Request.IdempotencyKey {
+		t.Fatalf("distinct secrets produced identical durable identifiers: first %#v, second %#v",
+			firstRecord.Request, secondRecord.Request)
+	}
+
+	record, accepted, err := run.AcceptOperatorMessage(first)
 	if err != nil {
 		t.Fatalf("duplicate AcceptOperatorMessage: %v", err)
 	}
-	if accepted || record.Request.RequestID != durableRequest.RequestID {
-		t.Fatalf("duplicate = (%v, %q), want durable request %q", accepted, record.Request.RequestID, durableRequest.RequestID)
+	if accepted || record.Request.RequestID != firstRecord.Request.RequestID {
+		t.Fatalf("duplicate = (%v, %q), want durable request %q",
+			accepted, record.Request.RequestID, firstRecord.Request.RequestID)
 	}
 
 	record, err = run.AcknowledgeOperatorMessage(apiv1.OperatorMessageAcknowledgement{
 		Schema:         apiv1.OperatorMessageAcknowledgementSchema,
-		RequestID:      request.RequestID,
-		IdempotencyKey: request.IdempotencyKey,
+		RequestID:      first.RequestID,
+		IdempotencyKey: first.IdempotencyKey,
 		PrincipalRef:   "operator:acknowledger",
 		AcknowledgedAt: fixedClock()().Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("AcknowledgeOperatorMessage: %v", err)
 	}
-	if record.Acknowledgement == nil || record.Acknowledgement.RequestID != durableRequest.RequestID {
+	if record.Acknowledgement == nil || record.Acknowledgement.RequestID != firstRecord.Request.RequestID {
 		t.Fatalf("acknowledged record = %#v", record)
 	}
 
 	record, err = run.CompleteOperatorMessage(apiv1.OperatorMessageOutcome{
 		Schema:         apiv1.OperatorMessageOutcomeSchema,
-		RequestID:      request.RequestID,
-		IdempotencyKey: request.IdempotencyKey,
+		RequestID:      second.RequestID,
+		IdempotencyKey: second.IdempotencyKey,
 		CompletedAt:    fixedClock()().Add(2 * time.Minute),
 		Status:         apiv1.OperatorMessageDelivered,
 	})
 	if err != nil {
 		t.Fatalf("CompleteOperatorMessage: %v", err)
 	}
-	if record.Outcome == nil || record.Outcome.RequestID != durableRequest.RequestID {
+	if record.Outcome == nil || record.Outcome.RequestID != secondRecord.Request.RequestID {
 		t.Fatalf("completed record = %#v", record)
+	}
+
+	reader, err := OpenRead(run.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	records, err := reader.OperatorMessages()
+	if err != nil {
+		t.Fatalf("OperatorMessages: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("replayed records = %d, want 2", len(records))
+	}
+	if records[0].Acknowledgement == nil || records[0].Outcome != nil ||
+		records[1].Acknowledgement != nil || records[1].Outcome == nil {
+		t.Fatalf("lifecycle updates targeted wrong records: %#v", records)
 	}
 }
 
