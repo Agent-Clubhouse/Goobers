@@ -62,7 +62,7 @@ func RetainAbandonedPreparation(ctx context.Context, request RetentionRequest, l
 	record := Record{Version: 1, RunID: request.RunID, RepositoryKey: request.RepositoryKey,
 		Ref: snapshotRef, BaseSHA: parent, SnapshotSHA: commit, PatchDigest: digest,
 		CreatedAt: request.IdentityTime, RetainUntil: request.RetainUntil}
-	retained, recordPath, err := publishAbandonedPreparation(ctx, request, record)
+	retained, recordPath, overflowed, err := publishAbandonedPreparation(ctx, request, record)
 	if err != nil {
 		return err
 	}
@@ -71,26 +71,42 @@ func RetainAbandonedPreparation(ctx context.Context, request RetentionRequest, l
 		return err
 	}
 	event.Runner["recoveryCapture"] = true
+	if overflowed {
+		event.Runner["recoveryOverflow"] = true
+	}
 	if err := log.Append(event); err != nil {
 		return fmt.Errorf("acknowledge abandoned preparation: %w", err)
 	}
-	if err := request.acknowledgeArchive(ctx, retained, recordPath); err != nil {
-		return err
+	if !overflowed {
+		if err := request.acknowledgeArchive(ctx, retained, recordPath); err != nil {
+			return err
+		}
 	}
 	return deleteExactRecoveryRef(ctx, request.Repository, ref, commit)
 }
 
-func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, prepared Record) (Record, string, error) {
+// publishAbandonedPreparation reports whether it had to fall back to the
+// overflow tier, so the caller journals the same recoveryOverflow marker
+// Retain does and skips the archive custody hook there is no archive for.
+func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, prepared Record) (Record, string, bool, error) {
 	prepared, err := matchAbandonedReservation(ctx, request, prepared)
 	if err != nil {
-		return Record{}, "", err
+		return Record{}, "", false, err
 	}
 	_, path, err := PublishToInventoryWithEviction(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes, request.EvictFull)
+	if errors.Is(err, ErrInventoryFull) && request.OverflowRoot != "" {
+		// No retention sidecar in the overflow tier: the record itself is
+		// republished with the current deadline, which is the same effect
+		// RenewRetention has for a retained entry.
+		prepared.RetainUntil = request.RetainUntil
+		overflowed, overflowPath, overflowErr := PublishOverflow(ctx, request.Repository, request.OverflowRoot, prepared)
+		return overflowed, overflowPath, overflowErr == nil, overflowErr
+	}
 	if err != nil {
-		return Record{}, "", err
+		return Record{}, "", false, err
 	}
 	renewed, err := RenewRetention(ctx, path, request.RetainUntil, request.MaxArchiveBytes)
-	return renewed, path, err
+	return renewed, path, false, err
 }
 
 // matchAbandonedReservation returns the immutable capture identity this

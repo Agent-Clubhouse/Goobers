@@ -359,6 +359,9 @@ func (c RecoverySnapshotConfig) validate() error {
 	if _, err := c.RetainWindowEffective(); err != nil {
 		return err
 	}
+	if c.OnFull != "" && c.OnFull != RecoveryOnFullOverflow && c.OnFull != RecoveryOnFullRefuse {
+		return fmt.Errorf("retention.recovery.onFull must be %q or %q, got %q", RecoveryOnFullOverflow, RecoveryOnFullRefuse, c.OnFull)
+	}
 	if c.MaxVolumeBytes == 0 {
 		return nil
 	}

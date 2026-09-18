@@ -187,7 +187,7 @@ func TestRecoveryInventoryHighWaterWarningIsDeduplicated(t *testing.T) {
 	at := time.Date(2026, time.September, 17, 12, 0, 0, 0, time.UTC)
 	report := func(used int) {
 		status := &readservice.RecoveryInventoryStatus{
-			State: readservice.ClassifyRecoveryInventory(used, 10), Used: used, Limit: 10,
+			State: readservice.ClassifyRecoveryInventory(used, 10, 0), Used: used, Limit: 10,
 			HighWaterPercent: readservice.RecoveryInventoryHighWaterPercent,
 			InventoryRoot:    filepath.Join(layout.Root, "recovery"),
 		}

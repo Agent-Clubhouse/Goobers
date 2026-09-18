@@ -153,7 +153,7 @@ func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt ti
 		},
 		TelemetryRetention: telemetryRetentionWireFixture(startedAt, finishedAt),
 		RecoveryInventory: &readservice.RecoveryInventoryStatus{
-			State: readservice.RecoveryInventoryWarning, Used: 104, Limit: 128, Unreadable: 2,
+			State: readservice.RecoveryInventoryWarning, Used: 104, Limit: 128, Unreadable: 2, Overflow: 0,
 			HighWaterPercent:    readservice.RecoveryInventoryHighWaterPercent,
 			EarliestRetainUntil: &finishedAt, InventoryRoot: "/instances/fixture/recovery",
 			PolicySource: "instance-config", ObservedAt: startedAt,
