@@ -200,12 +200,26 @@ func scrubOperatorMessage[T any](scrubber Scrubber, value T) (T, error) {
 }
 
 func canonicalOperatorMessageIdentifier(scrubber Scrubber, kind, value string) string {
-	if !strings.HasPrefix(value, scrubbedOperatorMessageIdentifierPrefix) &&
-		bytes.Equal(scrubber.Scrub([]byte(value)), []byte(value)) {
+	if isCanonicalOperatorMessageIdentifier(kind, value) ||
+		(!strings.HasPrefix(value, scrubbedOperatorMessageIdentifierPrefix) &&
+			bytes.Equal(scrubber.Scrub([]byte(value)), []byte(value))) {
 		return value
 	}
 	sum := sha256.Sum256([]byte("goobers.dev/operator-message/" + kind + "/v1\x00" + value))
 	return fmt.Sprintf("%s%s:%x", scrubbedOperatorMessageIdentifierPrefix, kind, sum)
+}
+
+func isCanonicalOperatorMessageIdentifier(kind, value string) bool {
+	digest, ok := strings.CutPrefix(value, scrubbedOperatorMessageIdentifierPrefix+kind+":")
+	if !ok || len(digest) != sha256.Size*2 {
+		return false
+	}
+	for _, char := range digest {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Run) operatorMessagesLocked() ([]apiv1.OperatorMessageRecord, error) {

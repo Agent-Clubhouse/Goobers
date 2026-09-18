@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"crypto/sha256"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -265,6 +266,89 @@ func TestOperatorMessageScrubSensitiveIdentifiersRemainIdempotent(t *testing.T) 
 	if records[0].Acknowledgement == nil || records[0].Outcome != nil ||
 		records[1].Acknowledgement != nil || records[1].Outcome == nil {
 		t.Fatalf("lifecycle updates targeted wrong records: %#v", records)
+	}
+}
+
+func TestOperatorMessageReplayedIdentifiersDriveLifecycle(t *testing.T) {
+	run, _ := newRun(t)
+	defer func() { _ = run.Close() }()
+	secret := "ghp_" + strings.Repeat("c", 36)
+	request := testOperatorMessageRequest("request-"+secret, "key-"+secret)
+
+	if _, accepted, err := run.AcceptOperatorMessage(request); err != nil || !accepted {
+		t.Fatalf("AcceptOperatorMessage = accepted %v, err %v", accepted, err)
+	}
+	reader, err := OpenRead(run.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	records, err := reader.OperatorMessages()
+	if err != nil {
+		t.Fatalf("OperatorMessages: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	durable := records[0].Request
+
+	record, accepted, err := run.AcceptOperatorMessage(durable)
+	if err != nil {
+		t.Fatalf("duplicate AcceptOperatorMessage: %v", err)
+	}
+	if accepted || record.Request.RequestID != durable.RequestID {
+		t.Fatalf("duplicate = (%v, %q), want durable request %q",
+			accepted, record.Request.RequestID, durable.RequestID)
+	}
+	record, err = run.AcknowledgeOperatorMessage(apiv1.OperatorMessageAcknowledgement{
+		Schema:         apiv1.OperatorMessageAcknowledgementSchema,
+		RequestID:      durable.RequestID,
+		IdempotencyKey: durable.IdempotencyKey,
+		PrincipalRef:   "operator:acknowledger",
+		AcknowledgedAt: fixedClock()().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("AcknowledgeOperatorMessage: %v", err)
+	}
+	if record.Acknowledgement == nil {
+		t.Fatalf("acknowledged record = %#v", record)
+	}
+
+	records, err = reader.OperatorMessages()
+	if err != nil {
+		t.Fatalf("OperatorMessages after acknowledgement: %v", err)
+	}
+	replayed := records[0].Request
+	record, err = run.CompleteOperatorMessage(apiv1.OperatorMessageOutcome{
+		Schema:         apiv1.OperatorMessageOutcomeSchema,
+		RequestID:      replayed.RequestID,
+		IdempotencyKey: replayed.IdempotencyKey,
+		CompletedAt:    fixedClock()().Add(2 * time.Minute),
+		Status:         apiv1.OperatorMessageDelivered,
+	})
+	if err != nil {
+		t.Fatalf("CompleteOperatorMessage: %v", err)
+	}
+	if record.Outcome == nil || record.Outcome.RequestID != durable.RequestID {
+		t.Fatalf("completed record = %#v", record)
+	}
+}
+
+func TestCanonicalOperatorMessageIdentifierRejectsPrefixSpoofing(t *testing.T) {
+	scrubber := NewPatternScrubber()
+	valid := scrubbedOperatorMessageIdentifierPrefix + "request-id:" + strings.Repeat("a", sha256.Size*2)
+	if got := canonicalOperatorMessageIdentifier(scrubber, "request-id", valid); got != valid {
+		t.Fatalf("canonical identifier changed: got %q, want %q", got, valid)
+	}
+
+	for _, spoofed := range []string{
+		scrubbedOperatorMessageIdentifierPrefix + "request-id:not-a-digest",
+		scrubbedOperatorMessageIdentifierPrefix + "idempotency-key:" + strings.Repeat("a", sha256.Size*2),
+		scrubbedOperatorMessageIdentifierPrefix + "request-id:" + strings.Repeat("A", sha256.Size*2),
+	} {
+		got := canonicalOperatorMessageIdentifier(scrubber, "request-id", spoofed)
+		if got == spoofed || !isCanonicalOperatorMessageIdentifier("request-id", got) {
+			t.Fatalf("spoofed identifier %q canonicalized to %q", spoofed, got)
+		}
 	}
 }
 
