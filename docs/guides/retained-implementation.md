@@ -26,6 +26,22 @@ counts as an entry holding nothing worth keeping; a contentless entry is
 retired even inside the retain-until floor, and the sweep journals the same
 `recovery-reclaimed` annotation the on-demand hook does.
 
+Retention's first-enable grace window (an upgraded instance reports what it
+would delete for seven days before it deletes anything, giving an operator
+time to review real worktrees and archives) does not hold back a contentless
+retirement or an incomplete reservation with no `record.json` at all. Neither
+holds anything an operator could review: a contentless entry has no patch
+bytes worth keeping by definition, and an incomplete reservation has no
+identity to review in the first place. Waiting out the window for these would
+turn "an already-wedged instance heals on upgrade" into "it limps for a week,
+reclaiming one slot per refused publish" — exactly the outage this exists to
+close. Only the operator's own `retention.dryRun` still holds them; every
+other retention action (retain-floor expiry, worktree pruning, merged-branch
+pruning, and landing-proof retirement) keeps observing the grace window as
+before. A pass that deletes either shape while the window is still open says
+so in its output, e.g. `retention deleted rule=stored-no-diff kind=recovery
+... (grace window does not apply: no recoverable content)`.
+
 Early merge-based retirement requires all of the following:
 
 - A terminal, idle receiving run in the source run's configured run directory,

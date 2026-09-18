@@ -18,12 +18,19 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// dryRun is the retention pass's resolved decision (operator retention.dryRun
-// or an unelapsed first-enable grace window, #4253). Retiring a snapshot
-// deletes its refs, so it has to observe the same window the worktree sweep
-// does — otherwise a grace period that only reports worktrees would still be
-// destroying recovery snapshots underneath it.
-func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, dryRun bool, stdout, stderr io.Writer) error {
+// windowDryRun is the retention pass's combined resolved decision (operator
+// retention.dryRun or an unelapsed first-enable grace window, #4253). It
+// governs the landing-proof retirement path: retiring a snapshot with landed
+// content deletes its refs, so that path has to observe the same window the
+// worktree sweep does — otherwise a grace period that only reports worktrees
+// would still be destroying recovery snapshots underneath it.
+//
+// operatorDryRun and graceActive are the same decision split apart (#5354):
+// a contentless retirement (recoveryContentlessJustification below) holds no
+// recoverable content, so it is gated by operatorDryRun alone, and graceActive
+// is passed through only so a successful deletion can note when the grace
+// window would otherwise have held it.
+func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, windowDryRun, operatorDryRun, graceActive bool, stdout, stderr io.Writer) error {
 	root := filepath.Join(layout.Root, "recovery")
 	// #5092: the sweep that RECLAIMS capacity must read the same cap the
 	// writers enforce. Reading at a smaller one refuses with "inventory is
@@ -77,7 +84,7 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	// protects its content in the same pass.
 	retained := retainedEvictionRecords(entries)
 	for _, entry := range entries {
-		err := retireExpiredRecoveryEntry(ctx, root, setup, policy, managers, runsByRoot, entry, retained, operatorEvents, dryRun, stdout, layout.SchedulerDir())
+		err := retireExpiredRecoveryEntry(ctx, root, setup, policy, managers, runsByRoot, entry, retained, operatorEvents, windowDryRun, operatorDryRun, graceActive, stdout, layout.SchedulerDir())
 		if err != nil {
 			pf(stderr, "warning: recovery retention failed run=%q ref=%q: %v\n", entry.Record.RunID, entry.Record.Ref, err)
 			failures = errors.Join(failures, err)
@@ -122,7 +129,7 @@ func prioritizeAbandonedRecovery(
 	return append(prioritized, remaining...)
 }
 
-func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, recoveryCfg instance.RecoverySnapshotConfig, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, retained []recovery.Record, operatorEvents []journal.Event, dryRun bool, stdout io.Writer, schedulerDir string) error {
+func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, recoveryCfg instance.RecoverySnapshotConfig, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, retained []recovery.Record, operatorEvents []journal.Event, windowDryRun, operatorDryRun, graceActive bool, stdout io.Writer, schedulerDir string) error {
 	manager, runDir, err := recoveryRetentionOwner(entry.Record.RunID, managers, runsByRoot)
 	if err != nil {
 		return err
@@ -171,7 +178,15 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 			if justification != "" {
 				rule = justification
 			}
-			if dryRun {
+			// A contentless retirement holds nothing reviewable, so it is
+			// gated by the operator's explicit dryRun alone (#5354); every
+			// other retirement (landing proof) keeps observing the combined
+			// window dry-run exactly as before.
+			effectiveDryRun := windowDryRun
+			if justification != "" {
+				effectiveDryRun = operatorDryRun
+			}
+			if effectiveDryRun {
 				pf(stdout, "retention candidate kind=recovery rule=%s run=%q ref=%q\n", rule, record.RunID, record.Ref)
 				return nil
 			}
@@ -188,6 +203,9 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 			}
 			if justification != "" {
 				journalSweepReclamation(schedulerDir, record, justification)
+				if graceActive {
+					pf(stdout, "retention deleted rule=%s kind=recovery run=%q ref=%q (grace window does not apply: no recoverable content)\n", justification, record.RunID, record.Ref)
+				}
 			}
 			return nil
 		})
