@@ -92,10 +92,23 @@ directories — they consume capacity that no reclamation path can free.
 
 The recovery inventory is a single instance-wide directory, `<instance
 root>/recovery`. Every writer shares it and every writer counts against one
-cap: each gaggle's live stage cleanup, the startup crash-orphan worktree reap,
-terminal finalization, and archives accepted from remote workers. Startup-reap
-publications are ordinary inventory entries — they are not exempt from the cap
-that gates live-run worktree teardown.
+cap: live stage cleanup that contains uncommitted or otherwise unanchored work,
+abandoned recovery preparations, the startup crash-orphan worktree reap,
+terminal finalization, and archives accepted from remote workers. Ordinary
+nonterminal cleanup does not publish recovery when Git proves the worktree is
+clean and its current commit is unchanged or anchored by a surviving local
+branch. Startup-reap publications are ordinary inventory entries — they are
+not exempt from the cap that gates live-run worktree teardown.
+
+Skipping a clean nonterminal cleanup is only safe because terminal
+finalization captures the run branch itself. A run whose worktrees were all
+removed while it was still running reaches termination with no checkout left
+to capture from, and a local branch is not reachable through any part of the
+recovery contract. Terminal finalization therefore checks out the run branch's
+tip in the managed mirror and publishes it, unless the tip carries nothing the
+base does not or some record already retained for that run was captured from
+that exact commit. Failure to publish is deferred, not skipped: the run stays
+active and finalization is retried.
 
 `retention.recovery.maxSnapshots` in `instance.yaml` sets that cap (128 when
 the section is omitted). It is resolved from `instance.yaml` at the point of
