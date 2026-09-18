@@ -171,6 +171,7 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 	recoveryErr := errors.Join(
 		retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, dryRun, stdout, stderr),
 		reapConfiguredRecovery(ctx, l, cfg, dryRun, stdout, stderr),
+		reconcileIncompleteRecovery(ctx, l, cfg, dryRun, stdout, stderr),
 	)
 	protectedBranches, err := retentionProtectedBranches(runsByRoot, setup)
 	if err != nil {

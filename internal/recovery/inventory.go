@@ -88,40 +88,61 @@ func lockedReserveSnapshotDirectory(ctx context.Context, root, name string, limi
 	return reserveSnapshotDirectory(root, name, limit)
 }
 
-// reclaimInventoryCapacity always attempts the in-package reap of already
-// retired-but-unremoved entries first, then the caller-supplied evict hook,
-// which knows how to retire a terminal-and-landed entry on the spot (#4823).
+// reclaimInventoryCapacity reclaims in cheapest-and-safest-first order:
+// stale incomplete reservations, then the in-package reap of already
+// retired-but-unremoved entries, then the caller-supplied evict hook, which
+// knows how to retire a terminal-and-landed entry on the spot (#4823).
+//
+// Incomplete reservations go first because they are the only class whose
+// reclamation cannot lose anything: they hold no record and therefore no
+// recoverable identity, so unlike eviction there is no landing to prove and
+// no policy to consult. Running them here, under actual capacity pressure and
+// ahead of the evict hook, is what heals an instance whose inventory has
+// already filled with crash debris: its first refused cleanup after upgrade
+// clears the debris and succeeds, with no operator action (#5354). Like
+// eviction, this deliberately bypasses the periodic sweep's dry-run and
+// first-enable gating — those govern a background policy decision, while this
+// is the one thing standing between the caller and ErrInventoryFull.
 func reclaimInventoryCapacity(ctx context.Context, root string, limit int, evict EvictFunc) (bool, error) {
-	reaped, reapErr := ReapRetired(ctx, root, limit, true)
-	freed := false
-	for _, result := range reaped {
-		if result.Deleted {
-			freed = true
-		}
-	}
+	freed, failures := reconcileForCapacity(ctx, root, limit)
+	reaped, reapErr := reapForCapacity(ctx, root, limit)
+	freed, failures = freed || reaped, errors.Join(failures, reapErr)
 	if evict == nil {
-		return freed, reapErr
+		return freed, failures
 	}
 	if err := ctx.Err(); err != nil {
-		return freed, errors.Join(reapErr, err)
+		return freed, errors.Join(failures, err)
 	}
 	evictedMore, err := evict(ctx, root, limit)
 	if err != nil {
-		return freed, errors.Join(reapErr, err)
+		return freed, errors.Join(failures, err)
 	}
 	if evictedMore {
 		// evict() only retires (renames to the .retired- prefix); it does not
 		// delete files. A retired entry still counts toward capacity until
 		// reaped, so the slot it just freed is not real until this runs.
-		second, secondErr := ReapRetired(ctx, root, limit, true)
-		for _, result := range second {
-			if result.Deleted {
-				freed = true
-			}
-		}
-		reapErr = errors.Join(reapErr, secondErr)
+		second, secondErr := reapForCapacity(ctx, root, limit)
+		freed, failures = freed || second, errors.Join(failures, secondErr)
 	}
-	return freed || evictedMore, reapErr
+	return freed || evictedMore, failures
+}
+
+func reconcileForCapacity(ctx context.Context, root string, limit int) (bool, error) {
+	results, err := ReconcileIncompleteReservations(ctx, root, limit, IncompleteReservationGrace, true)
+	freed := false
+	for _, result := range results {
+		freed = freed || result.Deleted
+	}
+	return freed, err
+}
+
+func reapForCapacity(ctx context.Context, root string, limit int) (bool, error) {
+	results, err := ReapRetired(ctx, root, limit, true)
+	freed := false
+	for _, result := range results {
+		freed = freed || result.Deleted
+	}
+	return freed, err
 }
 
 func inventoryDirectoryName(record Record) string {

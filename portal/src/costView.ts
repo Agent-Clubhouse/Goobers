@@ -81,7 +81,7 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
   const kind = aggregate.externalKind === "pr" ? "PR" : "Issue";
   const coverage = aggregate.coverage;
   return {
-    key: `${aggregate.provider}:${aggregate.externalKind}:${aggregate.externalId}`,
+    key: `${aggregate.provider}:${aggregate.repository ?? ""}:${aggregate.externalKind}:${aggregate.externalId}`,
     label: aggregate.repository
       ? `${aggregate.repository}#${aggregate.externalId}`
       : `${kind} #${aggregate.externalId}`,

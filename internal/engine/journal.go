@@ -330,10 +330,11 @@ func (r *runJournal) mutationIssues(ctx workflow.Context, stage string, attempt 
 
 func (r *runJournal) mutations(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact) {
 	for _, mutation := range mutations {
+		externalURL := providers.MutationWorkItemURL(mutation.Provider, mutation.Kind, mutation.ID, mutation.URL, mutation.MergeConfirmation, mutation.QueueAdmission, mutation.LandingIntent)
 		r.append(ctx, journal.WithMutationOutcome(journal.Event{
 			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
 			ExternalRef: &journal.ExternalRef{
-				Provider: mutation.Provider, Kind: mutation.Kind, ID: mutation.ID, URL: mutation.URL,
+				Provider: mutation.Provider, Kind: mutation.Kind, ID: mutation.ID, URL: externalURL,
 			},
 			Runner: providers.MutationReceiptRunnerFields(mutation.ReceiptID, mutation.Operation, mutation.MergeConfirmation, mutation.QueueAdmission, mutation.LandingIntent),
 		}, mutation.RunID, mutation.Outcome, mutation.ErrorCode, mutation.ProviderRunID))
