@@ -572,6 +572,9 @@ func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) 
 		if err := ensureScratchExcluded(ctx, dir); err != nil {
 			return "", err
 		}
+		if err := maintainMirror(ctx, dir); err != nil {
+			return "", err
+		}
 		return dir, nil
 	case err != nil:
 		return "", fmt.Errorf("worktree: stat workcopy for %s: %w", repoURL, err)
@@ -601,6 +604,9 @@ func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) 
 		return "", err
 	}
 	if err := ensureScratchExcluded(ctx, dir); err != nil {
+		return "", err
+	}
+	if err := maintainMirror(ctx, dir); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -850,8 +856,8 @@ func flattenedSymlinks(root string, symlinkPaths []string, lstat func(string) (o
 //     serializes mirror work behind the per-repo lock, and a fetch that
 //     returns while housekeeping is still running only moves that work onto
 //     an unsupervised process whose failures nobody reads. Automatic
-//     housekeeping is disabled for these commands; explicit maintenance runs
-//     remain available to the lifecycle that owns the mirror.
+//     housekeeping is disabled for these commands; maintainMirror performs
+//     the replacement pass synchronously while the per-repository lock is held.
 func hardenedGitArgs(args []string) []string {
 	return append(append([]string{
 		"-c", "safe.bareRepository=all",
@@ -885,6 +891,16 @@ func ForegroundMaintenanceArgs() []string {
 		"-c", "maintenance.autoDetach=false",
 		"-c", "gc.autoDetach=false",
 	}
+}
+
+// maintainMirror performs the housekeeping disabled by ForegroundMaintenanceArgs.
+// The caller must hold the mirror's per-repository lock so maintenance cannot
+// overlap a teardown or another operation that mutates the object store.
+func maintainMirror(ctx context.Context, dir string) error {
+	if err := runGit(ctx, dir, "maintenance", "run"); err != nil {
+		return fmt.Errorf("worktree: maintain mirror %s: %w", dir, err)
+	}
+	return nil
 }
 
 // gitOutput runs git in dir and returns its trimmed stdout.
