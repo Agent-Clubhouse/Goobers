@@ -198,6 +198,21 @@ make: *** [Makefile:352: ci] Error 1
 	}
 }
 
+func TestCommandFailureDiagnosticPrefersStaleManagedWorktreeOverWrapperTrailer(t *testing.T) {
+	stderr := []byte(`level=warning msg="[runner/nolint_filter] Found unknown linters in //nolint directives: wsl"
+level=error msg="failed to parse file: open C:\goobers\runs\wt-477de6f81fdc8e7507549359\api\v1alpha1\zz_generated.deepcopy.go: The system cannot find the path specified."
+make: *** [Makefile:192: lint-fast] Error 1
+`)
+
+	got := summarizeCommandFailure(nil, stderr).failure
+	if !strings.Contains(got.text, "wt-477de6f81fdc8e7507549359") {
+		t.Fatalf("failure = %+v, want stale managed worktree evidence", got)
+	}
+	if strings.HasPrefix(got.text, "make: ***") {
+		t.Fatalf("failure = %+v, must not select the wrapper trailer", got)
+	}
+}
+
 // #5101, from the goobernetes cloud instance, run
 // ebd455dedd8f54270f9e0eb16c462a9c: 55,805 bytes of stdout whose ONLY failure
 // signal was a package-level "FAIL\tpkg\t1315.643s" — no "--- FAIL:", no

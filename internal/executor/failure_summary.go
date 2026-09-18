@@ -145,6 +145,7 @@ const (
 	specificityPackageFailure   = 20
 	specificityTestFailure      = 30
 	specificityDependencyDenial = 40
+	specificityStaleWorktree    = 45
 )
 
 // collectFailureDigest returns every distinct failure line across both
@@ -215,6 +216,11 @@ func collectFailureDigest(stdout, stderr []byte) []string {
 func failureLineSpecificity(line string) int {
 	line = cleanOutputLine(line)
 	switch {
+	// A cached linter result can retain the absolute path of a managed
+	// worktree after that checkout has been removed (#5371). The missing
+	// checkout is runner state, not a finding the implementation can repair.
+	case failureclass.IsStaleManagedWorktreePath(line):
+		return specificityStaleWorktree
 	// A dependency fetch the network refused is the most specific line a
 	// failing build can carry: it names a cause no diff can address. It has
 	// to outrank the wrapper trailer below it (#4143 — `make: *** [ci]` is
