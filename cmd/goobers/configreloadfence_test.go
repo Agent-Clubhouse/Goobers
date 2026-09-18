@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
@@ -113,6 +114,39 @@ func TestDeterministicStageConfigDigestFailsClosed(t *testing.T) {
 	digest, err := deterministicStageConfigDigest(filepath.Join(t.TempDir(), "missing"))
 	if err == nil || digest != "" || !strings.Contains(err.Error(), "digest deterministic-stage config") {
 		t.Fatalf("digest missing config: digest=%q err=%v", digest, err)
+	}
+}
+
+func TestAppliedStageConfigFenceSkipsPinnedDispatchRuntime(t *testing.T) {
+	if shouldEnforceAppliedStageConfig([]string{dispatcher.DispatchExecCommand}) {
+		t.Fatal("dispatch runtime must not compare its pinned stage against mutable worker config")
+	}
+	for _, args := range [][]string{{"version"}, {"backlog-query"}, {"bogus"}} {
+		if !shouldEnforceAppliedStageConfig(args) {
+			t.Fatalf("command %q unexpectedly bypasses the config generation fence", args[0])
+		}
+	}
+}
+
+func TestConfigGenerationChangeDoesNotBlockPinnedDispatchRuntime(t *testing.T) {
+	root := initDeterministicDemo(t)
+	t.Setenv(executor.InstanceRootEnvVar, root)
+	t.Setenv(executor.AppliedConfigDigestEnvVar, "sha256:superseded")
+	t.Setenv(dispatcher.EnvRunID, "")
+	t.Setenv(dispatcher.EnvStage, "")
+	t.Setenv(dispatcher.EnvAttempt, "")
+	t.Setenv(dispatcher.EnvDaemonAPI, "")
+	t.Setenv(dispatcher.EnvPodToken, "")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{dispatcher.DispatchExecCommand}, &stdout, &stderr); code != 1 {
+		t.Fatalf("dispatch runtime exit=%d, want its own missing-identity failure", code)
+	}
+	if strings.Contains(stderr.String(), configGenerationMismatchCode) {
+		t.Fatalf("dispatch runtime was blocked by mutable worker config: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "dispatch-exec: missing or invalid pod identity") {
+		t.Fatalf("dispatch runtime did not reach its pinned entrypoint: %q", stderr.String())
 	}
 }
 

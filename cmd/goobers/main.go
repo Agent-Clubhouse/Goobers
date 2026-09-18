@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/version"
@@ -66,12 +67,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
-	if err := enforceAppliedStageConfig(); err != nil {
-		if reportErr := writeBuiltinStageError(configGenerationMismatchCode, err); reportErr != nil {
-			pf(stderr, "error: report %s: %v\n", configGenerationMismatchCode, reportErr)
+	if shouldEnforceAppliedStageConfig(args) {
+		if err := enforceAppliedStageConfig(); err != nil {
+			if reportErr := writeBuiltinStageError(configGenerationMismatchCode, err); reportErr != nil {
+				pf(stderr, "error: report %s: %v\n", configGenerationMismatchCode, reportErr)
+			}
+			pf(stderr, "error: %s: %v\n", configGenerationMismatchCode, err)
+			return 1
 		}
-		pf(stderr, "error: %s: %v\n", configGenerationMismatchCode, err)
-		return 1
 	}
 	if command, ok := findCLICommand(args[0]); ok {
 		return command.dispatch(args[1:], stdout, stderr)
@@ -79,6 +82,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	pf(stderr, "goobers: unknown command %q\n\n", args[0])
 	usage(stderr)
 	return 2
+}
+
+func shouldEnforceAppliedStageConfig(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	// __dispatch-exec executes the stage definition already pinned into the
+	// pod environment by the run's owning runner. It never reads the instance
+	// config tree, so fencing it against a later worker config sync only kills
+	// valid in-flight work without preventing mixed-generation reads (#5382).
+	return args[0] != dispatcher.DispatchExecCommand
 }
 
 func enforceAppliedStageConfig() error {
