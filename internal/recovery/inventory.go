@@ -110,21 +110,51 @@ func reclaimInventoryCapacity(ctx context.Context, root string, limit int, evict
 	if evict == nil {
 		return freed, failures
 	}
-	if err := ctx.Err(); err != nil {
-		return freed, errors.Join(failures, err)
-	}
-	evictedMore, err := evict(ctx, root, limit)
-	if err != nil {
-		return freed, errors.Join(failures, err)
-	}
-	if evictedMore {
+	evictedMore, err := evictForCapacity(ctx, root, limit, evict)
+	return freed || evictedMore, errors.Join(failures, err)
+}
+
+// evictForCapacity retires reclaimable entries until the inventory has room,
+// rather than exactly once.
+//
+// One retirement is enough only when the inventory sits AT its cap. An
+// inventory already holding MORE entries than the cap — what an operator gets
+// by lowering maxSnapshots on a full inventory, and the shape of the "130 of
+// 128" wedge — is still full after a single retirement, so the publish that
+// paid for it was refused anyway and fell through to the overflow tier. The
+// surplus then drained at one entry per refused cleanup, if at all (#5354).
+//
+// The loop is bounded twice over: by the structural ceiling, and by the hook
+// itself, which stops the moment it declines to retire anything. It never
+// retires past the point where the inventory has room, so an entry is never
+// reclaimed for capacity that is already free.
+func evictForCapacity(ctx context.Context, root string, limit int, evict EvictFunc) (bool, error) {
+	freed := false
+	var failures error
+	for range MaxInventoryEntries {
+		if err := ctx.Err(); err != nil {
+			return freed, errors.Join(failures, err)
+		}
+		occupied, err := inventoryOccupancy(ctx, root)
+		if err != nil {
+			return freed, errors.Join(failures, err)
+		}
+		if occupied < limit {
+			return freed, failures
+		}
+		evicted, err := evict(ctx, root, limit)
+		if err != nil || !evicted {
+			return freed, errors.Join(failures, err)
+		}
+		freed = true
 		// evict() only retires (renames to the .retired- prefix); it does not
 		// delete files. A retired entry still counts toward capacity until
 		// reaped, so the slot it just freed is not real until this runs.
-		second, secondErr := reapForCapacity(ctx, root, limit)
-		freed, failures = freed || second, errors.Join(failures, secondErr)
+		if _, reapErr := reapForCapacity(ctx, root, limit); reapErr != nil {
+			failures = errors.Join(failures, reapErr)
+		}
 	}
-	return freed || evictedMore, failures
+	return freed, failures
 }
 
 func reconcileForCapacity(ctx context.Context, root string, limit int) (bool, error) {
