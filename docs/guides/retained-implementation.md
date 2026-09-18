@@ -53,10 +53,13 @@ operator annotation authorizes the later sweep.
 
 The recovery inventory is a single instance-wide directory, `<instance
 root>/recovery`. Every writer shares it and every writer counts against one
-cap: each gaggle's live stage cleanup, the startup crash-orphan worktree reap,
-terminal finalization, and archives accepted from remote workers. Startup-reap
-publications are ordinary inventory entries — they are not exempt from the cap
-that gates live-run worktree teardown.
+cap: live stage cleanup that contains uncommitted or otherwise unanchored work,
+abandoned recovery preparations, the startup crash-orphan worktree reap,
+terminal finalization, and archives accepted from remote workers. Ordinary
+nonterminal cleanup does not publish recovery when Git proves the worktree is
+clean and its current commit is unchanged or anchored by a surviving local
+branch. Startup-reap publications are ordinary inventory entries — they are
+not exempt from the cap that gates live-run worktree teardown.
 
 `retention.recovery.maxSnapshots` in `instance.yaml` sets that cap (128 when
 the section is omitted). It is resolved from `instance.yaml` at the point of

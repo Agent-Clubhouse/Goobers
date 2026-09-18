@@ -93,6 +93,11 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return err
 	}
+	if !terminal {
+		if err := worktree.VerifyCleanupTargetPreservedByGit(ctx, target); err == nil {
+			return nil
+		}
+	}
 	_, _, err = recovery.Retain(ctx, request, publication)
 	return err
 }
