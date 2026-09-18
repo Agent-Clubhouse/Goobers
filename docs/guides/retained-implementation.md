@@ -257,13 +257,25 @@ promotion all run normally on it, so an over-cap inventory drains on its own.
 Raising `retention.recovery.maxSnapshots` is no longer a remedy for it, and
 recovery directories are still never deleted by hand.
 
-The strict, cap-bounded read remains where a caller decides whether it is safe
-to discard work because recovery state appears absent: the exact-record checks
-behind `recovery-abandon`, snapshot selection for restore and resume, the
-publication API, the per-run retained events the read model serves, and the
-guard that refuses to prune a run journal still owned by a live snapshot.
-Those return no partial result and never remove existing records; if one of
-them is refused for a full inventory, raise the cap for that operation.
+The strict, cap-bounded read remains in exactly three places, all of them
+callers deciding whether it is safe to discard work because recovery state
+appears absent: the exact-record checks behind `recovery-abandon`, snapshot
+selection for restore and resume, and the publication API. Those return no
+partial result and never remove existing records; if one of them is refused for
+a full inventory, raise the cap for that operation.
+
+Every other reader reads the whole directory. A caller that only ever touches
+its OWN run's records — terminal renewal, the terminal-capture coverage check,
+the per-run retained events the read model serves — reads it that way too: a
+record it cannot find is nothing to renew or nothing already covered, which is
+a no-op rather than a refusal. Bounding those by the cap deferred terminal
+finalization of every completed run on an over-cap instance, at every startup,
+each deferral holding the worktree and active marker it was trying to release.
+
+Only the cap stopped refusing. A reservation no scan can interpret still does:
+`goobers status` reports the inventory as unavailable rather than as absent,
+and the guard protecting a run journal from telemetry retention refuses to
+prune rather than ruling out ownership it cannot read.
 
 ### Incomplete reservations
 
