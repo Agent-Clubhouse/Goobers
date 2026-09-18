@@ -278,6 +278,11 @@ func TestClassifyCleanupWarningSeparatesRemediations(t *testing.T) {
 			CleanupWarningRecoveryCapacity,
 		},
 		{
+			"recovery capture failure, wrapped in the generic deferral",
+			fmt.Errorf("%w: %w: git merge-base: exit status 128: fatal: unknown revision", ErrCleanupDeferred, ErrCleanupRecoveryCapture),
+			CleanupWarningRecoveryCapture,
+		},
+		{
 			"handoff still in progress",
 			fmt.Errorf("%w: recovery handoff for wt-1: publishing", ErrCleanupDeferred),
 			CleanupWarningHandoff,
@@ -335,6 +340,39 @@ func TestCleanupRetryClassifiesMalformedRecordWarning(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no record-class warning for an unreadable marker: %+v", report.Warnings)
+	}
+}
+
+// TestClassifyCleanupWarningSeparatesCaptureCapacityAndRemoval is #5352's
+// three-way distinction requirement: a git capture failure, a full recovery
+// inventory, and a worktree-removal failure must classify separately so a
+// journaled/logged cleanup failure states which one occurred.
+func TestClassifyCleanupWarningSeparatesCaptureCapacityAndRemoval(t *testing.T) {
+	capture := fmt.Errorf("%w: recovery handoff for wt-1: %w",
+		ErrCleanupDeferred, fmt.Errorf("capture recovery patch: %w", ErrCleanupRecoveryCapture))
+	capacity := fmt.Errorf("%w: recovery handoff for wt-1: %w", ErrCleanupDeferred, ErrCleanupRecoveryCapacity)
+	removal := fmt.Errorf("remove worktree: %w", syscall.ENOTEMPTY)
+
+	classes := map[string]CleanupWarningClass{
+		"capture":  classifyCleanupWarning(capture),
+		"capacity": classifyCleanupWarning(capacity),
+		"removal":  classifyCleanupWarning(removal),
+	}
+	if classes["capture"] != CleanupWarningRecoveryCapture {
+		t.Errorf("capture class = %q, want %q", classes["capture"], CleanupWarningRecoveryCapture)
+	}
+	if classes["capacity"] != CleanupWarningRecoveryCapacity {
+		t.Errorf("capacity class = %q, want %q", classes["capacity"], CleanupWarningRecoveryCapacity)
+	}
+	if classes["removal"] != CleanupWarningFilesystem {
+		t.Errorf("removal class = %q, want %q", classes["removal"], CleanupWarningFilesystem)
+	}
+	seen := map[CleanupWarningClass]bool{}
+	for _, class := range classes {
+		if seen[class] {
+			t.Fatalf("class %q reused across distinct failure kinds: %+v", class, classes)
+		}
+		seen[class] = true
 	}
 }
 
