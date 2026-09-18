@@ -489,6 +489,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	tracker := &startupPhaseTracker{}
 	go watchStartupReadiness(ctx, stdout, tracker, ready.Load, livenessTimeout)
 	retentionGate := &retentionSweepGate{}
+	telemetryRetentionGate := &retentionSweepGate{}
 
 	// Single-instance lock (#23 AC3): a second `up` on the same instance root
 	// must fail fast with a clear message, not silently race the first.
@@ -1192,11 +1193,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// coalescing with the periodic 6h sweep via retentionGate so at most one
 	// ever runs at a time.
 	pf(stdout, "%s startup phase=retention-sweep status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#4373)")
-	telemetryRetentionConfig, telemetryErr := runStartupTelemetryRetention(stdout, tracker, l, setup)
-	if telemetryErr != nil {
-		pf(stderr, "error: prune retained telemetry: %v\n", telemetryErr)
+	telemetryRetentionConfig := configuredTelemetryRetention(setup)
+	if telemetryErr := reconcileStartupTelemetryRetention(stdout, tracker, l, setup); telemetryErr != nil {
+		pf(stderr, "error: reconcile retained telemetry: %v\n", telemetryErr)
 		return 1
 	}
+	pf(stdout, "%s startup phase=telemetry-retention-prune status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#5233)")
 
 	// Prune crash-abandoned orphan runs and run-creation staging directories
 	// before anything else touches the runs tree (#2035): a mid-Create crash's
@@ -1599,9 +1601,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-telemetryRetentionTicker.C:
-				err := runPeriodicTelemetryRetention(ctx, setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, journalGenerationCleanupErrors, now)
-				telemetryRetentionErrors.report(err)
-				migrationBackupCleanupErrors.report(sweepMigrationBackups(l, setup, now))
+				err := telemetryRetentionGate.run(func() error {
+					telemetryRetentionErrors.report(runPeriodicTelemetryRetention(ctx, setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, journalGenerationCleanupErrors, now))
+					migrationBackupCleanupErrors.report(sweepMigrationBackups(l, setup, now))
+					return nil
+				})
+				if err != nil && !errors.Is(err, errRetentionSweepAlreadyRunning) {
+					telemetryRetentionErrors.report(err)
+				}
 			}
 		}
 	}()
@@ -1760,10 +1767,20 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	// Now that the API is up and status/dashboard reads no longer block on
 	// it, run the broad retention sweep deferred above (#4373).
-	// startupRetentionSweepDone is always closed, whether or not readiness
-	// was actually reached, so the shutdown join below never blocks on a
-	// sweep that was never launched.
+	// The completion channels are always closed, whether or not readiness was
+	// reached, so shutdown never waits on a sweep that was never launched.
 	startupRetentionSweepDone := startDeferredRetentionSweep(ctx, l, setup, retentionGate, worktreeRetentionErrors, readyNow)
+	startupTelemetryRetentionSweepDone := startDeferredTelemetryRetentionSweep(
+		ctx,
+		l,
+		setup,
+		telemetryRetentionConfig,
+		telemetryRetentionGate,
+		telemetryRetentionErrors,
+		journalGenerationCleanupErrors,
+		migrationBackupCleanupErrors,
+		readyNow,
+	)
 	terminalCleanupRetryCtx, stopTerminalCleanupRetry := context.WithCancel(context.Background())
 	defer stopTerminalCleanupRetry()
 	terminalCleanupRetryDone := startTerminalCleanupRetry(terminalCleanupRetryCtx, cleanupRetries, terminalCleanupRetryErrors, readyNow)
@@ -1883,6 +1900,7 @@ daemonLoop:
 	<-storageHealthTickerDone
 	<-recoveryInventoryTickerDone
 	<-startupRetentionSweepDone
+	<-startupTelemetryRetentionSweepDone
 	<-mergedPRCostSweeps.tickerDone
 	<-startupMergedPRCostSweepDone
 	<-apiReadCacheLockSweepTickerDone

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -591,29 +592,81 @@ func runPeriodicTelemetryRetention(
 	return compactSchedulerRetention(ctx, config, db, log, cleanupErrors, now)
 }
 
-// runStartupTelemetryRetention keeps the startup phase, failure, and summary
-// sequencing together without growing the daemon's orchestration body.
-func runStartupTelemetryRetention(
-	stdout io.Writer,
-	tracker *startupPhaseTracker,
-	layout instance.Layout,
-	setup *schedulerSetup,
-) (instance.TelemetryRetentionConfig, error) {
+func configuredTelemetryRetention(setup *schedulerSetup) instance.TelemetryRetentionConfig {
 	config := instance.TelemetryRetentionConfig{}
 	if setup.Config.Telemetry.Retention != nil {
 		config = *setup.Config.Telemetry.Retention
 	}
-	var candidateCount int
-	var dryRun bool
-	err := runStartupPhase(stdout, tracker, "telemetry-retention-prune", "", func() error {
-		var pruneErr error
-		candidateCount, dryRun, pruneErr = pruneAndRecordTelemetryRetention(setup.InstanceLog, layout, config, setup.RollupDB, time.Now())
-		return pruneErr
+	return config
+}
+
+// reconcileStartupTelemetryRetention completes a pass that crossed the
+// durable prepare/delete/publish boundary before the previous daemon exited.
+// Starting a new scan is ordinary housekeeping and is deferred until the API
+// is ready; completing an already-prepared deletion remains crash recovery.
+func reconcileStartupTelemetryRetention(
+	stdout io.Writer,
+	tracker *startupPhaseTracker,
+	layout instance.Layout,
+	setup *schedulerSetup,
+) error {
+	var pass telemetryRetentionPass
+	var reconciled bool
+	err := runStartupPhase(stdout, tracker, "telemetry-retention-reconcile", "", func() error {
+		var reconcileErr error
+		pass, reconciled, reconcileErr = reconcilePendingTelemetryRetentionPass(
+			setup.InstanceLog,
+			layout,
+			setup.RollupDB,
+			writeTelemetryRetentionState,
+		)
+		return reconcileErr
 	})
-	if err == nil {
-		reportTelemetryPruned(stdout, candidateCount, dryRun, config.EnabledEffective())
+	if err == nil && reconciled {
+		reportTelemetryPruned(stdout, pass.CandidateCount, pass.DryRun, true)
 	}
-	return config, err
+	return err
+}
+
+// startDeferredTelemetryRetentionSweep launches the ordinary retention scan
+// only after readiness. The gate is shared with the periodic ticker, so a slow
+// immediate pass cannot overlap the next scheduled pass.
+func startDeferredTelemetryRetentionSweep(
+	ctx context.Context,
+	layout instance.Layout,
+	setup *schedulerSetup,
+	config instance.TelemetryRetentionConfig,
+	gate *retentionSweepGate,
+	retentionErrors *sweepErrorReporter,
+	cleanupErrors *sweepErrorReporter,
+	migrationBackupErrors *sweepErrorReporter,
+	ready bool,
+) <-chan struct{} {
+	done := make(chan struct{})
+	if !ready {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		err := gate.run(func() error {
+			retentionErrors.report(runPeriodicTelemetryRetention(
+				ctx,
+				setup.InstanceLog,
+				layout,
+				config,
+				setup.RollupDB,
+				cleanupErrors,
+				time.Now(),
+			))
+			migrationBackupErrors.report(sweepMigrationBackups(layout, setup, time.Now()))
+			return nil
+		})
+		if err != nil && !errors.Is(err, errRetentionSweepAlreadyRunning) {
+			retentionErrors.report(err)
+		}
+	}()
+	return done
 }
 
 // compactSchedulerRetention bounds the scheduler journal and rollup rows. A
