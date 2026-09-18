@@ -27,6 +27,13 @@
         "text": { "description": "Inline content scrubbed by the journal boundary.", "type": "string", "minLength": 1, "maxLength": 1048576 },
         "artifact": {
           "description": "Bounded reference to journal-retained content.",
+          "examples": [
+            {
+              "path": "artifacts/operator-message.txt",
+              "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 1
+            }
+          ],
           "allOf": [
             { "$ref": "artifact-pointer.schema.json" },
             {

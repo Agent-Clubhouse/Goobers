@@ -363,6 +363,22 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 // purpose is solely to prove every Go field has a schema counterpart (#2042):
 // DataSchema is the field that fixture would have caught before it shipped.
 func completeJournalEvent() journal.Event {
+	requestedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	expiresAt := requestedAt.Add(time.Hour)
+	request := apiv1.OperatorMessageRequest{
+		Schema:         apiv1.OperatorMessageRequestSchema,
+		RequestID:      "message-1",
+		IdempotencyKey: "operator-message-1",
+		TargetAddress:  "operator:primary",
+		PrincipalRef:   "github:user:42",
+		RequestedAt:    requestedAt,
+		ExpiresAt:      &expiresAt,
+		Purpose:        "approval",
+		Content: apiv1.OperatorMessageContent{
+			Artifact: pointer(completeArtifactPointer("artifacts/operator-message.json")),
+		},
+		DeliveryMode: "portal",
+	}
 	return journal.Event{
 		Schema:              "goobers.dev/journal/event/v1",
 		Seq:                 1,
@@ -449,6 +465,24 @@ func completeJournalEvent() journal.Event {
 			Status:      apiv1.NotificationDelivered, Unresolved: true,
 			ExternalReference: "delivery-1", Error: "none",
 		}),
+		OperatorMessageRequest: &request,
+		OperatorMessageAcknowledgement: pointer(apiv1.OperatorMessageAcknowledgement{
+			Schema:         apiv1.OperatorMessageAcknowledgementSchema,
+			RequestID:      request.RequestID,
+			IdempotencyKey: request.IdempotencyKey,
+			PrincipalRef:   request.PrincipalRef,
+			AcknowledgedAt: requestedAt.Add(time.Minute),
+		}),
+		OperatorMessageOutcome: pointer(apiv1.OperatorMessageOutcome{
+			Schema:         apiv1.OperatorMessageOutcomeSchema,
+			RequestID:      request.RequestID,
+			IdempotencyKey: request.IdempotencyKey,
+			CompletedAt:    requestedAt.Add(2 * time.Minute),
+			Status:         apiv1.OperatorMessageDelivered,
+			Code:           "delivered",
+			Detail:         "Delivered to the selected operator.",
+			Request:        &request,
+		}),
 		Agent: &journal.AgentProvenance{
 			Schema: "goobers.dev/journal/agent/v1", ID: "worker", ParentID: "coordinator",
 			RunID: "run-123", Stage: "implement", Attempt: 2, Plugin: "copilot",
@@ -510,6 +544,9 @@ var completenessOmissions = map[reflect.Type]map[string]string{
 	},
 	reflect.TypeOf(apiv1.RepoRef{}): {
 		"Checkout": "workspace materialization config is intentionally projected out by RepoRef.EnvelopeRef",
+	},
+	reflect.TypeOf(apiv1.OperatorMessageContent{}): {
+		"Text": "content permits exactly one variant; the complete event fixture exercises the bounded artifact-reference variant",
 	},
 }
 
