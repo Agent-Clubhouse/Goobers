@@ -16,7 +16,7 @@ import (
 func TestTelemetryPruneAcknowledgesTriggerBeforeDeletingItsJournal(t *testing.T) {
 	for _, mode := range []string{"normal", "dry-run", "interrupted", "mismatched"} {
 		t.Run(mode, func(t *testing.T) {
-			layout := instance.NewLayout(t.TempDir())
+			layout := writeRecoveryPolicyInstance(t, 0)
 			if err := os.MkdirAll(layout.SchedulerDir(), 0700); err != nil {
 				t.Fatal(err)
 			}

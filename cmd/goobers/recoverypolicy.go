@@ -15,14 +15,14 @@ import (
 // instance-wide inventory. It resolves the operator's policy at the point of
 // use so raising maxSnapshots unblocks a live daemon without a restart.
 func readConfiguredRecoveryInventory(ctx context.Context, layout instance.Layout) ([]recovery.InventoryEntry, int, error) {
-	policy, origin := resolveRecoveryPolicy(layout, nil)
-	limit := policy.MaxSnapshotsEffective()
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return nil, 0, fmt.Errorf("load recovery inventory configuration: %w", err)
+	}
+	limit := cfg.Retention.RecoveryEffective().MaxSnapshotsEffective()
 	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), limit)
 	if err != nil {
 		err = recoveryInventoryReadError(err, limit)
-		if origin.LoadErr != nil {
-			err = fmt.Errorf("recovery policy resolved from %s because instance configuration is unavailable: %w", origin.Source, errors.Join(origin.LoadErr, err))
-		}
 		return nil, limit, err
 	}
 	return entries, limit, nil
