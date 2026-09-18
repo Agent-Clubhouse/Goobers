@@ -162,16 +162,17 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 	if repaired {
 		pf(stderr, "warning: corrected invalid worktree retention grace state; enforcement deferred until %s\n", state.EnforceAt.UTC().Format(time.RFC3339))
 	}
-	dryRun := cfg.DryRun || retentionPassIsDryRun(state, cfg.ImmediateFirstEnable(), now)
+	resolvedDryRun := resolveWorktreeRetentionDryRun(cfg, state, now)
+	dryRun := resolvedDryRun.combined()
 
 	managers, runsByRoot, err := retentionManagers(l, setup)
 	if err != nil {
 		return err
 	}
 	recoveryErr := errors.Join(
-		retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, dryRun, stdout, stderr),
+		retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, dryRun, resolvedDryRun.operator, resolvedDryRun.grace, stdout, stderr),
 		reapConfiguredRecovery(ctx, l, cfg, dryRun, stdout, stderr),
-		reconcileIncompleteRecovery(ctx, l, cfg, dryRun, stdout, stderr),
+		reconcileIncompleteRecovery(ctx, l, cfg, resolvedDryRun.operator, resolvedDryRun.grace, stdout, stderr),
 	)
 	protectedBranches, err := retentionProtectedBranches(runsByRoot, setup)
 	if err != nil {

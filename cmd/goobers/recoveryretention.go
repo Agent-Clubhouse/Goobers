@@ -47,23 +47,24 @@ func reapConfiguredRecovery(ctx context.Context, layout instance.Layout, cfg ins
 // entry points that pass has: the startup sweep deferred until API readiness
 // and the periodic ticker.
 //
-// dryRun is the pass's already-resolved decision, exactly as for
-// reapConfiguredRecovery: during a first-enable grace window this reports what
-// it would reclaim instead of reclaiming it. Capacity pressure does NOT wait
-// for that window — the reservation path's own reclamation reconciles
-// unconditionally when a cleanup is about to be refused — so an already-wedged
-// instance still heals at its first refused cleanup after upgrade (#5354).
-func reconcileIncompleteRecovery(ctx context.Context, layout instance.Layout, cfg instance.RetentionConfig, dryRun bool, stdout, stderr io.Writer) error {
+// operatorDryRun is the operator's explicit retention.dryRun alone, not the
+// pass's combined decision: an incomplete reservation holds nothing an
+// operator could review, so the first-enable grace window does not apply to
+// it (#5354) — an already-wedged instance heals in full on its first pass
+// after upgrade rather than waiting out the window one refused publish at a
+// time. graceActive is passed through only so a successful deletion can note
+// when the grace window would otherwise have held it.
+func reconcileIncompleteRecovery(ctx context.Context, layout instance.Layout, cfg instance.RetentionConfig, operatorDryRun, graceActive bool, stdout, stderr io.Writer) error {
 	if !cfg.EnabledEffective() && !cfg.DryRun {
 		return nil
 	}
 	policy, _ := resolveRecoveryPolicy(layout, &instance.Config{Retention: cfg})
 	limit := policy.MaxSnapshotsEffective()
 	root := filepath.Join(layout.Root, "recovery")
-	results, err := recovery.ReconcileIncompleteReservations(ctx, root, limit, recovery.IncompleteReservationGrace, !dryRun)
+	results, err := recovery.ReconcileIncompleteReservations(ctx, root, limit, recovery.IncompleteReservationGrace, !operatorDryRun)
 	err = recoveryInventoryReadError(err, limit)
 	for _, result := range results {
-		reportIncompleteRecovery(result, stdout, stderr)
+		reportIncompleteRecovery(result, graceActive, stdout, stderr)
 	}
 	return err
 }
@@ -71,7 +72,7 @@ func reconcileIncompleteRecovery(ctx context.Context, layout instance.Layout, cf
 // A reservation younger than the grace window may be a publish still writing
 // its archive, so it is neither a candidate nor a failure: it is reported as
 // the capacity it still legitimately holds.
-func reportIncompleteRecovery(result recovery.ReconcileResult, stdout, stderr io.Writer) {
+func reportIncompleteRecovery(result recovery.ReconcileResult, graceActive bool, stdout, stderr io.Writer) {
 	switch {
 	case result.Err != nil:
 		pf(stderr, "warning: incomplete recovery reservation cleanup failed path=%q: %v\n", result.Path, result.Err)
@@ -80,6 +81,10 @@ func reportIncompleteRecovery(result recovery.ReconcileResult, stdout, stderr io
 	case result.DryRun:
 		pf(stdout, "retention candidate kind=incomplete-recovery-reservation path=%q\n", result.Path)
 	case result.Deleted:
+		if graceActive {
+			pf(stdout, "retention deleted kind=incomplete-recovery-reservation path=%q (grace window does not apply: no recoverable content)\n", result.Path)
+			return
+		}
 		pf(stdout, "retention deleted kind=incomplete-recovery-reservation path=%q\n", result.Path)
 	}
 }
