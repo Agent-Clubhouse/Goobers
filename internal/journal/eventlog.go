@@ -53,6 +53,15 @@ func marshalEvent(ev Event) ([]byte, error) {
 	if ev.Type == EventNotificationReceipt && ev.NotificationReceipt == nil {
 		return nil, fmt.Errorf("%s requires a notification receipt", EventNotificationReceipt)
 	}
+	if ev.Type == EventOperatorMessageRequested && ev.OperatorMessageRequest == nil {
+		return nil, fmt.Errorf("%s requires an operator message request", EventOperatorMessageRequested)
+	}
+	if ev.Type == EventOperatorMessageAcknowledged && ev.OperatorMessageAcknowledgement == nil {
+		return nil, fmt.Errorf("%s requires an operator message acknowledgement", EventOperatorMessageAcknowledged)
+	}
+	if ev.Type == EventOperatorMessageOutcome && ev.OperatorMessageOutcome == nil {
+		return nil, fmt.Errorf("%s requires an operator message outcome", EventOperatorMessageOutcome)
+	}
 	if ev.Type == EventAgentLifecycle || ev.Type == EventAgentMessage {
 		if err := ValidateAgentEvent(ev); err != nil {
 			return nil, err

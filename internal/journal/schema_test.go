@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 )
 
@@ -112,6 +114,17 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			ID: "message-1", SenderID: "worker-1", RecipientID: "coordinator",
 			OccurredAt: fixedClock()(), Purpose: "completion",
 		}},
+		{Type: EventOperatorMessageRequested, OperatorMessageRequest: ptr(testOperatorMessageRequest("message-1", "message-key"))},
+		{Type: EventOperatorMessageAcknowledged, OperatorMessageAcknowledgement: &apiv1.OperatorMessageAcknowledgement{
+			Schema: apiv1.OperatorMessageAcknowledgementSchema, RequestID: "message-1",
+			IdempotencyKey: "message-key", PrincipalRef: "user:operator",
+			AcknowledgedAt: fixedClock()().Add(time.Minute),
+		}},
+		{Type: EventOperatorMessageOutcome, OperatorMessageOutcome: &apiv1.OperatorMessageOutcome{
+			Schema: apiv1.OperatorMessageOutcomeSchema, RequestID: "message-1",
+			IdempotencyKey: "message-key", CompletedAt: fixedClock()().Add(2 * time.Minute),
+			Status: apiv1.OperatorMessageDelivered,
+		}},
 	} {
 		if err := run.Append(ev); err != nil {
 			t.Fatalf("Append %s: %v", ev.Type, err)
@@ -184,6 +197,9 @@ func TestSchemaRejectsMalformedEvent(t *testing.T) {
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"gate.overridden","gate":"review","verdict":"pass","target":"","actor":"operator","rationale":"manual inspection","status":"escalated","workflowVersion":1,"workflowDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"notification.requested"}`),
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"notification.delivery.receipt"}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"operator-message.requested"}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"operator-message.acknowledged"}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"operator-message.outcome"}`),
 	}
 	for i, b := range bad {
 		if err := v.ValidateJSON("journal-event.schema.json", b); err == nil {
@@ -199,7 +215,10 @@ func TestMarshalEventRejectsGateOverrideWithoutTarget(t *testing.T) {
 }
 
 func TestMarshalEventRejectsNotificationWithoutTypedPayload(t *testing.T) {
-	for _, eventType := range []EventType{EventNotificationRequested, EventNotificationReceipt} {
+	for _, eventType := range []EventType{
+		EventNotificationRequested, EventNotificationReceipt, EventOperatorMessageRequested,
+		EventOperatorMessageAcknowledged, EventOperatorMessageOutcome,
+	} {
 		if _, err := marshalEvent(Event{Type: eventType}); err == nil {
 			t.Fatalf("marshalEvent accepted %s without its typed payload", eventType)
 		}

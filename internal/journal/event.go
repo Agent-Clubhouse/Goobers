@@ -128,6 +128,12 @@ const (
 	EventNotificationRequested EventType = "notification.requested"
 	// EventNotificationReceipt records one sink attempt or suppression result.
 	EventNotificationReceipt EventType = "notification.delivery.receipt"
+	// EventOperatorMessageRequested records an accepted operator message.
+	EventOperatorMessageRequested EventType = "operator-message.requested"
+	// EventOperatorMessageAcknowledged records operator acknowledgement.
+	EventOperatorMessageAcknowledged EventType = "operator-message.acknowledged"
+	// EventOperatorMessageOutcome records a terminal delivery or rejection.
+	EventOperatorMessageOutcome EventType = "operator-message.outcome"
 	// EventAgentLifecycle records structured nested-agent state transitions.
 	EventAgentLifecycle EventType = "agent.lifecycle"
 	// EventAgentMessage records orchestration-relevant peer communication
@@ -459,6 +465,12 @@ type Event struct {
 	NotificationRequest *apiv1.NotificationRequest `json:"notificationRequest,omitempty"`
 	// NotificationReceipt is the typed payload on notification.delivery.receipt.
 	NotificationReceipt *apiv1.NotificationReceipt `json:"notificationReceipt,omitempty"`
+	// OperatorMessageRequest is the typed payload on operator-message.requested.
+	OperatorMessageRequest *apiv1.OperatorMessageRequest `json:"operatorMessageRequest,omitempty"`
+	// OperatorMessageAcknowledgement is the typed payload on operator-message.acknowledged.
+	OperatorMessageAcknowledgement *apiv1.OperatorMessageAcknowledgement `json:"operatorMessageAcknowledgement,omitempty"`
+	// OperatorMessageOutcome is the typed payload on operator-message.outcome.
+	OperatorMessageOutcome *apiv1.OperatorMessageOutcome `json:"operatorMessageOutcome,omitempty"`
 	// Agent carries normalized nested-agent provenance on agent events.
 	Agent *AgentProvenance `json:"agent,omitempty"`
 	// PeerMessage carries scrubbed coordination metadata, never raw content.
@@ -598,7 +610,8 @@ func (e Event) IsConformanceNormative() bool {
 		// Spans carry live-harness transcripts (LLM output); structural only
 		// per §3.3, never content-compared across runners.
 		return false
-	case EventNotificationRequested, EventNotificationReceipt:
+	case EventNotificationRequested, EventNotificationReceipt,
+		EventOperatorMessageRequested, EventOperatorMessageAcknowledged, EventOperatorMessageOutcome:
 		// Output transports are deployment-side effects, not deterministic
 		// workflow-machine transitions.
 		return false
