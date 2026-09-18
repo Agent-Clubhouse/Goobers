@@ -8,26 +8,28 @@
   "required": ["repository", "commitSha"],
   "properties": {
     "repository": {
+      "description": "Canonical repository identity for the selected workspace revision.",
       "type": "object",
       "additionalProperties": false,
       "required": ["provider", "owner", "name"],
       "properties": {
-        "provider": {"type": "string", "enum": ["github", "ado", "gitea"]},
-        "url": {"type": "string"},
-        "owner": {"type": "string", "minLength": 1},
-        "project": {"type": "string"},
-        "name": {"type": "string", "minLength": 1},
-        "id": {"type": "string"}
+        "provider": {"description": "Provider kind for the repository identity.", "type": "string", "enum": ["github", "ado", "gitea"]},
+        "url": {"description": "Service URL used to distinguish hosts when required.", "type": "string"},
+        "owner": {"description": "Repository owner or organization name.", "type": "string", "minLength": 1},
+        "project": {"description": "Azure DevOps project containing the repository.", "type": "string"},
+        "name": {"description": "Repository name, excluding any branch or checkout policy.", "type": "string", "minLength": 1},
+        "id": {"description": "Provider-native repository identifier, if the provider exposes one.", "type": "string"}
       }
     },
-    "commitSha": {"$ref": "#/$defs/sha"},
-    "sourceRef": {"type": "string"},
-    "sourceId": {"type": "string"},
-    "baseRepository": {"$ref": "#/properties/repository"},
-    "baseSha": {"$ref": "#/$defs/sha"}
+    "commitSha": {"description": "Full lowercase Git object ID for the selected revision.", "$ref": "#/$defs/sha"},
+    "sourceRef": {"description": "Optional source ref provenance for the selected revision.", "type": "string"},
+    "sourceId": {"description": "Optional source identifier provenance for the selected revision.", "type": "string"},
+    "baseRepository": {"description": "Optional canonical base repository identity that the selected revision is bound to.", "$ref": "#/properties/repository"},
+    "baseSha": {"description": "Optional full lowercase Git object ID for the base revision.", "$ref": "#/$defs/sha"}
   },
   "$defs": {
     "sha": {
+      "description": "A full lowercase Git SHA-1 or SHA-256 object ID.",
       "type": "string",
       "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
     }
