@@ -7,6 +7,8 @@ import (
 	"unicode/utf8"
 )
 
+// OperatorMessageRequestSchema and the accompanying constants identify the
+// versioned operator message contracts and their validation bounds.
 const (
 	OperatorMessageRequestSchema         = "goobers.dev/operator-message/request/v1"
 	OperatorMessageAcknowledgementSchema = "goobers.dev/operator-message/acknowledgement/v1"
@@ -108,6 +110,8 @@ func (a OperatorMessageAcknowledgement) Validate() error {
 // OperatorMessageOutcomeStatus is a terminal delivery disposition.
 type OperatorMessageOutcomeStatus string
 
+// OperatorMessageDelivered and the accompanying constants identify terminal
+// delivery dispositions.
 const (
 	OperatorMessageDelivered OperatorMessageOutcomeStatus = "delivered"
 	OperatorMessageFailed    OperatorMessageOutcomeStatus = "failed"
@@ -167,6 +171,8 @@ func exceedsRunes(value string, limit int) bool {
 // OperatorMessageState is the replayed lifecycle state.
 type OperatorMessageState string
 
+// OperatorMessageAccepted and OperatorMessageAcknowledged identify non-terminal
+// durable request states.
 const (
 	OperatorMessageAccepted     OperatorMessageState = "accepted"
 	OperatorMessageAcknowledged OperatorMessageState = "acknowledged"

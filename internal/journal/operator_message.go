@@ -12,6 +12,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// ErrOperatorMessageNotFound and ErrOperatorMessageTerminal identify invalid
+// operator message lifecycle transitions.
 var (
 	ErrOperatorMessageNotFound = errors.New("operator message request not found")
 	ErrOperatorMessageTerminal = errors.New("operator message request is terminal")
