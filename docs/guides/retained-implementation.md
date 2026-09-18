@@ -17,7 +17,14 @@ The retention sweep requires the source run to be terminal and its journal
 writer idle. It can retire an archive after explicit, trusted operator
 abandonment, after the bounded retention window, or after verified landing of
 its restored content. The deadline path also preserves thirty days after the
-source run finishes, even when its earlier capture deadline has elapsed.
+source run finishes, even when its earlier capture deadline has elapsed. The
+sweep also applies the same contentless justifications — `stored-no-diff`,
+`bookkeeping-only`, and `superseded-duplicate`, described under
+[Reclamation under capacity pressure](#reclamation-under-capacity-pressure)
+below — as on-demand reclamation, so the two paths cannot disagree about what
+counts as an entry holding nothing worth keeping; a contentless entry is
+retired even inside the retain-until floor, and the sweep journals the same
+`recovery-reclaimed` annotation the on-demand hook does.
 
 Early merge-based retirement requires all of the following:
 
