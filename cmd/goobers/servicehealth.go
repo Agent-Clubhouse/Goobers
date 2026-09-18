@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 // serviceHealthInterval is #5244's six-hour cadence. Var, not const, so tests
@@ -18,7 +19,9 @@ var serviceHealthInterval = 6 * time.Hour
 // serviceHealthSchemaVersion versions the record's payload shape. Consumers
 // read it before interpreting any other field, so a later field addition is a
 // version bump rather than a silent change of meaning for an older reader.
-const serviceHealthSchemaVersion = 1
+//
+// 2 adds recoveryInventory (#4911 AC5).
+const serviceHealthSchemaVersion = 2
 
 // serviceHealthUnknown is the explicit marker for a field whose real value
 // could not be observed.
@@ -52,6 +55,11 @@ type serviceHealthObservation struct {
 	UncleanRestarts int
 	WindowStart     time.Time
 	WindowCoverage  string
+	// RecoveryInventory is shared recovery-snapshot occupancy at the moment
+	// of observation (#4911 AC5). Nil when this reader has no sample — an
+	// offline or pre-first-sample record declines to answer rather than
+	// reporting an empty inventory it never measured.
+	RecoveryInventory *readservice.RecoveryInventoryStatus
 }
 
 // Window coverage values. An incomplete history stays explicit rather than
@@ -68,7 +76,7 @@ const (
 // explicit unknown rather than failing: a diagnostic record that refuses to be
 // written when one field is unavailable reports nothing at all, which is the
 // opposite of what it exists for.
-func observeServiceHealth(root string, identity *daemonIdentity, log *journal.InstanceLog, now time.Time) serviceHealthObservation {
+func observeServiceHealth(root string, identity *daemonIdentity, log *journal.InstanceLog, inventory recoveryInventorySampler, now time.Time) serviceHealthObservation {
 	obs := serviceHealthObservation{
 		ObservedAt:     now.UTC(),
 		MachineName:    serviceHealthUnknown,
@@ -90,6 +98,9 @@ func observeServiceHealth(root string, identity *daemonIdentity, log *journal.In
 	}
 	if identity != nil {
 		obs.StartedAt = identity.StartedAt.UTC()
+	}
+	if inventory != nil {
+		obs.RecoveryInventory = inventory()
 	}
 	if log != nil {
 		if events, err := journal.ReadInstanceLog(log.Dir()); err == nil {
@@ -155,17 +166,46 @@ func serviceHealthPayload(obs serviceHealthObservation) map[string]any {
 			payload["observationWindowStart"] = obs.WindowStart.Format(time.RFC3339Nano)
 		}
 	}
+	if obs.RecoveryInventory != nil {
+		payload["recoveryInventory"] = recoveryInventoryHealthPayload(obs.RecoveryInventory)
+	}
+	return payload
+}
+
+// recoveryInventorySampler supplies the most recent occupancy reading.
+type recoveryInventorySampler func() *readservice.RecoveryInventoryStatus
+
+// recoveryInventoryHealthPayload renders occupancy into the health record.
+// The state, not just the counts, is recorded: a reader comparing records
+// months apart should not have to re-derive the high-water threshold that was
+// in force when each one was written.
+func recoveryInventoryHealthPayload(status *readservice.RecoveryInventoryStatus) map[string]any {
+	payload := map[string]any{
+		"state":            status.State,
+		"used":             status.Used,
+		"limit":            status.Limit,
+		"unreadable":       status.Unreadable,
+		"highWaterPercent": status.HighWaterPercent,
+		"inventoryRoot":    status.InventoryRoot,
+		"policySource":     status.PolicySource,
+	}
+	if status.EarliestRetainUntil != nil {
+		payload["earliestRetainUntil"] = status.EarliestRetainUntil.Format(time.RFC3339Nano)
+	}
+	if status.Error != "" {
+		payload["error"] = status.Error
+	}
 	return payload
 }
 
 // appendServiceHealth records one observation into the instance diagnostic log.
-func appendServiceHealth(root string, identity *daemonIdentity, log *journal.InstanceLog, now time.Time) error {
+func appendServiceHealth(root string, identity *daemonIdentity, log *journal.InstanceLog, inventory recoveryInventorySampler, now time.Time) error {
 	if log == nil {
 		return nil
 	}
 	return log.Append(journal.Event{
 		Type:   journal.EventServiceHealth,
-		Runner: serviceHealthPayload(observeServiceHealth(root, identity, log, now)),
+		Runner: serviceHealthPayload(observeServiceHealth(root, identity, log, inventory, now)),
 	})
 }
 
@@ -183,6 +223,7 @@ func emitServiceHealth(
 	root string,
 	identity *daemonIdentity,
 	log *journal.InstanceLog,
+	inventory recoveryInventorySampler,
 	interval time.Duration,
 	now func() time.Time,
 	done chan<- struct{},
@@ -195,7 +236,7 @@ func emitServiceHealth(
 	}
 	// Startup record first, before any tick: an instance that is restarted more
 	// often than the interval would otherwise never emit one at all.
-	_ = appendServiceHealth(root, identity, log, now())
+	_ = appendServiceHealth(root, identity, log, inventory, now())
 	if interval <= 0 {
 		return
 	}
@@ -211,7 +252,7 @@ func emitServiceHealth(
 			if ctx.Err() != nil {
 				return
 			}
-			_ = appendServiceHealth(root, identity, log, now())
+			_ = appendServiceHealth(root, identity, log, inventory, now())
 		}
 	}
 }
