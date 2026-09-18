@@ -396,8 +396,33 @@ func configReloadErrorMessage(err error) string {
 // goober instructions and skill bodies, and every file in a goober assets
 // directory; unrelated config-tree churn remains excluded.
 func configDirectoryDigest(root string) (string, error) {
+	return configDirectoryDigestScoped(root, "")
+}
+
+// configDirectoryDigestForGaggle fingerprints the config surface visible to
+// one gaggle. Sibling gaggle trees are independent hot-reload units and must
+// not invalidate deterministic stages already running under this generation.
+func configDirectoryDigestForGaggle(root, gaggle string) (string, error) {
+	if strings.TrimSpace(gaggle) == "" {
+		return configDirectoryDigest(root)
+	}
+	return configDirectoryDigestScoped(root, gaggle)
+}
+
+func configDirectoryDigestScoped(root, gaggle string) (string, error) {
 	hash := sha256.New()
 	contentPaths := make(map[string]struct{})
+	includePath := func(path string) (bool, error) {
+		if gaggle == "" {
+			return true, nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return false, err
+		}
+		parts := strings.Split(filepath.Clean(relative), string(filepath.Separator))
+		return len(parts) < 2 || parts[0] != "gaggles" || parts[1] == gaggle, nil
+	}
 	writeEntry := func(path string, mode fs.FileMode, content []byte) error {
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
@@ -419,6 +444,16 @@ func configDirectoryDigest(root string) (string, error) {
 		return filepath.WalkDir(tree, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
+			}
+			included, err := includePath(path)
+			if err != nil {
+				return err
+			}
+			if !included {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 			name := entry.Name()
 			// Handle asset loading/hashing first
