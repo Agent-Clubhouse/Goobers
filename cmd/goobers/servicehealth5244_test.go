@@ -52,7 +52,7 @@ func TestServiceHealthEmitsAtStartupThenOnCadence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
-	go emitServiceHealth(ctx, root, identity, log, 0, nil, done)
+	go emitServiceHealth(ctx, root, identity, log, nil, 0, nil, done)
 	<-done
 
 	health := readServiceHealthEvents(t, log)
@@ -64,7 +64,7 @@ func TestServiceHealthEmitsAtStartupThenOnCadence(t *testing.T) {
 	// duplicate periodic records for a single tick.
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	done2 := make(chan struct{})
-	go emitServiceHealth(ctx2, root, identity, log, 5*time.Millisecond, nil, done2)
+	go emitServiceHealth(ctx2, root, identity, log, nil, 5*time.Millisecond, nil, done2)
 
 	deadline := time.Now().Add(10 * time.Second)
 	for len(readServiceHealthEvents(t, log)) < 4 {
@@ -101,7 +101,7 @@ func TestServiceHealthCadenceIsSixHours(t *testing.T) {
 func TestServiceHealthRecordIsFindableWithoutARunID(t *testing.T) {
 	log := openTestInstanceLog(t)
 	identity := &daemonIdentity{StartedAt: time.Unix(1_700_000_000, 0).UTC()}
-	if err := appendServiceHealth(t.TempDir(), identity, log, time.Unix(1_700_003_600, 0)); err != nil {
+	if err := appendServiceHealth(t.TempDir(), identity, log, nil, time.Unix(1_700_003_600, 0)); err != nil {
 		t.Fatalf("appendServiceHealth: %v", err)
 	}
 
@@ -134,7 +134,7 @@ func TestServiceHealthRecordIsFindableWithoutARunID(t *testing.T) {
 func TestServiceHealthKeepsMissingIdentityExplicit(t *testing.T) {
 	log := openTestInstanceLog(t)
 	// A root with no durable identity file.
-	payload := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, log, time.Unix(1_700_000_000, 0)))
+	payload := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, log, nil, time.Unix(1_700_000_000, 0)))
 
 	if got := payload["instanceId"]; got != serviceHealthUnknown {
 		t.Errorf("instanceId = %v, want %q", got, serviceHealthUnknown)
@@ -159,7 +159,7 @@ func TestServiceHealthKeepsMissingIdentityExplicit(t *testing.T) {
 func TestServiceHealthDistinguishesCoveredEmptyWindowFromUnknown(t *testing.T) {
 	// Covered and empty: the log is readable and contains no dirty restarts.
 	log := openTestInstanceLog(t)
-	covered := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, log, time.Now()))
+	covered := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, log, nil, time.Now()))
 	if got := covered["windowCoverage"]; got != serviceHealthWindowComplete {
 		t.Fatalf("windowCoverage = %v, want %q", got, serviceHealthWindowComplete)
 	}
@@ -169,7 +169,7 @@ func TestServiceHealthDistinguishesCoveredEmptyWindowFromUnknown(t *testing.T) {
 
 	// Unreadable: the count must be ABSENT, not zero, or a covered empty window
 	// and an unmeasured one would look identical.
-	unknown := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, nil, time.Now()))
+	unknown := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, nil, nil, time.Now()))
 	if got := unknown["windowCoverage"]; got != serviceHealthWindowUnknown {
 		t.Errorf("windowCoverage = %v, want %q", got, serviceHealthWindowUnknown)
 	}
@@ -192,7 +192,7 @@ func TestServiceHealthCountsObservedUncleanRestarts(t *testing.T) {
 		t.Fatalf("append started: %v", err)
 	}
 
-	payload := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, log, time.Now()))
+	payload := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, log, nil, time.Now()))
 	if got := payload["observedUncleanRestarts"]; got != 2 {
 		t.Errorf("observedUncleanRestarts = %v, want 2", got)
 	}
@@ -207,7 +207,7 @@ func TestServiceHealthCancellationStopsCleanly(t *testing.T) {
 	log := openTestInstanceLog(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go emitServiceHealth(ctx, t.TempDir(), nil, log, time.Hour, nil, done)
+	go emitServiceHealth(ctx, t.TempDir(), nil, log, nil, time.Hour, nil, done)
 	cancel()
 	select {
 	case <-done:
@@ -219,11 +219,11 @@ func TestServiceHealthCancellationStopsCleanly(t *testing.T) {
 // TestServiceHealthSurvivesAnUnwritableLog proves the emitter never becomes the
 // reason a daemon fails: diagnostic recording is best-effort by construction.
 func TestServiceHealthSurvivesAnUnwritableLog(t *testing.T) {
-	if err := appendServiceHealth(t.TempDir(), nil, nil, time.Now()); err != nil {
+	if err := appendServiceHealth(t.TempDir(), nil, nil, nil, time.Now()); err != nil {
 		t.Fatalf("appendServiceHealth with no log = %v, want nil", err)
 	}
 	// A root path that does not exist must not panic the observation either.
-	_ = serviceHealthPayload(observeServiceHealth(filepath.Join(t.TempDir(), "nope"), nil, nil, time.Now()))
+	_ = serviceHealthPayload(observeServiceHealth(filepath.Join(t.TempDir(), "nope"), nil, nil, nil, time.Now()))
 	if _, err := os.Stat(filepath.Join(t.TempDir(), "nope")); !os.IsNotExist(err) {
 		t.Fatalf("precondition: the missing root should not exist: %v", err)
 	}
