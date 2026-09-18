@@ -49,9 +49,10 @@ func TestPrioritizeAbandonedRecoveryUsesRenewedRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err = prioritizeAbandonedRecovery(entries, events)
-	if err != nil {
-		t.Fatal(err)
+	var classifyFailures error
+	entries = prioritizeAbandonedRecovery(entries, events, &classifyFailures)
+	if classifyFailures != nil {
+		t.Fatal(classifyFailures)
 	}
 	if len(entries) != 2 || entries[0].RecordPath != abandonedPath {
 		t.Fatalf("abandoned recovery was not prioritized: %#v", entries)
