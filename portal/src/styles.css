@@ -7359,12 +7359,12 @@ code,
   text-decoration: none;
 }
 
-.artifact-access-note {
+.artifact-actions {
   align-self: center;
-  color: var(--muted);
-  font-size: var(--font-meta);
-  font-style: italic;
-  white-space: nowrap;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-self: start;
 }
 
 .artifact-row > .artifact-content,
@@ -7690,7 +7690,7 @@ code,
     grid-column: 1;
   }
 
-  .artifact-access-note {
+  .artifact-actions {
     justify-self: start;
   }
 
