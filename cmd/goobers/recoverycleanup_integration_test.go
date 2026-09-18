@@ -229,17 +229,19 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 		if terminal {
 			name = "standalone-terminal"
 		}
-		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false, false, false, "main") })
+		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false, false, false, false, "main") })
 	}
-	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true, false, false, "main") })
-	t.Run("abandoned-preparation-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, false, "main") })
-	t.Run("abandoned-preparation-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, true, false, "main") })
-	t.Run("abandoned-preparation-missing-record", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, true, "main") })
-	t.Run("master-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, "master") })
-	t.Run("slash-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, "release/2026.09") })
+	t.Run("committed-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, true, "main") })
+	t.Run("committed-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, false, false, true, "main") })
+	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true, false, false, false, "main") })
+	t.Run("abandoned-preparation-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, false, false, "main") })
+	t.Run("abandoned-preparation-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, true, false, false, "main") })
+	t.Run("abandoned-preparation-missing-record", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, true, false, "main") })
+	t.Run("master-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, false, "master") })
+	t.Run("slash-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, false, "release/2026.09") })
 }
 
-func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, abandoned, interruptRecord bool, baseBranch string) {
+func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, abandoned, interruptRecord, commitCurrent bool, baseBranch string) {
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -281,6 +283,10 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	}
 	if err := os.WriteFile(filepath.Join(workspace.Path, "implementation.txt"), []byte("recover me"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if commitCurrent {
+		recoveryCLIGit(t, workspace.Path, "add", "implementation.txt")
+		recoveryCLIGit(t, workspace.Path, "commit", "-m", "Implement feature")
 	}
 	if abandoned {
 		prepared, err := recovery.PreparedRestoreBranch(runID)
@@ -367,6 +373,12 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	entries, err := os.ReadDir(filepath.Join(layout.Root, "recovery"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if commitCurrent && !terminal {
+		if len(entries) != 0 {
+			t.Fatalf("committed intermediate stage created %d recovery entries, want none", len(entries))
+		}
+		return
 	}
 	var retained recovery.Record
 	for _, entry := range entries {
