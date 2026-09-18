@@ -95,3 +95,52 @@ not delete recovery directories by hand. Temporarily raise
 inspection or exact `recovery-abandon` operation, and let configured retention
 remove only records whose ownership and retention checks succeed. Inventory
 overflow returns no partial result and never removes existing records.
+
+### Incomplete reservations
+
+A publish reserves its directory before it writes anything into it, so a
+crash, a kill or a lost machine can leave a reservation holding no
+`record.json` — typically just `.publish.lock` and `snapshot.bundle.lock`.
+Such a directory counts toward `maxSnapshots` like any other entry: unknown
+and partial entries are never silently discounted, because capacity has to
+reflect what is actually on disk.
+
+An incomplete reservation is reclaimed automatically, and operators do not
+delete it by hand:
+
+- For the first hour after its newest file was written it is treated as a
+  publish that may still be in flight. An identity-matching retry reuses that
+  exact directory and completes it, which is how an interrupted publish
+  resumes; until then the reservation is reported and left alone, and it keeps
+  its slot.
+- After that it is debris. It carries no record, so it has no run, ref or
+  repository identity and nothing can be restored from it — not even when it
+  holds a bundle, since the bytes cannot be attributed to anything. The
+  configured retention pass reclaims it, reporting
+  `retention candidate kind=incomplete-recovery-reservation` while the sweep
+  is in dry run or inside its first-enable grace window and
+  `retention deleted kind=incomplete-recovery-reservation` once enforcing.
+- Capacity pressure does not wait for that pass. When a reservation is about
+  to be refused for a full inventory, stale incomplete reservations are
+  reconciled first — before the landing-proof eviction hook, and independent
+  of the retention sweep's dry-run and grace-window gating — and the
+  reservation is retried. An instance whose inventory has already filled with
+  this debris therefore heals at its first refused cleanup after upgrade, with
+  no operator action and no manual quarantine. Reclamation also works while
+  the directory holds more entries than the cap, which is the state that makes
+  every other reader refuse.
+
+Only Goobers' own debris is reclaimable this way. A directory whose name is
+not a reservation identity, or that holds any file other than the known
+reservation files, is evidence: it is left in place and keeps its slot until
+an operator decides otherwise. A reservation holding a `record.json` is never
+touched by reconciliation whatever its state — retirement, expiry and
+eviction govern published records.
+
+One incomplete reservation cannot fail unrelated work. A cleanup asking about
+its own identity — the abandoned-preparation handoff — reads the inventory
+tolerantly and proceeds beside debris it can never match. The strict,
+all-or-nothing read is kept for callers asking whether recovery state exists
+at all, where an incomplete scan must never be mistaken for absence:
+`recovery-abandon`, snapshot selection and viewing, custody pruning, and the
+publication API.
