@@ -30,6 +30,8 @@ type WorkspaceRevision struct {
 	BaseSHA        string              `json:"baseSha,omitempty"`
 }
 
+// ValidateCommitSHA ensures the SHA is a full lowercase 40- or 64-character
+// hexadecimal object ID.
 func ValidateCommitSHA(sha string) error {
 	if len(sha) != 40 && len(sha) != 64 {
 		return fmt.Errorf("commit SHA must contain 40 or 64 lowercase hexadecimal characters")
@@ -42,6 +44,8 @@ func ValidateCommitSHA(sha string) error {
 	return nil
 }
 
+// Validate ensures the repository identity is canonical and compatible with the
+// configured provider.
 func (r RepositoryIdentity) Validate() error {
 	switch r.Provider {
 	case ProviderGitHub, ProviderADO, ProviderGitea:
@@ -81,6 +85,8 @@ func (r RepositoryIdentity) Validate() error {
 	return nil
 }
 
+// Validate ensures the selected revision carries a canonical repository identity
+// and valid object IDs.
 func (r WorkspaceRevision) Validate() error {
 	if err := r.Repository.Validate(); err != nil {
 		return fmt.Errorf("workspace revision repository: %w", err)
@@ -101,6 +107,8 @@ func (r WorkspaceRevision) Validate() error {
 	return nil
 }
 
+// DeepCopy returns a deep-copy of the selected revision, preserving any nested
+// base repository value while copying the top-level structure.
 func (r *WorkspaceRevision) DeepCopy() *WorkspaceRevision {
 	if r == nil {
 		return nil
