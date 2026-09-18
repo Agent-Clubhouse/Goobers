@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,17 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	subdirectory := filepath.Join(repository, "nested")
 	if err := os.Mkdir(subdirectory, 0o700); err != nil {
 		t.Fatal(err)
+	}
+	pathList, err := snapshotPaths(context.Background(), repository, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := os.ReadFile(pathList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Split(strings.TrimSuffix(string(selected), "\x00"), "\x00"), []string{"[literal].txt", "new.bin"}; !slices.Equal(got, want) {
+		t.Fatalf("snapshot paths = %q, want only non-ignored untracked paths %q", got, want)
 	}
 	identityTime := storageTestRecord().CreatedAt
 	snapshot, err := CaptureSnapshot(context.Background(), subdirectory, "run-1", identityTime)
