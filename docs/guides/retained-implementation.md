@@ -82,3 +82,55 @@ not delete recovery directories by hand. Temporarily raise
 inspection or exact `recovery-abandon` operation, and let configured retention
 remove only records whose ownership and retention checks succeed. Inventory
 overflow returns no partial result and never removes existing records.
+
+## A retained stale worktree after a capture failure
+
+A worktree cleanup that cannot durably hand off recovery fails closed: the
+worktree is left in place on disk (never deleted), the run's active marker
+stays cleared for retry, and the failure is reported as `worktree cleanup
+deferred pending durable handoff: recovery handoff for <id>: ...`. This is
+the correct outcome when the underlying git capture itself failed — a
+missing ref/object, lock contention, or an unsafe-repository refusal — not
+just when the recovery inventory is full.
+
+The wrapped failure carries three pieces of evidence an operator needs, all
+preserved in the error chain and in whatever journal/log surfaces it (both
+pass through the instance journal's scrubber, so nothing beyond this bounded,
+local diagnostic is retained):
+
+- The git subcommand that failed (`merge-base`, `ls-files`, `add`,
+  `write-tree`, `commit-tree`, `bundle`, `diff`, ...).
+- Its exit code and a bounded (4 KiB) tail of its stderr.
+- A failure class: `missing-object`, `locked`, `unsafe-repository`, or
+  unclassified when no rule matched.
+
+What to check, by class:
+
+- **`missing-object`** — the repository's object database or a ref this
+  capture needed is missing or corrupt. Inspect the worktree's repository
+  directly (`git -C <path> fsck`, `git -C <path> rev-parse <ref>`). This
+  will not resolve itself on retry; it needs repository repair or, if the
+  worktree is unrecoverable, an operator decision to abandon it
+  (`goobers recovery-abandon` covers already-retained state — a worktree
+  that never captured anything has nothing to abandon and can be inspected
+  and removed once its content is confirmed disposable).
+- **`locked`** — another git process (or a crashed one's leftover
+  `index.lock`) held a lock this capture needed. This is transient: the next
+  scheduled cleanup pass retries automatically. If it recurs repeatedly for
+  the same worktree, check for a stuck git process against that path before
+  assuming the lock file itself is stale.
+- **`unsafe-repository`** — git refused to operate on the repository because
+  its ownership looks unsafe (a dubious-ownership refusal). This points at a
+  host or filesystem-ownership misconfiguration around the worktree root,
+  not at the recovery content; it needs host-level investigation, not a
+  retry.
+- **unclassified** — no rule matched the stderr text. Read the captured
+  stderr tail directly; it is the same diagnostic git printed.
+
+A capture failure is distinguishable from a full recovery inventory (see
+above) and from a worktree-removal failure (the filesystem refusing to
+delete the directory itself, reported separately): each is its own
+remediation class, so treating one as another wastes the correct action. In
+every case the worktree and its recorded ownership are preserved for retry;
+none of these failures is permission to delete recovery evidence or the
+worktree by hand.
