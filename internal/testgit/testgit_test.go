@@ -16,7 +16,7 @@ func TestCommandIsolatesGit(t *testing.T) {
 	t.Setenv("GIT_CONFIG_SYSTEM", "/host/system")
 
 	cmd := Command("status", "--short")
-	wantArgs := []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=0", "status", "--short"}
+	wantArgs := []string{"git", "-c", "safe.bareRepository=all", "-c", "gc.auto=0", "-c", "maintenance.auto=0", "status", "--short"}
 	if !slices.Equal(cmd.Args, wantArgs) {
 		t.Fatalf("args = %q, want %q", cmd.Args, wantArgs)
 	}
