@@ -32,9 +32,10 @@ import (
 // window would otherwise have held it.
 func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, windowDryRun, operatorDryRun, graceActive bool, stdout, stderr io.Writer) error {
 	root := filepath.Join(layout.Root, "recovery")
-	// #5092: the sweep that RECLAIMS capacity must read the same cap the
-	// writers enforce. Reading at a smaller one refuses with "inventory is
-	// full" and reclaims nothing, so the inventory only ever grows.
+	// #5092: the sweep that RECLAIMS capacity must resolve the same cap the
+	// writers enforce, or it decides retention against a limit no writer
+	// agrees with. The cap governs the retirement decisions below; it no
+	// longer bounds the read (see the read itself).
 	policy, origin := resolveRecoveryPolicy(layout, setup.Config)
 	// setup.InstanceLog is a typed nil on the retention CLI path, which an
 	// interface-valued nil check cannot see — take the address of a live log
@@ -59,7 +60,19 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	// whether recovery state exists at all, which is the distinction its doc
 	// draws. The unreadable set is reported rather than dropped, so an
 	// incomplete scan is never mistaken for a clean one.
-	entries, unreadable, err := recovery.ReadInventoryTolerant(ctx, root, policy.MaxSnapshotsEffective())
+	//
+	// The limit passed here is the structural ceiling, not policy.
+	// MaxSnapshotsEffective(): #5300 moved this read onto the cap the writers
+	// enforce, which fixed reading BELOW the cap and still refused ABOVE it.
+	// An inventory holding more entries than the cap — what any operator gets
+	// by lowering maxSnapshots on a full inventory, and the shape of the
+	// production wedge — made the whole sweep return "inventory is full"
+	// before a single entry was considered, so retention, including the
+	// contentless purge that ignores the grace window, never ran on exactly
+	// the inventories that needed it (#5354). The cap governs whether a new
+	// reservation may be WRITTEN; it is resolved above and still governs
+	// every retirement decision below.
+	entries, unreadable, err := recovery.ReadInventoryTolerant(ctx, root, recovery.MaxInventoryEntries)
 	if err != nil {
 		return err
 	}

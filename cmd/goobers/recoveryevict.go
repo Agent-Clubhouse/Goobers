@@ -30,7 +30,9 @@ import (
 // on it; candidates for any OTHER repository use TryWithRecoveryRepositories,
 // which takes that repository's own lock without ever waiting for it.
 func recoveryEvictFunc(layout instance.Layout, cfg *instance.Config, manager *worktree.Manager, key string) recovery.EvictFunc {
-	return func(ctx context.Context, root string, limit int) (bool, error) {
+	// The operator cap the caller was refused against is deliberately unused:
+	// see the read below.
+	return func(ctx context.Context, root string, _ int) (bool, error) {
 		// Tolerant, for the same reason this function never fails on an
 		// individual ineligible candidate: one unreadable reservation must
 		// not stop a later, genuinely reclaimable one from being evicted. A
@@ -40,7 +42,18 @@ func recoveryEvictFunc(layout instance.Layout, cfg *instance.Config, manager *wo
 		// (#5092). A broken reservation is never an eviction candidate
 		// itself, so skipping it loses nothing; it is reported rather than
 		// discarded so an operator can see debris that no path can reclaim.
-		entries, unreadable, err := recovery.ReadInventoryTolerant(ctx, root, limit)
+		//
+		// Read at the structural ceiling, not at limit. The cap is a WRITE
+		// limit — whether another reservation may be created — and a read
+		// bounded by it refuses outright once the directory already holds
+		// MORE entries than the cap ("75 of 8 slots used"). That is exactly
+		// the state this hook exists to clear: the refusal happened before
+		// any rule was evaluated, so superseded duplicates and landed work
+		// stayed put and every publish fell through to the overflow tier
+		// (#5354). Nothing here infers absence from the scan; each candidate
+		// is judged on its own evidence, so seeing more than the cap allows
+		// cannot make retiring one of them wrong.
+		entries, unreadable, err := recovery.ReadInventoryTolerant(ctx, root, recovery.MaxInventoryEntries)
 		if err != nil {
 			return false, err
 		}
