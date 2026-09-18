@@ -8,7 +8,13 @@ import (
 	"strings"
 )
 
-var configArgs = []string{"-c", "gc.auto=0", "-c", "maintenance.auto=0"}
+// Tests create and operate on bare mirrors, and newer Git versions default to
+// `safe.bareRepository=explicit` unless the caller opts back in.
+var configArgs = []string{
+	"-c", "safe.bareRepository=all",
+	"-c", "gc.auto=0",
+	"-c", "maintenance.auto=0",
+}
 
 var isolatedEnvironment = map[string]string{
 	"GIT_CONFIG_GLOBAL":   os.DevNull,
