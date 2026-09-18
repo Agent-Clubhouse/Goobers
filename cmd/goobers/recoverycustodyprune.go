@@ -27,9 +27,20 @@ func openRecoveryCustodyPruneGuard(layout instance.Layout, dryRun bool) (func(re
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	entries, _, err := readConfiguredRecoveryInventory(ctx, layout)
+	// The cap does not bound this read: an inventory already holding more
+	// entries than it refused the read outright, which stopped telemetry
+	// retention entirely on exactly the instances under the most pressure
+	// (#5354). Fail-closed is preserved where it matters — a reservation no
+	// scan can interpret may still name a run that owns live recovery state,
+	// so the guard refuses rather than pruning journals it cannot rule out.
+	entries, unreadable, _, err := observeRecoveryInventory(ctx, layout)
 	if err != nil {
 		return nil, noop, err
+	}
+	if len(unreadable) > 0 {
+		return nil, noop, fmt.Errorf(
+			"recovery inventory holds %d unreadable reservation(s); refusing to prune run journals that may still own recovery state",
+			len(unreadable))
 	}
 	owners := make(map[string]bool, len(entries))
 	for _, entry := range entries {

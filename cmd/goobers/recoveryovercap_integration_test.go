@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -206,4 +207,66 @@ func TestIntegrationRecoveryOverCapUniqueWorkStillOverflows(t *testing.T) {
 func (f *reclaimFixture) inventoryState() string {
 	f.t.Helper()
 	return newRecoveryInventoryGate(f.layout, f.cfg, nil).Sample(f.t.Context()).State
+}
+
+// retainedRecord reads the effective (sidecar-aware) record the inventory
+// currently holds for runID.
+func (f *reclaimFixture) retainedRecord(runID string) recovery.Record {
+	f.t.Helper()
+	entries, _, err := recovery.ReadInventoryTolerant(f.t.Context(), f.root, recovery.MaxInventoryEntries)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Record.RunID != runID {
+			continue
+		}
+		record, err := recovery.ReadRetainedRecord(entry.RecordPath)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		return record
+	}
+	f.t.Fatalf("no inventory record for run %s", runID)
+	return recovery.Record{}
+}
+
+// TestIntegrationTerminalFinalizationRunsOnAnOverCapInventory is the live
+// follow-up on the same defect class. renewTerminalRecovery and
+// terminalCaptureCovered both read the inventory bounded by the operator cap,
+// and both only ever touch their own run's records. On an over-cap inventory
+// the read refused ("10 of 8 slots used"), the failure was joined as
+// worktree.ErrCleanupDeferred, and terminal finalization of EVERY completed run
+// was deferred and retried at every daemon startup — each deferral holding the
+// worktree and active marker it was trying to release.
+func TestIntegrationTerminalFinalizationRunsOnAnOverCapInventory(t *testing.T) {
+	testdep.Require(t, "git")
+	f := newReclaimFixture(t, 4)
+	f.seed([]reclaimEntry{
+		{runID: "finalize-owner", ageHours: 9, terminal: true,
+			files: map[string]string{"owner.txt": "work this run owns\n"}},
+		{runID: "finalize-other-a", ageHours: 8, terminal: true,
+			files: map[string]string{"a.txt": "work another run owns\n"}},
+		{runID: "finalize-other-b", ageHours: 7, terminal: true,
+			files: map[string]string{"b.txt": "more work another run owns\n"}},
+		{runID: "finalize-other-c", ageHours: 6, terminal: true,
+			files: map[string]string{"c.txt": "still more work another run owns\n"}},
+	})
+	f.lowerCap(2)
+
+	before := f.retainedRecord("finalize-owner")
+	if err := finalizeTerminalRun(f.layout, nil, f.manager, "finalize-owner"); err != nil {
+		t.Fatalf("terminal finalization was deferred on an over-cap inventory: %v", err)
+	}
+	after := f.retainedRecord("finalize-owner")
+	if !after.RetainUntil.After(before.RetainUntil) {
+		t.Fatalf("terminal renewal did not extend the run's deadline: before=%s after=%s", before.RetainUntil, after.RetainUntil)
+	}
+
+	// A run with no record of its own has nothing to renew. That is a no-op,
+	// never a refusal, whatever the rest of the inventory holds.
+	f.seedRun(reclaimEntry{runID: "finalize-recordless", ageHours: 5, terminal: true})
+	if err := finalizeTerminalRun(f.layout, nil, f.manager, "finalize-recordless"); err != nil {
+		t.Fatalf("terminal finalization of a run holding no recovery record was deferred: %v", err)
+	}
 }
