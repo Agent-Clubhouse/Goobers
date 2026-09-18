@@ -24,7 +24,7 @@ import (
 func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
-	applied, err := configDirectoryDigest(layout.ConfigDir())
+	applied, err := deterministicStageConfigDigest(layout.ConfigDir(), "example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,6 +32,7 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = instanceLog.Close() })
 	reloader := &configReloader{
 		layout:        layout,
 		setup:         &schedulerSetup{InstanceLog: instanceLog},
@@ -52,11 +53,16 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 	// The direct CLI boundary still refuses the rejected on-disk generation.
 	var stdout, stderr bytes.Buffer
 	t.Setenv(executor.InstanceRootEnvVar, root)
+	t.Setenv(executor.GaggleEnvVar, "example")
 	t.Setenv(executor.AppliedConfigDigestEnvVar, applied)
 	if code := run([]string{"version"}, &stdout, &stderr); code != 1 {
 		t.Fatalf("fenced stage exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, fragment := range []string{configGenerationMismatchCode, rejected, applied, "refusing to read"} {
+	rejectedScoped, err := deterministicStageConfigDigest(layout.ConfigDir(), "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{configGenerationMismatchCode, rejectedScoped, applied, "refusing to read"} {
 		if !strings.Contains(stderr.String(), fragment) {
 			t.Errorf("fenced stage stderr %q does not contain %q", stderr.String(), fragment)
 		}
@@ -76,7 +82,7 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 	runDir := filepath.Join(layout.RunsDir(), runID)
 	r := newConfigReloadFenceRunner(t, layout, applied)
 	result, err := r.Start(context.Background(), runner.StartInput{
-		RunID: runID, Machine: configReloadFenceMachine(t), Gaggle: "example",
+		RunID: runID, Machine: configReloadFenceMachine(t, root), Gaggle: "example",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
 	})
 	if err != nil {
@@ -98,7 +104,7 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 			if event.Error == nil || event.Error.Code != configGenerationMismatchCode {
 				t.Fatalf("stage.finished error = %+v, want named %s", event.Error, configGenerationMismatchCode)
 			}
-			for _, fragment := range []string{rejected, applied, "refusing to read"} {
+			for _, fragment := range []string{rejectedScoped, applied, "refusing to read"} {
 				if !strings.Contains(event.Error.Message, fragment) {
 					t.Errorf("journaled stage error %q does not contain %q", event.Error.Message, fragment)
 				}
@@ -110,10 +116,112 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 }
 
 func TestDeterministicStageConfigDigestFailsClosed(t *testing.T) {
-	digest, err := deterministicStageConfigDigest(filepath.Join(t.TempDir(), "missing"))
+	digest, err := deterministicStageConfigDigest(filepath.Join(t.TempDir(), "missing"), "example")
 	if err == nil || digest != "" || !strings.Contains(err.Error(), "digest deterministic-stage config") {
 		t.Fatalf("digest missing config: digest=%q err=%v", digest, err)
 	}
+}
+
+func TestDeterministicStageConfigDigestIgnoresSiblingGaggleReload(t *testing.T) {
+	root := initDeterministicDemo(t)
+	configDir := instance.NewLayout(root).ConfigDir()
+	siblingPath := addConfigReloadFenceSiblingGaggle(t, configDir)
+
+	applied, err := deterministicStageConfigDigest(configDir, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newConfigReloadFenceRunner(t, instance.NewLayout(root), applied)
+	wholeBefore, err := configDirectoryDigest(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling, err := os.ReadFile(siblingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded := strings.Replace(string(sibling), "spec:\n", "spec:\n  displayName: Reloaded\n", 1)
+	if err := os.WriteFile(siblingPath, []byte(reloaded), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, report, err := instance.LoadConfigDir(configDir); err != nil {
+		t.Fatalf("sibling gaggle reload is invalid: %v (%+v)", err, report)
+	}
+	wholeAfter, err := configDirectoryDigest(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wholeAfter == wholeBefore {
+		t.Fatal("sibling gaggle edit did not move the instance-wide reload digest")
+	}
+
+	t.Setenv(executor.InstanceRootEnvVar, root)
+	t.Setenv(executor.GaggleEnvVar, "example")
+	t.Setenv(executor.AppliedConfigDigestEnvVar, applied)
+	if err := enforceAppliedStageConfig(); err != nil {
+		t.Fatalf("sibling gaggle reload fenced active run: %v", err)
+	}
+
+	result, err := r.Start(context.Background(), runner.StartInput{
+		RunID: "sibling-gaggle-reload", Machine: configReloadFenceMachine(t, root), Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("active run did not complete after sibling gaggle reload: %+v", result)
+	}
+
+	relevantPath := filepath.Join(configDir, "gaggles", "example", "workflows", "default-implement.yaml")
+	relevant, err := os.ReadFile(relevantPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unapplied := strings.Replace(string(relevant), "spec:\n", "spec:\n  displayName: Unapplied\n", 1)
+	if err := os.WriteFile(relevantPath, []byte(unapplied), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := enforceAppliedStageConfig(); err == nil {
+		t.Fatal("unapplied edit to the active run's own gaggle was not fenced")
+	}
+}
+
+func addConfigReloadFenceSiblingGaggle(t *testing.T, configDir string) string {
+	t.Helper()
+	source := filepath.Join(configDir, "gaggles", "example")
+	sibling := filepath.Join(configDir, "gaggles", "other")
+	if err := os.CopyFS(sibling, os.DirFS(source)); err != nil {
+		t.Fatal(err)
+	}
+	if err := filepath.WalkDir(sibling, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".yaml") {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte(strings.ReplaceAll(string(content), "example", "other")), 0o644)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(configDir, "manifest.yaml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(manifest), "    - example\n", "    - example\n    - other\n", 1)
+	if updated == string(manifest) {
+		t.Fatal("demo manifest did not list example gaggle")
+	}
+	if err := os.WriteFile(manifestPath, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, report, err := instance.LoadConfigDir(configDir); err != nil {
+		t.Fatalf("sibling gaggle fixture is invalid: %v (%+v)", err, report)
+	}
+	return filepath.Join(sibling, "workflows", "default-implement.yaml")
 }
 
 func newConfigReloadFenceRunner(t *testing.T, layout instance.Layout, appliedDigest string) *runner.Runner {
@@ -156,7 +264,7 @@ func newConfigReloadFenceRunner(t *testing.T, layout instance.Layout, appliedDig
 	return r
 }
 
-func configReloadFenceMachine(t *testing.T) *workflow.Machine {
+func configReloadFenceMachine(t *testing.T, root string) *workflow.Machine {
 	t.Helper()
 	machine, err := workflow.Compile(workflow.Definition{
 		Name: "reload-fence", Version: 1,
@@ -164,7 +272,7 @@ func configReloadFenceMachine(t *testing.T) *workflow.Machine {
 			Gaggle: "example", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}, Start: "observe-config",
 			Tasks: []apiv1.Task{{
 				Name: "observe-config", Type: apiv1.TaskDeterministic, Goal: "observe the applied config",
-				Run: &apiv1.DeterministicRun{Command: []string{"goobers", "validate"}, Workspace: apiv1.WorkspaceScratch},
+				Run: &apiv1.DeterministicRun{Command: []string{"goobers", "validate", root}, Workspace: apiv1.WorkspaceScratch},
 			}},
 		},
 	})
