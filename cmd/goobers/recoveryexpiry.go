@@ -18,12 +18,19 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// dryRun is the retention pass's resolved decision (operator retention.dryRun
-// or an unelapsed first-enable grace window, #4253). Retiring a snapshot
-// deletes its refs, so it has to observe the same window the worktree sweep
-// does — otherwise a grace period that only reports worktrees would still be
-// destroying recovery snapshots underneath it.
-func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, dryRun bool, stdout, stderr io.Writer) error {
+// windowDryRun is the retention pass's combined resolved decision (operator
+// retention.dryRun or an unelapsed first-enable grace window, #4253). It
+// governs the landing-proof retirement path: retiring a snapshot with landed
+// content deletes its refs, so that path has to observe the same window the
+// worktree sweep does — otherwise a grace period that only reports worktrees
+// would still be destroying recovery snapshots underneath it.
+//
+// operatorDryRun and graceActive are the same decision split apart (#5354):
+// a contentless retirement (recoveryContentlessJustification below) holds no
+// recoverable content, so it is gated by operatorDryRun alone, and graceActive
+// is passed through only so a successful deletion can note when the grace
+// window would otherwise have held it.
+func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, windowDryRun, operatorDryRun, graceActive bool, stdout, stderr io.Writer) error {
 	root := filepath.Join(layout.Root, "recovery")
 	// #5092: the sweep that RECLAIMS capacity must read the same cap the
 	// writers enforce. Reading at a smaller one refuses with "inventory is
@@ -35,24 +42,49 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	if setup.InstanceLog != nil {
 		journalRecoveryPolicyFallback(setup.InstanceLog, origin, policy, root)
 	}
-	entries, err := recovery.ReadInventory(ctx, root, policy.MaxSnapshotsEffective())
-	if err != nil {
-		return err
-	}
-	if len(entries) == 0 {
-		return nil
-	}
-	operatorEvents, err := journal.ReadInstanceLog(layout.SchedulerDir())
-	if err != nil {
-		return err
-	}
-	entries, err = prioritizeAbandonedRecovery(entries, operatorEvents)
+	// Tolerant, and this is the fix for a hard instance wedge. The sweep is the
+	// ONLY path that reclaims capacity by retention policy, and it read the
+	// inventory all-or-nothing: one crashed publish leaves a reservation
+	// holding only lock files, the strict read then failed the whole scan, and
+	// from that moment nothing was ever retired again. The inventory climbed to
+	// its cap, every worktree cleanup needing a recovery handoff was refused
+	// with ErrInventoryFull, worktree reuse stopped, and stages died at
+	// "create worktree". #5092 fixed exactly this for the eviction path and
+	// left the sweep strict.
+	//
+	// Tolerance is safe HERE specifically because this sweep never infers
+	// absence: it decides each entry on that entry's own evidence and retires
+	// it individually, so not seeing a broken neighbour cannot make retiring
+	// this one wrong. ReadInventory stays all-or-nothing for callers that ask
+	// whether recovery state exists at all, which is the distinction its doc
+	// draws. The unreadable set is reported rather than dropped, so an
+	// incomplete scan is never mistaken for a clean one.
+	entries, unreadable, err := recovery.ReadInventoryTolerant(ctx, root, policy.MaxSnapshotsEffective())
 	if err != nil {
 		return err
 	}
 	var failures error
+	for _, broken := range unreadable {
+		pf(stderr, "warning: recovery inventory reservation %q is unreadable and still consumes a slot: %v\n", broken.Name, broken.Err)
+		failures = errors.Join(failures, fmt.Errorf("unreadable recovery reservation %s: %w", broken.Name, broken.Err))
+	}
+	if len(entries) == 0 {
+		return failures
+	}
+	operatorEvents, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	entries = prioritizeAbandonedRecovery(entries, operatorEvents, &failures)
+	// retained is the full set the pass read, fixed for the whole sweep.
+	// recoveryContentlessJustification needs it to decide supersession, and
+	// deciding every candidate against one fixed snapshot (rather than
+	// re-scanning after each retirement) is what keeps a superseded
+	// duplicate from ever being retired ahead of the newer entry that
+	// protects its content in the same pass.
+	retained := retainedEvictionRecords(entries)
 	for _, entry := range entries {
-		err := retireExpiredRecoveryEntry(ctx, root, setup, policy, managers, runsByRoot, entry, operatorEvents, dryRun, stdout)
+		err := retireExpiredRecoveryEntry(ctx, root, setup, policy, managers, runsByRoot, entry, retained, operatorEvents, windowDryRun, operatorDryRun, graceActive, stdout, layout.SchedulerDir())
 		if err != nil {
 			pf(stderr, "warning: recovery retention failed run=%q ref=%q: %v\n", entry.Record.RunID, entry.Record.Ref, err)
 			failures = errors.Join(failures, err)
@@ -61,17 +93,32 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	return failures
 }
 
-func prioritizeAbandonedRecovery(entries []recovery.InventoryEntry, operatorEvents []journal.Event) ([]recovery.InventoryEntry, error) {
+// prioritizeAbandonedRecovery puts operator-abandoned entries first so the
+// slots an operator has already released are reclaimed before anything else.
+//
+// An entry whose record cannot be read is now SKIPPED (recorded into failures)
+// rather than aborting the whole ordering. It was the second of two places
+// where one damaged entry stopped every other entry from ever being retired:
+// ordering is a preference, so failing to classify one entry must not deny the
+// other 127 their retention policy. A skipped entry keeps its slot and is
+// reported, so the problem stays visible instead of becoming a silent leak.
+func prioritizeAbandonedRecovery(
+	entries []recovery.InventoryEntry,
+	operatorEvents []journal.Event,
+	failures *error,
+) []recovery.InventoryEntry {
 	prioritized := make([]recovery.InventoryEntry, 0, len(entries))
 	remaining := make([]recovery.InventoryEntry, 0, len(entries))
 	for _, entry := range entries {
 		current, err := recovery.ReadRetainedRecord(entry.RecordPath)
 		if err != nil {
-			return nil, err
+			*failures = errors.Join(*failures, fmt.Errorf("classify recovery entry %s: %w", entry.RecordPath, err))
+			continue
 		}
 		abandoned, err := recovery.ExplicitlyAbandoned(operatorEvents, current)
 		if err != nil {
-			return nil, err
+			*failures = errors.Join(*failures, fmt.Errorf("classify recovery entry %s: %w", entry.RecordPath, err))
+			continue
 		}
 		if abandoned {
 			prioritized = append(prioritized, entry)
@@ -79,10 +126,10 @@ func prioritizeAbandonedRecovery(entries []recovery.InventoryEntry, operatorEven
 			remaining = append(remaining, entry)
 		}
 	}
-	return append(prioritized, remaining...), nil
+	return append(prioritized, remaining...)
 }
 
-func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, recoveryCfg instance.RecoverySnapshotConfig, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, operatorEvents []journal.Event, dryRun bool, stdout io.Writer) error {
+func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, recoveryCfg instance.RecoverySnapshotConfig, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, retained []recovery.Record, operatorEvents []journal.Event, windowDryRun, operatorDryRun, graceActive bool, stdout io.Writer, schedulerDir string) error {
 	manager, runDir, err := recoveryRetentionOwner(entry.Record.RunID, managers, runsByRoot)
 	if err != nil {
 		return err
@@ -100,38 +147,47 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 		if err != nil {
 			return err
 		}
-		var landed []recovery.LandedHead
-		if !eligible {
-			phase, err := reader.PhaseBounded(ctx)
-			if err != nil || !terminalRunPhase(phase) {
-				return err
-			}
-			project, err := recoveryConfiguredProject(setup.Config, record.RepositoryKey)
-			if err != nil {
-				return err
-			}
-			route, err := recoveryLandingRoute(project)
-			if err != nil {
-				return err
-			}
-			landed, err = recoveryLandingHeads(ctx, filepath.Dir(runDir), record, route)
-			if err != nil || len(landed) == 0 {
-				return err
-			}
-		}
 		url, err := recoveryRetentionCloneURL(setup.Config, record.RepositoryKey)
 		if err != nil {
 			return err
 		}
 		found, err := manager.WithRecoveryRepositories(ctx, url, func(repositories []string) error {
+			// recoveryContentlessJustification decides categories 2-4 from
+			// retained content alone: no landing proof, no operator decision,
+			// no elapsed retain-until window (#5359 follow-up left by #5366).
+			// It runs FIRST, ahead of landing proof, because it needs neither
+			// a terminal run phase nor a configured landing route, and a
+			// non-empty result makes the entry eligible even inside the
+			// retain floor: it holds nothing worth keeping.
+			justification := ""
 			if !eligible {
+				justification = recoveryContentlessJustification(ctx, record, repositories, retained, operatorEvents, true)
+				eligible = justification != ""
+			}
+			if !eligible {
+				landed, err := recoverySweepLandedHeads(ctx, setup, reader, runDir, record)
+				if err != nil || len(landed) == 0 {
+					return err
+				}
 				eligible, err = verifyRecoveryLandingRepositories(ctx, repositories, record, landed, recoveryCfg.MaxArchiveBytesEffective())
 				if err != nil || !eligible {
 					return err
 				}
 			}
-			if dryRun {
-				pf(stdout, "retention candidate kind=recovery rule=recovery-policy run=%q ref=%q\n", record.RunID, record.Ref)
+			rule := "recovery-policy"
+			if justification != "" {
+				rule = justification
+			}
+			// A contentless retirement holds nothing reviewable, so it is
+			// gated by the operator's explicit dryRun alone (#5354); every
+			// other retirement (landing proof) keeps observing the combined
+			// window dry-run exactly as before.
+			effectiveDryRun := windowDryRun
+			if justification != "" {
+				effectiveDryRun = operatorDryRun
+			}
+			if effectiveDryRun {
+				pf(stdout, "retention candidate kind=recovery rule=%s run=%q ref=%q\n", rule, record.RunID, record.Ref)
 				return nil
 			}
 			_, err := recovery.RetireSnapshot(ctx, root, record, func(current recovery.Record) error {
@@ -142,7 +198,16 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 				}
 				return nil
 			})
-			return err
+			if err != nil {
+				return err
+			}
+			if justification != "" {
+				journalSweepReclamation(schedulerDir, record, justification)
+				if graceActive {
+					pf(stdout, "retention deleted rule=%s kind=recovery run=%q ref=%q (grace window does not apply: no recoverable content)\n", justification, record.RunID, record.Ref)
+				}
+			}
+			return nil
 		})
 		if err == nil && !found {
 			return fmt.Errorf("recovery retention requires an existing managed repository")
@@ -150,6 +215,41 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 		return err
 	})
 	return err
+}
+
+// recoverySweepLandedHeads gates the sweep's original #4823 landing-proof
+// path behind a terminal run phase and a configured landing route, unchanged
+// from before recoveryContentlessJustification was folded in above it.
+func recoverySweepLandedHeads(ctx context.Context, setup *schedulerSetup, reader *journal.Reader, runDir string, record recovery.Record) ([]recovery.LandedHead, error) {
+	phase, err := reader.PhaseBounded(ctx)
+	if err != nil || !terminalRunPhase(phase) {
+		return nil, err
+	}
+	project, err := recoveryConfiguredProject(setup.Config, record.RepositoryKey)
+	if err != nil {
+		return nil, err
+	}
+	route, err := recoveryLandingRoute(project)
+	if err != nil {
+		return nil, err
+	}
+	return recoveryLandingHeads(ctx, filepath.Dir(runDir), record, route)
+}
+
+// journalSweepReclamation records the periodic sweep's contentless retirement
+// the same way the on-demand eviction hook does
+// (recoveryEvictionScope.journalReclamation), so a snapshot holding nothing
+// worth keeping is equally explainable from the instance log regardless of
+// which path retired it.
+func journalSweepReclamation(schedulerDir string, record recovery.Record, justification string) {
+	event, err := recovery.RetainedEvent(record)
+	if err != nil {
+		return
+	}
+	event.Runner["operation"] = "recovery-reclaimed"
+	event.Runner["recoveryReclamationJustification"] = justification
+	log := recoveryCleanupJournal{directory: schedulerDir, scrubber: journal.NewRegistryScrubber()}
+	_ = log.Append(event)
 }
 
 // A receiving commit may exist only in the pinned clone, not the mirror (or

@@ -160,9 +160,18 @@ type LocalSources struct {
 	// this process's own sampled state, not something an offline reader can
 	// reconstruct from the journal.
 	StorageHealthStats func() localscheduler.StorageHealthStats
-	WorkItemLookup     WorkItemLookup
-	SchedulerHeartbeat func() (time.Time, error)
-	LivenessTimeout    time.Duration
+	// RecoveryInventoryStats is present only in the live daemon, for the same
+	// reason as StorageHealthStats: it is a sampled reading of the shared
+	// recovery inventory, taken on the daemon's own cadence rather than on
+	// every read request. The inventory scan takes an instance-wide lock that
+	// publication and retirement also hold, so serving it from a sample keeps
+	// a polled read route from contending with the runs it is reporting on.
+	// Offline readers get no value; `goobers status` reads the directory
+	// directly instead.
+	RecoveryInventoryStats func() *RecoveryInventoryStatus
+	WorkItemLookup         WorkItemLookup
+	SchedulerHeartbeat     func() (time.Time, error)
+	LivenessTimeout        time.Duration
 	// FleetEnrolled reports whether the instance at the given root is
 	// associated with a Fleet service (#4218). Optional override; by default
 	// enrollment is derived from FleetAssociation.

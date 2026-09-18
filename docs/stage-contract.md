@@ -35,6 +35,92 @@ by convention:
 - `outputs` on the result envelope accepts **scalars only**; anything larger is
   an artifact, referenced by pointer. State cannot be smuggled through `outputs`.
 
+## Scalar binding: `outputs` and `inputsFrom` (#5247)
+
+Scalar binding is **already supported** and is the mechanism for passing small
+control values between stages. `outputs` and `inputsFrom` carry those values;
+`contextFrom` is a *different* contract that selects artifact/verdict context.
+Neither is a substitute for the other, and `contextFrom` is **not** a required
+structured scalar input.
+
+A producer emits scalars on its result envelope; a consumer names, per input,
+which upstream output to bind:
+
+~~~yaml
+- name: plan                      # producer
+  run:
+    command: ["goobers", "plan"]
+  expectedOutputs:
+    - prTitle
+    - attempt
+
+- name: build                     # intermediate stage, also a producer
+  run:
+    command: ["make", "build"]
+  expectedOutputs:
+    - sha
+
+- name: open-pr                   # consumer
+  run:
+    command: ["goobers", "open-pr"]
+  inputsFrom:
+    title: plan.prTitle           # stage-qualified: names `plan` explicitly
+    head: sha                     # bare key: the IMMEDIATELY PRECEDING stage
+~~~
+
+### Which stage a value comes from
+
+The resolution rule is deliberately conservative
+(`internal/runner.resolveInputsFrom`):
+
+> The value is a **stage-qualified** reference only when the segment before the
+> first dot names a stage that has **actually produced outputs in this run**.
+> Otherwise the **entire string** is treated as a bare output key.
+
+- A **bare key** resolves against the immediately preceding stage only.
+- A **stage-qualified** key (`<stage>.<key>`) resolves against that stage.
+- A **legacy dotted key** — an output literally named `a.b` — keeps working,
+  because `a` is not a stage. This fallthrough is why the rule is ordered this
+  way, and stage names may not contain a dot, so there is no ambiguity to
+  escape and no escaping syntax to invent.
+- Stage-qualified resolution requires a workflow version that supports it
+  (`workflow.SupportsStageQualifiedInputs`); under an older version every value
+  is a bare key, exactly as before.
+
+The fallthrough has one sharp edge worth knowing: a dotted value whose prefix
+is **not** a stage that ran silently degrades into a whole-key lookup. If that
+key does not exist either, the stage fails closed — and the diagnostic says so
+explicitly rather than reporting only "not found".
+
+### Missing and invalid bindings
+
+`inputsFrom` is a **contract, not a hint**: an unresolvable reference fails the
+stage closed rather than silently omitting the input. Three diagnostics, each
+naming the keys that *were* available:
+
+| Situation | Message |
+|---|---|
+| Qualified reference to a stage that ran but did not emit the key | names the stage and what it *did* emit |
+| Dotted reference whose prefix is not a stage that ran | says the value was treated as a single output key, and names the preceding stage's keys |
+| Bare key not found | names the preceding stage's keys |
+
+Every one of them reports **keys only, never values**. An author needs to know
+what they could have bound; a diagnostic that printed the values would leak an
+entire upstream result into a message that lands in journals, PR comments and
+logs.
+
+The local runner and the Temporal engine share these messages through one
+exported function rather than each phrasing its own, so the same failure cannot
+be explained one way on one substrate and differently on the other.
+
+### Scalars are not artifacts
+
+`outputs` accepts **scalars only** — anything larger is an artifact, referenced
+by pointer, and state cannot be smuggled through `outputs`. Binding a *typed
+artifact* to a consumer-local name, with the producer attempt and digest that
+produced it, is a separate contract tracked by #4771/#5089 and is **not**
+implemented by `inputsFrom`.
+
 ## Well-known outputs
 
 Most `outputs` keys mean whatever the consuming gate or downstream stage's
@@ -892,6 +978,64 @@ business `failure`/`blocked` `ResultEnvelope`. Each policy-driven retry
 attempt is a new journal entry, never overwritten history (§5). A business
 `failure`/`blocked` result is never retried by `Task.Retry`; it is handled
 per the table above.
+
+**Deterministic stage execution deadline — resolution and visibility (#5265).**
+A deterministic (shell) stage's execution deadline resolves through
+`internal/executor.(*ShellExecutor).resolveTimeout`, which is the single
+resolution point. Highest precedence first:
+
+1. `limits.maxDurationSeconds`, **when positive**.
+2. `inputs.timeout`, when present and non-empty, parsed as a Go duration
+   (`10m`, `90s`). This is the legacy surface.
+3. The runner default (`ShellExecutor.DefaultTimeout`, which the instance's
+   configured stage timeout resolves into), when positive.
+4. The built-in `internal/executor.DefaultTimeout` (10m).
+
+The ten-minute value is a **fallback, not a universal hard cap**: it applies
+only when no surface above it supplied a value.
+
+Note that this ordering is the **opposite** of the agentic one documented below
+for the task-level value versus `limits`: here `limits.maxDurationSeconds` wins
+over the stage's own `inputs.timeout`, whereas an agentic task's
+`timeoutSeconds` wins over `limits`. That divergence is why a bare duration was
+not enough to act on, and why the effective value is now reported together with
+its **source**.
+
+Three different zeros exist in this area and they do **not** mean the same
+thing. All three are preserved:
+
+| Setting | Zero means |
+| --- | --- |
+| `limits.maxDurationSeconds: 0` | **Unset** — falls through to the next surface. |
+| `inputs.timeout: "0s"` | **Expires immediately** — honored as written. |
+| task `timeoutSeconds: 0` | **Rejected** before it reaches an executor. |
+
+An *empty* `inputs.timeout` string is **absent**, not zero, so it falls
+through — that is what stops an unset value threaded through `inputsFrom` from
+becoming an instant deadline. An unparseable duration fails the stage closed
+rather than silently falling back to a default.
+
+Every deterministic stage result publishes the effective deadline and where it
+came from, on **every** outcome rather than only on a timeout (an operator
+asking which clock governs a stage most needs the answer from one that
+succeeded):
+
+- `outputs.timeoutSeconds` — the effective deadline, in seconds.
+- `outputs.timeoutSource` — one of `limits.maxDurationSeconds`,
+  `inputs.timeout`, `runner default`, `built-in default`.
+
+Both timeout diagnostics name the source too, so `stage exceeded timeout 10m`
+now reads `stage exceeded timeout 10m0s (from built-in default)`.
+
+Queue/admission deadlines are **not** part of this resolution: they bound how
+long a stage may wait to *start*, not how long it may *run*, and are reported
+separately.
+
+An explicit "no Goobers-imposed execution deadline" (infinite) mode is **not**
+implemented; #5265 tracks it as a versioned authoring-surface change that also
+needs engine/pod conformance, since a substrate that imposes a non-removable
+deadline must refuse it explicitly rather than advertise infinity and silently
+apply a finite limit.
 
 **Agentic session timeout & `Task.OnTimeout` (#724).** An agentic stage's
 harness session is bounded by a wall-clock timeout. The default is 30m

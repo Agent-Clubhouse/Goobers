@@ -62,10 +62,21 @@ func inputsFromIntegrity(value string, upstream apiv1.ResultEnvelope, completed 
 }
 
 // inputsFromError phrases an unresolvable reference the way the local runner
-// does, including its two distinct messages: a qualified reference to a stage
-// that RAN but did not emit the key names what it did emit, while everything
-// else keeps the legacy "upstream output %q not found" wording pre-3.0
-// operators know.
-func inputsFromError(taskName, inputKey, value string, completed completedStages, qualified bool) error {
-	return runner.InputsFromError(taskName, inputKey, value, completed, qualified)
+// does, including all three of its distinct messages: a qualified reference to
+// a stage that RAN but did not emit the key names what it did emit; a dotted
+// reference whose prefix is not a stage that ran says so, because that value
+// silently degrades into a bare key lookup; and everything else keeps the
+// familiar "upstream output %q not found" wording. Each names the available
+// keys and never their values (#5247).
+//
+// Delegating rather than re-deriving is the point: a copied message set would
+// drift, and the symptom would be the same failure explained one way on the
+// local runner and another on the engine.
+func inputsFromError(
+	taskName, inputKey, value string,
+	upstream apiv1.ResultEnvelope,
+	completed completedStages,
+	qualified bool,
+) error {
+	return runner.InputsFromError(taskName, inputKey, value, upstream, completed, qualified)
 }

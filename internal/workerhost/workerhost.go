@@ -14,10 +14,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 
+	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/bootstrap"
 )
 
@@ -29,6 +33,11 @@ var ErrAbandonedWork = errors.New("workerhost: drain timeout expired with activi
 // DefaultDrainTimeout bounds how long Stop waits for in-flight activities
 // after a shutdown signal before abandoning them.
 const DefaultDrainTimeout = 30 * time.Second
+
+const (
+	placementBuildEnv  = "GOOBERS_RUNNER_BUILD"
+	placementWorkerEnv = "GOOBERS_RUNNER_WORKER"
+)
 
 // Config describes one worker process.
 type Config struct {
@@ -79,7 +88,10 @@ func New(cfg Config) (*Host, error) {
 	if cfg.DrainTimeout <= 0 {
 		cfg.DrainTimeout = DefaultDrainTimeout
 	}
-	h := &Host{cfg: cfg, tracker: &activityTracker{}}
+	h := &Host{cfg: cfg, tracker: &activityTracker{
+		buildID: cfg.BuildVersion,
+		worker:  Identity(cfg.BuildVersion),
+	}}
 	h.dial = bootstrap.DialTemporal
 	h.newWorker = func(c client.Client, taskQueue string, opts worker.Options) managedWorker {
 		w := worker.New(c, taskQueue, opts)
@@ -102,11 +114,23 @@ func Identity(buildVersion string) string {
 
 // workerOptions builds the one options set every queue's worker runs under.
 func (h *Host) workerOptions() worker.Options {
-	return worker.Options{
+	opts := worker.Options{
 		Identity:          Identity(h.cfg.BuildVersion),
 		WorkerStopTimeout: h.cfg.DrainTimeout,
 		Interceptors:      []interceptor.WorkerInterceptor{h.tracker},
 	}
+	if h.cfg.BuildVersion == "" {
+		return opts
+	}
+	opts.DeploymentOptions = worker.DeploymentOptions{
+		UseVersioning: true,
+		Version: worker.WorkerDeploymentVersion{
+			DeploymentName: "goobers",
+			BuildID:        h.cfg.BuildVersion,
+		},
+		DefaultVersioningBehavior: workflow.VersioningBehaviorPinned,
+	}
+	return opts
 }
 
 // Run serves the configured task queues until ctx is cancelled (SIGTERM/
@@ -122,6 +146,25 @@ func (h *Host) Run(ctx context.Context) error {
 		defer c.Close()
 	}
 
+	previousBuild, hadBuild := os.LookupEnv(placementBuildEnv)
+	previousWorker, hadWorker := os.LookupEnv(placementWorkerEnv)
+	if h.cfg.BuildVersion != "" {
+		_ = os.Setenv(placementBuildEnv, h.cfg.BuildVersion)
+		_ = os.Setenv(placementWorkerEnv, Identity(h.cfg.BuildVersion))
+	}
+	defer func() {
+		if hadBuild {
+			_ = os.Setenv(placementBuildEnv, previousBuild)
+		} else {
+			_ = os.Unsetenv(placementBuildEnv)
+		}
+		if hadWorker {
+			_ = os.Setenv(placementWorkerEnv, previousWorker)
+		} else {
+			_ = os.Unsetenv(placementWorkerEnv)
+		}
+	}()
+
 	opts := h.workerOptions()
 	started := make([]managedWorker, 0, len(h.cfg.TaskQueues))
 	stopAll := func() {
@@ -129,6 +172,7 @@ func (h *Host) Run(ctx context.Context) error {
 		// later queues accepting work and multiply the process drain window.
 		var draining sync.WaitGroup
 		for _, w := range started {
+			w := w
 			draining.Add(1)
 			go func() {
 				defer draining.Done()
@@ -159,7 +203,9 @@ func (h *Host) Run(ctx context.Context) error {
 // a non-zero count is work the drain window abandoned.
 type activityTracker struct {
 	interceptor.WorkerInterceptorBase
-	n atomic.Int64
+	n       atomic.Int64
+	buildID string
+	worker  string
 }
 
 func (t *activityTracker) inFlight() int64 { return t.n.Load() }
@@ -176,8 +222,60 @@ type trackedActivityInbound struct {
 	tracker *activityTracker
 }
 
+// The SDK panics if GetInfo runs outside a real activity context; unit tests
+// drive this interceptor directly with a background context.
+func currentActivityInfo(ctx context.Context) (_ activity.Info, ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	return activity.GetInfo(ctx), true
+}
+
 func (a *trackedActivityInbound) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (interface{}, error) {
 	a.tracker.n.Add(1)
 	defer a.tracker.n.Add(-1)
-	return a.Next.ExecuteActivity(ctx, in)
+	identity := attemptidentity.Identity{
+		BuildID:        a.tracker.buildID,
+		WorkerIdentity: a.tracker.worker,
+	}
+	if info, ok := currentActivityInfo(ctx); ok {
+		identity.TaskQueue = info.TaskQueue
+		identity.ActivityID = info.ActivityID
+		identity.ActivityType = info.ActivityType.Name
+		identity.Attempt = info.Attempt
+	}
+	ctx = attemptidentity.WithContext(ctx, identity)
+	result, err := a.Next.ExecuteActivity(ctx, in)
+	if err == nil {
+		return result, nil
+	}
+	if temporal.IsCanceledError(err) || temporal.IsTerminatedError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
+	// Keep the original error as the cause so its details and retry options
+	// remain available to the engine, while the outer error carries identity.
+	failureType := "GoobersAttemptFailure"
+	var appErr *temporal.ApplicationError
+	if errors.As(err, &appErr) {
+		failureType = appErr.Type()
+	}
+	return nil, temporal.NewApplicationErrorWithOptions(err.Error(), failureType, temporal.ApplicationErrorOptions{
+		NonRetryable: appErr != nil && appErr.NonRetryable(),
+		Cause:        err,
+		NextRetryDelay: func() time.Duration {
+			if appErr == nil {
+				return 0
+			}
+			return appErr.NextRetryDelay()
+		}(),
+		Category: func() temporal.ApplicationErrorCategory {
+			if appErr == nil {
+				return temporal.ApplicationErrorCategoryUnspecified
+			}
+			return appErr.Category()
+		}(),
+		Details: []interface{}{identity},
+	})
 }

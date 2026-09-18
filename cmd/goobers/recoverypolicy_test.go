@@ -15,7 +15,6 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -167,7 +166,8 @@ func TestRecoveryCleanupRequestUsesConfiguredInventoryCap(t *testing.T) {
 		filepath.Join(layout.Root, "workcopies"),
 		nil,
 		"github.com/goobers/goobers",
-		worktree.CleanupTarget{OwnerRunID: "0123456789abcdef0123456789abcdef", BaseRef: "refs/heads/main"},
+		"",
+		"0123456789abcdef0123456789abcdef",
 		time.Now().UTC(),
 		log,
 	)
@@ -262,6 +262,40 @@ func TestRecoveryInventoryAcceptsConfiguredCapacityAndFailsClosedOnOverflow(t *t
 	}
 	if preserved != 501 {
 		t.Fatalf("overflow preserved %d records, want 501", preserved)
+	}
+}
+
+func TestConfiguredRecoveryInventoryFailsClosedWithoutValidConfig(t *testing.T) {
+	for name, configure := range map[string]func(*testing.T, instance.Layout){
+		"missing": func(*testing.T, instance.Layout) {},
+		"malformed": func(t *testing.T, layout instance.Layout) {
+			if err := os.WriteFile(layout.ConfigFile(), []byte("retention: ["), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			layout := instance.NewLayout(t.TempDir())
+			configure(t, layout)
+
+			entries, limit, err := readConfiguredRecoveryInventory(context.Background(), layout)
+			if err == nil || entries != nil || limit != 0 {
+				t.Fatalf("unavailable configuration = entries:%v limit:%d error:%v; want nil, 0, error", entries, limit, err)
+			}
+			if !strings.Contains(err.Error(), "load recovery inventory configuration") {
+				t.Fatalf("error %q does not identify recovery inventory configuration", err)
+			}
+		})
+	}
+}
+
+func TestConfiguredRecoveryInventoryUsesDefaultForValidOmittedPolicy(t *testing.T) {
+	layout := writeRecoveryPolicyInstance(t, 0)
+
+	entries, limit, err := readConfiguredRecoveryInventory(context.Background(), layout)
+	if err != nil || len(entries) != 0 || limit != instance.DefaultRecoverySnapshotMaxCount {
+		t.Fatalf("valid default policy = entries:%v limit:%d error:%v; want empty, %d, nil",
+			entries, limit, err, instance.DefaultRecoverySnapshotMaxCount)
 	}
 }
 

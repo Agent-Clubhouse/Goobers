@@ -240,6 +240,17 @@ const (
 	// EventTelemetryRetentionPass records one successful automatic telemetry
 	// retention evaluation. Its operational summary is carried under Runner.
 	EventTelemetryRetentionPass EventType = "telemetry.retention.pass"
+	// EventServiceHealth records the periodic service-health observation
+	// (#5244): a structured snapshot of the instance's own identity, the
+	// executing account, and daemon uptime, emitted at startup and on a fixed
+	// cadence thereafter EVEN WHEN NO WORKFLOW IS RUNNING.
+	//
+	// Distinct from the fast informational liveness heartbeat (#488), which
+	// reports scheduler activity to stdout and is deliberately preserved at its
+	// own cadence. This one is a durable diagnostic record about the service
+	// itself, so an operator can answer "what has this instance been doing, as
+	// which account, since when" without a run to hang the question off.
+	EventServiceHealth EventType = "service.health"
 	// EventDaemonUpdateDrainStarted records the stable supervisor beginning a
 	// graceful drain for a validated binary handoff.
 	EventDaemonUpdateDrainStarted EventType = "daemon.update.drain_started"

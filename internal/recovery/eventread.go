@@ -101,5 +101,5 @@ func recordFromEvent(event journal.Event) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
-	return Decode(bytes.NewReader(data))
+	return decodeRestorable(bytes.NewReader(data))
 }

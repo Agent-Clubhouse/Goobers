@@ -195,6 +195,34 @@ stop.
 
 ---
 
+## Windows (per-user Scheduled Task)
+
+Use the per-user Scheduled Task when Goobers must retain the logged-in user's
+GitHub CLI accounts, harness sessions, Credential Manager entries, and user
+environment:
+
+```powershell
+goobers service task-install C:\path\to\instance
+goobers service task-status  C:\path\to\instance
+goobers service task-stop    C:\path\to\instance
+goobers service task-start   C:\path\to\instance
+goobers service task-uninstall C:\path\to\instance
+```
+
+`task-install` registers an interactive, limited-privilege task for the current
+user, starts it immediately, and triggers it again at user logon. The task has
+no execution-time limit and retries a failed supervisor three times at
+one-minute intervals. A daemon crash therefore returns failure and activates
+that retry policy. A clean daemon exit, including the drain requested by
+`goobers down`, returns success and remains stopped.
+
+The task runs the stable `__service-supervise` host, so self-update activation,
+health monitoring, and rollback use the same mutable binary layout as the other
+platform supervisors. Product upgrades use `goobers self-update`; do not replace
+the active `updates\current\goobers.exe` directly.
+
+---
+
 ## Windows (Windows Service)
 
 The stable host uses [`internal/winsvc`](https://github.com/Agent-Clubhouse/Goobers/tree/main/internal/winsvc) to translate SCM
@@ -238,6 +266,49 @@ whose credentials the instance references.
 > [#2438](https://github.com/Agent-Clubhouse/Goobers/issues/2438).
 
 ---
+
+## Service health record (#5244)
+
+Alongside the fast informational heartbeat on stdout (which is unchanged and
+still one minute), the daemon appends a durable `service.health` event to
+`scheduler/events.jsonl` **at startup and every six hours thereafter**, whether
+or not any workflow is running. It answers "what is this instance, running as
+which account, since when" without needing a run to hang the question off — no
+workflow run is fabricated and no artificial long-lived task is held open to
+represent an idle instance.
+
+The record is not silenced by `--quiet`: that flag suppresses stdout chatter,
+while this is evidence read back from the log later.
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | Payload shape version; read it before interpreting the rest. |
+| `observedAt` | When the observation was taken. |
+| `instanceId` | The durable instance identity, or `unknown`. |
+| `identityProblem` | Present only when the identity could not be read, explaining why. |
+| `machineName` | Host name, or `unknown`. |
+| `accountName` | The account the **service** is executing as — not the interactive observer. |
+| `daemonStartedAt` / `processUptimeSeconds` | This process's lifetime. Absent when no daemon identity is available. |
+| `observedUncleanRestarts` | Count of recorded `daemon.dirty_restart` events in the readable window. |
+| `observationWindowStart` | Earliest event actually read — after log rotation this is later than the daemon's start. |
+| `windowCoverage` | `complete` when the history was readable, `unknown` when it was not. |
+
+Two deliberate limits on what the record claims:
+
+- **Zero means a covered empty window.** The restart count is reported *only*
+  when `windowCoverage` is `complete`; an unreadable window omits the field
+  entirely rather than reporting zero, so "none happened" and "nothing was
+  measured" never look alike.
+- **The names do not over-claim.** An unclean restart means the previous lock
+  was not cleanly released, which is not automatically a confirmed crash; and
+  `processUptimeSeconds` is this process's lifetime, not cumulative healthy
+  availability across restarts.
+
+Export of this record to an OpenTelemetry collector is **not** implemented. It
+needs the separately configurable operational-diagnostics stream tracked by
+#5243, whose whole point is that configuring a workflow-journal destination must
+not silently start exporting machine and account labels. The record is local
+evidence until that lands.
 
 ## Dirty restart journal event
 

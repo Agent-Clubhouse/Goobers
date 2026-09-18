@@ -40,6 +40,27 @@ func (m *Manager) WithRecoveryRepositoriesLocked(ctx context.Context, repoURL st
 	return m.withRecoveryRepositoriesLocked(ctx, repoKey(repoURL), repoURL, visit)
 }
 
+// TryWithRecoveryRepositories behaves like WithRecoveryRepositories but never
+// waits for this manager's repository lock. It exists for a caller that is
+// already inside ANOTHER repository's lock — the capacity-pressure eviction
+// hook running inside a cleanup guard — where blocking on a second repository
+// lock lets two concurrent cleanups in opposite repositories wait on each
+// other forever. A contended repository is simply not visited (found is
+// false, error nil), which for eviction means "try a different candidate",
+// never "fail the cleanup".
+func (m *Manager) TryWithRecoveryRepositories(ctx context.Context, repoURL string, visit func([]string) error) (bool, error) {
+	if visit == nil {
+		return false, fmt.Errorf("recovery repositories require visitor")
+	}
+	key := repoKey(repoURL)
+	lock := m.lockFor(key)
+	if !lock.TryLock() {
+		return false, nil
+	}
+	defer lock.Unlock()
+	return m.withRecoveryRepositoriesLocked(ctx, key, repoURL, visit)
+}
+
 func (m *Manager) withRecoveryRepositoriesLocked(ctx context.Context, key, repoURL string, visit func([]string) error) (bool, error) {
 	var found bool
 	entered, err := m.withExistingMirrorLocked(ctx, key, func(mirror string) error {

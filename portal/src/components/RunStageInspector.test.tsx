@@ -3,7 +3,7 @@ import type { ReactElement } from "react";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import { LiveDataProvider } from "../liveData";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AttemptList,
   ArtifactContent,
@@ -161,6 +161,10 @@ describe("run stage inspector", () => {
 
   beforeEach(() => {
     delete document.documentElement.dataset.theme;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("does not render an empty inspector when no stage is selected", () => {
@@ -427,6 +431,73 @@ describe("run stage inspector", () => {
     expect(client.getArtifact).toHaveBeenCalledWith("run-1", "sha256:abc", {
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it("downloads binary artifacts with a safe basename", async () => {
+    const bytes = new Uint8Array([0, 1, 2, 3]).buffer;
+    const client = stubClient(
+      [
+        attempt({
+          artifacts: [
+            {
+              name: "implement/unpushed-diff.patch",
+              digest: "sha256:abc",
+              size: bytes.byteLength,
+              mediaType: "application/octet-stream",
+            },
+          ],
+        }),
+      ],
+      {
+        digest: "sha256:abc",
+        mediaType: "application/octet-stream",
+        size: bytes.byteLength,
+        etag: null,
+        bytes,
+      },
+    );
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:artifact");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(screen.queryByText("Metadata only")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Download" }));
+
+    await waitFor(() => expect(click).toHaveBeenCalledOnce());
+    expect(client.getArtifact).toHaveBeenCalledWith("run-1", "sha256:abc", {
+      signal: expect.any(AbortSignal),
+    });
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(click.mock.instances[0]).toMatchObject({
+      download: "unpushed-diff.patch",
+      href: "blob:artifact",
+    });
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:artifact");
+  });
+
+  it("offers downloads alongside inline previews and reuses verified bytes", async () => {
+    const body = "preview and download";
+    const bytes = new TextEncoder().encode(body).buffer;
+    const client = stubClient(
+      [
+        attempt({
+          artifacts: [{ name: "notes.txt", digest: "sha256:abc", size: body.length, mediaType: "text/plain" }],
+        }),
+      ],
+      { digest: "sha256:abc", mediaType: "text/plain", size: body.length, etag: null, bytes },
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:artifact");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View content" }));
+    await screen.findByText(body);
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+
+    expect(click).toHaveBeenCalledOnce();
+    expect(client.getArtifact).toHaveBeenCalledOnce();
   });
 
   it("caps an oversized artifact preview with an internal scroll bound (#fix-artifact-windowing)", async () => {

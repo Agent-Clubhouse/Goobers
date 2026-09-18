@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/credreadiness"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -1379,10 +1380,60 @@ var harnessAdapterFor = adapterFor
 
 // perHarnessModelCredential adapts agentModelCredentialResolver to the
 // per-harness resolver shape checkHarnessesAtSources takes (#5148).
-func perHarnessModelCredential(cfg *instance.Config, stores credentials.StoreResolver) func(apiv1.Harness) (func(context.Context) (string, error), string, error) {
-	return func(h apiv1.Harness) (func(context.Context) (string, error), string, error) {
-		return agentModelCredentialResolver(cfg, stores, h)
+func perHarnessModelCredential(cfg *instance.Config, stores credentials.StoreResolver) func(apiv1.Harness) (harnessModelCredential, error) {
+	return func(h apiv1.Harness) (harnessModelCredential, error) {
+		resolve, label, err := agentModelCredentialResolver(cfg, stores, h)
+		if err != nil {
+			return harnessModelCredential{}, err
+		}
+		ref, ok := agentModelCredentialRef(cfg, h)
+		return harnessModelCredential{Resolve: resolve, Ref: ref, RefFound: ok, Label: label}, nil
 	}
+}
+
+// harnessModelCredential is one harness's agent:model grant as --check-harness
+// sees it: the resolver the preflight probe uses, plus the ref's identity so
+// the readiness report can name the SOURCE without ever naming its value
+// (#5261).
+type harnessModelCredential struct {
+	Resolve  func(context.Context) (string, error)
+	Ref      credentials.TokenRef
+	RefFound bool
+	Label    string
+}
+
+// readiness observes this grant's credential source under the identity running
+// the check. A grant with no configured ref is reported as unobservable rather
+// than skipped: "there is nothing to check here" and "this was checked and is
+// fine" are the two answers #5261 exists to keep apart.
+func (c harnessModelCredential) readiness(ctx context.Context, now time.Time) credreadiness.Check {
+	if !c.RefFound {
+		return credreadiness.Check{
+			Name:     "agent:model",
+			Kind:     credreadiness.SourceUnsupported,
+			Status:   credreadiness.StatusUnobservable,
+			Category: credreadiness.CategoryAuthentication,
+			Detail:   "no agent:model grant is configured, so no credential source was checked",
+		}
+	}
+	var resolve credreadiness.ExpiringResolve
+	if c.Resolve != nil {
+		// Token refs state no expiry -- only minting sources do -- so the
+		// zero time here is the accurate answer, and credreadiness reports it
+		// as an unknown validity window rather than as unbounded validity.
+		resolve = func(ctx context.Context) (string, time.Time, error) {
+			value, err := c.Resolve(ctx)
+			return value, time.Time{}, err
+		}
+	}
+	check := credreadiness.Probe(ctx, "agent:model", c.Ref, resolve, nil, now)
+	if check.Kind.UserScoped() && check.Status.Asserted() {
+		// The check passed, but it passed for THIS identity. Saying so is the
+		// whole point: an operator reading their own keychain or CLI login is
+		// not evidence that the service account running the work can.
+		check.Detail = "readable by the observing identity; a service identity may not share this source"
+	}
+	return check
 }
 
 // checkHarnessesAtSources preflights every distinct harness referenced by set's
@@ -1403,9 +1454,11 @@ func checkHarnessesAtSources(
 	sourceFile func(apiv1.Goober) string,
 	environment harness.EnvironmentConfig,
 	harnessCommand map[string][]string,
-	credentialResolverFor func(apiv1.Harness) (func(ctx context.Context) (string, error), string, error),
+	credentialResolverFor func(apiv1.Harness) (harnessModelCredential, error),
 	collectors ...*diagnosticCollector,
 ) bool {
+	observer := credreadiness.CurrentObserver()
+	readiness := credreadiness.Report{Observer: observer, CheckedAt: time.Now()}
 	seen := map[apiv1.Harness]bool{}
 	ok := true
 	for _, g := range goobers {
@@ -1421,17 +1474,21 @@ func checkHarnessesAtSources(
 
 		var modelCredential func(context.Context) (string, error)
 		credentialLabel := "no agent:model grant configured"
+		var credential harnessModelCredential
+		haveCredential := false
 		if credentialResolverFor != nil {
-			resolve, label, err := credentialResolverFor(h)
+			resolved, err := credentialResolverFor(h)
 			if err != nil {
 				pf(stdout, "HARNESS %s: %v\n", h, err)
 				addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
 				ok = false
 				continue
 			}
-			modelCredential = resolve
-			if label != "" {
-				credentialLabel = label
+			credential = resolved
+			haveCredential = true
+			modelCredential = resolved.Resolve
+			if resolved.Label != "" {
+				credentialLabel = resolved.Label
 			}
 		}
 
@@ -1457,8 +1514,55 @@ func checkHarnessesAtSources(
 		}
 
 		pf(stdout, "HARNESS %s: OK (agent:model: %s)\n", h, credentialLabel)
+		if haveCredential {
+			// Reported separately from the OK above because it answers a
+			// different question. The preflight says this harness signed in
+			// here; the readiness line says WHICH source that credential came
+			// from and whether it can be observed under the identity running
+			// the check -- which is not the identity a scheduled run uses
+			// (#5261).
+			readinessCtx, cancelReadiness := context.WithTimeout(context.Background(), harnessPreflightTimeout)
+			check := credential.readiness(readinessCtx, readiness.CheckedAt)
+			cancelReadiness()
+			readiness.Checks = append(readiness.Checks, check)
+			pf(stdout, "  credential %s [observed as %s]\n", check.Summarize(), observer)
+		}
 	}
+	printCredentialReadiness(stdout, readiness, observer)
 	return ok
+}
+
+// printCredentialReadiness summarizes the credential sources this run actually
+// observed. It is reported separately from each harness's OK because it answers
+// a different question, and it never upgrades to a readiness claim on its own:
+//
+//   - A report whose observing identity could not be established asserts
+//     nothing, because there is no identity to attribute the claim to.
+//   - An unobservable source keeps the whole report unready. That is the
+//     absence of evidence, which is exactly what must not round up to a pass
+//     (#5261).
+//
+// The claim is explicitly scoped to the observing identity. A scheduled run
+// executes as a service account that may not be able to read these sources at
+// all, and this output is not evidence about that identity.
+func printCredentialReadiness(stdout io.Writer, report credreadiness.Report, observer credreadiness.Observer) {
+	if len(report.Checks) == 0 {
+		return
+	}
+	if !report.AssertsFor(observer) {
+		pf(stdout, "CREDENTIALS: not asserted — the observing identity could not be established\n")
+		return
+	}
+	unready := report.Unready()
+	if report.Ready() {
+		pf(stdout, "CREDENTIALS: %d source(s) usable as %s; not evidence for another identity\n",
+			len(report.Checks), observer)
+		return
+	}
+	pf(stdout, "CREDENTIALS: %d of %d source(s) not usable as %s\n", len(unready), len(report.Checks), observer)
+	for _, check := range unready {
+		pf(stdout, "  %s\n", check.Summarize())
+	}
 }
 
 func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity, message string) {

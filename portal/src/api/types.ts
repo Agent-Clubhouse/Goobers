@@ -390,6 +390,7 @@ export interface Instance extends ContractVersion {
   telemetryRetention?: TelemetryRetentionStatus;
   journalHealth?: JournalHealthStatus;
   storageHealth?: StorageHealthStatus;
+  recoveryInventory?: RecoveryInventoryStatus;
   memoryHighWater?: number;
   memoryGateEnabled: boolean;
   fsyncDisabled: boolean;
@@ -417,6 +418,32 @@ export interface StorageHealthStatus {
   criticalFloorPercent?: number;
   measuredAt?: string;
   error?: string;
+}
+
+/**
+ * Shared recovery-snapshot inventory occupancy (#5343). A full inventory does
+ * not degrade the instance, it stops it: worktree cleanup needs a durable
+ * recovery handoff, and a worktree that cannot be cleaned cannot be reused.
+ */
+export interface RecoveryInventoryStatus {
+  state: "healthy" | "warning" | "exhausted" | "unavailable";
+  /** Occupied slots, including incomplete reservations. */
+  used: number;
+  limit: number;
+  /** Reservations holding no interpretable record. They still occupy slots. */
+  unreadable: number;
+  /**
+   * Snapshots held as pinned mirror refs with no bundle because the inventory
+   * was full when they were captured. They occupy no slot, so they are not
+   * part of `used`, and they are promoted to bundles as capacity frees.
+   */
+  overflow: number;
+  highWaterPercent: number;
+  earliestRetainUntil?: string;
+  inventoryRoot?: string;
+  policySource?: string;
+  error?: string;
+  observedAt: string;
 }
 
 export interface TelemetryRetentionStatus {

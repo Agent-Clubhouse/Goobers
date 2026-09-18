@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -38,6 +39,11 @@ type recoverySnapshot struct {
 	PatchDigest   string    `json:"patchDigest"`
 	RetainUntil   time.Time `json:"retainUntil"`
 	Expired       bool      `json:"expired"`
+	// Overflow marks a snapshot held as a pinned mirror ref with no bundle
+	// (#5370). It is restorable, but only while the managed repository keeps
+	// the objects, so an operator reading this list has to be able to tell
+	// the two tiers apart.
+	Overflow bool `json:"overflow,omitempty"`
 }
 
 // Metadata availability is distinct from bundle integrity. Restore verifies
@@ -57,11 +63,25 @@ func loadRecoveryViews(ctx context.Context, layout instance.Layout, now time.Tim
 	if err != nil {
 		return nil, err
 	}
+	overflow, _, err := readConfiguredRecoveryOverflow(ctx, layout)
+	if err != nil {
+		return nil, err
+	}
 	views := make(map[string]*recoveryView)
+	if err := addRecoveryViews(views, entries, now, false); err != nil {
+		return nil, err
+	}
+	if err := addRecoveryViews(views, overflow, now, true); err != nil {
+		return nil, err
+	}
+	return views, nil
+}
+
+func addRecoveryViews(views map[string]*recoveryView, entries []recovery.InventoryEntry, now time.Time, overflow bool) error {
 	for _, entry := range entries {
-		record, err := recovery.ReadRetainedRecord(entry.RecordPath)
+		record, err := readRecoveryEntryRecord(entry.RecordPath)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		view := views[record.RunID]
 		if view == nil {
@@ -72,9 +92,10 @@ func loadRecoveryViews(ctx context.Context, layout instance.Layout, now time.Tim
 			RepositoryKey: record.RepositoryKey, Ref: record.Ref,
 			BaseSHA: record.BaseSHA, PatchDigest: record.PatchDigest,
 			RetainUntil: record.RetainUntil, Expired: !now.Before(record.RetainUntil),
+			Overflow: overflow,
 		})
 	}
-	return views, nil
+	return nil
 }
 
 func statusRecoverySummaries(layout instance.Layout, runs []runSummary, now time.Time) []statusJSONSummary {
@@ -145,11 +166,19 @@ func printRecoveryInventoryOccupancy(out io.Writer, layout instance.Layout) {
 		pf(out, "recovery inventory: unavailable (%v)\n", err)
 		return
 	}
-	if earliest.IsZero() {
-		pf(out, "recovery inventory: %d/%d\n", used, limit)
-		return
+	line := fmt.Sprintf("recovery inventory: %d/%d", used, limit)
+	// Overflow sits next to occupancy rather than in it: these snapshots hold
+	// no slot, so folding them into used/limit would report an occupancy no
+	// reservation agrees with (#5370).
+	if overflow, err := recoveryOverflowCount(context.Background(), layout); err != nil {
+		line += " (overflow unavailable)"
+	} else if overflow > 0 {
+		line += fmt.Sprintf(" +%d overflow (held as mirror refs until capacity frees)", overflow)
 	}
-	pf(out, "recovery inventory: %d/%d (earliest retain until %s)\n", used, limit, earliest.UTC().Format(time.RFC3339))
+	if !earliest.IsZero() {
+		line += fmt.Sprintf(" (earliest retain until %s)", earliest.UTC().Format(time.RFC3339))
+	}
+	pf(out, "%s\n", line)
 }
 
 func printRecoveryView(out io.Writer, view *recoveryView) {
@@ -162,6 +191,9 @@ func printRecoveryView(out io.Writer, view *recoveryView) {
 	}
 	for _, snapshot := range view.Snapshots {
 		state := "retained"
+		if snapshot.Overflow {
+			state = "overflow"
+		}
 		if snapshot.Expired {
 			state = "expired"
 		}

@@ -40,12 +40,16 @@ describe("run detail", () => {
       await screen.findByRole("heading", { name: `Run ${runId}` }),
     ).toBeInTheDocument();
     expect(screen.getByText(status, { selector: ".status-badge" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What this run did" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Execution graph" })).not.toBeInTheDocument();
+    await openRunTab("Diagnostics");
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
     expect(screen.queryByText("Structure")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Execution timeline" })).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Selected event details" }),
     ).toBeInTheDocument();
+    await openRunTab("Journal");
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
@@ -64,6 +68,77 @@ describe("run detail", () => {
     expect(
       screen.getByText("No recent run activity is available and the daemon heartbeat is stale."),
     ).toBeInTheDocument();
+  });
+
+  it("presents the actual stage story and repass reason on Overview", async () => {
+    renderRun("01JZ402DASHBOARD");
+
+    expect(await screen.findByRole("tab", { name: "Overview" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: "What this run did" })).toBeInTheDocument();
+    expect(screen.getByText("One row per visit")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Open implement, visit / })).toHaveLength(2);
+    const secondVisit = screen.getByRole("button", {
+      name: "Open implement, visit 2, Completed",
+    });
+    expect(within(secondVisit).getByText("Returned from Review")).toBeInTheDocument();
+    expect(
+      within(secondVisit).getByText("Review returned needs-changes."),
+    ).toBeInTheDocument();
+  });
+
+  it("groups transcript checkpoints as one logical artifact", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const fixtures = populatedDaemonFixtures();
+    const eventList = fixtures.runEvents?.[runId];
+    if (!eventList) {
+      throw new Error("Expected active run events.");
+    }
+    eventList.events.push(
+      {
+        schema: "v1",
+        seq: 7,
+        type: "span.recorded",
+        branch: 0,
+        time: "2026-07-18T06:00:07Z",
+        knownSchema: true,
+        category: "evidence",
+        stage: `${runId}:implement`,
+        name: "reviewer.transcript",
+      },
+      {
+        schema: "v1",
+        seq: 8,
+        type: "span.recorded",
+        branch: 0,
+        time: "2026-07-18T06:00:08Z",
+        knownSchema: true,
+        category: "evidence",
+        stage: `${runId}:implement`,
+        name: "reviewer.transcript",
+      },
+    );
+    renderRun(runId, new FixtureDaemonClient(fixtures));
+
+    await openRunTab("Artifacts");
+    const transcript = screen.getByRole("button", { name: /Implement transcript/ });
+    expect(within(transcript).getByText("Implement · 2 checkpoints")).toBeInTheDocument();
+    expect(screen.getAllByText("Implement transcript")).toHaveLength(1);
+  });
+
+  it("supports arrow-key navigation between run detail tabs", async () => {
+    renderRun("01JZ441DAEMONAPI");
+
+    const overview = await screen.findByRole("tab", { name: "Overview" });
+    overview.focus();
+    fireEvent.keyDown(overview, { key: "ArrowRight" });
+
+    const artifacts = screen.getByRole("tab", { name: "Artifacts" });
+    expect(artifacts).toHaveFocus();
+    expect(artifacts).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "Artifacts" })).toBeInTheDocument();
   });
 
   it("reveals the run directory when the local capability is available", async () => {
@@ -109,12 +184,15 @@ describe("run detail", () => {
     const user = userEvent.setup();
     renderRun("01JZ441DAEMONAPI");
 
+    await openRunTab("Journal");
     const latest = await screen.findByRole("button", { name: /^Select sequence 6:/ });
     expect(latest).toHaveAttribute("aria-current", "true");
+    await openRunTab("Diagnostics");
     expect(
       screen.getByRole("button", { name: "review, gate, Running at sequence 6" }),
     ).toHaveAttribute("aria-pressed", "true");
 
+    await openRunTab("Journal");
     await user.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
 
     expect(
@@ -139,6 +217,7 @@ describe("run detail", () => {
 
     try {
       renderRun("01JZ441DAEMONAPI");
+      await openRunTab("Diagnostics");
       await user.click(
         await screen.findByRole("button", {
           name: "query, deterministic, Completed at sequence 6",
@@ -152,6 +231,7 @@ describe("run detail", () => {
         inline: "nearest",
       });
 
+      await openRunTab("Journal");
       await user.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
       inspector = screen.getByRole("complementary", { name: "implementation · implement attempt inspector" });
       expect(inspector).toHaveFocus();
@@ -224,18 +304,16 @@ describe("run detail", () => {
     };
     renderRun(runId, new FixtureDaemonClient(fixtures));
 
+    await openRunTab("Diagnostics");
     expect(await screen.findByText("artifact-30.txt")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(40);
     const workspace = document.querySelector(".run-detail-workspace");
     const inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    const ledger = screen.getByRole("region", { name: "Event ledger" });
     expect(workspace).toHaveAttribute("data-scroll-owner", "page");
-    expect(
-      inspector.compareDocumentPosition(ledger) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
 
     fireEvent.click(screen.getAllByRole("button", { name: "View content" })[0]);
     expect(await screen.findByText(/expanded preview/)).toBeInTheDocument();
+    await openRunTab("Journal");
+    expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(40);
 
     expect(portalStyles).not.toMatch(
       /\.run-inspector\s*\{[^}]*position:\s*sticky/s,
@@ -260,22 +338,24 @@ describe("run detail", () => {
     stageStart.replayChapter = true;
     renderRun("01JZ455ESCALATE", new FixtureDaemonClient(fixtures));
 
+    await openRunTab("Diagnostics");
     await user.click(
       await screen.findByRole("button", {
         name: /Go to Workflow transition chapter at event 2: Stage started/,
       }),
     );
 
-    expect(screen.getByRole("button", { name: /^Select sequence 2:/ })).toHaveAttribute(
-      "aria-current",
-      "true",
-    );
     expect(
       screen.getByRole("button", { name: "query, deterministic, Running at sequence 2" }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(
       screen.getByRole("complementary", { name: "implementation · query attempt inspector" }),
     ).toBeInTheDocument();
+    await openRunTab("Journal");
+    expect(screen.getByRole("button", { name: /^Select sequence 2:/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
   });
 
   it("prioritizes major events while preserving grouped evidence and exact all-event order", async () => {
@@ -432,6 +512,7 @@ describe("run detail", () => {
     };
     renderRun(runId, new FixtureDaemonClient(fixtures));
 
+    await openRunTab("Journal");
     const majorEvents = await screen.findByRole("button", { name: "Major events" });
     expect(majorEvents).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Key moments" })).toHaveAttribute(
@@ -472,12 +553,15 @@ describe("run detail", () => {
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptOne)).toBeInTheDocument();
 
+    await openRunTab("Journal");
+    fireEvent.click(screen.getByRole("button", { name: "All events (15)" }));
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
     inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("Evidence · Visit 1 · Sequence 4")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictOne)).toBeInTheDocument();
 
+    await openRunTab("Journal");
     fireEvent.click(screen.getByRole("button", { name: "All events (15)" }));
     expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(15);
     expect(
@@ -506,12 +590,16 @@ describe("run detail", () => {
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptTwo)).toBeInTheDocument();
 
+    await openRunTab("Journal");
+    fireEvent.click(screen.getByRole("button", { name: "All events (15)" }));
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 11:/ }));
     inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("Evidence · Visit 2 · Sequence 11")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictTwo)).toBeInTheDocument();
 
+    await openRunTab("Journal");
+    fireEvent.click(screen.getByRole("button", { name: "All events (15)" }));
     expect(
       screen.getAllByRole("button", { name: /^Select sequence/ }).map((button) =>
         Number(button.getAttribute("aria-label")?.match(/^Select sequence (\d+):/)?.[1]),
@@ -563,8 +651,11 @@ describe("run detail", () => {
     detail.lastSeq = 3;
     renderRun(runId, new FixtureDaemonClient(fixtures));
 
+    await openRunTab("Diagnostics");
     expect(await screen.findByText("Evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    await openRunTab("Journal");
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 1:/ }));
+    await openRunTab("Journal");
     fireEvent.click(
       screen.getByRole("button", {
         name: /Expand 2 supporting events for Review · Visit 1, sequences 2 through 3/,
@@ -579,6 +670,7 @@ describe("run detail", () => {
     const user = userEvent.setup();
     renderRun("01JZ441DAEMONAPI");
 
+    await openRunTab("Diagnostics");
     const graph = await screen.findByRole("group", {
       name: "implementation pinned execution graph",
     });
@@ -630,6 +722,7 @@ describe("run detail", () => {
   it("requests native fullscreen for the complete run graph workspace", async () => {
     renderRun("01JZ441DAEMONAPI");
 
+    await openRunTab("Diagnostics");
     const graph = await screen.findByRole("group", {
       name: "implementation pinned execution graph",
     });
@@ -722,6 +815,7 @@ describe("run detail", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
+    fireEvent.click(screen.getByRole("tab", { name: "Journal" }));
 
     events.events.push({
       schema: "v1",
@@ -747,10 +841,12 @@ describe("run detail", () => {
       "aria-current",
       "true",
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Diagnostics" }));
     expect(
       screen.getByRole("button", { name: "review, gate, Completed at sequence 7" }),
     ).toHaveAttribute("aria-pressed", "true");
 
+    fireEvent.click(screen.getByRole("tab", { name: "Journal" }));
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
     events.events.push({
       schema: "v1",
@@ -769,6 +865,7 @@ describe("run detail", () => {
       await vi.advanceTimersByTimeAsync(200);
     });
 
+    fireEvent.click(screen.getByRole("tab", { name: "Journal" }));
     expect(screen.getByRole("button", { name: /^Select sequence 4:/ })).toHaveAttribute(
       "aria-current",
       "true",
@@ -790,6 +887,7 @@ describe("run detail", () => {
     const client = new LiveFixtureClient(fixtures);
     renderRun(runId, client);
     await screen.findByRole("heading", { name: `Run ${runId}` });
+    await openRunTab("Diagnostics");
 
     expect(
       screen.getByRole("button", { name: "review, gate, Running at sequence 6" }),
@@ -822,21 +920,24 @@ describe("run detail", () => {
     // The graph selection must survive the background refresh instead of
     // snapping back to the new latest stage (unlike the timeline-event and
     // replay-seek paths, this previously left followingLatest untouched).
-    await screen.findByRole("button", { name: /^Select sequence 7:/ });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "query, deterministic, Completed at sequence 6" }),
+      ).toHaveAttribute("aria-pressed", "true"),
+    );
     expect(
       screen.getByRole("button", { name: "query, deterministic, Completed at sequence 6" }),
     ).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).not.toHaveAttribute(
-      "aria-current",
-    );
 
     fireEvent.click(screen.getByRole("button", { name: /^review, gate,/ }));
 
     // Selecting the latest stage resumes follow-latest immediately.
+    await openRunTab("Journal");
     expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).toHaveAttribute(
       "aria-current",
       "true",
     );
+    await openRunTab("Diagnostics");
 
     events.events.push({
       schema: "v1",
@@ -853,11 +954,9 @@ describe("run detail", () => {
     act(() => client.invalidateRun("fixture:2"));
 
     // Follow-latest continues to track subsequent live events.
+    await openRunTab("Journal");
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Select sequence 8:/ })).toHaveAttribute(
-        "aria-current",
-        "true",
-      ),
+      expect(screen.getByRole("button", { name: /^Select sequence 8:/ })).toHaveAttribute("aria-current", "true"),
     );
     client.close();
   });
@@ -903,6 +1002,7 @@ describe("run detail", () => {
     const client = new LiveFixtureClient(fixtures);
     renderRun(runId, client);
 
+    await openRunTab("Diagnostics");
     fireEvent.click(
       await screen.findByRole("button", { name: "Visit 1 · Attempt 1" }),
     );
@@ -927,16 +1027,19 @@ describe("run detail", () => {
     detail.currentStage = "implement";
     act(() => client.invalidateRun("fixture:attempt-selection"));
 
-    await screen.findByRole("button", { name: /^Select sequence 7:/ });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Visit 1 · Attempt 1" }),
+      ).toHaveAttribute("aria-pressed", "true"),
+    );
     expect(
       screen.getByRole("button", { name: "review, gate, Running at sequence 6" }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(
       screen.getByRole("button", { name: "Visit 1 · Attempt 1" }),
     ).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).not.toHaveAttribute(
-      "aria-current",
-    );
+    await openRunTab("Journal");
+    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).not.toHaveAttribute("aria-current");
     client.close();
   });
 
@@ -957,6 +1060,7 @@ describe("run detail", () => {
     const client = new LiveFixtureClient(populatedDaemonFixtures());
     renderRun(runId, client);
     await screen.findByRole("heading", { name: `Run ${runId}` });
+    await openRunTab("Diagnostics");
 
     client.holdRefresh();
     await act(async () => {
@@ -998,6 +1102,7 @@ describe("run detail", () => {
   it("keeps repasses on one graph node and exposes attempts in sequence", async () => {
     renderRun("01JZ402DASHBOARD");
 
+    await openRunTab("Diagnostics");
     const graph = await screen.findByRole("group", {
       name: "implementation pinned execution graph",
     });
@@ -1029,6 +1134,7 @@ describe("run detail", () => {
   it("keeps an unknown schema visible without rendering its raw payload", async () => {
     renderRun("01JZ455ESCALATE");
 
+    await openRunTab("Journal");
     expect(await screen.findByText("Unsupported schema v2-preview")).toBeInTheDocument();
     expect(screen.getAllByText("future.recorded")).not.toHaveLength(0);
     expect(screen.queryByText(/preserved but not rendered/)).not.toBeInTheDocument();
@@ -1037,6 +1143,7 @@ describe("run detail", () => {
   it("operates the ledger and graph with directional keys", async () => {
     renderRun("01JZ441DAEMONAPI");
 
+    await openRunTab("Journal");
     const sequenceFour = await screen.findByRole("button", { name: /^Select sequence 4:/ });
     sequenceFour.focus();
     fireEvent.keyDown(sequenceFour, { key: "ArrowDown" });
@@ -1044,6 +1151,7 @@ describe("run detail", () => {
     const sequenceFive = screen.getByRole("button", { name: /^Select sequence 5:/ });
     expect(sequenceFive).toHaveFocus();
     expect(sequenceFive).toHaveAttribute("aria-current", "true");
+    await openRunTab("Diagnostics");
     const queryNode = screen.getByRole("button", {
       name: "query, deterministic, Completed at sequence 5",
     });
@@ -1060,6 +1168,7 @@ describe("run detail", () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
     renderRun("01JZ300ABORTED");
 
+    await openRunTab("Diagnostics");
     expect(
       await screen.findByText("sha256:tools", { selector: ".run-graph-pin .mono" }),
     ).toBeInTheDocument();
@@ -1108,6 +1217,7 @@ describe("run detail", () => {
 
   it("exposes mobile-first ledger fields with expandable secondary detail", async () => {
     renderRun("01JZ441DAEMONAPI");
+    await openRunTab("Journal");
     const row = await screen.findByRole("button", { name: /^Select sequence 6:/ });
     expect(within(row).getByText("6")).toBeInTheDocument();
     expect(within(row).getByText("review")).toBeInTheDocument();
@@ -1133,11 +1243,12 @@ describe("run detail", () => {
     const user = userEvent.setup();
     renderRun("01JZ400FAILED");
 
-    const banner = await screen.findByRole("region", {
-      name: /harness\.crash · Harness exited before producing a result envelope\./,
-    });
+    const banner = await screen.findByRole("region", { name: "Run failed" });
 
-    expect(within(banner).getAllByText("harness.crash", { selector: ".mono" })).toHaveLength(2);
+    expect(within(banner).getByText("harness.crash", { selector: ".mono" })).toBeInTheDocument();
+    expect(
+      within(banner).getByText("Harness exited before producing a result envelope."),
+    ).toBeInTheDocument();
     expect(within(banner).getByRole("link", { name: /view matching errors/i })).toHaveAttribute(
       "href",
       "#/errors?gaggle=core&workflow=implementation&stage=implement&code=harness.crash",
@@ -1153,6 +1264,7 @@ describe("run detail", () => {
   it("marks the failing ledger event with a severity class and a text label, not color alone", async () => {
     renderRun("01JZ400FAILED");
 
+    await openRunTab("Journal");
     const failingRow = await screen.findByRole("button", {
       name: /^Select sequence 5:.*Failed\.$/,
     });
@@ -1171,6 +1283,7 @@ describe("journal stage column", () => {
   it("renders the stage as its own column and announces it", async () => {
     renderRun("01JZ441DAEMONAPI");
 
+    await openRunTab("Journal");
     await screen.findByRole("heading", { name: "Event ledger" });
     fireEvent.click(screen.getByRole("button", { name: /^All events/ }));
 
@@ -1188,6 +1301,7 @@ describe("journal stage column", () => {
     const user = userEvent.setup();
     renderRun("01JZ441DAEMONAPI");
 
+    await openRunTab("Journal");
     await screen.findByRole("heading", { name: "Event ledger" });
     fireEvent.click(screen.getByRole("button", { name: /^All events/ }));
     const all = screen.getAllByRole("button", { name: /^Select sequence/ }).length;
@@ -1215,6 +1329,7 @@ describe("journal search", () => {
     const user = userEvent.setup();
     renderRun("01JZ441DAEMONAPI");
 
+    await openRunTab("Journal");
     await screen.findByRole("heading", { name: "Event ledger" });
     fireEvent.click(screen.getByRole("button", { name: /^All events/ }));
     const all = screen.getAllByRole("button", { name: /^Select sequence/ }).length;
@@ -1243,6 +1358,7 @@ describe("journal search", () => {
     const user = userEvent.setup();
     renderRun("01JZ441DAEMONAPI");
 
+    await openRunTab("Journal");
     await screen.findByRole("heading", { name: "Event ledger" });
     fireEvent.click(screen.getByRole("button", { name: /^All events/ }));
 
@@ -1271,6 +1387,10 @@ function renderRun(
 ) {
   window.location.hash = `#/run/${runId}`;
   return render(<App client={client} />);
+}
+
+async function openRunTab(name: "Overview" | "Artifacts" | "Diagnostics" | "Journal") {
+  fireEvent.click(await screen.findByRole("tab", { name }));
 }
 
 class LiveFixtureClient extends FixtureDaemonClient {

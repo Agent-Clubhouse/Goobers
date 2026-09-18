@@ -19,6 +19,8 @@ const (
 	placementKeyNode         = "node"
 	placementKeyHost         = "host"
 	placementKeyOS           = "os"
+	placementKeyBuild        = "build"
+	placementKeyWorker       = "worker"
 	placementKeyImage        = "image"
 	placementKeyPod          = "pod"
 	placementKeyQueuedAt     = "queuedAt"
@@ -58,6 +60,16 @@ type Placement struct {
 	Host string `json:"host,omitempty"`
 	// OS is the GOOS of the executing substrate.
 	OS string `json:"os,omitempty"`
+	// Build is the Temporal build ID/version this attempt ran under, when the
+	// worker exposes one. It is the worker's runtime identity for the process
+	// that executed the attempt and is recorded in the runner.* metadata so an
+	// operator can explain which build served a stage without reading back the
+	// raw Temporal history.
+	Build string `json:"build,omitempty"`
+	// Worker is the executing worker's identity string (for example
+	// goobers-worker/<build>@<host>#<pid>) so operators can connect a stage
+	// attempt to the exact process that ran it.
+	Worker string `json:"worker,omitempty"`
 	// Image is the container image reference the attempt ran under, when the
 	// substrate is containerized and knows it.
 	Image string `json:"image,omitempty"`
@@ -89,6 +101,8 @@ func PlacementEvent(stage string, attempt int, class AttemptClass, p Placement) 
 	setNonEmpty(placementKeyNode, p.Node)
 	setNonEmpty(placementKeyHost, p.Host)
 	setNonEmpty(placementKeyOS, p.OS)
+	setNonEmpty(placementKeyBuild, p.Build)
+	setNonEmpty(placementKeyWorker, p.Worker)
 	setNonEmpty(placementKeyImage, p.Image)
 	setNonEmpty(placementKeyPod, p.Pod)
 	if p.QueuedAt != nil {
@@ -123,6 +137,8 @@ func PlacementFromEvent(e Event) (Placement, bool) {
 		Node:         str(placementKeyNode),
 		Host:         str(placementKeyHost),
 		OS:           str(placementKeyOS),
+		Build:        str(placementKeyBuild),
+		Worker:       str(placementKeyWorker),
 		Image:        str(placementKeyImage),
 		Pod:          str(placementKeyPod),
 		QueuedAt:     placementTime(e.Runner[placementKeyQueuedAt]),
