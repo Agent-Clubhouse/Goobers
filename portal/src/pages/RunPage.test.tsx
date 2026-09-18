@@ -1245,11 +1245,12 @@ describe("run detail", () => {
     const user = userEvent.setup();
     renderRun("01JZ400FAILED");
 
-    const banner = await screen.findByRole("region", {
-      name: /harness\.crash · Harness exited before producing a result envelope\./,
-    });
+    const banner = await screen.findByRole("region", { name: "Run failed" });
 
-    expect(within(banner).getAllByText("harness.crash", { selector: ".mono" })).toHaveLength(2);
+    expect(within(banner).getByText("harness.crash", { selector: ".mono" })).toBeInTheDocument();
+    expect(
+      within(banner).getByText("Harness exited before producing a result envelope."),
+    ).toBeInTheDocument();
     expect(within(banner).getByRole("link", { name: /view matching errors/i })).toHaveAttribute(
       "href",
       "#/errors?gaggle=core&workflow=implementation&stage=implement&code=harness.crash",
