@@ -5,13 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -58,8 +54,13 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 		return err
 	}
 	results, worktreeErr := wtMgr.FinalizeRun(context.Background(), runID)
-	if retainErr := retainTerminalRunBranch(l, wtMgr, runID); retainErr != nil {
-		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: retain terminal branch for %s: %w", worktree.ErrCleanupDeferred, runID, retainErr))
+	// After existing worktrees are finalized, and before renewal: a run whose
+	// worktrees were all removed while it was still nonterminal has its only
+	// implementation on the mirror's run branch, and nothing but this capture
+	// publishes it. Deferring the failure keeps the run active for a retry
+	// exactly as a refused terminal handoff does.
+	if captureErr := captureTerminalRunBranch(l, wtMgr, runID); captureErr != nil {
+		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: capture terminal run branch for %s: %w", worktree.ErrCleanupDeferred, runID, captureErr))
 	}
 	if renewErr := renewTerminalRecovery(l, runID); renewErr != nil {
 		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: renew terminal recovery for %s: %w", worktree.ErrCleanupDeferred, runID, renewErr))
@@ -128,120 +129,6 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 		err = journal.ClearRunActive(filepath.Join(l.RunsDir(), runID))
 	}
 	return err
-}
-
-func retainTerminalRunBranch(l instance.Layout, manager *worktree.Manager, runID string) error {
-	reader, err := journal.OpenReadOnly(filepath.Join(l.RunsDir(), runID))
-	if err != nil {
-		return err
-	}
-	identity, err := reader.Identity()
-	if err != nil {
-		return err
-	}
-	events, err := reader.Events()
-	if err != nil {
-		return err
-	}
-	var branch string
-	for _, event := range events {
-		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
-			branch = strings.TrimSpace(event.ExternalRef.ID)
-		}
-	}
-	if branch == "" {
-		return nil
-	}
-	pinned := false
-	for _, event := range events {
-		if event.Type == journal.EventRunnerAnnotation && event.Runner["workspaceMode"] == "pinned" {
-			pinned = true
-			break
-		}
-	}
-	if exists, inventoryErr := terminalRecoveryExists(l, runID); inventoryErr != nil {
-		return inventoryErr
-	} else if exists {
-		return nil
-	}
-	project := apiv1.RepoRef{}
-	if identity.WorkspaceRepository != nil {
-		project = *identity.WorkspaceRepository
-	} else {
-		project, err = terminalGaggleProject(l)
-		if err != nil {
-			return err
-		}
-	}
-	if project.Name == "" || strings.TrimSpace(project.Branch) == "" {
-		return fmt.Errorf("terminal recovery requires the run repository and base branch")
-	}
-	cloneURL := repoCloneURL
-	if cloneURL == nil {
-		cloneURL = runner.DefaultRepoCloneURL
-	}
-	url, err := cloneURL(project)
-	if err != nil {
-		return err
-	}
-	cfg, err := instance.LoadConfig(l.ConfigFile())
-	if err != nil {
-		return err
-	}
-	identities, err := recoveryRepositoryIdentities(cfg, cloneURL)
-	if err != nil {
-		return err
-	}
-	target := func(path string, pinned bool) worktree.CleanupTarget {
-		worktreeID := "terminal-branch"
-		baseRef := project.Branch
-		if pinned {
-			worktreeID = "terminal-pinned"
-			baseRef = "refs/remotes/mirror/" + project.Branch
-		}
-		return worktree.CleanupTarget{
-			Path: path, WorktreeID: worktreeID, OwnerRunID: runID,
-			Gaggle: identity.Gaggle, BaseRef: baseRef, Pinned: pinned,
-			RepositoryDigest: worktree.RepositoryDigest(url), CreatedAt: identity.StartedAt,
-		}
-	}
-	callback := recoveryCleanupHandler(l, cfg, manager.Root, identities, journal.NewRegistryScrubber(), true, manager, nil)
-	if pinned {
-		found, err := manager.WithPinnedWorkspaceOwnedBy(context.Background(), url, runID, branch, func(path string) error {
-			return callback(context.Background(), target(path, true))
-		})
-		if err != nil {
-			return err
-		}
-		if !found {
-			return fmt.Errorf("terminal recovery pinned workspace for branch %q is not held by run %s", branch, runID)
-		}
-		return nil
-	}
-	found, err := manager.WithExistingBranchCheckout(context.Background(), url, branch, project.Branch, func(path string) error {
-		return callback(context.Background(), target(path, false))
-	})
-	if err != nil {
-		return err
-	}
-	if found {
-		return nil
-	}
-	return fmt.Errorf("terminal recovery branch %q is not present in the managed mirror", branch)
-}
-
-func terminalRecoveryExists(l instance.Layout, runID string) (bool, error) {
-	cfg, _ := resolveRecoveryPolicy(l, nil)
-	entries, err := recovery.ReadInventory(context.Background(), filepath.Join(l.Root, "recovery"), cfg.MaxSnapshotsEffective())
-	if err != nil {
-		return false, err
-	}
-	for _, entry := range entries {
-		if entry.Record.RunID == runID {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func worktreeDispositionJournaled(schedulerDir, runID, worktreeID, status string) (bool, error) {

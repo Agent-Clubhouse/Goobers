@@ -3,12 +3,10 @@ package worktree
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/safeopen"
@@ -55,41 +53,6 @@ func (m *Manager) handoffPinnedState(ctx context.Context, key, expectedOwner str
 		Path: path, WorktreeID: "pin-" + key, OwnerRunID: owner.OwnerRunID,
 		Gaggle: owner.Gaggle, BaseRef: owner.BaseRef, RepositoryDigest: owner.RepositoryDigest,
 		CreatedAt: owner.CreatedAt, Pinned: true,
-	})
-}
-
-// WithPinnedWorkspaceOwnedBy visits a released pinned workspace under its
-// repository and lease locks after verifying recovery custody and branch.
-func (m *Manager) WithPinnedWorkspaceOwnedBy(ctx context.Context, repoURL, ownerRunID, branch string, visit func(string) error) (bool, error) {
-	branch = strings.TrimSpace(branch)
-	if repoURL == "" || !validRunID(ownerRunID) || branch == "" || visit == nil {
-		return false, fmt.Errorf("worktree: pinned custody visit requires repository identity, run ID, branch, and visitor")
-	}
-	key := repoKey(repoURL)
-	lock := m.lockFor(key)
-	lock.Lock()
-	defer lock.Unlock()
-	root := filepath.Join(m.pinnedRoot, key)
-	owner, err := readPinnedCustody(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if owner.OwnerRunID != ownerRunID {
-		return false, nil
-	}
-	return m.withPinnedRecoveryRepository(ctx, repoURL, nil, func(repositories []string) error {
-		pin := repositories[0]
-		head, err := gitOutput(ctx, pin, "symbolic-ref", "--quiet", "HEAD")
-		if err != nil {
-			return fmt.Errorf("worktree: inspect pinned recovery branch: %w", err)
-		}
-		if head != "refs/heads/"+branch {
-			return fmt.Errorf("worktree: pinned recovery workspace is on branch %q, expected %q", strings.TrimPrefix(head, "refs/heads/"), branch)
-		}
-		return visit(pin)
 	})
 }
 

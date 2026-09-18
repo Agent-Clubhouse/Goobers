@@ -16,7 +16,6 @@ func TestPinnedCustodyRejectsInvalidMetadataBeforeHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	for _, mode := range []string{"valid", "oversize", "truncated", "empty", "foreign", "directory"} {
 		t.Run(mode, func(t *testing.T) {
 			m, err := NewManager(t.TempDir())
@@ -57,40 +56,5 @@ func TestPinnedCustodyRejectsInvalidMetadataBeforeHandoff(t *testing.T) {
 				t.Fatalf("handoff called=%t error=%v", called, err)
 			}
 		})
-	}
-}
-
-func TestWithPinnedWorkspaceOwnedBy(t *testing.T) {
-	manager, err := NewManager(t.TempDir(), WithPinnedRoot(t.TempDir()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo := newSourceRepo(t)
-	const branch = "goobers/implementation/owner"
-	lease, err := manager.AcquirePinned(t.Context(), PinnedOptions{
-		RepoURL: repo, RunID: "owner", BaseRef: "main", Branch: branch,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := lease.Release(); err != nil {
-		t.Fatal(err)
-	}
-	called := false
-	found, err := manager.WithPinnedWorkspaceOwnedBy(t.Context(), repo, "owner", branch, func(path string) error {
-		called = true
-		if path != lease.Worktree.Path {
-			t.Fatalf("visited path = %q, want %q", path, lease.Worktree.Path)
-		}
-		return nil
-	})
-	if err != nil || !found || !called {
-		t.Fatalf("owner lookup = %t, called=%t, %v", found, called, err)
-	}
-	if found, err := manager.WithPinnedWorkspaceOwnedBy(t.Context(), repo, "other", branch, func(string) error {
-		t.Fatal("unexpected foreign visit")
-		return nil
-	}); err != nil || found {
-		t.Fatalf("other lookup = %t, %v", found, err)
 	}
 }
