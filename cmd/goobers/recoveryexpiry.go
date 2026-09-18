@@ -35,22 +35,40 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	if setup.InstanceLog != nil {
 		journalRecoveryPolicyFallback(setup.InstanceLog, origin, policy, root)
 	}
-	entries, err := recovery.ReadInventory(ctx, root, policy.MaxSnapshotsEffective())
-	if err != nil {
-		return err
-	}
-	if len(entries) == 0 {
-		return nil
-	}
-	operatorEvents, err := journal.ReadInstanceLog(layout.SchedulerDir())
-	if err != nil {
-		return err
-	}
-	entries, err = prioritizeAbandonedRecovery(entries, operatorEvents)
+	// Tolerant, and this is the fix for a hard instance wedge. The sweep is the
+	// ONLY path that reclaims capacity by retention policy, and it read the
+	// inventory all-or-nothing: one crashed publish leaves a reservation
+	// holding only lock files, the strict read then failed the whole scan, and
+	// from that moment nothing was ever retired again. The inventory climbed to
+	// its cap, every worktree cleanup needing a recovery handoff was refused
+	// with ErrInventoryFull, worktree reuse stopped, and stages died at
+	// "create worktree". #5092 fixed exactly this for the eviction path and
+	// left the sweep strict.
+	//
+	// Tolerance is safe HERE specifically because this sweep never infers
+	// absence: it decides each entry on that entry's own evidence and retires
+	// it individually, so not seeing a broken neighbour cannot make retiring
+	// this one wrong. ReadInventory stays all-or-nothing for callers that ask
+	// whether recovery state exists at all, which is the distinction its doc
+	// draws. The unreadable set is reported rather than dropped, so an
+	// incomplete scan is never mistaken for a clean one.
+	entries, unreadable, err := recovery.ReadInventoryTolerant(ctx, root, policy.MaxSnapshotsEffective())
 	if err != nil {
 		return err
 	}
 	var failures error
+	for _, broken := range unreadable {
+		pf(stderr, "warning: recovery inventory reservation %q is unreadable and still consumes a slot: %v\n", broken.Name, broken.Err)
+		failures = errors.Join(failures, fmt.Errorf("unreadable recovery reservation %s: %w", broken.Name, broken.Err))
+	}
+	if len(entries) == 0 {
+		return failures
+	}
+	operatorEvents, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	entries = prioritizeAbandonedRecovery(entries, operatorEvents, &failures)
 	for _, entry := range entries {
 		err := retireExpiredRecoveryEntry(ctx, root, setup, policy, managers, runsByRoot, entry, operatorEvents, dryRun, stdout)
 		if err != nil {
@@ -61,17 +79,32 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	return failures
 }
 
-func prioritizeAbandonedRecovery(entries []recovery.InventoryEntry, operatorEvents []journal.Event) ([]recovery.InventoryEntry, error) {
+// prioritizeAbandonedRecovery puts operator-abandoned entries first so the
+// slots an operator has already released are reclaimed before anything else.
+//
+// An entry whose record cannot be read is now SKIPPED (recorded into failures)
+// rather than aborting the whole ordering. It was the second of two places
+// where one damaged entry stopped every other entry from ever being retired:
+// ordering is a preference, so failing to classify one entry must not deny the
+// other 127 their retention policy. A skipped entry keeps its slot and is
+// reported, so the problem stays visible instead of becoming a silent leak.
+func prioritizeAbandonedRecovery(
+	entries []recovery.InventoryEntry,
+	operatorEvents []journal.Event,
+	failures *error,
+) []recovery.InventoryEntry {
 	prioritized := make([]recovery.InventoryEntry, 0, len(entries))
 	remaining := make([]recovery.InventoryEntry, 0, len(entries))
 	for _, entry := range entries {
 		current, err := recovery.ReadRetainedRecord(entry.RecordPath)
 		if err != nil {
-			return nil, err
+			*failures = errors.Join(*failures, fmt.Errorf("classify recovery entry %s: %w", entry.RecordPath, err))
+			continue
 		}
 		abandoned, err := recovery.ExplicitlyAbandoned(operatorEvents, current)
 		if err != nil {
-			return nil, err
+			*failures = errors.Join(*failures, fmt.Errorf("classify recovery entry %s: %w", entry.RecordPath, err))
+			continue
 		}
 		if abandoned {
 			prioritized = append(prioritized, entry)
@@ -79,7 +112,7 @@ func prioritizeAbandonedRecovery(entries []recovery.InventoryEntry, operatorEven
 			remaining = append(remaining, entry)
 		}
 	}
-	return append(prioritized, remaining...), nil
+	return append(prioritized, remaining...)
 }
 
 func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, recoveryCfg instance.RecoverySnapshotConfig, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, operatorEvents []journal.Event, dryRun bool, stdout io.Writer) error {
