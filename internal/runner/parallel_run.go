@@ -655,6 +655,7 @@ func (r *Runner) runParallelBranch(
 						upstreamResult:  result.lastResult,
 						completed:       result.completed,
 						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
+						workspaceRevision: &in.workspaceRevision,
 					},
 					branch.id, startAttempt, firstClass, "",
 					nil, committedWorkOnInfra, resumeAccounting,

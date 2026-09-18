@@ -2,6 +2,7 @@ package runner
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -301,6 +302,23 @@ func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) 
 		return nil
 	}
 	return out
+}
+
+func reconstructWorkspaceRevision(events []journal.Event) *apiv1.WorkspaceRevision {
+	var revision *apiv1.WorkspaceRevision
+	for _, event := range events {
+		if event.Type != journal.EventStageFinished || event.WorkspaceRevision == nil {
+			continue
+		}
+		if revision == nil {
+			revision = event.WorkspaceRevision.DeepCopy()
+			continue
+		}
+		if !reflect.DeepEqual(revision, event.WorkspaceRevision) {
+			return nil
+		}
+	}
+	return revision
 }
 
 // resolvedInputGrades maps each of a task's inputsFrom entries to the provenance

@@ -14,7 +14,12 @@ func Resolve(revision apiv1.WorkspaceRevision, base apiv1.RepoRef, additional []
 	if err := revision.Validate(); err != nil {
 		return apiv1.RepoRef{}, &Error{Code: CodeInvalid, Message: err.Error(), Cause: err}
 	}
-	refs := append([]apiv1.RepoRef{base}, additional...)
+	if revision.BaseRepository != nil && !matches(*revision.BaseRepository, base) {
+		return apiv1.RepoRef{}, &Error{Code: CodeUnauthorized, Message: "selected base repository does not match configured base"}
+	}
+	refs := make([]apiv1.RepoRef, 0, len(additional)+1)
+	refs = append(refs, base)
+	refs = append(refs, additional...)
 	var match *apiv1.RepoRef
 	for _, configured := range refs {
 		if !matches(revision.Repository, configured) {
@@ -29,33 +34,53 @@ func Resolve(revision apiv1.WorkspaceRevision, base apiv1.RepoRef, additional []
 	if match == nil {
 		return apiv1.RepoRef{}, &Error{Code: CodeUnauthorized, Message: "selected repository is not declared by configuration"}
 	}
+	if match.Checkout != nil {
+		checkout := *match.Checkout
+		checkout.Sparse = append([]string(nil), checkout.Sparse...)
+		match.Checkout = &checkout
+	}
 	return *match, nil
 }
 
 func matches(identity apiv1.RepositoryIdentity, configured apiv1.RepoRef) bool {
 	if identity.Provider != configured.Provider ||
 		!strings.EqualFold(identity.Owner, configured.Owner) ||
-		!strings.EqualFold(identity.Project, configured.Project) ||
-		(!strings.EqualFold(identity.Name, configured.Name) &&
-			(identity.Provider != apiv1.ProviderADO || identity.ID == "" || !strings.EqualFold(identity.ID, configured.Name))) {
+		!strings.EqualFold(identity.Project, configured.Project) {
+		return false
+	}
+	if !strings.EqualFold(identity.Name, configured.Name) {
 		return false
 	}
 	raw := configured.BaseURL
-	if raw == "" {
-		if configured.Provider == apiv1.ProviderGitHub {
-			raw = "https://github.com"
-		} else if configured.Provider == apiv1.ProviderADO {
-			raw = "https://dev.azure.com"
-		}
+	switch {
+	case raw == "" && configured.Provider == apiv1.ProviderGitHub:
+		raw = "https://github.com"
+	case raw == "" && configured.Provider == apiv1.ProviderADO:
+		raw = "https://dev.azure.com"
 	}
 	configuredURL, err := url.Parse(raw)
-	if err != nil || configuredURL.Hostname() == "" {
+	if err != nil || configuredURL.Hostname() == "" ||
+		(configuredURL.Scheme != "http" && configuredURL.Scheme != "https") ||
+		configuredURL.User != nil || configuredURL.RawQuery != "" || configuredURL.Fragment != "" {
 		return false
 	}
 	if identity.URL == "" {
-		return configured.BaseURL == ""
+		return configured.Provider != apiv1.ProviderGitea && configured.BaseURL == ""
 	}
 	selected, err := url.Parse(identity.URL)
-	return err == nil && strings.EqualFold(selected.Scheme, configuredURL.Scheme) &&
-		strings.EqualFold(selected.Host, configuredURL.Host)
+	if err != nil || !strings.EqualFold(selected.Scheme, configuredURL.Scheme) ||
+		!strings.EqualFold(selected.Host, configuredURL.Host) {
+		return false
+	}
+	path := strings.TrimSuffix(strings.TrimSuffix(selected.Path, "/"), ".git")
+	switch identity.Provider {
+	case apiv1.ProviderGitHub, apiv1.ProviderGitea:
+		return strings.EqualFold(path, strings.TrimSuffix(configuredURL.Path, "/")+"/"+identity.Owner+"/"+identity.Name)
+	case apiv1.ProviderADO:
+		root := strings.TrimSuffix(configuredURL.Path, "/") + "/" + identity.Owner + "/" + identity.Project
+		return strings.EqualFold(path, root+"/_git/"+identity.Name) ||
+			(identity.ID != "" && strings.EqualFold(path, root+"/_git/"+identity.ID))
+	default:
+		return false
+	}
 }

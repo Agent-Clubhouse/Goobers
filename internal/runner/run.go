@@ -897,6 +897,7 @@ type StartInput struct {
 	RequiredCapabilities []string
 	pinnedWorkspace      *worktree.Worktree
 	pinnedStage          *sync.Mutex
+	workspaceRevision    *apiv1.WorkspaceRevision
 }
 
 // ToolchainVerifier verifies, on the executing host, that a run's declared
@@ -1323,6 +1324,7 @@ type walkState struct {
 	fanIn                *parallelExec
 	workspaceBranch      string
 	branchRecorded       bool
+	workspaceRevision    *apiv1.WorkspaceRevision
 	reboundRecorded      string
 	humanDecision        *HumanGateDecision
 	gateAttempts         map[string]int
@@ -1369,12 +1371,13 @@ func (ws *walkState) chargeEvidenceRejection(gateName, digest string) (int, bool
 
 func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state string) *walkState {
 	return &walkState{
-		jr:            jr,
-		in:            in,
-		reg:           reg,
-		state:         state,
-		completed:     stageOutputs{},
-		visitedStages: map[string]bool{},
+		jr:                jr,
+		in:                in,
+		reg:               reg,
+		state:             state,
+		completed:         stageOutputs{},
+		visitedStages:     map[string]bool{},
+		workspaceRevision: in.workspaceRevision.DeepCopy(),
 	}
 }
 
@@ -2159,7 +2162,8 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 				upstream: upstreamPointers, upstreamResult: ws.lastResult,
 				completed: ws.completed, fanIn: ws.fanIn,
 				workspaceBranch: ws.workspaceBranch, branchRecorded: &ws.branchRecorded,
-				reboundRecorded: &ws.reboundRecorded,
+				reboundRecorded:   &ws.reboundRecorded,
+				workspaceRevision: &ws.workspaceRevision,
 			},
 			branch, startAttempt, firstClass, instructionAddendum,
 			taskRerun, infraFailedAttemptCommittedWork, resumeAccounting,
@@ -4516,12 +4520,16 @@ type taskFrame struct {
 	// once rather than once per stage. A run that rebinds twice records both,
 	// which is exactly what terminal capture has to evaluate. A parallel
 	// branch journals into its own branch journal and so carries its own.
-	reboundRecorded *string
+	reboundRecorded   *string
+	workspaceRevision **apiv1.WorkspaceRevision
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
 	jr, in, t := tf.jr, tf.in, tf.t
+	if tf.workspaceRevision != nil {
+		in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
+	}
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
 	// Both admission checks run here, before any workspace or credential
@@ -4769,6 +4777,50 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			}
 			result.Summary = "workspace revision authority is restricted to deterministic stages"
 		}
+		if t.Type == apiv1.TaskDeterministic &&
+			result.Status == apiv1.ResultSuccess &&
+			result.WorkspaceRevision != nil {
+			if _, err := workspacerevision.Resolve(*result.WorkspaceRevision, in.RepoRef, r.cfg.AdditionalRepos); err != nil {
+				errorCode := workspacerevision.CodeUnauthorized
+				var revisionErr *workspacerevision.Error
+				if errors.As(err, &revisionErr) {
+					errorCode = revisionErr.Code
+				}
+				if aerr := jr.Append(journal.Event{
+					Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
+					Error: &journal.ErrorDetail{Code: errorCode, Message: err.Error()},
+				}); aerr != nil {
+					err = fmt.Errorf("runner: journal workspace revision rejection for %q: %w", t.Name, aerr)
+					span.Fail(err)
+					return apiv1.ResultEnvelope{}, nil, err
+				}
+				span.Fail(err)
+				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: stage %q workspace revision rejected: %w", t.Name, err)
+			}
+			var current *apiv1.WorkspaceRevision
+			if tf.workspaceRevision != nil {
+				current = *tf.workspaceRevision
+			} else {
+				current = in.workspaceRevision
+			}
+			accepted, err := workspacerevision.Accept(current, result.WorkspaceRevision, true, true)
+			if err != nil {
+				if aerr := jr.Append(journal.Event{
+					Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
+					Error: &journal.ErrorDetail{Code: workspacerevision.CodeConflict, Message: err.Error()},
+				}); aerr != nil {
+					err = fmt.Errorf("runner: journal workspace revision rejection for %q: %w", t.Name, aerr)
+					span.Fail(err)
+					return apiv1.ResultEnvelope{}, nil, err
+				}
+				span.Fail(err)
+				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: stage %q workspace revision rejected: %w", t.Name, err)
+			}
+			if tf.workspaceRevision != nil {
+				*tf.workspaceRevision = accepted.DeepCopy()
+			}
+			in.workspaceRevision = accepted.DeepCopy()
+		}
 		// Provenance flows with the data: what this stage produced is only as
 		// trustworthy as the weakest input it was admitted with. Downstream
 		// stages resolving inputsFrom grade against this, because Outputs are
@@ -4776,17 +4828,17 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		result.Integrity = producedIntegrity(t, in.Item, upstream,
 			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
 		outputs := stageFinishedOutputs(result, t.ContinueOnError)
-		var workspaceRevision *apiv1.WorkspaceRevision
+		var eventWorkspaceRevision *apiv1.WorkspaceRevision
 		if t.Type == apiv1.TaskDeterministic &&
 			result.Status == apiv1.ResultSuccess &&
 			result.WorkspaceRevision != nil {
-			workspaceRevision = result.WorkspaceRevision.DeepCopy()
+			eventWorkspaceRevision = result.WorkspaceRevision.DeepCopy()
 		}
 		if err := jr.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result),
 			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
-			WorkspaceRevision: workspaceRevision,
+			WorkspaceRevision: eventWorkspaceRevision,
 			// Carried so reconstructStageOutputs can restore each stage's grade
 			// on resume; without it a resumed run would fail inputsFrom
 			// admission that a live run admits (TBH-4).
@@ -6353,6 +6405,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		ConfigGeneration:     in.configGeneration,
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
+		WorkspaceRevision:    in.workspaceRevision.DeepCopy(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
 		CheckoutCones:        checkoutCones(workspace),
 		Item:                 in.Item,

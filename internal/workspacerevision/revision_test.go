@@ -62,6 +62,57 @@ func TestAcceptFailedAndInvalidDoNotEstablish(t *testing.T) {
 	}
 }
 
+func TestResolveAuthorizesConfiguredRepositoryIdentity(t *testing.T) {
+	revision := &apiv1.WorkspaceRevision{
+		Repository: apiv1.RepositoryIdentity{
+			Provider: apiv1.ProviderGitea, URL: "https://git.example.test/team/repo",
+			Owner: "team", Name: "repo",
+		},
+		CommitSHA: strings.Repeat("a", 40),
+	}
+	configured := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitea, BaseURL: "https://git.example.test",
+		Owner: "team", Name: "repo", Branch: "main",
+	}
+	got, err := Resolve(*revision, configured, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != configured {
+		t.Fatalf("resolved ref = %+v, want %+v", got, configured)
+	}
+}
+
+func TestResolveRequiresADOProjectAndRepositoryName(t *testing.T) {
+	revision := &apiv1.WorkspaceRevision{
+		Repository: apiv1.RepositoryIdentity{
+			Provider: apiv1.ProviderADO, URL: "https://dev.azure.com/acme/project/_git/repo",
+			Owner: "acme", Project: "project", Name: "repo",
+		},
+		CommitSHA: strings.Repeat("a", 40),
+	}
+	configured := apiv1.RepoRef{
+		Provider: apiv1.ProviderADO, Owner: "acme", Project: "project", Name: "repo",
+	}
+	if _, err := Resolve(*revision, configured, nil); err != nil {
+		t.Fatal(err)
+	}
+	revision.Repository.Project = "other"
+	if _, err := Resolve(*revision, configured, nil); errorCode(err) != CodeUnauthorized {
+		t.Fatalf("project mismatch error = %v, want %s", err, CodeUnauthorized)
+	}
+}
+
+func TestResolveRejectsAmbiguousConfiguredPolicy(t *testing.T) {
+	revision := validRevision()
+	revision.BaseRepository = nil
+	base := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "org", Name: "repo", Branch: "main"}
+	additional := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "org", Name: "repo", Branch: "release"}
+	if _, err := Resolve(*revision, base, []apiv1.RepoRef{additional}); errorCode(err) != CodeUnauthorized {
+		t.Fatalf("ambiguous match error = %v, want %s", err, CodeUnauthorized)
+	}
+}
+
 func errorCode(err error) string {
 	var revisionErr *Error
 	if errors.As(err, &revisionErr) {

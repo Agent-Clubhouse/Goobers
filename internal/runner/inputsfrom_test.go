@@ -1,12 +1,39 @@
 package runner
 
 import (
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 )
+
+func TestReconstructWorkspaceRevisionDeepCopiesAndRejectsConflicts(t *testing.T) {
+	revision := &apiv1.WorkspaceRevision{
+		Repository: apiv1.RepositoryIdentity{
+			Provider: apiv1.ProviderGitHub, Owner: "org", Name: "repo",
+		},
+		CommitSHA: strings.Repeat("a", 40),
+	}
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, WorkspaceRevision: revision.DeepCopy()},
+		{Type: journal.EventStageFinished, WorkspaceRevision: revision.DeepCopy()},
+	}
+	got := reconstructWorkspaceRevision(events)
+	if got == nil {
+		t.Fatal("reconstructWorkspaceRevision returned nil")
+	}
+	revision.CommitSHA = strings.Repeat("b", 40)
+	if got.CommitSHA != strings.Repeat("a", 40) {
+		t.Fatal("reconstructed revision aliases journal data")
+	}
+	conflict := revision.DeepCopy()
+	events[1].WorkspaceRevision = conflict
+	if got := reconstructWorkspaceRevision(events); got != nil {
+		t.Fatalf("conflicting revisions reconstructed as %+v", got)
+	}
+}
 
 func TestResolveInputsFrom(t *testing.T) {
 	upstream := apiv1.ResultEnvelope{Outputs: map[string]any{
