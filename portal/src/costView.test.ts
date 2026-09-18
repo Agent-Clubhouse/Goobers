@@ -16,6 +16,8 @@ describe("external cost view model", () => {
       pullRequests: [
         {
           provider: "github",
+          repository: "gim-home/goobers-ms",
+          url: "https://github.com/gim-home/goobers-ms/pull/4398",
           externalKind: "pr",
           externalId: "4398",
           totalRuns: 3,
@@ -65,9 +67,9 @@ describe("external cost view model", () => {
 
     expect(deriveExternalCostRows(result)).toEqual([
       {
-        key: "github:pr:4398",
-        label: "PR #4398",
-        repository: undefined,
+        key: "github:gim-home/goobers-ms:pr:4398",
+        label: "gim-home/goobers-ms#4398",
+        repository: "gim-home/goobers-ms",
         externalKind: "pr",
         externalId: "4398",
         provider: "github",

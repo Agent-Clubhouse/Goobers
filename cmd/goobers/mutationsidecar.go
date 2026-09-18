@@ -86,7 +86,7 @@ func (r sidecarMutationRecorder) RecordLandingReceipt(ctx context.Context, ref p
 		Provider:          string(ref.Provider),
 		Kind:              r.kind,
 		ID:                externalRefID(ref.Ref),
-		URL:               ref.URL,
+		URL:               providers.MutationWorkItemURL(string(ref.Provider), r.kind, externalRefID(ref.Ref), ref.URL, ref.MergeConfirmation, ref.QueueAdmission, ref.LandingIntent),
 		Operation:         ref.Operation,
 		RunID:             ref.RunID, Outcome: ref.Outcome, ErrorCode: ref.ErrorCode,
 		ProviderRunID: ref.ProviderRunID,
