@@ -4,7 +4,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"io"
 	"testing"
 	"time"
@@ -111,13 +110,15 @@ func assertDispatchCancellationCleanup(t *testing.T, ctx context.Context, server
 		t.Fatal("Temporal cancellation never reached dispatched pod cleanup")
 	}
 	// Hold cleanup beyond the heartbeat timeout. Continued heartbeats must keep
-	// the activity alive, and the canceled future must still await its result.
-	waitCtx, stopWait := context.WithTimeout(ctx, dispatchHeartbeatTimeout+2*time.Second)
-	err = run.Get(waitCtx, nil)
-	waitErr := waitCtx.Err()
-	stopWait()
-	if !errors.Is(waitErr, context.DeadlineExceeded) {
-		t.Fatalf("workflow settled before pod disappearance: %v", err)
+	// the activity alive. Do not use WorkflowRun.Get with a timed context here:
+	// the client can return a transport-level RST_STREAM when that context ends,
+	// obscuring the workflow state this test needs to observe.
+	timer := time.NewTimer(dispatchHeartbeatTimeout + 2*time.Second)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		t.Fatalf("cancellation observation timed out: %v", ctx.Err())
 	}
 	description, err := server.Client().DescribeWorkflowExecution(ctx, run.GetID(), run.GetRunID())
 	if err != nil {
