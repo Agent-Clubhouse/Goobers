@@ -58,6 +58,7 @@ describe("overview page", () => {
     ).toBeInTheDocument();
     const active = within(screen.getByRole("region", { name: "Active runs" }));
     expect(active.getByText("Agent-Clubhouse/Goobers#3088 Operator status progress")).toBeInTheDocument();
+    expect(active.getByText("core / implementation")).toBeInTheDocument();
     expect(active.getByText("review · recent heartbeat 30s ago · claim active/verified")).toBeInTheDocument();
     expect(active.getByText("review · PR via open-pr · finish review")).toBeInTheDocument();
     expect(
