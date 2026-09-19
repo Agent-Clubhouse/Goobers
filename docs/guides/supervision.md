@@ -216,6 +216,11 @@ one-minute intervals. A daemon crash therefore returns failure and activates
 that retry policy. A clean daemon exit, including the drain requested by
 `goobers down`, returns success and remains stopped.
 
+The task launches a hidden, non-interactive Windows PowerShell host that waits
+for `__service-supervise` and propagates its exit code. This keeps Task Scheduler
+attached to the supervisor for stop, restart, and failure-retry behavior without
+opening a persistent console or Windows Terminal tab.
+
 The task runs the stable `__service-supervise` host, so self-update activation,
 health monitoring, and rollback use the same mutable binary layout as the other
 platform supervisors. Product upgrades use `goobers self-update`; do not replace

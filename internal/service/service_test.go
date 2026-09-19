@@ -259,6 +259,9 @@ func TestWindowsScheduledTaskInstallUsesCurrentUserAndLogonTrigger(t *testing.T)
 		"-NoProfile", "-NonInteractive", "Register-ScheduledTask",
 		"New-ScheduledTaskTrigger -AtLogOn", "New-ScheduledTaskPrincipal",
 		"-LogonType Interactive", "-RunLevel Limited", "__service-supervise",
+		"-WindowStyle Hidden", "-ExecutionPolicy Bypass",
+		`-Execute 'powershell.exe'`,
+		`exit $LASTEXITCODE`,
 		"New-ScheduledTaskSettingsSet", "-RestartCount 3",
 		"-RestartInterval (New-TimeSpan -Minutes 1)",
 		"-ExecutionTimeLimit ([TimeSpan]::Zero)", "-Settings $settings",
@@ -269,6 +272,34 @@ func TestWindowsScheduledTaskInstallUsesCurrentUserAndLogonTrigger(t *testing.T)
 	}
 	if strings.Contains(strings.ToLower(args), "password") {
 		t.Fatalf("create command must not request or persist a password: %q", args)
+	}
+}
+
+func TestWindowsScheduledTaskActionIsHiddenSynchronousAndSafelyQuoted(t *testing.T) {
+	executable, arguments := windowsScheduledTaskAction(
+		`C:\Program Files\O'Brien's Goobers\goobers.exe`,
+		`C:\Users\O'Brien\Goobers Instance\`,
+	)
+	if executable != "powershell.exe" {
+		t.Fatalf("executable = %q, want powershell.exe", executable)
+	}
+	for _, want := range []string{
+		"-NoLogo -NoProfile -NonInteractive",
+		"-WindowStyle Hidden",
+		"-ExecutionPolicy Bypass",
+		`-Command "`,
+		`& 'C:\Program Files\O''Brien''s Goobers\goobers.exe'`,
+		`__service-supervise 'C:\Users\O''Brien\Goobers Instance\'`,
+		`exit $LASTEXITCODE`,
+	} {
+		if !strings.Contains(arguments, want) {
+			t.Fatalf("arguments = %q, missing %q", arguments, want)
+		}
+	}
+	for _, forbidden := range []string{"Start-Process", "start /b", "cmd.exe"} {
+		if strings.Contains(arguments, forbidden) {
+			t.Fatalf("arguments = %q, contains detached launcher %q", arguments, forbidden)
+		}
 	}
 }
 
