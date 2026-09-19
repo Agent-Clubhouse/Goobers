@@ -30,12 +30,34 @@ describe("FailurePanel", () => {
 
     const chain = screen.getByRole("list", { name: "Failure cause chain" });
     const causes = within(chain).getAllByRole("listitem");
-    expect(causes).toHaveLength(8);
-    expect(causes[1]).toHaveTextContent('execute stage "push-branch"');
-    expect(causes[5]).toHaveTextContent(
+    expect(causes).toHaveLength(7);
+    expect(causes[0]).toHaveTextContent('runner: execute stage "push-branch"');
+    expect(causes[4]).toHaveTextContent(
       "occupant Q:\\GitHub\\Goobers\\workcopies\\run",
     );
-    expect(causes[7]).toHaveTextContent("128 of 128 slots used");
+    expect(causes[6]).toHaveTextContent("128 of 128 slots used");
+  });
+
+  it("keeps the runner operation together as one causal layer", () => {
+    render(
+      <FailurePanel
+        failure={{
+          message:
+            'runner: prepare gate "review": create read-only workspace: a rebound branch requires a writable repo workspace',
+        }}
+        phase="failed"
+      />,
+    );
+
+    const causes = within(
+      screen.getByRole("list", { name: "Failure cause chain" }),
+    ).getAllByRole("listitem");
+    expect(causes).toHaveLength(3);
+    expect(causes[0]).toHaveTextContent('runner: prepare gate "review"');
+    expect(causes[1]).toHaveTextContent("create read-only workspace");
+    expect(causes[2]).toHaveTextContent(
+      "a rebound branch requires a writable repo workspace",
+    );
   });
 
   it("renders an unwrapped reason as plain text", () => {

@@ -125,5 +125,8 @@ function splitFailureReason(message: string): string[] {
   if (finalPart) {
     parts.push(finalPart);
   }
+  if (parts.length > 1 && parts[0] === "runner") {
+    parts.splice(0, 2, `${parts[0]}: ${parts[1]}`);
+  }
   return parts.length > 0 ? parts : [message];
 }
