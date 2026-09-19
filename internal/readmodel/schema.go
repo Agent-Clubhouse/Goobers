@@ -719,4 +719,13 @@ SELECT root, after_name, cycle_started_at, last_cycle_completed_at, entries_this
 FROM sweep_cursor
 WHERE root <> '';
 `,
+	// v23: serve the Runs page's gaggle + workflow + phase filter directly.
+	//
+	// The portal defaults to an active-phase view. Selecting a workflow therefore
+	// sends all three equality predicates, which must precede the recency key so
+	// pagination remains bounded rather than evaluating phase residually.
+	`
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_workflow_phase_recency
+	ON run(gaggle, workflow, phase, started_at DESC, run_id ASC);
+`,
 }

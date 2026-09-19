@@ -17,7 +17,6 @@ import {
   incompleteRunPhasesMessage,
   type OperationalOverview,
   useOperationalOverview,
-  workflowDisplayName,
 } from "../operationalData";
 import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
@@ -418,7 +417,7 @@ function Overview({
                               <span>{attentionDiagnosis(run, failureReasons)}</span>
                             </a>
                             <ScopePivot
-                              label={workflowDisplayName(overview, run)}
+                              label={workflowIdentity(run)}
                               scope={{ gaggle: run.gaggle, workflow: run.workflow }}
                             />
                             <time dateTime={run.lastActivityAt}>
@@ -456,7 +455,7 @@ function Overview({
                   <div className="attention-row attention-row-dismissed" key={run.id}>
                     <span className="attention-copy">
                       <strong>{runLabel(run)}</strong>
-                      <span>{workflowDisplayName(overview, run)}</span>
+                      <span>{workflowIdentity(run)}</span>
                     </span>
                     <button
                       aria-label={`Undo dismiss for run ${run.id}`}
@@ -922,7 +921,7 @@ function RunSection({
               {active ? (
                 <>
                   <span className="row-workflow">
-                    <span>{run.gaggle} / {workflowDisplayName(overview, run)}</span>
+                    <span>{workflowIdentity(run)}</span>
                     <a
                       className="workflow-detail-link"
                       href={routeHash({
@@ -943,7 +942,7 @@ function RunSection({
                 <>
                   <StatusBadge status={run.phase} />
                   <span className="row-workflow">
-                    <span>{run.gaggle} / {workflowDisplayName(overview, run)}</span>
+                    <span>{workflowIdentity(run)}</span>
                     <a
                       className="workflow-detail-link"
                       href={routeHash({
@@ -974,14 +973,13 @@ function runLabel(run: RunSummary): string {
 }
 
 function runContextSubtitle(
-  overview: OperationalOverview,
   run: RunSummary,
   active: boolean,
 ): string {
   if (active && run.operator) {
     return operatorSubtitle(run);
   }
-  const context = workflowDisplayName(overview, run);
+  const context = workflowIdentity(run);
   const ref =
     run.trigger.ref && run.trigger.ref !== run.id && run.trigger.ref !== run.workflow
       ? ` · ${run.trigger.kind} ${run.trigger.ref}`
@@ -1021,16 +1019,19 @@ function groupAttentionRuns(
       domId: key.replace(/[^a-zA-Z0-9_-]/g, "-"),
       label: issue
         ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
-        : `${workflowDisplayName(overview, run)} · ${attentionCategoryLabel(run, failureReasons)}`,
-      context: issue
-        ? workflowDisplayName(overview, run)
-        : `${run.gaggle} / ${run.workflow}`,
+        : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons)}`,
+      context: workflowIdentity(run),
       diagnosis: attentionDiagnosis(run, failureReasons),
       latest: run,
       runs: [run],
     });
   }
+
   return [...grouped.values()];
+}
+
+function workflowIdentity(run: Pick<RunSummary, "gaggle" | "workflow">): string {
+  return `${run.gaggle} / ${run.workflow}`;
 }
 
 function attentionCategory(run: RunSummary, failureReasons: FailureReasons): string {

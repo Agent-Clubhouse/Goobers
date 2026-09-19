@@ -3804,10 +3804,6 @@ a.telemetry-error-latest:hover {
   gap: 5px;
 }
 
-.distribution-scale {
-  margin-left: auto;
-}
-
 .distribution-mark {
   background: var(--active);
   display: inline-block;
@@ -4314,6 +4310,13 @@ code,
 
 .gaggle-workflow-choice .definition-nameplate > strong {
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.gaggle-workflow-choice > code,
+.gaggle-workflow-identity {
+  color: var(--muted);
+  font-size: 9px;
   overflow-wrap: anywhere;
 }
 
@@ -8883,10 +8886,6 @@ code,
 
   .distribution-values > span {
     text-align: left;
-  }
-
-  .distribution-scale {
-    margin-left: 0;
   }
 
   .distribution-legend {

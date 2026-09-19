@@ -24,6 +24,9 @@ type CostQuery struct {
 	Provider     string
 	ExternalKind string
 	ExternalID   string
+	Gaggle       string
+	Workflow     string
+	Stage        string
 	Since        time.Time
 	Until        time.Time
 }
@@ -216,7 +219,7 @@ func (db *DB) CostAggregates(ctx context.Context, query CostQuery) (CostResult, 
 	if !query.Since.IsZero() && !query.Until.IsZero() && !query.Since.Before(query.Until) {
 		return CostResult{}, fmt.Errorf("rollup: cost since must be before until")
 	}
-	providers, err := db.costProviders(ctx, query.Provider, query.Since, query.Until)
+	providers, err := db.costProviders(ctx, query)
 	if err != nil {
 		return CostResult{}, err
 	}
@@ -225,7 +228,7 @@ func (db *DB) CostAggregates(ctx context.Context, query CostQuery) (CostResult, 
 		Issues:       []CostAggregate{},
 	}
 	for _, provider := range providers {
-		runs, err := db.loadCostRuns(ctx, provider, query.Since, query.Until)
+		runs, err := db.loadCostRuns(ctx, provider, query)
 		if err != nil {
 			return CostResult{}, err
 		}
@@ -299,9 +302,9 @@ func (db *DB) enrichCostWorkItemIdentities(ctx context.Context, provider string,
 	return nil
 }
 
-func (db *DB) costProviders(ctx context.Context, provider string, since, until time.Time) ([]string, error) {
-	if provider != "" {
-		return []string{provider}, nil
+func (db *DB) costProviders(ctx context.Context, costQuery CostQuery) ([]string, error) {
+	if costQuery.Provider != "" {
+		return []string{costQuery.Provider}, nil
 	}
 	query := `
 		SELECT DISTINCT a.provider
@@ -309,7 +312,7 @@ func (db *DB) costProviders(ctx context.Context, provider string, since, until t
 		JOIN runs r ON r.run_id = a.run_id
 		WHERE a.provider <> ''`
 	var args []any
-	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query, args = appendCostRunScope(query, args, "r", costQuery)
 	query += ` ORDER BY a.provider`
 	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -425,7 +428,7 @@ func filterCostAggregates(aggregates []CostAggregate, externalID string) []CostA
 	return filtered
 }
 
-func (db *DB) loadCostRuns(ctx context.Context, provider string, since, until time.Time) ([]*costRun, error) {
+func (db *DB) loadCostRuns(ctx context.Context, provider string, query CostQuery) ([]*costRun, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("rollup: cost provider is required")
 	}
@@ -435,14 +438,14 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string, since, until ti
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	byID, order, err := loadCostRunReferences(ctx, tx, provider, since, until)
+	byID, order, err := loadCostRunReferences(ctx, tx, provider, query)
 	if err != nil {
 		return nil, err
 	}
-	if err := loadCostAttemptUsage(ctx, tx, provider, since, until, byID); err != nil {
+	if err := loadCostAttemptUsage(ctx, tx, provider, query, byID); err != nil {
 		return nil, err
 	}
-	if err := loadCostModelUsage(ctx, tx, provider, since, until, byID); err != nil {
+	if err := loadCostModelUsage(ctx, tx, provider, query, byID); err != nil {
 		return nil, err
 	}
 
@@ -456,14 +459,14 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string, since, until ti
 	return out, nil
 }
 
-func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, since, until time.Time) (map[string]*costRun, []string, error) {
+func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery) (map[string]*costRun, []string, error) {
 	query := `
 		SELECT r.run_id, r.started_at, a.repository, a.external_kind, a.external_id, COALESCE(a.url, '')
 		FROM runs r
 		JOIN run_cost_attribution a ON a.run_id = r.run_id
 		WHERE a.provider = ? AND a.external_kind IN ('pr', 'issue')`
 	args := []any{provider}
-	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query, args = appendCostRunScope(query, args, "r", costQuery)
 	query += `
 		GROUP BY r.run_id, r.started_at, a.repository, a.external_kind, a.external_id, a.url
 		ORDER BY r.started_at, r.run_id, a.external_kind, a.repository, a.external_id`
@@ -507,7 +510,7 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, sin
 	return byID, order, nil
 }
 
-func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, since, until time.Time, byID map[string]*costRun) error {
+func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, byID map[string]*costRun) error {
 	query := `
 		SELECT sa.run_id, su.input_tokens, su.output_tokens,
 		       su.cache_read_tokens, su.cache_write_tokens, su.reasoning_tokens,
@@ -523,7 +526,12 @@ func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, sinc
 			WHERE a.run_id = sa.run_id AND a.provider = ?
 		)`
 	args := []any{provider}
-	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query, args = appendCostRunIdentityScope(query, args, "r", costQuery)
+	if costQuery.Stage != "" {
+		query += " AND sa.stage = ?"
+		args = append(args, costQuery.Stage)
+	}
+	query, args = appendCostWindow(query, args, "r.started_at", costQuery.Since, costQuery.Until)
 	query += ` ORDER BY sa.run_id, sa.stage, sa.traversal`
 	usageRows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -560,7 +568,7 @@ func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, sinc
 	return nil
 }
 
-func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, since, until time.Time, byID map[string]*costRun) error {
+func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, byID map[string]*costRun) error {
 	query := `
 		SELECT smu.run_id, smu.model, smu.input_tokens, smu.output_tokens,
 		       smu.cache_read_tokens, smu.cache_write_tokens, smu.reasoning_tokens,
@@ -573,7 +581,12 @@ func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, since,
 			WHERE a.run_id = smu.run_id AND a.provider = ?
 		)`
 	args := []any{provider}
-	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query, args = appendCostRunIdentityScope(query, args, "r", costQuery)
+	if costQuery.Stage != "" {
+		query += " AND smu.stage = ?"
+		args = append(args, costQuery.Stage)
+	}
+	query, args = appendCostWindow(query, args, "r.started_at", costQuery.Since, costQuery.Until)
 	query += ` ORDER BY smu.run_id, smu.stage, smu.traversal, smu.model`
 	modelRows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -626,6 +639,28 @@ func appendCostWindow(query string, args []any, column string, since, until time
 	if !until.IsZero() {
 		query += " AND " + column + " < ?"
 		args = append(args, formatTime(until).String)
+	}
+	return query, args
+}
+
+func appendCostRunScope(query string, args []any, runAlias string, costQuery CostQuery) (string, []any) {
+	query, args = appendCostRunIdentityScope(query, args, runAlias, costQuery)
+	if costQuery.Stage != "" {
+		query += " AND EXISTS (SELECT 1 FROM stage_attempts scoped_sa WHERE scoped_sa.run_id = " +
+			runAlias + ".run_id AND scoped_sa.stage = ?)"
+		args = append(args, costQuery.Stage)
+	}
+	return appendCostWindow(query, args, runAlias+".started_at", costQuery.Since, costQuery.Until)
+}
+
+func appendCostRunIdentityScope(query string, args []any, runAlias string, costQuery CostQuery) (string, []any) {
+	if costQuery.Gaggle != "" {
+		query += " AND " + runAlias + ".gaggle = ?"
+		args = append(args, costQuery.Gaggle)
+	}
+	if costQuery.Workflow != "" {
+		query += " AND " + runAlias + ".workflow = ?"
+		args = append(args, costQuery.Workflow)
 	}
 	return query, args
 }
