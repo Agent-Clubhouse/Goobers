@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -57,37 +58,8 @@ func parseContracts(m *wf.Machine) (Contracts, error) {
 		return Contracts{}, fmt.Errorf("%s version must be 1", Annotation)
 	}
 	for _, name := range sortedKeys(c.Stages) {
-		s := c.Stages[name]
-		if !m.Has(name) || !slices.Contains([]string{"", "code", "pr", "internal"}, s.Review) ||
-			!slices.Contains([]string{"", "patch", "none"}, s.Evidence) {
-			return Contracts{}, fmt.Errorf("%s: invalid stage contract %q (review: code/pr/internal; evidence: patch/none)", Annotation, name)
-		}
-		if s.Review != "" {
-			if g, ok := m.Gate(name); !ok || g.Agentic == nil {
-				return Contracts{}, fmt.Errorf("%s: review profile %q requires an agentic gate", Annotation, name)
-			}
-		}
-		task, isTask := m.Task(name)
-		if !isTask && (s.Evidence != "" || s.ChangesSubject || s.Parks || s.RecoveryOnNoWork != "") {
-			return Contracts{}, fmt.Errorf("%s: evidence, subject changes, parking and recovery assertions require a task, not %q", Annotation, name)
-		}
-		if !isTask && s.Publishes != "" && s.Publishes != name {
-			return Contracts{}, fmt.Errorf("%s: a gate can only assert publication of its own verdict (%q)", Annotation, name)
-		}
-		if isTask {
-			e := CommandEffects(task)
-			if e.Known && ((s.Evidence == "patch" && !e.Patch) || (s.Evidence == "none" && e.Patch) ||
-				(s.Publishes != "" && s.Publishes != e.Publishes) || (s.ChangesSubject && !e.Changes) || (s.Parks && !e.Parks)) {
-				return Contracts{}, fmt.Errorf("%s: assertion for %q contradicts a known command effect; use assertions for custom behavior", Annotation, name)
-			}
-		}
-		if s.Publishes != "" {
-			if _, ok := m.Gate(s.Publishes); !ok {
-				return Contracts{}, fmt.Errorf("%s: publisher %q names unknown gate %q", Annotation, name, s.Publishes)
-			}
-		}
-		if s.RecoveryOnNoWork != "" && !m.Has(s.RecoveryOnNoWork) {
-			return Contracts{}, fmt.Errorf("%s: recovery obligation at %q names unknown stage %q", Annotation, name, s.RecoveryOnNoWork)
+		if err := validateStageContract(m, name, c.Stages[name]); err != nil {
+			return Contracts{}, err
 		}
 	}
 	for _, s := range c.Suppressions {
@@ -97,4 +69,63 @@ func parseContracts(m *wf.Machine) (Contracts, error) {
 		}
 	}
 	return c, nil
+}
+
+func validateStageContract(m *wf.Machine, name string, s StageContract) error {
+	if !m.Has(name) || !slices.Contains([]string{"", "code", "pr", "internal"}, s.Review) ||
+		!slices.Contains([]string{"", "patch", "none"}, s.Evidence) {
+		return fmt.Errorf("%s: invalid stage contract %q (review: code/pr/internal; evidence: patch/none)", Annotation, name)
+	}
+	if s.Review != "" {
+		if g, ok := m.Gate(name); !ok || g.Agentic == nil {
+			return fmt.Errorf("%s: review profile %q requires an agentic gate", Annotation, name)
+		}
+	}
+	task, isTask := m.Task(name)
+	if !isTask && (s.Evidence != "" || s.ChangesSubject || s.Parks || s.RecoveryOnNoWork != "") {
+		return fmt.Errorf("%s: evidence, subject changes, parking and recovery assertions require a task, not %q", Annotation, name)
+	}
+	if !isTask && s.Publishes != "" && s.Publishes != name {
+		return fmt.Errorf("%s: a gate can only assert publication of its own verdict (%q)", Annotation, name)
+	}
+	if s.Publishes != "" {
+		if _, ok := m.Gate(s.Publishes); !ok {
+			return fmt.Errorf("%s: publisher %q names unknown gate %q", Annotation, name, s.Publishes)
+		}
+	}
+	if s.RecoveryOnNoWork != "" && !m.Has(s.RecoveryOnNoWork) {
+		return fmt.Errorf("%s: recovery obligation at %q names unknown stage %q", Annotation, name, s.RecoveryOnNoWork)
+	}
+	if isTask {
+		return validateKnownEffects(task, s)
+	}
+	return nil
+}
+
+func validateKnownEffects(task apiv1.Task, s StageContract) error {
+	e := CommandEffects(task)
+	if e.Known && ((s.Evidence == "patch" && !e.Patch) || (s.Evidence == "none" && e.Patch) ||
+		(s.Publishes != "" && s.Publishes != e.Publishes) || (s.ChangesSubject && !e.Changes) || (s.Parks && !e.Parks)) {
+		return fmt.Errorf("%s: assertion for %q contradicts a known command effect; use assertions for custom behavior", Annotation, task.Name)
+	}
+	return nil
+}
+
+func (c StageContract) assertsEffects() bool {
+	return c.Evidence != "" || c.Publishes != "" || c.ChangesSubject || c.Parks
+}
+
+func (c StageContract) apply(e Effects) Effects {
+	if c.Evidence == "patch" {
+		e.Patch = true
+	}
+	if c.Evidence == "none" {
+		e.EmptySuccess = true
+	}
+	if c.Publishes != "" {
+		e.Publishes = c.Publishes
+	}
+	e.Changes = e.Changes || c.ChangesSubject
+	e.Parks = e.Parks || c.Parks
+	return e
 }

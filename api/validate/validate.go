@@ -2453,6 +2453,8 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 		for _, finding := range workflowsafety.Analyze(machine, safetyOptions) {
 			details := finding.Details
 			line, col := safetyPosition(indexed, details.Stage)
+			details.File, details.Line, details.Col = indexed.file, line, col
+			finding.Details = details
 			r.Issues = append(r.Issues, Issue{
 				Code: WarningCode(finding.Code), Severity: Warning,
 				File: indexed.file, Line: line, Col: col, Kind: "Workflow", Name: w.Name, Gaggle: w.Spec.Gaggle,

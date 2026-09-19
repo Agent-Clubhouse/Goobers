@@ -42,16 +42,7 @@ func CommandEffects(t apiv1.Task) Effects {
 		return Effects{Known: true, EmptySuccess: true}
 	}
 	if len(cmd) >= 2 && cmd[0] == "git" && cmd[1] == "diff" {
-		// Only these exact forms establish the subject (the committed run
-		// branch versus its base). Other revisions/options may omit the patch.
-		if slices.Equal(cmd, []string{"git", "diff", "--check"}) {
-			return Effects{Known: true, EmptySuccess: true, CodeSubject: true}
-		}
-		if len(cmd) == 3 && strings.HasSuffix(cmd[2], "...HEAD") &&
-			!strings.HasPrefix(cmd[2], "-") {
-			return Effects{Known: true, Patch: true, CodeSubject: true}
-		}
-		return Effects{}
+		return gitDiffEffects(cmd)
 	}
 	if len(cmd) < 2 || cmd[0] != "goobers" {
 		return Effects{}
@@ -59,32 +50,9 @@ func CommandEffects(t apiv1.Task) Effects {
 	args := cmd[2:]
 	switch cmd[1] {
 	case "apply-verdict":
-		name := "review"
-		if len(args) == 2 && (args[0] == "--gate" || args[0] == "-gate") && args[1] != "" {
-			name = args[1]
-		} else if len(args) == 1 && strings.HasPrefix(args[0], "--gate=") && len(args[0]) > len("--gate=") {
-			name = strings.TrimPrefix(args[0], "--gate=")
-		} else if len(args) != 0 {
-			return Effects{}
-		}
-		return Effects{Known: true, Publishes: name}
-	case "pr-select":
-		if len(args) == 0 {
-			return Effects{Known: true, SelectsPR: true, NoWork: true}
-		}
-	case "gather-pr-context", "gather-sibling-context":
-		if len(args) == 0 || (cmd[1] == "gather-sibling-context" && slices.Equal(args, []string{"--no-verdict-cache"})) {
-			return Effects{Known: true, SelectsPR: true, Rebinds: cmd[1] == "gather-pr-context",
-				ConditionalRebind: cmd[1] == "gather-sibling-context", NoWork: cmd[1] == "gather-pr-context"}
-		}
-	case "update-behind-pr":
-		if len(args) == 0 {
-			return Effects{Known: true, SelectsPR: true, NoWork: true, Changes: true}
-		}
-	case "backlog-query":
-		if len(args) == 0 || slices.Equal(args, []string{"--claim"}) {
-			return Effects{Known: true, NoWork: true}
-		}
+		return verdictEffects(args)
+	case "pr-select", "gather-pr-context", "gather-sibling-context", "update-behind-pr", "backlog-query":
+		return selectionEffects(cmd[1], args)
 	case "push-branch", "push-remediated", "rebase-pr":
 		if len(args) == 0 {
 			return Effects{Known: true, Changes: true, CodeSubject: true}
@@ -96,6 +64,54 @@ func CommandEffects(t apiv1.Task) Effects {
 	case "remediation-checkpoint":
 		if slices.Equal(args, []string{"--escalate"}) {
 			return Effects{Known: true, Parks: true}
+		}
+	}
+	return Effects{}
+}
+
+func gitDiffEffects(cmd []string) Effects {
+	if slices.Equal(cmd, []string{"git", "diff", "--check"}) {
+		return Effects{Known: true, EmptySuccess: true, CodeSubject: true}
+	}
+	if len(cmd) == 3 && strings.HasSuffix(cmd[2], "...HEAD") && !strings.HasPrefix(cmd[2], "-") {
+		if cmd[2] == "HEAD...HEAD" || cmd[2] == "...HEAD" {
+			return Effects{Known: true, EmptySuccess: true, CodeSubject: true}
+		}
+		return Effects{Known: true, Patch: true, CodeSubject: true}
+	}
+	return Effects{}
+}
+
+func verdictEffects(args []string) Effects {
+	name := "review"
+	if len(args) == 2 && (args[0] == "--gate" || args[0] == "-gate") && args[1] != "" {
+		name = args[1]
+	} else if len(args) == 1 && strings.HasPrefix(args[0], "--gate=") && len(args[0]) > len("--gate=") {
+		name = strings.TrimPrefix(args[0], "--gate=")
+	} else if len(args) != 0 {
+		return Effects{}
+	}
+	return Effects{Known: true, Publishes: name}
+}
+
+func selectionEffects(command string, args []string) Effects {
+	switch command {
+	case "pr-select":
+		if len(args) == 0 {
+			return Effects{Known: true, SelectsPR: true, NoWork: true}
+		}
+	case "gather-pr-context", "gather-sibling-context":
+		if len(args) == 0 || (command == "gather-sibling-context" && slices.Equal(args, []string{"--no-verdict-cache"})) {
+			return Effects{Known: true, SelectsPR: true, Rebinds: command == "gather-pr-context",
+				ConditionalRebind: command == "gather-sibling-context", NoWork: command == "gather-pr-context"}
+		}
+	case "update-behind-pr":
+		if len(args) == 0 {
+			return Effects{Known: true, SelectsPR: true, NoWork: true, Changes: true}
+		}
+	case "backlog-query":
+		if len(args) == 0 || slices.Equal(args, []string{"--claim"}) {
+			return Effects{Known: true, NoWork: true}
 		}
 	}
 	return Effects{}

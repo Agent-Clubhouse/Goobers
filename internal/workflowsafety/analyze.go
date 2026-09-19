@@ -34,6 +34,9 @@ type Details struct {
 	Gaggle            string   `json:"gaggle"`
 	Workflow          string   `json:"workflow"`
 	Stage             string   `json:"stage"`
+	File              string   `json:"file,omitempty"`
+	Line              int      `json:"line,omitempty"`
+	Col               int      `json:"col,omitempty"`
 	WitnessPath       []string `json:"witnessPath"`
 	Confidence        string   `json:"confidence"`
 	Coverage          string   `json:"coverage"`
@@ -56,6 +59,9 @@ func (f Finding) Message() string {
 	d := f.Details
 	message := fmt.Sprintf("workflow %q/%q stage %q: %s Path: %s. Impact: %s Action: %s Confidence: %s; coverage: %s. %s",
 		d.Gaggle, d.Workflow, d.Stage, f.Summary, strings.Join(d.WitnessPath, " -> "), d.Impact, d.Action, d.Confidence, d.Coverage, d.Limitations)
+	if d.Line > 0 {
+		message += fmt.Sprintf(" Source: %s:%d:%d.", d.File, d.Line, d.Col)
+	}
 	if d.Budget > 0 {
 		message += fmt.Sprintf(" Policy repass bound: %d (%s); infrastructure retries use their separate runtime budget.", d.Budget, d.BudgetSource)
 	}
@@ -155,7 +161,8 @@ func (a *analyzer) add(code, stage string, path []string, summary, impact, actio
 			break
 		}
 	}
-	identity := strings.Join([]string{CatalogVersion, a.opts.BinaryIdentity, a.m.Digest(), key, strings.Join(path, "\x00")}, "\x00")
+	controls, _ := json.Marshal(a.opts.GaggleRunControls)
+	identity := strings.Join([]string{CatalogVersion, a.opts.BinaryIdentity, a.m.Digest(), string(controls), key, strings.Join(path, "\x00")}, "\x00")
 	sum := sha256.Sum256([]byte(identity))
 	d.ID = hex.EncodeToString(sum[:])
 	a.findings = append(a.findings, Finding{Code: code, Summary: summary, Details: d})
@@ -216,27 +223,21 @@ func (a *analyzer) walk(f frame) {
 
 func (a *analyzer) task(f frame, t apiv1.Task) {
 	f.path = appendPath(f.path, t.Name)
-	e := CommandEffects(t)
 	c := a.contracts.Stages[t.Name]
-	asserted := c.Evidence != "" || c.Publishes != "" || c.ChangesSubject || c.Parks
-	if c.Evidence == "patch" {
-		e.Patch = true
-	}
-	if c.Evidence == "none" {
-		e.EmptySuccess = true
-	}
-	if c.Publishes != "" {
-		e.Publishes = c.Publishes
-	}
-	e.Changes = e.Changes || c.ChangesSubject
-	e.Parks = e.Parks || c.Parks
-	if t.Type == apiv1.TaskDeterministic && !e.Known && !asserted {
+	e := c.apply(CommandEffects(t))
+	// An assertion supplies its named effect, not knowledge of every other
+	// effect a custom command may have.
+	f.unknown = f.unknown || !e.Known || e.ConditionalRebind
+	if t.Type == apiv1.TaskDeterministic && !e.Known && !c.assertsEffects() {
 		a.add(CoverageCode, t.Name, f.path, "custom command or agent effects are unknown",
 			"Evidence production, subject changes and publication by this stage are not proven.",
 			"Declare a narrowly scoped safety contract if this stage supplies an obligation, or inspect it manually.", "unknown", "partial", 0, "")
 	}
 	recovery := c.RecoveryOnNoWork
-	if e.NoWork && recovery != "" {
+	if e.NoWork {
+		a.publication(f, "no-work -> @complete")
+	}
+	if e.NoWork && recovery != "" && !slices.Contains(f.visited, recovery) {
 		a.add(RecoveryCode, t.Name, appendPath(f.path, "no-work -> @complete"),
 			fmt.Sprintf("terminal no-work bypasses the declared recovery obligation %q", recovery),
 			"The expected handler never runs on this result, even if it is graph-reachable.",
@@ -254,9 +255,6 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 		}
 		f.feedback = ""
 	}
-	if e.Parks {
-		a.publication(f, t.Name)
-	}
 	if e.Publishes != "" {
 		// continueOnError also admits a path on which publication failed.
 		if t.ContinueOnError {
@@ -267,6 +265,18 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 		}
 		f.pending = remove(f.pending, e.Publishes)
 	}
+	if e.Parks {
+		a.publication(f, t.Name)
+	}
+	f.recordEvidence(t, e, c)
+	f.cycleChange = f.cycleChange || e.Changes
+	f.cycleUnknown = f.cycleUnknown || !e.Known
+	f.visited = addSorted(f.visited, t.Name)
+	f.lastTask, f.state = t.Name, t.Next
+	a.walk(f)
+}
+
+func (f *frame) recordEvidence(t apiv1.Task, e Effects, c StageContract) {
 	if e.SelectsPR {
 		f.pr = true
 		f.patch, f.rebound = false, false
@@ -279,45 +289,46 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 	}
 	f.codeSubject = f.codeSubject || e.CodeSubject || e.Patch || t.CommitsRepo
 	if e.Patch {
-		f.patch = true
+		mode := t.EffectiveWorkspace()
+		writable := mode == "" || mode == apiv1.WorkspaceRepo
+		f.patch = c.Evidence == "patch" || (writable && (!f.pr || f.rebound))
+		if !f.patch {
+			f.unknown = true
+		}
 	}
 	if !e.Known && !e.Patch && t.Type == apiv1.TaskDeterministic {
 		f.patch = false
 	}
-	// An assertion supplies its named effect, not knowledge of every other
-	// effect a custom command may have.
-	f.unknown = f.unknown || !e.Known || e.ConditionalRebind
-	f.cycleChange = f.cycleChange || e.Changes
-	f.cycleUnknown = f.cycleUnknown || !e.Known
-	f.visited = addSorted(f.visited, t.Name)
-	f.lastTask, f.state = t.Name, t.Next
-	a.walk(f)
 }
 
-func (a *analyzer) gate(f frame, g apiv1.Gate) {
+func (a *analyzer) reviewEvidence(f frame, g apiv1.Gate) bool {
 	profile := a.contracts.Stages[g.Name].Review
 	codeReview := g.Evaluator == apiv1.EvaluatorAgentic && (profile == "code" || profile == "pr" || (profile == "" && (f.codeSubject || f.pr)))
 	prReview := codeReview && (profile == "pr" || (profile == "" && f.pr))
-	if codeReview && !f.patch {
-		mode := g.EffectiveWorkspace()
-		implicit := mode == "" || mode == apiv1.WorkspaceRepo
-		// A selected PR must have a branch binding; otherwise the run's own
-		// branch is not evidence about the selected subject.
-		if implicit && (!f.pr || f.rebound) {
-			// The runner supplies the committed diff, independent of the last
-			// task's stdout and the reviewer's capability grants.
-		} else {
-			confidence, coverage := "high", "modeled"
-			if f.unknown || mode == apiv1.WorkspaceRepoReadOnly {
-				confidence, coverage = "uncertain", "partial"
-			}
-			a.add(EvidenceCode, g.Name, appendPath(f.path, g.Name),
-				"no verified patch-evidence route for this code review",
-				"The reviewer may judge a changed subject without its usable patch.",
-				"Supply a subject-pinned patch artifact or use the runner's writable subject workspace. Read-only implicit evidence depends on workspace pinning.",
-				confidence, coverage, 0, "")
-		}
+	if !codeReview || f.patch {
+		return prReview
 	}
+	mode := g.EffectiveWorkspace()
+	implicit := mode == "" || mode == apiv1.WorkspaceRepo
+	// The runner's diff is independent of task stdout or reviewer grants,
+	// but a selected PR needs a binding to that subject's branch.
+	if implicit && (!f.pr || f.rebound) {
+		return prReview
+	}
+	confidence, coverage := "high", "modeled"
+	if f.unknown || mode == apiv1.WorkspaceRepoReadOnly {
+		confidence, coverage = "uncertain", "partial"
+	}
+	a.add(EvidenceCode, g.Name, appendPath(f.path, g.Name),
+		"no verified patch-evidence route for this code review",
+		"The reviewer may judge a changed subject without its usable patch.",
+		"Supply a subject-pinned patch artifact or use the runner's writable subject workspace. Read-only implicit evidence depends on workspace pinning.",
+		confidence, coverage, 0, "")
+	return prReview
+}
+
+func (a *analyzer) gate(f frame, g apiv1.Gate) {
+	prReview := a.reviewEvidence(f, g)
 	if c := a.contracts.Stages[g.Name]; c.Publishes == g.Name {
 		f.pending = remove(f.pending, g.Name)
 	}

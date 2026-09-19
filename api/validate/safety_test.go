@@ -42,6 +42,9 @@ func TestSafetyCompiledValidationBothDSLVersions(t *testing.T) {
 				issue.Gaggle != "example" || !strings.Contains(issue.Message, "Advisory only") {
 				t.Fatalf("missing advisory provenance: %+v", issue)
 			}
+			if issue.Safety.File != issue.File || issue.Safety.Line != issue.Line || issue.Safety.Col != issue.Col {
+				t.Fatalf("persistent advisory lost YAML source location: %+v", issue)
+			}
 			if warnings := report.Warnings(); len(warnings) != 1 || warnings[0].Safety.ID != issue.Safety.ID {
 				t.Fatalf("persistent warnings lost safety details: %+v", warnings)
 			}

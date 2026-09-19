@@ -90,6 +90,7 @@ func TestSafetyEvidenceRoutes(t *testing.T) {
 		{"base-only uncertain", "", apiv1.WorkspaceRepoReadOnly, []string{"git", "diff", "--check"}, true},
 		{"explicit alternate producer", "", apiv1.WorkspaceScratch, []string{"git", "diff", "main...HEAD"}, false},
 		{"explicit readonly evidence", "", apiv1.WorkspaceRepoReadOnly, []string{"git", "diff", "main...HEAD"}, false},
+		{"self comparison is empty", "", apiv1.WorkspaceScratch, []string{"git", "diff", "HEAD...HEAD"}, true},
 		{"internal non-code review", "internal", apiv1.WorkspaceScratch, []string{"git", "diff", "--check"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -157,6 +158,49 @@ func TestSafetyBudgetExhaustionPublication(t *testing.T) {
 	assertFinding(t, compile(t, d), PublishCode, false)
 }
 
+func TestSafetyNoWorkCannotSkipPendingPublication(t *testing.T) {
+	d := publicationDefinition(t)
+	d.Spec.Gates[0].Branches["fail"] = "select"
+	d.Spec.Gates[0].Branches["needs-changes"] = "select"
+	selector := shell("select", "publish", "goobers", "backlog-query")
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("backlog-query", nil) {
+		selector.Capabilities = append(selector.Capabilities, string(use.Capability))
+	}
+	d.Spec.Tasks = append(d.Spec.Tasks, selector)
+	got := assertFinding(t, compile(t, d), PublishCode, true)
+	if !strings.Contains(strings.Join(got[0].Details.WitnessPath, " "), "no-work") {
+		t.Fatalf("no-work terminal was not checked: %+v", got)
+	}
+	assertFinding(t, compile(t, d), RecoveryCode, false)
+	d.Spec.Tasks[3].Run.Command = []string{"true"}
+	assertFinding(t, compile(t, d), PublishCode, false)
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{
+		"review": {Review: "pr"}, "publish": {Publishes: "review", Parks: true},
+	}})
+	assertFinding(t, compile(t, d), PublishCode, false)
+}
+
+func TestSafetyPatchMustBelongToSelectedSubject(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Tasks[0] = shell("select", "check", "goobers", "gather-sibling-context")
+	d.Spec.Tasks[0].Inputs = map[string]string{"selectedNumber": "42"}
+	d.Spec.Tasks[0].PolicyActions = []string{"flag-scope-drift", "route-verdict"}
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-sibling-context", nil) {
+		d.Spec.Tasks[0].Capabilities = append(d.Spec.Tasks[0].Capabilities, string(use.Capability))
+	}
+	d.Spec.Start = "select"
+	d.Spec.Tasks[1].Run.Command = []string{"git", "diff", "main...HEAD"}
+	d.Spec.Gates[0].Branches["needs-changes"] = "check"
+	d.Spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceScratch
+	got := assertFinding(t, compile(t, d), EvidenceCode, true)
+	if got[0].Details.Confidence != "uncertain" {
+		t.Fatalf("conditional PR binding must remain uncertain: %+v", got)
+	}
+	d.Spec.Tasks[1].Run.Command = []string{"custom-subject-patch"}
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"check": {Evidence: "patch"}}})
+	assertFinding(t, compile(t, d), EvidenceCode, false)
+}
+
 func TestSafetyFeedbackUsesRuntimeContextSelection(t *testing.T) {
 	d := reviewDefinition()
 	d.Spec.Tasks[0].ContextFrom = []string{"check"}
@@ -197,6 +241,9 @@ func TestSafetyRecoveryRequiresDeclaredObligation(t *testing.T) {
 	assertFinding(t, compile(t, d), RecoveryCode, false)
 	annotate(t, &d, Contracts{Stages: map[string]StageContract{"select": {RecoveryOnNoWork: "recovery"}}})
 	assertFinding(t, compile(t, d), RecoveryCode, true)
+	d.Spec.Start = "recovery"
+	d.Spec.Tasks[1].Next, d.Spec.Tasks[0].Next = "select", ""
+	assertFinding(t, compile(t, d), RecoveryCode, false)
 	annotate(t, &d, Contracts{})
 	assertFinding(t, compile(t, d), RecoveryCode, false)
 }
@@ -339,6 +386,10 @@ func TestSafetyIdentityAndNoExecutionMutation(t *testing.T) {
 	c := Analyze(m, Options{BinaryIdentity: "b"})
 	if len(a) == 0 || a[0].Details.ID == c[0].Details.ID {
 		t.Fatal("binary upgrade reused finding identity")
+	}
+	withControls := Analyze(m, Options{BinaryIdentity: "a", GaggleRunControls: &apiv1.RunControls{MaxRepasses: 9}})
+	if a[0].Details.ID == withControls[0].Details.ID {
+		t.Fatal("gaggle run-control change reused finding identity")
 	}
 	changed := d
 	changed.Spec.RunControls = &apiv1.RunControls{MaxRepasses: 8}

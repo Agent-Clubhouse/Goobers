@@ -500,6 +500,9 @@ export interface WorkflowSafetyDetails {
   gaggle: string;
   workflow: string;
   stage: string;
+  file?: string;
+  line?: number;
+  col?: number;
   witnessPath: string[];
   confidence: string;
   coverage: string;

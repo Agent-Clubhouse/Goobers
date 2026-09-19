@@ -43,7 +43,8 @@ selectors and explicit `remediation-checkpoint --escalate`.
 
 A publisher on another branch or for another gate does not satisfy a
 rejection. `continueOnError` on publication includes a failed-publication
-path. Budget-exhaustion paths use the production repass budget helper,
+path. Terminal no-work also checks any pending publication obligation.
+Budget-exhaustion paths use the production repass budget helper,
 including the separate infrastructure budget and configured escalation
 branch. Known non-changing cycles are not called infinite loops.
 Unknown agents and scripts are not assumed unable to make progress.
@@ -58,6 +59,9 @@ Writable agents alone do not establish a code-review role: recognized code
 operations, a selected PR, `commitsRepo`, or a review profile must establish it.
 Sibling context only rebinds managed PR branches; evidence that depends on
 that conditional binding is qualified rather than certified.
+An explicit Git patch must also come from the subject workspace, not an
+unrelated run branch or a base-only checkout. Self-comparisons such as
+`git diff HEAD...HEAD` are known empty producers.
 
 ## Optional author assertions and suppression
 
@@ -115,7 +119,8 @@ incomplete coverage rather than inventing successful branch outputs.
 Reaching any bound emits `SAF006`; valid workflows still run.
 
 Findings deduplicate by rule, scope and evidence and have identities including
-the compiled configuration digest, catalog version and binary identity.
+the compiled configuration digest, inherited gaggle controls, catalog version
+and binary identity.
 The daemon's existing content-digest reload guard avoids repeating work on
 unchanged polls. There is no cross-binary analysis cache. A changed binary
 reanalyzes the configuration on boot. Default retry-bound diagnostics
@@ -126,4 +131,8 @@ analysis rather than reporting the default as a guaranteed effective limit.
 a synthetic five-gaggle/23-workflow fixture (11 tasks and a review gate per
 workflow, mixed evidence routes and bounded rework), with compile time excluded.
 `TestSafetyFiveGaggleTwentyThreeWorkflowBudget` enforces the two-second target.
+Reference measurement on September 19, 2026: Windows/amd64, AMD EPYC 7763
+64-Core Processor, benchmark concurrency 32; approximately 2.2 milliseconds
+and 828 KB allocated per complete 23-workflow pass. This synthetic fixture
+is a regression target, not a guarantee for arbitrary graphs.
 No clean result claims that arbitrary workflows cannot fail.
