@@ -237,6 +237,35 @@ func TestCostAggregatesBoundsWindowAndFiltersExternalID(t *testing.T) {
 	}
 }
 
+func TestCostAggregatesFilterRunScope(t *testing.T) {
+	tmp := t.TempDir()
+	db := openTestDB(t, tmp)
+	defer func() { _ = db.Close() }()
+	seedCostRow(t, db, "matching", fixtureStart, []costRef{{"pr", "10"}}, []costUsage{{nanoAIU: int64Pointer(20)}})
+	seedCostRow(t, db, "other-gaggle", fixtureStart.Add(time.Minute), []costRef{{"pr", "10"}}, []costUsage{{nanoAIU: int64Pointer(30)}})
+	seedCostRow(t, db, "other-workflow", fixtureStart.Add(2*time.Minute), []costRef{{"pr", "10"}}, []costUsage{{nanoAIU: int64Pointer(40)}})
+	if _, err := db.sql.Exec(`UPDATE runs SET gaggle = 'other' WHERE run_id = 'other-gaggle'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.Exec(`UPDATE runs SET workflow = 'other' WHERE run_id = 'other-workflow'`); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := db.CostAggregates(context.Background(), CostQuery{
+		Provider: "github", Gaggle: "test", Workflow: "implement", Stage: "implement",
+		Since: fixtureStart.Add(-time.Minute), Until: fixtureStart.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.PullRequests) != 1 ||
+		result.PullRequests[0].TotalRuns != 1 ||
+		result.PullRequests[0].NanoAIU == nil ||
+		*result.PullRequests[0].NanoAIU != 20 {
+		t.Fatalf("scoped costs = %+v", result)
+	}
+}
+
 func TestCostMigrationUpgradeAndConcurrentFreshOpen(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "telemetry.db")

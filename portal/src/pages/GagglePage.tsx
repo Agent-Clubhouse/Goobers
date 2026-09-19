@@ -272,7 +272,8 @@ function GaggleActivitySections({
   const workflowNames = new Map(
     workflows.map((workflow) => [workflow.identity.name, workflow.displayName]),
   );
-  const label = (run: RunSummary) => workflowNames.get(run.workflow) ?? run.workflow;
+  const label = (run: RunSummary) => workflowNames.get(run.workflow);
+  const identity = (run: RunSummary) => `${run.gaggle} / ${run.workflow}`;
 
   return (
     <>
@@ -302,10 +303,10 @@ function GaggleActivitySections({
               <DataRow href={routeHash({ page: "run", id: run.id })} key={run.id} label={`Open run ${run.id}`}>
                 <span className="row-primary">
                   <span className="row-title">
-                    {run.workflow} · {run.id}
+                    {identity(run)} · {run.id}
                   </span>
                 </span>
-                <span>{label(run)}</span>
+                <span>{label(run) ?? run.workflow}</span>
                 <span className="stage-progress">
                   <span aria-hidden="true" className="stage-progress-mark" />
                   {run.currentStage ?? "Awaiting stage"}
@@ -335,11 +336,11 @@ function GaggleActivitySections({
               <DataRow href={routeHash({ page: "run", id: run.id })} key={run.id} label={`Open run ${run.id}`}>
                 <span className="row-primary">
                   <span className="row-title">
-                    {run.workflow} · {run.id}
+                    {identity(run)} · {run.id}
                   </span>
                 </span>
                 <StatusBadge status={run.phase} />
-                <span>{label(run)}</span>
+                <span>{label(run) ?? run.workflow}</span>
                 <RunTiming run={run} />
               </DataRow>
             ))}

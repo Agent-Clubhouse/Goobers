@@ -57,6 +57,7 @@ describe("gaggle view summary (#2531)", () => {
 
     const active = screen.getByRole("region", { name: "Core product active runs" });
     expect(within(active).getByText(/01JZ441DAEMONAPI/)).toBeInTheDocument();
+    expect(within(active).getByText(/core \/ implementation/)).toBeInTheDocument();
 
     const recentToggle = screen.getByRole("button", { name: /Recent outcomes/ });
     expect(recentToggle).toHaveAttribute("aria-expanded", "false");
