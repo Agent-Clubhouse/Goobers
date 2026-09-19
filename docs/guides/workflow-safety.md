@@ -12,6 +12,10 @@ strict-promoted warnings retain their behavior. Findings never change claims,
 scheduling, permissions, readiness, retry limits, run outcomes, or a compiled
 workflow's execution identity.
 
+The checked-in configuration CI gate also keeps these seven codes nonfatal
+while printing them. Its existing warning allowlist still rejects other
+unexpected warnings, including unrecognized safety codes.
+
 | Code | Meaning |
 | --- | --- |
 | SAF001 | A recognized code review has no verified subject-patch route. |

@@ -27,6 +27,11 @@ const (
 	maxFindings    = 128
 )
 
+// Codes returns the closed set of strict-neutral safety warning codes.
+func Codes() []string {
+	return []string{EvidenceCode, PublishCode, FeedbackCode, RecoveryCode, CycleCode, CoverageCode, SuppressedCode}
+}
+
 // Details is additive diagnostic metadata shared by CLI and persistent status.
 type Details struct {
 	Version           string   `json:"version"`

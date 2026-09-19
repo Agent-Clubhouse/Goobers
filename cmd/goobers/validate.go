@@ -534,19 +534,18 @@ func emitStaticRealityFindings(
 	return placementErrors, capabilityErrors
 }
 
-var strictNeutralWarningCodes = []validate.WarningCode{
-	validate.WarningDeprecatedDSLVersion,
-	validate.WarningConnectionRefUnhonored,
-	validate.RunnerAVExclusionsUnverified,
-	validate.WarningImplicitWritableWorkspace,
-	validate.WarningCode(workflowsafety.EvidenceCode),
-	validate.WarningCode(workflowsafety.PublishCode),
-	validate.WarningCode(workflowsafety.FeedbackCode),
-	validate.WarningCode(workflowsafety.RecoveryCode),
-	validate.WarningCode(workflowsafety.CycleCode),
-	validate.WarningCode(workflowsafety.CoverageCode),
-	validate.WarningCode(workflowsafety.SuppressedCode),
-}
+var strictNeutralWarningCodes = func() []validate.WarningCode {
+	codes := []validate.WarningCode{
+		validate.WarningDeprecatedDSLVersion,
+		validate.WarningConnectionRefUnhonored,
+		validate.RunnerAVExclusionsUnverified,
+		validate.WarningImplicitWritableWorkspace,
+	}
+	for _, code := range workflowsafety.Codes() {
+		codes = append(codes, validate.WarningCode(code))
+	}
+	return codes
+}()
 
 func strictNeutralWarningCodeText() string {
 	codes := make([]string, 0, len(strictNeutralWarningCodes))
