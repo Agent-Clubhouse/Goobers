@@ -1039,7 +1039,11 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "Visit 1 · Attempt 1" }),
     ).toHaveAttribute("aria-pressed", "true");
     await openRunTab("Journal");
-    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).not.toHaveAttribute("aria-current");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^Select sequence 7:/ }),
+      ).not.toHaveAttribute("aria-current"),
+    );
     client.close();
   });
 
