@@ -199,6 +199,20 @@ The same hidden directory holds:
 | `lock.json` | Accepted full commit, source identity, content digest and pristine bound file contents; commit with your config. |
 | `deployed.json` | Runtime-only snapshot of the last deployed **user configuration**; generated during materialization. Do not backprop or commit it. |
 
+The source-edit lock is a persistent local lock file, not configuration.
+Keep operational files out of your config commits, for example with:
+
+```gitignore
+.template-edit.lock
+.template-config.lock
+**/.template/deployed.json
+**/.template-candidate-*/
+**/.template-backup-*/
+```
+
+Do not ignore the whole `.template` directory: `source.yaml` and `lock.json`
+must travel with the customized gaggle.
+
 The two baselines are deliberately different. `lock.json` answers "what came
 from the template?" `deployed.json` answers "what changed at runtime since
 deployment?" Never edit a lockfile to accept an update. Unknown source fields,

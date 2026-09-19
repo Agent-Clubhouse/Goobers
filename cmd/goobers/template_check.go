@@ -203,6 +203,12 @@ func reportTemplateStatus(root string, stdout io.Writer) {
 			continue
 		}
 		pln(stdout, templateNotice(name, *status))
+		if status.Installed != "" {
+			pf(stdout, "  installed revision: %s\n", status.Installed)
+		}
+		if status.Candidate != "" {
+			pf(stdout, "  source revision: %s\n", status.Candidate)
+		}
 		if status.LastSuccess.IsZero() {
 			pln(stdout, "  no successful source check")
 		} else {
@@ -213,6 +219,9 @@ func reportTemplateStatus(root string, stdout io.Writer) {
 		}
 		for _, conflict := range status.Conflicts {
 			pf(stdout, "  conflict: %s\n", conflict)
+		}
+		for _, change := range status.Changes {
+			pf(stdout, "  changed: %s\n", change)
 		}
 	}
 }

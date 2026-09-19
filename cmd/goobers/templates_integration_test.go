@@ -41,6 +41,16 @@ func TestIntegrationTrackedTemplateCommittedSourceAndAncestry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(packageRoot, "gaggle.yaml"), []byte("uncommitted invalid definition"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	committed, unchanged, err := resolveGaggleTemplate(context.Background(), root, source, revision)
+	if err != nil || unchanged != revision || committed.Digest() != first.Digest() {
+		t.Fatalf("read dirty template checkout instead of accepted commit: %s %v", unchanged, err)
+	}
+	if err := tree.Write(packageRoot); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(repo, "unrelated.txt"), []byte("unrelated change"), 0644); err != nil {
 		t.Fatal(err)
 	}

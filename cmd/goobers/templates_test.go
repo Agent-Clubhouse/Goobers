@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -168,6 +169,28 @@ spec:
 	}
 	if err := validateTemplatePackage("orders", bound); err != nil {
 		t.Fatalf("vendored package dependency rejected: %v", err)
+	}
+}
+
+func TestTemplateStandaloneImportRecordsDeploymentAndRefusesRuntimeUpdate(t *testing.T) {
+	root, source, tree := templateTestSetup(t)
+	fail := false
+	fakeTemplateResolver(t, &tree, &fail)
+	configDir := instance.NewLayout(root).ConfigDir()
+	if runtime.GOOS == "windows" {
+		configDir = strings.ToUpper(configDir)
+	}
+	code, _, stderr := runArgs(t, "config", "templates", "import", "--repository", source,
+		"--directory", "gaggles/example", "--gaggle", "orders", "--source", configDir, root)
+	if code != 0 {
+		t.Fatal(stderr)
+	}
+	if _, err := gaggletemplate.Deployment(filepath.Join(configDir, "gaggles", "orders")); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = runArgs(t, "config", "templates", "update", "--gaggle", "orders", "--source", configDir, root)
+	if code == 0 || !strings.Contains(stderr, "separate") {
+		t.Fatalf("runtime source accepted for update: %d %s", code, stderr)
 	}
 }
 

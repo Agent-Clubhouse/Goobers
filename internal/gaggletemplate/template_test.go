@@ -144,6 +144,18 @@ func TestUnsafeTreesRejected(t *testing.T) {
 	}
 }
 
+func TestBindRejectsAmbiguousYAML(t *testing.T) {
+	for _, text := range []string{
+		testGaggle + "---\n" + testGaggle,
+		strings.Replace(testGaggle, "namespace: example", "namespace: &name example, key: *name", 1),
+		strings.Replace(testGaggle, "name: example", "name: example\n  name: duplicate", 1),
+	} {
+		if _, err := Bind(Tree{"gaggle.yaml": treeFile(text)}, "orders"); err == nil {
+			t.Fatalf("ambiguous YAML accepted: %s", text)
+		}
+	}
+}
+
 func trackedFixture(t *testing.T, root string) Tree {
 	t.Helper()
 	if err := os.MkdirAll(root, 0755); err != nil {

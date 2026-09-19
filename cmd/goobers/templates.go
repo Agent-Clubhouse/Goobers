@@ -283,7 +283,15 @@ func importTemplate(ctx context.Context, root, configDir string, opts templateOp
 		return err
 	}
 	defer func() { _ = os.RemoveAll(stage) }()
-	if configDir == instance.NewLayout(root).ConfigDir() {
+	sourceInfo, err := os.Stat(configDir)
+	if err != nil {
+		return err
+	}
+	runtimeInfo, err := os.Stat(instance.NewLayout(root).ConfigDir())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if runtimeInfo != nil && os.SameFile(sourceInfo, runtimeInfo) {
 		if err := gaggletemplate.RecordDeployment(stage); err != nil {
 			return err
 		}
@@ -324,6 +332,9 @@ func templateManifest(raw []byte, name string) ([]byte, error) {
 }
 
 func updateTemplate(ctx context.Context, root, configDir, name string) error {
+	if err := instance.CheckGuidedSourceInstancePaths(root, configDir); err != nil {
+		return fmt.Errorf("update requires a separate user config source; persist runtime edits with backprop first: %w", err)
+	}
 	target := filepath.Join(configDir, "gaggles", name)
 	tracking, err := requiredTemplate(target)
 	if err != nil {
@@ -342,10 +353,7 @@ func updateTemplate(ctx context.Context, root, configDir, name string) error {
 		return err
 	}
 	if len(conflicts) > 0 {
-		return fmt.Errorf("template conflicts (nothing changed): %s", strings.Join(conflicts, "; "))
-	}
-	if configDir == instance.NewLayout(root).ConfigDir() {
-		return errors.New("update requires a separate user config source; persist runtime edits with backprop first")
+		return fmt.Errorf("template conflicts against revision %s (nothing changed): %s", revision, strings.Join(conflicts, "; "))
 	}
 	stage, err := stageTemplate(configDir, name, merged, tracking.Source, revision, upstream, nil)
 	if err != nil {
