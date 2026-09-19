@@ -604,6 +604,70 @@ summary:focus-visible {
   font-size: 13px;
 }
 
+.live-status-wrap {
+  display: inline-flex;
+  position: relative;
+}
+
+.live-status-trigger {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: inherit;
+  cursor: help;
+  display: inline-flex;
+  font: inherit;
+  gap: 10px;
+  padding: 4px 6px;
+}
+
+.live-status-trigger:hover,
+.live-status-trigger:focus-visible {
+  background: var(--surface-subtle);
+  outline: none;
+}
+
+.live-status-trigger:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.live-status-tooltip {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 16%, transparent);
+  color: var(--text);
+  display: grid;
+  gap: 10px;
+  min-width: min(430px, calc(100vw - 24px));
+  opacity: 0;
+  padding: 12px 14px;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 10px);
+  transform: translateY(-4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    visibility 120ms ease;
+  visibility: hidden;
+  white-space: normal;
+  z-index: 40;
+}
+
+.live-status-wrap:hover .live-status-tooltip,
+.live-status-wrap:focus-within .live-status-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.live-status-tooltip > strong {
+  font-size: 13px;
+}
+
 .topbar-tooltip-grid {
   display: grid;
   font-size: 12px;
@@ -1355,7 +1419,7 @@ summary:focus-visible {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 17px;
+  padding: 13px;
 }
 
 .goober-roster-card[data-expanded="true"] {
@@ -1391,18 +1455,26 @@ summary:focus-visible {
 
 .goober-card .goober-summary {
   display: grid;
-  gap: 11px 18px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 17px 0 0;
+  gap: 12px 48px;
+  grid-template-columns: 180px minmax(0, 1fr);
+  margin: 12px 0 0;
 }
 
-.goober-card .goober-summary div {
+.goober-summary-list {
   display: grid;
   gap: 3px;
+  margin: 0;
 }
 
-.goober-card .goober-summary div:last-child {
-  grid-column: 1 / -1;
+.goober-summary-basics {
+  align-content: start;
+  gap: 10px;
+}
+
+.goober-card .goober-summary-list div {
+  align-content: start;
+  display: grid;
+  gap: 3px;
 }
 
 .goober-card dt {
@@ -1421,8 +1493,8 @@ summary:focus-visible {
 
 .goober-groups {
   display: grid;
-  gap: 38px;
-  max-width: 960px;
+  gap: 22px;
+  max-width: none;
 }
 
 .goober-group {
@@ -1468,7 +1540,7 @@ summary:focus-visible {
 
 .goober-group > .goober-roster {
   border-top: 1px solid var(--line);
-  padding: 14px;
+  padding: 12px;
 }
 
 .goober-roster-page {
@@ -1494,10 +1566,21 @@ summary:focus-visible {
   margin: 0;
 }
 
-.goober-card-toggle-label p {
+.goober-card-toggle-label {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  min-width: 0;
+}
+
+.goober-title-separator {
+  color: var(--line-strong);
+}
+
+.goober-role {
   color: var(--muted);
   font-size: 12px;
-  margin: 4px 0 0;
 }
 
 .goober-card-toggle-meta {
@@ -3632,10 +3715,6 @@ a.telemetry-error-latest:hover {
   gap: 5px;
 }
 
-.distribution-scale {
-  margin-left: auto;
-}
-
 .distribution-mark {
   background: var(--active);
   display: inline-block;
@@ -4137,6 +4216,13 @@ code,
 
 .gaggle-workflow-choice > strong {
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.gaggle-workflow-choice > code,
+.gaggle-workflow-identity {
+  color: var(--muted);
+  font-size: 9px;
   overflow-wrap: anywhere;
 }
 
@@ -4847,7 +4933,15 @@ code,
 
 .goober-detail .property-list div {
   align-items: start;
-  gap: 24px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 120px minmax(0, 1fr);
+  justify-content: normal;
+}
+
+.goober-detail .property-list dd {
+  max-width: none;
+  text-align: left;
 }
 
 .graph-canvas {
@@ -8705,10 +8799,6 @@ code,
 
   .distribution-values > span {
     text-align: left;
-  }
-
-  .distribution-scale {
-    margin-left: 0;
   }
 
   .distribution-legend {

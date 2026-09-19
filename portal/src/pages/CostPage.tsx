@@ -51,7 +51,13 @@ export function CostPage({
   const query = useInsightStats(client, window, scope.gaggle, scope.workflow);
   const costTrend = useInsightCostTrend(client, window, scope.gaggle, scope.workflow);
   const costRollup = useInsightCostRollup(client, window);
-  const externalCosts = useInsightExternalCosts(client, window);
+  const externalCosts = useInsightExternalCosts(
+    client,
+    window,
+    scope.gaggle,
+    scope.workflow,
+    scope.stage,
+  );
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;

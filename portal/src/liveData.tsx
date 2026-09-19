@@ -42,6 +42,23 @@ export interface LiveDataSSEFailure {
   result?: string;
 }
 
+export interface LiveUpdateDetails {
+  transport: "sse" | "polling" | "none";
+  shared: boolean;
+  consecutiveFailures: number;
+  connectStartedAt?: number;
+  connectDeadlineAt?: number;
+  connectedAt?: number;
+  lastMessageAt?: number;
+  lastDataEventAt?: number;
+  lastFailure?: LiveDataSSEFailure;
+  lastFailureAt?: number;
+  nextReconnectAt?: number;
+  lastPollAt?: number;
+  lastPollSucceeded?: boolean;
+  nextPollAt?: number;
+}
+
 export interface LiveDataConfig {
   /** Share one SSE transport across visible tabs when BroadcastChannel is available. */
   crossTabEnabled?: boolean;
@@ -110,7 +127,11 @@ type ModelListener = (
   reason: "initial" | "refresh",
   invalidations?: readonly ModelInvalidation[],
 ) => boolean | void | Promise<boolean | void>;
-type StateListener = (state: LiveFreshness, failure?: LiveDataSSEFailure) => void;
+type StateListener = (
+  state: LiveFreshness,
+  failure: LiveDataSSEFailure | undefined,
+  details: LiveUpdateDetails,
+) => void;
 type LiveChannelMessage =
   | {
       sender: string;
@@ -122,6 +143,11 @@ type LiveChannelMessage =
       type: "freshness";
       freshness: LiveFreshness;
       failure?: LiveDataSSEFailure;
+      details: LiveUpdateDetails;
+    }
+  | {
+      sender: string;
+      type: "status-request";
     }
   | {
       sender: string;
@@ -175,6 +201,7 @@ interface LiveDataContextValue {
   cache: SessionDataCache;
   freshness: LiveFreshness;
   lastSSEFailure?: LiveDataSSEFailure;
+  liveUpdateDetails: LiveUpdateDetails;
   /** How current the data is. Independent of `freshness`. */
   dataFreshness: DataFreshness;
   admissionState?: AdmissionDegradedState;
@@ -234,6 +261,9 @@ export function LiveDataProvider({
   const [lastSSEFailure, setLastSSEFailure] = useState<LiveDataSSEFailure | undefined>(
     () => controller.lastSSEFailure,
   );
+  const [liveUpdateDetails, setLiveUpdateDetails] = useState<LiveUpdateDetails>(
+    () => controller.liveUpdateDetails,
+  );
   const [dataFreshness, setDataFreshness] = useState<DataFreshness>({ kind: "unknown" });
   const [admissionState, setAdmissionState] = useState<AdmissionDegradedState | undefined>();
 
@@ -248,9 +278,10 @@ export function LiveDataProvider({
   useLayoutEffect(() => setAdmissionStateSink(setAdmissionState), []);
 
   useLayoutEffect(() => {
-    const unsubscribe = controller.subscribeState((nextFreshness, failure) => {
+    const unsubscribe = controller.subscribeState((nextFreshness, failure, details) => {
       setFreshness(nextFreshness);
       setLastSSEFailure(failure);
+      setLiveUpdateDetails(details);
     });
     controller.start();
     return () => {
@@ -264,6 +295,7 @@ export function LiveDataProvider({
       cache,
       freshness,
       lastSSEFailure,
+      liveUpdateDetails,
       dataFreshness,
       admissionState,
       reportReadState,
@@ -272,7 +304,16 @@ export function LiveDataProvider({
       retryConnection: controller.retryConnection,
       subscribe: controller.subscribe,
     }),
-    [admissionState, cache, controller, dataFreshness, freshness, lastSSEFailure, reportReadState],
+    [
+      admissionState,
+      cache,
+      controller,
+      dataFreshness,
+      freshness,
+      lastSSEFailure,
+      liveUpdateDetails,
+      reportReadState,
+    ],
   );
 
   return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
@@ -331,6 +372,11 @@ export class LiveDataController {
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private refreshFailureCount = 0;
   lastSSEFailure: LiveDataSSEFailure | undefined;
+  liveUpdateDetails: LiveUpdateDetails = {
+    transport: "sse",
+    shared: false,
+    consecutiveFailures: 0,
+  };
   // Tracks the failure object last broadcast to state listeners, so a repeat
   // failure while freshness holds steady (e.g. a second SSE drop while
   // already in polling-fallback) still reaches subscribers — see
@@ -388,7 +434,20 @@ export class LiveDataController {
     this.lastSSEFailure = undefined;
     window.sessionStorage.removeItem(this.cursorStorageKey);
     this.closeConnection("manual-retry");
-    this.setFreshness("reconnecting");
+    this.setConnectionState("reconnecting", undefined, {
+      transport: "sse",
+      shared: false,
+      consecutiveFailures: 0,
+      connectStartedAt: undefined,
+      connectDeadlineAt: undefined,
+      connectedAt: undefined,
+      lastFailure: undefined,
+      lastFailureAt: undefined,
+      nextReconnectAt: undefined,
+      lastPollAt: undefined,
+      lastPollSucceeded: undefined,
+      nextPollAt: undefined,
+    });
     this.connect("manual-retry");
   };
 
@@ -420,7 +479,7 @@ export class LiveDataController {
 
   subscribeState(listener: StateListener): () => void {
     this.stateListeners.add(listener);
-    listener(this.freshness, this.lastSSEFailure);
+    listener(this.freshness, this.lastSSEFailure, this.liveUpdateDetails);
     return () => this.stateListeners.delete(listener);
   }
 
@@ -436,16 +495,31 @@ export class LiveDataController {
     window.addEventListener("offline", this.onOffline);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
     if (!navigator.onLine) {
-      this.setFreshness("offline");
+      this.setConnectionState("offline", this.lastSSEFailure, {
+        transport: "none",
+        connectStartedAt: undefined,
+        connectDeadlineAt: undefined,
+        connectedAt: undefined,
+        nextReconnectAt: undefined,
+        nextPollAt: undefined,
+      });
       return;
     }
     if (document.visibilityState === "hidden") {
-      this.setFreshness("stale");
+      this.setConnectionState("stale", this.lastSSEFailure, {
+        transport: "none",
+        connectStartedAt: undefined,
+        connectDeadlineAt: undefined,
+        connectedAt: undefined,
+        nextReconnectAt: undefined,
+        nextPollAt: undefined,
+      });
       return;
     }
     if (this.startCrossTabCoordination()) {
       this.connect("initial");
     } else {
+      this.followSharedConnection();
       this.queueRefresh({ cursor: "", models: ALL_MODELS }, 0);
     }
   }
@@ -478,6 +552,8 @@ export class LiveDataController {
     this.failureCount = 0;
     if (this.tryBecomeLeader()) {
       this.connect("online");
+    } else {
+      this.followSharedConnection();
     }
     this.resumeInvalidations();
   };
@@ -491,7 +567,14 @@ export class LiveDataController {
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
-    this.setFreshness("offline");
+    this.setConnectionState("offline", this.lastSSEFailure, {
+      transport: "none",
+      connectStartedAt: undefined,
+      connectDeadlineAt: undefined,
+      connectedAt: undefined,
+      nextReconnectAt: undefined,
+      nextPollAt: undefined,
+    });
   };
 
   private readonly onVisibilityChange = (): void => {
@@ -505,20 +588,48 @@ export class LiveDataController {
       this.clearPollingTimer();
       this.clearInvalidationTimer();
       this.releaseLeadership();
-      this.setFreshness("stale");
+      this.setConnectionState("stale", this.lastSSEFailure, {
+        transport: "none",
+        connectStartedAt: undefined,
+        connectDeadlineAt: undefined,
+        connectedAt: undefined,
+        nextReconnectAt: undefined,
+        nextPollAt: undefined,
+      });
       return;
     }
     if (!navigator.onLine) {
-      this.setFreshness("offline");
+      this.setConnectionState("offline", this.lastSSEFailure, {
+        transport: "none",
+        connectStartedAt: undefined,
+        connectDeadlineAt: undefined,
+        connectedAt: undefined,
+        nextReconnectAt: undefined,
+        nextPollAt: undefined,
+      });
       return;
     }
     this.invalidationsPaused = false;
     this.failureCount = 0;
     if (this.tryBecomeLeader()) {
       this.connect("visibility-visible");
+    } else {
+      this.followSharedConnection();
     }
     this.resumeInvalidations();
   };
+
+  private followSharedConnection(): void {
+    this.updateLiveDetails({
+      transport: "sse",
+      shared: true,
+      connectStartedAt: undefined,
+      connectDeadlineAt: undefined,
+      connectedAt: undefined,
+      nextReconnectAt: undefined,
+    });
+    this.postLiveMessage({ sender: this.tabId, type: "status-request" });
+  }
 
   private connect(cause: string, delayMs?: number): void {
     if (
@@ -537,6 +648,15 @@ export class LiveDataController {
     const generation = this.generation;
     const controller = new AbortController();
     this.connectController = controller;
+    const connectStartedAt = Date.now();
+    this.updateLiveDetails({
+      transport: this.polling ? "polling" : "sse",
+      shared: false,
+      connectStartedAt,
+      connectDeadlineAt: connectStartedAt + this.config.connectTimeoutMs,
+      connectedAt: undefined,
+      nextReconnectAt: undefined,
+    });
     void this.consumeStream(generation, controller, cause);
   }
 
@@ -561,11 +681,18 @@ export class LiveDataController {
       }
       this.activeStream = stream;
       connectedAt = Date.now();
-      this.lastSSEFailure = undefined;
       this.armIdleWatchdog(generation, controller);
       this.dependencies.diagnostics?.recordSSE({ event: "connect", cause });
       this.clearPollingTimer();
-      this.setFreshness(resumeCursor ? "connected" : "stale");
+      this.setConnectionState(resumeCursor ? "connected" : "stale", undefined, {
+        transport: "sse",
+        shared: false,
+        connectStartedAt: undefined,
+        connectDeadlineAt: undefined,
+        connectedAt,
+        nextReconnectAt: undefined,
+        nextPollAt: undefined,
+      });
       this.skipNextSnapshotRefresh = !resumeCursor;
       if (!resumeCursor) {
         this.queueRefresh({ cursor: "", models: ALL_MODELS }, 0);
@@ -575,6 +702,11 @@ export class LiveDataController {
         if (!this.isCurrent(generation, controller)) {
           return;
         }
+        const receivedAt = Date.now();
+        this.updateLiveDetails({
+          lastMessageAt: receivedAt,
+          ...(event.type === "heartbeat" ? {} : { lastDataEventAt: receivedAt }),
+        });
         // Re-arm on every frame, heartbeat included. A heartbeat is not data
         // and applyEvent still drops it, but it IS evidence the socket is
         // carrying bytes — which is the only thing that distinguishes a live
@@ -586,6 +718,7 @@ export class LiveDataController {
         // forever.
         if (connectedAt !== 0 && Date.now() - connectedAt >= this.config.connectionSettledMs) {
           this.failureCount = 0;
+          this.updateLiveDetails({ consecutiveFailures: 0 });
         }
         this.applyEvent(event);
       }
@@ -602,6 +735,7 @@ export class LiveDataController {
       }
       if (connectedAt !== 0 && Date.now() - connectedAt >= this.config.connectionSettledMs) {
         this.failureCount = 0;
+        this.updateLiveDetails({ consecutiveFailures: 0 });
       }
       this.handleDisconnect("stream-error", describeSSEFailure(error));
     } finally {
@@ -790,34 +924,58 @@ export class LiveDataController {
     this.seenEventOrder.length = 0;
     window.sessionStorage.removeItem(this.cursorStorageKey);
     this.failureCount = 0;
-    this.setFreshness("stale");
+    this.setConnectionState("stale", undefined, {
+      transport: "sse",
+      consecutiveFailures: 0,
+      connectedAt: undefined,
+    });
     this.scheduleReconnect(0, "stale-cursor");
   }
 
   private handleDisconnect(cause: string, failure?: LiveDataSSEFailure): void {
-    this.lastSSEFailure = failure ?? { cause, endpoint: "/api/v1/events" };
+    const nextFailure = failure ?? { cause, endpoint: "/api/v1/events" };
     this.closeConnection(cause);
     if (!navigator.onLine) {
       this.clearPollingTimer();
-      this.setFreshness("offline");
+      this.setConnectionState("offline", nextFailure, {
+        transport: "none",
+        connectStartedAt: undefined,
+        connectDeadlineAt: undefined,
+        connectedAt: undefined,
+        lastFailure: nextFailure,
+        lastFailureAt: Date.now(),
+        nextReconnectAt: undefined,
+        nextPollAt: undefined,
+      });
       return;
     }
     this.failureCount += 1;
-    if (this.config.pollingEnabled !== false && this.failureCount >= this.config.failuresBeforePolling) {
+    const polling =
+      this.config.pollingEnabled !== false &&
+      this.failureCount >= this.config.failuresBeforePolling;
+    if (polling) {
       this.startPollingFallback();
-    } else {
-      this.setFreshness("reconnecting");
     }
     const exponent = Math.max(0, this.failureCount - 1);
     const delay = Math.min(
       this.config.reconnectBaseDelayMs * 2 ** exponent,
       this.config.reconnectMaxDelayMs,
     );
+    this.setConnectionState(polling ? "polling-fallback" : "reconnecting", nextFailure, {
+      transport: polling ? "polling" : "sse",
+      shared: false,
+      consecutiveFailures: this.failureCount,
+      connectStartedAt: undefined,
+      connectDeadlineAt: undefined,
+      connectedAt: undefined,
+      lastFailure: nextFailure,
+      lastFailureAt: Date.now(),
+      nextReconnectAt: Date.now() + delay,
+    });
     this.scheduleReconnect(delay, cause);
   }
 
   private startPollingFallback(): void {
-    this.setFreshness("polling-fallback");
     if (this.polling) {
       return;
     }
@@ -838,10 +996,17 @@ export class LiveDataController {
     } else {
       this.refreshFailureCount += 1;
     }
+    const completedAt = Date.now();
+    const delay = refreshed ? this.config.pollingIntervalMs : this.refreshRetryDelay();
+    this.updateLiveDetails({
+      lastPollAt: completedAt,
+      lastPollSucceeded: refreshed,
+      nextPollAt: completedAt + delay,
+    });
     this.pollingTimer = setTimeout(() => {
       this.pollingTimer = undefined;
       void this.runPollingCycle();
-    }, refreshed ? this.config.pollingIntervalMs : this.refreshRetryDelay());
+    }, delay);
   }
 
   private async pollForChanges(): Promise<boolean> {
@@ -881,6 +1046,7 @@ export class LiveDataController {
       return;
     }
     this.clearReconnectTimer();
+    this.updateLiveDetails({ nextReconnectAt: Date.now() + delay });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       this.connect(cause, delay);
@@ -1095,18 +1261,36 @@ export class LiveDataController {
   }
 
   private setFreshness(freshness: LiveFreshness): void {
+    this.setConnectionState(freshness, this.lastSSEFailure);
+  }
+
+  private updateLiveDetails(details: Partial<LiveUpdateDetails>): void {
+    this.setConnectionState(this.freshness, this.lastSSEFailure, details);
+  }
+
+  private setConnectionState(
+    freshness: LiveFreshness,
+    failure: LiveDataSSEFailure | undefined,
+    details?: Partial<LiveUpdateDetails>,
+  ): void {
+    const nextDetails = details
+      ? { ...this.liveUpdateDetails, ...details }
+      : this.liveUpdateDetails;
     // A repeated SSE failure while the freshness value doesn't change (e.g. a
     // second disconnect while already in polling-fallback) still needs to
-    // reach subscribers, since it carries new failure details — so the
-    // no-op guard only fires when BOTH the freshness value and the failure
-    // are unchanged from what was last broadcast.
+    // reach subscribers, since it carries new failure details. Timing changes
+    // also matter because the custom status tooltip reports the current
+    // connection attempt, last message, and next retry.
     if (
       this.freshness === freshness &&
-      this.lastSSEFailure === this.lastNotifiedSSEFailure
+      failure === this.lastNotifiedSSEFailure &&
+      nextDetails === this.liveUpdateDetails
     ) {
       return;
     }
     this.freshness = freshness;
+    this.lastSSEFailure = failure;
+    this.liveUpdateDetails = nextDetails;
     this.lastNotifiedSSEFailure = this.lastSSEFailure;
     if (this.isLeader) {
       this.postLiveMessage({
@@ -1114,10 +1298,11 @@ export class LiveDataController {
         type: "freshness",
         freshness,
         ...(this.lastSSEFailure ? { failure: this.lastSSEFailure } : {}),
+        details: this.liveUpdateDetails,
       });
     }
     for (const listener of this.stateListeners) {
-      listener(freshness, this.lastSSEFailure);
+      listener(freshness, this.lastSSEFailure, this.liveUpdateDetails);
     }
   }
 
@@ -1237,9 +1422,21 @@ export class LiveDataController {
       this.applyEvent(value.event);
       return;
     }
+    if (value.type === "status-request" && this.isLeader) {
+      this.postLiveMessage({
+        sender: this.tabId,
+        type: "freshness",
+        freshness: this.freshness,
+        ...(this.lastSSEFailure ? { failure: this.lastSSEFailure } : {}),
+        details: this.liveUpdateDetails,
+      });
+      return;
+    }
     if (value.type === "freshness" && !this.isLeader) {
-      this.lastSSEFailure = value.failure;
-      this.setFreshness(value.freshness);
+      this.setConnectionState(value.freshness, value.failure, {
+        ...value.details,
+        shared: true,
+      });
       return;
     }
     if (

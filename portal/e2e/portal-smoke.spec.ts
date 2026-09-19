@@ -328,6 +328,13 @@ test("shows one coherent polling fallback status with diagnostics out of primary
   const status = page.getByText("Data current via polling", { exact: true });
   await expect(status).toBeVisible({ timeout: 10_000 });
   await expect(status).not.toContainText("stream-error");
-  await expect(status).toHaveAttribute("title", /stream-error.*\/api\/v1\/events/);
+  await expect(status).not.toHaveAttribute("title", /.+/);
+
+  const detailsButton = page.getByRole("button", { name: /Show live update details/ });
+  await detailsButton.focus();
+  const details = page.locator("#live-updates-tooltip");
+  await expect(details).toBeVisible();
+  await expect(details).toContainText("stream-error");
+  await expect(details).toContainText("/api/v1/events");
   await expect(page.locator('[data-state="polling-fallback"]')).toHaveCount(1);
 });

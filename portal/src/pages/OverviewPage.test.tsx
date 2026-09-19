@@ -20,7 +20,9 @@ describe("overview page", () => {
       decommissionReason: "migrated to replacement",
     };
     render(<App client={new FixtureDaemonClient(fixtures)} />);
-    const tooltip = await screen.findByRole("tooltip");
+    await screen.findByText("0123456789abcdef0123456789abcdef");
+    const tooltip = document.getElementById("portal-context-tooltip");
+    expect(tooltip).not.toBeNull();
     expect(tooltip).toHaveTextContent("0123456789abcdef0123456789abcdef");
     expect(tooltip).toHaveTextContent(fixtures.instance.instanceRoot);
     expect(tooltip).toHaveTextContent("MDB5");
@@ -37,7 +39,8 @@ describe("overview page", () => {
 
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+    await screen.findByText("v1.2.3 · abcdef0123456789");
+    expect(document.getElementById("portal-context-tooltip")).toHaveTextContent(
       "v1.2.3 · abcdef0123456789",
     );
   });
@@ -58,6 +61,7 @@ describe("overview page", () => {
     ).toBeInTheDocument();
     const active = within(screen.getByRole("region", { name: "Active runs" }));
     expect(active.getByText("Agent-Clubhouse/Goobers#3088 Operator status progress")).toBeInTheDocument();
+    expect(active.getByText("core / implementation")).toBeInTheDocument();
     expect(active.getByText("review · recent heartbeat 30s ago · claim active/verified")).toBeInTheDocument();
     expect(active.getByText("review · PR via open-pr · finish review")).toBeInTheDocument();
     expect(

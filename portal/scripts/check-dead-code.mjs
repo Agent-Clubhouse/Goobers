@@ -35,6 +35,18 @@ const exemptions = [
   },
   {
     type: "files",
+    file: "src/components/RunStageInspector.tsx",
+    symbol: "src/components/RunStageInspector.tsx",
+    reason: "Retained on the 0.4.1 branch as a tested detail-view implementation not yet routed by production.",
+  },
+  {
+    type: "files",
+    file: "src/transcript.ts",
+    symbol: "src/transcript.ts",
+    reason: "Supports the retained 0.4.1 RunStageInspector and its focused tests.",
+  },
+  {
+    type: "files",
     file: "src/api/wire.generated.ts",
     symbol: "src/api/wire.generated.ts",
     reason: "Generated Go/TypeScript contract fixture consumed by the contract and component tests.",
@@ -73,7 +85,6 @@ const testOnlyExports = {
     "readStoredAttentionDismissals",
   ],
   "src/components/GaggleWorkflowExplorer.tsx": ["WorkflowPicker"],
-  "src/components/RunStageInspector.tsx": ["TranscriptView"],
   "src/dataCache.ts": ["DATA_CACHE_TTL_MS"],
   "src/insightData.ts": [
     "insightTrendBuckets",
@@ -100,7 +111,14 @@ const testOnlyExports = {
     "orderedReplayEvents",
     "replayChapterKind",
   ],
-  "src/runDetailData.ts": ["loadRunDetail", "isVerdictArtifact"],
+  "src/runDetailData.ts": [
+    "loadRunDetail",
+    "isVerdictArtifact",
+    "logicalArtifacts",
+    "evidenceVisit",
+    "isInspectableEvidenceEvent",
+    "isTranscriptEvent",
+  ],
   "src/runsHistory.ts": ["RUNS_PAGE_SIZE"],
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
   "src/theme.ts": ["themeStorageKey", "persistTheme"],

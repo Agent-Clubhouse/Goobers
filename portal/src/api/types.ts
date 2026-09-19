@@ -1066,6 +1066,9 @@ export interface TelemetryCostOptions {
   provider?: string;
   scope: TelemetryCostScope;
   id?: string;
+  gaggle?: string;
+  workflow?: string;
+  stage?: string;
   since: string;
   until: string;
 }
