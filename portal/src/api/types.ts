@@ -324,7 +324,7 @@ export interface ConfigAuthoringErrorEnvelope {
 }
 
 export interface Health extends ContractVersion {
-	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string };
+	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
   startup?: { phase: string; target?: string; since: string };
   build?: BuildMetadata;
   readState?: ReadState;
@@ -491,6 +491,25 @@ export interface ValidationWarning {
   severity: ValidationSeverity;
   scope: string;
   explanation: string;
+  safety?: WorkflowSafetyDetails;
+}
+
+export interface WorkflowSafetyDetails {
+  version: string;
+  id: string;
+  gaggle: string;
+  workflow: string;
+  stage: string;
+  witnessPath: string[];
+  confidence: string;
+  coverage: string;
+  impact: string;
+  action: string;
+  limitations: string;
+  budget?: number;
+  budgetSource?: string;
+  suppressedCode?: string;
+  suppressionReason?: string;
 }
 
 export interface RepoRef {

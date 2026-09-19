@@ -38,7 +38,30 @@
         "path": { "type": "string", "pattern": "^/" },
         "code": { "type": "string", "minLength": 1 },
         "severity": { "type": "string", "enum": ["error", "warning", "info"] },
-        "message": { "type": "string", "minLength": 1 }
+        "message": { "type": "string", "minLength": 1 },
+        "safety": {
+          "description": "Additive warning-only workflow safety analysis; never affects execution.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "id", "gaggle", "workflow", "stage", "witnessPath", "confidence", "coverage", "impact", "action", "limitations"],
+          "properties": {
+            "version": { "const": "goobers.dev/workflow-safety/v1" },
+            "id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "gaggle": { "type": "string" },
+            "workflow": { "type": "string" },
+            "stage": { "type": "string" },
+            "witnessPath": { "type": "array", "items": { "type": "string" } },
+            "confidence": { "type": "string", "enum": ["high", "uncertain", "unknown"] },
+            "coverage": { "type": "string", "enum": ["modeled", "partial", "incomplete"] },
+            "impact": { "type": "string" },
+            "action": { "type": "string" },
+            "limitations": { "type": "string" },
+            "budget": { "type": "integer", "minimum": 1 },
+            "budgetSource": { "type": "string" },
+            "suppressedCode": { "type": "string" },
+            "suppressionReason": { "type": "string" }
+          }
+        }
       },
       "anyOf": [
         { "required": ["line", "col"] },

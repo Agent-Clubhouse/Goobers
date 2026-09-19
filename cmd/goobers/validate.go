@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workflowsafety"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -538,6 +539,13 @@ var strictNeutralWarningCodes = []validate.WarningCode{
 	validate.WarningConnectionRefUnhonored,
 	validate.RunnerAVExclusionsUnverified,
 	validate.WarningImplicitWritableWorkspace,
+	validate.WarningCode(workflowsafety.EvidenceCode),
+	validate.WarningCode(workflowsafety.PublishCode),
+	validate.WarningCode(workflowsafety.FeedbackCode),
+	validate.WarningCode(workflowsafety.RecoveryCode),
+	validate.WarningCode(workflowsafety.CycleCode),
+	validate.WarningCode(workflowsafety.CoverageCode),
+	validate.WarningCode(workflowsafety.SuppressedCode),
 }
 
 func strictNeutralWarningCodeText() string {
