@@ -560,6 +560,7 @@ function sortRunsByActivity(runs: RunSummary[]): RunSummary[] {
 
 export interface OverviewInventory {
   gaggleCount: number;
+  repositoryNames: Map<string, string>;
   // `${gaggle}/${workflow}` -> workflow display name, for labeling runs.
   workflowNames: Map<string, string>;
 }
@@ -578,6 +579,7 @@ export interface OperationalOverview {
   health: Health;
   instance: Instance;
   gaggleCount: number;
+  repositoryNames?: Map<string, string>;
   workflowNames: Map<string, string>;
   groups: OperationalRunGroups;
   // Present only when part of the Overview could not be read. Everything else
@@ -1126,6 +1128,7 @@ export async function loadOperationalOverview(
     health: resolvedHealth,
     instance: resolvedInstance,
     gaggleCount: previous?.gaggleCount ?? 0,
+    repositoryNames: previous?.repositoryNames ?? new Map<string, string>(),
     workflowNames: previous?.workflowNames ?? new Map<string, string>(),
     groups: previous?.groups ?? { active: [], attention: [], recent: [] },
     ...(previous
@@ -1143,6 +1146,7 @@ export async function loadOperationalOverview(
       ? loadOverviewInventory(client, options?.cache, signal)
       : Promise.resolve<OverviewInventory>({
           gaggleCount: previous!.gaggleCount,
+          repositoryNames: previous?.repositoryNames ?? new Map<string, string>(),
           workflowNames: previous!.workflowNames,
         }),
   );
@@ -1164,6 +1168,7 @@ export async function loadOperationalOverview(
 
   const resolvedInventory = settledValue(inventory) ?? {
     gaggleCount: previous?.gaggleCount ?? 0,
+    repositoryNames: previous?.repositoryNames ?? new Map<string, string>(),
     workflowNames: previous?.workflowNames ?? new Map<string, string>(),
   };
   const resolvedGroups = settledValue(groups) ??
@@ -1183,6 +1188,7 @@ export async function loadOperationalOverview(
     health: resolvedHealth,
     instance: resolvedInstance,
     gaggleCount: resolvedInventory.gaggleCount,
+    repositoryNames: resolvedInventory.repositoryNames,
     workflowNames: resolvedInventory.workflowNames,
     groups: resolvedGroups,
     ...(inventoryError || runsError ? { sectionErrors } : {}),
@@ -1219,6 +1225,12 @@ async function loadOverviewInventory(
     gaggles.map((gaggle) => loadWorkflowDefinitions(client, gaggle.name, cache, signal)),
   );
   const workflowNames = new Map<string, string>();
+  const repositoryNames = new Map(
+    gaggles.map((gaggle) => [
+      gaggle.name,
+      `${gaggle.project.owner}/${gaggle.project.name}`,
+    ]),
+  );
   for (const workflows of workflowLists) {
     for (const workflow of workflows) {
       workflowNames.set(
@@ -1227,7 +1239,7 @@ async function loadOverviewInventory(
       );
     }
   }
-  return { gaggleCount: gaggles.length, workflowNames };
+  return { gaggleCount: gaggles.length, repositoryNames, workflowNames };
 }
 
 async function loadOperationalInventory(

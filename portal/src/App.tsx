@@ -146,6 +146,10 @@ function activeRouteGaggle(route: Route): string | undefined {
   return undefined;
 }
 
+function routeScrollKey(route: Route): string {
+  return route.page === "run" ? `run/${route.id}` : routeHash(route);
+}
+
 function Portal({
   client,
   mode,
@@ -162,6 +166,7 @@ function Portal({
   const [config, setConfig] = useState<PortalConfig>(cachedConfig ?? defaultPortalConfig);
   const [loading, setLoading] = useState(cachedConfig === undefined);
   const initialRoute = useRef(true);
+  const scrollKey = routeScrollKey(route);
 
   useEffect(() => {
     const onHashChange = () => setRoute(parseRoute());
@@ -182,7 +187,7 @@ function Portal({
       scrollPane.scrollLeft = 0;
     }
     document.getElementById("main-content")?.focus();
-  }, [route]);
+  }, [scrollKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -377,11 +382,15 @@ function Portal({
           {route.page === "run" && (
             <RunPage
               client={client}
+              eventDetail={route.event}
               key={route.id}
               navigate={navigate}
+              nodeId={route.node}
               revealRun={revealRun}
               runId={route.id}
+              sequence={route.seq}
               standalone={standalone}
+              tab={route.tab}
             />
           )}
           {route.page === "workflow" && !route.gaggle && (

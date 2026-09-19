@@ -778,12 +778,26 @@ function AttemptDetail({
       {outputs.length > 0 && (
         <details className="definition-disclosure" open>
           <summary>Outputs</summary>
-          {outputs.map(([key, value]) => (
-            <div className="output-line" key={key}>
-              <span>{key}</span>
-              <code>{typeof value === "string" ? value : JSON.stringify(value)}</code>
-            </div>
-          ))}
+          <div className="output-table-wrap">
+            <table aria-label="Attempt outputs" className="output-table">
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outputs.map(([key, value]) => (
+                  <tr key={key}>
+                    <th scope="row">{key}</th>
+                    <td>
+                      <code>{typeof value === "string" ? value : JSON.stringify(value)}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </details>
       )}
       <div className="artifact-heading">

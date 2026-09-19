@@ -365,7 +365,7 @@ function semanticVisitResult(event: RunEvent, stage: string): string {
   if (event.type === "gate.evaluated") {
     const verdict = event.verdict?.trim() || "Decision recorded";
     return event.target
-      ? `${humanize(verdict)} → ${humanize(event.target.replace(/^@/, ""))}`
+      ? `${humanize(verdict)} · Next: ${humanize(event.target.replace(/^@/, ""))}`
       : humanize(verdict);
   }
   if (event.reason?.trim()) {
@@ -1210,9 +1210,20 @@ function stateFromStatus(
   }
 }
 
-function humanize(value: string): string {
-  const words = value.replace(/[._-]+/g, " ").trim();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Event";
+export function humanize(value: string): string {
+  const words = value.replace(/[._-]+/g, " ").trim().split(/\s+/);
+  if (!words[0]) {
+    return "Event";
+  }
+  return words
+    .map((word, index) =>
+      word.toLowerCase() === "pr"
+        ? "PR"
+        : index === 0
+          ? word.charAt(0).toUpperCase() + word.slice(1)
+          : word,
+    )
+    .join(" ");
 }
 
 // nodeOwner resolves the goober that owns a stage/gate node in the run's

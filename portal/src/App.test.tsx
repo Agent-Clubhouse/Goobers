@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -175,7 +175,7 @@ describe("portal foundation", () => {
       await screen.findByRole("heading", { name: "Run 01JZ402DASHBOARD" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Progress & Transitions" })).toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Diagnostics" }));
+    await user.click(screen.getByRole("tab", { name: "Graph" }));
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Journal" }));
@@ -187,7 +187,7 @@ describe("portal foundation", () => {
     renderLiveApp();
 
     await openAttentionRun(user, "01JZ402DASHBOARD");
-    await user.click(await screen.findByRole("tab", { name: "Diagnostics" }));
+    await user.click(await screen.findByRole("tab", { name: "Graph" }));
     expect(
       await screen.findByText("sha256:core", { selector: ".run-graph-pin .mono" }),
     ).toBeInTheDocument();
@@ -197,6 +197,14 @@ describe("portal foundation", () => {
       screen.getByRole("button", { name: /^Select sequence 4:/ }),
     );
 
+    const dialog = await screen.findByRole("dialog", { name: "Event detail" });
+    expect(within(dialog).getByText("Sequence 4")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Journal" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Close event detail" }));
+    await user.click(screen.getByRole("tab", { name: "Graph" }));
     expect(
       screen.getByRole("button", {
         name: "implement, agentic, Running at sequence 4",
