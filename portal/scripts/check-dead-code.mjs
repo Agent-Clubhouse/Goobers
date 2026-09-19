@@ -57,18 +57,6 @@ const exemptions = [
     symbol: "e2e/real-daemon.mjs",
     reason: "Playwright real-dashboard web-server entry point invoked from playwright.config.ts.",
   },
-  {
-    type: "files",
-    file: "src/transcript.ts",
-    symbol: "src/transcript.ts",
-    reason: "Transcript parser consumed by the run-stage inspector.",
-  },
-  {
-    type: "files",
-    file: "src/components/RunStageInspector.tsx",
-    symbol: "src/components/RunStageInspector.tsx",
-    reason: "Run-stage inspector consumed by the run detail page.",
-  },
 ];
 
 const testOnlyExports = {
@@ -85,6 +73,7 @@ const testOnlyExports = {
     "readStoredAttentionDismissals",
   ],
   "src/components/GaggleWorkflowExplorer.tsx": ["WorkflowPicker"],
+  "src/components/RunStageInspector.tsx": ["TranscriptView"],
   "src/dataCache.ts": ["DATA_CACHE_TTL_MS"],
   "src/insightData.ts": [
     "insightTrendBuckets",
@@ -114,10 +103,6 @@ const testOnlyExports = {
   "src/runDetailData.ts": [
     "loadRunDetail",
     "isVerdictArtifact",
-    "logicalArtifacts",
-    "evidenceVisit",
-    "isInspectableEvidenceEvent",
-    "isTranscriptEvent",
   ],
   "src/runsHistory.ts": ["RUNS_PAGE_SIZE"],
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
