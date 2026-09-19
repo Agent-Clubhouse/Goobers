@@ -5081,41 +5081,6 @@ code,
   margin: 0;
 }
 
-.failure-reason-chain {
-  counter-reset: failure-cause;
-  display: grid;
-  gap: 8px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.failure-reason-chain li {
-  counter-increment: failure-cause;
-  display: grid;
-  gap: 9px;
-  grid-template-columns: 22px minmax(0, 1fr);
-  line-height: 1.5;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.failure-reason-chain li::before {
-  align-items: center;
-  background: color-mix(in srgb, var(--danger) 12%, var(--panel));
-  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--line));
-  border-radius: 999px;
-  color: var(--danger);
-  content: counter(failure-cause);
-  display: inline-flex;
-  font-size: 9px;
-  font-weight: 760;
-  height: 20px;
-  justify-content: center;
-  margin-top: 1px;
-  width: 20px;
-}
-
 .failure-errors-link {
   align-items: center;
   color: var(--danger);

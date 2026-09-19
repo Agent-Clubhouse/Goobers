@@ -23,7 +23,6 @@ export function FailurePanel({
   errorsHref?: string;
 }) {
   const aborted = phase === "aborted";
-  const reasonParts = splitFailureReason(failure.message);
   return (
     <section aria-labelledby="failure-title" className="failure-panel" tabIndex={0}>
       <span className="escalation-icon">
@@ -53,15 +52,7 @@ export function FailurePanel({
           <div className="failure-reason">
             <dt>Reason</dt>
             <dd>
-              {reasonParts.length === 1 ? (
-                <p>{reasonParts[0]}</p>
-              ) : (
-                <ol aria-label="Failure cause chain" className="failure-reason-chain">
-                  {reasonParts.map((reason, index) => (
-                    <li key={`${index}-${reason}`}>{reason}</li>
-                  ))}
-                </ol>
-              )}
+              <p>{failure.message}</p>
             </dd>
           </div>
         </dl>
@@ -89,44 +80,4 @@ export function FailurePanel({
       </div>
     </section>
   );
-}
-
-function splitFailureReason(message: string): string[] {
-  const parts: string[] = [];
-  let start = 0;
-  let quoted = false;
-  let escaped = false;
-
-  for (let index = 0; index < message.length; index += 1) {
-    const character = message[index];
-    if (quoted && character === "\\" && !escaped) {
-      escaped = true;
-      continue;
-    }
-    if (character === '"' && !escaped) {
-      quoted = !quoted;
-    }
-    escaped = false;
-
-    if (!quoted && character === ":" && /\s/.test(message[index + 1] ?? "")) {
-      const part = message.slice(start, index).trim();
-      if (part) {
-        parts.push(part);
-      }
-      start = index + 1;
-      while (/\s/.test(message[start] ?? "")) {
-        start += 1;
-      }
-      index = start - 1;
-    }
-  }
-
-  const finalPart = message.slice(start).trim();
-  if (finalPart) {
-    parts.push(finalPart);
-  }
-  if (parts.length > 1 && parts[0] === "runner") {
-    parts.splice(0, 2, `${parts[0]}: ${parts[1]}`);
-  }
-  return parts.length > 0 ? parts : [message];
 }
