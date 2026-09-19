@@ -4003,45 +4003,9 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 			}
 		}
 
-		// #5107: mirror the ResultFailure branch above — when t.Next names a
-		// gate, a no-work verdict can be the identical "repass reproduced
-		// nothing new" situation a stage failure hits, and deserves the same
-		// routing. local-gate's `fail` branch repasses local-ci's failure
-		// straight back to implement (bypassing review); if the implementer
-		// then declines to change anything further (ResultNoWork, no new
-		// commit), falling through to finishNoWork below completes the run
-		// silently — no PR, no escalation, no park — and releases the claim
-		// back to the ready pool for the same failure to repeat forever.
-		//
-		// The routing is scoped, not unconditional (that distinction is the
-		// whole fix): only take it when t.Next's gate has ALREADY journaled a
-		// real evaluation earlier in this run. A first arrival at the gate —
-		// #233's genuine "a query-type stage found nothing to do" — has no
-		// prior verdict to route into, so it must still complete
-		// unconditionally; TestRunnerDoesNotPreserveEarlierStageCommitWhenFailedAttemptCreatedNone
-		// depends on exactly this (implement's infra-retry reports no-work on
-		// its very first pass at review, with review never yet evaluated, and
-		// the run completes without ever invoking the reviewer). A
-		// SUBSEQUENT arrival — the gate has already evaluated a real diff
-		// once — means its own emptyDiff/duplicateDiff machinery
-		// (internal/gate/evaluate.go) is the right arbiter of what a diffless
-		// repass means: a genuine empty diff fails closed to the gate's
-		// `fail` branch, and a repass reproducing the identical prior diff
-		// escalates via the gate's `escalate` branch and repass budget —
-		// either way, reportable, instead of silently vanishing.
-		if _, isGate := machine.Gate(t.Next); t.Next != "" && isGate {
-			evaluated, jerr := gateAlreadyEvaluated(jr, t.Next)
-			if jerr != nil {
-				// Fail closed: a journal we can't reread must never be
-				// silently treated as "this gate has no prior evaluation,"
-				// since that reading routes straight back into the very
-				// silent-completion bug this check exists to close.
-				res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: reread journal for gate %q evaluation history: %w", t.Next, jerr))
-				return "", res, false, err
-			}
-			if evaluated {
-				return t.Next, Result{}, true, nil
-			}
+		// #5107: see noWorkRepassOutcome's doc for the full rationale.
+		if next, res, advance, done, gerr := r.noWorkRepassOutcome(ctx, runID, jr, repoRef, machine, t, steps); done {
+			return next, res, advance, gerr
 		}
 
 		res, err = r.finishNoWork(runID, jr, ws, t.Name)
@@ -4094,6 +4058,56 @@ func fanInAllBranchesNoOutput(ws *walkState, task string) bool {
 
 func isContextNotInspectedResult(result apiv1.ResultEnvelope) bool {
 	return result.Status == apiv1.ResultBlocked && result.Error != nil && result.Error.Code == ContextNotInspectedCode
+}
+
+// noWorkRepassOutcome decides #5107's routing for a ResultNoWork verdict:
+// when t.Next names a gate, a no-work verdict can be the identical "repass
+// reproduced nothing new" situation ResultFailure's gate-routing (above, in
+// taskOutcome) already handles. local-gate's `fail` branch repasses
+// local-ci's failure straight back to implement (bypassing review); if the
+// implementer then declines to change anything further (ResultNoWork, no new
+// commit), letting taskOutcome fall through to its ordinary no-work
+// completion silently finishes the run — no PR, no escalation, no park —
+// and releases the claim back to the ready pool for the same failure to
+// repeat forever.
+//
+// The routing is scoped, not unconditional (that distinction is the whole
+// fix): done=true with a routed next only when t.Next's gate has ALREADY
+// journaled a real evaluation earlier in this run. A first arrival at the
+// gate — #233's genuine "a query-type stage found nothing to do" — has no
+// prior verdict to route into, so done=false and the caller falls through to
+// its ordinary no-work completion unconditionally;
+// TestRunnerDoesNotPreserveEarlierStageCommitWhenFailedAttemptCreatedNone
+// depends on exactly this (implement's infra-retry reports no-work on its
+// very first pass at review, with review never yet evaluated, and the run
+// completes without ever invoking the reviewer). A SUBSEQUENT arrival — the
+// gate has already evaluated a real diff once — means its own
+// emptyDiff/duplicateDiff machinery (internal/gate/evaluate.go) is the right
+// arbiter of what a diffless repass means: a genuine empty diff fails closed
+// to the gate's `fail` branch, and a repass reproducing the identical prior
+// diff escalates via the gate's `escalate` branch and repass budget — either
+// way, reportable, instead of silently vanishing.
+//
+// done=true also covers the journal-reread failure itself: a journal that
+// can't be reread must never be silently treated as "no prior evaluation,"
+// since that reading routes straight back into the very silent-completion
+// bug this check exists to close, so it fails the run closed via
+// failTerminal instead and reports done so the caller returns immediately —
+// mirrors the finishStalledRequest idiom used throughout this function.
+func (r *Runner) noWorkRepassOutcome(ctx context.Context, runID string, jr *journal.Run, repoRef apiv1.RepoRef, machine *workflow.Machine, t apiv1.Task, steps int) (next string, res Result, advance, done bool, err error) {
+	_, isGate := machine.Gate(t.Next)
+	if t.Next == "" || !isGate {
+		return "", Result{}, false, false, nil
+	}
+	evaluated, jerr := gateAlreadyEvaluated(jr, t.Next)
+	if jerr != nil {
+		res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: reread journal for gate %q evaluation history: %w", t.Next, jerr))
+		return "", res, false, true, err
+	}
+	if !evaluated {
+		return "", Result{}, false, false, nil
+	}
+	return t.Next, Result{}, true, true, nil
 }
 
 // gateAlreadyEvaluated reports whether gate has journaled at least one real
