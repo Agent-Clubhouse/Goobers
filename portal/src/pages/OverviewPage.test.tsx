@@ -70,6 +70,32 @@ describe("overview page", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows an accessible local completion time for every recent outcome", async () => {
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const recent = within(await screen.findByRole("region", { name: "Recent outcomes" }));
+    const completionTimes = recent.getAllByText(/^Completed /, { selector: "time" });
+    expect(completionTimes).toHaveLength(2);
+
+    const finishedAt = "2026-07-18T03:00:00Z";
+    const completionTime = completionTimes.find(
+      (time) => time.getAttribute("datetime") === finishedAt,
+    );
+    const timestamp = new Date(finishedAt);
+    const visibleTime = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(timestamp);
+    const preciseTime = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "full",
+      timeStyle: "long",
+    }).format(timestamp);
+
+    expect(completionTime).toHaveTextContent(`Completed ${visibleTime}`);
+    expect(completionTime).toHaveAccessibleName(`Completed ${preciseTime}`);
+    expect(completionTime).toHaveAttribute("title", `Completed ${preciseTime}`);
+  });
+
   it("groups repeated attention runs by linked issue and expands direct run links", async () => {
     const fixtures = populatedDaemonFixtures();
     const repeated = fixtures.runs.runs.filter(
