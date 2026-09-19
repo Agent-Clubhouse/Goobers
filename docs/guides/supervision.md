@@ -195,6 +195,35 @@ stop.
 
 ---
 
+## Windows (per-user Scheduled Task)
+
+Use the per-user Scheduled Task when Goobers must retain the logged-in user's
+GitHub CLI accounts, harness sessions, Credential Manager entries, and user
+environment:
+
+```powershell
+goobers service task-install C:\path\to\instance
+goobers service task-status  C:\path\to\instance
+goobers service task-stop    C:\path\to\instance
+goobers service task-start   C:\path\to\instance
+goobers service task-uninstall C:\path\to\instance
+```
+
+`task-install` registers an interactive, limited-privilege task for the current
+user, starts it immediately, and triggers it again at user logon.
+
+The task launches a hidden, non-interactive Windows PowerShell host that waits
+for `__service-supervise` and propagates its exit code. This keeps Task Scheduler
+attached to the supervisor for stop and restart behavior without opening a
+persistent console or Windows Terminal tab.
+
+The task runs the stable `__service-supervise` host, so self-update activation,
+health monitoring, and rollback use the same mutable binary layout as the other
+platform supervisors. Product upgrades use `goobers self-update`; do not replace
+the active `updates\current\goobers.exe` directly.
+
+---
+
 ## Windows (Windows Service)
 
 The stable host uses [`internal/winsvc`](https://github.com/Agent-Clubhouse/Goobers/tree/main/internal/winsvc) to translate SCM
