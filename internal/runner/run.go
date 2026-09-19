@@ -4003,6 +4003,47 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 			}
 		}
 
+		// #5107: mirror the ResultFailure branch above — when t.Next names a
+		// gate, a no-work verdict can be the identical "repass reproduced
+		// nothing new" situation a stage failure hits, and deserves the same
+		// routing. local-gate's `fail` branch repasses local-ci's failure
+		// straight back to implement (bypassing review); if the implementer
+		// then declines to change anything further (ResultNoWork, no new
+		// commit), falling through to finishNoWork below completes the run
+		// silently — no PR, no escalation, no park — and releases the claim
+		// back to the ready pool for the same failure to repeat forever.
+		//
+		// The routing is scoped, not unconditional (that distinction is the
+		// whole fix): only take it when t.Next's gate has ALREADY journaled a
+		// real evaluation earlier in this run. A first arrival at the gate —
+		// #233's genuine "a query-type stage found nothing to do" — has no
+		// prior verdict to route into, so it must still complete
+		// unconditionally; TestRunnerDoesNotPreserveEarlierStageCommitWhenFailedAttemptCreatedNone
+		// depends on exactly this (implement's infra-retry reports no-work on
+		// its very first pass at review, with review never yet evaluated, and
+		// the run completes without ever invoking the reviewer). A
+		// SUBSEQUENT arrival — the gate has already evaluated a real diff
+		// once — means its own emptyDiff/duplicateDiff machinery
+		// (internal/gate/evaluate.go) is the right arbiter of what a diffless
+		// repass means: a genuine empty diff fails closed to the gate's
+		// `fail` branch, and a repass reproducing the identical prior diff
+		// escalates via the gate's `escalate` branch and repass budget —
+		// either way, reportable, instead of silently vanishing.
+		if _, isGate := machine.Gate(t.Next); t.Next != "" && isGate {
+			evaluated, jerr := gateAlreadyEvaluated(jr, t.Next)
+			if jerr != nil {
+				// Fail closed: a journal we can't reread must never be
+				// silently treated as "this gate has no prior evaluation,"
+				// since that reading routes straight back into the very
+				// silent-completion bug this check exists to close.
+				res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: reread journal for gate %q evaluation history: %w", t.Next, jerr))
+				return "", res, false, err
+			}
+			if evaluated {
+				return t.Next, Result{}, true, nil
+			}
+		}
+
 		res, err = r.finishNoWork(runID, jr, ws, t.Name)
 		return "", res, false, err
 	}
@@ -4053,6 +4094,33 @@ func fanInAllBranchesNoOutput(ws *walkState, task string) bool {
 
 func isContextNotInspectedResult(result apiv1.ResultEnvelope) bool {
 	return result.Status == apiv1.ResultBlocked && result.Error != nil && result.Error.Code == ContextNotInspectedCode
+}
+
+// gateAlreadyEvaluated reports whether gate has journaled at least one real
+// journal.EventGateEvaluated event earlier in this run (#5107). Rereads the
+// journal fresh rather than trusting any in-memory walkState bookkeeping,
+// mirroring journalToleratedFailure's own idiom just below — the running
+// process's in-memory maps don't survive a restart, but the journal always
+// reflects exactly what actually happened. Note this counts ANY evaluation,
+// including one synthesized by emptyDiff/duplicateDiff rather than a real
+// reviewer call — those are still genuine verdicts the gate reached, and it
+// is precisely the presence of a PRIOR verdict (not what that verdict was)
+// that distinguishes a repass through the gate from a first arrival at it.
+func gateAlreadyEvaluated(jr executionJournal, gate string) (bool, error) {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return false, err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return false, err
+	}
+	for _, event := range events {
+		if event.Type == journal.EventGateEvaluated && event.Gate == gate {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func journalToleratedFailure(jr executionJournal, stage string) error {
