@@ -280,34 +280,7 @@ func init() {
 				"goobers netpol-render --out ./deploy/netpol --write-baseline",
 				"goobers netpol-render --out ./deploy/netpol --check",
 			),
-		groupCommand(
-			"config",
-			runConfig,
-			groupCommand("templates", runTemplates,
-				subcommand("config templates import", "import", apicontract.ActionConfigTime, runTemplateImport).
-					withHelp("import an opt-in tracked gaggle template", templateImportHelp),
-				subcommand("config templates update", "update", apicontract.ActionConfigTime, runTemplateUpdate).
-					withHelp("merge template changes into the user's config source", templateUpdateHelp),
-				subcommand("config templates backprop", "backprop", apicontract.ActionConfigTime, runTemplateBackprop).
-					withHelp("persist runtime edits into the user's config checkout", templateBackpropHelp),
-				subcommand("config templates check", "check", apicontract.ActionMaintenance, runTemplateCheck).
-					withHelp("check tracked templates without applying updates", templateCheckHelp),
-				subcommand("config templates status", "status", apicontract.ActionReadOnlyNavigation, runTemplateStatus).
-					withHelp("show cached template update availability", templateStatusHelp),
-			).withHelp("manage tracked gaggle templates", templatesHelp),
-			subcommand("config diff", "diff", apicontract.ActionConfigTime, runConfigDiff).
-				withHelp("compare active workflows with canonical definitions", configDiffHelp).
-				withExamples("goobers config diff ./instance", "goobers config diff --against ./reference-workflows ./instance"),
-			subcommand("config materialize", "materialize", apicontract.ActionConfigTime, runConfigMaterialize).
-				withHelp("apply the recorded checked-in source to the runtime instance", configMaterializeHelp).
-				withExamples("goobers config materialize", "goobers config materialize ./instance"),
-			subcommand("config show", "show", apicontract.ActionReadOnlyNavigation, runConfigShow).
-				withHelp("render the effective instance config (secrets redacted)", configShowHelp).
-				withExamples("goobers config show", "goobers config show --json"),
-		).
-			withSynopsis(synopsisByID["config"]).
-			withHelp("inspect, materialize, and compare instance configuration", configHelp).
-			withExamples("goobers config show", "goobers config materialize ./instance", "goobers config diff ./instance"),
+		configCLICommand(synopsisByID["config"]),
 		groupCommand(
 			"speech",
 			runSpeech,

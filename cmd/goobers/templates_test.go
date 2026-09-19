@@ -28,6 +28,13 @@ func TestTemplateAuthoringGuideExample(t *testing.T) {
 			t.Fatal("authoring guide is missing its minimal package examples")
 		}
 		tree[name] = gaggletemplate.File{Mode: 0644, Data: []byte(strings.SplitN(blocks[i+1], "```", 2)[0])}
+		shipped, err := os.ReadFile(filepath.Join("..", "..", "templates", "starter", filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(strings.ReplaceAll(string(shipped), "\r\n", "\n")) != strings.TrimSpace(string(tree[name].Data)) {
+			t.Fatalf("shipped starter %s differs from the authoring guide", name)
+		}
 	}
 	bound, err := gaggletemplate.Bind(tree, "orders")
 	if err != nil {

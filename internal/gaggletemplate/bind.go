@@ -42,43 +42,9 @@ func Bind(input Tree, name string) (Tree, error) {
 		return nil, errors.New("template gaggle has no name")
 	}
 	oldName := original.Value
-	goobers := map[string]string{}
-	documents := map[string]*yaml.Node{}
-	for path, file := range input {
-		if !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
-			continue
-		}
-		// Skill and asset packages may contain arbitrary YAML; only definition
-		// files participate in identity binding.
-		if strings.HasPrefix(path, "skills/") || strings.HasPrefix(path, "assets/") || strings.Contains(path, "/assets/") {
-			continue
-		}
-		doc, err := parseYAML(file.Data)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-		fields := mapping(doc)
-		kind := fields["kind"]
-		if kind == nil {
-			continue
-		}
-		switch kind.Value {
-		case "Gaggle", "Goober", "Workflow":
-			documents[path] = doc
-		default:
-			return nil, fmt.Errorf("template contains unsupported definition %s in %s", kind.Value, path)
-		}
-		if kind.Value == "Goober" {
-			meta := fields["metadata"]
-			if meta == nil || mapping(meta)["name"] == nil {
-				return nil, fmt.Errorf("%s has no metadata.name", path)
-			}
-			old := mapping(meta)["name"].Value
-			goobers[old] = name + "-" + old
-		}
-		if kind.Value == "Gaggle" && path != "gaggle.yaml" {
-			return nil, errors.New("a template package must contain exactly one gaggle")
-		}
+	documents, goobers, err := templateDefinitions(input, name)
+	if err != nil {
+		return nil, err
 	}
 	result := Tree{}
 	for path, file := range input {
@@ -121,6 +87,47 @@ func Bind(input Tree, name string) (Tree, error) {
 		result[path] = File{Data: data, Mode: file.Mode}
 	}
 	return result, result.Validate()
+}
+
+func templateDefinitions(input Tree, name string) (map[string]*yaml.Node, map[string]string, error) {
+	goobers := map[string]string{}
+	documents := map[string]*yaml.Node{}
+	for path, file := range input {
+		if !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
+			continue
+		}
+		// Skill and asset packages may contain arbitrary YAML.
+		if strings.HasPrefix(path, "skills/") || strings.HasPrefix(path, "assets/") || strings.Contains(path, "/assets/") {
+			continue
+		}
+		doc, err := parseYAML(file.Data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", path, err)
+		}
+		fields := mapping(doc)
+		kind := fields["kind"]
+		if kind == nil {
+			continue
+		}
+		switch kind.Value {
+		case "Gaggle", "Goober", "Workflow":
+			documents[path] = doc
+		default:
+			return nil, nil, fmt.Errorf("template contains unsupported definition %s in %s", kind.Value, path)
+		}
+		if kind.Value == "Goober" {
+			meta := fields["metadata"]
+			if meta == nil || mapping(meta)["name"] == nil {
+				return nil, nil, fmt.Errorf("%s has no metadata.name", path)
+			}
+			old := mapping(meta)["name"].Value
+			goobers[old] = name + "-" + old
+		}
+		if kind.Value == "Gaggle" && path != "gaggle.yaml" {
+			return nil, nil, errors.New("a template package must contain exactly one gaggle")
+		}
+	}
+	return documents, goobers, nil
 }
 
 func renameGooberReferences(node *yaml.Node, names map[string]string) {

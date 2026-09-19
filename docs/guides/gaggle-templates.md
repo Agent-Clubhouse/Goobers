@@ -24,6 +24,11 @@ that is not a substitute for a durable config repository.
 
 ## Build a template package
 
+The repository includes this minimal package at
+[`templates/starter`](../../templates/starter). It has one manual inspection
+workflow and no automatic triggers. Copy it into your template repository or
+import that directory from a branch containing this feature.
+
 A template is a **self-contained directory containing exactly one gaggle**:
 
 ```text
