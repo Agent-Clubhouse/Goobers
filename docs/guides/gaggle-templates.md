@@ -337,6 +337,7 @@ concurrently. Portal workflow edits and managed Git-source replacement share a
 separate config lock. Candidate validation runs against the complete target
 configuration before publication; missing/invalid dependencies never become
 accepted templates.
+The lock also covers a deployment that enrolls an instance's first tracked gaggle.
 
 A gaggle publication uses a sibling candidate directory and a hidden
 `.template-backup-<gaggle>` directory. If interrupted, retain both versions and

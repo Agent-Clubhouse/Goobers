@@ -64,7 +64,7 @@ func PrepareGitWorkflowSourceIfChanged(ctx context.Context, root string, source 
 // prepareSyncedConfigDir atomically replaces layout.ConfigDir() while retaining
 // the previous directory for an explicit commit or rollback decision.
 func prepareSyncedConfigDir(layout Layout, stagedConfigDir string) (*PreparedConfigSwap, error) {
-	release, err := gaggletemplate.LockConfig(layout.ConfigDir())
+	release, err := gaggletemplate.LockConfig(layout.ConfigDir(), stagedConfigDir)
 	if err != nil {
 		return nil, err
 	}

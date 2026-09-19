@@ -9,6 +9,30 @@ import (
 	"github.com/goobers/goobers/internal/gaggletemplate"
 )
 
+func TestPreparedTemplateFirstEnrollmentHoldsConfigLock(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.ConfigDir(), 0755); err != nil {
+		t.Fatal(err)
+	}
+	candidate := filepath.Join(layout.Root, "candidate")
+	if err := os.MkdirAll(filepath.Join(candidate, "gaggles", "orders", gaggletemplate.MetadataDir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	swap, err := prepareSyncedConfigDir(layout, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := swap.Rollback(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if release, err := gaggletemplate.LockConfig(layout.ConfigDir()); err == nil {
+		_ = release()
+		t.Fatal("first enrollment did not serialize edits with the pending swap")
+	}
+}
+
 func TestPreparedTemplateSourceSwapProtectsEditsAndReleasesLock(t *testing.T) {
 	root := t.TempDir()
 	layout := NewLayout(root)

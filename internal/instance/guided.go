@@ -242,7 +242,7 @@ func MaterializeWorkflowSource(root string) (string, error) {
 }
 
 func installMaterializedConfig(layout Layout, stagingRoot string) error {
-	release, err := gaggletemplate.LockConfig(layout.ConfigDir())
+	release, err := gaggletemplate.LockConfig(layout.ConfigDir(), filepath.Join(stagingRoot, ConfigDirName))
 	if err != nil {
 		return err
 	}
