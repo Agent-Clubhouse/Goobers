@@ -183,7 +183,7 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
       >
         <span className="goober-card-toggle-label">
           <h4 id={headingId}>{goober.displayName}</h4>
-          <p>{goober.role}</p>
+          <span className="goober-role">{goober.role}</span>
           <code className="goober-identity">{gaggle.name}/{goober.name}</code>
         </span>
         <span className="goober-card-toggle-meta">
