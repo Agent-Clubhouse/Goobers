@@ -9,7 +9,50 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
+
+func TestRecoveryRecognizesDerivedLandingURLWithoutWeakeningReceiptIdentity(t *testing.T) {
+	fact := Fact{ReceiptID: "intent-receipt", Provider: "github", Kind: "pr", ID: "25", Operation: "merge-intent",
+		LandingIntent: &providers.LandingIntent{ID: "intent", Operation: "merge", RepositoryAPIURL: "https://api.github.com/repos/acme/app", PullID: "25", ExpectedHeadSHA: "reviewed-head"}}
+	// The durable pre-mutation sidecar has no URL. Normal projection enriches it.
+	normal := recoveryEvent(fact)
+	normal.ExternalRef.URL = "https://github.com/acme/app/pull/25"
+	legacy, err := missingRecoveryEvents([]Fact{fact}, nil, "stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, events := range [][]journal.Event{{normal}, legacy, append(legacy, normal)} {
+		// Round-trip the journal: receipt fields become maps, not producer structs.
+		data, err := json.Marshal(events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var recorded []journal.Event
+		if err := json.Unmarshal(data, &recorded); err != nil {
+			t.Fatal(err)
+		}
+		if pending, err := missingRecoveryEvents([]Fact{fact}, recorded, "stage"); err != nil || len(pending) != 0 {
+			t.Fatalf("derived URL prevented durable handoff: pending=%v err=%v", pending, err)
+		}
+	}
+	for _, change := range []func(*journal.Event){
+		func(e *journal.Event) { e.ExternalRef.URL = "https://github.com/other/repo/pull/25" },
+		func(e *journal.Event) { e.Runner["operation"] = "delete" },
+		func(e *journal.Event) { e.ExternalRef.ID = "26" },
+		func(e *journal.Event) {
+			intent := *fact.LandingIntent
+			intent.ExpectedHeadSHA = "different-head"
+			e.Runner["landingIntent"] = &intent
+		},
+	} {
+		conflict := recoveryEvent(fact)
+		change(&conflict)
+		if _, err := missingRecoveryEvents([]Fact{fact}, []journal.Event{conflict}, "stage"); err == nil {
+			t.Fatal("accepted a genuinely different receipt")
+		}
+	}
+}
 
 func TestRecoveryRecognizesNormalProjectionWhileWriterIsHeld(t *testing.T) {
 	root, workspace := t.TempDir(), t.TempDir()
