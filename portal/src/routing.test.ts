@@ -46,6 +46,36 @@ describe("definition routing", () => {
     expect(routeHash(route)).toBe("#/goobers?gaggle=core+tools");
     expect(parseRoute(routeHash(route))).toEqual(route);
   });
+
+  it("round-trips shareable run detail state", () => {
+    const route = {
+      page: "run" as const,
+      id: "run / 42",
+      tab: "diagnostics" as const,
+      seq: 17,
+      node: "gather-pr-context",
+      event: true,
+    };
+
+    expect(routeHash(route)).toBe(
+      "#/run/run%20%2F%2042?tab=graph&seq=17&node=gather-pr-context&event=1",
+    );
+    expect(parseRoute(routeHash(route))).toEqual(route);
+    expect(parseRoute("#/run/run-1?tab=diagnostics")).toEqual({
+      page: "run",
+      id: "run-1",
+      tab: "diagnostics",
+    });
+    expect(parseRoute("#/run/run-1?tab=unknown&seq=-1")).toEqual({
+      page: "run",
+      id: "run-1",
+    });
+    expect(parseRoute("#/run/run-1?tab=artifacts")).toEqual({
+      page: "run",
+      id: "run-1",
+      tab: "artifacts",
+    });
+  });
 });
 
 describe("Insight routing", () => {

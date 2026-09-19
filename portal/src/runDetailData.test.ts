@@ -13,6 +13,7 @@ import {
   eventNodeId,
   eventStage,
   eventSummary,
+  humanize,
   isFailureJournalEvent,
   journalEntries,
   keyMoments,
@@ -52,6 +53,12 @@ function event(seq: number, type: RunEvent["type"], fields: Partial<RunEvent>): 
 }
 
 describe("run detail projection", () => {
+  it("preserves known acronyms while humanizing identifiers", () => {
+    expect(humanize("update-behind-pr")).toBe("Update behind PR");
+    expect(humanize("gather-pr-context")).toBe("Gather PR context");
+    expect(humanize("pr-remediation")).toBe("PR remediation");
+  });
+
   it("orders and derives state at a sequence without mutating source data", () => {
     const events = [
       event(4, "gate.evaluated", {
@@ -215,7 +222,7 @@ describe("run detail projection", () => {
         stage: "pre-review",
         visit: 1,
         status: "completed",
-        result: "Needs changes → Implement",
+        result: "Needs changes · Next: Implement",
       }),
       expect.objectContaining({
         stage: "lint-fast",

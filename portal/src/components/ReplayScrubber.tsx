@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Ref } from "react";
 import type { RunEvent, WorkflowGraph } from "../api/types";
 import {
   formatReplayClock,
@@ -95,19 +94,17 @@ export function ReplayScrubber({
   graph,
   runId,
   selectedSeq,
-  selectedEventDetailsRef,
+  onInspect,
   onSeek,
   terminal,
-  workflow,
 }: {
   events: RunEvent[];
   graph?: WorkflowGraph;
   runId: string;
   selectedSeq: number;
-  selectedEventDetailsRef?: Ref<HTMLElement>;
+  onInspect?: (seq: number) => void;
   onSeek: (seq: number) => void;
   terminal: boolean;
-  workflow?: string;
 }) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<ReplaySpeed>(1);
@@ -130,7 +127,6 @@ export function ReplayScrubber({
   const position = index < 0 ? 0 : index;
   const currentPoint = timeline.points[position];
   const atEnd = index >= ordered.length - 1;
-  const selectedChapter = timeline.chapters.find((chapter) => chapter.index === index);
   const previousChapter = [...timeline.chapters]
     .reverse()
     .find((chapter) => chapter.index < index);
@@ -190,9 +186,13 @@ export function ReplayScrubber({
     return null;
   }
 
-  const seek = (event: RunEvent) => {
+  const seek = (event: RunEvent, inspect = true) => {
     setPlaying(false);
-    onSeek(event.seq);
+    if (inspect && onInspect) {
+      onInspect(event.seq);
+    } else {
+      onSeek(event.seq);
+    }
   };
 
   const togglePlay = () => {
@@ -249,22 +249,6 @@ export function ReplayScrubber({
     seek(nearest.event);
   };
 
-  const heading = eventHeading(currentPoint.event);
-  const summary = eventSummary(currentPoint.event, undefined, runId).replace(
-    / Select this event to inspect (?:the artifact|the evidence)\.$/,
-    "",
-  );
-  const currentStageId = eventNodeId(currentPoint.event, runId);
-  const currentStageLabel = timeline.stageSegments.find(
-    (segment) => segment.stageId === currentStageId,
-  )?.label;
-  const currentStageKind = graph?.nodes.find(
-    (node) => node.id === currentStageId,
-  )?.kind;
-  const currentOwner = nodeOwner(graph, currentStageId);
-  const currentChapterPosition = selectedChapter
-    ? timeline.chapters.indexOf(selectedChapter) + 1
-    : undefined;
   const totalIdleTime = timeline.idleGaps.reduce(
     (total, gap) => total + gap.realDelayMs,
     0,
@@ -574,36 +558,6 @@ export function ReplayScrubber({
         </div>
       </section>
 
-      <section
-        aria-label="Selected replay event"
-        className="playback-panel playback-details-panel"
-        ref={selectedEventDetailsRef}
-        tabIndex={-1}
-      >
-        <h2 className="playback-details-title">Selected event details</h2>
-        <div aria-live="polite" className="playback-summary">
-          <div className="playback-now">
-            <span>
-              {currentChapterPosition
-                ? `Chapter ${currentChapterPosition} of ${timeline.chapters.length}`
-                : `Raw event ${position + 1} of ${ordered.length}`}
-              {" · "}Sequence {currentPoint.event.seq}
-            </span>
-            {(workflow || currentStageLabel) && (
-              <span aria-label="Workflow, stage kind, and goober" className="playback-scope" role="group">
-                {workflow && <span className="playback-workflow">{workflow}</span>}
-                {workflow && currentStageLabel && <span aria-hidden="true">·</span>}
-                {currentStageLabel && <span className="playback-stage">{currentStageLabel}</span>}
-                {currentStageKind && <span aria-hidden="true">·</span>}
-                {currentStageKind && <span className="playback-kind">{currentStageKind}</span>}
-                {currentOwner && <span className="playback-owner">{currentOwner}</span>}
-              </span>
-            )}
-            <strong>{heading}</strong>
-            <span>{summary}</span>
-          </div>
-        </div>
-      </section>
     </>
   );
 }
