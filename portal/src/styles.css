@@ -1571,11 +1571,12 @@ summary:focus-visible {
   grid-template-areas:
     "harness ownership"
     "skills ownership";
-  grid-template-columns: minmax(160px, 0.45fr) minmax(0, 1.55fr);
+  grid-template-columns: 180px minmax(0, 1fr);
   margin: 12px 0 0;
 }
 
 .goober-card .goober-summary div {
+  align-content: start;
   display: grid;
   gap: 3px;
 }
@@ -1706,8 +1707,12 @@ summary:focus-visible {
   align-items: baseline;
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: 4px 7px;
   min-width: 0;
+}
+
+.goober-title-separator {
+  color: var(--line-strong);
 }
 
 .goober-role {

@@ -33,6 +33,12 @@ describe("goobers roster page", () => {
     expect(portalStyles).toMatch(
       /\.goober-card \.goober-summary\s*\{[^}]*"harness ownership"\s*"skills ownership"/s,
     );
+    expect(portalStyles).toMatch(
+      /\.goober-card \.goober-summary\s*\{[^}]*grid-template-columns:\s*180px\s+minmax\(0,\s*1fr\)/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.goober-card \.goober-summary div\s*\{[^}]*align-content:\s*start/s,
+    );
   });
 
   it("filters by owning gaggle and keeps the group disclosure keyboard accessible", async () => {
