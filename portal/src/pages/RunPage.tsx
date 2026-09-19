@@ -714,10 +714,7 @@ function RunOverview({
 
       <section className="run-stage-history" aria-labelledby="run-stage-history-title">
         <div className="panel-heading-row">
-          <div>
-            <p className="section-kicker">Stage-oriented history</p>
-            <h2 id="run-stage-history-title">Progress and transitions</h2>
-          </div>
+          <h2 id="run-stage-history-title">Progress &amp; Transitions</h2>
           <span className="graph-legend">One row per visit</span>
         </div>
         <ol className="run-stage-list">
