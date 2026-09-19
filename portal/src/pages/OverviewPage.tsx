@@ -769,18 +769,6 @@ function RunSection({
                   {active && run.operator
                     ? operatorSubtitle(run)
                     : runContextSubtitle(run, active)}
-                  {!active && run.finishedAt && (
-                    <>
-                      {" · "}
-                      <time
-                        aria-label={`Completed ${formatPreciseTimestamp(run.finishedAt)}`}
-                        dateTime={run.finishedAt}
-                        title={`Completed ${formatPreciseTimestamp(run.finishedAt)}`}
-                      >
-                        Completed {formatTimestamp(run.finishedAt)}
-                      </time>
-                    </>
-                  )}
                 </span>
                 {active && operatorContext(run) ? (
                   <span className="row-subtitle">{operatorContext(run)}</span>
