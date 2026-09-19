@@ -28,7 +28,7 @@ cmd/goobers/reconcilebranches.go	reconcileRemoteBranches	56
 cmd/goobers/run_continue.go	runRunContinue	44
 cmd/goobers/status.go	runRunTable	71
 cmd/goobers/trace.go	runTraceWithFactories	51
-cmd/goobers/up.go	runUpContextWithForce	198
+cmd/goobers/up.go	runUpContextWithForce	196
 cmd/goobers/validate.go	runValidateConfig	41
 internal/agentkit/repository.go	(*Repository).planInterruptedUpdate	57
 internal/authoring/explain.go	(*registry).schemaExample	50
@@ -53,10 +53,11 @@ internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	50
 internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	58
 internal/runner/parallel_run.go	(*Runner).runParallelBranch	78
 internal/runner/resume.go	pendingParallel	61
-internal/runner/run.go	(*Runner).dispatchTask	70
+internal/runner/run.go	(*Runner).dispatchTask	63
 internal/runner/run.go	(*Runner).evaluateGate	44
 internal/runner/run.go	(*Runner).runTask	50
-internal/runner/run.go	(*Runner).taskOutcome	51
+!entry-justification	internal/runner/run.go	(*Runner).taskOutcome	52	#5107 adds the no-work repass gate-routing decision (extracted into noWorkRepassOutcome, but the call site itself still adds one branch)
+internal/runner/run.go	(*Runner).taskOutcome	52
 internal/runner/run.go	(*Runner).walk	93
 internal/runner/run.go	parseReceiptInputInspection	43
 internal/telemetry/rollup/ingest.go	insertEvents	49
@@ -92,8 +93,7 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	cmd/goobers/status.go	runRunTable	383
 !body-length	cmd/goobers/telemetryquery.go	runTelemetryQuery	206
 !body-length	cmd/goobers/trace.go	runTraceWithFactories	225
-!body-length-justification	cmd/goobers/up.go	runUpContextWithForce	1649	#5368 and #5377 wire the recovery inventory health sampler and overflow promotion into daemon startup on the v0.4.1 release branch, on top of #4873's growth
-!body-length	cmd/goobers/up.go	runUpContextWithForce	1649
+!body-length	cmd/goobers/up.go	runUpContextWithForce	1637
 !body-length	cmd/goobers/validate.go	runValidateConfig	269
 !body-length	cmd/goobers/worker.go	runWorker	274
 !body-length	internal/apicontract/wire.go	newWireFixtures	776
@@ -112,10 +112,11 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	284
 !body-length	internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	279
 !body-length	internal/runner/parallel_run.go	(*Runner).runParallelBranch	397
-!body-length	internal/runner/run.go	(*Runner).dispatchTask	275
+!body-length	internal/runner/run.go	(*Runner).dispatchTask	261
 !body-length	internal/runner/run.go	(*Runner).evaluateGate	254
 !body-length	internal/runner/run.go	(*Runner).runTask	284
-!body-length	internal/runner/run.go	(*Runner).taskOutcome	290
+!body-length-justification	internal/runner/run.go	(*Runner).taskOutcome	295	#5107 adds the no-work repass gate-routing call site (decision logic itself extracted into noWorkRepassOutcome to keep this growth minimal)
+!body-length	internal/runner/run.go	(*Runner).taskOutcome	295
 !body-length	internal/runner/run.go	(*Runner).walk	417
 !body-length	internal/telemetry/rollup/ingest.go	insertEvents	222
 !body-length-justification	internal/workflow/v_2_0/features.go	currentFeatures	225	#4810 registers the codex harness feature id in the v2 feature list
