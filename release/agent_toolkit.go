@@ -206,6 +206,7 @@ func collectAgentToolkitAssets(repoRoot string, release agentToolkitRelease) ([]
 		{"docs/cli/README.md", "docs/cli/README.md"},
 		{"docs/design/cobrand.md", "docs/design/cobrand.md"},
 		{"docs/design/notification-output.md", "docs/design/notification-output.md"},
+		{"docs/design/plan-driven-dynamic-fan-out.md", "docs/design/plan-driven-dynamic-fan-out.md"},
 		{"docs/design/static-fan-out-fan-in.md", "docs/design/static-fan-out-fan-in.md"},
 		{"docs/feature-matrix.md", "docs/feature-matrix.md"},
 		{"docs/guides/codex-harness.md", "docs/guides/codex-harness.md"},

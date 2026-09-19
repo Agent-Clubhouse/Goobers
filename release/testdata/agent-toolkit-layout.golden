@@ -111,6 +111,7 @@ payload/.goobers/agent-toolkit/docs/adr/0002-provider-neutral-capability-namespa
 payload/.goobers/agent-toolkit/docs/cli/README.md
 payload/.goobers/agent-toolkit/docs/design/cobrand.md
 payload/.goobers/agent-toolkit/docs/design/notification-output.md
+payload/.goobers/agent-toolkit/docs/design/plan-driven-dynamic-fan-out.md
 payload/.goobers/agent-toolkit/docs/design/static-fan-out-fan-in.md
 payload/.goobers/agent-toolkit/docs/feature-matrix.md
 payload/.goobers/agent-toolkit/docs/guides/codex-harness.md
