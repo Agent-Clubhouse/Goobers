@@ -482,7 +482,7 @@ function Overview({
                 {dismissedAttention.map((run) => (
                   <div className="attention-row attention-row-dismissed" key={run.id}>
                     <span className="attention-copy">
-                      <strong>{runLabel(run)}</strong>
+                      <strong>{runLabel(overview, run)}</strong>
                       <span>{workflowDisplayName(overview, run)}</span>
                     </span>
                     <button
@@ -773,7 +773,9 @@ function RunSection({
               label={`Open run ${run.id}`}
             >
               <span className="row-primary">
-                <span className="row-title" title={runLabel(run)}>{runLabel(run)}</span>
+                <span className="row-title" title={runLabel(overview, run)}>
+                  {runLabel(overview, run)}
+                </span>
                 <span className="row-subtitle" title={runContextSubtitle(overview, run, active)}>
                   {active && run.operator
                     ? operatorSubtitle(run)
@@ -830,9 +832,10 @@ function RunSection({
   );
 }
 
-function runLabel(run: RunSummary): string {
+function runLabel(overview: OperationalOverview, run: RunSummary): string {
   if (run.operator?.issue) {
-    return `#${run.operator.issue.number}${run.operator.issue.title ? ` ${run.operator.issue.title}` : ""}`;
+    const repository = overview.repositoryNames?.get(run.gaggle);
+    return `${repository ? `${repository}#` : "#"}${run.operator.issue.number}${run.operator.issue.title ? ` ${run.operator.issue.title}` : ""}`;
   }
   return run.id;
 }

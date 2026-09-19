@@ -29,35 +29,31 @@ export function FailurePanel({
         <Icon name="alert" />
       </span>
       <div className="escalation-content">
-        <span className="escalation-label">
-          {aborted
-            ? "Attention · Aborted · why this run was aborted"
-            : "Attention · Failure · why this run failed"}
-        </span>
-        <h2 id="failure-title">
-          {failure.code ? <span className="mono">{failure.code}</span> : null}
-          {failure.code ? " · " : null}
-          {failure.message}
-        </h2>
-        <dl className="escalation-facts">
-          {failure.stage && (
-            <div>
-              <dt>{aborted ? "Last stage" : "Failed stage"}</dt>
-              <dd>
-                <span className="mono">{failure.stage}</span>
-                {failure.attempt ? ` · attempt ${failure.attempt}` : ""}
-              </dd>
-            </div>
-          )}
+        <h2 id="failure-title">{aborted ? "Run aborted" : "Run failed"}</h2>
+        <dl className="failure-facts">
           {failure.code && (
-            <div>
-              <dt>Error code</dt>
+            <div className="failure-fact-inline">
+              <dt>Error Code:</dt>
               <dd className="mono">{failure.code}</dd>
             </div>
           )}
-          <div>
+          {failure.stage && (
+            <div>
+              <dt>{aborted ? "Last stage" : "Failed stage"}</dt>
+              <dd className="mono">{failure.stage}</dd>
+            </div>
+          )}
+          {failure.attempt !== undefined && (
+            <div>
+              <dt>Attempt</dt>
+              <dd>{failure.attempt}</dd>
+            </div>
+          )}
+          <div className="failure-reason">
             <dt>Reason</dt>
-            <dd>{failure.message}</dd>
+            <dd>
+              <p>{failure.message}</p>
+            </dd>
           </div>
         </dl>
         {failure.causalEventSeq !== undefined &&

@@ -13,12 +13,15 @@ import {
   eventNodeId,
   eventStage,
   eventSummary,
+  humanize,
   isFailureJournalEvent,
   journalEntries,
   keyMoments,
+  logicalArtifacts,
   orderRunEvents,
   runEventStages,
   runFailure,
+  semanticStageVisits,
   UNSCOPED_EVENT_STAGE,
 } from "./runDetailData";
 
@@ -50,6 +53,12 @@ function event(seq: number, type: RunEvent["type"], fields: Partial<RunEvent>): 
 }
 
 describe("run detail projection", () => {
+  it("preserves known acronyms while humanizing identifiers", () => {
+    expect(humanize("update-behind-pr")).toBe("Update behind PR");
+    expect(humanize("gather-pr-context")).toBe("Gather PR context");
+    expect(humanize("pr-remediation")).toBe("PR remediation");
+  });
+
   it("orders and derives state at a sequence without mutating source data", () => {
     const events = [
       event(4, "gate.evaluated", {
@@ -154,6 +163,144 @@ describe("run detail projection", () => {
       stage: `run-1:${nodeId}`,
       name: "reviewer.transcript",
     }), "run-2")).toBe(`run-1:${nodeId}`);
+    expect(eventNodeId(event(7, "stage.started", {
+      stage: `run-1:${nodeId}`,
+    }), "run-1")).toBe(nodeId);
+    expect(eventNodeId(event(8, "artifact.recorded", {
+      artifact: {
+        digest: "sha256:scoped",
+        size: 1,
+        mediaType: "text/plain",
+        stage: `run-1:${nodeId}`,
+      },
+    }), "run-1")).toBe(nodeId);
+    expect(eventStage(event(9, "span.recorded", {
+      stage: `run-1:${nodeId}`,
+      name: "reviewer.transcript",
+    }), "run-1")).toBe(nodeId);
+  });
+
+  it("projects one semantic row per stage visit with explicit corrective repasses", () => {
+    const events = [
+      event(1, "stage.started", { stage: "implement", attempt: 1 }),
+      event(2, "stage.finished", {
+        stage: "implement",
+        attempt: 1,
+        status: "success",
+      }),
+      event(3, "gate.started", { gate: "pre-review", attempt: 1 }),
+      event(4, "stage.finished", {
+        stage: "lint-fast",
+        attempt: 1,
+        status: "failure",
+        error: {
+          code: "worktree.missing",
+          message: "lint-fast referenced a deleted worktree",
+        },
+      }),
+      event(5, "runner.annotation", {
+        stage: "pre-review",
+        runner: { correctionFeedback: "Recreate the worktree and rerun lint-fast." },
+      }),
+      event(6, "gate.evaluated", {
+        gate: "pre-review",
+        verdict: "needs-changes",
+        target: "implement",
+      }),
+      event(7, "stage.started", { stage: "run-1:implement", attempt: 1 }),
+    ];
+
+    expect(semanticStageVisits(events, "run-1")).toEqual([
+      expect.objectContaining({
+        stage: "implement",
+        visit: 1,
+        status: "completed",
+        durationMillis: 1_000,
+        result: "Completed",
+      }),
+      expect.objectContaining({
+        stage: "pre-review",
+        visit: 1,
+        status: "completed",
+        result: "Needs changes · Next: Implement",
+      }),
+      expect.objectContaining({
+        stage: "lint-fast",
+        visit: 1,
+        status: "failed",
+        result: "lint-fast referenced a deleted worktree",
+      }),
+      expect.objectContaining({
+        stage: "implement",
+        visit: 2,
+        status: "running",
+        repass: {
+          sourceStage: "pre-review",
+          reason: "Recreate the worktree and rerun lint-fast.",
+          eventSeq: 6,
+          kind: "infrastructure",
+        },
+      }),
+    ]);
+  });
+
+  it("groups transcript checkpoints into one logical artifact", () => {
+    const events = [
+      event(1, "span.recorded", {
+        stage: "run-1:implement",
+        name: "reviewer.transcript",
+        category: "evidence",
+      }),
+      event(2, "span.recorded", {
+        stage: "run-1:implement",
+        name: "reviewer.transcript",
+        category: "evidence",
+      }),
+      event(3, "artifact.recorded", {
+        artifact: {
+          name: "logs/lint-fast.txt",
+          digest: "sha256:lint",
+          size: 20,
+          mediaType: "text/plain",
+          stage: "implement",
+        },
+      }),
+    ];
+
+    expect(logicalArtifacts(events, "run-1")).toEqual([
+      expect.objectContaining({
+        label: "Implement transcript",
+        kind: "transcript",
+        stage: "implement",
+        events: [events[0], events[1]],
+      }),
+      expect.objectContaining({
+        label: "lint fast",
+        kind: "artifact",
+        stage: "implement",
+        events: [events[2]],
+      }),
+    ]);
+  });
+
+  it("closes a dangling active visit with the terminal run outcome", () => {
+    const events = [
+      event(1, "stage.started", { stage: "implement", attempt: 1 }),
+      event(2, "run.finished", {
+        status: "aborted",
+        reason: "Run was aborted by the operator.",
+      }),
+    ];
+
+    expect(semanticStageVisits(events)).toEqual([
+      expect.objectContaining({
+        stage: "implement",
+        status: "aborted",
+        finishedSeq: 2,
+        durationMillis: 1_000,
+        result: "Run was aborted by the operator.",
+      }),
+    ]);
   });
 
   it("groups adjacent supporting records by stage visit without changing event sequence", () => {

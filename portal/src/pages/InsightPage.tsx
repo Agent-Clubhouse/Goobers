@@ -4,6 +4,8 @@ import type {
   TelemetryErrorSignature,
   TelemetryCurationStats,
   NodeCredit,
+  TelemetryCostAmount,
+  TelemetryCostRunAggregate,
   TelemetryReadyPool,
   TelemetryStageStats,
   TelemetryStatsOptions,
@@ -677,7 +679,8 @@ export function UsageAnalytics({
           />
         ) : (
           <UsagePercentiles
-            ariaLabel={`View AI cost runs behind ${label}: total ${formatMeasuredCost(usage.costUSD)}, ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
+            ariaLabel={`View AI cost runs behind ${label}: total ${formatMeasuredCost(usage.costUSD)}, ${formatRunCount(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
+            countFormatter={formatRunCount}
             formatter={formatMeasuredCost}
             label="AI cost"
             p50={usage.p50CostUSD}
@@ -699,6 +702,7 @@ export function UsageAnalytics({
 
 function UsagePercentiles({
   ariaLabel,
+  countFormatter = formatSamples,
   formatter,
   href,
   label,
@@ -708,6 +712,7 @@ function UsagePercentiles({
   total,
 }: {
   ariaLabel: string;
+  countFormatter?: (value: number) => string;
   formatter: (value: number | undefined) => string;
   href?: string;
   label: string;
@@ -720,7 +725,7 @@ function UsagePercentiles({
     <>
       <span className="usage-metric-heading">
         <strong>{label}</strong>
-        <small>{formatSamples(samples)}</small>
+        <small>{countFormatter(samples)}</small>
       </span>
       <span className={`usage-percentiles${total !== undefined ? " usage-percentiles-with-total" : ""}`}>
         {total !== undefined && (
@@ -899,32 +904,34 @@ function CostTrendSparkline({
   const margin = { top: 14, right: 18, bottom: 42, left: 64 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
-  const scaleMax = Math.max(...points.map((point) => point.usage?.p95CostUSD ?? 0), 0.0001);
+  let cumulativeCost = 0;
   const chartPoints = points.map((point, index) => {
     const x =
       margin.left + (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
-    const p50 = point.usage?.p50CostUSD ?? 0;
-    const p95 = Math.max(p50, point.usage?.p95CostUSD ?? 0);
+    cumulativeCost += point.usage?.costUSD ?? 0;
     return {
       ...point,
-      p50,
-      p95,
+      cumulativeCost,
+      p95: point.usage?.p95CostUSD ?? 0,
       x,
-      p50Y: margin.top + plotHeight - (p50 / scaleMax) * plotHeight,
-      p95Y: margin.top + plotHeight - (p95 / scaleMax) * plotHeight,
     };
   });
+  const scaleMax = Math.max(
+    ...chartPoints.flatMap((point) => [point.cumulativeCost, point.p95]),
+    0.0001,
+  );
+  const plottedPoints = chartPoints.map((point) => ({
+    ...point,
+    cumulativeY: margin.top + plotHeight - (point.cumulativeCost / scaleMax) * plotHeight,
+    p95Y: margin.top + plotHeight - (point.p95 / scaleMax) * plotHeight,
+  }));
   const baseline = margin.top + plotHeight;
-  const p50Area = areaPath(
-    chartPoints.map((point) => [point.x, point.p50Y]),
+  const cumulativeArea = areaPath(
+    plottedPoints.map((point) => [point.x, point.cumulativeY]),
     baseline,
   );
-  const spreadArea = bandPath(
-    chartPoints.map((point) => [point.x, point.p95Y]),
-    chartPoints.map((point) => [point.x, point.p50Y]),
-  );
-  const p50Line = linePath(chartPoints.map((point) => [point.x, point.p50Y]));
-  const p95Line = linePath(chartPoints.map((point) => [point.x, point.p95Y]));
+  const cumulativeLine = linePath(plottedPoints.map((point) => [point.x, point.cumulativeY]));
+  const p95Line = linePath(plottedPoints.map((point) => [point.x, point.p95Y]));
   const xTickIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
   const yTicks = [scaleMax, scaleMax / 2, 0];
 
@@ -948,17 +955,16 @@ function CostTrendSparkline({
             </g>
           );
         })}
-        <path className="usage-trend-area usage-trend-area-p50" d={p50Area} />
-        <path className="usage-trend-area usage-trend-area-spread" d={spreadArea} />
-        <path className="usage-trend-line usage-trend-line-p50" d={p50Line} />
+        <path className="usage-trend-area usage-trend-area-cumulative" d={cumulativeArea} />
+        <path className="usage-trend-line usage-trend-line-cumulative" d={cumulativeLine} />
         <path className="usage-trend-line usage-trend-line-p95" d={p95Line} />
-        {chartPoints.map((point) => (
+        {plottedPoints.map((point) => (
           <g key={point.since}>
-            <circle className="usage-trend-point usage-trend-point-p50" cx={point.x} cy={point.p50Y} r="3">
-              <title>{`${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(point.p50)}`}</title>
+            <circle className="usage-trend-point usage-trend-point-cumulative" cx={point.x} cy={point.cumulativeY} r="3">
+              <title>{`${formatMeasuredCost(point.cumulativeCost)} · ${formatBucketTick(point.since, window)}`}</title>
             </circle>
             <circle className="usage-trend-point usage-trend-point-p95" cx={point.x} cy={point.p95Y} r="3">
-              <title>{`${formatBucketLabel(point.since, point.until)}: P95 ${formatMeasuredCost(point.p95)}`}</title>
+              <title>{`${formatMeasuredCost(point.p95)} · ${formatBucketTick(point.since, window)}`}</title>
             </circle>
           </g>
         ))}
@@ -985,8 +991,8 @@ function CostTrendSparkline({
         })}
       </svg>
       <div className="usage-trend-legend" aria-hidden="true">
-        <span><i className="usage-trend-key usage-trend-key-p50" />P50 cost</span>
-        <span><i className="usage-trend-key usage-trend-key-spread" />P50–P95 spread</span>
+        <span><i className="usage-trend-key usage-trend-key-cumulative" />Cumulative cost</span>
+        <span><i className="usage-trend-key usage-trend-key-p95" />P95 run cost</span>
       </div>
     </div>
   );
@@ -1003,24 +1009,15 @@ function areaPath(points: [number, number][], baseline: number): string {
   return `${linePath(points)} L ${points.at(-1)![0]} ${baseline} L ${points[0][0]} ${baseline} Z`;
 }
 
-function bandPath(upper: [number, number][], lower: [number, number][]): string {
-  if (upper.length === 0) {
-    return "";
-  }
-  return `${linePath(upper)} ${[...lower]
-    .reverse()
-    .map(([x, y]) => `L ${x} ${y}`)
-    .join(" ")} Z`;
-}
-
 function sparklineAriaLabel(
   points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[],
 ): string {
+  let cumulativeCost = 0;
   const summary = points
-    .map(
-      (point) =>
-        `${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(point.usage?.p50CostUSD)}`,
-    )
+    .map((point) => {
+      cumulativeCost += point.usage?.costUSD ?? 0;
+      return `${formatBucketLabel(point.since, point.until)}: cumulative ${formatMeasuredCost(cumulativeCost)}, P95 ${formatMeasuredCost(point.usage?.p95CostUSD)}`;
+    })
     .join("; ");
   return `AI cost trend by bucket. ${summary}`;
 }
@@ -1114,7 +1111,10 @@ export function ExternalCostBreakdown({
   const [kind, setKind] = useState<"all" | "pr" | "issue">("all");
   const [sortKey, setSortKey] = useState<ExternalCostSortKey>("native");
   const [sortDirection, setSortDirection] = useState<ExternalCostSortDirection>("desc");
-  const [openRuns, setOpenRuns] = useState<{ label: string; runs: string[] }>();
+  const [openRuns, setOpenRuns] = useState<{
+    label: string;
+    runs: TelemetryCostRunAggregate[];
+  }>();
   const rows = useMemo(
     () =>
       costs.status === "ready" || costs.status === "stale"
@@ -1315,13 +1315,38 @@ export function ExternalCostBreakdown({
                     <Icon name="close" size={16} />
                   </button>
                 </header>
-                <ul aria-label={`${openRuns.label} run breakdown`}>
-                  {openRuns.runs.map((run) => (
-                    <li key={run}>
-                      <a href={routeHash({ page: "run", id: run })}>{run}</a>
-                    </li>
-                  ))}
-                </ul>
+                <div className="external-cost-run-table-wrap">
+                  <table aria-label={`${openRuns.label} run breakdown`}>
+                    <thead>
+                      <tr>
+                        <th scope="col">Run</th>
+                        <th scope="col">Started</th>
+                        <th scope="col">Attempts</th>
+                        <th scope="col">Provider-native</th>
+                        <th scope="col">Models</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {openRuns.runs.map((run) => (
+                        <tr key={run.runId}>
+                          <td>
+                            <a href={routeHash({ page: "run", id: run.runId })}>{run.runId}</a>
+                          </td>
+                          <td>
+                            <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
+                          </td>
+                          <td>{run.measuredAttempts}/{run.usageAttempts} measured</td>
+                          <td>{formatCostAmounts(run.nativeTotals, "Unmeasured")}</td>
+                          <td>
+                            {run.models.map((model) => model.model).join(", ") ||
+                              run.billingModels.join(", ") ||
+                              "Unavailable"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </section>
             </div>
           )}
@@ -1404,9 +1429,10 @@ export function InstanceCostRollup({
         <div className="data-table-shell gaggle-spend-table">
           <div aria-hidden="true" className="data-table-header gaggle-spend-header">
             <span>Gaggle</span>
+            <span>Total cost</span>
             <span>P50 cost</span>
             <span>P95 cost</span>
-            <span>Samples</span>
+            <span>Runs</span>
           </div>
           {rankedGaggles.map((entry) => (
             <GaggleSpendRow entry={entry} filters={data.filters} key={entry.gaggle} />
@@ -1456,18 +1482,43 @@ function GaggleSpendRow({
   });
   return (
     <a
-      aria-label={`View instance spend for gaggle ${entry.gaggle}: ${formatSamples(usage?.costSamples ?? 0)}, P50 ${formatMeasuredCost(usage?.p50CostUSD)}, P95 ${formatMeasuredCost(usage?.p95CostUSD)}`}
+      aria-label={`View instance spend for gaggle ${entry.gaggle}: total ${formatMeasuredCost(usage?.costUSD)}, ${formatRunCount(usage?.costSamples ?? 0)}, P50 ${formatMeasuredCost(usage?.p50CostUSD)}, P95 ${formatMeasuredCost(usage?.p95CostUSD)}`}
       className="gaggle-spend-row"
       href={href}
     >
       <span className="distribution-name">
         <strong>{entry.gaggle}</strong>
       </span>
+      <span>{formatMeasuredCost(usage?.costUSD)}</span>
       <span>{formatMeasuredCost(usage?.p50CostUSD)}</span>
       <span>{formatMeasuredCost(usage?.p95CostUSD)}</span>
-      <span>{formatSamples(usage?.costSamples ?? 0)}</span>
+      <span>{formatRunCount(usage?.costSamples ?? 0)}</span>
     </a>
   );
+}
+
+function formatRunCount(value: number): string {
+  return `${value.toLocaleString()} ${value === 1 ? "run" : "runs"}`;
+}
+
+function formatCostAmounts(
+  amounts: readonly TelemetryCostAmount[],
+  empty: string,
+): string {
+  if (amounts.length === 0) {
+    return empty;
+  }
+  return amounts
+    .map((amount) => {
+      if (amount.unit === "usd") {
+        return formatMeasuredCost(amount.value);
+      }
+      if (amount.unit === "aiCredits") {
+        return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} AIC`;
+      }
+      return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} ${amount.unit}`;
+    })
+    .join(" · ");
 }
 
 function StageDistributions({

@@ -1,6 +1,7 @@
 import type {
   TelemetryCostAggregate,
   TelemetryCostAmount,
+  TelemetryCostRunAggregate,
   TelemetryCostResult,
 } from "./api/types";
 
@@ -19,7 +20,7 @@ export interface ExternalCostRow {
   coverageRatio: number;
   lowerBound: boolean;
   models: string[];
-  runs: string[];
+  runs: TelemetryCostRunAggregate[];
 }
 
 export type ExternalCostSortKey =
@@ -57,7 +58,12 @@ export function filterExternalCostRows(
       row.normalized,
       row.coverage,
       ...row.models,
-      ...row.runs,
+      ...row.runs.flatMap((run) => [
+        run.runId,
+        run.startedAt,
+        ...run.billingModels,
+        ...run.models.map((model) => model.model),
+      ]),
     ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
 }
@@ -103,7 +109,7 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
       (model) =>
         `${model.model}: ${formatAmounts(model.nativeTotals, "unmeasured")} · ${model.measuredAttempts}/${model.usageAttempts} attempts`,
     ),
-    runs: aggregate.runs.map((run) => run.runId),
+    runs: aggregate.runs,
   };
 }
 

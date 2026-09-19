@@ -30,14 +30,12 @@ function Harness({
   initial,
   terminal,
   onSeek,
-  workflow,
 }: {
   events: RunEvent[];
   graph?: WorkflowGraph;
   initial: number;
   terminal: boolean;
   onSeek?: (seq: number) => void;
-  workflow?: string;
 }) {
   const [seq, setSeq] = useState(initial);
   return (
@@ -51,7 +49,6 @@ function Harness({
       runId="run-1"
       selectedSeq={seq}
       terminal={terminal}
-      workflow={workflow}
     />
   );
 }
@@ -96,7 +93,11 @@ describe("replay scrubber", () => {
       vi.advanceTimersByTime(2_000);
     });
     expect(onSeek).toHaveBeenCalledWith(2);
-    expect(screen.getByText(/Raw event 2 of 2 · Sequence 2/)).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "Scrub replay timeline" })).toHaveAttribute(
+      "aria-valuetext",
+      "Event 2 of 2, 0:01 elapsed",
+    );
+    expect(screen.queryByText("Selected event details")).not.toBeInTheDocument();
   });
 
   it("scrubs by compressed elapsed time and supports keyboard event stepping", () => {
@@ -203,7 +204,6 @@ describe("replay scrubber", () => {
         graph={graph}
         initial={1}
         terminal
-        workflow="implementation"
       />,
     );
 
@@ -212,11 +212,6 @@ describe("replay scrubber", () => {
         name: /Go to Workflow transition chapter at event 1: .*implement · builder-goober\./,
       }),
     ).toBeInTheDocument();
-
-    const scope = screen.getByRole("group", { name: "Workflow, stage kind, and goober" });
-    expect(within(scope).getByText("implementation")).toBeInTheDocument();
-    expect(within(scope).getByText("implement")).toBeInTheDocument();
-    expect(within(scope).getByText("builder-goober")).toBeInTheDocument();
 
     expect(
       screen.getByRole("note", { name: "Stage implement, owned by builder-goober" }),
@@ -504,6 +499,7 @@ describe("replay scrubber", () => {
 
   it("stops cleanly at a finished run's end", () => {
     vi.useFakeTimers();
+    const onSeek = vi.fn();
     render(
       <Harness
         events={[
@@ -511,6 +507,7 @@ describe("replay scrubber", () => {
           ev(2, "2026-01-01T00:00:01Z"),
         ]}
         initial={1}
+        onSeek={onSeek}
         terminal
       />,
     );
@@ -518,7 +515,7 @@ describe("replay scrubber", () => {
     act(() => {
       vi.advanceTimersByTime(10_000);
     });
-    expect(screen.getByText(/Sequence 2/)).toBeInTheDocument();
+    expect(onSeek).toHaveBeenCalledWith(2);
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
   });
 });
