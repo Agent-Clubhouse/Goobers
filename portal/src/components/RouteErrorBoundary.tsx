@@ -5,6 +5,7 @@ interface Props {
 }
 
 interface State {
+  componentStack?: string;
   error: Error | null;
 }
 
@@ -23,6 +24,7 @@ export class RouteErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("goobers: page crashed", error, info.componentStack);
+    this.setState({ componentStack: info.componentStack ?? undefined });
   }
 
   render() {
@@ -32,6 +34,13 @@ export class RouteErrorBoundary extends Component<Props, State> {
           <div>
             <h1>This page hit an error</h1>
             <p>Something went wrong rendering this page. Reload to try again.</p>
+            <details>
+              <summary>Error details</summary>
+              <pre>{[
+                `${this.state.error.name}: ${this.state.error.message}`,
+                this.state.componentStack,
+              ].filter(Boolean).join("\n")}</pre>
+            </details>
           </div>
           <button
             className="reconnect-button"

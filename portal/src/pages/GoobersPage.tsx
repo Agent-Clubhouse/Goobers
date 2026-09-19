@@ -188,7 +188,9 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
       >
         <span className="goober-card-toggle-label">
           <h4 id={headingId}>{goober.displayName}</h4>
-          <p>{goober.role}</p>
+          <span aria-hidden="true" className="goober-title-separator">/</span>
+          <span className="goober-role">{goober.role}</span>
+          <span aria-hidden="true" className="goober-title-separator">/</span>
           <code className="goober-identity">{gaggle.name}/{goober.name}</code>
         </span>
         <span className="goober-card-toggle-meta">
@@ -198,46 +200,50 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
         </span>
       </button>
 
-      <dl className="goober-summary">
-        <div>
-          <dt>Harness</dt>
-          <dd>{goober.harness}</dd>
-        </div>
-        <div>
-          <dt>Skills</dt>
-          <dd>
-            {goober.skills.length > 0 ? (
-              <ul className="goober-field-list">
-                {goober.skills.map((skill) => <li key={skill}>{skill}</li>)}
-              </ul>
-            ) : "None declared"}
-          </dd>
-        </div>
-        <div>
-          <dt>Workflow / stage ownership</dt>
-          <dd>
-            {goober.workflows.length > 0 || goober.stages.length > 0 ? (
-              <ul className="goober-ownership-list">
-                {goober.workflows.map((workflow) => (
-                  <li key={`${workflow.gaggle}/${workflow.name}`}>
-                    {workflow.gaggle}/{workflow.name}
-                  </li>
-                ))}
-                {goober.stages.map((stage) => (
-                  <li
-                    className="goober-stage-ownership"
-                    key={`${stage.workflow.gaggle}/${stage.workflow.name}/${stage.stage}`}
-                  >
-                    {stage.workflow.gaggle}/{stage.workflow.name}/{stage.stage} ({stage.kind})
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              "None declared"
-            )}
-          </dd>
-        </div>
-      </dl>
+      <div className="goober-summary">
+        <dl className="goober-summary-list goober-summary-basics">
+          <div>
+            <dt>Harness</dt>
+            <dd>{goober.harness}</dd>
+          </div>
+          <div>
+            <dt>Skills</dt>
+            <dd>
+              {goober.skills.length > 0 ? (
+                <ul className="goober-field-list">
+                  {goober.skills.map((skill) => <li key={skill}>{skill}</li>)}
+                </ul>
+              ) : "None declared"}
+            </dd>
+          </div>
+        </dl>
+        <dl className="goober-summary-list">
+          <div>
+            <dt>Workflow / stage ownership</dt>
+            <dd>
+              {goober.workflows.length > 0 || goober.stages.length > 0 ? (
+                <ul className="goober-ownership-list">
+                  {goober.workflows.map((workflow) => (
+                    <li key={`${workflow.gaggle}/${workflow.name}`}>
+                      {workflow.gaggle}/{workflow.name}
+                    </li>
+                  ))}
+                  {goober.stages.map((stage) => (
+                    <li
+                      className="goober-stage-ownership"
+                      key={`${stage.workflow.gaggle}/${stage.workflow.name}/${stage.stage}`}
+                    >
+                      {stage.workflow.gaggle}/{stage.workflow.name}/{stage.stage} ({stage.kind})
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                "None declared"
+              )}
+            </dd>
+          </div>
+        </dl>
+      </div>
 
       {expanded && (
         <div aria-labelledby={headingId} className="goober-detail definition-panel" id={detailId}>
