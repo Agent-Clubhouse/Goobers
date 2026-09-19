@@ -464,7 +464,7 @@ describe("workflow and gaggle inventory", () => {
     expect(within(topology).getByRole("tab", { name: /Implementation/ })).toBeInTheDocument();
     const openWorkflowLink = screen.getByRole("link", { name: "Open full workflow" });
     const pivotLink = screen.getByRole("link", {
-      name: "View Core product / Implementation in Insight",
+      name: "View core / implementation in Insight",
     });
     expect(pivotLink).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
 
