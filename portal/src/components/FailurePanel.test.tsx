@@ -20,7 +20,7 @@ describe("FailurePanel", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Run failed" })).toBeInTheDocument();
-    expect(screen.queryByText(message)).not.toBeInTheDocument();
+    expect(screen.getByText(message, { selector: "pre" })).toBeInTheDocument();
     expect(screen.getAllByText("run_failed")).toHaveLength(1);
     expect(screen.getByText("push-branch", { selector: "dd" })).toBeInTheDocument();
     expect(screen.getByText("1", { selector: "dd" })).toBeInTheDocument();
@@ -33,6 +33,15 @@ describe("FailurePanel", () => {
       "occupant Q:\\GitHub\\Goobers\\workcopies\\run",
     );
     expect(causes[7]).toHaveTextContent("128 of 128 slots used");
+
+    const rawDetails = screen.getByText("Show raw failure details");
+    expect(rawDetails).toBeInTheDocument();
+    expect(rawDetails.closest("details")).not.toHaveAttribute("open");
+    expect(
+      within(rawDetails.closest("details") as HTMLElement).getByRole("button", {
+        name: "Copy raw details",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("renders an unwrapped reason as plain text", () => {
@@ -45,6 +54,8 @@ describe("FailurePanel", () => {
 
     expect(screen.getByRole("heading", { name: "Run aborted" })).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Failure cause chain" })).not.toBeInTheDocument();
-    expect(screen.getByText("The daemon stopped before recording a result.")).toBeInTheDocument();
+    expect(
+      screen.getByText("The daemon stopped before recording a result.", { selector: "p" }),
+    ).toBeInTheDocument();
   });
 });
