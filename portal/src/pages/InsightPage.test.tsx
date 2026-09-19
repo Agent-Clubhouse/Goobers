@@ -255,7 +255,9 @@ describe("Insight page", () => {
       "#/run/01JZ455ESCALATE",
     );
     const runTable = screen.getByRole("table", { name: "PR #4398 run breakdown" });
-    expect(within(runTable).getByText("Jul 17, 2026, 07:00:00 PM")).toBeInTheDocument();
+    expect(
+      runTable.querySelector('time[datetime="2026-07-18T02:00:00Z"]'),
+    ).toBeInTheDocument();
     expect(within(runTable).getByText("3/3 measured")).toBeInTheDocument();
     expect(within(runTable).getByText("2.5 AIC")).toBeInTheDocument();
     expect(within(runTable).queryByRole("columnheader", { name: "Normalized" })).not.toBeInTheDocument();
