@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/strictyaml"
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/strictyaml"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
