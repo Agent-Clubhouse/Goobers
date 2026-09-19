@@ -28,6 +28,7 @@ beforeEach(() => {
   delete document.documentElement.dataset.theme;
   document.getElementById("cobrand-theme")?.remove();
   document.querySelector('meta[name="goobers-dashboard-mode"]')?.remove();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("portal foundation", () => {
@@ -41,10 +42,37 @@ describe("portal foundation", () => {
     expect(
       await screen.findByRole("heading", { name: "2 runs need attention." }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Daemon ready")).toBeInTheDocument();
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
     // The walkthrough nav entry belongs to `goobers init --guided` only.
     expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
+  });
+
+  it("renders compact instance identity in the masthead", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.computerName = "CPC-JEFFS-7VMWT";
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const context = await screen.findByLabelText("Instance context");
+    expect(context).toHaveTextContent("local-dev");
+    expect(context).toHaveTextContent("CPC-JEFFS-7VMWT");
+    expect(context).toHaveTextContent("dev");
+    const details = within(document.querySelector(".topbar") as HTMLElement).getByRole("button", {
+      name: "Show portal details",
+    });
+    expect(details).toHaveAttribute("aria-describedby", "portal-context-tooltip");
+    expect(screen.getByRole("tooltip")).toHaveTextContent(fixtures.instance.instanceRoot);
+  });
+
+  it("uses the query-string Fleet host override", async () => {
+    window.history.replaceState(null, "", "/?host=fleet#/overview");
+    const { container } = render(
+      <App client={new FixtureDaemonClient(populatedDaemonFixtures())} />,
+    );
+
+    expect(await screen.findByText("Goobers Fleet")).toBeInTheDocument();
+    expect(container.querySelector(".portal-frame")).toHaveAttribute("data-host", "fleet");
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
   });
 
   it("renders cached branding immediately while refreshing it in the background", async () => {
@@ -101,7 +129,7 @@ describe("portal foundation", () => {
     expect(
       await screen.findByRole("heading", { name: "Instance is ready — Healthy." }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Local instance loaded")).toBeInTheDocument();
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
     );

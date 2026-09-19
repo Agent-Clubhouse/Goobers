@@ -20,9 +20,10 @@ describe("overview page", () => {
       decommissionReason: "migrated to replacement",
     };
     render(<App client={new FixtureDaemonClient(fixtures)} />);
-    expect(await screen.findByText("0123456789abcdef0123456789abcdef")).toBeInTheDocument();
-    expect(screen.getByText(fixtures.instance.instanceRoot)).toBeInTheDocument();
-    expect(screen.getByText("MDB5")).toBeInTheDocument();
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("0123456789abcdef0123456789abcdef");
+    expect(tooltip).toHaveTextContent(fixtures.instance.instanceRoot);
+    expect(tooltip).toHaveTextContent("MDB5");
     expect(screen.getByText(/Historical root; do not use/)).toHaveTextContent("migrated to replacement");
   });
 
@@ -36,9 +37,8 @@ describe("overview page", () => {
 
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
-    expect(await screen.findByText("v1.2.3 · abcdef0")).toHaveAttribute(
-      "title",
-      "Commit abcdef0123456789 · Built 2026-09-10T00:00:00Z",
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "v1.2.3 · abcdef0123456789",
     );
   });
 
@@ -247,7 +247,9 @@ describe("overview page", () => {
     };
 
     render(<App client={new FixtureDaemonClient(completed)} />);
-    expect(await screen.findByText("Retention sweep completed")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("status", { name: "Retention sweep completed" }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/periodic trigger/i)).toBeInTheDocument();
   });
 
@@ -265,11 +267,13 @@ describe("overview page", () => {
     };
 
     render(<App client={new FixtureDaemonClient(fixtures)} />);
-    expect(await screen.findByText("Telemetry retention enabled")).toBeInTheDocument();
-    expect(screen.getByText(/30d window, maximum 900 runs/)).toBeInTheDocument();
-    expect(screen.getByText(/last pass dry-run/)).toHaveTextContent("17 candidates");
-    expect(screen.getByText(/enforcement begins/)).toBeInTheDocument();
-    expect(screen.getByText(/instance.yaml retention changes require a daemon restart/)).toHaveTextContent(/materialized config directory/);
+    expect(
+      await screen.findByRole("status", { name: "Telemetry retention enabled" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/30 days · Max 900 runs/)).toBeInTheDocument();
+    expect(screen.getByText(/last pass dry-run/i)).toHaveTextContent("17 candidates");
+    expect(screen.getByText(/enforcement begins/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Restart required/)).not.toBeInTheDocument();
   });
 
   it("does not present a stale enforcement date for a disabled retention policy", async () => {
@@ -286,8 +290,10 @@ describe("overview page", () => {
     };
 
     render(<App client={new FixtureDaemonClient(fixtures)} />);
-    expect(await screen.findByText("Telemetry retention disabled")).toBeInTheDocument();
-    expect(screen.getByText(/last pass dry-run/)).toHaveTextContent("17 candidates");
+    expect(
+      await screen.findByRole("status", { name: "Telemetry retention disabled" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/last pass dry-run/i)).toHaveTextContent("17 candidates");
     expect(screen.queryByText(/enforcement begins/)).not.toBeInTheDocument();
   });
 
@@ -306,10 +312,9 @@ describe("overview page", () => {
       lastResult: "failed",
       errorSummary: "git remote timed out",
     };
-
     render(<App client={new FixtureDaemonClient(failed)} />);
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Retention sweep failed");
+    render(<App client={new FixtureDaemonClient(failed)} />);
+    const alert = await screen.findByRole("alert", { name: "Retention sweep failed" });
     expect(alert).toHaveTextContent("git remote timed out");
     expect(alert).toHaveTextContent(/periodic trigger/i);
   });
@@ -328,7 +333,9 @@ describe("overview page", () => {
     };
 
     render(<App client={new FixtureDaemonClient(cancelled)} />);
-    expect(await screen.findByText("Retention sweep cancelled")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("status", { name: "Retention sweep cancelled" }),
+    ).toBeInTheDocument();
   });
 
   it("renders live sweep progress with elapsed and recent activity details", async () => {
@@ -347,7 +354,9 @@ describe("overview page", () => {
     };
 
     render(<App client={new FixtureDaemonClient(running)} />);
-    expect(await screen.findByText("Retention sweep running")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("status", { name: "Retention sweep running" }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/last progress/i)).toBeInTheDocument();
     expect(screen.getByText(/projection-retention/i)).toBeInTheDocument();
   });
@@ -366,7 +375,9 @@ describe("overview page", () => {
     };
 
     render(<App client={new FixtureDaemonClient(noSweep)} />);
-    expect(await screen.findByText("No retention sweep running")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("status", { name: "No retention sweep running" }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/last completed at/i)).toBeInTheDocument();
   });
 });

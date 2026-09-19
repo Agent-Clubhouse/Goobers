@@ -67,6 +67,10 @@ export function App({
   cursorScope?: string;
   liveDataConfig?: Partial<LiveDataConfig>;
 } = {}) {
+  const effectiveLiveDataConfig = import.meta.env.DEV
+    ? { ...liveDataConfig, crossTabEnabled: false }
+    : liveDataConfig;
+
   if (mode === "getting-started") {
     return <GettingStartedApplication />;
   }
@@ -76,7 +80,7 @@ export function App({
       client={client}
       diagnostics={diagnostics}
       cursorScope={cursorScope}
-      config={liveDataConfig}
+      config={effectiveLiveDataConfig}
       standalone={mode === "standalone"}
     >
       <Portal client={client} mode={mode} warningClient={warningClient} />
@@ -86,11 +90,14 @@ export function App({
 
 // The index's goobers-dashboard-mode marker: "daemon" (default), "standalone"
 // (`goobers dashboard` with no daemon), or "getting-started" (`goobers
-// init --guided`). Getting-started serves the same standalone read-only
-// /api/ once the tutorial instance exists, so its chrome reads as standalone.
-type DashboardMode = "daemon" | "standalone" | "getting-started";
+// init --guided`). Fleet supplies its mode through the package API; `host=fleet`
+// is the browser/Vite override for developing that embedded experience.
+export type DashboardMode = "daemon" | "fleet" | "standalone" | "getting-started";
 
 function dashboardMode(): DashboardMode {
+  if (new URLSearchParams(window.location.search).get("host") === "fleet") {
+    return "fleet";
+  }
   const content = document
     .querySelector('meta[name="goobers-dashboard-mode"]')
     ?.getAttribute("content");
@@ -159,7 +166,7 @@ function Portal({
   mode: DashboardMode;
   warningClient: ConfigurationWarningClient;
 }) {
-  const standalone = mode !== "daemon";
+  const standalone = mode === "standalone";
   const { theme, toggleTheme } = useTheme();
   const [route, setRoute] = useState<Route>(() => parseRoute());
   const cachedConfig = useMemo(readCachedPortalConfig, []);
@@ -304,6 +311,7 @@ function Portal({
         activeGaggle={activeRouteGaggle(route)}
         client={client}
         currentScope={currentScope}
+        hostContext={mode === "fleet" ? "fleet" : standalone ? "standalone" : "daemon"}
         navigate={navigate}
         standalone={standalone}
         theme={theme}

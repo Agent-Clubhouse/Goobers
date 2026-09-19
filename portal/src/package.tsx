@@ -1,4 +1,4 @@
-import { App } from "./App";
+import { App, type DashboardMode } from "./App";
 import type { DaemonClient } from "./api/types";
 import type { PortalDiagnostics } from "./portalDiagnostics";
 
@@ -7,7 +7,7 @@ export interface PortalWorkbenchProps {
   /** Include the principal, instance and route/filter identity; never include credentials. */
   scope: string;
   diagnostics?: PortalDiagnostics;
-  mode?: "daemon" | "standalone";
+  mode?: Exclude<DashboardMode, "getting-started">;
 }
 
 export function PortalWorkbench({
