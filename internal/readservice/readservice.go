@@ -49,6 +49,8 @@ type Reader interface {
 	GetRun(context.Context, string) (RunDetail, error)
 	RunEvents(context.Context, string) (EventList, error)
 	StageAttempts(context.Context, string, string) (AttemptList, error)
+	AddressableAgents(context.Context, string) ([]AddressableAgent, error)
+	ResolveAgentAddress(context.Context, string, string) (AgentResolution, error)
 	Artifact(context.Context, string, string) (ArtifactContent, error)
 	Transcript(context.Context, string, uint64) (TranscriptContent, error)
 	Instance(context.Context) (Instance, error)
