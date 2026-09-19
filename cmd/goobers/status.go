@@ -1933,6 +1933,7 @@ func daemonLivenessLabel(liveness daemonstate.Liveness) string {
 // its own: `goobers status` must stay a local, offline-safe read, and the
 // daemon is the one process that talks to the release source.
 func reportUpdateCheck(instanceRoot string, stdout io.Writer) {
+	reportTemplateStatus(instanceRoot, stdout)
 	result, err := selfupdate.ReadCheck(instanceRoot)
 	if err != nil {
 		// No cache means the check has not run yet (a daemon that just

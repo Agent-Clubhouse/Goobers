@@ -28,7 +28,7 @@ complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (c
 complete -c goobers -n '__fish_seen_subcommand_from diagnostics; and test (count (commandline -opc)) -eq 2' -f -a 'bundle'
 complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and test (count (commandline -opc)) -eq 2' -f -a 'install check update'
 complete -c goobers -n '__fish_seen_subcommand_from portal-extension; and test (count (commandline -opc)) -eq 2' -f -a 'install status update'
-complete -c goobers -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -f -a 'diff materialize show'
+complete -c goobers -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -f -a 'templates diff materialize show'
 complete -c goobers -n '__fish_seen_subcommand_from speech; and test (count (commandline -opc)) -eq 2' -f -a 'preflight test'
 complete -c goobers -n '__fish_seen_subcommand_from fleet; and test (count (commandline -opc)) -eq 2' -f -a 'join status leave'
 complete -c goobers -n '__fish_seen_subcommand_from service; and test (count (commandline -opc)) -eq 2' -f -a 'install uninstall stop start status task-install task-uninstall task-start task-stop task-status'

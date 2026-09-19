@@ -167,6 +167,32 @@ function GaggleTopology({
         </dl>
       </header>
 
+      {gaggle.template && (
+        <section className="daemon-state" aria-label="Template updates">
+          <div>
+            <h2>
+              {gaggle.template.state === "update-available"
+                ? "Template update available"
+                : gaggle.template.state === "conflicts"
+                  ? "Template update needs conflict resolution"
+                  : `Template: ${gaggle.template.state}`}
+            </h2>
+            <p>Installed revision: {gaggle.template.installed || "not checked"}</p>
+            {gaggle.template.candidate && <p>Source revision: {gaggle.template.candidate}</p>}
+            <p>Last successful check: {gaggle.template.lastSuccess.startsWith("0001-") ? "never" : gaggle.template.lastSuccess}</p>
+            {gaggle.template.error && <p role="alert">{gaggle.template.error}</p>}
+            {gaggle.template.pendingBackprop && <p>Runtime edits need backprop into your config repository before deployment.</p>}
+            {(gaggle.template.changes?.length ?? 0) > 0 && (
+              <p>Changed files: {gaggle.template.changes?.join(", ")}</p>
+            )}
+            {(gaggle.template.conflicts?.length ?? 0) > 0 && (
+              <p>Conflicts: {gaggle.template.conflicts?.join("; ")}</p>
+            )}
+            <p>Updates are never applied automatically. Stop the instance, then review with <code>goobers config templates update --gaggle {gaggle.name}</code>.</p>
+          </div>
+        </section>
+      )}
+
       <GaggleActivitySections
         activity={activity}
         gaggleDisplayName={gaggle.displayName}

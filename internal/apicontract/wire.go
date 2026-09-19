@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -403,6 +404,10 @@ func newWireFixtures() wireFixtures {
 		},
 		Gaggles: readservice.GagglePage{
 			Items: []readservice.Gaggle{{
+				Template: &gaggletemplate.Status{
+					State: "update-available", Installed: strings.Repeat("1", 40), Candidate: strings.Repeat("2", 40),
+					CheckedAt: timestamp, LastSuccess: timestamp, Changes: []string{"workflows/implementation.yaml"}, PendingBackprop: true,
+				},
 				Name:        "core",
 				DisplayName: "Core",
 				Status:      readservice.DefinitionStatusConfigured,

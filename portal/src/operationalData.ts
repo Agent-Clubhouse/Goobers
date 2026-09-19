@@ -1502,6 +1502,7 @@ function workflowActivityDependencies(gaggle: string): readonly DataCacheDepende
 
 function gaggleDefinition(gaggle: Gaggle): GaggleDefinition {
   return {
+    template: gaggle.template,
     name: gaggle.name,
     displayName: gaggle.displayName,
     enabled: gaggle.enabled,

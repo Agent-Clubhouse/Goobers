@@ -18,6 +18,7 @@ import (
 const configHelp = "Usage: goobers config <subcommand> [flags] [path]\n\n" +
 	"Inspect, materialize, and compare instance configuration.\n\n" +
 	"Subcommands:\n" +
+	"  templates    import, update, backprop, and check tracked gaggle templates\n" +
 	"  show         render the effective instance config (secrets redacted)\n" +
 	"  materialize  apply the recorded checked-in source to the runtime instance\n" +
 	"  diff         compare active workflows with the shipped canonical workflows\n\n" +

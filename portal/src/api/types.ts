@@ -510,6 +510,18 @@ export interface BacklogRef {
 }
 
 export interface Gaggle {
+  template?: {
+    state: string;
+    installed: string;
+    candidate?: string;
+    candidateDigest?: string;
+    checkedAt: string;
+    lastSuccess: string;
+    changes?: string[];
+    conflicts?: string[];
+    error?: string;
+    pendingBackprop: boolean;
+  };
   name: string;
   displayName: string;
   enabled: boolean;

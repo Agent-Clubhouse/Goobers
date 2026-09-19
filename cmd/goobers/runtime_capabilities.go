@@ -283,6 +283,18 @@ func init() {
 		groupCommand(
 			"config",
 			runConfig,
+			groupCommand("templates", runTemplates,
+				subcommand("config templates import", "import", apicontract.ActionConfigTime, runTemplateImport).
+					withHelp("import an opt-in tracked gaggle template", templateImportHelp),
+				subcommand("config templates update", "update", apicontract.ActionConfigTime, runTemplateUpdate).
+					withHelp("merge template changes into the user's config source", templateUpdateHelp),
+				subcommand("config templates backprop", "backprop", apicontract.ActionConfigTime, runTemplateBackprop).
+					withHelp("persist runtime edits into the user's config checkout", templateBackpropHelp),
+				subcommand("config templates check", "check", apicontract.ActionMaintenance, runTemplateCheck).
+					withHelp("check tracked templates without applying updates", templateCheckHelp),
+				subcommand("config templates status", "status", apicontract.ActionReadOnlyNavigation, runTemplateStatus).
+					withHelp("show cached template update availability", templateStatusHelp),
+			).withHelp("manage tracked gaggle templates", templatesHelp),
 			subcommand("config diff", "diff", apicontract.ActionConfigTime, runConfigDiff).
 				withHelp("compare active workflows with canonical definitions", configDiffHelp).
 				withExamples("goobers config diff ./instance", "goobers config diff --against ./reference-workflows ./instance"),
