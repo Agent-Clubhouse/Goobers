@@ -902,6 +902,18 @@ function RunSection({
                   {active && run.operator
                     ? operatorSubtitle(run)
                     : runContextSubtitle(overview, run, active)}
+                  {!active && run.finishedAt && (
+                    <>
+                      {" · "}
+                      <time
+                        aria-label={`Completed ${formatPreciseTimestamp(run.finishedAt)}`}
+                        dateTime={run.finishedAt}
+                        title={`Completed ${formatPreciseTimestamp(run.finishedAt)}`}
+                      >
+                        Completed {formatTimestamp(run.finishedAt)}
+                      </time>
+                    </>
+                  )}
                 </span>
                 {active && operatorContext(run) ? (
                   <span className="row-subtitle">{operatorContext(run)}</span>
@@ -1149,5 +1161,12 @@ function formatTimestamp(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function formatPreciseTimestamp(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "full",
+    timeStyle: "long",
   }).format(new Date(value));
 }
