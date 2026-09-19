@@ -196,15 +196,18 @@ func (m *Manager) InstallTask(ctx context.Context) (Status, error) {
 		return Status{}, ErrAlreadyInstalled
 	}
 	task := m.windowsTaskName()
-	arguments := "__service-supervise " + quoteWindowsCommandArg(m.config.InstanceRoot)
+	actionExecutable, actionArguments := windowsScheduledTaskAction(
+		m.config.Executable,
+		m.config.InstanceRoot,
+	)
 	script := fmt.Sprintf(
 		`$ErrorActionPreference='Stop'; $action=New-ScheduledTaskAction -Execute %s -Argument %s; `+
 			`$trigger=New-ScheduledTaskTrigger -AtLogOn -User %s; `+
 			`$principal=New-ScheduledTaskPrincipal -UserId %s -LogonType Interactive -RunLevel Limited; `+
 			`$settings=New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero); `+
 			`Register-ScheduledTask -TaskPath %s -TaskName %s -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null`,
-		quotePowerShellLiteral(m.config.Executable),
-		quotePowerShellLiteral(arguments),
+		quotePowerShellLiteral(actionExecutable),
+		quotePowerShellLiteral(actionArguments),
 		quotePowerShellLiteral(m.config.UserName),
 		quotePowerShellLiteral(m.config.UserName),
 		quotePowerShellLiteral(windowsTaskPrefix),
@@ -640,6 +643,23 @@ func (m *Manager) windowsTaskName() string {
 
 func quotePowerShellLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func windowsScheduledTaskAction(executable, instanceRoot string) (string, string) {
+	command := fmt.Sprintf(
+		`$ErrorActionPreference='Stop'; & %s __service-supervise %s; exit $LASTEXITCODE`,
+		quotePowerShellLiteral(executable),
+		quotePowerShellLiteral(instanceRoot),
+	)
+	arguments := strings.Join([]string{
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-WindowStyle", "Hidden",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", quoteWindowsCommandArg(command),
+	}, " ")
+	return "powershell.exe", arguments
 }
 
 func (m *Manager) statusTask(ctx context.Context) (Status, error) {
