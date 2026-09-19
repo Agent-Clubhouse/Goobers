@@ -52,6 +52,15 @@ type reclaimFixture struct {
 
 func newReclaimFixture(t *testing.T, capacity int) *reclaimFixture {
 	t.Helper()
+	return newReclaimFixtureAt(t, capacity, false)
+}
+
+// newReclaimFixtureAt builds the fixture with the instance root's workcopies
+// entry either as its own directory or, when aliased is set, as an alias to
+// the gaggle's directory — the layout an instance migrated from the pre-gaggle
+// runtime keeps.
+func newReclaimFixtureAt(t *testing.T, capacity int, aliased bool) *reclaimFixture {
+	t.Helper()
 	testdep.Require(t, "git")
 	f := &reclaimFixture{t: t, layout: instance.NewLayout(t.TempDir()), source: t.TempDir(), cap: capacity}
 	recoveryCLIGit(t, f.source, "init", "--initial-branch=main")
@@ -59,7 +68,11 @@ func newReclaimFixture(t *testing.T, capacity int) *reclaimFixture {
 	f.base = recoveryCLIGit(t, f.source, "rev-parse", "HEAD")
 
 	f.workcopies = filepath.Join(f.layout.Root, "workcopies")
-	manager, err := worktree.NewManager(f.workcopies)
+	var options []worktree.ManagerOption
+	if aliased {
+		f.workcopies, options = aliasedWorkcopies(t, f.layout.Root)
+	}
+	manager, err := worktree.NewManager(f.workcopies, options...)
 	if err != nil {
 		t.Fatal(err)
 	}

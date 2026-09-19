@@ -57,6 +57,39 @@ func ReadInventoryTolerant(ctx context.Context, root string, maxEntries int) ([]
 	return readInventory(ctx, root, maxEntries, true)
 }
 
+// inventoryOccupancy counts the reservations holding a slot, including retired
+// and unreadable ones, without the cap refusal readInventoryNames applies.
+//
+// It is what capacity reclamation asks between retirements: the question "is
+// there room yet" cannot be answered by a read that refuses whenever the
+// answer is no (#5354).
+func inventoryOccupancy(ctx context.Context, root string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	before, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil || !before.IsDir() {
+		return 0, fmt.Errorf("recovery inventory must be a real directory")
+	}
+	handle, err := acquireInventoryLock(ctx, root)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = handle.Release() }()
+	names, err := listReservationNames(root, before)
+	if err != nil {
+		return 0, err
+	}
+	count := len(names)
+	if slices.Contains(names, ".inventory.lock") {
+		count--
+	}
+	return count, nil
+}
+
 func readInventory(ctx context.Context, root string, maxEntries int, tolerant bool) ([]InventoryEntry, []UnreadableEntry, error) {
 	if maxEntries <= 0 || maxEntries > MaxInventoryEntries {
 		return nil, nil, fmt.Errorf("invalid recovery inventory read limit")

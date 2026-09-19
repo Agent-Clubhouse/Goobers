@@ -547,7 +547,7 @@ func (r *Runner) runParallelBranch(
 	if state == "" {
 		state = branch.start
 	}
-	branchRecorded := true
+	branchRecorded, reboundRecorded := true, ""
 	if lastStage, lastResult, ok := lastFinishedSubject(history); ok {
 		result.lastStage, result.lastResult = lastStage, lastResult
 	}
@@ -654,7 +654,7 @@ func (r *Runner) runParallelBranch(
 						upstream:        branchContextPointers(basePointers, result.pointers),
 						upstreamResult:  result.lastResult,
 						completed:       result.completed,
-						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded,
+						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
 					},
 					branch.id, startAttempt, firstClass, "",
 					nil, committedWorkOnInfra, resumeAccounting,

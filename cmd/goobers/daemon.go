@@ -1279,7 +1279,7 @@ func buildRuntimeRunner(
 	selfIdentity string,
 	requireLabelsDefault string,
 ) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
-	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir())
+	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir(), l.Gaggle())
 	if err != nil {
 		return nil, nil, nil, err
 	}

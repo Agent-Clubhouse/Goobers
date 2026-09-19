@@ -59,9 +59,19 @@ func runRecoveryView(ctx context.Context, layout instance.Layout, runID string, 
 }
 
 func loadRecoveryViews(ctx context.Context, layout instance.Layout, now time.Time) (map[string]*recoveryView, error) {
-	entries, _, err := readConfiguredRecoveryInventory(ctx, layout)
+	// Observation: `goobers status` and the status JSON. Bounding this read by
+	// the operator cap reported an over-cap inventory as "unavailable", hiding
+	// the retained state of every run on exactly the instance whose retained
+	// state an operator most needs to see (#5354).
+	entries, unreadable, _, err := observeRecoveryInventory(ctx, layout)
 	if err != nil {
 		return nil, err
+	}
+	// An incomplete scan is still reported as unavailable, never as absence:
+	// a run whose only record sits in a reservation nothing can interpret must
+	// not be shown as having no recovery state. Only the CAP stopped refusing.
+	if len(unreadable) > 0 {
+		return nil, fmt.Errorf("recovery inventory holds %d unreadable reservation(s)", len(unreadable))
 	}
 	overflow, _, err := readConfiguredRecoveryOverflow(ctx, layout)
 	if err != nil {
@@ -134,14 +144,22 @@ func printStatusRecovery(out io.Writer, layout instance.Layout, runs []runSummar
 // The earliest retention deadline says when the next slot can be reclaimed,
 // which is what distinguishes ordinary pressure from an inventory wedged
 // behind a retain floor no eviction can shorten (#4994).
+//
+// The cap is resolved the same way every writer into this inventory resolves
+// it (#5092), so what `goobers status` reports and what a cleanup is refused
+// against cannot be two different numbers for the same directory. It is
+// reported, not enforced: an inventory already holding more entries than the
+// cap reads as `75/8`, the occupancy the daemon's own health alarm names,
+// instead of "unavailable (... full: 75 of 8 slots used ...)" — which left the
+// operator unable to see the very number the alarm was firing on (#5354).
+// Unreadable reservations are counted in used because they hold slots until
+// they are reconciled, matching the health sampler.
 func recoveryInventoryOccupancy(ctx context.Context, layout instance.Layout) (used, limit int, earliest time.Time, err error) {
-	// The same resolution every writer into this inventory uses (#5092), so
-	// what `goobers status` reports and what a cleanup is refused against
-	// cannot be two different numbers for the same directory.
-	entries, limit, err := readConfiguredRecoveryInventory(ctx, layout)
+	entries, unreadable, limit, err := observeRecoveryInventory(ctx, layout)
 	if err != nil {
 		return 0, limit, time.Time{}, err
 	}
+	used = len(entries) + len(unreadable)
 	for _, entry := range entries {
 		// The reservation's own record carries the deadline it was published
 		// with; renewals live in the sidecar. Only the effective deadline says
@@ -154,7 +172,7 @@ func recoveryInventoryOccupancy(ctx context.Context, layout instance.Layout) (us
 			earliest = record.RetainUntil
 		}
 	}
-	return len(entries), limit, earliest, nil
+	return used, limit, earliest, nil
 }
 
 func printRecoveryInventoryOccupancy(out io.Writer, layout instance.Layout) {
