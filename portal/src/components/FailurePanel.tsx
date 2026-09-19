@@ -30,16 +30,11 @@ export function FailurePanel({
         <Icon name="alert" />
       </span>
       <div className="escalation-content">
-        <span className="escalation-label">
-          {aborted
-            ? "Attention · Aborted · why this run was aborted"
-            : "Attention · Failure · why this run failed"}
-        </span>
         <h2 id="failure-title">{aborted ? "Run aborted" : "Run failed"}</h2>
         <dl className="failure-facts">
           {failure.code && (
-            <div>
-              <dt>Error code</dt>
+            <div className="failure-fact-inline">
+              <dt>Error Code:</dt>
               <dd className="mono">{failure.code}</dd>
             </div>
           )}

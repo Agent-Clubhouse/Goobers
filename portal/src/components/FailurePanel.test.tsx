@@ -20,8 +20,11 @@ describe("FailurePanel", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Run failed" })).toBeInTheDocument();
+    expect(screen.queryByText(/Attention · Failure/)).not.toBeInTheDocument();
     expect(screen.queryByText(message)).not.toBeInTheDocument();
-    expect(screen.getAllByText("run_failed")).toHaveLength(1);
+    expect(screen.getByText("Error Code:").parentElement).toHaveTextContent(
+      /Error Code:\s*run_failed/,
+    );
     expect(screen.getByText("push-branch", { selector: "dd" })).toBeInTheDocument();
     expect(screen.getByText("1", { selector: "dd" })).toBeInTheDocument();
 

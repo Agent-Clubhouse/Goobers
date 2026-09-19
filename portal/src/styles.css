@@ -5059,6 +5059,12 @@ code,
   min-width: 0;
 }
 
+.failure-facts > .failure-fact-inline {
+  align-items: baseline;
+  display: flex;
+  gap: 6px;
+}
+
 .failure-facts dd {
   margin: 0;
   overflow-wrap: anywhere;
