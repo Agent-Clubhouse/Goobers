@@ -174,7 +174,7 @@ describe("portal foundation", () => {
     expect(
       await screen.findByRole("heading", { name: "Run 01JZ402DASHBOARD" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "What this run did" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Progress and transitions" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Diagnostics" }));
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();

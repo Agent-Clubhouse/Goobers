@@ -666,7 +666,6 @@ function RunOverview({
     >
       <article className={`run-current-state run-current-state-${current?.status ?? run.phase}`}>
         <div className="run-current-state-heading">
-          <span aria-hidden="true" className="run-stage-status-mark" />
           <div>
             <p>Current state</p>
             <h2>
@@ -712,33 +711,6 @@ function RunOverview({
           </button>
         </div>
       </article>
-
-      <section className="run-path-panel" aria-labelledby="run-actual-path-title">
-        <div className="panel-heading-row">
-          <div>
-            <p className="section-kicker">Actual path</p>
-            <h2 id="run-actual-path-title">What this run did</h2>
-          </div>
-          <span className="graph-legend">{visits.length} stage visits</span>
-        </div>
-        {visits.length === 0 ? (
-          <div className="empty-detail" role="status">
-            <strong>No stage visits recorded</strong>
-          </div>
-        ) : (
-          <ol className="run-path">
-            {visits.map((visit) => (
-              <li className={`run-path-step run-path-step-${visit.status}`} key={visit.id}>
-                <span aria-hidden="true" className="run-path-mark" />
-                <span>
-                  {humanizeLedgerValue(visit.stage)}
-                  {visit.visit > 1 ? ` · Visit ${visit.visit}` : ""}
-                </span>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
 
       <section className="run-stage-history" aria-labelledby="run-stage-history-title">
         <div className="panel-heading-row">

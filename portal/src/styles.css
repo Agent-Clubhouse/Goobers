@@ -6339,7 +6339,6 @@ code,
 }
 
 .run-current-state,
-.run-path-panel,
 .run-stage-history,
 .run-artifacts-panel {
   background: var(--panel);
@@ -6419,8 +6418,7 @@ code,
   gap: 14px;
 }
 
-.run-stage-status-mark,
-.run-path-mark {
+.run-stage-status-mark {
   background: var(--active);
   border-radius: 50%;
   display: inline-block;
@@ -6430,8 +6428,7 @@ code,
 }
 
 .run-current-state-completed .run-stage-status-mark,
-.run-stage-row-completed .run-stage-status-mark,
-.run-path-step-completed .run-path-mark {
+.run-stage-row-completed .run-stage-status-mark {
   background: var(--success);
 }
 
@@ -6442,52 +6439,17 @@ code,
 .run-stage-row-failed .run-stage-status-mark,
 .run-stage-row-blocked .run-stage-status-mark,
 .run-stage-row-aborted .run-stage-status-mark,
-.run-stage-row-escalated .run-stage-status-mark,
-.run-path-step-failed .run-path-mark,
-.run-path-step-blocked .run-path-mark,
-.run-path-step-aborted .run-path-mark,
-.run-path-step-escalated .run-path-mark {
+.run-stage-row-escalated .run-stage-status-mark {
   background: var(--danger);
 }
 
-.run-stage-row-skipped .run-stage-status-mark,
-.run-path-step-skipped .run-path-mark {
+.run-stage-row-skipped .run-stage-status-mark {
   background: var(--muted);
 }
 
-.run-path-panel,
 .run-stage-history,
 .run-artifacts-panel {
   padding: 18px;
-}
-
-.run-path {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 0;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.run-path-step {
-  align-items: center;
-  color: var(--muted-strong);
-  display: inline-flex;
-  font-size: var(--font-meta);
-  font-weight: 650;
-  gap: 7px;
-}
-
-.run-path-step:not(:last-child)::after {
-  color: var(--muted);
-  content: ">";
-  margin: 0 9px;
-}
-
-.run-path-step-running {
-  color: var(--ink);
 }
 
 .run-stage-list,

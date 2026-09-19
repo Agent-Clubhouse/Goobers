@@ -40,7 +40,7 @@ describe("run detail", () => {
       await screen.findByRole("heading", { name: `Run ${runId}` }),
     ).toBeInTheDocument();
     expect(screen.getByText(status, { selector: ".status-badge" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "What this run did" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Progress and transitions" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Execution graph" })).not.toBeInTheDocument();
     await openRunTab("Diagnostics");
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
@@ -77,7 +77,7 @@ describe("run detail", () => {
       "aria-selected",
       "true",
     );
-    expect(screen.getByRole("heading", { name: "What this run did" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Progress and transitions" })).toBeInTheDocument();
     expect(screen.getByText("One row per visit")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /^Open implement, visit / })).toHaveLength(2);
     const secondVisit = screen.getByRole("button", {
