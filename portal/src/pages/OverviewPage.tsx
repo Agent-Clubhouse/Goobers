@@ -897,10 +897,10 @@ function RunSection({
             >
               <span className="row-primary">
                 <span className="row-title" title={runLabel(run)}>{runLabel(run)}</span>
-                <span className="row-subtitle" title={runContextSubtitle(overview, run, active)}>
+                <span className="row-subtitle" title={runContextSubtitle(run, active)}>
                   {active && run.operator
                     ? operatorSubtitle(run)
-                    : runContextSubtitle(overview, run, active)}
+                    : runContextSubtitle(run, active)}
                   {!active && run.finishedAt && (
                     <>
                       {" · "}
