@@ -33,13 +33,16 @@ describe("goobers roster page", () => {
       /\.goober-card-toggle-label\s*\{[^}]*display:\s*flex/s,
     );
     expect(portalStyles).toMatch(
-      /\.goober-card \.goober-summary\s*\{[^}]*"harness ownership"\s*"skills ownership"/s,
-    );
-    expect(portalStyles).toMatch(
       /\.goober-card \.goober-summary\s*\{[^}]*grid-template-columns:\s*180px\s+minmax\(0,\s*1fr\)/s,
     );
     expect(portalStyles).toMatch(
-      /\.goober-card \.goober-summary div\s*\{[^}]*align-content:\s*start/s,
+      /\.goober-card \.goober-summary\s*\{[^}]*gap:\s*12px\s+48px/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.goober-summary-basics\s*\{[^}]*gap:\s*10px/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.goober-detail \.property-list div\s*\{[^}]*grid-template-columns:\s*120px\s+minmax\(0,\s*1fr\)/s,
     );
   });
 

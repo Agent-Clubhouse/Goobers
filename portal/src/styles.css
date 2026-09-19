@@ -1391,30 +1391,26 @@ summary:focus-visible {
 
 .goober-card .goober-summary {
   display: grid;
-  gap: 8px 16px;
-  grid-template-areas:
-    "harness ownership"
-    "skills ownership";
+  gap: 12px 48px;
   grid-template-columns: 180px minmax(0, 1fr);
   margin: 12px 0 0;
 }
 
-.goober-card .goober-summary div {
+.goober-summary-list {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.goober-summary-basics {
+  align-content: start;
+  gap: 10px;
+}
+
+.goober-card .goober-summary-list div {
   align-content: start;
   display: grid;
   gap: 3px;
-}
-
-.goober-card .goober-summary div:nth-child(1) {
-  grid-area: harness;
-}
-
-.goober-card .goober-summary div:nth-child(2) {
-  grid-area: skills;
-}
-
-.goober-card .goober-summary div:last-child {
-  grid-area: ownership;
 }
 
 .goober-card dt {
@@ -4873,7 +4869,15 @@ code,
 
 .goober-detail .property-list div {
   align-items: start;
-  gap: 24px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 120px minmax(0, 1fr);
+  justify-content: normal;
+}
+
+.goober-detail .property-list dd {
+  max-width: none;
+  text-align: left;
 }
 
 .graph-canvas {
