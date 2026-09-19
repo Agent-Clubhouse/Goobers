@@ -147,7 +147,10 @@ export function PortalShell({
             {instanceIdentity?.environment && (
               <>
                 <span aria-hidden="true" className="topbar-context-separator">•</span>
-                <span className="topbar-environment">{instanceIdentity.environment}</span>
+                <span className="topbar-environment">
+                  {instanceIdentity.environment}
+                  {build?.commit && build.commit !== "none" ? ` (${build.commit})` : ""}
+                </span>
               </>
             )}
             <span className="topbar-info-wrap">
