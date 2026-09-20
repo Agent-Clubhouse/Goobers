@@ -27,7 +27,9 @@ const codexModelEnv = "CODEX_API_KEY"
 type CodexAuthMode string
 
 const (
-	CodexAuthAPIKey         CodexAuthMode = "api-key"
+	// CodexAuthAPIKey uses Goobers-materialized OpenAI API credentials.
+	CodexAuthAPIKey CodexAuthMode = "api-key"
+	// CodexAuthAmbientChatGPT uses the trusted operator's existing ChatGPT CLI login.
 	CodexAuthAmbientChatGPT CodexAuthMode = "ambient-chatgpt"
 )
 

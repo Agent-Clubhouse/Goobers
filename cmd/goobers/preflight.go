@@ -274,7 +274,7 @@ func preflightHarnessGroup(
 ) {
 	spec := group[0].spec
 	var modelCredential func(ctx context.Context) (string, error)
-	if credentialFor != nil && !(h == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(spec.HarnessOptions)) {
+	if credentialFor != nil && (h != apiv1.HarnessCodex || !harness.CodexUsesAmbientChatGPT(spec.HarnessOptions)) {
 		resolved, err := credentialFor(h)
 		if err != nil {
 			refuseHarnessGroup(failures, group, fmt.Sprintf("requires harness %q, but its agent:model credential could not be resolved: %v", h, err))
