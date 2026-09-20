@@ -1067,54 +1067,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		if errors.Is(completionErr, ErrInvalidCompletion) {
 			invalidCompletionPayload = append([]byte(nil), payload...)
 		}
-		if repairableCompletionError(completionErr) {
-			// A clean Copilot exit can still omit its completion contract. Give
-			// the same session one contract-only turn without extending its budget.
-			totalTimeout := req.Timeout
-			if totalTimeout <= 0 {
-				totalTimeout = DefaultTimeout
-			}
-			remaining := totalTimeout - time.Since(started)
-			if remaining <= 0 {
-				runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
-				completionErr = nil
-			} else {
-				recoveryArgv := append([]string(nil), argv...)
-				recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
-				var recoveryCapture *syncBuffer
-				var recoveryStdout io.Writer
-				if completionInResponse {
-					recoveryPrompt = renderResponseCompletionRepairPrompt(req, completionErr)
-					recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
-					recoveryStdout = recoveryCapture
-				}
-				recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
-				recovery, err := runner.Run(ctx, ProcessRequest{
-					Command:                      recoveryArgv,
-					Dir:                          req.Workspace,
-					Env:                          env,
-					Timeout:                      remaining,
-					MaxTranscriptBytes:           req.MaxTranscriptBytes,
-					StdoutCapture:                recoveryStdout,
-					TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
-					TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
-					// The recovery turn runs on what is LEFT of the budget,
-					// so a stall here is if anything more urgent to see than
-					// one in the main session (#4179).
-					Activity: agentTelemetry.activityObserver(),
-				})
-				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
-				if err != nil {
-					runErr = err
-					completionErr = nil
-				} else {
-					// Same stdout gap can swallow the recovery turn's answer.
-					payload, completionErr = readCopilotCompletionWithSessionFallback(
-						req, recoveryCapture, completionInResponse, nativeTranscriptPath)
-					completionErr = validateCompletion(req, payload, completionErr)
-				}
-			}
-		}
+		result, payload, runErr, completionErr = runCopilotCompletionRepair(
+			ctx, runner, req, result, payload, argv, env, promptArg, flag,
+			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
+		)
 	}
 	out = Outcome{
 		Transcript:               result.Transcript,
@@ -1148,6 +1104,66 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		return out, completionErr
 	}
 	return out, nil
+}
+
+func runCopilotCompletionRepair(
+	ctx context.Context,
+	runner ProcessRunner,
+	req RunRequest,
+	result ProcessResult,
+	payload []byte,
+	argv, env []string,
+	promptArg int,
+	flag string,
+	completionInResponse bool,
+	nativeTranscriptPath string,
+	started time.Time,
+	completionErr error,
+	agentTelemetry *adapterAgentEmitter,
+) (ProcessResult, []byte, error, error) {
+	if !repairableCompletionError(completionErr) {
+		return result, payload, nil, completionErr
+	}
+
+	totalTimeout := req.Timeout
+	if totalTimeout <= 0 {
+		totalTimeout = DefaultTimeout
+	}
+	remaining := totalTimeout - time.Since(started)
+	if remaining <= 0 {
+		return result, payload, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0]), nil
+	}
+
+	recoveryArgv := append([]string(nil), argv...)
+	recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
+	var recoveryCapture *syncBuffer
+	var recoveryStdout io.Writer
+	if completionInResponse {
+		recoveryPrompt = renderResponseCompletionRepairPrompt(req, completionErr)
+		recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
+		recoveryStdout = recoveryCapture
+	}
+	recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
+	recovery, err := runner.Run(ctx, ProcessRequest{
+		Command:                      recoveryArgv,
+		Dir:                          req.Workspace,
+		Env:                          env,
+		Timeout:                      remaining,
+		MaxTranscriptBytes:           req.MaxTranscriptBytes,
+		StdoutCapture:                recoveryStdout,
+		TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
+		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
+		Activity:                     agentTelemetry.activityObserver(),
+	})
+	result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
+	if err != nil {
+		return result, payload, err, nil
+	}
+
+	payload, completionErr = readCopilotCompletionWithSessionFallback(
+		req, recoveryCapture, completionInResponse, nativeTranscriptPath)
+	completionErr = validateCompletion(req, payload, completionErr)
+	return result, payload, nil, completionErr
 }
 
 func applyCopilotUsageDocument(out *Outcome, path string) {
