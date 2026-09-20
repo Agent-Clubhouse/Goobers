@@ -56,6 +56,12 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
+| [`goobers config templates`](#goobers-config-templates) | manage tracked gaggle templates |
+| [`goobers config templates backprop`](#goobers-config-templates-backprop) | persist runtime edits into the user's config checkout |
+| [`goobers config templates check`](#goobers-config-templates-check) | check tracked templates without applying updates |
+| [`goobers config templates import`](#goobers-config-templates-import) | import an opt-in tracked gaggle template |
+| [`goobers config templates status`](#goobers-config-templates-status) | show cached template update availability |
+| [`goobers config templates update`](#goobers-config-templates-update) | merge template changes into the user's config source |
 | [`goobers config-seed`](#goobers-config-seed) | seed a private worker instance from a rendered configuration mirror |
 | [`goobers diagnostics`](#goobers-diagnostics) | collect a portable, redacted support bundle |
 | [`goobers diagnostics bundle`](#goobers-diagnostics-bundle) | write a portable, redacted support bundle |
@@ -779,6 +785,7 @@ Usage: goobers config <subcommand> [flags] [path]
 Inspect, materialize, and compare instance configuration.
 
 Subcommands:
+  templates    import, update, backprop, and check tracked gaggle templates
   show         render the effective instance config (secrets redacted)
   materialize  apply the recorded checked-in source to the runtime instance
   diff         compare active workflows with the shipped canonical workflows
@@ -876,6 +883,87 @@ instance root.
 ~~~console
 $ goobers config show
 $ goobers config show --json
+~~~
+
+## `goobers config templates`
+
+manage tracked gaggle templates
+
+~~~text
+Usage: goobers config templates <import|update|backprop|check|status> [flags] [instance-root]
+
+Manage opt-in, repository-backed gaggle copies. Existing gaggles are unchanged.
+Imports start disabled. Updates are explicit and never overwrite conflicting
+local edits. Backprop writes a reviewable user's config checkout, never the
+template repository, and does not commit or push.
+See docs/guides/gaggle-templates.md for package authoring and recovery.
+~~~
+
+## `goobers config templates backprop`
+
+persist runtime edits into the user's config checkout
+
+~~~text
+Usage: goobers config templates backprop --gaggle <name> [--source <config-root>] [instance-root]
+
+Persist runtime edits into the user's config checkout using the recorded
+deployment baseline. --source defaults to a local workflowSource; it must be
+separate from the runtime instance. Source changes merge or report conflicts.
+Stop the daemon first. No commit or push is performed: review and commit the
+reported files in YOUR repository. The shared template is never modified.
+~~~
+
+## `goobers config templates check`
+
+check tracked templates without applying updates
+
+~~~text
+Usage: goobers config templates check [instance-root]
+
+Check enrolled runtime gaggles for template changes and persist notify-only
+status. Fetches source branches but never changes definitions or accepted pins.
+Reports changed files, merge conflicts, pending backprop and check errors.
+Exit 0 means checks succeeded (updates may be available); 1 means a check failed.
+~~~
+
+## `goobers config templates import`
+
+import an opt-in tracked gaggle template
+
+~~~text
+Usage: goobers config templates import --repository <repo> --directory <path> --gaggle <name> [--ref <branch>] [--token-env <name>] [--source <config-root>] [instance-root]
+
+Import a self-contained gaggle from a committed local Git repository or HTTPS
+repository. The ref is a branch (default main); directory is repository-relative.
+HTTPS sources require a read-only token environment variable. No hooks run.
+Writes ordinary definitions plus .template/source.yaml and lock.json to the
+user's config source, and registers the gaggle in its manifest. Starts disabled.
+--source defaults to a local workflowSource, otherwise the instance config/.
+Stop the daemon first. Review, commit, and deploy the user's source afterwards.
+~~~
+
+## `goobers config templates status`
+
+show cached template update availability
+
+~~~text
+Usage: goobers config templates status [instance-root]
+
+Show cached template update state without network access. No prior check or a
+failed/stale check is not reported as up to date. Unenrolled gaggles are omitted.
+~~~
+
+## `goobers config templates update`
+
+merge template changes into the user's config source
+
+~~~text
+Usage: goobers config templates update --gaggle <name> [--source <config-root>] [instance-root]
+
+Fetch the tracked template branch and three-way merge the previous pristine
+template, local customizations, and updated template. Conflicts or validation
+errors leave the accepted files and lock unchanged. No automatic update.
+Stop the daemon first. Review, commit, and deploy the user's source afterwards.
 ~~~
 
 ## `goobers config-seed`

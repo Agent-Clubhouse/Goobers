@@ -1784,6 +1784,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// stdout itself, so it adds no concurrent writer. It never applies an
 	// update and never affects the daemon's health or exit status.
 	updateNotices, updateCheckDone, updatePendingState := startUpdateCheck(ctx, root, setup.Config, stderr)
+	templateNotices, templateChecksDone := startTemplateChecks(ctx, root)
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
 		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
@@ -1814,6 +1815,13 @@ daemonLoop:
 		select {
 		case update := <-updateNotices:
 			update.report(stdout, stderr)
+		case update := <-templateNotices:
+			update.report(stdout, stderr)
+			if reloader.readModel != nil {
+				if err := reloader.readModel.PublishDefinitionsChanged(ctx); err != nil {
+					pf(stderr, "warning: template status changed but portal invalidation failed: %v\n", err)
+				}
+			}
 		case connectorErr := <-fleetConnectorDone:
 			fleetConnectorDone = nil
 			fleetConnectorStarted = false
@@ -1878,6 +1886,7 @@ daemonLoop:
 	<-sharedVisibilityDone
 	<-stalledTickerDone
 	<-updateCheckDone
+	<-templateChecksDone
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-storageHealthTickerDone

@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -171,6 +172,35 @@ func telemetryRetentionWireFixture(startedAt, finishedAt time.Time) *readservice
 func wireFixtureTimes() (time.Time, time.Time, time.Time) {
 	timestamp := time.Date(2026, time.July, 18, 12, 34, 56, 0, time.UTC)
 	return timestamp, timestamp.Add(2 * time.Minute), timestamp.Add(-2 * time.Minute)
+}
+
+func gaggleWireFixture(warning validate.CodedWarning, timestamp time.Time) readservice.Gaggle {
+	return readservice.Gaggle{
+		Template: &gaggletemplate.Status{
+			State: "update-available", Installed: strings.Repeat("1", 40), Candidate: strings.Repeat("2", 40),
+			CheckedAt: timestamp, LastSuccess: timestamp, Changes: []string{"workflows/implementation.yaml"}, PendingBackprop: true,
+		},
+		Name:        "core",
+		DisplayName: "Core",
+		Status:      readservice.DefinitionStatusConfigured,
+		Project: apiv1.RepoRef{
+			Provider:      apiv1.ProviderGitHub,
+			Owner:         "Agent-Clubhouse",
+			Name:          "Goobers",
+			Branch:        "main",
+			ConnectionRef: "github",
+		},
+		Backlog: apiv1.BacklogRef{
+			Provider:      apiv1.ProviderGitHub,
+			Project:       "Agent-Clubhouse/Goobers",
+			Labels:        []string{"goobers:ready"},
+			ConnectionRef: "github",
+		},
+		GooberCount:    1,
+		WorkflowCount:  1,
+		ActiveRunCount: 1,
+		Warnings:       []validate.CodedWarning{warning},
+	}
 }
 
 func newWireFixtures() wireFixtures {
@@ -402,29 +432,8 @@ func newWireFixtures() wireFixtures {
 			},
 		},
 		Gaggles: readservice.GagglePage{
-			Items: []readservice.Gaggle{{
-				Name:        "core",
-				DisplayName: "Core",
-				Status:      readservice.DefinitionStatusConfigured,
-				Project: apiv1.RepoRef{
-					Provider:      apiv1.ProviderGitHub,
-					Owner:         "Agent-Clubhouse",
-					Name:          "Goobers",
-					Branch:        "main",
-					ConnectionRef: "github",
-				},
-				Backlog: apiv1.BacklogRef{
-					Provider:      apiv1.ProviderGitHub,
-					Project:       "Agent-Clubhouse/Goobers",
-					Labels:        []string{"goobers:ready"},
-					ConnectionRef: "github",
-				},
-				GooberCount:    1,
-				WorkflowCount:  1,
-				ActiveRunCount: 1,
-				Warnings:       []validate.CodedWarning{warning},
-			}},
-			Page: page,
+			Items: []readservice.Gaggle{gaggleWireFixture(warning, timestamp)},
+			Page:  page,
 		},
 		Goobers: readservice.GooberPage{
 			Items: []readservice.Goober{{
