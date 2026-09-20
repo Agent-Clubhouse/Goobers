@@ -835,6 +835,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if err := validateStandardExecution(req); err != nil {
 		return Outcome{}, err
 	}
+	if req.ValidateCompletion == nil {
+		req.ValidateCompletion = func(payload []byte) error {
+			return validateCopilotCompletion(req.Mode, payload)
+		}
+	}
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -1185,16 +1190,13 @@ func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResp
 	if !completionInResponse {
 		return readCompletion(req.Workspace, req.CompletionPath)
 	}
-	payload, responseErr := readCopilotResponseCompletion(req.Mode, capture)
+	payload, responseErr := readCopilotResponseCompletion(capture)
 	if responseErr == nil {
 		return payload, nil
 	}
 	payload, fileErr := readCompletion(req.Workspace, req.CompletionPath)
 	switch {
 	case fileErr == nil:
-		if err := validateCopilotCompletion(req.Mode, payload); err != nil {
-			return nil, fmt.Errorf("%w: Copilot completion file failed validation: %w", ErrNoCompletion, err)
-		}
 		return payload, nil
 	case !errors.Is(fileErr, ErrNoCompletion):
 		return nil, fileErr
@@ -1249,7 +1251,7 @@ func readCopilotCompletionFromSession(mode Mode, path string, limit int64) ([]by
 		len(native.finalMessages)), false
 }
 
-func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, error) {
+func readCopilotResponseCompletion(capture *syncBuffer) ([]byte, error) {
 	if capture == nil {
 		return nil, fmt.Errorf("%w: Copilot final response was not captured", ErrNoCompletion)
 	}
@@ -1264,9 +1266,6 @@ func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, erro
 	payload = extractCompletionJSON(payload)
 	if !json.Valid(payload) {
 		return nil, fmt.Errorf("%w: Copilot final response is not valid JSON", ErrNoCompletion)
-	}
-	if err := validateCopilotCompletion(mode, payload); err != nil {
-		return nil, fmt.Errorf("%w: Copilot final response failed validation: %w", ErrNoCompletion, err)
 	}
 	return payload, nil
 }
