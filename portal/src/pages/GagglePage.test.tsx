@@ -9,6 +9,36 @@ beforeEach(() => {
   window.location.hash = "#/overview";
 });
 
+describe("tracked template updates", () => {
+  it("shows source changes, conflicts and pending backprop without an apply button", async () => {
+    const fixtures = structuredClone(populatedDaemonFixtures());
+    fixtures.gaggles.items[0].template = {
+      state: "conflicts",
+      installed: "old-revision",
+      candidate: "new-revision",
+      checkedAt: "2026-09-19T22:00:00Z",
+      lastSuccess: "2026-09-19T22:00:00Z",
+      changes: ["workflows/implementation.yaml"],
+      conflicts: ["spec.readiness.maxConcurrentRuns"],
+      pendingBackprop: true,
+    };
+    window.location.hash = `#/gaggle/${fixtures.gaggles.items[0].name}`;
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+    const region = await screen.findByRole("region", { name: "Template updates" });
+    expect(within(region).getByText("Template update needs conflict resolution")).toBeInTheDocument();
+    expect(within(region).getByText(/Runtime edits need backprop/)).toBeInTheDocument();
+    expect(within(region).getByText(/spec.readiness.maxConcurrentRuns/)).toBeInTheDocument();
+    expect(within(region).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("does not add template UI to legacy gaggles", async () => {
+    window.location.hash = "#/gaggle/core";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+    await screen.findByRole("heading", { name: "Core product" });
+    expect(screen.queryByRole("region", { name: "Template updates" })).not.toBeInTheDocument();
+  });
+});
+
 describe("gaggle reachability (#2531)", () => {
   it("reaches a gaggle directly from the sidebar without landing on Workflows first", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
@@ -57,6 +87,7 @@ describe("gaggle view summary (#2531)", () => {
 
     const active = screen.getByRole("region", { name: "Core product active runs" });
     expect(within(active).getByText(/01JZ441DAEMONAPI/)).toBeInTheDocument();
+    expect(within(active).getByText(/core \/ implementation/)).toBeInTheDocument();
 
     const recentToggle = screen.getByRole("button", { name: /Recent outcomes/ });
     expect(recentToggle).toHaveAttribute("aria-expanded", "false");

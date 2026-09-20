@@ -251,7 +251,7 @@ func TestFeaturesJSONContract(t *testing.T) {
 	t.Run("used", func(t *testing.T) {
 		root := initIntrospectionInstance(t)
 		code, stdout, stderr := runArgs(t, "features", "--json", "--used", root)
-		if code != 0 || stderr != "" {
+		if code != 0 || withoutSafetyWarnings(stderr) != "" {
 			t.Fatalf("features --json --used code=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		envelope := decodeFeaturesEnvelope(t, stdout)
@@ -266,7 +266,7 @@ func TestFeaturesJSONContract(t *testing.T) {
 			}
 		}
 		humanCode, humanStdout, humanStderr := runArgs(t, "features", "--used", root)
-		if humanCode != code || humanStderr != "" {
+		if humanCode != code || humanStderr != stderr {
 			t.Fatalf("features --used human output: code=%d stderr=%q", humanCode, humanStderr)
 		}
 		assertGoldenFile(t, filepath.Join("testdata", "introspection", "features.used.human.golden.txt"), humanStdout)

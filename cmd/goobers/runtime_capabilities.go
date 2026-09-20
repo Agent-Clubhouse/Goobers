@@ -280,22 +280,7 @@ func init() {
 				"goobers netpol-render --out ./deploy/netpol --write-baseline",
 				"goobers netpol-render --out ./deploy/netpol --check",
 			),
-		groupCommand(
-			"config",
-			runConfig,
-			subcommand("config diff", "diff", apicontract.ActionConfigTime, runConfigDiff).
-				withHelp("compare active workflows with canonical definitions", configDiffHelp).
-				withExamples("goobers config diff ./instance", "goobers config diff --against ./reference-workflows ./instance"),
-			subcommand("config materialize", "materialize", apicontract.ActionConfigTime, runConfigMaterialize).
-				withHelp("apply the recorded checked-in source to the runtime instance", configMaterializeHelp).
-				withExamples("goobers config materialize", "goobers config materialize ./instance"),
-			subcommand("config show", "show", apicontract.ActionReadOnlyNavigation, runConfigShow).
-				withHelp("render the effective instance config (secrets redacted)", configShowHelp).
-				withExamples("goobers config show", "goobers config show --json"),
-		).
-			withSynopsis(synopsisByID["config"]).
-			withHelp("inspect, materialize, and compare instance configuration", configHelp).
-			withExamples("goobers config show", "goobers config materialize ./instance", "goobers config diff ./instance"),
+		configCLICommand(synopsisByID["config"]),
 		groupCommand(
 			"speech",
 			runSpeech,

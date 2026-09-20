@@ -139,6 +139,24 @@ apply the recorded checked-in source to the runtime instance
 \fBgoobers config show\fR
 render the effective instance config (secrets redacted)
 .TP
+\fBgoobers config templates\fR
+manage tracked gaggle templates
+.TP
+\fBgoobers config templates backprop\fR
+persist runtime edits into the user's config checkout
+.TP
+\fBgoobers config templates check\fR
+check tracked templates without applying updates
+.TP
+\fBgoobers config templates import\fR
+import an opt-in tracked gaggle template
+.TP
+\fBgoobers config templates status\fR
+show cached template update availability
+.TP
+\fBgoobers config templates update\fR
+merge template changes into the user's config source
+.TP
 \fBgoobers config-seed\fR
 seed a private worker instance from a rendered configuration mirror
 .TP
@@ -544,6 +562,12 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-config-diff\fR(1),
 \fBgoobers-config-materialize\fR(1),
 \fBgoobers-config-show\fR(1),
+\fBgoobers-config-templates\fR(1),
+\fBgoobers-config-templates-backprop\fR(1),
+\fBgoobers-config-templates-check\fR(1),
+\fBgoobers-config-templates-import\fR(1),
+\fBgoobers-config-templates-status\fR(1),
+\fBgoobers-config-templates-update\fR(1),
 \fBgoobers-config-seed\fR(1),
 \fBgoobers-connect\fR(1),
 \fBgoobers-cost\fR(1),

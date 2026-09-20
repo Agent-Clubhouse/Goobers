@@ -397,7 +397,7 @@ func TestInitThenReferenceWorkflowsValidates(t *testing.T) {
 	if !strings.Contains(stdout, "1 gaggle(s), 11 goober(s), 14 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
-	warnings, previewCount := withoutGeneratedPreviewWarnings(stdout)
+	warnings, previewCount := withoutGeneratedPreviewWarnings(withoutSafetyWarnings(stdout))
 	if len(warnings) != 1 || !strings.Contains(warnings[0], `Workflow/docs-updater: workflow "docs-updater" has no schedule trigger`) || previewCount != 0 {
 		t.Fatalf("validate warnings = %#v, preview count = %d; want only the intentional inert docs-updater notice", warnings, previewCount)
 	}

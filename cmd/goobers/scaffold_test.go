@@ -140,7 +140,7 @@ func assertScaffoldValidationWarnings(t *testing.T, output string, wantCompatibi
 	t.Helper()
 	var compatibility []string
 	sawPreview := false
-	for _, warning := range warningLines(output) {
+	for _, warning := range warningLines(withoutSafetyWarnings(output)) {
 		if strings.HasPrefix(warning, "WARNING VER002 ") {
 			sawPreview = true
 			continue

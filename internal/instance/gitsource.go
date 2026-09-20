@@ -581,6 +581,32 @@ func (s *GitSource) gitOutput(ctx context.Context, operation string, args ...str
 	return s.gitOutputWithEnv(ctx, operation, gitSourceEnv(), args...)
 }
 
+// RequireAncestor refuses a rewritten source branch. Resolve must run first so
+// remote comparisons use the fetched mirror without another credential lookup.
+func (s *GitSource) RequireAncestor(ctx context.Context, older, newer string) error {
+	if older == "" || older == newer {
+		return nil
+	}
+	for _, revision := range []string{older, newer} {
+		if len(revision) != 40 && len(revision) != 64 {
+			return errors.New("source ancestry requires full commit hashes")
+		}
+		if _, err := hex.DecodeString(revision); err != nil {
+			return errors.New("source ancestry requires hexadecimal commit hashes")
+		}
+	}
+	args := []string{"-C", s.repository}
+	if !s.local {
+		args = []string{"--git-dir=" + s.mirror}
+	}
+	_, err := s.gitOutput(ctx, "verify template ancestry",
+		append(args, "merge-base", "--is-ancestor", older, newer)...)
+	if err != nil {
+		return fmt.Errorf("template source diverged or its previous commit is unavailable; explicit provenance review required: %w", err)
+	}
+	return nil
+}
+
 func (s *GitSource) remoteGitOutput(ctx context.Context, operation string, args ...string) ([]byte, error) {
 	token, err := s.tokenSource.Token(ctx)
 	if err != nil {

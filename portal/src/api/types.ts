@@ -324,7 +324,7 @@ export interface ConfigAuthoringErrorEnvelope {
 }
 
 export interface Health extends ContractVersion {
-	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string };
+	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
   startup?: { phase: string; target?: string; since: string };
   build?: BuildMetadata;
   readState?: ReadState;
@@ -491,6 +491,28 @@ export interface ValidationWarning {
   severity: ValidationSeverity;
   scope: string;
   explanation: string;
+  safety?: WorkflowSafetyDetails;
+}
+
+export interface WorkflowSafetyDetails {
+  version: string;
+  id: string;
+  gaggle: string;
+  workflow: string;
+  stage: string;
+  file?: string;
+  line?: number;
+  col?: number;
+  witnessPath: string[];
+  confidence: string;
+  coverage: string;
+  impact: string;
+  action: string;
+  limitations: string;
+  budget?: number;
+  budgetSource?: string;
+  suppressedCode?: string;
+  suppressionReason?: string;
 }
 
 export interface RepoRef {
@@ -510,6 +532,18 @@ export interface BacklogRef {
 }
 
 export interface Gaggle {
+  template?: {
+    state: string;
+    installed: string;
+    candidate?: string;
+    candidateDigest?: string;
+    checkedAt: string;
+    lastSuccess: string;
+    changes?: string[];
+    conflicts?: string[];
+    error?: string;
+    pendingBackprop: boolean;
+  };
   name: string;
   displayName: string;
   enabled: boolean;
@@ -1074,6 +1108,9 @@ export interface TelemetryCostOptions {
   provider?: string;
   scope: TelemetryCostScope;
   id?: string;
+  gaggle?: string;
+  workflow?: string;
+  stage?: string;
   since: string;
   until: string;
 }

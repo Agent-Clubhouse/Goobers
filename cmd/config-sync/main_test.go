@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsync"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 func devnull(t *testing.T) *os.File {
@@ -121,6 +123,10 @@ func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 			var compatibilityOutput strings.Builder
 			for _, line := range strings.Split(output, "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "WARNING VER002 ") {
+					continue
+				}
+				fields := strings.Fields(line)
+				if len(fields) > 1 && fields[0] == "WARNING" && slices.Contains(workflowsafety.Codes(), fields[1]) {
 					continue
 				}
 				compatibilityOutput.WriteString(line)

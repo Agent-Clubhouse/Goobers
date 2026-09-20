@@ -457,6 +457,13 @@ const (
 	// temp — decision 006).
 	LinuxTmpPath   = "/tmp"
 	WindowsTmpPath = WindowsHomePath + `\AppData\Local\Temp`
+	// LinuxGoCachePath / WindowsGoCachePath is the durable module cache volume
+	// stage pods mount outside tmp:ephemeral so fresh pods reuse downloaded
+	// modules. GOCACHE remains under the attempt-private temp root.
+	LinuxGoCachePath   = "/var/goobers/cache"
+	WindowsGoCachePath = `C:\var\goobers\cache`
+	goBuildCacheVolume = "go-build-cache"
+	goBuildCacheClaim  = "goobers-go-build-cache"
 )
 
 // Node scheduling contract.
@@ -1371,7 +1378,7 @@ func stampsPlaneEnv(cfg Config, attempt Attempt) bool {
 // filters at all — and closing it means validating declared env values or
 // reserving the GOOBERS_ prefix for env keys, which is its own change.
 func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string) []string {
-	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough)+len(DispatcherRunIdentityEnv)+len(alreadyOnContainer))
+	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough)+len(DispatcherRunIdentityEnv)+len(alreadyOnContainer)+1)
 	names = append(names, sortedKeys(attempt.Env)...)
 	for _, key := range sortedKeys(attempt.Inputs) {
 		names = append(names, InputEnvVar(key))
@@ -1389,6 +1396,10 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 	// plane environment and silently take the FILE branch against a scratch
 	// volume — #3725's restriction-conditional shape, wearing #3897's clothes.
 	names = append(names, DispatcherPlaneEnv...)
+	// GOMODCACHE is stamped after this allowlist is generated when the
+	// durable cache volume is mounted. Keep it through env:default-deny's
+	// in-pod rebuild so restricted stage pods reuse the durable module cache.
+	names = append(names, "GOMODCACHE")
 	names = append(names, alreadyOnContainer...)
 	names = append(names, cfg.EnvPassthrough...)
 	return names
@@ -1513,6 +1524,26 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "home", MountPath: LinuxHomePath})
 		container.Env = append(container.Env, corev1.EnvVar{Name: "HOME", Value: LinuxHomePath})
 	}
+
+	cachePath := LinuxGoCachePath
+	if windows {
+		cachePath = WindowsGoCachePath
+	}
+	spec.Volumes = append(spec.Volumes, corev1.Volume{
+		Name: goBuildCacheVolume,
+		VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+			ClaimName: goBuildCacheClaim,
+		}},
+	})
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name: goBuildCacheVolume, MountPath: cachePath,
+	})
+	container.Env = slices.DeleteFunc(container.Env, func(env corev1.EnvVar) bool {
+		return env.Name == "GOMODCACHE"
+	})
+	container.Env = append(container.Env,
+		corev1.EnvVar{Name: "GOMODCACHE", Value: cachePath},
+	)
 }
 
 // stampSecurity applies the restriction bindings by OS (decisions 006/007,

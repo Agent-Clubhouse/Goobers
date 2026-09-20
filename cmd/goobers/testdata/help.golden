@@ -620,6 +620,7 @@ Usage: goobers config <subcommand> [flags] [path]
 Inspect, materialize, and compare instance configuration.
 
 Subcommands:
+  templates    import, update, backprop, and check tracked gaggle templates
   show         render the effective instance config (secrets redacted)
   materialize  apply the recorded checked-in source to the runtime instance
   diff         compare active workflows with the shipped canonical workflows
@@ -673,6 +674,57 @@ credential comes from and never reads or prints the secret value itself.
 
 Exit codes: 0 = OK, 1 = load/render error, 2 = usage error or not an
 instance root.
+
+### config templates
+Usage: goobers config templates <import|update|backprop|check|status> [flags] [instance-root]
+
+Manage opt-in, repository-backed gaggle copies. Existing gaggles are unchanged.
+Imports start disabled. Updates are explicit and never overwrite conflicting
+local edits. Backprop writes a reviewable user's config checkout, never the
+template repository, and does not commit or push.
+See docs/guides/gaggle-templates.md for package authoring and recovery.
+
+### config templates backprop
+Usage: goobers config templates backprop --gaggle <name> [--source <config-root>] [instance-root]
+
+Persist runtime edits into the user's config checkout using the recorded
+deployment baseline. --source defaults to a local workflowSource; it must be
+separate from the runtime instance. Source changes merge or report conflicts.
+Stop the daemon first. No commit or push is performed: review and commit the
+reported files in YOUR repository. The shared template is never modified.
+
+### config templates check
+Usage: goobers config templates check [instance-root]
+
+Check enrolled runtime gaggles for template changes and persist notify-only
+status. Fetches source branches but never changes definitions or accepted pins.
+Reports changed files, merge conflicts, pending backprop and check errors.
+Exit 0 means checks succeeded (updates may be available); 1 means a check failed.
+
+### config templates import
+Usage: goobers config templates import --repository <repo> --directory <path> --gaggle <name> [--ref <branch>] [--token-env <name>] [--source <config-root>] [instance-root]
+
+Import a self-contained gaggle from a committed local Git repository or HTTPS
+repository. The ref is a branch (default main); directory is repository-relative.
+HTTPS sources require a read-only token environment variable. No hooks run.
+Writes ordinary definitions plus .template/source.yaml and lock.json to the
+user's config source, and registers the gaggle in its manifest. Starts disabled.
+--source defaults to a local workflowSource, otherwise the instance config/.
+Stop the daemon first. Review, commit, and deploy the user's source afterwards.
+
+### config templates status
+Usage: goobers config templates status [instance-root]
+
+Show cached template update state without network access. No prior check or a
+failed/stale check is not reported as up to date. Unenrolled gaggles are omitted.
+
+### config templates update
+Usage: goobers config templates update --gaggle <name> [--source <config-root>] [instance-root]
+
+Fetch the tracked template branch and three-way merge the previous pristine
+template, local customizations, and updated template. Conflicts or validation
+errors leave the accepted files and lock unchanged. No automatic update.
+Stop the daemon first. Review, commit, and deploy the user's source afterwards.
 
 ### config-seed
 Usage: goobers config-seed --mirror <absolute-path> --instance <absolute-path>
@@ -1586,7 +1638,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -2871,7 +2923,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
