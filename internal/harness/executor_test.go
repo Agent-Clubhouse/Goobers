@@ -1151,7 +1151,7 @@ func TestExecutorInvokeFailsClosedOnInvalidCompletion(t *testing.T) {
 }
 
 func TestExecutorRecordsScrubbedInvalidCompletionDiagnostic(t *testing.T) {
-	const secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"
+	const secret = "invalid-completion-diagnostic-secret"
 	scrubber := journal.NewRegistryScrubber()
 	scrubber.Register([]byte(secret))
 	rec := &fakeRecorder{}
@@ -1181,7 +1181,7 @@ func TestExecutorRecordsScrubbedInvalidCompletionDiagnostic(t *testing.T) {
 }
 
 func TestExecutorKeepsInvalidCompletionDiagnosticAfterSuccessfulRepair(t *testing.T) {
-	const secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"
+	const secret = "repaired-completion-diagnostic-secret"
 	scrubber := journal.NewRegistryScrubber()
 	scrubber.Register([]byte(secret))
 	rec := &fakeRecorder{}
@@ -1208,7 +1208,9 @@ func TestExecutorKeepsInvalidCompletionDiagnosticAfterSuccessfulRepair(t *testin
 	if len(result.Artifacts) != 1 || result.Artifacts[0].MediaType != "application/json" {
 		t.Fatalf("result artifacts = %+v, want repaired-completion diagnostic", result.Artifacts)
 	}
-	if len(rec.artifacts) != 1 || bytes.Contains(rec.artifacts[0].data, []byte(secret)) {
+	if len(rec.artifacts) != 1 ||
+		bytes.Contains(rec.artifacts[0].data, []byte(secret)) ||
+		!bytes.Contains(rec.artifacts[0].data, []byte(journal.Redacted)) {
 		t.Fatalf("recorded diagnostic = %+v, want one scrubbed artifact", rec.artifacts)
 	}
 }
