@@ -206,40 +206,12 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 		}
 		seen[directory] = true
 
-		var reason ReapReason
-		switch mk.Status {
-		case statusActive:
-			if processAlive(mk.PID) && !pidReused(mk) {
-				// The owner is alive, so this is not a crash orphan. It is
-				// still reapable when the owning run has settled: the only
-				// way an active marker outlives its own run is a normal
-				// removal that failed and will never be retried (#5035).
-				abandoned, err := opts.runAbandoned(mk)
-				if err != nil {
-					warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
-					continue
-				}
-				if !abandoned {
-					continue
-				}
-				reason = ReapReasonAbandoned
-			} else {
-				reason = ReapReasonOrphaned
-			}
-		case statusCleanupPending:
-			// Remove already recorded that the stage surrendered this tree.
-			// Retry immediately even while the owning daemon PID remains live,
-			// unless the caller delegates this queue to RetryCleanupPending.
-			if opts.DeferCleanupPending {
-				continue
-			}
-			reason = ReapReasonCleanupPending
-		case statusKept:
-			if opts.StaleAfter <= 0 || time.Since(mk.retainedAt()) <= opts.StaleAfter {
-				continue
-			}
-			reason = ReapReasonStale
-		default:
+		reason, err := markerReapReason(mk, opts)
+		if err != nil {
+			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
+			continue
+		}
+		if reason == "" {
 			continue
 		}
 
@@ -273,6 +245,38 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 	results = append(results, markerless...)
 	warnings = append(warnings, markerlessWarnings...)
 	return results, warnings, nil
+}
+
+func markerReapReason(mk marker, opts ReapOptions) (ReapReason, error) {
+	switch mk.Status {
+	case statusActive:
+		if !processAlive(mk.PID) || pidReused(mk) {
+			return ReapReasonOrphaned, nil
+		}
+		// The owner is alive, so this is not a crash orphan. It is still
+		// reapable when the owning run has settled: the only way an active
+		// marker outlives its own run is a normal removal that failed and
+		// will never be retried (#5035).
+		abandoned, err := opts.runAbandoned(mk)
+		if err != nil {
+			return "", err
+		}
+		if abandoned {
+			return ReapReasonAbandoned, nil
+		}
+	case statusCleanupPending:
+		// Remove already recorded that the stage surrendered this tree.
+		// Retry immediately even while the owning daemon PID remains live,
+		// unless the caller delegates this queue to RetryCleanupPending.
+		if !opts.DeferCleanupPending {
+			return ReapReasonCleanupPending, nil
+		}
+	case statusKept:
+		if opts.StaleAfter > 0 && time.Since(mk.retainedAt()) > opts.StaleAfter {
+			return ReapReasonStale, nil
+		}
+	}
+	return "", nil
 }
 
 // reapMarkerlessWorktrees diffs the actual worktree directories under key's
