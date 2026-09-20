@@ -75,6 +75,73 @@ func TestTelemetryRetentionStartupSummaryIsBounded(t *testing.T) {
 	}
 }
 
+func TestStartupTelemetryRetentionReconcilesWithoutStartingNewScan(t *testing.T) {
+	now := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	runDir := createTelemetryRetentionRun(t, layout.ForGaggle("example"), "old-run", now.Add(-48*time.Hour))
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	setup := &schedulerSetup{
+		Config: &instance.Config{
+			Telemetry: instance.TelemetryConfig{
+				Retention: &instance.TelemetryRetentionConfig{
+					Window:      "24h",
+					MaxRuns:     500,
+					FirstEnable: "immediate",
+				},
+			},
+		},
+		InstanceLog: log,
+		RollupDB:    db,
+	}
+
+	var stdout bytes.Buffer
+	if err := reconcileStartupTelemetryRetention(&stdout, &startupPhaseTracker{}, layout, setup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatalf("startup reconciliation started a new retention scan: %v", err)
+	}
+	if _, ok, err := readTelemetryRetentionState(layout); err != nil || ok {
+		t.Fatalf("startup reconciliation wrote new retention state: ok=%v err=%v", ok, err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "startup phase=telemetry-retention-reconcile status=done") {
+		t.Fatalf("startup reconciliation output = %q", got)
+	}
+}
+
+func TestDeferredTelemetryRetentionSweepSkipsBeforeReadiness(t *testing.T) {
+	done := startDeferredTelemetryRetentionSweep(
+		context.Background(),
+		instance.Layout{},
+		nil,
+		nil,
+		instance.TelemetryRetentionConfig{},
+		nil,
+		nil,
+		nil,
+		nil,
+		false,
+	)
+	select {
+	case <-done:
+	default:
+		t.Fatal("not-ready deferred sweep did not close its completion channel")
+	}
+}
+
 func TestRecordTelemetryRetentionPassJournalsBoundedProjection(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	passAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
