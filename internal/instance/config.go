@@ -1766,6 +1766,33 @@ type RecoverySnapshotConfig struct {
 	// could not possibly fit is refused at load rather than at the write that
 	// eventually fills the volume.
 	MaxVolumeBytes int64 `json:"maxVolumeBytes,omitempty" yaml:"maxVolumeBytes,omitempty"`
+	// OnFull selects what happens when the inventory is still full after
+	// every reclamation has run (#5370). Omitted means
+	// RecoveryOnFullOverflow.
+	OnFull string `json:"onFull,omitempty" yaml:"onFull,omitempty"`
+}
+
+// What a legitimately full recovery inventory does to a cleanup.
+const (
+	// RecoveryOnFullOverflow keeps the snapshot as a pinned ref with a
+	// bundle-less overflow record and acknowledges the cleanup. It is the
+	// default because refusing protects nothing — the objects are already in
+	// the mirror before any slot is consulted — while stopping the instance:
+	// the run branch cannot be reacquired and unrelated runs then fail at
+	// `create worktree`.
+	RecoveryOnFullOverflow = "overflow"
+	// RecoveryOnFullRefuse keeps the pre-#5370 fail-closed behaviour: the
+	// publish is refused and the cleanup deferred. It exists for an operator
+	// who would rather wedge execution than hold work at the ref tier.
+	RecoveryOnFullRefuse = "refuse"
+)
+
+// OnFullEffective resolves the configured full-inventory behaviour.
+func (c RecoverySnapshotConfig) OnFullEffective() string {
+	if c.OnFull == RecoveryOnFullRefuse {
+		return RecoveryOnFullRefuse
+	}
+	return RecoveryOnFullOverflow
 }
 
 // MaxSnapshotsEffective resolves the configured inventory cap.

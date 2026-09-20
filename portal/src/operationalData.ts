@@ -601,16 +601,6 @@ export interface OverviewLoadOptions {
   onPartial?: (overview: OperationalOverview) => void;
 }
 
-export function workflowDisplayName(
-  overview: Pick<OperationalOverview, "workflowNames">,
-  run: RunSummary,
-): string {
-  return (
-    overview.workflowNames.get(`${run.gaggle}/${run.workflow}`) ??
-    `${run.gaggle} / ${run.workflow}`
-  );
-}
-
 export function useOperationalOverview(client: DaemonClient): OperationalOverviewQuery {
   const { cache, freshness, isFresh, subscribe } = useLiveData();
   const cached = cache.get<OperationalOverview>(OPERATIONAL_OVERVIEW_CACHE_KEY);
@@ -1502,6 +1492,7 @@ function workflowActivityDependencies(gaggle: string): readonly DataCacheDepende
 
 function gaggleDefinition(gaggle: Gaggle): GaggleDefinition {
   return {
+    template: gaggle.template,
     name: gaggle.name,
     displayName: gaggle.displayName,
     enabled: gaggle.enabled,

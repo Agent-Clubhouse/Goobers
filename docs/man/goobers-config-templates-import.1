@@ -1,0 +1,20 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CONFIG TEMPLATES IMPORT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers config templates import \- import an opt-in tracked gaggle template
+.SH SYNOPSIS
+\fBgoobers config templates import\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers config templates import --repository <repo> --directory <path> --gaggle <name> [--ref <branch>] [--token-env <name>] [--source <config-root>] [instance-root]
+
+Import a self-contained gaggle from a committed local Git repository or HTTPS
+repository. The ref is a branch (default main); directory is repository-relative.
+HTTPS sources require a read-only token environment variable. No hooks run.
+Writes ordinary definitions plus .template/source.yaml and lock.json to the
+user's config source, and registers the gaggle in its manifest. Starts disabled.
+--source defaults to a local workflowSource, otherwise the instance config/.
+Stop the daemon first. Review, commit, and deploy the user's source afterwards.
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

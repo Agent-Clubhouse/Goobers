@@ -21,7 +21,7 @@ const DefaultMaxRepasses = runcontrol.DefaultMaxRepasses
 
 // DefaultMaxInfrastructureRepasses bounds gate-driven retries for retryable
 // infrastructure outcomes without consuming the policy repass budget.
-const DefaultMaxInfrastructureRepasses = 2
+const DefaultMaxInfrastructureRepasses = runcontrol.DefaultMaxInfrastructureRepasses
 
 // Result is the outcome of one gate evaluation.
 type Result struct {
@@ -171,8 +171,8 @@ const ReasonRemediationEvidenceNotInspected = "REMEDIATION_EVIDENCE_NOT_INSPECTE
 // Escalation reason codes are journaled so telemetry can distinguish policy
 // repass churn from an exhausted infrastructure retry budget.
 const (
-	ReasonRepassBudgetExhausted         = "REPASS_BUDGET_EXHAUSTED"
-	ReasonInfrastructureBudgetExhausted = "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED"
+	ReasonRepassBudgetExhausted         = runcontrol.ReasonRepassBudgetExhausted
+	ReasonInfrastructureBudgetExhausted = runcontrol.ReasonInfrastructureBudgetExhausted
 )
 
 func (c RepassCause) String() string {

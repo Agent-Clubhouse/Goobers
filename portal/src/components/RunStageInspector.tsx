@@ -38,6 +38,24 @@ function canPreview(media: string): boolean {
   return previewableMediaTypes.has(media.toLowerCase());
 }
 
+function artifactDownloadName(artifact: ArtifactMetadata): string {
+  const logicalName = artifact.name?.split(/[\\/]/).at(-1)?.trim() ?? "";
+  const fallback = artifact.digest.replace(":", "-");
+  const safeName = (logicalName || fallback)
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/[. ]+$/g, "");
+  return safeName || "artifact";
+}
+
+function downloadArtifact(artifact: ArtifactMetadata, content: ArtifactContent): void {
+  const url = URL.createObjectURL(new Blob([content.bytes], { type: content.mediaType }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = artifactDownloadName(artifact);
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 // Above this size an inline artifact preview gets a scroll cap (see
 // .artifact-content-bounded) instead of rendering in full and pushing the
 // run page long.
@@ -824,7 +842,7 @@ function ArtifactRow({
   runId: string;
 }) {
   const [content, setContent] = useState<ArtifactContent>();
-  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [state, setState] = useState<"idle" | "previewing" | "downloading" | "error">("idle");
   const [error, setError] = useState<string>();
   const request = useRef<AbortController | undefined>(undefined);
 
@@ -842,11 +860,15 @@ function ArtifactRow({
     };
   }, [artifact.digest, client, runId]);
 
-  const load = () => {
+  const load = (action: "preview" | "download") => {
+    if (action === "download" && content) {
+      downloadArtifact(artifact, content);
+      return;
+    }
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
-    setState("loading");
+    setState(action === "preview" ? "previewing" : "downloading");
     setError(undefined);
     client
       .getArtifact(runId, artifact.digest, { signal: controller.signal })
@@ -854,7 +876,11 @@ function ArtifactRow({
         if (controller.signal.aborted) {
           return;
         }
-        setContent(value);
+        if (action === "preview") {
+          setContent(value);
+        } else {
+          downloadArtifact(artifact, value);
+        }
         setState("idle");
       })
       .catch((err: unknown) => {
@@ -895,27 +921,34 @@ function ArtifactRow({
           </dd>
         </div>
       </dl>
-      {canPreview(artifact.mediaType) ? (
-        content ? (
-          <pre
-            className={`artifact-content code-block${
-              isLargeArtifactPreview(content.bytes) ? " artifact-content-bounded" : ""
-            }`}
-          >
-            {new TextDecoder().decode(content.bytes)}
-          </pre>
-        ) : (
+      <div className="artifact-actions">
+        {canPreview(artifact.mediaType) && !content && (
           <button
             className="artifact-action"
-            disabled={state === "loading"}
-            onClick={load}
+            disabled={state === "previewing" || state === "downloading"}
+            onClick={() => load("preview")}
             type="button"
           >
-            {state === "loading" ? "Loading…" : "View content"}
+            {state === "previewing" ? "Loading…" : "View content"}
           </button>
-        )
-      ) : (
-        <span className="artifact-access-note">Metadata only</span>
+        )}
+        <button
+          className="artifact-action"
+          disabled={state === "previewing" || state === "downloading"}
+          onClick={() => load("download")}
+          type="button"
+        >
+          {state === "downloading" ? "Downloading…" : "Download"}
+        </button>
+      </div>
+      {content && (
+        <pre
+          className={`artifact-content code-block${
+            isLargeArtifactPreview(content.bytes) ? " artifact-content-bounded" : ""
+          }`}
+        >
+          {new TextDecoder().decode(content.bytes)}
+        </pre>
       )}
       {state === "error" && (
         <p className="artifact-load-error" role="alert">

@@ -503,6 +503,19 @@ scaling shapes:
   repositories you operate together: one daemon, one journal, shared run
   conditions, and per-workflow budgets.
 
+This layout does not make one decomposition workflow a cross-repository
+publisher. The shipped decomposition plan creates its parent, children, and
+dependency links inside the publishing gaggle's configured repository; it has
+no per-child repository or target-gaggle selector. Use separate repo-owning
+implementation workflows, and treat any coordinated cross-repository delivery
+workflow as additional design work. See the decomposition design's
+[repository boundary](../design/decomposition-workflow.md#repository-boundary).
+
+An `additionalRepos` declaration remains read-only reference access. It neither
+changes that publication boundary nor, by itself, proves that the backing
+credential is materially down-scoped; review the repo-qualified credential
+mapping described in [GitHub token scopes](github-token-scopes.md).
+
 **If the additional repository belongs to a different GitHub owner and you use
 `daemonIdentity: kind: github-app`, add an installation binding for that owner.**
 A GitHub App installation is owner-scoped, so a single top-level

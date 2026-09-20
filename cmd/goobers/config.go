@@ -11,6 +11,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/configdiff"
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -18,6 +19,7 @@ import (
 const configHelp = "Usage: goobers config <subcommand> [flags] [path]\n\n" +
 	"Inspect, materialize, and compare instance configuration.\n\n" +
 	"Subcommands:\n" +
+	"  templates    import, update, backprop, and check tracked gaggle templates\n" +
 	"  show         render the effective instance config (secrets redacted)\n" +
 	"  materialize  apply the recorded checked-in source to the runtime instance\n" +
 	"  diff         compare active workflows with the shipped canonical workflows\n\n" +
@@ -58,6 +60,37 @@ const configMaterializeHelp = "Usage: goobers config materialize [instance-root]
 	"the desired revision into that checkout first.\n\n" +
 	"Exit codes: 0 = materialized, 1 = invalid source or apply error, 2 = usage\n" +
 	"error or not an instance root.\n"
+
+func configCLICommand(synopsis string) cliCommand {
+	return groupCommand(
+		"config",
+		runConfig,
+		groupCommand("templates", runTemplates,
+			subcommand("config templates import", "import", apicontract.ActionConfigTime, runTemplateImport).
+				withHelp("import an opt-in tracked gaggle template", templateImportHelp),
+			subcommand("config templates update", "update", apicontract.ActionConfigTime, runTemplateUpdate).
+				withHelp("merge template changes into the user's config source", templateUpdateHelp),
+			subcommand("config templates backprop", "backprop", apicontract.ActionConfigTime, runTemplateBackprop).
+				withHelp("persist runtime edits into the user's config checkout", templateBackpropHelp),
+			subcommand("config templates check", "check", apicontract.ActionMaintenance, runTemplateCheck).
+				withHelp("check tracked templates without applying updates", templateCheckHelp),
+			subcommand("config templates status", "status", apicontract.ActionReadOnlyNavigation, runTemplateStatus).
+				withHelp("show cached template update availability", templateStatusHelp),
+		).withHelp("manage tracked gaggle templates", templatesHelp),
+		subcommand("config diff", "diff", apicontract.ActionConfigTime, runConfigDiff).
+			withHelp("compare active workflows with canonical definitions", configDiffHelp).
+			withExamples("goobers config diff ./instance", "goobers config diff --against ./reference-workflows ./instance"),
+		subcommand("config materialize", "materialize", apicontract.ActionConfigTime, runConfigMaterialize).
+			withHelp("apply the recorded checked-in source to the runtime instance", configMaterializeHelp).
+			withExamples("goobers config materialize", "goobers config materialize ./instance"),
+		subcommand("config show", "show", apicontract.ActionReadOnlyNavigation, runConfigShow).
+			withHelp("render the effective instance config (secrets redacted)", configShowHelp).
+			withExamples("goobers config show", "goobers config show --json"),
+	).
+		withSynopsis(synopsis).
+		withHelp("inspect, materialize, and compare instance configuration", configHelp).
+		withExamples("goobers config show", "goobers config materialize ./instance", "goobers config diff ./instance")
+}
 
 // runConfig is the `config` group dispatcher: it only handles the bare/`-h`
 // invocation, since real work lives in subcommands.

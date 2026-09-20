@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -37,6 +38,12 @@ type RetentionRequest struct {
 	// full, so this capture is not refused when reclaimable capacity exists
 	// (#4823). Nil disables eviction; a full inventory then still refuses.
 	EvictFull EvictFunc
+	// OverflowRoot enables the overflow tier (#5370): when the inventory is
+	// still full after every reclamation has run, the snapshot is published
+	// here as a ref-backed record with no bundle instead of refusing the
+	// cleanup. Empty keeps the historical fail-closed behaviour, which is
+	// what retention.recovery.onFull: refuse selects.
+	OverflowRoot string
 }
 
 // PublicationJournal is the durable acknowledgement boundary. Production uses
@@ -69,12 +76,23 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 		return Record{}, "", nil
 	}
 	retained, path, err := PublishToInventoryWithEviction(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes, request.EvictFull)
+	overflowed := false
+	if errors.Is(err, ErrInventoryFull) && request.OverflowRoot != "" {
+		retained, path, err = PublishOverflow(ctx, request.Repository, request.OverflowRoot, prepared)
+		overflowed = err == nil
+	}
 	if err != nil {
 		return Record{}, "", err
 	}
 	event, err := RetainedEvent(retained)
 	if err != nil {
 		return Record{}, "", err
+	}
+	if overflowed {
+		// The tier is part of the durable acknowledgement, not a log line: a
+		// reader deciding whether this work is bundle-durable or ref-durable
+		// has no other way to tell, and promotion is what clears it.
+		event.Runner["recoveryOverflow"] = true
 	}
 	// Only actual source capture establishes ordering. Inventory readbacks
 	// and retention renewals also emit custody metadata, but must not make
@@ -86,8 +104,13 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 	if err := log.Append(event); err != nil {
 		return Record{}, "", fmt.Errorf("journal recovery publication: %w", err)
 	}
-	if err := request.acknowledgeArchive(ctx, retained, path); err != nil {
-		return Record{}, "", err
+	// An overflow entry has no archive to hand to external custody. Skipping
+	// the hook is not weaker custody than before: the alternative was no
+	// record at all and a refused cleanup.
+	if !overflowed {
+		if err := request.acknowledgeArchive(ctx, retained, path); err != nil {
+			return Record{}, "", err
+		}
 	}
 	return retained, path, nil
 }

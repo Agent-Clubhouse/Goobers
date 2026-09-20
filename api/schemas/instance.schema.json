@@ -1207,6 +1207,12 @@
               "type": "integer",
               "minimum": 1,
               "description": "Capacity of the volume recovery snapshots are written to. Omitted or zero means unbounded: no worst-case check is made. When set, config load refuses a maxSnapshots x maxArchiveBytes declared worst case that exceeds it (#4862)."
+            },
+            "onFull": {
+              "type": "string",
+              "enum": ["overflow", "refuse"],
+              "default": "overflow",
+              "description": "What a still-full inventory does to a worktree cleanup once every reclamation has run (#5370). `overflow` keeps the snapshot as a pinned mirror ref with a bundle-less record under recovery-overflow/, acknowledges the cleanup, and promotes the entry to a real bundle when a slot frees. `refuse` restores the pre-#5370 fail-closed behaviour, in which the cleanup is deferred and the owning run's branch cannot be reacquired."
             }
           }
         }

@@ -49,12 +49,18 @@ func TestLearnGoobersCurriculumContract(t *testing.T) {
 	for _, want := range []string{
 		"validated state machine",
 		"goobers workflow show --dot",
+		"without `continueOnError`",
+		"scalar outputs are discarded",
+		"goobers examples show implementation",
 		"Compile-time versus run-time decisions",
 		"Test at the smallest useful layer",
 	} {
 		if !strings.Contains(authoring, want) {
 			t.Errorf("learn-workflow-authoring.md missing %q", want)
 		}
+	}
+	if strings.Contains(authoring, "A failed task normally terminates the run before a gate can inspect it") {
+		t.Error("learn-workflow-authoring.md retains obsolete continueOnError gate guidance")
 	}
 
 	for _, want := range []string{

@@ -98,12 +98,29 @@ func TestMirrorFetchRunsAutoMaintenanceInForeground(t *testing.T) {
 				"the mirror while its caller tears the mirror down (#3990/#4000)", run)
 			continue
 		}
-		if wantExplicitFlag && !strings.Contains(run, "--no-detach") {
+		if wantExplicitFlag && strings.Contains(run, " --auto") && !strings.Contains(run, "--no-detach") {
 			t.Errorf("auto maintenance ran as %q, want --no-detach: this git "+
 				"offers the flag, so the pin must reach the child explicitly "+
 				"rather than through inherited configuration (#3990/#4000)", run)
 		}
 	}
+}
+
+func TestMirrorRunsExplicitMaintenanceAfterRefresh(t *testing.T) {
+	origin := newSourceRepo(t)
+	m, _ := detachedMaintenanceMirror(t, origin)
+
+	logPath := installRecordingGitShim(t)
+	if _, err := m.WorkingCopy(context.Background(), origin); err != nil {
+		t.Fatalf("WorkingCopy (refresh): %v", err)
+	}
+
+	for _, run := range recordedGitLines(t, logPath) {
+		if strings.Contains(run, "maintenance run") && !strings.Contains(run, " --auto") {
+			return
+		}
+	}
+	t.Fatalf("WorkingCopy did not run explicit maintenance")
 }
 
 // gitMaintenanceOffersDetachFlag reports whether this git's `maintenance run`

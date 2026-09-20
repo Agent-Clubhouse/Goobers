@@ -15,7 +15,7 @@ import (
 // repack the worker's objects). Neither a blob write nor a Git import is an ACK.
 // Transport wiring and policy (including deadlines) belong to the caller.
 func AcceptArchive(ctx context.Context, source io.Reader, request RetentionRequest, acknowledge PublicationJournal) (Record, string, error) {
-	if source == nil || acknowledge == nil || request.MaxSnapshots <= 0 || request.MaxSnapshots > 10000 || request.MaxArchiveBytes <= 0 {
+	if source == nil || acknowledge == nil || request.MaxSnapshots <= 0 || request.MaxSnapshots > MaxInventoryEntries || request.MaxArchiveBytes <= 0 {
 		return Record{}, "", fmt.Errorf("archive intake requires bounded durable custody")
 	}
 	if _, err := RefForRun(request.RunID); err != nil {

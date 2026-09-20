@@ -8,9 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-
-	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
+
+// MaxInventoryEntries is the largest inventory that recovery publication and
+// readers accept. It is also the independent structural ceiling for recovery
+// observations reconstructed from journals. Operator policy may choose any
+// smaller bound through retention.recovery.maxSnapshots.
+const MaxInventoryEntries = 10000
 
 // InventoryEntry is validated metadata in its identity-bound reservation.
 // It is not evidence of archive integrity; import must still verify the bundle.
@@ -53,8 +57,41 @@ func ReadInventoryTolerant(ctx context.Context, root string, maxEntries int) ([]
 	return readInventory(ctx, root, maxEntries, true)
 }
 
+// inventoryOccupancy counts the reservations holding a slot, including retired
+// and unreadable ones, without the cap refusal readInventoryNames applies.
+//
+// It is what capacity reclamation asks between retirements: the question "is
+// there room yet" cannot be answered by a read that refuses whenever the
+// answer is no (#5354).
+func inventoryOccupancy(ctx context.Context, root string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	before, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil || !before.IsDir() {
+		return 0, fmt.Errorf("recovery inventory must be a real directory")
+	}
+	handle, err := acquireInventoryLock(ctx, root)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = handle.Release() }()
+	names, err := listReservationNames(root, before)
+	if err != nil {
+		return 0, err
+	}
+	count := len(names)
+	if slices.Contains(names, ".inventory.lock") {
+		count--
+	}
+	return count, nil
+}
+
 func readInventory(ctx context.Context, root string, maxEntries int, tolerant bool) ([]InventoryEntry, []UnreadableEntry, error) {
-	if maxEntries <= 0 || maxEntries > 10000 {
+	if maxEntries <= 0 || maxEntries > MaxInventoryEntries {
 		return nil, nil, fmt.Errorf("invalid recovery inventory read limit")
 	}
 	if err := ctx.Err(); err != nil {
@@ -67,7 +104,7 @@ func readInventory(ctx context.Context, root string, maxEntries int, tolerant bo
 	if err != nil || !before.IsDir() {
 		return nil, nil, fmt.Errorf("recovery inventory must be a real directory")
 	}
-	handle, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
+	handle, err := acquireInventoryLock(ctx, root)
 	if err != nil {
 		return nil, nil, err
 	}

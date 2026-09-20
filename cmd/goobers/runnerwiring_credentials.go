@@ -194,7 +194,13 @@ func buildGooberCredentialGrants(gooberName, harness string, keys []string, sour
 		return e
 	}
 	for _, source := range sources {
-		if source.Goober != "" {
+		// Accept an already-bound grant for this goober as well as a
+		// runner-owned source. This makes the selection idempotent: the worker
+		// can narrow a pod kit to one goober before transport, and the shared
+		// executor constructor can apply the same scoping again in the pod
+		// without losing every grant. A grant bound to any sibling goober stays
+		// unreachable.
+		if source.Goober != "" && source.Goober != gooberName {
 			continue
 		}
 		base, sourceHarness, scoped := credentials.SplitHarnessScopedCapability(source.Capability)

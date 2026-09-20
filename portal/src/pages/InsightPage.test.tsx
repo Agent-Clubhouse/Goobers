@@ -63,7 +63,15 @@ describe("Insight page", () => {
         name: "View runs behind core implementation review: 1 failures, 1 escalations, 2 wasted attempts",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Slowest stages" })).toBeInTheDocument();
+    const slowestStages = screen.getByRole("heading", { name: "Slowest stages" })
+      .closest<HTMLElement>("section");
+    if (!slowestStages) throw new Error("Expected the slowest-stages section.");
+    const implementationStage = within(slowestStages).getByRole("link", {
+      name: /View runs behind core implementation implement:/,
+    });
+    expect(within(implementationStage).getByText("core / implementation")).toBeInTheDocument();
+    expect(within(implementationStage).getByText(/implement · \d+ samples/)).toBeInTheDocument();
+    expect(within(slowestStages).queryByText(/^Scale 0 to /)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ready-pool health" })).toBeInTheDocument();
     expect(screen.getByText("Throughput / demand")).toBeInTheDocument();
     expect(screen.getByText("8 / 6")).toBeInTheDocument();
@@ -284,6 +292,26 @@ describe("Insight page", () => {
         scope: "summary",
         since: expect.stringMatching(/Z$/),
         until: expect.stringMatching(/Z$/),
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("filters attributed costs to the selected workflow scope", async () => {
+    window.location.hash = "#/cost?gaggle=tools&workflow=implementation";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryCosts = vi.spyOn(client, "getTelemetryCosts");
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Cost summary" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Scope")).toHaveDisplayValue("Workflow · implementation");
+    expect(
+      await screen.findByRole("heading", { name: "Cost by pull request and issue" }),
+    ).toBeInTheDocument();
+    expect(getTelemetryCosts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gaggle: "tools",
+        workflow: "implementation",
       }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );

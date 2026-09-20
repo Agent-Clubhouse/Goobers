@@ -368,7 +368,7 @@ _goobers_completion()
             ;;
         config)
             if (( CURRENT == 3 )); then
-                candidates=(diff materialize show)
+                candidates=(templates diff materialize show)
                 _describe -V 'command' candidates
                 return
             fi

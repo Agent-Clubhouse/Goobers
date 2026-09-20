@@ -44,9 +44,11 @@ type RunSpanID struct {
 // StageSpanID identifies one stage attempt.
 type StageSpanID struct {
 	RunSpanID
-	Stage   string
-	Attempt int
-	Branch  int
+	Stage          string
+	Attempt        int
+	Branch         int
+	BuildID        string
+	WorkerIdentity string
 }
 
 // GateSpanID identifies one gate evaluation.
@@ -108,7 +110,8 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 	// stage.finished. Keyed by stage AND attempt because a retried stage is a
 	// new attempt with its own span, exactly as the local runner records it —
 	// collapsing them would hide the retry that is usually the interesting part.
-	open := map[stageKey]SynthSpan{}
+	started := map[stageKey]JournalOp{}
+	identities := map[stageKey]attemptIdentity{}
 	for _, op := range proj.Ops {
 		ev := op.Event
 		if op.Kind != opAppend || ev == nil {
@@ -117,24 +120,40 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 		switch ev.Type {
 		case journal.EventStageStarted:
 			key := stageKey{stage: ev.Stage, attempt: ev.Attempt}
-			_, span, err := sink.StartStageSpan(runCtx, StageSpanID{
-				RunSpanID: run, Stage: ev.Stage, Attempt: ev.Attempt, Branch: ev.Branch,
-			}, op.Time)
-			if err != nil {
-				return fmt.Errorf("engine: synthesize stage span %q: %w", ev.Stage, err)
+			started[key] = op
+		case journal.EventError:
+			// A failed activity has no result to carry its identity into
+			// stage.finished. Preserve the identity attached to executor_error
+			// so the terminal incomplete span remains attributable.
+			if ev.Stage != "" && ev.Attempt > 0 {
+				key := stageKey{stage: ev.Stage, attempt: ev.Attempt}
+				identities[key] = attemptIdentityFromRunner(ev.Runner)
 			}
-			open[key] = span
 		case journal.EventStageFinished:
 			key := stageKey{stage: ev.Stage, attempt: ev.Attempt}
-			span, ok := open[key]
+			start, ok := started[key]
 			if !ok {
 				// A finish with no start is a malformed projection, not
 				// something to paper over with a zero-length span.
 				return fmt.Errorf("engine: stage %q attempt %d finished without a start", ev.Stage, ev.Attempt)
 			}
+			startEV := start.Event
+			branch := 0
+			if startEV != nil {
+				branch = startEV.Branch
+			}
+			identity := attemptIdentityFromRunner(ev.Runner)
+			_, span, err := sink.StartStageSpan(runCtx, StageSpanID{
+				RunSpanID: run, Stage: ev.Stage, Attempt: ev.Attempt, Branch: branch,
+				BuildID:        identity.buildID,
+				WorkerIdentity: identity.workerIdentity,
+			}, start.Time)
+			if err != nil {
+				return fmt.Errorf("engine: synthesize stage span %q: %w", ev.Stage, err)
+			}
 			span.Complete(ev.Status, isFailureStatus(ev.Status))
 			span.EndAt(op.Time)
-			delete(open, key)
+			delete(started, key)
 		case journal.EventGateEvaluated:
 			// A gate evaluation is a point decision in the projection: there is
 			// no paired start, so the span spans the instant it was recorded.
@@ -152,7 +171,19 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 	// A stage still open at run end never recorded a finish. Close it at the
 	// run's end rather than leaking an unterminated span, and grade it as the
 	// incomplete thing it is.
-	for key, span := range open {
+	for key, start := range started {
+		identity := identities[key]
+		branch := 0
+		if start.Event != nil {
+			branch = start.Event.Branch
+		}
+		_, span, err := sink.StartStageSpan(runCtx, StageSpanID{
+			RunSpanID: run, Stage: key.stage, Attempt: key.attempt, Branch: branch,
+			BuildID: identity.buildID, WorkerIdentity: identity.workerIdentity,
+		}, start.Time)
+		if err != nil {
+			return fmt.Errorf("engine: synthesize incomplete stage span %q: %w", key.stage, err)
+		}
 		span.Complete("incomplete", true)
 		span.EndAt(last.Time)
 		_ = key
@@ -170,6 +201,29 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 type stageKey struct {
 	stage   string
 	attempt int
+}
+
+type attemptIdentity struct {
+	buildID        string
+	workerIdentity string
+}
+
+func attemptIdentityFromRunner(facts map[string]any) attemptIdentity {
+	return attemptIdentity{
+		buildID:        runnerFact(facts, "buildId"),
+		workerIdentity: runnerFact(facts, "workerIdentity"),
+	}
+}
+
+func runnerFact(facts map[string]any, key string) string {
+	if facts == nil {
+		return ""
+	}
+	value, ok := facts[key].(string)
+	if !ok {
+		return ""
+	}
+	return value
 }
 
 // isFailureStatus maps a journal status to the span's failure axis. Only

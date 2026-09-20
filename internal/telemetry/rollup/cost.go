@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,9 @@ type CostQuery struct {
 	Provider     string
 	ExternalKind string
 	ExternalID   string
+	Gaggle       string
+	Workflow     string
+	Stage        string
 	Since        time.Time
 	Until        time.Time
 }
@@ -38,8 +42,10 @@ type CostResult struct {
 type RunCostAttribution struct {
 	RunID        string
 	Provider     string
+	Repository   string
 	ExternalKind string
 	ExternalID   string
+	URL          string
 	Relationship string
 }
 
@@ -127,8 +133,8 @@ type optionalFloat struct {
 type costRun struct {
 	id               string
 	started          time.Time
-	issues           map[string]struct{}
-	prs              map[string]struct{}
+	issues           map[string]string
+	prs              map[string]string
 	measures         costMeasures
 	attempts         int
 	measuredAttempts int
@@ -144,10 +150,10 @@ type costModelRun struct {
 // RunCostAttributions returns a run's relationships in deterministic order.
 func (db *DB) RunCostAttributions(ctx context.Context, runID string) ([]RunCostAttribution, error) {
 	rows, err := db.readDB().QueryContext(ctx, `
-		SELECT run_id, provider, external_kind, external_id, relationship
+		SELECT run_id, provider, repository, external_kind, external_id, COALESCE(url, ''), relationship
 		FROM run_cost_attribution
 		WHERE run_id = ?
-		ORDER BY provider, external_kind, external_id, relationship`, runID)
+		ORDER BY provider, repository, external_kind, external_id, relationship`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query run cost attribution: %w", err)
 	}
@@ -159,8 +165,10 @@ func (db *DB) RunCostAttributions(ctx context.Context, runID string) ([]RunCostA
 		if err := rows.Scan(
 			&attribution.RunID,
 			&attribution.Provider,
+			&attribution.Repository,
 			&attribution.ExternalKind,
 			&attribution.ExternalID,
+			&attribution.URL,
 			&attribution.Relationship,
 		); err != nil {
 			return nil, fmt.Errorf("rollup: scan run cost attribution: %w", err)
@@ -211,7 +219,7 @@ func (db *DB) CostAggregates(ctx context.Context, query CostQuery) (CostResult, 
 	if !query.Since.IsZero() && !query.Until.IsZero() && !query.Since.Before(query.Until) {
 		return CostResult{}, fmt.Errorf("rollup: cost since must be before until")
 	}
-	providers, err := db.costProviders(ctx, query.Provider, query.Since, query.Until)
+	providers, err := db.costProviders(ctx, query)
 	if err != nil {
 		return CostResult{}, err
 	}
@@ -220,7 +228,7 @@ func (db *DB) CostAggregates(ctx context.Context, query CostQuery) (CostResult, 
 		Issues:       []CostAggregate{},
 	}
 	for _, provider := range providers {
-		runs, err := db.loadCostRuns(ctx, provider, query.Since, query.Until)
+		runs, err := db.loadCostRuns(ctx, provider, query)
 		if err != nil {
 			return CostResult{}, err
 		}
@@ -284,6 +292,9 @@ func (db *DB) enrichCostWorkItemIdentities(ctx context.Context, provider string,
 		return fmt.Errorf("rollup: iterate cost work item identities: %w", err)
 	}
 	for index := range aggregates {
+		if aggregates[index].Repository != "" {
+			continue
+		}
 		itemURL := identities[aggregates[index].ExternalKind+"\x00"+aggregates[index].ExternalID]
 		aggregates[index].URL = itemURL
 		aggregates[index].Repository = workItemRepository(provider, itemURL)
@@ -291,9 +302,9 @@ func (db *DB) enrichCostWorkItemIdentities(ctx context.Context, provider string,
 	return nil
 }
 
-func (db *DB) costProviders(ctx context.Context, provider string, since, until time.Time) ([]string, error) {
-	if provider != "" {
-		return []string{provider}, nil
+func (db *DB) costProviders(ctx context.Context, costQuery CostQuery) ([]string, error) {
+	if costQuery.Provider != "" {
+		return []string{costQuery.Provider}, nil
 	}
 	query := `
 		SELECT DISTINCT a.provider
@@ -301,7 +312,7 @@ func (db *DB) costProviders(ctx context.Context, provider string, since, until t
 		JOIN runs r ON r.run_id = a.run_id
 		WHERE a.provider <> ''`
 	var args []any
-	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query, args = appendCostRunScope(query, args, "r", costQuery)
 	query += ` ORDER BY a.provider`
 	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -368,19 +379,24 @@ func issueCostAggregates(provider string, runs []*costRun) []CostAggregate {
 			weights = directWeights
 		}
 		shares := splitMeasures(run.measures, targets, weights)
-		for _, issue := range targets {
-			aggregate := aggregates[issue]
+		for _, identity := range targets {
+			repository, externalID := costReferenceParts(identity)
+			aggregate := aggregates[identity]
 			if aggregate == nil {
 				aggregate = &CostAggregate{
-					Provider: provider, ExternalKind: CostExternalKindIssue, ExternalID: issue,
+					Provider: provider, Repository: repository,
+					ExternalKind: CostExternalKindIssue, ExternalID: externalID,
 				}
-				aggregates[issue] = aggregate
+				aggregates[identity] = aggregate
 			}
-			if seenRuns[issue] == nil {
-				seenRuns[issue] = make(map[string]struct{})
+			if aggregate.URL == "" {
+				aggregate.URL = run.issues[identity]
 			}
-			if _, seen := seenRuns[issue][run.id]; !seen {
-				seenRuns[issue][run.id] = struct{}{}
+			if seenRuns[identity] == nil {
+				seenRuns[identity] = make(map[string]struct{})
+			}
+			if _, seen := seenRuns[identity][run.id]; !seen {
+				seenRuns[identity][run.id] = struct{}{}
 				aggregate.TotalRuns++
 				aggregate.TotalAttempts += run.attempts
 				if run.measures.measured() {
@@ -388,9 +404,9 @@ func issueCostAggregates(provider string, runs []*costRun) []CostAggregate {
 				}
 				aggregate.MeasuredAttempts += run.measuredAttempts
 			}
-			addMeasuresToAggregate(aggregate, shares[issue])
-			addModelsToIssueAggregate(aggregate, run, targets, weights, issue)
-			aggregate.Runs = append(aggregate.Runs, issueCostRunAggregate(run, shares[issue], targets, weights, issue))
+			addMeasuresToAggregate(aggregate, shares[identity])
+			addModelsToIssueAggregate(aggregate, run, targets, weights, identity)
+			aggregate.Runs = append(aggregate.Runs, issueCostRunAggregate(run, shares[identity], targets, weights, identity))
 		}
 	}
 	for _, aggregate := range aggregates {
@@ -403,15 +419,16 @@ func filterCostAggregates(aggregates []CostAggregate, externalID string) []CostA
 	if externalID == "" {
 		return aggregates
 	}
+	var filtered []CostAggregate
 	for _, aggregate := range aggregates {
 		if aggregate.ExternalID == externalID {
-			return []CostAggregate{aggregate}
+			filtered = append(filtered, aggregate)
 		}
 	}
-	return []CostAggregate{}
+	return filtered
 }
 
-func (db *DB) loadCostRuns(ctx context.Context, provider string, since, until time.Time) ([]*costRun, error) {
+func (db *DB) loadCostRuns(ctx context.Context, provider string, query CostQuery) ([]*costRun, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("rollup: cost provider is required")
 	}
@@ -421,14 +438,14 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string, since, until ti
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	byID, order, err := loadCostRunReferences(ctx, tx, provider, since, until)
+	byID, order, err := loadCostRunReferences(ctx, tx, provider, query)
 	if err != nil {
 		return nil, err
 	}
-	if err := loadCostAttemptUsage(ctx, tx, provider, since, until, byID); err != nil {
+	if err := loadCostAttemptUsage(ctx, tx, provider, query, byID); err != nil {
 		return nil, err
 	}
-	if err := loadCostModelUsage(ctx, tx, provider, since, until, byID); err != nil {
+	if err := loadCostModelUsage(ctx, tx, provider, query, byID); err != nil {
 		return nil, err
 	}
 
@@ -442,17 +459,17 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string, since, until ti
 	return out, nil
 }
 
-func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, since, until time.Time) (map[string]*costRun, []string, error) {
+func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery) (map[string]*costRun, []string, error) {
 	query := `
-		SELECT r.run_id, r.started_at, a.external_kind, a.external_id
+		SELECT r.run_id, r.started_at, a.repository, a.external_kind, a.external_id, COALESCE(a.url, '')
 		FROM runs r
 		JOIN run_cost_attribution a ON a.run_id = r.run_id
 		WHERE a.provider = ? AND a.external_kind IN ('pr', 'issue')`
 	args := []any{provider}
-	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query, args = appendCostRunScope(query, args, "r", costQuery)
 	query += `
-		GROUP BY r.run_id, r.started_at, a.external_kind, a.external_id
-		ORDER BY r.started_at, r.run_id, a.external_kind, a.external_id`
+		GROUP BY r.run_id, r.started_at, a.repository, a.external_kind, a.external_id, a.url
+		ORDER BY r.started_at, r.run_id, a.external_kind, a.repository, a.external_id`
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("rollup: query cost-attributed runs: %w", err)
@@ -462,8 +479,8 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, sin
 	byID := make(map[string]*costRun)
 	var order []string
 	for rows.Next() {
-		var runID, startedText, kind, externalID string
-		if err := rows.Scan(&runID, &startedText, &kind, &externalID); err != nil {
+		var runID, startedText, repository, kind, externalID, itemURL string
+		if err := rows.Scan(&runID, &startedText, &repository, &kind, &externalID, &itemURL); err != nil {
 			return nil, nil, fmt.Errorf("rollup: scan cost-attributed run: %w", err)
 		}
 		run := byID[runID]
@@ -472,15 +489,16 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, sin
 			if err != nil {
 				return nil, nil, fmt.Errorf("rollup: parse cost run start %q: %w", startedText, err)
 			}
-			run = &costRun{id: runID, started: started, issues: map[string]struct{}{}, prs: map[string]struct{}{}}
+			run = &costRun{id: runID, started: started, issues: map[string]string{}, prs: map[string]string{}}
 			byID[runID] = run
 			order = append(order, runID)
 		}
+		identity := costReferenceKey(repository, externalID)
 		switch kind {
 		case CostExternalKindIssue:
-			run.issues[externalID] = struct{}{}
+			run.issues[identity] = itemURL
 		case CostExternalKindPR:
-			run.prs[externalID] = struct{}{}
+			run.prs[identity] = itemURL
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -492,7 +510,7 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, sin
 	return byID, order, nil
 }
 
-func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, since, until time.Time, byID map[string]*costRun) error {
+func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, byID map[string]*costRun) error {
 	query := `
 		SELECT sa.run_id, su.input_tokens, su.output_tokens,
 		       su.cache_read_tokens, su.cache_write_tokens, su.reasoning_tokens,
@@ -508,7 +526,12 @@ func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, sinc
 			WHERE a.run_id = sa.run_id AND a.provider = ?
 		)`
 	args := []any{provider}
-	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query, args = appendCostRunIdentityScope(query, args, "r", costQuery)
+	if costQuery.Stage != "" {
+		query += " AND sa.stage = ?"
+		args = append(args, costQuery.Stage)
+	}
+	query, args = appendCostWindow(query, args, "r.started_at", costQuery.Since, costQuery.Until)
 	query += ` ORDER BY sa.run_id, sa.stage, sa.traversal`
 	usageRows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -545,7 +568,7 @@ func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, sinc
 	return nil
 }
 
-func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, since, until time.Time, byID map[string]*costRun) error {
+func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, byID map[string]*costRun) error {
 	query := `
 		SELECT smu.run_id, smu.model, smu.input_tokens, smu.output_tokens,
 		       smu.cache_read_tokens, smu.cache_write_tokens, smu.reasoning_tokens,
@@ -558,7 +581,12 @@ func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, since,
 			WHERE a.run_id = smu.run_id AND a.provider = ?
 		)`
 	args := []any{provider}
-	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query, args = appendCostRunIdentityScope(query, args, "r", costQuery)
+	if costQuery.Stage != "" {
+		query += " AND smu.stage = ?"
+		args = append(args, costQuery.Stage)
+	}
+	query, args = appendCostWindow(query, args, "r.started_at", costQuery.Since, costQuery.Until)
 	query += ` ORDER BY smu.run_id, smu.stage, smu.traversal, smu.model`
 	modelRows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -611,6 +639,28 @@ func appendCostWindow(query string, args []any, column string, since, until time
 	if !until.IsZero() {
 		query += " AND " + column + " < ?"
 		args = append(args, formatTime(until).String)
+	}
+	return query, args
+}
+
+func appendCostRunScope(query string, args []any, runAlias string, costQuery CostQuery) (string, []any) {
+	query, args = appendCostRunIdentityScope(query, args, runAlias, costQuery)
+	if costQuery.Stage != "" {
+		query += " AND EXISTS (SELECT 1 FROM stage_attempts scoped_sa WHERE scoped_sa.run_id = " +
+			runAlias + ".run_id AND scoped_sa.stage = ?)"
+		args = append(args, costQuery.Stage)
+	}
+	return appendCostWindow(query, args, runAlias+".started_at", costQuery.Since, costQuery.Until)
+}
+
+func appendCostRunIdentityScope(query string, args []any, runAlias string, costQuery CostQuery) (string, []any) {
+	if costQuery.Gaggle != "" {
+		query += " AND " + runAlias + ".gaggle = ?"
+		args = append(args, costQuery.Gaggle)
+	}
+	if costQuery.Workflow != "" {
+		query += " AND " + runAlias + ".workflow = ?"
+		args = append(args, costQuery.Workflow)
 	}
 	return query, args
 }
@@ -729,8 +779,9 @@ func foldOrphanRuns(runs []*costRun, prIssues map[string]map[string]struct{}, pr
 
 func aggregateCostRuns(provider, kind string, groups map[string]map[string]*costRun) []CostAggregate {
 	out := make(map[string]*CostAggregate, len(groups))
-	for externalID, runs := range groups {
-		aggregate := &CostAggregate{Provider: provider, ExternalKind: kind, ExternalID: externalID}
+	for identity, runs := range groups {
+		repository, externalID := costReferenceParts(identity)
+		aggregate := &CostAggregate{Provider: provider, Repository: repository, ExternalKind: kind, ExternalID: externalID}
 		runIDs := make([]string, 0, len(runs))
 		for runID := range runs {
 			runIDs = append(runIDs, runID)
@@ -738,6 +789,13 @@ func aggregateCostRuns(provider, kind string, groups map[string]map[string]*cost
 		sort.Strings(runIDs)
 		for _, runID := range runIDs {
 			run := runs[runID]
+			if aggregate.URL == "" {
+				if kind == CostExternalKindPR {
+					aggregate.URL = run.prs[identity]
+				} else {
+					aggregate.URL = run.issues[identity]
+				}
+			}
 			aggregate.TotalRuns++
 			aggregate.TotalAttempts += run.attempts
 			if run.measures.measured() {
@@ -749,7 +807,7 @@ func aggregateCostRuns(provider, kind string, groups map[string]map[string]*cost
 			aggregate.Runs = append(aggregate.Runs, directCostRunAggregate(run))
 		}
 		sortCostRuns(aggregate.Runs)
-		out[externalID] = aggregate
+		out[identity] = aggregate
 	}
 	return sortedAggregates(out)
 }
@@ -980,7 +1038,7 @@ func targetWeight(target string, targets []string, weights map[string]int64) int
 	return 1
 }
 
-func sortedSet(values map[string]struct{}) []string {
+func sortedSet[V any](values map[string]V) []string {
 	out := make([]string, 0, len(values))
 	for value := range values {
 		out = append(out, value)
@@ -989,13 +1047,22 @@ func sortedSet(values map[string]struct{}) []string {
 	return out
 }
 
-func setsIntersect(left, right map[string]struct{}) bool {
+func setsIntersect(left map[string]string, right map[string]struct{}) bool {
 	for value := range left {
 		if _, ok := right[value]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+func costReferenceKey(repository, externalID string) string {
+	return repository + "\x00" + externalID
+}
+
+func costReferenceParts(identity string) (string, string) {
+	repository, externalID, _ := strings.Cut(identity, "\x00")
+	return repository, externalID
 }
 
 func sortedAggregates(values map[string]*CostAggregate) []CostAggregate {

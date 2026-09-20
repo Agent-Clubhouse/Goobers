@@ -104,6 +104,31 @@ func TestResolveToolsUsesConfiguredGoExecutable(t *testing.T) {
 	t.Fatal("resolved tools do not contain Go")
 }
 
+func TestResolveToolsPreservesWindowsCompilerInstallationPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows compiler layout contract")
+	}
+
+	tools, compilerCommand, err := resolveTools("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(compilerCommand) {
+		t.Fatalf("CC = %q, want an absolute path preserving the compiler installation", compilerCommand)
+	}
+	compilerName := strings.ToLower(filepath.Base(compilerCommand))
+	for _, tool := range tools {
+		if strings.EqualFold(executableName(tool.name), compilerName) {
+			t.Fatalf("compiler %q was relocated into the isolated PATH; CC must invoke it in place", tool.path)
+		}
+	}
+
+	environment := environmentMap(hermeticEnvironment(nil, t.TempDir(), compilerCommand, t.TempDir()))
+	if environment["CC"] != compilerCommand {
+		t.Fatalf("hermetic CC = %q, want %q", environment["CC"], compilerCommand)
+	}
+}
+
 func TestPlatformToolSpecsIncludeRequiredStackTools(t *testing.T) {
 	for _, tt := range []struct {
 		goos  string

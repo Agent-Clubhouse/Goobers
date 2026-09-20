@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,7 @@ import (
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/version"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
@@ -623,6 +625,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	configLoaded.Store(true)
 	logGateFlip(stdout, processStart, "configLoaded")
 	storageGate, storageThresholds := startDaemonStorageHealth(setup)
+	// #5343/#4911 AC5: the same reading, sampled on the daemon's own cadence,
+	// feeds the read model AND the deduplicated high-water warning below.
+	recoveryInventory := startDaemonRecoveryInventoryHealth(ctx, l, setup)
 	// #3651: the normal stop path calls this explicitly below so a flush or
 	// close failure fails the command; the defer only covers early returns,
 	// and Shutdown itself runs at most once.
@@ -778,11 +783,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// nothing here. Found by auditing which topologies attach which sources
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
-		ReadModel:          setup.ReadModel,
-		RetentionStats:     setup.RetentionStats,
-		InstanceLogStats:   setup.InstanceLog.Stats,
-		StorageHealthStats: storageGate.Stats,
-		WorkItemLookup:     statusWorkItemLookup(l.Root, setup.Definitions),
+		ReadModel:              setup.ReadModel,
+		RetentionStats:         setup.RetentionStats,
+		InstanceLogStats:       setup.InstanceLog.Stats,
+		StorageHealthStats:     storageGate.Stats,
+		RecoveryInventoryStats: recoveryInventory.Stats,
+		WorkItemLookup:         statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -945,6 +951,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// can always answer them. An instance with no rollup answers "no
 		// telemetry rollup yet", exactly as the local path does.
 		httpapi.WithTelemetryDefectAggregateService(newDaemonTelemetryDefectAggregateService(l)),
+		httpapi.WithPortalAssetHandler(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			serveDaemonInstanceAsset(response, request, l.Root)
+		})),
 		// The readiness-gate endpoint and the recovery gate it is exempt from
 		// (#5019): wired unconditionally, like the containment above,
 		// because every daemon build has a Layout and a startup phase
@@ -1294,19 +1303,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			setup.LegacyRunner,
 			engineGuards,
 			setup.InstanceLog,
-			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
-				// The stalled run's gaggle is only knowable from its runs-tree
-				// scope; cleanup must target that gaggle's own repo (#2692).
-				project, err := terminalGaggleProject(runLayout)
-				if err != nil {
-					return nil, err
-				}
-				prepare, err := buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
-				if err != nil {
-					return nil, err
-				}
-				return prepare.runnerPreparer(), nil
-			},
+			stalledSweepDependencies(setup),
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
 			now,
@@ -1487,20 +1484,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 		workflowSourceAppTokens = minted
 	}
-	var sourceReconcileMu sync.Mutex
-	var sourceRevision string
-	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
-		sourceReconcileMu.Lock()
-		defer sourceReconcileMu.Unlock()
-		var resp applyResponse
-		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, workflowSourceAppTokens, setup.SharedRegistry, setup.SecretStores)
-			if syncErr != nil {
-				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
-				return resp
-			}
-			resp.Revision = revision
+	var sourceApplier *workflowSourceApplier
+	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+		sourceApplier = &workflowSourceApplier{
+			root: root, source: *source, appTokens: workflowSourceAppTokens, setup: setup, reloader: reloader,
 		}
+	}
+	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
+		if sourceApplier != nil {
+			return sourceApplier.Apply(applyCtx, now)
+		}
+		var resp applyResponse
 		applied, oldDigest, newDigest, rejected, reloadErr := reloader.pollOnce(now)
 		resp.Applied = applied
 		resp.OldDigest = oldDigest
@@ -1508,8 +1502,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		resp.Rejected = rejected
 		if reloadErr != nil {
 			resp.Error = reloadErr.Error()
-		} else if resp.Revision != "" {
-			sourceRevision = resp.Revision
 		}
 		return resp
 	}
@@ -1641,6 +1633,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}()
 
 	storageHealthTickerDone := startStorageHealthTicker(ctx, setup, storageGate, storageThresholds.CheckInterval)
+	recoveryInventoryTickerDone := startRecoveryInventoryTicker(ctx, l, setup, recoveryInventory, recoveryInventorySampleInterval)
 	mergedPRCostSweeps := startMergedPRCostSweepRuntime(ctx, setup)
 
 	apiReadCacheLockSweepTickerDone := startAPIReadCacheLockSweepTicker(ctx, l)
@@ -1734,37 +1727,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// local ref watcher provides low-latency wakeups.
 	configDone := make(chan error, 1)
 	configLoopEnabled := *watchConfig
-	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+	if sourceApplier != nil {
 		configLoopEnabled = true
 		sourceLoop := &configSourceReconciler{
-			source: *source,
-			errors: newSweepErrorReporter(setup.InstanceLog, "config_reconcile_failed"),
-			wake:   sourceReconcileWake,
-			reconcile: func(reconcileCtx context.Context, now time.Time) error {
-				sourceReconcileMu.Lock()
-				defer sourceReconcileMu.Unlock()
-				revision, changed, _, syncErr := instance.SyncGitWorkflowSourceIfChanged(
-					reconcileCtx,
-					root,
-					*source,
-					sourceRevision,
-					workflowSourceAppTokens,
-					setup.SharedRegistry,
-					setup.SecretStores,
-				)
-				if syncErr != nil {
-					return fmt.Errorf("sync workflow source: %w", syncErr)
-				}
-				if !changed {
-					return nil
-				}
-				_, _, _, _, reloadErr := reloader.pollOnce(now)
-				if reloadErr != nil {
-					return reloadErr
-				}
-				sourceRevision = revision
-				return nil
-			},
+			source:    sourceApplier.source,
+			errors:    newSweepErrorReporter(setup.InstanceLog, "config_reconcile_failed"),
+			wake:      sourceReconcileWake,
+			reconcile: sourceApplier.Reconcile,
 		}
 		go func() { configDone <- sourceLoop.Run(ctx) }()
 	} else if *watchConfig {
@@ -1814,6 +1783,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// stdout itself, so it adds no concurrent writer. It never applies an
 	// update and never affects the daemon's health or exit status.
 	updateNotices, updateCheckDone, updatePendingState := startUpdateCheck(ctx, root, setup.Config, stderr)
+	templateNotices, templateChecksDone := startTemplateChecks(ctx, root)
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
 		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
@@ -1821,6 +1791,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		heartbeatDone = done
 		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), sched.WorkflowCount, tail, tailErr, heartbeatInterval, updatePendingState, done)
 	}
+	// #5244: the durable six-hour service-health record, separate from the fast
+	// informational heartbeat above and NOT gated on --quiet — that flag
+	// silences stdout chatter, while this is diagnostic evidence an operator
+	// reads back from the instance log later.
+	serviceHealthDone := make(chan struct{})
+	go emitServiceHealth(ctx, root, currentDaemon, setup.InstanceLog, recoveryInventory.Stats, serviceHealthInterval, nil, serviceHealthDone)
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error
@@ -1838,6 +1814,13 @@ daemonLoop:
 		select {
 		case update := <-updateNotices:
 			update.report(stdout, stderr)
+		case update := <-templateNotices:
+			update.report(stdout, stderr)
+			if reloader.readModel != nil {
+				if err := reloader.readModel.PublishDefinitionsChanged(ctx); err != nil {
+					pf(stderr, "warning: template status changed but portal invalidation failed: %v\n", err)
+				}
+			}
 		case connectorErr := <-fleetConnectorDone:
 			fleetConnectorDone = nil
 			fleetConnectorStarted = false
@@ -1902,9 +1885,11 @@ daemonLoop:
 	<-sharedVisibilityDone
 	<-stalledTickerDone
 	<-updateCheckDone
+	<-templateChecksDone
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-storageHealthTickerDone
+	<-recoveryInventoryTickerDone
 	<-startupRetentionSweepDone
 	<-mergedPRCostSweeps.tickerDone
 	<-startupMergedPRCostSweepDone
@@ -1916,6 +1901,7 @@ daemonLoop:
 	if heartbeatDone != nil {
 		<-heartbeatDone
 	}
+	<-serviceHealthDone
 	if fleetConnectorStarted && fleetConnectorDone != nil {
 		select {
 		case connectorErr := <-fleetConnectorDone:
@@ -2093,6 +2079,32 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 	})
 	<-done
 	return daemonDrainResult{forced: true, terminated: terminated}
+}
+
+// stalledSweepDependencies is the daemon-owned wiring the stalled-run sweep
+// needs when it has to terminalize a run no live Runner owns.
+func stalledSweepDependencies(setup *schedulerSetup) *stalledSweepDeps {
+	return &stalledSweepDeps{
+		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
+			// The stalled run's gaggle is only knowable from its runs-tree
+			// scope; cleanup must target that gaggle's own repo (#2692).
+			project, err := terminalGaggleProject(runLayout)
+			if err != nil {
+				return nil, err
+			}
+			prepare, err := buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
+			if err != nil {
+				return nil, err
+			}
+			return prepare.runnerPreparer(), nil
+		},
+		// The same observer the daemon's own runner carries (daemon.go's
+		// runnerCfg.JournalAdvanced), so a run this sweep terminalizes reaches
+		// the read model exactly as one that finishes under a live runner does.
+		// Without it the terminal append records no intake watermark and the
+		// projector never re-reads the run (#5278).
+		JournalAdvanced: telemetryingest.RunIntakeObserver(setup.Watermarks, setup.InstanceLog),
+	}
 }
 
 func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localscheduler.Option) *localscheduler.Scheduler {

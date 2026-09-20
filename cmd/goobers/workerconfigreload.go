@@ -114,6 +114,15 @@ func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) 
 	}
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
+	gaggleDigests := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		gaggle := set.Gaggles[i].Name
+		gaggleDigest, err := deterministicStageConfigDigest(l.ConfigDir(), gaggle)
+		if err != nil {
+			return nil, false, fmt.Errorf("worker: %w", err)
+		}
+		gaggleDigests[gaggle] = gaggleDigest
+	}
 
 	// Capture — not reference — the config-tree content this snapshot's kits
 	// and goober digests are derived from, so it stays answerable after the
@@ -132,6 +141,7 @@ func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) 
 	}
 	snapshot := &workerConfigSnapshot{
 		digest:        digest,
+		gaggleDigests: gaggleDigests,
 		cfg:           cfg,
 		set:           set,
 		instructions:  instructions,
