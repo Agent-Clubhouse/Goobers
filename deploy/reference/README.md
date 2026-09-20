@@ -201,14 +201,14 @@ execution-critical worker flags such as `--instance`, and (#4827) asserts that n
 reference NetworkPolicy selects pods from a chart release without also admitting
 that release's own required intra-cluster traffic.
 
-A stage pod's Go module cache is not mounted under `/tmp`: it lives on a dedicated
-persistent volume at `/var/goobers/cache` and is exported as `GOMODCACHE` so
-repeated agentic Go builds reuse their warm module cache. The attempt-private
-`tmp:ephemeral` root remains mounted at `/tmp` and continues to own the scratch
-space; without the separate cache volume, a stage pod starts every build from a
-cold module cache and spends its budget re-downloading modules. The PVC is bounded
-by a size request, keeping the cache volume from growing without bound while the
-`tmp:ephemeral` growth bound stays unchanged.
+A stage pod's Go module and build caches are not mounted under `/tmp`: each gaggle
+namespace supplies a dedicated RWX persistent volume at `/var/goobers/cache`,
+exported as `GOMODCACHE` and `GOCACHE`, so concurrent fresh stage pods reuse warm
+cache contents. The attempt-private `tmp:ephemeral` root remains mounted at
+`/tmp` and continues to own scratch space; without the separate cache volume, a
+stage pod starts every build cold and spends its budget re-downloading modules.
+The PVC's 20Gi request is the documented growth bound; the `tmp:ephemeral`
+growth bound stays unchanged.
 Run the same render and schema gate locally with:
 
 ```sh

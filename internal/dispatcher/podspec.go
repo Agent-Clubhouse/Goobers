@@ -1520,6 +1520,27 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "home", MountPath: LinuxHomePath})
 		container.Env = append(container.Env, corev1.EnvVar{Name: "HOME", Value: LinuxHomePath})
 	}
+
+	cachePath := LinuxGoCachePath
+	if windows {
+		cachePath = WindowsGoCachePath
+	}
+	spec.Volumes = append(spec.Volumes, corev1.Volume{
+		Name: goBuildCacheVolume,
+		VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+			ClaimName: goBuildCacheClaim,
+		}},
+	})
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name: goBuildCacheVolume, MountPath: cachePath,
+	})
+	container.Env = slices.DeleteFunc(container.Env, func(env corev1.EnvVar) bool {
+		return env.Name == "GOMODCACHE" || env.Name == "GOCACHE"
+	})
+	container.Env = append(container.Env,
+		corev1.EnvVar{Name: "GOMODCACHE", Value: cachePath},
+		corev1.EnvVar{Name: "GOCACHE", Value: cachePath},
+	)
 }
 
 // stampSecurity applies the restriction bindings by OS (decisions 006/007,

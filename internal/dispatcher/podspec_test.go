@@ -255,6 +255,7 @@ func TestRenderPodLinuxReadonlyBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}
+
 	container := pod.Spec.Containers[0]
 	if container.SecurityContext == nil || container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem {
 		t.Fatal("readOnlyRootFilesystem not stamped for the Linux fs restriction")
@@ -283,6 +284,68 @@ func TestRenderPodLinuxReadonlyBinding(t *testing.T) {
 	}
 	if pod.Spec.SecurityContext.SeccompProfile == nil || pod.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Fatal("RuntimeDefault seccomp baseline missing on Linux pod")
+	}
+}
+
+func TestRenderPodStampsDurableGoCache(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		runner     RunnerSpec
+	}{
+		{name: "linux", path: LinuxGoCachePath, runner: linuxRunner()},
+		{name: "windows", path: WindowsGoCachePath, runner: windowsRunner()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, err := RenderPod(testConfig(), testAttempt(), tc.runner)
+			if err != nil {
+				t.Fatalf("RenderPod: %v", err)
+			}
+			var volume *corev1.Volume
+			for i := range pod.Spec.Volumes {
+				if pod.Spec.Volumes[i].Name == goBuildCacheVolume {
+					volume = &pod.Spec.Volumes[i]
+				}
+			}
+			if volume == nil || volume.PersistentVolumeClaim == nil || volume.PersistentVolumeClaim.ClaimName != goBuildCacheClaim {
+				t.Fatalf("cache volume = %+v, want PVC %q", volume, goBuildCacheClaim)
+			}
+			var mounted bool
+			for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+				if mount.Name == goBuildCacheVolume && mount.MountPath == tc.path {
+					mounted = true
+				}
+			}
+			if !mounted {
+				t.Fatalf("cache volume is not mounted at %q", tc.path)
+			}
+			env := podEnv(pod)
+			for _, name := range []string{"GOMODCACHE", "GOCACHE"} {
+				if env[name] != tc.path {
+					t.Fatalf("%s = %q, want %q", name, env[name], tc.path)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderFromTemplateStampsDurableGoCache(t *testing.T) {
+	pod, err := RenderFromTemplate(testConfig(), testAttempt(), linuxRunner(), testDeployment())
+	if err != nil {
+		t.Fatalf("RenderFromTemplate: %v", err)
+	}
+	var found bool
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Name == goBuildCacheVolume && volume.PersistentVolumeClaim != nil &&
+			volume.PersistentVolumeClaim.ClaimName == goBuildCacheClaim {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("template stage pod has no PVC-backed Go cache volume")
+	}
+	env := podEnv(pod)
+	if env["GOMODCACHE"] != LinuxGoCachePath || env["GOCACHE"] != LinuxGoCachePath {
+		t.Fatalf("template cache environment = %v, want both cache variables at %q", env, LinuxGoCachePath)
 	}
 }
 
