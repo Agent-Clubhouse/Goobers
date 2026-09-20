@@ -35,3 +35,36 @@ func TestLegacyFailAmbiguityIsVisibleWithoutRewritingVerdict(t *testing.T) {
 		t.Fatal("explicit rejection reported as ambiguous")
 	}
 }
+
+func TestTerminalVerdictRequirementRejectsFixableAndOrderingFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    apiv1.Verdict
+		want string
+	}{
+		{name: "ordering fail is rejected", v: apiv1.Verdict{Decision: apiv1.VerdictFail, ReasonCode: apiv1.VerdictReasonOrdering, Rationale: "wait for sibling"}, want: "terminal fail verdict"},
+		{name: "cross-pr-blocked fail is rejected", v: apiv1.Verdict{Decision: apiv1.VerdictFail, ReasonCode: apiv1.VerdictReasonImplementationRejected, Rationale: "This PR is blocked by #10.", Findings: []apiv1.Finding{{Severity: apiv1.SeverityInfo, Class: apiv1.FindingCrossPRBlocked, Message: "wait on #10", BlockingPRs: []int{10}}}}, want: "terminal fail verdict"},
+		{name: "unsalvageable requires rationale", v: apiv1.Verdict{Decision: apiv1.VerdictFail, ReasonCode: apiv1.VerdictReasonUnsalvageableDesign}, want: "unsalvageable-design fail verdict requires rationale"},
+		{name: "typed failure remains valid", v: apiv1.Verdict{Decision: apiv1.VerdictFail, ReasonCode: apiv1.VerdictReasonImplementationRejected, Rationale: "Approach violates the required contract."}, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := terminalVerdictRequirement(tc.v)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("terminalVerdictRequirement() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("terminalVerdictRequirement() = %v, want error containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateVerdictForPublishRejectsContradictoryTerminalStatus(t *testing.T) {
+	v := apiv1.Verdict{Decision: apiv1.VerdictFail, ReasonCode: apiv1.VerdictReasonOrdering, Rationale: "Wait for sibling #10."}
+	if err := validateVerdictForPublish(v); err == nil {
+		t.Fatal("validateVerdictForPublish accepted a terminal fail with ordering semantics")
+	}
+}

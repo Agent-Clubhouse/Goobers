@@ -1932,7 +1932,13 @@ func validateVerdictForPublish(v apiv1.Verdict) error {
 	if err != nil {
 		return fmt.Errorf("marshal verdict payload: %w", err)
 	}
-	return validateVerdictJSON(data)
+	if err := validateVerdictJSON(data); err != nil {
+		return err
+	}
+	if err := terminalVerdictRequirement(v); err != nil {
+		return fmt.Errorf("reviewer verdict contract: %w", err)
+	}
+	return nil
 }
 
 func validateVerdictJSON(data []byte) error {
