@@ -61,6 +61,7 @@ describe("overview page", () => {
     ).toBeInTheDocument();
     const active = within(screen.getByRole("region", { name: "Active runs" }));
     expect(active.getByText("#3088 Operator status progress")).toBeInTheDocument();
+    expect(active.getByText("core / implementation")).toBeInTheDocument();
     expect(active.getByText("review · recent heartbeat 30s ago · claim active/verified")).toBeInTheDocument();
     expect(active.getByText("review · PR via open-pr · finish review")).toBeInTheDocument();
     expect(
@@ -68,6 +69,32 @@ describe("overview page", () => {
         "Error provider.rate_limit: quota exhausted · Review needs-changes: Show operator context. · Blockers: provider quota is exhausted",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("shows an accessible local completion time for every recent outcome", async () => {
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const recent = within(await screen.findByRole("region", { name: "Recent outcomes" }));
+    const completionTimes = recent.getAllByText(/^Completed /, { selector: "time" });
+    expect(completionTimes).toHaveLength(2);
+
+    const finishedAt = "2026-07-18T03:00:00Z";
+    const completionTime = completionTimes.find(
+      (time) => time.getAttribute("datetime") === finishedAt,
+    );
+    const timestamp = new Date(finishedAt);
+    const visibleTime = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(timestamp);
+    const preciseTime = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "full",
+      timeStyle: "long",
+    }).format(timestamp);
+
+    expect(completionTime).toHaveTextContent(`Completed ${visibleTime}`);
+    expect(completionTime).toHaveAccessibleName(`Completed ${preciseTime}`);
+    expect(completionTime).toHaveAttribute("title", `Completed ${preciseTime}`);
   });
 
   it("groups repeated attention runs by linked issue and expands direct run links", async () => {
@@ -387,6 +414,72 @@ describe("overview page", () => {
 
 // #3658: a phase whose query failed used to render as an empty group, so the
 // page claimed there was no recent activity when it simply could not read it.
+describe("overview recovery inventory capacity (#5343)", () => {
+  it("reports occupancy and the effective limit when the inventory is healthy", async () => {
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const row = await screen.findByRole("group", { name: "Recovery inventory healthy" });
+    expect(row).toHaveTextContent("12/128 slots");
+    expect(row).toHaveTextContent("(9%)");
+    expect(row).toHaveTextContent(
+      "Durable handoffs, worktree cleanup and unrelated runs fail when it is full.",
+    );
+    expect(within(row).getByRole("link", { name: "Recovery capacity and operator actions" })).toHaveAttribute(
+      "href",
+      expect.stringContaining("retained-implementation.md#inventory-capacity"),
+    );
+  });
+
+  it("elevates the high-water warning and names the consequence", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.recoveryInventory = {
+      ...fixtures.instance.recoveryInventory!,
+      state: "warning",
+      used: 104,
+      unreadable: 2,
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const row = await screen.findByRole("alert", { name: "Recovery inventory warning" });
+    expect(row.className).toContain("instance-summary-row-warning");
+    expect(row).toHaveTextContent("104/128 slots");
+    expect(row).toHaveTextContent("passed the 80% high-water mark");
+    expect(row).toHaveTextContent("2 incomplete reservations still occupying slots");
+  });
+
+  it("elevates exhaustion as critical and says unrelated runs fail", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.recoveryInventory = {
+      ...fixtures.instance.recoveryInventory!,
+      state: "exhausted",
+      used: 128,
+      unreadable: 1,
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const row = await screen.findByRole("alert", { name: "Recovery inventory exhausted" });
+    expect(row.className).toContain("instance-summary-row-error");
+    expect(row).toHaveTextContent("Full");
+    expect(row).toHaveTextContent("128/128 slots");
+    expect(row).toHaveTextContent(
+      "Durable handoffs, worktree cleanup and unrelated runs fail until capacity is freed.",
+    );
+    expect(row).toHaveTextContent("1 incomplete reservation still occupying slots");
+  });
+
+  it("omits the card entirely when the daemon reports no reading", async () => {
+    const fixtures = populatedDaemonFixtures();
+    delete fixtures.instance.recoveryInventory;
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    await screen.findByRole("region", { name: "Active runs" });
+    expect(screen.queryByText("Recovery inventory")).not.toBeInTheDocument();
+  });
+});
+
 describe("overview partial run-phase failures (#3658)", () => {
   it("warns that the run groups are incomplete when one phase query fails", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());

@@ -978,7 +978,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		outputKey := t.InputsFrom[inputKey]
 		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualifiedInputs)
 		if !ok {
-			return apiv1.ResultEnvelope{}, inputsFromError(t.Name, inputKey, outputKey, completed, qualifiedInputs)
+			return apiv1.ResultEnvelope{}, inputsFromError(t.Name, inputKey, outputKey, upstreamResult, completed, qualifiedInputs)
 		}
 		env.Inputs[inputKey] = v
 	}

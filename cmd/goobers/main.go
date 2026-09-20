@@ -87,7 +87,8 @@ func enforceAppliedStageConfig() error {
 		return nil
 	}
 	root := os.Getenv(executor.InstanceRootEnvVar)
-	current, err := configDirectoryDigest(instance.NewLayout(root).ConfigDir())
+	gaggle := strings.TrimSpace(os.Getenv(executor.GaggleEnvVar))
+	current, err := configDirectoryDigestForGaggle(instance.NewLayout(root).ConfigDir(), gaggle)
 	if err != nil {
 		return fmt.Errorf("read deterministic-stage config generation: %w", err)
 	}

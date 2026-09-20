@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/testgit"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 func TestValidateCheckedInTreesRunsEveryTreeWithoutPollutingRepository(t *testing.T) {
@@ -163,6 +164,39 @@ func TestValidateTreesRejectsWarningDrift(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "warnings changed") {
 		t.Fatalf("warning drift was not reported: %q", &stderr)
+	}
+}
+
+func TestValidateTreesKeepsSafetyAdvisoriesNonfatal(t *testing.T) {
+	const allowed = "WARNING Workflow/docs-updater: expected warning"
+	for _, code := range append(workflowsafety.Codes(), "SAF999", "OTHER001") {
+		t.Run(code, func(t *testing.T) {
+			t.Setenv("GO_WANT_CONFIGVALIDATE_HELPER", "1")
+			warning := "WARNING " + code + " Workflow/example: actionable advisory"
+			t.Setenv("GO_CONFIGVALIDATE_WARNING", allowed+"\n"+warning)
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "config-under-test"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			initGitRepository(t, root)
+			var stdout, stderr bytes.Buffer
+			exit := validateTrees(root, []checkedInTree{{
+				path: "config-under-test", sourceTree: true, strict: true,
+				allowedWarnings: []string{allowed},
+			}}, validatorCommand{path: os.Args[0],
+				prefixArgs: []string{"-test.run=TestValidatorHelperProcess", "--"},
+			}, &stdout, &stderr)
+			want := 0
+			if code == "SAF999" || code == "OTHER001" {
+				want = 1
+			}
+			if exit != want {
+				t.Fatalf("exit=%d, want %d; stdout=%s stderr=%s", exit, want, &stdout, &stderr)
+			}
+			if !strings.Contains(stdout.String(), warning) {
+				t.Fatalf("advisory was hidden from output: %s", &stdout)
+			}
+		})
 	}
 }
 

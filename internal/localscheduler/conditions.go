@@ -38,6 +38,12 @@ const (
 	// object blocked the start. This refusal is permanent until config
 	// changes, so the scheduler must not treat it as transient.
 	ReasonDisabled = "conditions: disabled"
+	// ReasonHarnessUnavailable prefixes the refusal of a workflow whose
+	// required agent harness failed the daemon's startup preflight. The
+	// refusal is scoped to that workflow: unrelated workflows keep serving,
+	// and the actionable preflight diagnostic is appended to this stable
+	// prefix in both explicit-trigger errors and tick.skipped events (#5163).
+	ReasonHarnessUnavailable = "conditions: harness-unavailable"
 	// ReasonPlacementUnsatisfiable prefixes the refusal of a workflow the
 	// boot-time constraint solve marked unplaceable on the declared runners:
 	// inventory (dsl-3.0.md §5 checkpoint 3, #2860: the workflow is refused

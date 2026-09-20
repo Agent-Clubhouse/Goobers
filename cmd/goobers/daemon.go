@@ -734,9 +734,7 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	// Built once and threaded into both admission (#4292 — model discovery at
-	// config-load time previously saw no resolver at all) and the preflight
-	// sign-in probe below, so both consult the exact same credential source.
+	// Admission and the sign-in preflight share this credential source (#4292).
 	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		return nil, err
@@ -751,7 +749,7 @@ func buildSchedulerDefinitions(
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, modelCredential)
+	harnessInfo, harnessRefusals, err := preflightSchedulerHarnesses(cfg, set, goobers, stores)
 	if err != nil {
 		return nil, err
 	}
@@ -1026,6 +1024,7 @@ func buildSchedulerDefinitions(
 			// Engine-selected entries enforce capabilities per pinned stage.
 			RequiredCapabilities: selections[identity].schedulerSelfCapabilities(requiredCaps),
 			DisabledReason:       resolveDisabledReason(gagglesByName[wf.Spec.Gaggle], wf),
+			HarnessRefusal:       harnessRefusals[identity], // Broken harnesses refuse only their dependent workflows (#5163).
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
 			// above found this workflow unplaceable on the declared inventory
 			// AND the entry is runner-driven — an engine-selected entry's
@@ -1280,7 +1279,7 @@ func buildRuntimeRunner(
 	selfIdentity string,
 	requireLabelsDefault string,
 ) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
-	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir())
+	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir(), l.Gaggle())
 	if err != nil {
 		return nil, nil, nil, err
 	}

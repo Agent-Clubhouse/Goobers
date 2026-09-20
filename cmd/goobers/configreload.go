@@ -20,6 +20,7 @@ import (
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
@@ -106,6 +107,8 @@ type configReloader struct {
 	// do," which poll's own plain error return cannot (reject reports success
 	// once the rejection is durably journaled).
 	lastRejectionMessage string
+	rejectionReason      string
+	candidateWarnings    []validate.CodedWarning
 	// Kept separately from the per-apply response message, which pollOnce
 	// clears even when unchanged rejected contents remain on disk.
 	rejectedDigest  string
@@ -136,10 +139,26 @@ func (r *configReloader) Run(ctx context.Context) error {
 // success/failure, so an on-demand caller (goobers apply, #459) can
 // distinguish "nothing changed," "applied," and "rejected: <message>."
 func (r *configReloader) pollOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error) {
+	return r.pollOnceMode(now, false)
+}
+
+// pollSourceOnce forces validation even when the candidate digest equals the
+// last rejected source digest. A rejected source tree is restored on disk, so
+// a later explicit `goobers apply` can install the same revision again; without
+// this reset poll would mistake that candidate for an already-observed no-op
+// and leave its unapplied bytes live (#5164).
+func (r *configReloader) pollSourceOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error) {
+	return r.pollOnceMode(now, true)
+}
+
+func (r *configReloader) pollOnceMode(now time.Time, forceSourceValidation bool) (applied bool, oldDigest, newDigest, rejected string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	oldDigest = r.appliedDigest
 	r.lastRejectionMessage = ""
+	if forceSourceValidation {
+		r.observedDigest = ""
+	}
 	if pollErr := r.poll(now); pollErr != nil {
 		return false, oldDigest, oldDigest, "", pollErr
 	}
@@ -147,6 +166,18 @@ func (r *configReloader) pollOnce(now time.Time) (applied bool, oldDigest, newDi
 		return true, oldDigest, r.appliedDigest, "", nil
 	}
 	return false, oldDigest, oldDigest, r.lastRejectionMessage, nil
+}
+
+// refreshRestoredSource republishes live status and retries the rendered
+// config mirror after a rejected source candidate has been rolled back. It
+// deliberately preserves observedDigest/rejectedDigest: status continues to
+// name the rejected generation even though stages once again see the applied
+// tree on disk.
+func (r *configReloader) refreshRestoredSource(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshConfigMirror(context.Background())
+	r.publishReloadStatus(now)
 }
 
 // workflowSource returns the config-relative source file the currently
@@ -299,6 +330,13 @@ func (r *configReloader) poll(now time.Time) error {
 	}
 	r.appliedDigest = digest
 	r.digests.Set(digest)
+	r.rejectionReason = ""
+	r.candidateWarnings = nil
+	// Advisory persistence cannot turn a successfully applied configuration
+	// into a reload failure. poll's generation check deduplicates this work.
+	if err := journalValidationWarnings(r.setup.InstanceLog, definitions.Validation.Warnings()); err != nil {
+		log.Printf("config reload: record advisory warnings: %v", err)
+	}
 	return nil
 }
 
@@ -321,15 +359,22 @@ func (r *configReloader) reloadStatus(now time.Time) readservice.DefinitionReloa
 	case !r.watching:
 		state = "not-watching"
 	}
-	return readservice.DefinitionReloadStatus{
+	status := readservice.DefinitionReloadStatus{
 		AppliedDigest: r.appliedDigest, ObservedDigest: r.observedDigest,
 		ObservedAt: now.UTC(), Watching: r.watching, State: state,
 	}
+	if state == "rejected" || state == "unreadable" {
+		status.RejectionReason = r.rejectionReason
+		status.CandidateWarnings = r.candidateWarnings
+	}
+	return status
 }
 
 func (r *configReloader) reject(newDigest string, reloadErr error) error {
 	message := configReloadErrorMessage(reloadErr)
 	r.lastRejectionMessage = message
+	r.rejectionReason = message
+	r.candidateWarnings = validationReportFromError(reloadErr).Warnings()
 	r.rejectedDigest = newDigest
 	event := journal.Event{
 		Type: journal.EventConfigReloadRejected,
@@ -341,6 +386,9 @@ func (r *configReloader) reject(newDigest string, reloadErr error) error {
 	}
 	if newDigest != "" {
 		event.Runner["newDigest"] = newDigest
+	}
+	if len(r.candidateWarnings) > 0 {
+		event.Runner["candidateWarnings"] = r.candidateWarnings
 	}
 	// The instance journal is the durable provenance contract. If it cannot
 	// record the rejection, propagate the error so the daemon fails closed.
@@ -368,8 +416,33 @@ func configReloadErrorMessage(err error) string {
 // goober instructions and skill bodies, and every file in a goober assets
 // directory; unrelated config-tree churn remains excluded.
 func configDirectoryDigest(root string) (string, error) {
+	return configDirectoryDigestScoped(root, "")
+}
+
+// configDirectoryDigestForGaggle fingerprints the config surface visible to
+// one gaggle. Sibling gaggle trees are independent hot-reload units and must
+// not invalidate deterministic stages already running under this generation.
+func configDirectoryDigestForGaggle(root, gaggle string) (string, error) {
+	if strings.TrimSpace(gaggle) == "" {
+		return configDirectoryDigest(root)
+	}
+	return configDirectoryDigestScoped(root, gaggle)
+}
+
+func configDirectoryDigestScoped(root, gaggle string) (string, error) {
 	hash := sha256.New()
 	contentPaths := make(map[string]struct{})
+	includePath := func(path string) (bool, error) {
+		if gaggle == "" {
+			return true, nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return false, err
+		}
+		parts := strings.Split(filepath.Clean(relative), string(filepath.Separator))
+		return len(parts) < 2 || parts[0] != "gaggles" || parts[1] == gaggle, nil
+	}
 	writeEntry := func(path string, mode fs.FileMode, content []byte) error {
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
@@ -391,6 +464,16 @@ func configDirectoryDigest(root string) (string, error) {
 		return filepath.WalkDir(tree, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
+			}
+			included, err := includePath(path)
+			if err != nil {
+				return err
+			}
+			if !included {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 			name := entry.Name()
 			// Handle asset loading/hashing first

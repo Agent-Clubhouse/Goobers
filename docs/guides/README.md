@@ -29,6 +29,7 @@ cannot leave it outside the documented navigation surfaces.
 - [EvalSuite PR review checklist](evals-review-checklist.md)
 - [External telemetry connectors](external-telemetry-connectors.md)
 - [Flake management](flake-management.md)
+- [Tracked gaggle templates](gaggle-templates.md)
 - [Guide: GitHub token scopes for V0 (local runner)](github-token-scopes.md)
 - [GitHub webhook triggers](github-webhooks.md)
 - [The goobers-io MCP: run identity and artifact I/O for agentic stages](goobers-io-mcp.md)
@@ -73,4 +74,5 @@ cannot leave it outside the documented navigation surfaces.
 - [Windows large-repo runbook](windows-large-repo-runbook.md)
 - [Windows git/worktree audit & policy (#643)](windows-worktree-notes.md)
 - [Workflow CD credential-isolation pen test](workflow-cd-isolation-pen-test.md)
+- [Advisory workflow safety lint](workflow-safety.md)
 - [Worktree and local-branch retention](worktree-retention.md)

@@ -353,6 +353,14 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	// anticipate — a missing tool is a system defect, so it must not escalate
 	// and needs-human-park every item this run claimed.
 	reclassifyMissingCapabilityBlock(&result)
+	// #5262: last, because it is the narrowest — an operational failure of the
+	// environment (a dependency restore that did not complete) reported as
+	// blocked would otherwise terminate the run at the #544 escalated terminal
+	// before the remediation gate a workflow declared after this stage could
+	// choose repair, infrastructure retry or escalation. Ordered after the
+	// capability backstop so a missing-tool code keeps its own, more specific
+	// classification rather than being absorbed into the operational one.
+	reclassifyOperationalFailureBlock(&result)
 	// The transcript pointer is runner-authored. Never trust a harness to
 	// self-report a path or digest for the diagnostic bytes the runner captured.
 	result.Transcript = transcript

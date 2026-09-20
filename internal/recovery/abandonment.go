@@ -26,7 +26,7 @@ func AbandonedEvent(record Record) (journal.Event, error) {
 // change, including retention renewal, requires a new abandonment decision.
 // Callers must independently establish terminality and hold lifecycle locks.
 func ExplicitlyAbandoned(events []journal.Event, record Record) (bool, error) {
-	if err := record.Validate(); err != nil {
+	if err := record.validateRestorable(); err != nil {
 		return false, err
 	}
 	for _, event := range events {

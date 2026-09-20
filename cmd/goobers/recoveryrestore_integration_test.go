@@ -28,7 +28,7 @@ import (
 
 func recoveryCLIGit(t *testing.T, repository string, args ...string) string {
 	t.Helper()
-	cmd := testgit.Command(append([]string{"-C", repository}, args...)...)
+	cmd := testgit.Command(append([]string{"-c", "safe.bareRepository=all", "-C", repository}, args...)...)
 	cmd.Env = append(cmd.Env, "GIT_AUTHOR_NAME=Recovery Test", "GIT_AUTHOR_EMAIL=recovery@example.invalid", "GIT_COMMITTER_NAME=Recovery Test", "GIT_COMMITTER_EMAIL=recovery@example.invalid")
 	data, err := cmd.CombinedOutput()
 	if err != nil {

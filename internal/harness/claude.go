@@ -182,6 +182,9 @@ type ClaudeAdapter struct {
 	EnvUnset                       []string
 	InstanceRoot                   string
 	SelfBin                        string
+	// ModelCredential supplies the configured agent:model grant to the auth
+	// probe, which has no RunRequest from which to resolve stage credentials.
+	ModelCredential func(context.Context) (string, error)
 	// EphemeralTmp binds `tmp:ephemeral` on the self runner for this
 	// adapter's subprocess — see CopilotAdapter.EphemeralTmp for the full
 	// contract; the two adapters share it so a self entry declaring the
@@ -280,6 +283,10 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 
 	authCommand := append(append([]string(nil), baseCommand...), "auth", "status")
 	authProbe := fmt.Sprintf("harness: claude-code: %q auth status", bin)
+	env, err = c.preflightCredentialEnv(ctx, env)
+	if err != nil {
+		return PreflightInfo{}, err
+	}
 	res, err = c.runner().Run(ctx, ProcessRequest{
 		Command:            authCommand,
 		Env:                env,

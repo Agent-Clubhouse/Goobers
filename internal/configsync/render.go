@@ -45,6 +45,14 @@ func (rs *RenderSet) WriteManifests(outDir string) ([]string, error) {
 }
 
 func (rs *RenderSet) writeManifests(outDir string, hooks publicationHooks) ([]string, error) {
+	// Refuse before rendering or touching the output tree when the host cannot
+	// provide the atomic path switch this publication protocol promises. In
+	// particular, a sequence of ordinary renames on Windows can expose an
+	// absent or partial output directory to ArgoCD and cannot be made crash-safe.
+	if err := validateManifestPublicationSupport(); err != nil {
+		return nil, err
+	}
+
 	manifests, err := rs.renderManifests()
 	if err != nil {
 		return nil, err

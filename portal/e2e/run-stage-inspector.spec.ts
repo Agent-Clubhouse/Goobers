@@ -89,6 +89,7 @@ async function openInspector(page: Page): Promise<{
   });
 
   await page.goto(`/#/run/${runId}`);
+  await page.getByRole("tab", { name: "Diagnostics" }).click();
   await expect(page.getByRole("button", { name: "View content" })).toBeVisible();
   await eventsConnected;
   return {

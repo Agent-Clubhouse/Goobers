@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RunTiming } from "../components/RunTiming";
-import type { DaemonClient, MaintenanceStatus, RunSummary } from "../api/types";
+import type {
+  DaemonClient,
+  MaintenanceStatus,
+  RecoveryInventoryStatus,
+  RunSummary,
+} from "../api/types";
 import { useAttentionCollapsed } from "../attentionCollapse";
 import { useAttentionDismissals } from "../attentionDismissals";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
@@ -12,7 +17,6 @@ import {
   incompleteRunPhasesMessage,
   type OperationalOverview,
   useOperationalOverview,
-  workflowDisplayName,
 } from "../operationalData";
 import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
@@ -413,7 +417,7 @@ function Overview({
                               <span>{attentionDiagnosis(run, failureReasons)}</span>
                             </a>
                             <ScopePivot
-                              label={workflowDisplayName(overview, run)}
+                              label={workflowIdentity(run)}
                               scope={{ gaggle: run.gaggle, workflow: run.workflow }}
                             />
                             <time dateTime={run.lastActivityAt}>
@@ -451,7 +455,7 @@ function Overview({
                   <div className="attention-row attention-row-dismissed" key={run.id}>
                     <span className="attention-copy">
                       <strong>{runLabel(run)}</strong>
-                      <span>{workflowDisplayName(overview, run)}</span>
+                      <span>{workflowIdentity(run)}</span>
                     </span>
                     <button
                       aria-label={`Undo dismiss for run ${run.id}`}
@@ -537,6 +541,7 @@ function InstanceSummaryPanel({
   const tickAge = overview.health.freshness.lastTickAgeMillis;
   const lastTickAt = overview.health.freshness.lastSchedulerTickAt;
   const maintenance = overview.instance.maintenance;
+  const recoveryInventory = overview.instance.recoveryInventory;
   const telemetryRetention = overview.instance.telemetryRetention;
   const daemonTitle = standalone
     ? overview.health.ready
@@ -618,6 +623,8 @@ function InstanceSummaryPanel({
         </div>
       </div>
 
+      {recoveryInventory && <RecoveryInventorySummary inventory={recoveryInventory} />}
+
       {maintenance && <MaintenanceSummary maintenance={maintenance} />}
 
       {telemetryRetention && (
@@ -660,6 +667,132 @@ function InstanceSummaryPanel({
     </section>
   );
 }
+
+/**
+ * Recovery-snapshot inventory occupancy (#5343).
+ *
+ * This is on Overview rather than on a recovery page because of what a full
+ * inventory actually does: worktree cleanup cannot complete without a durable
+ * recovery handoff, an uncleaned worktree cannot be reused, and stages then
+ * fail at `create worktree` - so the runs that break are unrelated to whatever
+ * filled the inventory, and the only symptom an operator sees today is a
+ * scattering of individual run failures. It is an instance-wide condition and
+ * belongs next to the instance's other capacity signals.
+ */
+function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryStatus }) {
+  const { state } = inventory;
+  const critical = state === "exhausted";
+  const elevated = critical || state === "warning";
+  const percent =
+    inventory.limit > 0 ? Math.round((inventory.used / inventory.limit) * 100) : undefined;
+
+  // Only the elevated states are a live region: an ordinary capacity reading
+  // announcing itself on every poll is noise, and it would also make this row
+  // indistinguishable from the daemon's own freshness status.
+  return (
+    <div
+      aria-label={`Recovery inventory ${state}`}
+      className={`instance-summary-row${critical ? " instance-summary-row-error" : ""}${
+        state === "warning" ? " instance-summary-row-warning" : ""
+      }`}
+      role={elevated ? "alert" : "group"}
+    >
+      <div className="instance-summary-kind">
+        <span
+          aria-hidden="true"
+          className={
+            elevated
+              ? "instance-summary-icon instance-summary-icon-warning"
+              : "instance-summary-icon"
+          }
+        >
+          <Icon name={elevated ? "alert" : "artifact"} size={24} />
+        </span>
+        <span className="instance-summary-copy">
+          <strong>Recovery inventory</strong>
+          <span>Durable handoffs for worktree cleanup</span>
+        </span>
+      </div>
+      <div className="instance-summary-result">
+        <strong>
+          <span aria-hidden="true" className="result-check">
+            <Icon name={elevated ? "alert" : "check"} size={16} />
+          </span>
+          {RECOVERY_INVENTORY_HEADLINES[state]}
+          {state !== "unavailable" && (
+            <span>
+              {" "}
+              &middot; {inventory.used}/{inventory.limit} slots
+              {percent === undefined ? "" : ` (${percent}%)`}
+            </span>
+          )}
+        </strong>
+        <span>{recoveryInventoryExplanation(inventory)}</span>
+        {inventory.overflow > 0 && (
+          <span>
+            {inventory.overflow} {inventory.overflow === 1 ? "snapshot" : "snapshots"} held as
+            mirror refs without a bundle until capacity frees
+          </span>
+        )}
+        {inventory.unreadable > 0 && (
+          <span>
+            {inventory.unreadable} incomplete{" "}
+            {inventory.unreadable === 1 ? "reservation" : "reservations"} still occupying slots
+          </span>
+        )}
+        {inventory.earliestRetainUntil && (
+          <span>Earliest retention deadline {formatTimestamp(inventory.earliestRetainUntil)}</span>
+        )}
+        {inventory.error && <span>{inventory.error}</span>}
+        <a
+          className="instance-warning-link"
+          href={RECOVERY_INVENTORY_DOCS}
+          rel="noreferrer"
+          target="_blank"
+        >
+          Recovery capacity and operator actions
+        </a>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The consequence, stated in the operator's terms, because the failure they
+ * will otherwise see names neither recovery nor capacity.
+ */
+function recoveryInventoryExplanation(inventory: RecoveryInventoryStatus): string {
+  switch (inventory.state) {
+    case "exhausted":
+      return "Every configured slot is in use. Durable handoffs, worktree cleanup and unrelated runs fail until capacity is freed.";
+    case "warning":
+      return `Occupancy has passed the ${inventory.highWaterPercent}% high-water mark. When it fills, durable handoffs, worktree cleanup and unrelated runs fail, including runs that did not fill it.`;
+    case "unavailable":
+      return "Occupancy could not be measured, so it cannot be reported as healthy.";
+    default:
+      return "Durable handoffs, worktree cleanup and unrelated runs fail when it is full.";
+  }
+}
+
+/**
+ * Capacity-specific wording, deliberately not reusing the daemon row's
+ * "Healthy"/"Unavailable": two rows in the same card reading identically tell
+ * an operator less than two rows that each say what they are about.
+ */
+const RECOVERY_INVENTORY_HEADLINES: Record<RecoveryInventoryStatus["state"], string> = {
+  exhausted: "Full",
+  healthy: "Within limits",
+  unavailable: "Not measured",
+  warning: "Filling up",
+};
+
+/**
+ * Operator actions live in the guide rather than in the portal: reclaiming a
+ * slot means abandoning a retained implementation or changing retention
+ * policy, neither of which is safe to offer as a one-click control.
+ */
+const RECOVERY_INVENTORY_DOCS =
+  "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/retained-implementation.md#inventory-capacity";
 
 function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus }) {
   const completedAt = maintenance.lastCompletedAt;
@@ -764,10 +897,22 @@ function RunSection({
             >
               <span className="row-primary">
                 <span className="row-title" title={runLabel(run)}>{runLabel(run)}</span>
-                <span className="row-subtitle" title={runContextSubtitle(overview, run, active)}>
+                <span className="row-subtitle" title={runContextSubtitle(run, active)}>
                   {active && run.operator
                     ? operatorSubtitle(run)
-                    : runContextSubtitle(overview, run, active)}
+                    : runContextSubtitle(run, active)}
+                  {!active && run.finishedAt && (
+                    <>
+                      {" · "}
+                      <time
+                        aria-label={`Completed ${formatPreciseTimestamp(run.finishedAt)}`}
+                        dateTime={run.finishedAt}
+                        title={`Completed ${formatPreciseTimestamp(run.finishedAt)}`}
+                      >
+                        Completed {formatTimestamp(run.finishedAt)}
+                      </time>
+                    </>
+                  )}
                 </span>
                 {active && operatorContext(run) ? (
                   <span className="row-subtitle">{operatorContext(run)}</span>
@@ -776,7 +921,7 @@ function RunSection({
               {active ? (
                 <>
                   <span className="row-workflow">
-                    <span>{run.gaggle} / {workflowDisplayName(overview, run)}</span>
+                    <span>{workflowIdentity(run)}</span>
                     <a
                       className="workflow-detail-link"
                       href={routeHash({
@@ -797,7 +942,7 @@ function RunSection({
                 <>
                   <StatusBadge status={run.phase} />
                   <span className="row-workflow">
-                    <span>{run.gaggle} / {workflowDisplayName(overview, run)}</span>
+                    <span>{workflowIdentity(run)}</span>
                     <a
                       className="workflow-detail-link"
                       href={routeHash({
@@ -828,14 +973,13 @@ function runLabel(run: RunSummary): string {
 }
 
 function runContextSubtitle(
-  overview: OperationalOverview,
   run: RunSummary,
   active: boolean,
 ): string {
   if (active && run.operator) {
     return operatorSubtitle(run);
   }
-  const context = workflowDisplayName(overview, run);
+  const context = workflowIdentity(run);
   const ref =
     run.trigger.ref && run.trigger.ref !== run.id && run.trigger.ref !== run.workflow
       ? ` · ${run.trigger.kind} ${run.trigger.ref}`
@@ -875,16 +1019,19 @@ function groupAttentionRuns(
       domId: key.replace(/[^a-zA-Z0-9_-]/g, "-"),
       label: issue
         ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
-        : `${workflowDisplayName(overview, run)} · ${attentionCategoryLabel(run, failureReasons)}`,
-      context: issue
-        ? workflowDisplayName(overview, run)
-        : `${run.gaggle} / ${run.workflow}`,
+        : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons)}`,
+      context: workflowIdentity(run),
       diagnosis: attentionDiagnosis(run, failureReasons),
       latest: run,
       runs: [run],
     });
   }
+
   return [...grouped.values()];
+}
+
+function workflowIdentity(run: Pick<RunSummary, "gaggle" | "workflow">): string {
+  return `${run.gaggle} / ${run.workflow}`;
 }
 
 function attentionCategory(run: RunSummary, failureReasons: FailureReasons): string {
@@ -1015,5 +1162,12 @@ function formatTimestamp(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function formatPreciseTimestamp(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "full",
+    timeStyle: "long",
   }).format(new Date(value));
 }

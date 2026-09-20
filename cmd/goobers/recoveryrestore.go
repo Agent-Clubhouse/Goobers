@@ -141,8 +141,17 @@ func restoreDownloadedRecovery(ctx context.Context, key, issue string, consume f
 
 func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, recordPath, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
 	record, err := recovery.ReadRetainedRecord(recordPath)
+	// An overflow record carries the same identity without an archive
+	// binding, so it is read by its own reader and restored from the mirror
+	// ref instead of from a bundle beside it (#5370).
+	overflow := false
 	if err != nil {
-		return "", err
+		var overflowErr error
+		record, overflowErr = recovery.ReadOverflowRecord(recordPath)
+		if overflowErr != nil {
+			return "", err
+		}
+		overflow = true
 	}
 	if !time.Now().Before(record.RetainUntil) {
 		return "", fmt.Errorf("recovery retention deadline has expired")
@@ -174,8 +183,7 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 		return "", err
 	}
 	const maxRecoveryBytes = 512 << 20
-	archive := filepath.Join(filepath.Dir(recordPath), recovery.BundleFileName)
-	if err := recovery.ImportSnapshotBundle(ctx, destination, archive, record, maxRecoveryBytes); err != nil {
+	if err := importRecoveryObjects(ctx, layout, cfg, destination, recordPath, record, overflow, maxRecoveryBytes); err != nil {
 		return "", err
 	}
 	return recovery.RestoreSnapshot(ctx, destination, record, base, branch, maxRecoveryBytes)

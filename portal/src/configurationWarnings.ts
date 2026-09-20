@@ -25,6 +25,9 @@ export interface ConfigurationWarningClient {
 type WarningRefresh = () => Promise<boolean>;
 
 export function configurationWarningKey(warning: ValidationWarning): string {
+  if (warning.safety) {
+    return warning.safety.id;
+  }
   return JSON.stringify([
     warning.scope,
     warning.code,

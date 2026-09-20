@@ -128,6 +128,32 @@ implementation attempt. It still requires the maintainer-applied approval label,
 an open issue, and the same claim and conflict checks. A manual target must never
 turn an arbitrary unapproved issue into decomposition work.
 
+### Repository boundary
+
+The shipped publisher is deliberately repository-local. The selected parent,
+every child it creates, native parent/child relationships, marker comments, and
+declared dependency links all use the publisher's configured repository. A
+`ChildPlan` has no repository or target-gaggle selector, so a plan cannot route
+one child to another repository or workforce.
+
+Each `dependsOn` entry is either a sibling child `key` or an existing work-item
+ID understood by the configured provider. Existing IDs are looked up and linked
+through that same repository; repository-qualified IDs are not a supported plan
+syntax. This boundary is specific to decomposition publication. Broader provider
+read/reference surfaces and the blocked-item ledger do not make a foreign issue
+a valid publication or dependency target here.
+
+Multiple gaggles in one instance do not coordinate publication across their
+repositories. Likewise, `additionalRepos` supplies declared reference content to
+a run; it is read-only and neither selects a publisher target nor proves that a
+credential has been materially down-scoped. Coordinated delivery therefore uses
+separate repo-owning implementation workflows today. Any workflow that governs
+dependencies across those repositories is additional product work, not behavior
+provided by this decomposition plan.
+
+See [Scale out with more gaggles and repositories](../guides/arbitrary-repo-onboarding.md#10-scale-out-with-more-gaggles-and-repositories)
+for the supported one-gaggle-per-repository layout.
+
 ### 3.2 Stage contracts
 
 | Stage | Kind | Responsibility | Side effects |

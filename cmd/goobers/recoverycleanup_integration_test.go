@@ -229,17 +229,19 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 		if terminal {
 			name = "standalone-terminal"
 		}
-		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false, false, false, "main") })
+		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false, false, false, false, "main") })
 	}
-	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true, false, false, "main") })
-	t.Run("abandoned-preparation-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, false, "main") })
-	t.Run("abandoned-preparation-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, true, false, "main") })
-	t.Run("abandoned-preparation-missing-record", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, true, "main") })
-	t.Run("master-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, "master") })
-	t.Run("slash-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, "release/2026.09") })
+	t.Run("committed-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, true, "main") })
+	t.Run("committed-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, false, false, true, "main") })
+	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true, false, false, false, "main") })
+	t.Run("abandoned-preparation-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, false, false, "main") })
+	t.Run("abandoned-preparation-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, true, false, false, "main") })
+	t.Run("abandoned-preparation-missing-record", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, true, false, "main") })
+	t.Run("master-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, false, "master") })
+	t.Run("slash-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, false, "release/2026.09") })
 }
 
-func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, abandoned, interruptRecord bool, baseBranch string) {
+func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, abandoned, interruptRecord, commitCurrent bool, baseBranch string) {
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -273,14 +275,21 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	}
 	option(manager)
 	option(manager) // A configuration reload must replace, not duplicate.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	withOpContext := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 2*time.Minute)
+	}
+	ctx, cancel := withOpContext()
 	workspace, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: baseBranch, Branch: "goobers/implementation/" + runID})
+	cancel()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(workspace.Path, "implementation.txt"), []byte("recover me"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if commitCurrent {
+		recoveryCLIGit(t, workspace.Path, "add", "implementation.txt")
+		recoveryCLIGit(t, workspace.Path, "commit", "-m", "Implement feature")
 	}
 	if abandoned {
 		prepared, err := recovery.PreparedRestoreBranch(runID)
@@ -313,10 +322,15 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 			InventoryRoot: root, CleanupRoots: []string{workcopies},
 			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(),
 		}
+		ctx, cancel = withOpContext()
 		if err := recovery.RetainAbandonedPreparation(ctx, request, recoveryCleanupTestJournal{err: interrupted}); !errors.Is(err, interrupted) {
+			cancel()
 			t.Fatalf("seed interrupted recovery publication: %v", err)
 		}
+		cancel()
+		ctx, cancel = withOpContext()
 		entries, err := recovery.ReadInventory(ctx, root, recoveryCfg.MaxSnapshotsEffective())
+		cancel()
 		if err != nil || len(entries) != 1 {
 			t.Fatalf("inspect interrupted recovery publication: %+v %v", entries, err)
 		}
@@ -326,9 +340,12 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	}
 	if terminal {
 		if removeBeforeTerminal {
+			ctx, cancel = withOpContext()
 			if err := workspace.Remove(ctx, worktree.RemoveOptions{}); err != nil {
+				cancel()
 				t.Fatal(err)
 			}
+			cancel()
 			if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
 				t.Fatalf("fixture must renew without any worktree: %v", err)
 			}
@@ -347,7 +364,9 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		}
 		err = finalizeTerminalRunWithClaimRelease(layout, nil, standalone, runID, func(instance.Layout, *journal.InstanceLog, string) error { return nil })
 	} else {
+		ctx, cancel = withOpContext()
 		err = workspace.Remove(ctx, worktree.RemoveOptions{})
+		cancel()
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -356,17 +375,28 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		t.Fatalf("acknowledged cleanup did not remove worktree: %v", err)
 	}
 	if interruptRecord {
+		ctx, cancel = withOpContext()
 		retry, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: baseBranch, Branch: "goobers/implementation/" + runID})
+		cancel()
 		if err != nil {
 			t.Fatalf("repaired cleanup left a self-colliding worktree branch: %v", err)
 		}
+		ctx, cancel = withOpContext()
 		if err := retry.Remove(ctx, worktree.RemoveOptions{}); err != nil {
+			cancel()
 			t.Fatalf("remove replacement worktree: %v", err)
 		}
+		cancel()
 	}
 	entries, err := os.ReadDir(filepath.Join(layout.Root, "recovery"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if commitCurrent && !terminal {
+		if len(entries) != 0 {
+			t.Fatalf("committed intermediate stage created %d recovery entries, want none", len(entries))
+		}
+		return
 	}
 	var retained recovery.Record
 	for _, entry := range entries {
@@ -401,6 +431,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		t.Fatalf("cleanup requires %d recovery observations, got %d", wantObservations, observations)
 	}
 	if abandoned {
+		ctx, cancel = withOpContext()
 		found, err := manager.WithExistingMirror(ctx, source, func(repository string) error {
 			prepared, err := recovery.PreparedRestoreBranch(runID)
 			if err != nil {
@@ -414,6 +445,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 			}
 			return nil
 		})
+		cancel()
 		if err != nil || !found {
 			t.Fatalf("verify retained preparation: %t %v", found, err)
 		}

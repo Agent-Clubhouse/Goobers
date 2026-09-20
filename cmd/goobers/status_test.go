@@ -1431,6 +1431,14 @@ func TestStatusWorkflowFailureRateCountsWorktreeRemoveFailedAsFailure(t *testing
 	}
 }
 
+func TestStatusCompletedRecoveryObservationWarningIsNotRemovalFailure(t *testing.T) {
+	run := completedRunBlockedByWorktreeRemoveFailed("observed", "site-build", "goobers-site", time.Now().UTC())
+	run.Operator.LatestError = &journal.ErrorDetail{Code: "recovery_observation_failed", Message: "inventory temporarily unavailable after cleanup"}
+	if statusRunIsRateFailure(run) {
+		t.Fatal("completed workflow with post-cleanup observation warning was misdiagnosed as a removal failure")
+	}
+}
+
 // TestStatusWorkflowFailureRateCoexistsWithFailureStreak proves both #4263's
 // consecutive-streak alarm and #4880's rate alarm can fire together as
 // independent signals — one does not replace or suppress the other — and

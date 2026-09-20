@@ -213,6 +213,18 @@ export const goWireFixtures = {
       "criticalFloorBytes": 5368709120,
       "measuredAt": "2026-07-18T12:32:56Z"
     },
+    "recoveryInventory": {
+      "state": "warning",
+      "used": 104,
+      "limit": 128,
+      "unreadable": 2,
+      "overflow": 0,
+      "highWaterPercent": 80,
+      "earliestRetainUntil": "2026-07-18T12:36:56Z",
+      "inventoryRoot": "/instances/fixture/recovery",
+      "policySource": "instance-config",
+      "observedAt": "2026-07-18T12:32:56Z"
+    },
     "memoryGateEnabled": false,
     "fsyncDisabled": false,
     "fleetEnrolled": false
@@ -247,6 +259,17 @@ export const goWireFixtures = {
   "gaggles": {
     "items": [
       {
+        "template": {
+          "state": "update-available",
+          "installed": "1111111111111111111111111111111111111111",
+          "candidate": "2222222222222222222222222222222222222222",
+          "checkedAt": "2026-07-18T12:34:56Z",
+          "lastSuccess": "2026-07-18T12:34:56Z",
+          "changes": [
+            "workflows/implementation.yaml"
+          ],
+          "pendingBackprop": true
+        },
         "name": "core",
         "displayName": "Core",
         "enabled": false,

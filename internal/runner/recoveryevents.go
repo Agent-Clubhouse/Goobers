@@ -2,12 +2,34 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 )
+
+const recoveryObservationFailureCode = "recovery_observation_failed"
+const recoveryObservationBatchSize = 128 // journal.AppendBatchIfAbsent's generic transaction ceiling
+
+// recoveryObservationError distinguishes a failure to observe already-retained
+// evidence after cleanup from a failure to perform the cleanup itself.
+type recoveryObservationError struct{ err error }
+
+func (e *recoveryObservationError) Error() string {
+	return "observe retained recovery state: " + e.err.Error()
+}
+func (e *recoveryObservationError) Unwrap() error { return e.err }
+
+func workspaceCleanupErrorDetail(err error) *journal.ErrorDetail {
+	code := "worktree_remove_failed"
+	var observationErr *recoveryObservationError
+	if errors.As(err, &observationErr) {
+		code = recoveryObservationFailureCode
+	}
+	return &journal.ErrorDetail{Code: code, Message: err.Error()}
+}
 
 type recoveryEventJournal interface {
 	AppendBatchIfAbsent(context.Context, []journal.Event, func(journal.Event) string) (int, error)
@@ -17,18 +39,24 @@ func (r *Runner) recordRecoveryAfterCleanup(ctx context.Context, log recoveryEve
 	if cleanupErr != nil {
 		return cleanupErr
 	}
-	return r.recordRecoveryEvents(context.WithoutCancel(ctx), log, runID)
+	if err := r.recordRecoveryEvents(context.WithoutCancel(ctx), log, runID); err != nil {
+		return &recoveryObservationError{err: err}
+	}
+	return nil
 }
 
 func (r *Runner) recordRecoveryEvents(ctx context.Context, log recoveryEventJournal, runID string) error {
 	if r.cfg.RecoveryEvents == nil {
 		return nil
 	}
-	events, err := r.cfg.RecoveryEvents(ctx, runID)
+	events, limit, err := r.cfg.RecoveryEvents(ctx, runID)
 	if err != nil {
 		return err
 	}
-	if len(events) > 128 {
+	if limit <= 0 {
+		return fmt.Errorf("invalid recovery observation limit")
+	}
+	if len(events) > limit {
 		return fmt.Errorf("recovery observations exceed inventory bound")
 	}
 	for _, event := range events {
@@ -41,8 +69,14 @@ func (r *Runner) recordRecoveryEvents(ctx context.Context, log recoveryEventJour
 			}
 		}
 	}
-	_, err = log.AppendBatchIfAbsent(ctx, events, recoveryObservationKey)
-	return err
+	for len(events) > 0 {
+		size := min(len(events), recoveryObservationBatchSize)
+		if _, err := log.AppendBatchIfAbsent(ctx, events[:size], recoveryObservationKey); err != nil {
+			return err
+		}
+		events = events[size:]
+	}
+	return nil
 }
 
 func recoveryObservationKey(event journal.Event) string {

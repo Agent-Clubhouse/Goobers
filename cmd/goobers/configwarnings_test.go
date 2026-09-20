@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 func withValidationIssues(t *testing.T, issues ...validate.Issue) {
@@ -38,6 +40,23 @@ func warningLines(output string) []string {
 		}
 	}
 	return warnings
+}
+
+func withoutSafetyWarnings(output string) string {
+	lines := strings.Split(output, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) > 1 && fields[0] == "WARNING" && slices.Contains(workflowsafety.Codes(), fields[1]) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+func isSafetyFinding(finding diagnosticFinding) bool {
+	return finding.Severity == "warning" && finding.Safety != nil && slices.Contains(workflowsafety.Codes(), finding.Code)
 }
 
 func TestAppendGooberHarnessWarningsMapsModelFallback(t *testing.T) {
@@ -246,6 +265,12 @@ func TestStatusJSONIncludesStableWarningShape(t *testing.T) {
 	for _, warning := range got.Warnings {
 		if warning.Code == validate.WarningPreviewFeature {
 			previewCount++
+			continue
+		}
+		if slices.Contains(workflowsafety.Codes(), string(warning.Code)) {
+			if warning.Safety == nil || warning.Safety.ID == "" {
+				t.Fatalf("status lost structured safety provenance: %+v", warning)
+			}
 			continue
 		}
 		nonPreview = append(nonPreview, warning)

@@ -626,10 +626,12 @@ func statusTextWorkflows(workflows []apiv1.Workflow, all bool, selectedWorkflow 
 
 func statusTextWarnings(warnings []validate.CodedWarning, workflows []apiv1.Workflow, hidden int, all bool, selectedWorkflow string) []validate.CodedWarning {
 	hiddenMessages := make(map[string]bool, hidden)
+	hiddenWorkflows := make(map[statusWorkflowKey]bool, hidden)
 	for _, workflow := range workflows {
 		if !statusManualOnlyWorkflow(workflow) || all || workflow.Name == selectedWorkflow {
 			continue
 		}
+		hiddenWorkflows[statusWorkflowKey{gaggle: workflow.Spec.Gaggle, workflow: workflow.Name}] = true
 		hiddenMessages[fmt.Sprintf(
 			"workflow %q has no schedule trigger; it will not fire autonomously — run it with `goobers run %s`",
 			workflow.Name,
@@ -646,6 +648,9 @@ func statusTextWarnings(warnings []validate.CodedWarning, workflows []apiv1.Work
 	}
 	for _, warning := range warnings {
 		if hiddenMessages[warning.Explanation] {
+			continue
+		}
+		if warning.Safety != nil && hiddenWorkflows[statusWorkflowKey{gaggle: warning.Safety.Gaggle, workflow: warning.Safety.Workflow}] {
 			continue
 		}
 		visible = append(visible, warning)
@@ -1933,6 +1938,7 @@ func daemonLivenessLabel(liveness daemonstate.Liveness) string {
 // its own: `goobers status` must stay a local, offline-safe read, and the
 // daemon is the one process that talks to the release source.
 func reportUpdateCheck(instanceRoot string, stdout io.Writer) {
+	reportTemplateStatus(instanceRoot, stdout)
 	result, err := selfupdate.ReadCheck(instanceRoot)
 	if err != nil {
 		// No cache means the check has not run yet (a daemon that just

@@ -20,7 +20,7 @@ import (
 func TestDispatchFailurePlacementSurvivesTemporalEncodingWithoutChangingRetry(t *testing.T) {
 	now := time.Date(2026, 9, 7, 1, 2, 3, 0, time.UTC)
 	retryAt := now.Add(17 * time.Minute)
-	report := dispatcher.Report{Runner: "actual-runner", Pod: "observed-pod", Image: "actual-image", Node: "observed-node", OS: "linux", QueuedAt: now, PodStartedAt: now.Add(time.Second)}
+	report := dispatcher.Report{Runner: "actual-runner", Build: "v9.9.9-test", Worker: "goobers-worker/v9.9.9-test@ci#42", Pod: "observed-pod", Image: "actual-image", Node: "observed-node", OS: "linux", QueuedAt: now, PodStartedAt: now.Add(time.Second)}
 	for _, retryReset := range []bool{false, true} {
 		cause := invoke.InfrastructureFailure(errors.New("pod lost"))
 		if retryReset {
