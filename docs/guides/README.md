@@ -74,4 +74,5 @@ cannot leave it outside the documented navigation surfaces.
 - [Windows large-repo runbook](windows-large-repo-runbook.md)
 - [Windows git/worktree audit & policy (#643)](windows-worktree-notes.md)
 - [Workflow CD credential-isolation pen test](workflow-cd-isolation-pen-test.md)
+- [Advisory workflow safety lint](workflow-safety.md)
 - [Worktree and local-branch retention](worktree-retention.md)
