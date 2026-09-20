@@ -369,6 +369,7 @@ type VerdictReasonCode string
 const (
 	VerdictReasonImplementationRejected VerdictReasonCode = "implementation-rejected"
 	VerdictReasonPolicyRejected         VerdictReasonCode = "policy-rejected"
+	VerdictReasonUnsalvageableDesign    VerdictReasonCode = "unsalvageable-design"
 	VerdictReasonOrdering               VerdictReasonCode = "ordering"
 	VerdictReasonNoLander               VerdictReasonCode = "no-lander"
 	VerdictReasonEmptyDiff              VerdictReasonCode = "empty-diff"

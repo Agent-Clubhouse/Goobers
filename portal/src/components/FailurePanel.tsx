@@ -1,5 +1,6 @@
 import type { RunEvent, RunPhase } from "../api/types";
 import { eventHeading, type RunFailure } from "../runDetailData";
+import { CopyCommand } from "../ui/CopyCommand";
 import { Icon } from "../ui/Icon";
 
 // FailurePanel is the unsuccessfully-terminated-run counterpart to
@@ -56,7 +57,7 @@ export function FailurePanel({
             </div>
           )}
           <div className="failure-reason">
-            <dt>Reason</dt>
+            <dt>Exit reason</dt>
             <dd>
               {reasonParts.length === 1 ? (
                 <p>{reasonParts[0]}</p>
@@ -70,6 +71,20 @@ export function FailurePanel({
             </dd>
           </div>
         </dl>
+        <details className="failure-raw-details">
+          <summary>Show raw failure details</summary>
+          <div className="failure-raw-toolbar">
+            <span>Complete error context</span>
+            <CopyCommand
+              command={failure.message}
+              compact
+              failureLabel="Could not copy the raw failure details."
+              idleLabel="Copy raw details"
+              successLabel="Raw failure details copied."
+            />
+          </div>
+          <pre>{failure.message}</pre>
+        </details>
         {failure.causalEventSeq !== undefined &&
           (causalEvent && onFocusCausalEvent ? (
             <button className="causal-event-link" onClick={onFocusCausalEvent} type="button">

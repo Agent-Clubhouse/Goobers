@@ -5478,6 +5478,58 @@ code,
   width: 20px;
 }
 
+.failure-raw-details {
+  border-top: 1px solid color-mix(in srgb, var(--danger) 25%, var(--line));
+  margin-top: 16px;
+  padding-top: 12px;
+}
+
+.failure-raw-details > summary {
+  align-items: center;
+  color: var(--danger);
+  cursor: pointer;
+  display: flex;
+  font-size: 11px;
+  font-weight: 680;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.failure-raw-details > summary::after {
+  content: "▸";
+  font-size: 14px;
+}
+
+.failure-raw-details[open] > summary::after {
+  content: "▾";
+}
+
+.failure-raw-toolbar {
+  align-items: center;
+  color: var(--muted-strong);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 10px;
+  gap: 8px;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.failure-raw-details pre {
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, var(--line));
+  border-radius: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 8px 0 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .failure-errors-link {
   align-items: center;
   color: var(--danger);
