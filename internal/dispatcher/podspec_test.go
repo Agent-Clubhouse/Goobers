@@ -330,7 +330,7 @@ func TestRenderPodStampsDurableGoCache(t *testing.T) {
 }
 
 func TestRenderFromTemplateStampsDurableGoCache(t *testing.T) {
-	pod, err := RenderFromTemplate(testConfig(), testAttempt(), linuxRunner(), testDeployment())
+	pod, err := RenderFromTemplate(testConfig(), testAttempt(), envDenyRunner(), testDeployment())
 	if err != nil {
 		t.Fatalf("RenderFromTemplate: %v", err)
 	}
@@ -350,6 +350,13 @@ func TestRenderFromTemplateStampsDurableGoCache(t *testing.T) {
 	}
 	if _, ok := env["GOCACHE"]; ok {
 		t.Fatalf("template GOCACHE was stamped onto the durable cache volume; it must remain under tmp:ephemeral")
+	}
+	var allow []string
+	if err := json.Unmarshal([]byte(env[EnvStageEnvAllow]), &allow); err != nil {
+		t.Fatalf("decode %s: %v", EnvStageEnvAllow, err)
+	}
+	if !slices.Contains(allow, "GOMODCACHE") {
+		t.Fatalf("env:default-deny allowlist = %v, missing GOMODCACHE", allow)
 	}
 }
 
@@ -963,7 +970,7 @@ func TestStagePodStampsEnvDefaultDenyFromTheRunnerClass(t *testing.T) {
 	// Everything the DISPATCHER stamped for the stage. In a pod these arrive as
 	// ordinary container variables, indistinguishable from the image's own, so
 	// procenv's allowlist alone would drop the stage's declared env and inputs.
-	for _, want := range []string{"DECLARED_STAGE_VAR", InputEnvVar("probe"), executorRepoNameEnv, "OPERATOR_DECLARED_VAR"} {
+	for _, want := range []string{"DECLARED_STAGE_VAR", InputEnvVar("probe"), executorRepoNameEnv, "OPERATOR_DECLARED_VAR", "GOMODCACHE"} {
 		if !slices.Contains(allow, want) {
 			t.Fatalf("%s = %v, missing %q", EnvStageEnvAllow, allow, want)
 		}

@@ -1378,7 +1378,7 @@ func stampsPlaneEnv(cfg Config, attempt Attempt) bool {
 // filters at all — and closing it means validating declared env values or
 // reserving the GOOBERS_ prefix for env keys, which is its own change.
 func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string) []string {
-	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough)+len(DispatcherRunIdentityEnv)+len(alreadyOnContainer))
+	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough)+len(DispatcherRunIdentityEnv)+len(alreadyOnContainer)+1)
 	names = append(names, sortedKeys(attempt.Env)...)
 	for _, key := range sortedKeys(attempt.Inputs) {
 		names = append(names, InputEnvVar(key))
@@ -1396,6 +1396,10 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 	// plane environment and silently take the FILE branch against a scratch
 	// volume — #3725's restriction-conditional shape, wearing #3897's clothes.
 	names = append(names, DispatcherPlaneEnv...)
+	// GOMODCACHE is stamped after this allowlist is generated when the
+	// durable cache volume is mounted. Keep it through env:default-deny's
+	// in-pod rebuild so restricted stage pods reuse the durable module cache.
+	names = append(names, "GOMODCACHE")
 	names = append(names, alreadyOnContainer...)
 	names = append(names, cfg.EnvPassthrough...)
 	return names
