@@ -457,9 +457,9 @@ const (
 	// temp — decision 006).
 	LinuxTmpPath   = "/tmp"
 	WindowsTmpPath = WindowsHomePath + `\AppData\Local\Temp`
-	// LinuxGoCachePath / WindowsGoCachePath is the durable cache volume stage
-	// pods mount outside tmp:ephemeral so a fresh pod still reuses a warm Go
-	// module/build cache instead of redownloading modules on every attempt.
+	// LinuxGoCachePath / WindowsGoCachePath is the durable module cache volume
+	// stage pods mount outside tmp:ephemeral so fresh pods reuse downloaded
+	// modules. GOCACHE remains under the attempt-private temp root.
 	LinuxGoCachePath   = "/var/goobers/cache"
 	WindowsGoCachePath = `C:\var\goobers\cache`
 	goBuildCacheVolume = "go-build-cache"
@@ -1535,11 +1535,10 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 		Name: goBuildCacheVolume, MountPath: cachePath,
 	})
 	container.Env = slices.DeleteFunc(container.Env, func(env corev1.EnvVar) bool {
-		return env.Name == "GOMODCACHE" || env.Name == "GOCACHE"
+		return env.Name == "GOMODCACHE"
 	})
 	container.Env = append(container.Env,
 		corev1.EnvVar{Name: "GOMODCACHE", Value: cachePath},
-		corev1.EnvVar{Name: "GOCACHE", Value: cachePath},
 	)
 }
 

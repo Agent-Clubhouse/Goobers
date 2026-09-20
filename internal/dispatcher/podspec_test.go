@@ -319,10 +319,11 @@ func TestRenderPodStampsDurableGoCache(t *testing.T) {
 				t.Fatalf("cache volume is not mounted at %q", tc.path)
 			}
 			env := podEnv(pod)
-			for _, name := range []string{"GOMODCACHE", "GOCACHE"} {
-				if env[name] != tc.path {
-					t.Fatalf("%s = %q, want %q", name, env[name], tc.path)
-				}
+			if env["GOMODCACHE"] != tc.path {
+				t.Fatalf("GOMODCACHE = %q, want %q", env["GOMODCACHE"], tc.path)
+			}
+			if _, ok := env["GOCACHE"]; ok {
+				t.Fatalf("GOCACHE was stamped onto the durable cache volume at %q; it must remain under tmp:ephemeral", env["GOCACHE"])
 			}
 		})
 	}
@@ -344,8 +345,11 @@ func TestRenderFromTemplateStampsDurableGoCache(t *testing.T) {
 		t.Fatal("template stage pod has no PVC-backed Go cache volume")
 	}
 	env := podEnv(pod)
-	if env["GOMODCACHE"] != LinuxGoCachePath || env["GOCACHE"] != LinuxGoCachePath {
-		t.Fatalf("template cache environment = %v, want both cache variables at %q", env, LinuxGoCachePath)
+	if env["GOMODCACHE"] != LinuxGoCachePath {
+		t.Fatalf("template GOMODCACHE = %q, want %q", env["GOMODCACHE"], LinuxGoCachePath)
+	}
+	if _, ok := env["GOCACHE"]; ok {
+		t.Fatalf("template GOCACHE was stamped onto the durable cache volume; it must remain under tmp:ephemeral")
 	}
 }
 
