@@ -127,6 +127,7 @@ func TestDeferredTelemetryRetentionSweepSkipsBeforeReadiness(t *testing.T) {
 		context.Background(),
 		instance.Layout{},
 		nil,
+		nil,
 		instance.TelemetryRetentionConfig{},
 		nil,
 		nil,

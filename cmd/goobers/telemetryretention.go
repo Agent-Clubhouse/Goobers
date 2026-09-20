@@ -592,12 +592,12 @@ func runPeriodicTelemetryRetention(
 	return compactSchedulerRetention(ctx, config, db, log, cleanupErrors, now)
 }
 
-func configuredTelemetryRetention(setup *schedulerSetup) instance.TelemetryRetentionConfig {
+func configuredTelemetryRetention(setup *schedulerSetup) (instance.TelemetryRetentionConfig, []string) {
 	config := instance.TelemetryRetentionConfig{}
 	if setup.Config.Telemetry.Retention != nil {
 		config = *setup.Config.Telemetry.Retention
 	}
-	return config
+	return config, snapshotMigrationBackupGaggles(setup)
 }
 
 // reconcileStartupTelemetryRetention completes a pass that crossed the
@@ -635,6 +635,7 @@ func startDeferredTelemetryRetentionSweep(
 	ctx context.Context,
 	layout instance.Layout,
 	setup *schedulerSetup,
+	migrationBackupGaggles []string,
 	config instance.TelemetryRetentionConfig,
 	gate *retentionSweepGate,
 	retentionErrors *sweepErrorReporter,
@@ -659,7 +660,7 @@ func startDeferredTelemetryRetentionSweep(
 				cleanupErrors,
 				time.Now(),
 			))
-			migrationBackupErrors.report(sweepMigrationBackups(layout, setup, time.Now()))
+			migrationBackupErrors.report(sweepMigrationBackups(layout, migrationBackupGaggles, time.Now()))
 			return nil
 		})
 		if err != nil && !errors.Is(err, errRetentionSweepAlreadyRunning) {

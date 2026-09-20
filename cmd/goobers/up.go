@@ -1193,7 +1193,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// coalescing with the periodic 6h sweep via retentionGate so at most one
 	// ever runs at a time.
 	pf(stdout, "%s startup phase=retention-sweep status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#4373)")
-	telemetryRetentionConfig := configuredTelemetryRetention(setup)
+	telemetryRetentionConfig, migrationBackupGaggles := configuredTelemetryRetention(setup)
 	if telemetryErr := reconcileStartupTelemetryRetention(stdout, tracker, l, setup); telemetryErr != nil {
 		pf(stderr, "error: reconcile retained telemetry: %v\n", telemetryErr)
 		return 1
@@ -1603,7 +1603,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case now := <-telemetryRetentionTicker.C:
 				err := telemetryRetentionGate.run(func() error {
 					telemetryRetentionErrors.report(runPeriodicTelemetryRetention(ctx, setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, journalGenerationCleanupErrors, now))
-					migrationBackupCleanupErrors.report(sweepMigrationBackups(l, setup, now))
+					migrationBackupCleanupErrors.report(sweepMigrationBackups(l, migrationBackupGaggles, now))
 					return nil
 				})
 				if err != nil && !errors.Is(err, errRetentionSweepAlreadyRunning) {
@@ -1774,6 +1774,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		ctx,
 		l,
 		setup,
+		migrationBackupGaggles,
 		telemetryRetentionConfig,
 		telemetryRetentionGate,
 		telemetryRetentionErrors,

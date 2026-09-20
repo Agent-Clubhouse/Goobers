@@ -110,11 +110,18 @@ func sweepWorktreeRetention(ctx context.Context, l instance.Layout, setup *sched
 	return pruneConfiguredRetention(ctx, l, setup, io.Discard, io.Discard)
 }
 
-func sweepMigrationBackups(l instance.Layout, setup *schedulerSetup, now time.Time) error {
+// snapshotMigrationBackupGaggles captures the startup generation before config
+// reload can replace the scheduler setup's runtime maps in place. Background
+// retention must iterate this immutable roster rather than those live maps.
+func snapshotMigrationBackupGaggles(setup *schedulerSetup) []string {
+	return configuredGaggleNames(setup.Definitions)
+}
+
+func sweepMigrationBackups(l instance.Layout, gaggleNames []string, now time.Time) error {
 	if err := journal.PruneMigrationBackups(l.RunsDir(), now); err != nil {
 		return err
 	}
-	for gaggle := range setup.WorktreesByGaggle {
+	for _, gaggle := range gaggleNames {
 		if err := journal.PruneMigrationBackups(l.ForGaggle(gaggle).RunsDir(), now); err != nil {
 			return fmt.Errorf("prune migration backups for gaggle %s: %w", gaggle, err)
 		}
