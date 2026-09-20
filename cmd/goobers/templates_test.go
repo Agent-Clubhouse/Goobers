@@ -45,6 +45,23 @@ func TestTemplateAuthoringGuideExample(t *testing.T) {
 	}
 }
 
+func TestTemplateSourceValidationIncludesReport(t *testing.T) {
+	root, source, _ := templateTestSetup(t)
+	path := filepath.Join(source, "gaggles", "example", "gaggle.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := strings.Replace(string(raw), "spec:\n", "spec:\n  unsupportedTemplateField: true\n", 1)
+	if err := os.WriteFile(path, []byte(invalid), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writableTemplateConfig(root, &instance.Config{}, source); err == nil ||
+		!strings.Contains(err.Error(), "unsupportedTemplateField") {
+		t.Fatalf("missing actionable source validation report: %v", err)
+	}
+}
+
 func templateTestSetup(t *testing.T) (root, source string, tree gaggletemplate.Tree) {
 	t.Helper()
 	root = filepath.Join(t.TempDir(), "runtime")

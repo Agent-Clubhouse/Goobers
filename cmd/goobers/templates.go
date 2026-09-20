@@ -189,8 +189,8 @@ func writableTemplateConfig(root string, cfg *instance.Config, explicit string) 
 	if err != nil {
 		return "", err
 	}
-	if _, _, err := instance.LoadConfigDir(source); err != nil {
-		return "", fmt.Errorf("user config source %s is invalid: %w", source, err)
+	if _, report, err := instance.LoadConfigDir(source); err != nil {
+		return "", fmt.Errorf("user config source %s is invalid: %w; %s", source, err, validationIssueSummary(report))
 	}
 	return source, nil
 }

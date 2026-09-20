@@ -45,7 +45,7 @@ func Merge(base, local, upstream Tree) (Tree, []string, error) {
 			}
 		default:
 			if !bok || !lok || !uok || l.Mode != b.Mode || u.Mode != b.Mode ||
-				!(strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yml")) {
+				(!strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml")) {
 				conflicts = append(conflicts, path)
 				continue
 			}
@@ -248,6 +248,7 @@ func orderedNodeKeys(node *yaml.Node) []string {
 	return keys
 }
 
+// Changes returns sorted paths whose content, permissions or presence differ.
 func Changes(base, other Tree) []string {
 	var changes []string
 	union := Tree{}
@@ -269,6 +270,7 @@ func Changes(base, other Tree) []string {
 	return changes
 }
 
+// Equivalent ignores YAML formatting while retaining file and permission changes.
 func Equivalent(a, b Tree) bool {
 	if len(a) != len(b) {
 		return false

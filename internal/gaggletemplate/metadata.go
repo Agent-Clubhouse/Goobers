@@ -20,6 +20,7 @@ import (
 var namePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 var revisionPattern = regexp.MustCompile(`^([a-f0-9]{40}|[a-f0-9]{64})$`)
 
+// Source identifies enrollment independently from the user's deployment repository.
 type Source struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Repository    string `json:"repository"`
@@ -29,6 +30,7 @@ type Source struct {
 	TokenEnv      string `json:"tokenEnv,omitempty"`
 }
 
+// Lock records accepted source identity and pristine bound content, not user edits.
 type Lock struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Source        Source `json:"source"`
@@ -37,11 +39,13 @@ type Lock struct {
 	Baseline      Tree   `json:"baseline"`
 }
 
+// Tracking pairs source settings with their validated, matching lock.
 type Tracking struct {
 	Source Source
 	Lock   Lock
 }
 
+// Status is the cached notify-only result of checking an enrolled gaggle.
 type Status struct {
 	State           string    `json:"state"`
 	Installed       string    `json:"installed"`
@@ -55,6 +59,7 @@ type Status struct {
 	PendingBackprop bool      `json:"pendingBackprop"`
 }
 
+// Validate rejects unsupported enrollment versions, identities and package paths.
 func (s Source) Validate() error {
 	if s.SchemaVersion != 1 || s.Repository == "" || s.Ref == "" ||
 		!safeRelative(s.Directory) || !namePattern.MatchString(s.Gaggle) || len(s.Gaggle) > 63 {
@@ -85,6 +90,7 @@ func metadataPath(root, name string) (string, error) {
 	return filepath.Join(dir, name), nil
 }
 
+// Load returns nil for unenrolled directories and rejects partial or corrupt metadata.
 func Load(root string) (*Tracking, error) {
 	path, err := metadataPath(root, "source.yaml")
 	if err != nil {
@@ -131,6 +137,7 @@ func Load(root string) (*Tracking, error) {
 	return &Tracking{Source: source, Lock: lock}, nil
 }
 
+// Save writes matching source settings and pristine ancestry into a staged gaggle.
 func Save(root string, source Source, revision string, base Tree) error {
 	if err := source.Validate(); err != nil {
 		return err
@@ -179,10 +186,12 @@ func writeJSON(path string, value any) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+// StatusPath locates runtime status outside the deployed configuration tree.
 func StatusPath(instanceRoot, gaggle string) string {
 	return filepath.Join(instanceRoot, "template-status", gaggle+".json")
 }
 
+// WriteStatus replaces one gaggle's cached check result atomically.
 func WriteStatus(instanceRoot, gaggle string, status Status) error {
 	if !namePattern.MatchString(gaggle) {
 		return errors.New("invalid gaggle name")
@@ -194,6 +203,7 @@ func WriteStatus(instanceRoot, gaggle string, status Status) error {
 	return writeJSON(path, status)
 }
 
+// ReadStatus reads bounded cached state without resolving the template source.
 func ReadStatus(instanceRoot, gaggle string) (*Status, error) {
 	if !namePattern.MatchString(gaggle) {
 		return nil, errors.New("invalid gaggle name")
@@ -240,7 +250,7 @@ func InventoryStatus(instanceRoot, gaggle string) *Status {
 	return status
 }
 
-// Deployment files are runtime-only. They are never the template merge base.
+// RecordDeployment saves the runtime user-source snapshot, not template ancestry.
 func RecordDeployment(root string) error {
 	tracking, err := Load(root)
 	if err != nil || tracking == nil {
@@ -257,6 +267,7 @@ func RecordDeployment(root string) error {
 	return writeJSON(path, tree)
 }
 
+// Deployment loads the bounded user-source baseline used to preserve runtime edits.
 func Deployment(root string) (Tree, error) {
 	path, err := metadataPath(root, "deployed.json")
 	if err != nil {
@@ -322,6 +333,7 @@ func containsEdits(base, runtime, candidate Tree) bool {
 	return err == nil && len(conflicts) == 0 && Equivalent(merged, candidate)
 }
 
+// RecordDeployments snapshots enrolled gaggles after their source is materialized.
 func RecordDeployments(configDir string) error {
 	entries, err := os.ReadDir(filepath.Join(configDir, "gaggles"))
 	if errors.Is(err, fs.ErrNotExist) {

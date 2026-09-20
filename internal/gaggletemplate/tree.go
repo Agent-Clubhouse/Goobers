@@ -17,15 +17,18 @@ import (
 	"strings"
 )
 
+// MetadataDir is excluded from executable definitions and pristine file trees.
 const MetadataDir = ".template"
 const maxTreeBytes = 16 << 20
 const maxFiles = 2048
 
+// File preserves both content and permissions in a merge baseline.
 type File struct {
 	Data []byte `json:"data"`
 	Mode uint32 `json:"mode"`
 }
 
+// Tree indexes package files by portable, slash-separated relative paths.
 type Tree map[string]File
 
 func safeRelative(name string) bool {
@@ -103,6 +106,7 @@ func readBounded(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
+// Validate rejects unsafe paths, portable path collisions and oversized trees.
 func (t Tree) Validate() error {
 	total := 0
 	folded := map[string]bool{}
@@ -124,12 +128,14 @@ func (t Tree) Validate() error {
 	return nil
 }
 
+// Digest fingerprints paths, content and permissions deterministically.
 func (t Tree) Digest() string {
 	data, _ := json.Marshal(t) // Tree contains only JSON-supported values.
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
 
+// Write materializes validated entries under a caller-owned staging directory.
 func (t Tree) Write(root string) error {
 	if err := t.Validate(); err != nil {
 		return err
@@ -164,8 +170,10 @@ func equalFile(a File, aOK bool, b File, bOK bool) bool {
 // further publication after interruption instead of guessing which copy won.
 func Publish(target, candidate string, expected Tree) error {
 	backup := filepath.Join(filepath.Dir(target), ".template-backup-"+filepath.Base(target))
-	if _, err := os.Lstat(backup); !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("template recovery required: inspect %s (error: %v)", backup, err)
+	if _, err := os.Lstat(backup); err == nil {
+		return fmt.Errorf("template recovery required: inspect existing backup %s", backup)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("template recovery required: inspect %s: %w", backup, err)
 	}
 	current, err := ReadTree(target)
 	if errors.Is(err, fs.ErrNotExist) && expected == nil {
