@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 const instanceYAML = `apiVersion: goobers.dev/v1alpha1
@@ -214,6 +217,12 @@ func validationWarnings(output string) []string {
 	var warnings []string
 	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
 		if strings.HasPrefix(line, "WARNING ") {
+			code, _, _ := strings.Cut(strings.TrimPrefix(line, "WARNING "), " ")
+			// Keep advisories visible in output without turning this wrapper
+			// into a stricter gate than the validator's safety contract.
+			if slices.Contains(workflowsafety.Codes(), code) {
+				continue
+			}
 			warnings = append(warnings, line)
 		}
 	}

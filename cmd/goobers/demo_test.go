@@ -182,7 +182,7 @@ OK: instance.yaml valid; config/ valid (1 gaggle(s), 0 goober(s), 1 workflow(s))
 
 Next: no placeholder edits are required.
 `, abs, abs)
-	if stdout.String() != want {
+	if withoutSafetyWarnings(stdout.String()) != want {
 		t.Fatalf("init --demo banner:\n--- got ---\n%s--- want ---\n%s", stdout.String(), want)
 	}
 }
