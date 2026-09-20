@@ -243,52 +243,52 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 		for _, key := range groupOrder {
 			group := groups[key]
 			spec := group[0].spec
-		// Resolve the credential FOR THIS HARNESS. Startup previously resolved
-		// once with an empty harness and reused it, so an instance whose
-		// agent:model grant was scoped to claude-code preflighted
-		// `claude auth status` with no token and reported loggedIn:false —
-		// then took the whole daemon down with it (#5163).
-		var modelCredential func(ctx context.Context) (string, error)
-		if credentialFor != nil && !(h == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(spec.HarnessOptions)) {
-			resolved, err := credentialFor(h)
+			// Resolve the credential FOR THIS HARNESS. Startup previously resolved
+			// once with an empty harness and reused it, so an instance whose
+			// agent:model grant was scoped to claude-code preflighted
+			// `claude auth status` with no token and reported loggedIn:false —
+			// then took the whole daemon down with it (#5163).
+			var modelCredential func(ctx context.Context) (string, error)
+			if credentialFor != nil && !(h == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(spec.HarnessOptions)) {
+				resolved, err := credentialFor(h)
+				if err != nil {
+					for _, use := range group {
+						failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, but its agent:model credential could not be resolved: %v", use.stage, h, err))
+					}
+					continue
+				}
+				modelCredential = resolved
+			}
+			adapter, err := harnessAdapterFor(h, environment, harnessCommand, modelCredential)
 			if err != nil {
 				for _, use := range group {
-					failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, but its agent:model credential could not be resolved: %v", use.stage, h, err))
+					failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, but its adapter could not be configured: %v", use.stage, h, err))
 				}
 				continue
 			}
-			modelCredential = resolved
-		}
-		adapter, err := harnessAdapterFor(h, environment, harnessCommand, modelCredential)
-		if err != nil {
-			for _, use := range group {
-				failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, but its adapter could not be configured: %v", use.stage, h, err))
+			ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
+			var result harness.PreflightInfo
+			if configPreflighter, ok := adapter.(interface {
+				PreflightConfig(context.Context, string, map[string]apiextensionsv1.JSON) (harness.PreflightInfo, error)
+			}); ok {
+				result, err = configPreflighter.PreflightConfig(ctx, spec.Model, spec.HarnessOptions)
+			} else {
+				result, err = adapter.Preflight(ctx)
 			}
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
-		var result harness.PreflightInfo
-		if configPreflighter, ok := adapter.(interface {
-			PreflightConfig(context.Context, string, map[string]apiextensionsv1.JSON) (harness.PreflightInfo, error)
-		}); ok {
-			result, err = configPreflighter.PreflightConfig(ctx, spec.Model, spec.HarnessOptions)
-		} else {
-			result, err = adapter.Preflight(ctx)
-		}
-		cancel()
-		if err != nil {
-			for _, use := range group {
-				failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, whose startup preflight failed: %v", use.stage, h, err))
+			cancel()
+			if err != nil {
+				for _, use := range group {
+					failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, whose startup preflight failed: %v", use.stage, h, err))
+				}
+				continue
 			}
-			continue
-		}
-		if result.Version == "" {
-			for _, use := range group {
-				failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, whose startup preflight returned no version", use.stage, h))
+			if result.Version == "" {
+				for _, use := range group {
+					failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, whose startup preflight returned no version", use.stage, h))
+				}
+				continue
 			}
-			continue
-		}
-		info[h] = result
+			info[h] = result
 		}
 	}
 	if len(failures.Refusals) > 0 {

@@ -443,7 +443,10 @@ func TestCodexAmbientChatGPTUsesLoginAndNeverAPIKey(t *testing.T) {
 		Command:         []string{executable},
 		Runner:          runner,
 		EnvCapabilities: map[string]string{"agent:model": codexModelEnv},
-		ModelCredential: func(context.Context) (string, error) { t.Fatal("ambient mode resolved agent:model API credential"); return "", nil },
+		ModelCredential: func(context.Context) (string, error) {
+			t.Fatal("ambient mode resolved agent:model API credential")
+			return "", nil
+		},
 	}
 	_, err = adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace, "agent:model"),
