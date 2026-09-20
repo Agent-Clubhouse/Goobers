@@ -40,7 +40,7 @@ func terminalVerdictRequirement(v apiv1.Verdict) error {
 		return nil
 	}
 	if v.ReasonCode == apiv1.VerdictReasonUnsalvageableDesign {
-		if strings.TrimSpace(v.Rationale) == "" {
+		if !unsalvageableDesignRationale(v.Rationale) {
 			return fmt.Errorf("unsalvageable-design fail verdict requires rationale explaining why ordinary code changes cannot repair the approach")
 		}
 		return nil
@@ -52,6 +52,23 @@ func terminalVerdictRequirement(v apiv1.Verdict) error {
 		return nil
 	}
 	return fmt.Errorf("terminal fail verdict with reasonCode %q is not allowed for this decision/finding combination; use needs-changes or defer for fixable or ordering findings", v.ReasonCode)
+}
+
+func unsalvageableDesignRationale(rationale string) bool {
+	s := strings.ToLower(strings.TrimSpace(rationale))
+	if s == "" {
+		return false
+	}
+	if !strings.Contains(s, "ordinary code changes") && !strings.Contains(s, "code changes") {
+		return false
+	}
+	if !strings.Contains(s, "cannot") && !strings.Contains(s, "can't") && !strings.Contains(s, "not") && !strings.Contains(s, "never") && !strings.Contains(s, "impossible") {
+		return false
+	}
+	if !strings.Contains(s, "repair") && !strings.Contains(s, "remediat") && !strings.Contains(s, "fix") && !strings.Contains(s, "salvage") && !strings.Contains(s, "restore") && !strings.Contains(s, "recover") {
+		return false
+	}
+	return true
 }
 
 func hasActionableOrOrderingFinding(findings []apiv1.Finding) bool {
