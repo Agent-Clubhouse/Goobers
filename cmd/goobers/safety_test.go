@@ -37,6 +37,68 @@ func safetyDemo(t *testing.T) (string, string) {
 	return root, path
 }
 
+func TestSafetyCompatibilityFilterPreservesOtherOutput(t *testing.T) {
+	for _, code := range workflowsafety.Codes() {
+		output := "before\nWARNING " + code + " advisory\nafter\n"
+		if got := withoutSafetyWarnings(output); got != "before\nafter\n" {
+			t.Fatalf("%s filter = %q", code, got)
+		}
+	}
+	for _, output := range []string{
+		"WARNING SAF999 unknown\n",
+		"WARNING MODEL002 legacy\n",
+		"ERROR SAF006 failure\n",
+		"WARNING SAF006extra not-a-safety-code\n",
+	} {
+		if got := withoutSafetyWarnings(output); got != output {
+			t.Fatalf("filter discarded non-advisory output: %q -> %q", output, got)
+		}
+	}
+}
+
+func TestSafetyStatusCollapsedWarningsRemainInspectable(t *testing.T) {
+	var manual apiv1.Workflow
+	manual.Name = "shared-name"
+	manual.Spec.Gaggle = "manual"
+	manual.Spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerManual}}
+	scheduled := manual
+	scheduled.Spec.Gaggle = "scheduled"
+	scheduled.Spec.Triggers = nil
+	workflows := []apiv1.Workflow{manual, scheduled}
+	warnings := []validate.CodedWarning{
+		{
+			Code: workflowsafety.CoverageCode,
+			Safety: &workflowsafety.Details{
+				Gaggle: manual.Spec.Gaggle, Workflow: manual.Name,
+			},
+		},
+		{
+			Code: workflowsafety.CoverageCode,
+			Safety: &workflowsafety.Details{
+				Gaggle: scheduled.Spec.Gaggle, Workflow: scheduled.Name,
+			},
+		},
+		{Code: validate.WarningModelFallback, Scope: "Workflow/shared-name"},
+	}
+	collapsed := statusTextWarnings(warnings, workflows, 1, false, "")
+	if len(collapsed) != 3 || collapsed[0].Scope != "Workflows" ||
+		!reflect.DeepEqual(collapsed[1:], warnings[1:]) {
+		t.Fatalf("default status hid unrelated warnings or expanded manual details: %+v", collapsed)
+	}
+	for _, tc := range []struct {
+		all      bool
+		selected string
+	}{
+		{all: true},
+		{selected: manual.Name},
+	} {
+		got := statusTextWarnings(warnings, workflows, 0, tc.all, tc.selected)
+		if !reflect.DeepEqual(got, warnings) {
+			t.Fatalf("all=%v selected=%q: warnings = %+v, want %+v", tc.all, tc.selected, got, warnings)
+		}
+	}
+}
+
 func TestSafetyCLIStartupAndLoaderUseIdenticalAdvisories(t *testing.T) {
 	root, workflowPath := safetyDemo(t)
 	marker := filepath.Join(t.TempDir(), "executed")

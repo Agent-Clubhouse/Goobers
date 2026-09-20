@@ -35,6 +35,9 @@ Instance, gaggle and workflow warnings retain the findings for the dashboard.
 Reload health distinguishes rejected candidate warnings from applied
 definitions through `definitionReload.candidateWarnings` and
 `rejectionReason`. Accepted reload replaces the warning set, clearing repairs.
+Default text status keeps manual-only workflows collapsed, including their
+safety details. Use `status --all`, `status --workflow <name>`, JSON status,
+or the dashboard to inspect those advisories.
 
 ## What the pass knows
 
