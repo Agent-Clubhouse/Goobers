@@ -457,6 +457,13 @@ const (
 	// temp — decision 006).
 	LinuxTmpPath   = "/tmp"
 	WindowsTmpPath = WindowsHomePath + `\AppData\Local\Temp`
+	// LinuxGoCachePath / WindowsGoCachePath is the durable cache volume stage
+	// pods mount outside tmp:ephemeral so a fresh pod still reuses a warm Go
+	// module/build cache instead of redownloading modules on every attempt.
+	LinuxGoCachePath   = "/var/goobers/cache"
+	WindowsGoCachePath = `C:\var\goobers\cache`
+	goBuildCacheVolume = "go-build-cache"
+	goBuildCacheClaim  = "goobers-go-build-cache"
 )
 
 // Node scheduling contract.

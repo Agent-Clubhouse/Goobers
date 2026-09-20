@@ -1,0 +1,20 @@
+# Durable Go module/build cache for stage pods (k8s-infra-shape.md §5).
+#
+# `tmp:ephemeral` remains attempt-private and mounted at /tmp; the Go cache is
+# intentionally outside that tmp root so a second Go build can reuse its prior
+# module downloads and build artifacts without weakening the temp isolation
+# guarantee. The cache grows on a bounded PVC, not an unbounded emptyDir, and
+# it is explicitly documented here because the worker image otherwise points
+# GOMODCACHE to /tmp/gomodcache and every attempt starts cold.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goobers-go-build-cache
+  namespace: goobers-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: change-me # a filesystem-backed RWO class for your platform
+  resources:
+    requests:
+      storage: 20Gi

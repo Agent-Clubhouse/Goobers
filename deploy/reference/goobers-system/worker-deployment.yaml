@@ -162,6 +162,12 @@ spec:
             # files even though the container root filesystem is read-only.
             - name: tmp
               mountPath: /tmp
+            # A stage pod's Go build cache must survive across attempts without
+            # living under the attempt-private tmp root. The deleted tmpdir is
+            # still the correct temp boundary; the build cache is the durable
+            # artifact that makes a second Go build warm.
+            - name: go-build-cache
+              mountPath: /var/goobers/cache
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -187,6 +193,14 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi
+        # Durable Go build/module cache for stage pods. This is intentionally
+        # outside /tmp so the attempt-private tmp:ephemeral boundary remains in
+        # place while repeated Go builds can reuse downloaded modules. Bound it
+        # to a persistent volume with an explicit growth cap so the cache cannot
+        # grow without bound.
+        - name: go-build-cache
+          persistentVolumeClaim:
+            claimName: goobers-go-build-cache
         # ReadWriteMany, because more than one worker mounts it. Provision it
         # with a filesystem your platform can serve RWX (Azure Files, EFS,
         # Filestore, CephFS, NFS). If you only ever run ONE worker, drop this
