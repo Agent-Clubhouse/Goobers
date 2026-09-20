@@ -4,6 +4,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// Shared infrastructure retry bound and durable budget-exhaustion reason codes.
 const (
 	DefaultMaxInfrastructureRepasses    = 2
 	ReasonRepassBudgetExhausted         = "REPASS_BUDGET_EXHAUSTED"

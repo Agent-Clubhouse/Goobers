@@ -11,6 +11,7 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
+// Annotation is the optional workflow annotation carrying safety assertions.
 const Annotation = "goobers.dev/safety"
 
 // Contracts are optional author assertions in a Workflow annotation. They do
@@ -21,6 +22,7 @@ type Contracts struct {
 	Suppressions []Suppression            `json:"suppressions,omitempty"`
 }
 
+// StageContract asserts only the named role or effects of an existing stage.
 type StageContract struct {
 	Review         string `json:"review,omitempty"`
 	Evidence       string `json:"evidence,omitempty"`
@@ -31,6 +33,7 @@ type StageContract struct {
 	RecoveryOnNoWork string `json:"recoveryOnNoWork,omitempty"`
 }
 
+// Suppression scopes a justified advisory waiver to a workflow or stage.
 type Suppression struct {
 	Code   string `json:"code"`
 	Stage  string `json:"stage,omitempty"`

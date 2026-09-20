@@ -14,6 +14,7 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
+// Safety diagnostic codes and fixed limits for advisory graph exploration.
 const (
 	EvidenceCode   = "SAF001"
 	PublishCode    = "SAF002"
@@ -54,12 +55,14 @@ type Details struct {
 	SuppressionReason string   `json:"suppressionReason,omitempty"`
 }
 
+// Finding couples a safety rule and summary with its scope and evidence.
 type Finding struct {
 	Code    string
 	Summary string
 	Details Details
 }
 
+// Message renders the shared CLI, daemon, and status explanation.
 func (f Finding) Message() string {
 	d := f.Details
 	message := fmt.Sprintf("workflow %q/%q stage %q: %s Path: %s. Impact: %s Action: %s Confidence: %s; coverage: %s. %s",
@@ -76,6 +79,7 @@ func (f Finding) Message() string {
 	return message + " Advisory only; the workflow remains enabled."
 }
 
+// Options supplies inherited controls and diagnostic identity, never adapters.
 type Options struct {
 	GaggleRunControls *apiv1.RunControls
 	// BinaryIdentity participates in finding identity, not execution identity.

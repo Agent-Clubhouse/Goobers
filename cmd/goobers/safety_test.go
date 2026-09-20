@@ -225,7 +225,11 @@ func readSafetyWarnings(t *testing.T, address string) []validate.CodedWarning {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close instance response: %v", err)
+		}
+	}()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("instance API status=%d", response.StatusCode)
 	}
@@ -291,7 +295,11 @@ func TestSafetyRejectedCandidateRemainsSeparate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	defer func() {
+		if err := log.Close(); err != nil {
+			t.Errorf("close instance journal: %v", err)
+		}
+	}()
 	reloader := &configReloader{setup: &schedulerSetup{InstanceLog: log},
 		appliedDigest: "applied", observedDigest: "candidate", watching: true}
 	report := &validate.Report{Issues: []validate.Issue{{Code: workflowsafety.EvidenceCode,

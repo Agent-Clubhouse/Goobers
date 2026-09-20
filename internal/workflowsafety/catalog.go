@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// CatalogVersion identifies the supported effects and diagnostic contract.
 const CatalogVersion = "goobers.dev/workflow-safety/v1"
 
 // Effects describe supported command forms, not successful live execution.
