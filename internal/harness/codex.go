@@ -435,22 +435,9 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 	if err != nil {
 		return preparedCodexInvocation{}, err
 	}
-	env = dropForeignCodexAPIKey(env)
-	if options.auth == CodexAuthAmbientChatGPT {
-		// Keep telemetry, repository routing, and every non-model scoped
-		// capability from buildCredentialEnv; only API-key selection is removed.
-		env = withAmbientCodexHome(env)
-	} else if !environmentContainsOpenAIKey(env) && c.ModelCredential != nil {
-		token, credentialErr := c.ModelCredential(ctx)
-		if credentialErr != nil {
-			return preparedCodexInvocation{}, fmt.Errorf("harness: codex: resolve agent:model credential: %w", credentialErr)
-		}
-		if isOpenAIAPIKey(token) {
-			env = overrideEnv(env, codexModelEnv, token)
-		}
-	}
-	if options.auth == CodexAuthAPIKey && !environmentContainsOpenAIKey(env) {
-		return preparedCodexInvocation{}, fmt.Errorf("harness: codex: an OpenAI API key is required for agent:model; stored Codex login is not used because workspace-write commands can read CODEX_HOME")
+	env, err = c.configureAuthEnvironment(ctx, env, options)
+	if err != nil {
+		return preparedCodexInvocation{}, err
 	}
 	reservedEnv := []string{codexModelEnv, "CODEX_HOME", "TMPDIR", "TEMP", "TMP"}
 	for _, name := range c.EnvCapabilities {
@@ -508,6 +495,28 @@ func (c *CodexAdapter) invocationEnvCapabilities(auth CodexAuthMode) map[string]
 		}
 	}
 	return filtered
+}
+
+func (c *CodexAdapter) configureAuthEnvironment(ctx context.Context, env []string, options codexConfig) ([]string, error) {
+	env = dropForeignCodexAPIKey(env)
+	if options.auth == CodexAuthAmbientChatGPT {
+		// Keep telemetry, repository routing, and every non-model scoped
+		// capability from buildCredentialEnv; only API-key selection is removed.
+		return withAmbientCodexHome(env), nil
+	}
+	if !environmentContainsOpenAIKey(env) && c.ModelCredential != nil {
+		token, err := c.ModelCredential(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("harness: codex: resolve agent:model credential: %w", err)
+		}
+		if isOpenAIAPIKey(token) {
+			env = overrideEnv(env, codexModelEnv, token)
+		}
+	}
+	if !environmentContainsOpenAIKey(env) {
+		return nil, fmt.Errorf("harness: codex: an OpenAI API key is required for agent:model; stored Codex login is not used because workspace-write commands can read CODEX_HOME")
+	}
+	return env, nil
 }
 
 func runCodexInvocation(
