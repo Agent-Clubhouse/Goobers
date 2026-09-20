@@ -650,24 +650,31 @@ func startDeferredTelemetryRetentionSweep(
 	}
 	go func() {
 		defer close(done)
-		err := gate.run(func() error {
-			retentionErrors.report(runPeriodicTelemetryRetention(
-				ctx,
-				setup.InstanceLog,
-				layout,
-				config,
-				setup.RollupDB,
-				cleanupErrors,
-				time.Now(),
-			))
-			migrationBackupErrors.report(sweepMigrationBackups(layout, migrationBackupGaggles, time.Now()))
-			return nil
-		})
-		if err != nil && !errors.Is(err, errRetentionSweepAlreadyRunning) {
-			retentionErrors.report(err)
-		}
+		runGatedTelemetryRetentionSweep(ctx, layout, setup, migrationBackupGaggles, config, gate, retentionErrors, cleanupErrors, migrationBackupErrors, time.Now())
 	}()
 	return done
+}
+
+func runGatedTelemetryRetentionSweep(
+	ctx context.Context,
+	layout instance.Layout,
+	setup *schedulerSetup,
+	migrationBackupGaggles []string,
+	config instance.TelemetryRetentionConfig,
+	gate *retentionSweepGate,
+	retentionErrors *sweepErrorReporter,
+	cleanupErrors *sweepErrorReporter,
+	migrationBackupErrors *sweepErrorReporter,
+	now time.Time,
+) {
+	err := gate.run(func() error {
+		retentionErrors.report(runPeriodicTelemetryRetention(ctx, setup.InstanceLog, layout, config, setup.RollupDB, cleanupErrors, now))
+		migrationBackupErrors.report(sweepMigrationBackups(layout, migrationBackupGaggles, now))
+		return nil
+	})
+	if err != nil && !errors.Is(err, errRetentionSweepAlreadyRunning) {
+		retentionErrors.report(err)
+	}
 }
 
 // compactSchedulerRetention bounds the scheduler journal and rollup rows. A

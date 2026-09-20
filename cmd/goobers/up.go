@@ -1607,14 +1607,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-telemetryRetentionTicker.C:
-				err := telemetryRetentionGate.run(func() error {
-					telemetryRetentionErrors.report(runPeriodicTelemetryRetention(ctx, setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, journalGenerationCleanupErrors, now))
-					migrationBackupCleanupErrors.report(sweepMigrationBackups(l, migrationBackupGaggles, now))
-					return nil
-				})
-				if err != nil && !errors.Is(err, errRetentionSweepAlreadyRunning) {
-					telemetryRetentionErrors.report(err)
-				}
+				runGatedTelemetryRetentionSweep(ctx, l, setup, migrationBackupGaggles, telemetryRetentionConfig, telemetryRetentionGate, telemetryRetentionErrors, journalGenerationCleanupErrors, migrationBackupCleanupErrors, now)
 			}
 		}
 	}()
