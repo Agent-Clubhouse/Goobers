@@ -1251,7 +1251,9 @@ describe("run detail", () => {
 
     expect(within(banner).getByText("harness.crash", { selector: ".mono" })).toBeInTheDocument();
     expect(
-      within(banner).getByText("Harness exited before producing a result envelope."),
+      within(banner).getByText("Harness exited before producing a result envelope.", {
+        selector: "p",
+      }),
     ).toBeInTheDocument();
     expect(within(banner).getByRole("link", { name: /view matching errors/i })).toHaveAttribute(
       "href",
