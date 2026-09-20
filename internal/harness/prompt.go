@@ -2,6 +2,7 @@ package harness
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -134,27 +135,49 @@ func renderResponseCompletionContract(req RunRequest) string {
 }
 
 func renderCompletionRecoveryPrompt(req RunRequest) string {
+	return renderCompletionRepairPrompt(req, nil)
+}
+
+func renderCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	completionKind, schemaHint := completionContract(req)
+	problem := "Your previous turn ended without writing the mandatory completion file."
+	if errors.Is(validationErr, ErrInvalidCompletion) {
+		problem = fmt.Sprintf(
+			"Your previous turn wrote a completion file that failed schema validation: %s.",
+			validationErr,
+		)
+	}
 	return fmt.Sprintf(
-		"Your previous turn ended without writing the mandatory completion file. "+
+		"%s "+
 			"Do not repeat completed work or make unrelated changes. Inspect the current state, then write "+
 			"the final %s as valid JSON to `%s` "+
 			"(relative to the working directory), matching this shape:\n\n%s\n\n"+
 			"Report the actual outcome; do not claim success unless the task is complete. "+
 			"Do not finish this turn until the file exists and is valid JSON.",
-		completionKind, req.CompletionPath, schemaHint,
+		problem, completionKind, req.CompletionPath, schemaHint,
 	)
 }
 
 func renderResponseCompletionRecoveryPrompt(req RunRequest) string {
+	return renderResponseCompletionRepairPrompt(req, nil)
+}
+
+func renderResponseCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	completionKind, schemaHint := completionContract(req)
+	problem := "Your previous turn ended without returning the mandatory completion as valid JSON."
+	if errors.Is(validationErr, ErrInvalidCompletion) {
+		problem = fmt.Sprintf(
+			"Your previous turn returned a completion that failed schema validation: %s.",
+			validationErr,
+		)
+	}
 	return fmt.Sprintf(
-		"Your previous turn ended without returning the mandatory completion as valid JSON. "+
+		"%s "+
 			"Do not repeat completed work or make unrelated changes. Inspect the current state, then return "+
 			"the final %s as the entire response, matching this shape:\n\n%s\n\n"+
 			"Do not write a completion file or wrap the JSON in Markdown. "+
 			"Report the actual outcome; do not claim success unless the task is complete.",
-		completionKind, schemaHint,
+		problem, completionKind, schemaHint,
 	)
 }
 

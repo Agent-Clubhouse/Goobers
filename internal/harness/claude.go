@@ -484,10 +484,15 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	invocationResults := []ProcessResult{result}
 	prompts := []string{prompt}
 	var payload []byte
+	var invalidCompletionPayload []byte
 	var completionErr error
 	if processErr == nil {
 		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
-		if errors.Is(completionErr, ErrNoCompletion) {
+		completionErr = validateCompletion(req, payload, completionErr)
+		if errors.Is(completionErr, ErrInvalidCompletion) {
+			invalidCompletionPayload = append([]byte(nil), payload...)
+		}
+		if repairableCompletionError(completionErr) {
 			totalTimeout := req.Timeout
 			if totalTimeout <= 0 {
 				totalTimeout = DefaultTimeout
@@ -497,7 +502,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 				runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
 				completionErr = nil
 			} else {
-				recoveryPrompt := renderCompletionRecoveryPrompt(req)
+				recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 				prompts = append(prompts, recoveryPrompt)
 				recoveryArgv := append([]string(nil), argv...)
 				recoveryArgv[promptArg] = recoveryPrompt
@@ -525,16 +530,19 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 					completionErr = nil
 				} else {
 					payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
+					completionErr = validateCompletion(req, payload, completionErr)
 				}
 			}
 		}
 	}
 
 	out = Outcome{
-		Transcript:             result.Transcript,
-		TranscriptTruncated:    result.TranscriptTruncated,
-		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
-		Stderr:                 result.Stderr,
+		Transcript:               result.Transcript,
+		TranscriptTruncated:      result.TranscriptTruncated,
+		TranscriptDroppedBytes:   result.TranscriptDroppedBytes,
+		Stderr:                   result.Stderr,
+		Payload:                  payload,
+		InvalidCompletionPayload: invalidCompletionPayload,
 	}
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
@@ -566,7 +574,6 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	if completionErr != nil {
 		return out, completionErr
 	}
-	out.Payload = payload
 	return out, nil
 }
 

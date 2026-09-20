@@ -1053,11 +1053,16 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	processErr = errors.Join(processErr, nativeCheckpoints.worker.observedError())
 	runErr = processErr
 	var payload []byte
+	var invalidCompletionPayload []byte
 	var completionErr error
 	if processErr == nil {
 		payload, completionErr = readCopilotCompletionWithSessionFallback(
 			req, responseCapture, completionInResponse, nativeTranscriptPath)
-		if errors.Is(completionErr, ErrNoCompletion) {
+		completionErr = validateCompletion(req, payload, completionErr)
+		if errors.Is(completionErr, ErrInvalidCompletion) {
+			invalidCompletionPayload = append([]byte(nil), payload...)
+		}
+		if repairableCompletionError(completionErr) {
 			// A clean Copilot exit can still omit its completion contract. Give
 			// the same session one contract-only turn without extending its budget.
 			totalTimeout := req.Timeout
@@ -1070,11 +1075,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 				completionErr = nil
 			} else {
 				recoveryArgv := append([]string(nil), argv...)
-				recoveryPrompt := renderCompletionRecoveryPrompt(req)
+				recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 				var recoveryCapture *syncBuffer
 				var recoveryStdout io.Writer
 				if completionInResponse {
-					recoveryPrompt = renderResponseCompletionRecoveryPrompt(req)
+					recoveryPrompt = renderResponseCompletionRepairPrompt(req, completionErr)
 					recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
 					recoveryStdout = recoveryCapture
 				}
@@ -1101,16 +1106,19 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 					// Same stdout gap can swallow the recovery turn's answer.
 					payload, completionErr = readCopilotCompletionWithSessionFallback(
 						req, recoveryCapture, completionInResponse, nativeTranscriptPath)
+					completionErr = validateCompletion(req, payload, completionErr)
 				}
 			}
 		}
 	}
 	out = Outcome{
-		Transcript:             result.Transcript,
-		RenderedPrompt:         []byte(prompt),
-		TranscriptTruncated:    result.TranscriptTruncated,
-		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
-		Stderr:                 result.Stderr,
+		Transcript:               result.Transcript,
+		RenderedPrompt:           []byte(prompt),
+		TranscriptTruncated:      result.TranscriptTruncated,
+		TranscriptDroppedBytes:   result.TranscriptDroppedBytes,
+		Stderr:                   result.Stderr,
+		Payload:                  payload,
+		InvalidCompletionPayload: invalidCompletionPayload,
 	}
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
@@ -1134,7 +1142,6 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if completionErr != nil {
 		return out, completionErr
 	}
-	out.Payload = payload
 	return out, nil
 }
 

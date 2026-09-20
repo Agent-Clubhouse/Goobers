@@ -237,7 +237,14 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 	out.Metrics = parsed.metrics
 
 	payload, completionErr := readCompletion(req.Workspace, req.CompletionPath)
-	if errors.Is(completionErr, ErrNoCompletion) {
+	completionErr = validateCompletion(req, payload, completionErr)
+	var invalidCompletionPayload []byte
+	if errors.Is(completionErr, ErrInvalidCompletion) {
+		invalidCompletionPayload = append([]byte(nil), payload...)
+	}
+	out.Payload = payload
+	out.InvalidCompletionPayload = invalidCompletionPayload
+	if repairableCompletionError(completionErr) {
 		totalTimeout := req.Timeout
 		if totalTimeout <= 0 {
 			totalTimeout = DefaultTimeout
@@ -247,7 +254,7 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 			runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
 			return out, runErr
 		}
-		recoveryPrompt := renderCompletionRecoveryPrompt(req)
+		recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 		recovery, recoveryParsed, recoveryErr := runCodexInvocation(
 			ctx, c.runner(), req, argv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(),
 		)
@@ -263,12 +270,13 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 			return out, runErr
 		}
 		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
+		completionErr = validateCompletion(req, payload, completionErr)
 	}
+	out.Payload = payload
 	if completionErr != nil {
 		runErr = completionErr
 		return out, runErr
 	}
-	out.Payload = payload
 	return out, nil
 }
 

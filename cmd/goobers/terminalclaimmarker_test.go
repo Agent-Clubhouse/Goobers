@@ -154,6 +154,54 @@ func TestTerminalCleanupReleasesClaimMarkerWithLedger(t *testing.T) {
 	}
 }
 
+func TestTerminalFailureReleasesEveryBatchClaimMarkerAndLease(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	const runID = "failed-batch-run"
+	newStaleTerminalRun(t, l, runID, "default-implement", journal.PhaseFailed, "implement")
+	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	ledger := openTestClaimLedger(t, ledgerPath)
+	for _, itemID := range []string{"2718", "2719", "2720"} {
+		if ok, _, err := ledger.ClaimScoped(localscheduler.ClaimKey{
+			Gaggle: "example", Provider: "github", ExternalID: itemID,
+		}, runID, "default-implement", time.Hour); err != nil || !ok {
+			t.Fatalf("seed batch claim %s: ok=%v err=%v", itemID, ok, err)
+		}
+	}
+
+	manager, err := worktree.NewManager(l.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeClaimMarkerRelease{ledgerPath: ledgerPath, runID: runID}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	if err := finalizeTerminalRunWithClaimMarkers(l, log, manager, runID, repo, fake.release); err != nil {
+		t.Fatalf("finalize terminal run: %v", err)
+	}
+
+	if len(fake.requests) != 3 {
+		t.Fatalf("provider claim releases = %+v, want every batch item", fake.requests)
+	}
+	seen := map[string]bool{}
+	for _, req := range fake.requests {
+		seen[req.ID] = true
+	}
+	for _, itemID := range []string{"2718", "2719", "2720"} {
+		if !seen[itemID] {
+			t.Errorf("provider marker for batch item %s was not released", itemID)
+		}
+	}
+	if entries := openTestClaimLedger(t, ledgerPath).ForRunAll(runID); len(entries) != 0 {
+		t.Fatalf("terminal batch still holds claim leases: %+v", entries)
+	}
+}
+
 // TestTerminalCleanupSkipsClaimMarkerWhenAlreadyReleased covers the ordinary
 // implementation run: issue-close-out already released both the marker and the
 // ledger lease, so terminal cleanup must not issue a second provider call (and
