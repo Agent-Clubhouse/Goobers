@@ -509,20 +509,9 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 				recoveryArgv[sessionSelectorArg] = "--resume"
 				recoveryCapture := &claudeTerminalCapture{}
 				captures = append(captures, recoveryCapture)
-				recovery, recoveryErr := runner.Run(ctx, ProcessRequest{
-					Command:                      recoveryArgv,
-					Dir:                          req.Workspace,
-					Env:                          env,
-					Timeout:                      remaining,
-					MaxTranscriptBytes:           req.MaxTranscriptBytes,
-					StdoutCapture:                recoveryCapture,
-					TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
-					TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
-					// The recovery turn runs on what is LEFT of the budget,
-					// so a stall here is if anything more urgent to see than
-					// one in the main session (#4179).
-					Activity: agentTelemetry.activityObserver(),
-				})
+				recovery, recoveryErr := runClaudeCompletionRepair(
+					ctx, runner, req, recoveryArgv, env, remaining, recoveryCapture, agentTelemetry,
+				)
 				invocationResults = append(invocationResults, recovery)
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 				if recoveryErr != nil {
@@ -575,6 +564,28 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		return out, completionErr
 	}
 	return out, nil
+}
+
+func runClaudeCompletionRepair(
+	ctx context.Context,
+	runner ProcessRunner,
+	req RunRequest,
+	argv, env []string,
+	timeout time.Duration,
+	capture *claudeTerminalCapture,
+	telemetry *adapterAgentEmitter,
+) (ProcessResult, error) {
+	return runner.Run(ctx, ProcessRequest{
+		Command:                      argv,
+		Dir:                          req.Workspace,
+		Env:                          env,
+		Timeout:                      timeout,
+		MaxTranscriptBytes:           req.MaxTranscriptBytes,
+		StdoutCapture:                capture,
+		TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
+		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
+		Activity:                     telemetry.activityObserver(),
+	})
 }
 
 func prepareClaudeRuntime(workspace string) (string, string, error) {

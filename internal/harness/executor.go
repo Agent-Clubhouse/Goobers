@@ -536,20 +536,14 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Tools:                    append([]string(nil), e.tools...),
 		Workspace:                env.Workspace,
 		CompletionPath:           completionPath,
-		ValidateCompletion: func(payload []byte) error {
-			envelope := "result"
-			if mode == ModeReview {
-				envelope = "verdict"
-			}
-			return e.validator.ValidateEnvelope(envelope, payload)
-		},
-		TelemetryDir:       telemetry.PrepareStageTelemetryDir(env.Workspace),
-		Credentials:        creds,
-		ContextPaths:       contextPaths,
-		Timeout:            invocationTimeout(env, e.timeout),
-		Attempt:            int(env.Attempt),
-		MaxTranscriptBytes: e.transcriptLimit,
-		HarnessVersion:     e.harnessVersion,
+		ValidateCompletion:       e.completionValidator(mode),
+		TelemetryDir:             telemetry.PrepareStageTelemetryDir(env.Workspace),
+		Credentials:              creds,
+		ContextPaths:             contextPaths,
+		Timeout:                  invocationTimeout(env, e.timeout),
+		Attempt:                  int(env.Attempt),
+		MaxTranscriptBytes:       e.transcriptLimit,
+		HarnessVersion:           e.harnessVersion,
 	}
 	if nestedAdapter != nil {
 		if err := validateNestedExecution(req); err != nil {
@@ -604,9 +598,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 	out, runErr = e.runAdapter(ctx, req, nestedAdapter)
 	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(out.MCPServerFailures))
-	if len(out.InvalidCompletionPayload) > 0 {
-		out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
-	}
+	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
 		if !hasAppender {
 			runErr = errors.Join(runErr, fmt.Errorf(
@@ -767,19 +759,8 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		}
 	}
 	if runErr != nil {
-		if errors.Is(runErr, ErrInvalidCompletion) && len(out.Payload) > 0 {
-			out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
-		}
-		var stderr *apiv1.ArtifactPointer
-		ref, artifactErr := e.artifacts.RecordArtifact(env.TaskID+"/stderr.log", e.scrubber.Scrub(out.Stderr))
-		if artifactErr != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("harness: record stderr: %w", artifactErr))
-		} else {
-			ptr := refToPointer(ref, "text/plain")
-			stderr = &ptr
-		}
-		wrapped := fmt.Errorf("harness: %s: %w", e.adapter.Name(), runErr)
-		return out, transcript, stderr, classifyHarnessRunError(runErr, wrapped)
+		out, stderr, failure := e.finalizeAdapterFailure(env.TaskID, out, runErr)
+		return out, transcript, stderr, failure
 	}
 
 	if len(out.Payload) == 0 {
@@ -790,6 +771,30 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return out, transcript, nil, invoke.InfrastructureFailure(err)
 	}
 	return out, transcript, nil, nil
+}
+
+func (e *Executor) finalizeAdapterFailure(stage string, out Outcome, runErr error) (Outcome, *apiv1.ArtifactPointer, error) {
+	out, runErr = e.recordInvalidCompletion(stage, out, runErr)
+	var stderr *apiv1.ArtifactPointer
+	ref, artifactErr := e.artifacts.RecordArtifact(stage+"/stderr.log", e.scrubber.Scrub(out.Stderr))
+	if artifactErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("harness: record stderr: %w", artifactErr))
+	} else {
+		ptr := refToPointer(ref, "text/plain")
+		stderr = &ptr
+	}
+	wrapped := fmt.Errorf("harness: %s: %w", e.adapter.Name(), runErr)
+	return out, stderr, classifyHarnessRunError(runErr, wrapped)
+}
+
+func (e *Executor) completionValidator(mode Mode) func([]byte) error {
+	envelope := "result"
+	if mode == ModeReview {
+		envelope = "verdict"
+	}
+	return func(payload []byte) error {
+		return e.validator.ValidateEnvelope(envelope, payload)
+	}
 }
 
 func (e *Executor) recordInvalidCompletion(stage string, out Outcome, validationErr error) (Outcome, error) {
