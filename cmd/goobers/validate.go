@@ -30,8 +30,6 @@ import (
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
-
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // copilotAuthCheckArgs is the confirmed non-interactive Copilot authentication
@@ -1521,13 +1519,7 @@ func checkHarnessesAtSources(
 		// just CLI presence — a fine-grained PAT lacking the "Copilot Requests"
 		// permission (#284) passes --version but fails the probe.
 		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
-		if configPreflighter, supportsConfigPreflight := adapter.(interface {
-			PreflightConfig(context.Context, string, map[string]apiextensionsv1.JSON) (harness.PreflightInfo, error)
-		}); supportsConfigPreflight {
-			_, err = configPreflighter.PreflightConfig(ctx, g.Spec.Model, g.Spec.HarnessOptions)
-		} else {
-			_, err = adapter.Preflight(ctx)
-		}
+		_, err = preflightAdapterConfig(ctx, adapter, g.Spec)
 		cancel()
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
