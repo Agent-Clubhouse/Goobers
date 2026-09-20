@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -137,6 +138,7 @@ const (
 
 // Gaggle is one configured workforce inventory item.
 type Gaggle struct {
+	Template       *gaggletemplate.Status  `json:"template,omitempty"`
 	Name           string                  `json:"name"`
 	DisplayName    string                  `json:"displayName"`
 	Enabled        bool                    `json:"enabled"`
@@ -502,6 +504,7 @@ func (s *Local) gagglesUnannotated(ctx context.Context, request PageRequest) (Ga
 	for i := range inventory.definitions.Gaggles {
 		def := &inventory.definitions.Gaggles[i]
 		item := Gaggle{
+			Template:       gaggletemplate.InventoryStatus(s.sources.Layout.Root, def.Name),
 			Name:           def.Name,
 			DisplayName:    displayName(def.Spec.DisplayName, def.Name),
 			Enabled:        definitionEnabled(def.Spec.Enabled),

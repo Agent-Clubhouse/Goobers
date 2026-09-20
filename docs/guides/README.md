@@ -29,6 +29,7 @@ cannot leave it outside the documented navigation surfaces.
 - [EvalSuite PR review checklist](evals-review-checklist.md)
 - [External telemetry connectors](external-telemetry-connectors.md)
 - [Flake management](flake-management.md)
+- [Tracked gaggle templates](gaggle-templates.md)
 - [Guide: GitHub token scopes for V0 (local runner)](github-token-scopes.md)
 - [GitHub webhook triggers](github-webhooks.md)
 - [The goobers-io MCP: run identity and artifact I/O for agentic stages](goobers-io-mcp.md)

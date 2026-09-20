@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gaggletemplate"
 )
 
 // PreparedConfigSwap is an installed workflow-source tree whose previous
@@ -18,6 +19,7 @@ type PreparedConfigSwap struct {
 	backupRoot   string
 	backupConfig string
 	finished     bool
+	release      func() error
 }
 
 // PrepareGitWorkflowSourceIfChanged installs a changed source revision while
@@ -62,6 +64,19 @@ func PrepareGitWorkflowSourceIfChanged(ctx context.Context, root string, source 
 // prepareSyncedConfigDir atomically replaces layout.ConfigDir() while retaining
 // the previous directory for an explicit commit or rollback decision.
 func prepareSyncedConfigDir(layout Layout, stagedConfigDir string) (*PreparedConfigSwap, error) {
+	release, err := gaggletemplate.LockConfig(layout.ConfigDir(), stagedConfigDir)
+	if err != nil {
+		return nil, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			_ = release()
+		}
+	}()
+	if err := gaggletemplate.GuardReplacement(layout.ConfigDir(), stagedConfigDir); err != nil {
+		return nil, err
+	}
 	backupRoot, err := os.MkdirTemp(layout.Root, ".config-apply-backup-")
 	if err != nil {
 		return nil, fmt.Errorf("create config apply backup directory: %w", err)
@@ -73,19 +88,26 @@ func prepareSyncedConfigDir(layout Layout, stagedConfigDir string) (*PreparedCon
 	}
 	if err := os.Rename(stagedConfigDir, layout.ConfigDir()); err != nil {
 		rollbackErr := os.Rename(backupConfigDir, layout.ConfigDir())
+		if rollbackErr != nil {
+			return nil, errors.Join(fmt.Errorf("install config: %w; previous configuration retained in %s", err, backupConfigDir), rollbackErr)
+		}
 		return nil, errors.Join(
 			fmt.Errorf("install %s: %w", ConfigDirName, err),
 			rollbackErr,
 			os.RemoveAll(backupRoot),
 		)
 	}
-	return &PreparedConfigSwap{layout: layout, backupRoot: backupRoot, backupConfig: backupConfigDir}, nil
+	transferred = true
+	return &PreparedConfigSwap{layout: layout, backupRoot: backupRoot, backupConfig: backupConfigDir, release: release}, nil
 }
 
 // Commit accepts the installed candidate and removes its prior-tree backup.
 func (s *PreparedConfigSwap) Commit() error {
 	if s == nil || s.finished {
 		return nil
+	}
+	if s.release != nil {
+		defer func() { _ = s.release() }()
 	}
 	if err := os.RemoveAll(s.backupRoot); err != nil {
 		return fmt.Errorf("remove config apply backup %s: %w", s.backupRoot, err)
@@ -101,6 +123,9 @@ func (s *PreparedConfigSwap) Rollback() error {
 	if s == nil || s.finished {
 		return nil
 	}
+	if s.release != nil {
+		defer func() { _ = s.release() }()
+	}
 	rejectedRoot, err := os.MkdirTemp(s.layout.Root, ".config-rejected-")
 	if err != nil {
 		return fmt.Errorf("create rejected config staging directory: %w", err)
@@ -112,6 +137,9 @@ func (s *PreparedConfigSwap) Rollback() error {
 	}
 	if err := os.Rename(s.backupConfig, s.layout.ConfigDir()); err != nil {
 		reinstateErr := os.Rename(rejectedConfig, s.layout.ConfigDir())
+		if reinstateErr != nil {
+			return errors.Join(fmt.Errorf("restore config: %w; configurations retained in %s and %s", err, s.backupConfig, rejectedConfig), reinstateErr)
+		}
 		return errors.Join(
 			fmt.Errorf("restore applied %s: %w", ConfigDirName, err),
 			reinstateErr,

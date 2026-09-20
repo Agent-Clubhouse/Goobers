@@ -84,6 +84,11 @@ decides whether those changes become active. See the
 [architecture of record](docs/ARCHITECTURE.md) for the full design and current
 deployment boundaries.
 
+To reuse repository-hosted gaggle defaults while keeping local customizations,
+see [Tracked gaggle templates](docs/guides/gaggle-templates.md). The opt-in
+tracking files preserve template ancestry, notify about updates, and support
+conflict-safe updates and backprop into your own configuration repository.
+
 ## Install
 
 Install the latest stable release on Linux or macOS:
