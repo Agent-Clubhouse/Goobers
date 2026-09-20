@@ -1,12 +1,70 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 )
+
+// readConfiguredRecoveryInventory is the single strict reader for the
+// instance-wide inventory. It resolves the operator's policy at the point of
+// use so raising maxSnapshots unblocks a live daemon without a restart.
+func readConfiguredRecoveryInventory(ctx context.Context, layout instance.Layout) ([]recovery.InventoryEntry, int, error) {
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return nil, 0, fmt.Errorf("load recovery inventory configuration: %w", err)
+	}
+	limit := cfg.Retention.RecoveryEffective().MaxSnapshotsEffective()
+	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), limit)
+	if err != nil {
+		err = recoveryInventoryReadError(err, limit)
+		return nil, limit, err
+	}
+	return entries, limit, nil
+}
+
+// observeRecoveryInventory reads the whole inventory directory for a caller
+// that only OBSERVES it, and returns the operator cap alongside the reading
+// rather than enforcing it.
+//
+// readConfiguredRecoveryInventory stays strict and cap-bounded for the callers
+// that decide whether work is safe to discard because recovery state appears
+// absent. An observer needs the opposite: bounding the read by the cap makes
+// capacity reporting go blind at exactly the occupancy it exists to report,
+// because the read itself refuses with "75 of 8 slots used" (#5354). Tolerant
+// for the same reason the health sampler is: one crashed publish leaving a
+// lock-only directory must not take the reading down with it. Unreadable
+// entries are returned, never dropped, because they hold slots.
+func observeRecoveryInventory(ctx context.Context, layout instance.Layout) ([]recovery.InventoryEntry, []recovery.UnreadableEntry, int, error) {
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("load recovery inventory configuration: %w", err)
+	}
+	limit := cfg.Retention.RecoveryEffective().MaxSnapshotsEffective()
+	root := filepath.Join(layout.Root, "recovery")
+	entries, unreadable, readErr := recovery.ReadInventoryTolerant(ctx, root, recovery.MaxInventoryEntries)
+	if readErr != nil {
+		return nil, nil, limit, recoveryInventoryReadError(readErr, limit)
+	}
+	return entries, unreadable, limit, nil
+}
+
+// recoveryInventoryReadError keeps an oversized inventory fail-closed while
+// giving an operator a path that does not delete or bypass retained evidence.
+func recoveryInventoryReadError(err error, limit int) error {
+	if !errors.Is(err, recovery.ErrInventoryFull) {
+		return err
+	}
+	return fmt.Errorf(
+		"%w; retained evidence was left untouched: temporarily raise retention.recovery.maxSnapshots above the current inventory size, retry the operation, then use recovery-abandon or configured retention instead of deleting recovery files manually (configured maxSnapshots=%d)",
+		err, limit,
+	)
+}
 
 // Every recovery-snapshot policy resolution names where it came from, so a
 // path that governs the instance-wide inventory can never disagree with the

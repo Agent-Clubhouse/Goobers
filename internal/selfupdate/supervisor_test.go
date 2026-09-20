@@ -195,6 +195,44 @@ func TestSupervisorKeepsCurrentAfterConsecutiveActivationCrash(t *testing.T) {
 	stopSupervisor(t, root, cancel, current, done)
 }
 
+func TestSupervisorReturnsSuccessWhenDaemonExitsCleanly(t *testing.T) {
+	root := t.TempDir()
+	writeTestExecutable(t, currentBinary(root, "linux"), "current")
+	launcher := &fakeLauncher{started: make(chan *fakeProcess, 1)}
+	_, done := startSupervisor(root, launcher, fakeEscalator{make(chan Request, 1)})
+	process := <-launcher.started
+
+	process.complete(nil)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunSupervisor() = %v, want clean exit", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("supervisor did not return after clean daemon exit")
+	}
+}
+
+func TestSupervisorReturnsFailureWhenDaemonCrashes(t *testing.T) {
+	root := t.TempDir()
+	writeTestExecutable(t, currentBinary(root, "linux"), "current")
+	launcher := &fakeLauncher{started: make(chan *fakeProcess, 1)}
+	_, done := startSupervisor(root, launcher, fakeEscalator{make(chan Request, 1)})
+	process := <-launcher.started
+
+	process.complete(errors.New("crashed"))
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "supervised daemon exited: crashed") {
+			t.Fatalf("RunSupervisor() = %v, want daemon crash failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("supervisor did not return after daemon crash")
+	}
+}
+
 func setupSupervisorRequest(t *testing.T) (string, time.Time, Request) {
 	t.Helper()
 	root := t.TempDir()

@@ -308,6 +308,7 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
 		EphemeralTmp:      ephemeralTmp,
+		ModelCredential:   modelCredential,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessClaudeCode), claudeAdapter); err != nil {
 		return nil, fmt.Errorf("register Claude Code harness: %w", err)

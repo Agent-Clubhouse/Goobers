@@ -636,3 +636,59 @@ func TestRebindingAMissingBranchFailsLoudly(t *testing.T) {
 		t.Fatal("run completed on a rebound branch that does not exist — the stage silently got a fresh branch off main")
 	}
 }
+
+// TestWorkspaceBranchRebindingIsJournaledOnce is #5399: the commits a rebound
+// run makes land on the rebound branch, never on the nominal run branch, so
+// terminal recovery capture can only find them if the journal names that
+// branch. The annotation is written once for the sticky rebinding, not once
+// per stage, and it does not disturb the run's own branch reference — terminal
+// branch cleanup resolves the branch it may DELETE from that reference, and a
+// pull request's branch must never become a candidate.
+func TestWorkspaceBranchRebindingIsJournaledOnce(t *testing.T) {
+	runID := "rebind-run-5399"
+	r, runsDir, observed := newRebindRunner(t, map[string]stubTaskResult{
+		runID + ":select": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
+			WorkspaceBranchOutput: rebindBranch,
+		}},
+		runID + ":rework": {status: apiv1.ResultSuccess},
+		runID + ":verify": {status: apiv1.ResultSuccess},
+	})
+	res, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: rebindFixtureMachine(t), Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want %q", res.Phase, journal.PhaseCompleted)
+	}
+
+	var rebound, bound, references []string
+	for _, event := range readRunEvents(t, runsDir, runID) {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["annotation"] == ReboundWorkspaceBranchAnnotation {
+			branch, _ := event.Runner[WorkspaceBranchOutput].(string)
+			sha, _ := event.Runner[ReboundBranchBoundSHAKey].(string)
+			rebound, bound = append(rebound, branch), append(bound, sha)
+		}
+		if event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
+			references = append(references, event.ExternalRef.ID)
+		}
+	}
+	if len(rebound) != 1 || rebound[0] != rebindBranch {
+		t.Fatalf("rebound-branch annotations = %v, want exactly one naming %q", rebound, rebindBranch)
+	}
+	// The bound commit is what tells this run's commits from the pull
+	// request's existing ones, so it must be the commit the stage STARTED at.
+	if bound[0] != observed["rework"].revision {
+		t.Fatalf("annotation bound commit = %q, want the commit the rebound stage started at %q",
+			bound[0], observed["rework"].revision)
+	}
+	runBranch := providers.BranchName("rebind-fixture", runID)
+	for _, reference := range references {
+		if reference != runBranch {
+			t.Fatalf("branch reference %q, want only the run's own branch %q", reference, runBranch)
+		}
+	}
+}

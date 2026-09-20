@@ -145,6 +145,20 @@ readiness:
 See [Trigger primitives](../reference/workflow-primitives/triggers.md) for
 manual, schedule, backlog-item, signal, and webhook parameters.
 
+### Temporarily stop new starts without deleting triggers
+
+To pause a workflow without editing its schedule or backlog trigger, set:
+
+```yaml
+spec:
+  enabled: false
+```
+
+Omitting the field, setting it to `null`, or setting it back to `true` re-enables new
+starts. Existing runs keep their pinned definitions and continue normally. The Portal
+shows disabled workflows and their parent gaggle greyed out but still clickable so you
+can inspect or re-enable them without losing navigation.
+
 ## 4. Add a deterministic built-in stage
 
 The first state claims one trusted backlog item:
@@ -259,8 +273,12 @@ continuing.
 
 ## 7. Gate deterministic CI
 
-A failed task normally terminates the run before a gate can inspect it.
-`continueOnError: true` keeps the failure visible and advances to its gate:
+A failed task whose `next` state is a gate advances to that gate without
+`continueOnError`. The failure remains unresolved while the gate classifies it:
+the gate must route it to remediation or another explicit terminal path, and a
+failure that is not cleared still fails the workflow. This is the normal CI and
+review pattern because it preserves the failed task's scalar outputs and result
+artifact for qualified downstream consumers.
 
 ```yaml
 - name: local-ci
@@ -271,26 +289,40 @@ A failed task normally terminates the run before a gate can inspect it.
     syncBase: true
   retry:
     maxAttempts: 1
-  continueOnError: true
   next: local-ci-gate
 ```
 
-The automated gate reads the normalized status of `local-ci`:
+The automated gate reads the normalized status and error classification of
+`local-ci`:
 
 ```yaml
 - name: local-ci-gate
   evaluator: automated
   automated:
-    check: status-equals
-    params:
-      equals: success
+    check: failure-class
   branches:
     pass: push-branch
     fail: implement
+    infra: "@abort"
 ```
 
 The gate receives the preceding result's `status`, error classification, and
 scalar outputs. It does not read the preceding stage's result file directly.
+After a failure branch, a deterministic consumer may bind a preserved scalar
+with a qualified `inputsFrom` entry such as
+`validationState: local-ci.validationState`; the full result remains available
+as a journal artifact/context pointer.
+
+`continueOnError: true` means something narrower: the failure is deliberately
+best-effort, its scalar outputs are discarded, and execution advances to
+`next`. Use it for work such as an optional notification whose failure must not
+fail the workflow. Do not use it merely to reach a failure gate, and do not use
+it when a later state requires the failed task's outputs.
+
+Run `goobers examples show implementation` for a complete executable workflow
+using this pattern: its `local-ci` task advances directly to the
+`failure-class` gate without `continueOnError`.
+
 See [Gate evaluator and check primitives](../reference/workflow-primitives/gates-and-checks.md)
 for every check's parameters and required branches.
 
@@ -343,6 +375,16 @@ Use the narrowest channel matching the data:
 | Rich artifact or verdict context | `contextFrom` and artifact pointers |
 | Durable non-repository files | `outbox` |
 | Repository state in DSL 3.0 | `repoFrom` |
+
+Keep outbox exports bounded: each attempt is limited to 200 files and 64 MiB.
+Each execution is stored under its own immutable occurrence within the attempt,
+so a gate repass that re-enters attempt 1 cannot replace earlier evidence.
+For a large test corpus, export a compact manifest with every logical outcome,
+content hashes, and explicit omission/truncation markers; store the raw corpus
+in durable artifact storage and reference it from the manifest. An oversized
+or otherwise incomplete export fails the workflow after preserving the
+command's own outcome in the run journal—it is not made successful by
+`continueOnError`.
 
 For example, pass the PR number emitted by `open-pr` into a later `ci-poll`
 stage:

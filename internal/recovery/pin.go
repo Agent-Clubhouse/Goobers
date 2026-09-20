@@ -3,6 +3,7 @@ package recovery
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -102,8 +103,40 @@ func recoveryGitIO(ctx context.Context, repository string, stdout io.Writer, std
 	command.Env = append(command.Env, environment...)
 	command.Stdout = stdout
 	command.Stdin = stdin
-	// Git diagnostics can contain local paths or credential-bearing remote
-	// URLs. Return the operation's exit error without echoing those bytes.
-	command.Stderr = io.Discard
-	return command.Run()
+	// These operations are all local (no network transport; GIT_* stripped
+	// above; safe.directory pinned to trustedPath), so stderr cannot carry a
+	// remote credential or URL the way a clone/fetch failure could. Capture
+	// it bounded, rather than discarding it, so a failure names the git
+	// subcommand, the exit code, and the diagnostic instead of a bare exit
+	// status (#5352). The bound protects the journal, not a secret.
+	var stderr boundedCaptureStderr
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		return newCaptureError(args, exitCode, stderr.String(), err)
+	}
+	return nil
 }
+
+// boundedCaptureStderr accumulates a command's stderr without holding more
+// than captureStderrBound bytes plus one write's worth of overrun; the exact
+// tail is trimmed by boundedTail once the command has finished. Unlike
+// boundedRefOutput this never fails the write — a truncated diagnostic is
+// still useful, and a lost error message here would leave the caller with
+// less evidence than before this fix.
+type boundedCaptureStderr struct {
+	buf []byte
+}
+
+func (b *boundedCaptureStderr) Write(data []byte) (int, error) {
+	if len(b.buf) < captureStderrBound*2 {
+		b.buf = append(b.buf, data...)
+	}
+	return len(data), nil
+}
+
+func (b *boundedCaptureStderr) String() string { return string(b.buf) }

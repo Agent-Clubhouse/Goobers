@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/readmodel/projector"
@@ -50,6 +52,73 @@ func TestStartProjectorRoutesRepairWritesThroughCommitLoop(t *testing.T) {
 	}
 	if _, ok := repairWriter.(*projector.Projector); !ok {
 		t.Fatalf("repair writer = %T, want *projector.Projector", repairWriter)
+	}
+}
+
+func TestStartProjectorRepairsStaleRunningRowsAcrossGaggles(t *testing.T) {
+	ctx := context.Background()
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	if err := layout.EnsureGaggleRuntime("beta"); err != nil {
+		t.Fatal(err)
+	}
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watermarks.Close() }()
+
+	const runID = "00000000000000000000000000005308"
+	writer, err := journal.Create(layout.ForGaggle("beta").RunsDir(), journal.RunIdentity{
+		RunID: runID, Gaggle: "beta", Workflow: "merge-review", WorkflowVersion: 1,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "review", Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(ctx, readmodel.Projection{Run: readmodel.RunRow{
+		RunID: runID, Gaggle: "beta", Workflow: "merge-review",
+		Phase: journal.PhaseRunning, StartedAt: time.Now().UTC(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := journal.Recover(filepath.Join(layout.ForGaggle("beta").RunsDir(), runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stop, _, _, restartComplete := startProjector(ctx, store, watermarks, layout, nil)
+	defer stop()
+	if !restartComplete {
+		t.Fatal("projector startup reconciliation did not complete")
+	}
+	row, ok, err := store.GetRun(ctx, runID)
+	if err != nil || !ok {
+		t.Fatalf("reconciled beta run: found=%v err=%v", ok, err)
+	}
+	if row.Phase != journal.PhaseCompleted || !row.Terminal {
+		t.Fatalf("beta run after startup = phase %q terminal=%v, want completed terminal", row.Phase, row.Terminal)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -86,6 +87,11 @@ type Instance struct {
 	TelemetryRetention *TelemetryRetentionStatus `json:"telemetryRetention,omitempty"`
 	JournalHealth      *JournalHealthStatus      `json:"journalHealth,omitempty"`
 	StorageHealth      *StorageHealthStatus      `json:"storageHealth,omitempty"`
+	// RecoveryInventory is shared recovery-snapshot occupancy (#5343). A full
+	// inventory halts worktree cleanup and therefore unrelated runs, so it
+	// belongs on the instance summary the portal Overview renders rather than
+	// only in the individual stage failures it eventually causes.
+	RecoveryInventory *RecoveryInventoryStatus `json:"recoveryInventory,omitempty"`
 	// MemoryHighWater, MemoryGateEnabled, and FsyncDisabled surface
 	// GOOBERS_MEMORY_HIGH_WATER and GOOBERS_DISABLE_FSYNC (#4218), settings
 	// that were previously invisible outside the daemon process's own
@@ -132,8 +138,10 @@ const (
 
 // Gaggle is one configured workforce inventory item.
 type Gaggle struct {
+	Template       *gaggletemplate.Status  `json:"template,omitempty"`
 	Name           string                  `json:"name"`
 	DisplayName    string                  `json:"displayName"`
+	Enabled        bool                    `json:"enabled"`
 	Status         DefinitionStatus        `json:"status"`
 	Project        apiv1.RepoRef           `json:"project"`
 	Backlog        apiv1.BacklogRef        `json:"backlog"`
@@ -246,6 +254,7 @@ type WorkflowSummary struct {
 	EngineFallback *readmodel.EngineFallback `json:"engineFallback,omitempty"`
 	Identity       WorkflowReference         `json:"identity"`
 	DisplayName    string                    `json:"displayName"`
+	Enabled        bool                      `json:"enabled"`
 	Purpose        string                    `json:"purpose"`
 	Triggers       []apiv1.Trigger           `json:"triggers"`
 	Readiness      apiv1.ReadinessConditions `json:"readiness"`
@@ -433,6 +442,10 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	if s.sources.StorageHealthStats != nil {
 		storageHealth = storageHealthStatus(s.sources.StorageHealthStats())
 	}
+	var recoveryInventory *RecoveryInventoryStatus
+	if s.sources.RecoveryInventoryStats != nil {
+		recoveryInventory = s.sources.RecoveryInventoryStats()
+	}
 	projected, err := s.instanceLog.snapshot(ctx, s.sources.Layout.SchedulerDir())
 	if err != nil {
 		return Instance{}, err
@@ -464,6 +477,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		TelemetryRetention: telemetryRetention,
 		JournalHealth:      journalHealth,
 		StorageHealth:      storageHealth,
+		RecoveryInventory:  recoveryInventory,
 		MemoryHighWater:    memoryHighWater,
 		MemoryGateEnabled:  !memoryGateDisabled,
 		FsyncDisabled:      journal.FsyncDisabled(),
@@ -490,8 +504,10 @@ func (s *Local) gagglesUnannotated(ctx context.Context, request PageRequest) (Ga
 	for i := range inventory.definitions.Gaggles {
 		def := &inventory.definitions.Gaggles[i]
 		item := Gaggle{
+			Template:       gaggletemplate.InventoryStatus(s.sources.Layout.Root, def.Name),
 			Name:           def.Name,
 			DisplayName:    displayName(def.Spec.DisplayName, def.Name),
+			Enabled:        definitionEnabled(def.Spec.Enabled),
 			Status:         DefinitionStatusConfigured,
 			Project:        def.Spec.Project,
 			Backlog:        def.Spec.Backlog,
@@ -850,6 +866,7 @@ func (s *Local) workflowSummary(
 	return WorkflowSummary{
 		Identity:    WorkflowReference{Gaggle: def.Spec.Gaggle, Name: def.Name},
 		DisplayName: displayName(def.Spec.DisplayName, def.Name),
+		Enabled:     definitionEnabled(def.Spec.Enabled),
 		Purpose:     purpose,
 		Triggers:    triggers,
 		Readiness:   readiness,
@@ -993,6 +1010,10 @@ func displayName(configured, fallback string) string {
 		return configured
 	}
 	return fallback
+}
+
+func definitionEnabled(value *bool) bool {
+	return value == nil || *value
 }
 
 func sortedStrings(values []string) []string {

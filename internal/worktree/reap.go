@@ -101,6 +101,10 @@ type ReapResult struct {
 type ReapWarning struct {
 	Path string
 	Err  error
+	// Class names the remediation this failure calls for (#5264). Additive and
+	// zero-valued (CleanupWarningUnknown) unless the producer classified it, so
+	// every existing Reap warning keeps its exact current meaning.
+	Class CleanupWarningClass
 }
 
 // Reap scans every managed working copy under Root for worktrees whose

@@ -23,6 +23,7 @@ export function FailurePanel({
   errorsHref?: string;
 }) {
   const aborted = phase === "aborted";
+  const reasonParts = splitFailureReason(failure.message);
   return (
     <section aria-labelledby="failure-title" className="failure-panel" tabIndex={0}>
       <span className="escalation-icon">
@@ -34,30 +35,39 @@ export function FailurePanel({
             ? "Attention · Aborted · why this run was aborted"
             : "Attention · Failure · why this run failed"}
         </span>
-        <h2 id="failure-title">
-          {failure.code ? <span className="mono">{failure.code}</span> : null}
-          {failure.code ? " · " : null}
-          {failure.message}
-        </h2>
-        <dl className="escalation-facts">
-          {failure.stage && (
-            <div>
-              <dt>{aborted ? "Last stage" : "Failed stage"}</dt>
-              <dd>
-                <span className="mono">{failure.stage}</span>
-                {failure.attempt ? ` · attempt ${failure.attempt}` : ""}
-              </dd>
-            </div>
-          )}
+        <h2 id="failure-title">{aborted ? "Run aborted" : "Run failed"}</h2>
+        <dl className="failure-facts">
           {failure.code && (
             <div>
               <dt>Error code</dt>
               <dd className="mono">{failure.code}</dd>
             </div>
           )}
-          <div>
+          {failure.stage && (
+            <div>
+              <dt>{aborted ? "Last stage" : "Failed stage"}</dt>
+              <dd className="mono">{failure.stage}</dd>
+            </div>
+          )}
+          {failure.attempt !== undefined && (
+            <div>
+              <dt>Attempt</dt>
+              <dd>{failure.attempt}</dd>
+            </div>
+          )}
+          <div className="failure-reason">
             <dt>Reason</dt>
-            <dd>{failure.message}</dd>
+            <dd>
+              {reasonParts.length === 1 ? (
+                <p>{reasonParts[0]}</p>
+              ) : (
+                <ol aria-label="Failure cause chain" className="failure-reason-chain">
+                  {reasonParts.map((reason, index) => (
+                    <li key={`${index}-${reason}`}>{reason}</li>
+                  ))}
+                </ol>
+              )}
+            </dd>
           </div>
         </dl>
         {failure.causalEventSeq !== undefined &&
@@ -84,4 +94,41 @@ export function FailurePanel({
       </div>
     </section>
   );
+}
+
+function splitFailureReason(message: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+
+  for (let index = 0; index < message.length; index += 1) {
+    const character = message[index];
+    if (quoted && character === "\\" && !escaped) {
+      escaped = true;
+      continue;
+    }
+    if (character === '"' && !escaped) {
+      quoted = !quoted;
+    }
+    escaped = false;
+
+    if (!quoted && character === ":" && /\s/.test(message[index + 1] ?? "")) {
+      const part = message.slice(start, index).trim();
+      if (part) {
+        parts.push(part);
+      }
+      start = index + 1;
+      while (/\s/.test(message[start] ?? "")) {
+        start += 1;
+      }
+      index = start - 1;
+    }
+  }
+
+  const finalPart = message.slice(start).trim();
+  if (finalPart) {
+    parts.push(finalPart);
+  }
+  return parts.length > 0 ? parts : [message];
 }

@@ -1,12 +1,37 @@
 package recovery
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 )
+
+func TestRecoveryEventFoldUsesSupportedInventoryBound(t *testing.T) {
+	record := storageTestRecord()
+	events := make([]journal.Event, 129)
+	for i := range events {
+		current := record
+		current.SnapshotSHA = fmt.Sprintf("%040x", i+1)
+		var err error
+		current.Ref, err = RefForSnapshot(current.RunID, current.SnapshotSHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		events[i], err = RetainedEvent(current)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if records, err := RecordsFromEvents(events, record.RunID); err != nil || len(records) != 129 {
+		t.Fatalf("supported observation set: records=%d err=%v", len(records), err)
+	}
+	if records, err := RecordsFromEventsBounded(events, record.RunID, 128); err == nil || records != nil {
+		t.Fatalf("configured overflow returned partial records: records=%d err=%v", len(records), err)
+	}
+}
 
 // TestRecoveryEventFoldRoundTripsArchiveFormat pins #4862: a journal-observed
 // record must decode with the same ArchiveFormat the disk record carries, or

@@ -1052,20 +1052,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	var payload []byte
 	var completionErr error
 	if processErr == nil {
-		payload, completionErr = readCopilotCompletion(req, responseCapture, completionInResponse)
-		if errors.Is(completionErr, ErrNoCompletion) && nativeTranscriptPath != "" {
-			// Copilot does not reliably echo its final message to stdout under
-			// --silent --output-format=text with MCP tools attached: the answer
-			// lands in the session log while the stdout capture stays empty, so
-			// the read above reports "final response is not valid JSON" for a
-			// completion the model produced correctly. Recover it from the log
-			// before spending the contract-recovery turn (which re-runs the whole
-			// session and hits the same stdout gap, failing the stage twice and
-			// stranding committed work on the branch).
-			if recovered, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes); ok {
-				payload, completionErr = recovered, nil
-			}
-		}
+		payload, completionErr = readCopilotCompletionWithSessionFallback(
+			req, responseCapture, completionInResponse, nativeTranscriptPath)
 		if errors.Is(completionErr, ErrNoCompletion) {
 			// A clean Copilot exit can still omit its completion contract. Give
 			// the same session one contract-only turn without extending its budget.
@@ -1107,13 +1095,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 					runErr = err
 					completionErr = nil
 				} else {
-					payload, completionErr = readCopilotCompletion(req, recoveryCapture, completionInResponse)
-					if errors.Is(completionErr, ErrNoCompletion) && nativeTranscriptPath != "" {
-						// Same stdout gap on the recovery turn.
-						if recovered, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes); ok {
-							payload, completionErr = recovered, nil
-						}
-					}
+					// Same stdout gap can swallow the recovery turn's answer.
+					payload, completionErr = readCopilotCompletionWithSessionFallback(
+						req, recoveryCapture, completionInResponse, nativeTranscriptPath)
 				}
 			}
 		}
@@ -1170,6 +1154,35 @@ func applyCopilotUsageDocument(out *Outcome, path string) {
 	}
 }
 
+// readCopilotCompletionWithSessionFallback reads the completion for one Copilot
+// turn, falling back to the CLI's own session log when the normal read comes up
+// empty.
+//
+// Copilot does not reliably echo its final message to stdout under
+// --silent --output-format=text with MCP tools attached: the answer lands in the
+// session log while the stdout capture stays empty, so the primary read reports
+// "final response is not valid JSON" for a completion the model produced
+// correctly. Recovering from the log here avoids spending the contract-recovery
+// turn on a re-run that hits the same stdout gap, fails the stage twice, and
+// strands committed work on the branch.
+//
+// When the log does not rescue it either, the reason is folded into the error so
+// diagnosing the next occurrence does not require re-reading the transcript with
+// `goobers trace` (#4752).
+func readCopilotCompletionWithSessionFallback(
+	req RunRequest, capture *syncBuffer, completionInResponse bool, nativeTranscriptPath string,
+) ([]byte, error) {
+	payload, completionErr := readCopilotCompletion(req, capture, completionInResponse)
+	if !errors.Is(completionErr, ErrNoCompletion) || nativeTranscriptPath == "" {
+		return payload, completionErr
+	}
+	recovered, why, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes)
+	if ok {
+		return recovered, nil
+	}
+	return nil, fmt.Errorf("%w (session log: %s)", completionErr, why)
+}
+
 func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResponse bool) ([]byte, error) {
 	if !completionInResponse {
 		return readCompletion(req.Workspace, req.CompletionPath)
@@ -1208,22 +1221,34 @@ func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResp
 // already failed with ErrNoCompletion. The recovered payload goes through the
 // same extraction and envelope validation as any other completion, so a genuinely
 // malformed final message still fails.
-func readCopilotCompletionFromSession(mode Mode, path string, limit int64) ([]byte, bool) {
+func readCopilotCompletionFromSession(mode Mode, path string, limit int64) ([]byte, string, bool) {
 	if path == "" {
-		return nil, false
+		return nil, "no session log path", false
 	}
 	native, ok := readCopilotSessionTranscript(path, limit)
-	if !ok || len(native.finalMessage) == 0 {
-		return nil, false
+	if !ok {
+		return nil, "session log could not be read", false
 	}
-	payload := extractCompletionJSON(bytes.TrimSpace(native.finalMessage))
-	if !json.Valid(payload) {
-		return nil, false
+	if len(native.finalMessages) == 0 {
+		return nil, "session log holds no non-empty assistant message for the final turn", false
 	}
-	if err := validateCopilotCompletion(mode, payload); err != nil {
-		return nil, false
+	// Newest first. The completion is what the model ends the turn on, but the
+	// turn does not always end ON it: a trailing empty or prose sign-off
+	// assistant.message after the envelope used to mask a recoverable
+	// completion entirely (#4752). Walking back finds the envelope; validation
+	// below is unchanged, so a turn that genuinely produced none still fails.
+	for i := len(native.finalMessages) - 1; i >= 0; i-- {
+		payload := extractCompletionJSON(bytes.TrimSpace(native.finalMessages[i]))
+		if !json.Valid(payload) {
+			continue
+		}
+		if err := validateCopilotCompletion(mode, payload); err != nil {
+			continue
+		}
+		return payload, "", true
 	}
-	return payload, true
+	return nil, fmt.Sprintf("none of the final turn's %d assistant message(s) parsed as a completion envelope",
+		len(native.finalMessages)), false
 }
 
 func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, error) {

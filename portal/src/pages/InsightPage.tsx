@@ -1490,9 +1490,6 @@ function StageDistributions({
           <span>
             <i className="distribution-mark distribution-mark-p95" /> P95
           </span>
-          <span className="distribution-scale">
-            Scale 0 to {formatDuration(scaleMax)}
-          </span>
         </div>
         {visibleStages.map((stage) => (
           <StageDistributionRow filters={filters} key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`} scaleMax={scaleMax} stage={stage} />
@@ -1533,9 +1530,11 @@ function StageDistributionRow({
           })}
         >
           <span className="distribution-name">
-            <strong>{stage.stage}</strong>
+            <strong>
+              {stage.gaggle} / {stage.workflow}
+            </strong>
             <small>
-              {stage.gaggle} / {stage.workflow} · {stage.durationSamples} samples
+              {stage.stage} · {stage.durationSamples} samples
               {stage.stuckAbortedAttempts > 0 && (
                 <span
                   className="distribution-excluded"

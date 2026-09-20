@@ -123,12 +123,17 @@ function GaggleSection({
         <button
           aria-controls={contentId}
           aria-expanded={expanded}
-          className="goober-group-summary"
+          className={`goober-group-summary${gaggle.enabled ? "" : " definition-disabled"}`}
           onClick={() => setExpanded((current) => !current)}
           type="button"
         >
           <span>
-            <strong id={headingId}>{gaggle.displayName}</strong>
+            <span className="definition-nameplate">
+              <strong id={headingId}>{gaggle.displayName}</strong>
+              {!gaggle.enabled && (
+                <span className="definition-disabled-badge">Disabled</span>
+              )}
+            </span>
             <code>
               {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
             </code>
@@ -180,11 +185,16 @@ function GaggleSection({
                   );
                   return (
                     <div
-                      className="data-row workflow-row"
+                      className={`data-row workflow-row${workflow.enabled ? "" : " definition-disabled"}`}
                       key={`${workflow.identity.gaggle}/${workflow.identity.name}`}
                     >
                       <span className="row-primary">
-                        <span className="row-title">{workflow.displayName}</span>
+                        <span className="definition-nameplate">
+                          <span className="row-title">{workflow.displayName}</span>
+                          {!workflow.enabled && (
+                            <span className="definition-disabled-badge">Disabled</span>
+                          )}
+                        </span>
                         <span className="row-subtitle">{workflow.purpose}</span>
                         <CopyCommand
                           compact

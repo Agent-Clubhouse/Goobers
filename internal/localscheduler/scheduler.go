@@ -94,6 +94,15 @@ type WorkflowEntry struct {
 	// their per-run capability check below stays their only refusal path,
 	// byte-identical to previous releases.
 	PlacementRefusal string
+	// HarnessRefusal, when non-empty, marks only this workflow unavailable
+	// because a harness it references failed startup preflight. It is a
+	// permanent condition for the current configuration/startup snapshot;
+	// sibling workflows remain eligible (#5163).
+	HarnessRefusal string
+	// DisabledReason, when non-empty, marks this workflow or its gaggle
+	// disabled by spec.enabled=false (#5200): refused before admission with
+	// this named diagnostic, while in-flight runs finish normally.
+	DisabledReason string
 }
 
 func entryIdentity(entry WorkflowEntry) WorkflowIdentity {
@@ -273,6 +282,13 @@ type Scheduler struct {
 	// consecutivePoolSkips ages workflows that were due and otherwise ready
 	// but could not enter the shared instance concurrency pool.
 	consecutivePoolSkips map[WorkflowIdentity]int
+	// capacityRefusals tracks, per workflow, how long dispatch has been
+	// refused for capacity that is supposed to be about to exist. See
+	// recordDispatchOutcome and journalTriggerStalls (#5277).
+	capacityRefusals map[WorkflowIdentity]capacityRefusal
+	// capacityStarvedNotified bounds journalCapacityStarvation to one event per
+	// episode, the way triggerStallNotified does for #1868.
+	capacityStarvedNotified map[WorkflowIdentity]bool
 	// triggerStallNotified marks workflows already reported as having a
 	// silently stalled schedule trigger (#1868), so each stall episode
 	// journals one workflow.starved event instead of one per tick.
@@ -466,30 +482,32 @@ func WithTargetedPRValidator(validate func(context.Context, WorkflowEntry, int) 
 // a restart; a freshly-created instance can skip it (everything starts empty).
 func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Scheduler {
 	s := &Scheduler{
-		workflows:             make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
-		conditions:            NewConditions(),
-		log:                   log,
-		now:                   time.Now,
-		after:                 time.After,
-		demandPollTimeout:     demandPollTimeout,
-		triggers:              make(map[WorkflowIdentity]TriggerState),
-		reconciledRuns:        make(map[string]WorkflowIdentity),
-		admittedRuns:          make(map[string]runAdmission),
-		backlogLastCheck:      make(map[WorkflowIdentity]time.Time),
-		refillLastCheck:       make(map[WorkflowIdentity]time.Time),
-		idleBackoffs:          make(map[WorkflowIdentity][]idleBackoffState),
-		webhookBackoffs:       make(map[WorkflowIdentity]idleBackoffState),
-		pendingScheduleDemand: make(map[WorkflowIdentity]scheduledDemand),
-		consecutivePoolSkips:  make(map[WorkflowIdentity]int),
-		triggerStallNotified:  make(map[WorkflowIdentity]bool),
-		quotaResumePacing:     make(map[apiv1.Provider]bool),
-		authCircuits:          make(map[WorkflowIdentity]struct{}),
-		refillBlockedUntil:    make(map[WorkflowIdentity]time.Time),
-		refillBackoff:         30 * time.Second,
-		refillBackoffJitter:   5 * time.Second,
-		refillRandN:           rand.Int64N,
-		wake:                  make(chan struct{}, 1),
-		stateOwner:            newStateOwner(),
+		workflows:               make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
+		conditions:              NewConditions(),
+		log:                     log,
+		now:                     time.Now,
+		after:                   time.After,
+		demandPollTimeout:       demandPollTimeout,
+		triggers:                make(map[WorkflowIdentity]TriggerState),
+		reconciledRuns:          make(map[string]WorkflowIdentity),
+		admittedRuns:            make(map[string]runAdmission),
+		backlogLastCheck:        make(map[WorkflowIdentity]time.Time),
+		refillLastCheck:         make(map[WorkflowIdentity]time.Time),
+		idleBackoffs:            make(map[WorkflowIdentity][]idleBackoffState),
+		webhookBackoffs:         make(map[WorkflowIdentity]idleBackoffState),
+		pendingScheduleDemand:   make(map[WorkflowIdentity]scheduledDemand),
+		consecutivePoolSkips:    make(map[WorkflowIdentity]int),
+		capacityRefusals:        make(map[WorkflowIdentity]capacityRefusal),
+		capacityStarvedNotified: make(map[WorkflowIdentity]bool),
+		triggerStallNotified:    make(map[WorkflowIdentity]bool),
+		quotaResumePacing:       make(map[apiv1.Provider]bool),
+		authCircuits:            make(map[WorkflowIdentity]struct{}),
+		refillBlockedUntil:      make(map[WorkflowIdentity]time.Time),
+		refillBackoff:           30 * time.Second,
+		refillBackoffJitter:     5 * time.Second,
+		refillRandN:             rand.Int64N,
+		wake:                    make(chan struct{}, 1),
+		stateOwner:              newStateOwner(),
 	}
 	s.writeTriggerState = func(schedulerDir string, evaluations map[WorkflowIdentity]time.Time) error {
 		return writeTriggerEvaluations(schedulerDir, s.stateOwner, evaluations)
@@ -504,7 +522,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		s.triggers[identity] = ts
 		s.idleBackoffs[identity] = make([]idleBackoffState, len(e.Schedules))
 	}
-	s.journalPlacementRefusals(entries)
+	s.journalStartupRefusals(entries)
 	return s
 }
 
@@ -978,13 +996,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if s.authCircuitOpen(entryIdentity(entry)) {
 			continue
 		}
-		if entry.PlacementRefusal != "" {
-			// Refused by the startup constraint solve (#2860, checkpoint 3):
-			// journaled as workflow.refused when the entry was learned, and
-			// refused with the named diagnostic on any explicit Trigger.
-			// Skipped silently here (the auth-circuit idiom) so a permanently
-			// refused workflow neither spends provider polls nor floods the
-			// journal with a tick.skipped every tick.
+		if skipPermanentRefusedEntry(entry) {
 			continue
 		}
 		identity := entryIdentity(entry)
@@ -1133,6 +1145,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					scheduleIndexes = candidate.scheduleIndexes
 				}
 				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes, false, false, "")
+				s.recordDispatchOutcome(entryIdentity(candidate.entry), admitted, reason, now)
 				if admitted {
 					if kind == journal.TriggerSchedule && candidate.scheduleDemand {
 						s.consumePendingScheduleDemand(candidate.entry)
@@ -1165,9 +1178,18 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	// Evaluated after dispatch so a trigger that fired this tick has already
 	// refreshed its baseline and is never reported as stalled.
 	s.journalTriggerStalls(entries, now)
+	s.journalCapacityStarvation(entries, now)
 	if s.afterTick != nil {
 		s.afterTick(ctx)
 	}
+}
+
+func skipPermanentRefusedEntry(entry WorkflowEntry) bool {
+	// Disabled workflows/gaggles (#5200), broken harness dependencies (#5163),
+	// and startup placement refusals (#2860) are permanent until config changes.
+	// Skip them silently so they do not spend polls or flood the journal;
+	// explicit triggers still receive a named refusal through dispatch.
+	return entry.DisabledReason != "" || entry.HarnessRefusal != "" || entry.PlacementRefusal != ""
 }
 
 func (s *Scheduler) orderedGaggles(gaggles []string) []string {
@@ -1269,7 +1291,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	// Re-record refusals for the accepted configuration: the config.reloaded
 	// event above marks the boundary, so a status reader always sees the
 	// refusals current for the configuration now in force (#2860).
-	s.journalPlacementRefusals(entries)
+	s.journalStartupRefusals(entries)
 	evaluations := make(map[WorkflowIdentity]time.Time, len(triggers))
 	for identity, state := range triggers {
 		evaluations[identity] = state.LastEval
@@ -2459,40 +2481,8 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		return "", false, reason
 	}
 
-	// Checkpoint-3 refusal (#2860, dsl-3.0.md §5): a workflow the startup
-	// constraint solve marked unplaceable on the declared inventory is refused
-	// per run with the solver's named diagnostic — the proportionate
-	// replacement for the boot-kill this ruling removed. Permanent for the
-	// pinned inventory (restart-only, accept-and-pin), so not transient.
-	if entry.PlacementRefusal != "" {
-		reason := ReasonPlacementUnsatisfiable + ": " + entry.PlacementRefusal
-		s.journalEvent(journal.Event{
-			Type:     journal.EventTickSkipped,
-			Workflow: entry.Workflow,
-			Gaggle:   entry.Gaggle,
-			Reason:   s.refillRejectionReason(identity, now, triggerReason, reason),
-		})
-		span.Complete(telemetry.OutcomeBlocked, false)
-		return "", false, reason
-	}
-	// Schedule-time runner-capability match (RRQ-1/#1101): refuse the run
-	// before it can consume an admission slot when the runner does not satisfy
-	// a capability the workflow's gaggle/stages require. This is the runtime,
-	// per-run enforcement of the same invariant checkpoint 1 validates
-	// statically, served from the shared solver's self-runner view (#3506) so
-	// the two can never diverge — a missing claim fails a run to schedule
-	// rather than scheduling it to fail at run. Placement across a
-	// multi-runner inventory is dispatch-time work (#3513); until it lands,
-	// every stage of an admitted run executes on this host, which is exactly
-	// what this self-runner check answers for.
-	if missing := s.selfRunner.MissingCapabilities(entry.RequiredCapabilities); len(missing) > 0 {
-		reason := ReasonMissingCapability + ": " + strings.Join(missing, ", ")
-		s.journalEvent(journal.Event{
-			Type:     journal.EventTickSkipped,
-			Workflow: entry.Workflow,
-			Gaggle:   entry.Gaggle,
-			Reason:   s.refillRejectionReason(identity, now, triggerReason, reason),
-		})
+	if reason, refused := s.permanentDispatchRefusal(entry); refused {
+		s.journalDispatchRefusal(entry, identity, now, triggerReason, reason)
 		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}
@@ -2605,6 +2595,31 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		s.journalEvent(ev)
 	}()
 	return runID, true, ""
+}
+
+func (s *Scheduler) permanentDispatchRefusal(entry WorkflowEntry) (string, bool) {
+	if entry.DisabledReason != "" {
+		return ReasonDisabled + ": " + entry.DisabledReason, true
+	}
+	if entry.HarnessRefusal != "" {
+		return ReasonHarnessUnavailable + ": " + entry.HarnessRefusal, true
+	}
+	if entry.PlacementRefusal != "" {
+		return ReasonPlacementUnsatisfiable + ": " + entry.PlacementRefusal, true
+	}
+	if missing := s.selfRunner.MissingCapabilities(entry.RequiredCapabilities); len(missing) > 0 {
+		return ReasonMissingCapability + ": " + strings.Join(missing, ", "), true
+	}
+	return "", false
+}
+
+func (s *Scheduler) journalDispatchRefusal(entry WorkflowEntry, identity WorkflowIdentity, now time.Time, triggerReason, reason string) {
+	s.journalEvent(journal.Event{
+		Type:     journal.EventTickSkipped,
+		Workflow: entry.Workflow,
+		Gaggle:   entry.Gaggle,
+		Reason:   s.refillRejectionReason(identity, now, triggerReason, reason),
+	})
 }
 
 func (s *Scheduler) authCircuitOpen(identity WorkflowIdentity) bool {
@@ -2759,22 +2774,25 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 	return minPoll
 }
 
-// journalPlacementRefusals records one workflow.refused event per entry the
-// startup constraint solve marked unplaceable (#2860, dsl-3.0.md §5
-// checkpoint 3). Called when the scheduler learns a configuration — New and
-// Reload — so the instance journal and `goobers status` name every refusal
-// without waiting for a dispatch attempt. Best-effort like every other
-// decision record (the refusal is enforced by dispatch regardless).
-func (s *Scheduler) journalPlacementRefusals(entries []WorkflowEntry) {
+// journalStartupRefusals records one workflow.refused event per entry that
+// startup marked unavailable, whether from the placement solve (#2860) or a
+// required harness's preflight (#5163). Called when the scheduler learns a
+// configuration — New and Reload — so the instance journal and `goobers
+// status` name every refusal without waiting for a dispatch attempt.
+func (s *Scheduler) journalStartupRefusals(entries []WorkflowEntry) {
 	for _, entry := range entries {
-		if entry.PlacementRefusal == "" {
+		reason := entry.HarnessRefusal
+		if reason == "" {
+			reason = entry.PlacementRefusal
+		}
+		if reason == "" {
 			continue
 		}
 		s.journalEvent(journal.Event{
 			Type:     journal.EventWorkflowRefused,
 			Workflow: entry.Workflow,
 			Gaggle:   entry.Gaggle,
-			Reason:   entry.PlacementRefusal,
+			Reason:   reason,
 		})
 	}
 }

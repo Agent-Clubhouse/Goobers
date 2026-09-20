@@ -141,6 +141,7 @@ test("extension opens a server and dispatches actions and HTTP requests", async 
             };
             const associated = await snapshot();
             assert.equal(associated.connected, true);
+            assert.equal(associated.mode, "daemon");
             assert.deepEqual(associated.fleet, fleet);
             assert.deepEqual(associated.instance.warnings, warnings);
             assert.match(renderFleetPortalLink(associated.fleet), /href="https:\/\/fleet\.example\.test\/"/);

@@ -1,0 +1,181 @@
+package worktree
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// terminalCaptureDirectory is the single deterministic scratch checkout
+// WithRunBranchCheckout materializes under a repository's managed directory.
+// One fixed name — the rationale initializeRecoveryMirror's staging directory
+// uses — bounds the debris an interrupted capture can leave to exactly one
+// directory that the next capture reclaims, instead of growing a new random
+// path per crash.
+const terminalCaptureDirectory = "terminal-capture"
+
+// RepositoryKey is the managed directory name under a Manager's root for a
+// repository clone URL. Terminal recovery needs it to attribute the mirror it
+// found a run branch in back to a configured repository identity.
+func RepositoryKey(repoURL string) string { return repoKey(repoURL) }
+
+// WithRunBranchCheckout finds the managed mirror holding branch and, under the
+// repository lock, offers it to decide. Only if decide says the branch is worth
+// capturing is a temporary detached checkout of its tip materialized and handed
+// to visit. It reports whether any mirror had the branch at all.
+//
+// The two phases exist because materializing a checkout is by far the most
+// expensive thing this path can do — hundreds of milliseconds inside terminal
+// finalization, on every terminal run — while almost every run branch carries
+// nothing that needs protecting. decide answers that from the bare mirror
+// alone: it gets the mirror directory and the tip, so an ancestry test against
+// the base and a coverage test against the inventory both run without checking
+// anything out. A checkout happens only for a branch that is genuinely ahead
+// and genuinely unprotected.
+//
+// It is the terminal-time counterpart to a stage worktree: `git worktree
+// remove` never deletes a branch, so a run whose stage worktrees were all torn
+// down while it was still nonterminal still has its committed implementation
+// here, and nothing else can reach it.
+//
+// The search is over the managed mirrors themselves rather than over a
+// caller-supplied repository, so the cheap "this run has nothing on disk to
+// protect" answer is available BEFORE any configuration is resolved. A run
+// branch name embeds the run ID, so at most one mirror can hold it; mirrors are
+// visited in sorted order so a pathological duplicate resolves deterministically.
+//
+// The checkout is created and destroyed with the lowest-level git worktree
+// operations deliberately. Manager.Create and Manager.Remove run the cleanup
+// guards, and the recovery guard is exactly this function's caller, so routing
+// a capture scratch tree through them would recurse: the guard would try to
+// publish recovery for the throwaway checkout it was invoked to produce. This
+// path writes no marker and no ownership record, so no guard, reaper or
+// retention sweep ever sees it as an owned worktree.
+func (m *Manager) WithRunBranchCheckout(ctx context.Context, branch string, decide func(key, mirror, tip string) (bool, error), visit func(path, tip string) error) (bool, error) {
+	if decide == nil || visit == nil {
+		return false, fmt.Errorf("worktree: run-branch checkout requires a decision and a visitor")
+	}
+	if err := validRunBranch(branch); err != nil {
+		// A run whose journalled branch name is unusable has nothing this can
+		// safely act on. That is an absence, not a capture failure.
+		return false, nil
+	}
+	keys, err := managedRepositoryKeys(m.Root)
+	if err != nil || len(keys) == 0 {
+		return false, err
+	}
+	for _, key := range keys {
+		found, err := m.visitRunBranchInMirror(ctx, key, branch, decide, visit)
+		if found || err != nil {
+			return found, err
+		}
+	}
+	return false, nil
+}
+
+// managedRepositoryKeys lists the managed repository directories under root. A
+// missing root is an empty list: an instance that never provisioned a mirror
+// cannot be holding a run branch.
+func managedRepositoryKeys(root string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("worktree: list managed repositories: %w", err)
+	}
+	var keys []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			keys = append(keys, entry.Name())
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
+func (m *Manager) visitRunBranchInMirror(ctx context.Context, key, branch string, decide func(key, mirror, tip string) (bool, error), visit func(path, tip string) error) (bool, error) {
+	lock := m.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	dir := m.repoDirForKey(key)
+	if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
+		return false, nil
+	}
+	tip, err := runBranchTip(ctx, dir, branch)
+	if err != nil || tip == "" {
+		// An unreadable mirror is not this run's work going missing; the
+		// branch simply cannot be shown to be here.
+		return false, nil
+	}
+	capture, err := decide(key, dir, tip)
+	if err != nil || !capture {
+		return true, err
+	}
+	path := filepath.Join(m.Root, key, terminalCaptureDirectory)
+	if err := clearTerminalCapture(ctx, dir, path); err != nil {
+		return true, err
+	}
+	if err := runGit(ctx, dir, "worktree", "add", "--detach", "--", path, tip); err != nil {
+		return true, fmt.Errorf("worktree: check out run branch %q for terminal recovery: %w", branch, err)
+	}
+	visitErr := visit(path, tip)
+	return true, errors.Join(visitErr, clearTerminalCapture(ctx, dir, path))
+}
+
+// runBranchTip resolves branch's local tip in the mirror. An absent branch is
+// not an error: a run that never created one simply has nothing to capture.
+func runBranchTip(ctx context.Context, dir, branch string) (string, error) {
+	out, err := rawGitOutput(ctx, dir, nil, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}")
+	if err != nil {
+		var gitErr *gitCommandError
+		if errors.As(err, &gitErr) && gitErr.exitCode == 1 {
+			return "", nil
+		}
+		return "", fmt.Errorf("worktree: resolve run branch %q: %w", branch, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// clearTerminalCapture makes the scratch checkout absent and unregistered,
+// whether it is this call's own or one an interrupted earlier capture left
+// behind.
+//
+// It deliberately does NOT use `git worktree remove`. That command is the
+// package's ordinary teardown verb for worktrees a run owns, and this scratch
+// tree is not one: borrowing it would make a throwaway checkout
+// indistinguishable from a real removal to anything observing git invocations,
+// and its failure would have to be ignored here to stay harmless — which is
+// exactly the kind of swallowed error this file should not contain. Deleting
+// the directory and pruning is the lower-level equivalent: prune exists to reap
+// registrations whose directories are gone, both steps are checked, and a
+// capture that crashed before cleaning up self-heals on the next pass. Callers
+// hold the per-repo lock, so no concurrent add can race the prune.
+func clearTerminalCapture(ctx context.Context, dir, path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("worktree: remove terminal capture checkout: %w", err)
+	}
+	if err := runGit(ctx, dir, "worktree", "prune"); err != nil {
+		return fmt.Errorf("worktree: prune terminal capture registration: %w", err)
+	}
+	return nil
+}
+
+// validRunBranch refuses anything that is not a plain branch name, so a
+// corrupt journal cannot turn a capture into an option-bearing git invocation
+// or a traversal out of the managed mirror.
+func validRunBranch(branch string) error {
+	if branch == "" || strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "/") ||
+		strings.HasSuffix(branch, "/") || strings.Contains(branch, "..") ||
+		strings.ContainsAny(branch, " \t\x00\r\n:?*[\\~^") {
+		return fmt.Errorf("worktree: %q is not a usable run branch name", branch)
+	}
+	return nil
+}

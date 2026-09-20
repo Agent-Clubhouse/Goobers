@@ -3,6 +3,7 @@ import { RunTiming } from "../components/RunTiming";
 import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
+import { manualRunCommand, statusCommand } from "../manualRunCommand";
 import { useOperationalSnapshot } from "../operationalData";
 import {
   routeHash,
@@ -51,10 +52,12 @@ export function RunsPage({
       ? NARROW_RUNS_PAGE_SIZE
       : undefined;
   const query = useRunsHistory(client, filter, scope, pageSize);
-  const inventories =
+  const snapshot =
     inventoryQuery.state.status === "ready" || inventoryQuery.state.status === "stale"
-      ? inventoryQuery.state.data.inventories
-      : [];
+      ? inventoryQuery.state.data
+      : undefined;
+  const inventories = snapshot?.inventories ?? [];
+  const instanceRoot = snapshot?.instance.instanceRoot;
   const gaggleOptions = inventories.map(({ gaggle }) => ({
     name: gaggle.name,
     label: gaggle.displayName || gaggle.name,
@@ -108,7 +111,6 @@ export function RunsPage({
   return (
     <>
       <header className="page-heading">
-        <p className="page-kicker">Journal</p>
         <h1>Runs</h1>
         <p>
           {filters
@@ -208,13 +210,17 @@ export function RunsPage({
               >
                 Clear all filters
               </a>
-              <RecoveryCommand command="goobers status <instance>" />
+              {instanceRoot && <RecoveryCommand command={statusCommand(instanceRoot)} />}
             </div>
           ) : (
             <div className="inline-empty inline-empty-recovery">
               <strong>No runs recorded</strong>
               <span>Start a configured workflow to create the first run journal.</span>
-              <RecoveryCommand command="goobers run <workflow> <instance>" />
+              {instanceRoot && (
+                <RecoveryCommand
+                  command={manualRunCommand("<gaggle>", "<workflow>", instanceRoot)}
+                />
+              )}
             </div>
           )
         ) : (

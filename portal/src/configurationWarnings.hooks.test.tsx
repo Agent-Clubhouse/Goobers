@@ -5,6 +5,7 @@ import { ConfigurationWarnings } from "./components/ConfigurationWarnings";
 import {
   type ConfigurationWarningClient,
   type ConfigurationWarningSource,
+  configurationWarningKey,
   useConfigurationWarnings,
 } from "./configurationWarnings";
 
@@ -40,6 +41,27 @@ const warning: ValidationWarning = {
   explanation: "expected output is not emitted by the configured result file",
 };
 const noWarnings: readonly ValidationWarning[] = [];
+
+it("invalidates a safety dismissal when configuration or binary identity changes", () => {
+  const safety: NonNullable<ValidationWarning["safety"]> = {
+    version: "goobers.dev/workflow-safety/v1",
+    id: "config-and-binary-a",
+    gaggle: "core",
+    workflow: "implementation",
+    stage: "review",
+    witnessPath: ["review(fail)", "@escalate"],
+    confidence: "high",
+    coverage: "modeled",
+    impact: "Findings may not reach the PR.",
+    action: "Publish the verdict before parking.",
+    limitations: "Static wiring only.",
+  };
+  const first = { ...warning, safety };
+  expect(configurationWarningKey(first)).toBe(configurationWarningKey({ ...first }));
+  expect(configurationWarningKey(first)).not.toBe(
+    configurationWarningKey({ ...first, safety: { ...safety, id: "config-and-binary-b" } }),
+  );
+});
 
 interface PendingRead {
   resolve: (value: { warnings: ValidationWarning[] }) => void;

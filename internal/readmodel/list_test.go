@@ -273,6 +273,9 @@ func TestListPlansUseCoveringIndexes(t *testing.T) {
 		{"gaggle+workflow", ListOptions{Gaggle: "gaggle-000", Workflow: "wf-0", Limit: 50}, "idx_run_gaggle_workflow_recency"},
 		{"phase", ListOptions{Phase: journal.PhaseRunning, Limit: 50}, "idx_run_phase_recency"},
 		{"gaggle+phase", ListOptions{Gaggle: "gaggle-000", Phase: journal.PhaseRunning, Limit: 50}, "idx_run_gaggle_phase_recency"},
+		{"gaggle+workflow+phase", ListOptions{
+			Gaggle: "gaggle-000", Workflow: "wf-0", Phase: journal.PhaseRunning, Limit: 50,
+		}, "idx_run_gaggle_workflow_phase_recency"},
 		// With a cursor, so the deep-page plan is asserted too rather than assumed
 		// to match the first page's.
 		{"gaggle deep page", ListOptions{

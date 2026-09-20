@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsync"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 func devnull(t *testing.T) *os.File {
@@ -52,6 +54,7 @@ spec:
 }
 
 func TestRun_RenderMode(t *testing.T) {
+	requireRenderSupport(t)
 	cfg := writeRepo(t)
 	out := t.TempDir()
 	code := run([]string{"--config", cfg, "--out", out}, devnull(t), devnull(t))
@@ -70,6 +73,7 @@ func TestRun_RenderMode(t *testing.T) {
 // directory nested under the config repo must stay idempotent — the second
 // render must not re-ingest the first render's output.
 func TestRun_RenderIdempotentNestedOut(t *testing.T) {
+	requireRenderSupport(t)
 	cfg := writeRepo(t)
 	out := filepath.Join(cfg, "rendered") // nested under the config root
 	for i := 0; i < 2; i++ {
@@ -106,6 +110,9 @@ func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 		{name: "invalid config", makeInvalid: true, wantCode: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if !tc.makeInvalid {
+				requireRenderSupport(t)
+			}
 			cfg := warningRepo(t, tc.makeInvalid)
 			stderr := outputFile(t)
 			code := run([]string{"--config", cfg, "--out", t.TempDir()}, devnull(t), stderr)
@@ -116,6 +123,10 @@ func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 			var compatibilityOutput strings.Builder
 			for _, line := range strings.Split(output, "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "WARNING VER002 ") {
+					continue
+				}
+				fields := strings.Fields(line)
+				if len(fields) > 1 && fields[0] == "WARNING" && slices.Contains(workflowsafety.Codes(), fields[1]) {
 					continue
 				}
 				compatibilityOutput.WriteString(line)

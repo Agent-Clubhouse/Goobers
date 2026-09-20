@@ -37,13 +37,12 @@ const (
 	LabelAttempt = "goobers.dev/attempt"
 	// LabelPodAttempt is the optional physical dispatch ordinal across visits.
 	LabelPodAttempt = "goobers.dev/pod-attempt"
+	// LabelInstance scopes orphan reconciliation to one durable Goobers
+	// instance even when several instances share Kubernetes namespaces.
+	LabelInstance = "goobers.dev/instance"
 	// LabelOwner names the dispatcher process that created the pod
-	// (Config.Owner, sanitized to label grammar). Decision 003 wires
-	// SweepOrphans on the WORKER, and a cluster legitimately runs more than
-	// one: without this the sweep's selector matches a sibling worker's live
-	// stage pods too, and one worker's restart would dispose another's
-	// in-flight attempts. Scoped by owner, a sweep can only ever reach pods
-	// it created.
+	// (Config.Owner, sanitized to label grammar). It is diagnostic provenance;
+	// the stable LabelInstance, not this rollout-scoped value, bounds sweeps.
 	LabelOwner = "goobers.dev/owner"
 )
 
@@ -458,6 +457,13 @@ const (
 	// temp — decision 006).
 	LinuxTmpPath   = "/tmp"
 	WindowsTmpPath = WindowsHomePath + `\AppData\Local\Temp`
+	// LinuxGoCachePath / WindowsGoCachePath is the durable module cache volume
+	// stage pods mount outside tmp:ephemeral so fresh pods reuse downloaded
+	// modules. GOCACHE remains under the attempt-private temp root.
+	LinuxGoCachePath   = "/var/goobers/cache"
+	WindowsGoCachePath = `C:\var\goobers\cache`
+	goBuildCacheVolume = "go-build-cache"
+	goBuildCacheClaim  = "goobers-go-build-cache"
 )
 
 // Node scheduling contract.
@@ -1008,8 +1014,8 @@ func restrictionSet(restrictions []string) map[string]bool {
 // exactly one runner-class label DERIVED from the resolved restriction set
 // via the single shared producer (runnercap.RunnerClassValue, delivery
 // decision 015), the role marker the baseline policies select on, the
-// run/attempt identity the reconcile sweep keys on, and — when this
-// dispatcher declares one — the owner the sweep scopes itself to.
+// run/attempt identity the reconcile sweep keys on, the stable instance sweep
+// domain, and — when this dispatcher declares one — its diagnostic owner.
 func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]string {
 	labels := map[string]string{
 		LabelManagedBy:             ManagedByValue,
@@ -1019,14 +1025,14 @@ func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]st
 		LabelStage:                 sanitizeNameSegment(attempt.Stage, 63),
 		LabelAttempt:               fmt.Sprintf("%d", attempt.Number),
 	}
+	if instance.ValidIdentity(cfg.InstanceID) {
+		labels[LabelInstance] = cfg.InstanceID
+	}
 	if attempt.PodAttempt > 0 {
 		labels[LabelPodAttempt] = fmt.Sprint(attempt.PodAttempt)
 	}
-	// Absent owner stamps nothing rather than an "unknown" placeholder: a
-	// placeholder is a value a second ownerless dispatcher would also match,
-	// which is the cross-worker disposal this label exists to prevent. An
-	// unlabeled pod is instead unreachable by any sweep, and SweepOrphans
-	// refuses to run without an owner at all.
+	// Absent owner stamps nothing rather than an "unknown" placeholder; owner
+	// is provenance, while LabelInstance is the sweep's stable safety scope.
 	if owner := cfg.ownerLabel(); owner != "" {
 		labels[LabelOwner] = owner
 	}
@@ -1372,7 +1378,7 @@ func stampsPlaneEnv(cfg Config, attempt Attempt) bool {
 // filters at all — and closing it means validating declared env values or
 // reserving the GOOBERS_ prefix for env keys, which is its own change.
 func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string) []string {
-	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough)+len(DispatcherRunIdentityEnv)+len(alreadyOnContainer))
+	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough)+len(DispatcherRunIdentityEnv)+len(alreadyOnContainer)+1)
 	names = append(names, sortedKeys(attempt.Env)...)
 	for _, key := range sortedKeys(attempt.Inputs) {
 		names = append(names, InputEnvVar(key))
@@ -1390,6 +1396,10 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 	// plane environment and silently take the FILE branch against a scratch
 	// volume — #3725's restriction-conditional shape, wearing #3897's clothes.
 	names = append(names, DispatcherPlaneEnv...)
+	// GOMODCACHE is stamped after this allowlist is generated when the
+	// durable cache volume is mounted. Keep it through env:default-deny's
+	// in-pod rebuild so restricted stage pods reuse the durable module cache.
+	names = append(names, "GOMODCACHE")
 	names = append(names, alreadyOnContainer...)
 	names = append(names, cfg.EnvPassthrough...)
 	return names
@@ -1514,6 +1524,26 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "home", MountPath: LinuxHomePath})
 		container.Env = append(container.Env, corev1.EnvVar{Name: "HOME", Value: LinuxHomePath})
 	}
+
+	cachePath := LinuxGoCachePath
+	if windows {
+		cachePath = WindowsGoCachePath
+	}
+	spec.Volumes = append(spec.Volumes, corev1.Volume{
+		Name: goBuildCacheVolume,
+		VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+			ClaimName: goBuildCacheClaim,
+		}},
+	})
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name: goBuildCacheVolume, MountPath: cachePath,
+	})
+	container.Env = slices.DeleteFunc(container.Env, func(env corev1.EnvVar) bool {
+		return env.Name == "GOMODCACHE"
+	})
+	container.Env = append(container.Env,
+		corev1.EnvVar{Name: "GOMODCACHE", Value: cachePath},
+	)
 }
 
 // stampSecurity applies the restriction bindings by OS (decisions 006/007,

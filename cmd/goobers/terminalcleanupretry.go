@@ -19,6 +19,18 @@ var (
 
 const terminalCleanupRetryBatch = 8
 
+// terminalCleanupRetryPassBudget bounds one target's share of a pass (#5264).
+//
+// The loop already wraps each pass in terminalCleanupRetryTimeout, but that is a
+// context deadline: it cancels whatever is in flight when it fires, and one
+// target with a large retained population could consume the entire window and
+// hard-cancel mid-cleanup. A per-target budget instead makes the target DECLINE
+// to start further work and report the deferral, which leaves the durable
+// records consistent, lets the remaining targets have their turn, and is
+// deliberately well inside the context deadline so the graceful bound is the
+// one that normally fires.
+const terminalCleanupRetryPassBudget = 20 * time.Second
+
 type terminalCleanupRetryTarget struct {
 	name      string
 	rootKey   string
@@ -184,6 +196,7 @@ func (s *terminalCleanupRetryState) run(ctx context.Context, targets []terminalC
 		target := targets[index]
 		report, err := target.manager.RetryCleanupPending(ctx, worktree.CleanupRetryOptions{
 			After: s.cursors[target.manager], Limit: remaining,
+			PassBudget: terminalCleanupRetryPassBudget,
 		})
 		s.cursors[target.manager] = report.Next
 		remaining -= report.Attempted

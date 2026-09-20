@@ -1,9 +1,12 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
+
+const portalStyles = readFileSync("src/styles.css", "utf8");
 
 describe("goobers roster page", () => {
   it("is reachable from primary nav and lists every goober across gaggles", async () => {
@@ -21,6 +24,24 @@ describe("goobers roster page", () => {
       .toHaveAttribute("aria-expanded", "false");
     expect(screen.getByRole("button", { name: /Developer tools/ }))
       .toHaveAttribute("aria-expanded", "false");
+    expect(portalStyles).toMatch(
+      /\.goober-roster-page\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.goober-card-toggle-label\s*\{[^}]*display:\s*flex/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.goober-card \.goober-summary\s*\{[^}]*grid-template-columns:\s*180px\s+minmax\(0,\s*1fr\)/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.goober-card \.goober-summary\s*\{[^}]*gap:\s*12px\s+48px/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.goober-summary-basics\s*\{[^}]*gap:\s*10px/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.goober-detail \.property-list div\s*\{[^}]*grid-template-columns:\s*120px\s+minmax\(0,\s*1fr\)/s,
+    );
   });
 
   it("filters by owning gaggle and keeps the group disclosure keyboard accessible", async () => {
@@ -28,6 +49,8 @@ describe("goobers roster page", () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
     const summary = await screen.findByRole("button", { name: /Core product/ });
+    expect(summary).toHaveClass("definition-disabled");
+    expect(within(summary).getByText("Disabled")).toBeInTheDocument();
     expect(summary).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Core implementer")).not.toBeInTheDocument();
     expect(screen.queryByText("Tools implementer")).not.toBeInTheDocument();

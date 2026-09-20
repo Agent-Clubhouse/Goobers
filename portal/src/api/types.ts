@@ -324,7 +324,7 @@ export interface ConfigAuthoringErrorEnvelope {
 }
 
 export interface Health extends ContractVersion {
-	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string };
+	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
   startup?: { phase: string; target?: string; since: string };
   build?: BuildMetadata;
   readState?: ReadState;
@@ -390,6 +390,7 @@ export interface Instance extends ContractVersion {
   telemetryRetention?: TelemetryRetentionStatus;
   journalHealth?: JournalHealthStatus;
   storageHealth?: StorageHealthStatus;
+  recoveryInventory?: RecoveryInventoryStatus;
   memoryHighWater?: number;
   memoryGateEnabled: boolean;
   fsyncDisabled: boolean;
@@ -417,6 +418,32 @@ export interface StorageHealthStatus {
   criticalFloorPercent?: number;
   measuredAt?: string;
   error?: string;
+}
+
+/**
+ * Shared recovery-snapshot inventory occupancy (#5343). A full inventory does
+ * not degrade the instance, it stops it: worktree cleanup needs a durable
+ * recovery handoff, and a worktree that cannot be cleaned cannot be reused.
+ */
+export interface RecoveryInventoryStatus {
+  state: "healthy" | "warning" | "exhausted" | "unavailable";
+  /** Occupied slots, including incomplete reservations. */
+  used: number;
+  limit: number;
+  /** Reservations holding no interpretable record. They still occupy slots. */
+  unreadable: number;
+  /**
+   * Snapshots held as pinned mirror refs with no bundle because the inventory
+   * was full when they were captured. They occupy no slot, so they are not
+   * part of `used`, and they are promoted to bundles as capacity frees.
+   */
+  overflow: number;
+  highWaterPercent: number;
+  earliestRetainUntil?: string;
+  inventoryRoot?: string;
+  policySource?: string;
+  error?: string;
+  observedAt: string;
 }
 
 export interface TelemetryRetentionStatus {
@@ -464,6 +491,28 @@ export interface ValidationWarning {
   severity: ValidationSeverity;
   scope: string;
   explanation: string;
+  safety?: WorkflowSafetyDetails;
+}
+
+export interface WorkflowSafetyDetails {
+  version: string;
+  id: string;
+  gaggle: string;
+  workflow: string;
+  stage: string;
+  file?: string;
+  line?: number;
+  col?: number;
+  witnessPath: string[];
+  confidence: string;
+  coverage: string;
+  impact: string;
+  action: string;
+  limitations: string;
+  budget?: number;
+  budgetSource?: string;
+  suppressedCode?: string;
+  suppressionReason?: string;
 }
 
 export interface RepoRef {
@@ -483,8 +532,21 @@ export interface BacklogRef {
 }
 
 export interface Gaggle {
+  template?: {
+    state: string;
+    installed: string;
+    candidate?: string;
+    candidateDigest?: string;
+    checkedAt: string;
+    lastSuccess: string;
+    changes?: string[];
+    conflicts?: string[];
+    error?: string;
+    pendingBackprop: boolean;
+  };
   name: string;
   displayName: string;
+  enabled: boolean;
   status: DefinitionStatus;
   project: RepoRef;
   backlog: BacklogRef;
@@ -588,6 +650,7 @@ export interface WorkflowSummary {
   engineFallback?: EngineFallback;
   identity: WorkflowReference;
   displayName: string;
+  enabled: boolean;
   purpose: string;
   triggers: WorkflowTrigger[];
   readiness: ReadinessConditions;
@@ -1045,6 +1108,9 @@ export interface TelemetryCostOptions {
   provider?: string;
   scope: TelemetryCostScope;
   id?: string;
+  gaggle?: string;
+  workflow?: string;
+  stage?: string;
   since: string;
   until: string;
 }

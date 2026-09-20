@@ -811,6 +811,13 @@ type WorkflowSpec struct {
 	// DisplayName is the human-facing name shown on the portal.
 	// +optional
 	DisplayName string `json:"displayName,omitempty" yaml:"displayName,omitempty"`
+	// Enabled selects whether new runs may start for this workflow. Null or
+	// omitted means true (enabled). Setting false blocks new run starts
+	// without touching schedule or backlog configuration; in-flight runs
+	// finish normally.
+	// +optional
+	// +nullable
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// Triggers declare when the scheduler may start a run (WF-010). A single
 	// type=manual trigger declares a workflow that never auto-fires.
 	// +kubebuilder:validation:MinItems=1

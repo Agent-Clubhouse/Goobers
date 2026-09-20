@@ -601,16 +601,6 @@ export interface OverviewLoadOptions {
   onPartial?: (overview: OperationalOverview) => void;
 }
 
-export function workflowDisplayName(
-  overview: Pick<OperationalOverview, "workflowNames">,
-  run: RunSummary,
-): string {
-  return (
-    overview.workflowNames.get(`${run.gaggle}/${run.workflow}`) ??
-    `${run.gaggle} / ${run.workflow}`
-  );
-}
-
 export function useOperationalOverview(client: DaemonClient): OperationalOverviewQuery {
   const { cache, freshness, isFresh, subscribe } = useLiveData();
   const cached = cache.get<OperationalOverview>(OPERATIONAL_OVERVIEW_CACHE_KEY);
@@ -735,6 +725,7 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
 export interface GaggleSummary {
   name: string;
   displayName: string;
+  enabled: boolean;
   status: Gaggle["status"];
 }
 
@@ -771,6 +762,7 @@ export function useGaggleList(client: DaemonClient): GaggleListQuery {
         const loaded = gaggles.map((gaggle) => ({
           name: gaggle.name,
           displayName: gaggle.displayName,
+          enabled: gaggle.enabled,
           status: gaggle.status,
         }));
         if (signal.aborted) {
@@ -1500,8 +1492,10 @@ function workflowActivityDependencies(gaggle: string): readonly DataCacheDepende
 
 function gaggleDefinition(gaggle: Gaggle): GaggleDefinition {
   return {
+    template: gaggle.template,
     name: gaggle.name,
     displayName: gaggle.displayName,
+    enabled: gaggle.enabled,
     status: gaggle.status,
     project: gaggle.project,
     backlog: gaggle.backlog,
@@ -1515,6 +1509,7 @@ function workflowDefinition(workflow: WorkflowSummary): WorkflowDefinitionSummar
   return {
     identity: workflow.identity,
     displayName: workflow.displayName,
+    enabled: workflow.enabled,
     purpose: workflow.purpose,
     triggers: workflow.triggers,
     readiness: workflow.readiness,

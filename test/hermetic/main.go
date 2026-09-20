@@ -136,7 +136,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	tools, compilerName, err := resolveTools(invocation.goCommand)
+	tools, compilerCommand, err := resolveTools(invocation.goCommand)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
 		return 1
@@ -184,7 +184,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	goArgs := goCommandArgs(invocation)
 	command := exec.Command(filepath.Join(toolDir, executableName("go")), goArgs...)
 	command.Dir = root
-	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerName, goroot)
+	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerCommand, goroot)
 
 	collector := &diagnosticCollector{allowed: allowed, tools: make(map[string]struct{})}
 	stdoutWriter := &diagnosticWriter{destination: stdout, collector: collector}
@@ -448,14 +448,26 @@ func resolveTools(goCommand string) ([]resolvedTool, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("required race-detector C compiler %q is unavailable: %w", compilerCommand, err)
 	}
+	compilerPath, err = filepath.Abs(compilerPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve race-detector C compiler path %q: %w", compilerPath, err)
+	}
 	compilerName := filepath.Base(compilerCommand)
 	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(compilerName), ".exe") {
 		compilerName += ".exe"
 	}
-	if _, exists := toolNames(tools)[compilerName]; !exists {
+	compilerEnvironmentCommand := compilerName
+	if runtime.GOOS == "windows" {
+		// GCC distributions such as WinLibs resolve cc1, assembler/linker, and
+		// runtime DLLs relative to gcc.exe. Hard-linking or copying only gcc.exe
+		// into the isolated PATH loses that installation layout and makes cgo
+		// fail before tests start. Keep CC pinned to the one resolved executable
+		// instead of exposing the compiler's entire bin directory on PATH.
+		compilerEnvironmentCommand = compilerPath
+	} else if _, exists := toolNames(tools)[compilerName]; !exists {
 		tools = append(tools, resolvedTool{name: compilerName, path: compilerPath})
 	}
-	return tools, compilerName, nil
+	return tools, compilerEnvironmentCommand, nil
 }
 
 func platformToolSpecs(goos string) []toolSpec {
@@ -602,13 +614,13 @@ func resolveGoroot(goPath string) (string, error) {
 	return goroot, nil
 }
 
-func hermeticEnvironment(base []string, toolPath, compilerName, goroot string) []string {
+func hermeticEnvironment(base []string, toolPath, compilerCommand, goroot string) []string {
 	excluded := map[string]string{
 		"GOOBERS_OTLP_ENDPOINT": "",
 		"GOOBERS_OTLP_INSECURE": "",
 	}
 	overrides := map[string]string{
-		"CC":          compilerName,
+		"CC":          compilerCommand,
 		"GO":          executableName("go"),
 		"GOROOT":      goroot,
 		"GOENV":       "off",

@@ -53,6 +53,12 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
 			return PullRequestResult{}, err
 		}
+		// #5266: record the confirmed effect. A successful create or update
+		// previously returned without recording anything, so Work Items —
+		// which lists RECORDED provider effects — had no receipt for a PR that
+		// demonstrably existed. Recorded only after p.do returns nil: a failed
+		// or conflicting request must not count as a confirmed mutation.
+		p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "update", req.Repository)
 		return adoPullRequestResult(out), nil
 	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
@@ -70,6 +76,7 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestResult{}, err
 	}
+	p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "create", req.Repository)
 	return adoPullRequestResult(out), nil
 }
 
@@ -295,7 +302,7 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"status": "abandoned"}, &out); err != nil {
 		return ClosePullRequestResult{}, err
 	}
-	p.recordMutation(ctx, "pr", req.PullID, "close")
+	p.recordMutation(ctx, "pr", req.PullID, "close", req.Repository)
 	if req.Comment != "" {
 		if _, err := p.postAttributedPullRequestThreadComment(ctx, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
 			return ClosePullRequestResult{}, err
@@ -351,7 +358,7 @@ func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequ
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestStatusResult{}, err
 	}
-	p.recordMutation(ctx, "pr", req.PullID, "status")
+	p.recordMutation(ctx, "pr", req.PullID, "status", req.Repository)
 	return PullRequestStatusResult{ID: out.ID}, nil
 }
 

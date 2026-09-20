@@ -106,9 +106,10 @@ type workerSeams struct {
 // cache in place, which is what lets an in-flight attempt keep the kit it was
 // handed while the next attempt gets the new tree.
 type workerConfigSnapshot struct {
-	digest string
-	cfg    *instance.Config
-	set    *instance.ConfigSet
+	digest        string
+	gaggleDigests map[string]string
+	cfg           *instance.Config
+	set           *instance.ConfigSet
 	// instructions holds every configured goober's instruction body, and
 	// skillPackages every gaggle's resolved skill files, read ONCE when this
 	// snapshot was taken.
@@ -144,6 +145,7 @@ type builtGaggleSeams struct {
 func (s *workerConfigSnapshot) withGaggle(gaggle string, built *builtGaggleSeams) *workerConfigSnapshot {
 	next := &workerConfigSnapshot{
 		digest:        s.digest,
+		gaggleDigests: s.gaggleDigests,
 		cfg:           s.cfg,
 		set:           s.set,
 		instructions:  s.instructions,
@@ -266,16 +268,16 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if err != nil {
 		return nil, fmt.Errorf("worker: secret stores: %w", err)
 	}
-	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, "")
-	if err != nil {
-		return nil, fmt.Errorf("worker: agent:model credential: %w", err)
-	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, modelCredential)
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
 	if err != nil {
 		return nil, fmt.Errorf("worker: harness preflight: %w", err)
 	}
 
 	scoped := l.ForGaggle(gaggle)
+	appliedConfigDigest, ok := snapshot.gaggleDigests[gaggle]
+	if !ok {
+		return nil, fmt.Errorf("worker: deterministic-stage config digest for gaggle %q is missing from snapshot", gaggle)
+	}
 	project := gaggleProjectRef(set, gaggle)
 	runnerCfg, credentialedMgr, err := buildRunnerConfig(runnerCompositionInput{
 		ExecutionFence: func(ctx context.Context, env apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
@@ -305,7 +307,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		HarnessInfo:         harnessInfo,
 		CredentialStores:    stores,
 		SandboxPosture:      instance.EffectiveAgenticSandbox(cfg, nil),
-		AppliedConfigDigest: snapshot.digest,
+		AppliedConfigDigest: appliedConfigDigest,
 		// Provider quota is a scheduler-side concern, not the executor's.
 		ProviderQuota: nil,
 	})

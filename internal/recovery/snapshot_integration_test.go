@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(repository, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
+
 	}
 	recoveryTestGit(t, repository, "add", ".")
 	recoveryTestGit(t, repository, "commit", "-m", "base")
@@ -59,6 +61,17 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	subdirectory := filepath.Join(repository, "nested")
 	if err := os.Mkdir(subdirectory, 0o700); err != nil {
 		t.Fatal(err)
+	}
+	pathList, err := snapshotPaths(context.Background(), repository, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := os.ReadFile(pathList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Split(strings.TrimSuffix(string(selected), "\x00"), "\x00"), []string{"[literal].txt", "new.bin"}; !slices.Equal(got, want) {
+		t.Fatalf("snapshot paths = %q, want only non-ignored untracked paths %q", got, want)
 	}
 	identityTime := storageTestRecord().CreatedAt
 	snapshot, err := CaptureSnapshot(context.Background(), subdirectory, "run-1", identityTime)
@@ -108,5 +121,81 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(repository, ".git", "info", "attributes")); err != nil || !bytes.Equal(got, attributes) {
 		t.Fatalf("capture changed source attributes: %q %v", got, err)
+	}
+}
+
+func TestIntegrationCaptureSnapshotWithoutUntrackedPathsExcludesIgnoredFiles(t *testing.T) {
+	testdep.Require(t, "git")
+	for _, state := range []string{"clean", "modified", "deleted"} {
+		t.Run(state, func(t *testing.T) {
+			repository := t.TempDir()
+			recoveryTestGit(t, repository, "init", "--initial-branch=main")
+			for name, content := range map[string]string{
+				".gitignore":  "ignored.out\nnode_modules/\n",
+				"tracked.txt": "base\n",
+			} {
+				if err := os.WriteFile(filepath.Join(repository, name), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recoveryTestGit(t, repository, "add", ".")
+			recoveryTestGit(t, repository, "commit", "-m", "base")
+			head := recoveryTestGit(t, repository, "rev-parse", "HEAD")
+			indexPath := filepath.Join(repository, ".git", "index")
+			before, err := os.ReadFile(indexPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(repository, "node_modules"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"ignored.out", "node_modules/generated.js"} {
+				if err := os.WriteFile(filepath.Join(repository, name), []byte("must not be captured"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tracked := filepath.Join(repository, "tracked.txt")
+			switch state {
+			case "modified":
+				if err := os.WriteFile(tracked, []byte("changed\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "deleted":
+				if err := os.Remove(tracked); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if paths := recoveryTestGit(t, repository, "ls-files", "--others", "--exclude-standard"); paths != "" {
+				t.Fatalf("expected no selected untracked paths, got %q", paths)
+			}
+			snapshot, err := CaptureSnapshot(context.Background(), repository, "run-no-untracked", storageTestRecord().CreatedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := recoveryTestGit(t, repository, "ls-tree", "-r", "--name-only", snapshot, "ignored.out", "node_modules"); got != "" {
+				t.Fatalf("empty selected path list captured ignored files: %q", got)
+			}
+			switch state {
+			case "clean":
+				if got := recoveryTestGit(t, repository, "diff", "--name-only", head, snapshot); got != "" {
+					t.Fatalf("clean worktree snapshot changed files: %q", got)
+				}
+			case "modified":
+				if got := recoveryTestGit(t, repository, "show", snapshot+":tracked.txt"); got != "changed" {
+					t.Fatalf("tracked modification lost: %q", got)
+				}
+			case "deleted":
+				if got := recoveryTestGit(t, repository, "ls-tree", "--name-only", snapshot, "tracked.txt"); got != "" {
+					t.Fatalf("tracked deletion lost: %q", got)
+				}
+			}
+			if got := recoveryTestGit(t, repository, "rev-parse", "HEAD"); got != head {
+				t.Fatalf("capture changed HEAD: %s", got)
+			}
+			after, err := os.ReadFile(indexPath)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("capture changed caller's index: %v", err)
+			}
+		})
 	}
 }

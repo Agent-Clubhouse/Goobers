@@ -54,6 +54,14 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 		return err
 	}
 	results, worktreeErr := wtMgr.FinalizeRun(context.Background(), runID)
+	// After existing worktrees are finalized, and before renewal: a run whose
+	// worktrees were all removed while it was still nonterminal has its only
+	// implementation on the mirror's run branch, and nothing but this capture
+	// publishes it. Deferring the failure keeps the run active for a retry
+	// exactly as a refused terminal handoff does.
+	if captureErr := captureTerminalRunBranch(l, wtMgr, runID); captureErr != nil {
+		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: capture terminal run branch for %s: %w", worktree.ErrCleanupDeferred, runID, captureErr))
+	}
 	if renewErr := renewTerminalRecovery(l, runID); renewErr != nil {
 		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: renew terminal recovery for %s: %w", worktree.ErrCleanupDeferred, runID, renewErr))
 	}

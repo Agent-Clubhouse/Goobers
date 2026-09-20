@@ -21,6 +21,22 @@ Do not make a workflow autonomous merely because it validates. Prove the
 manual path, constrain readiness and concurrency, and review every provider
 mutation first.
 
+## Pause a gaggle or workflow without changing trigger topology
+
+Use `spec.enabled: false` when you need to stop NEW run starts but want to keep the
+existing schedule, backlog, or webhook configuration in place for later reuse.
+
+```yaml
+spec:
+  enabled: false
+```
+
+Set it on either a gaggle or a workflow. Omitted, `null`, or `true` means enabled.
+Disabling does not cancel or rewrite in-flight runs; they finish on their pinned
+definitions. Re-enable by deleting the field or setting it back to `true`. The Portal
+keeps disabled gaggles/workflows visible and clickable, but renders them greyed out so
+operators can spot the paused state quickly.
+
 ## Validate the complete operating surface
 
 Run structural validation after each coherent configuration change:

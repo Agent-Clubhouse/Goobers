@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // Defaults for Config fields left zero. Each is a named constant so a
@@ -80,21 +82,17 @@ type Config struct {
 	// silently placing a pod in the wrong gaggle's namespace is exactly the
 	// isolation break this map exists to close.
 	GaggleNamespaces map[string]string
+	// InstanceID is the durable identity of the Goobers instance. It scopes
+	// orphan sweeps across worker generations without crossing into another
+	// instance that happens to share a Kubernetes namespace.
+	InstanceID string
 	// Owner identifies THIS dispatcher process among the workers sharing a
-	// namespace. It is stamped on every pod as LabelOwner and is the scope
-	// SweepOrphans sweeps within, so it must be stable across a restart of
-	// the same worker and distinct between workers. The worker wires its
+	// namespace. It is stamped on every pod as LabelOwner for diagnostic
+	// provenance and must be distinct between workers. The worker wires its
 	// hostname — in-cluster, its pod name: stable while the pod lives, unique
-	// per replica.
-	//
-	// A rollout gives the replacement worker a NEW pod name, so stage pods
-	// left by the outgoing one fall outside every later owner-scoped sweep.
-	// activeDeadlineSeconds eventually stops their containers, but does not
-	// delete the retained Pod objects. Deleting a possibly live pod on a guess
-	// is the failure this path is built to avoid.
-	//
-	// Empty stamps no owner label and makes SweepOrphans refuse: an ownerless
-	// fleet cannot be swept safely by one of its members.
+	// per replica. SweepOrphans deliberately does not select by this rollout-
+	// scoped value; it selects the stable InstanceID and deletes only pods
+	// whose owning workflow is positively terminal.
 	Owner string
 	// EmbeddedCommit is this dispatcher binary's embedded commit sha
 	// (internal/version.Commit at wiring) — the left side of the decision-009
@@ -726,6 +724,13 @@ func (t PlaneTokens) Distinct(podToken string) bool {
 type Report struct {
 	// Runner is the resolved runner name.
 	Runner string
+	// Build and Worker are the worker versioning identity this dispatcher is
+	// running under. They stay empty on a local self-host resolution with no
+	// remote pod, but are carried through pod-dispatch reports and failed
+	// activity placement evidence so the engine can attribute the attempt to the
+	// exact versioned worker that observed it.
+	Build  string
+	Worker string
 	// Local marks a self-host resolution: the stage belongs to the local
 	// execution path, and no pod was created.
 	Local bool
@@ -759,8 +764,8 @@ type Report struct {
 	// outcome (a confirmed success or a confirmed PodFailed), so Dispatch's
 	// returned error still reflects the settled result and this field carries
 	// the disposal failure alongside it. Disposed==false means DELETE failed;
-	// activeDeadlineSeconds bounds any remaining execution; the owner-scoped
-	// restart reconcile may delete the Pod object (dispatcher §5).
+	// activeDeadlineSeconds bounds any remaining execution; instance-scoped
+	// reconciliation may delete the Pod object (dispatcher §5).
 	DisposeErr error
 	// QueuedAt and PodStartedAt bound the schedule-to-start wait for
 	// provenance.
@@ -802,13 +807,15 @@ var ErrPodUnschedulable = errors.New("dispatcher: stage pod cannot be scheduled 
 // without a verified recovery acknowledgment are preserved. Every retry still
 // receives a fresh pod, never a reused one (D1).
 func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []RunnerSpec) (Report, error) {
-	runner, err := SelectRunner(attempt, eligible)
+	selected, err := SelectRunner(attempt, eligible)
 	if err != nil {
 		return Report{}, err
 	}
-	report := Report{Runner: runner.Name, QueuedAt: d.now().UTC()}
+	report := Report{Runner: selected.Name, QueuedAt: d.now().UTC()}
+	report.Build = os.Getenv(runner.EnvPlacementBuild)
+	report.Worker = os.Getenv(runner.EnvPlacementWorker)
 
-	if runner.HostKind == instance.RunnerHostSelf {
+	if selected.HostKind == instance.RunnerHostSelf {
 		// host: self — the local execution path (fresh worktree per attempt,
 		// createStageWorkspace semantics). No pod, and none of the pod-plane
 		// contract applies (architecture §3).
@@ -855,11 +862,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		return Report{}, err
 	}
 
-	if err := d.waitForCapacity(ctx, runner); err != nil {
+	if err := d.waitForCapacity(ctx, selected); err != nil {
 		return report, err
 	}
 
-	pod, err := d.renderFor(ctx, attempt, runner)
+	pod, err := d.renderFor(ctx, attempt, selected)
 	if err != nil {
 		return report, err
 	}
@@ -904,7 +911,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// (possibly MUTATING) stage. So record the disposal failure on the report
 	// as the leak signal (Disposed is false for a refused DELETE; accepted
 	// deletion with unconfirmed disappearance sets DisposeErr too). Execution is
-	// bounded by activeDeadlineSeconds; the owner-scoped restart reconcile may
+	// bounded by activeDeadlineSeconds; instance-scoped reconciliation may
 	// delete the retained object (dispatcher §5). The settled path still falls
 	// through: PodFailed → ErrStageFailed, success →
 	// nil. When superviseErr is already non-nil there is no settled outcome to

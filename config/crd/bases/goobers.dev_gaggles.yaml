@@ -232,6 +232,14 @@ spec:
                 description: DisplayName is the human-facing name shown on the portal
                   dashboard.
                 type: string
+              enabled:
+                description: |-
+                  Enabled selects whether new runs may start for this gaggle. Null or
+                  omitted means true (enabled). Setting false blocks new run starts
+                  without touching schedule or backlog configuration; in-flight runs
+                  finish normally.
+                nullable: true
+                type: boolean
               isolation:
                 description: Isolation declares the per-gaggle boundary (namespace
                   + workload identity).
