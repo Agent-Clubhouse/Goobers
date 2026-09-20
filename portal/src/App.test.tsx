@@ -51,12 +51,17 @@ describe("portal foundation", () => {
   it("renders compact instance identity in the masthead", async () => {
     const fixtures = populatedDaemonFixtures();
     fixtures.instance.computerName = "CPC-JEFFS-7VMWT";
+    fixtures.health.build = {
+      version: "portal-v0.2.3-34-g4267fe01",
+      commit: "4267fe01",
+      date: "2026-09-16T23:01:02.9443459-07:00",
+    };
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
     const context = await screen.findByLabelText("Instance context");
     expect(context).toHaveTextContent("local-dev");
     expect(context).toHaveTextContent("CPC-JEFFS-7VMWT");
-    expect(context).toHaveTextContent("dev");
+    expect(context).toHaveTextContent("dev (4267fe01)");
     const details = within(document.querySelector(".topbar") as HTMLElement).getByRole("button", {
       name: "Show portal details",
     });

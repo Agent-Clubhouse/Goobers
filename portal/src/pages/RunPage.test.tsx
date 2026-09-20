@@ -933,9 +933,10 @@ describe("run detail", () => {
 
     // Selecting the latest stage resumes follow-latest immediately.
     await openRunTab("Journal");
-    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).toHaveAttribute(
-      "aria-current",
-      "true",
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^Select sequence 7:/ }),
+      ).toHaveAttribute("aria-current", "true"),
     );
     await openRunTab("Diagnostics");
 
