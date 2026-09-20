@@ -421,17 +421,7 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 		return preparedCodexInvocation{}, fmt.Errorf("harness: codex: write prompt: %w", err)
 	}
 
-	envCapabilities := c.EnvCapabilities
-	if options.auth == CodexAuthAmbientChatGPT {
-		// agent:model remains a required semantic capability in the envelope, but
-		// its API-key grant must not be resolved or materialized in ambient mode.
-		envCapabilities = make(map[string]string, len(c.EnvCapabilities))
-		for capability, name := range c.EnvCapabilities {
-			if capability != "agent:model" {
-				envCapabilities[capability] = name
-			}
-		}
-	}
+	envCapabilities := c.invocationEnvCapabilities(options.auth)
 	env, err := buildCredentialEnv(ctx, credentialEnvConfig{
 		adapterName:                    c.Name(),
 		envCapabilities:                envCapabilities,
@@ -503,6 +493,21 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 		}
 	}
 	return preparedCodexInvocation{req: req, argv: argv, env: env, prompt: prompt, cleanup: cleanup}, nil
+}
+
+func (c *CodexAdapter) invocationEnvCapabilities(auth CodexAuthMode) map[string]string {
+	if auth != CodexAuthAmbientChatGPT {
+		return c.EnvCapabilities
+	}
+	// agent:model remains a required semantic capability in the envelope, but
+	// its API-key grant must not be resolved or materialized in ambient mode.
+	filtered := make(map[string]string, len(c.EnvCapabilities))
+	for capability, name := range c.EnvCapabilities {
+		if capability != "agent:model" {
+			filtered[capability] = name
+		}
+	}
+	return filtered
 }
 
 func runCodexInvocation(
