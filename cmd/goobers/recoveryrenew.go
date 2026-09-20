@@ -11,6 +11,37 @@ import (
 	"github.com/goobers/goobers/internal/recovery"
 )
 
+// renewableRecoveryEntries finds the reservations this run owns.
+//
+// It reads at the structural ceiling, tolerantly, because renewal touches only
+// its OWN records. Reading at the operator cap refused outright once the
+// directory held more entries than the cap ("10 of 8 slots used"), and because
+// renewTerminalRecovery's failure is joined as ErrCleanupDeferred, terminal
+// finalization of every completed run was deferred and retried at every
+// startup — each deferral holding the worktree and active marker it was trying
+// to release (#5354). A run whose record is absent has nothing to renew, which
+// is a no-op, never a refusal; an entry no scan can interpret carries no run
+// identity, so it is not this run's and skipping it renews nothing.
+//
+// Overflow records are deliberately not included: renewal rebinds a record to
+// its archive (recovery.RenewRetention verifies the bundle's size and digest),
+// and an overflow entry holds a pinned ref instead of an archive, so there is
+// nothing for renewal to rebind. That an overflow record's deadline therefore
+// does not extend at terminal finalization is #5370 behaviour, unchanged here.
+func renewableRecoveryEntries(ctx context.Context, root, runID string) ([]recovery.InventoryEntry, error) {
+	entries, _, err := recovery.ReadInventoryTolerant(ctx, root, recovery.MaxInventoryEntries)
+	if err != nil {
+		return nil, err
+	}
+	var matching []recovery.InventoryEntry
+	for _, entry := range entries {
+		if entry.Record.RunID == runID {
+			matching = append(matching, entry)
+		}
+	}
+	return matching, nil
+}
+
 // This runs even when FinalizeRun finds no worktree: earlier stage cleanup
 // may have retained the only implementation before the run became terminal.
 func renewTerminalRecovery(layout instance.Layout, runID string) error {
@@ -34,15 +65,9 @@ func renewTerminalRecovery(layout instance.Layout, runID string) error {
 	if err != nil {
 		return err
 	}
-	entries, err := recovery.ReadInventory(ctx, root, recoveryCfg.MaxSnapshotsEffective())
+	matching, err := renewableRecoveryEntries(ctx, root, runID)
 	if err != nil {
 		return err
-	}
-	var matching []recovery.InventoryEntry
-	for _, entry := range entries {
-		if entry.Record.RunID == runID {
-			matching = append(matching, entry)
-		}
 	}
 	if len(matching) == 0 {
 		return nil

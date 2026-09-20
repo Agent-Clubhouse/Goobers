@@ -34,6 +34,38 @@ export interface RunDetailQuery {
   state: QueryState<RunDetailSnapshot>;
 }
 
+export interface SemanticRepass {
+  sourceStage: string;
+  reason: string;
+  eventSeq: number;
+  kind: "correction" | "infrastructure" | "retry";
+}
+
+export interface SemanticStageVisit {
+  id: string;
+  branch: number;
+  stage: string;
+  visit: number;
+  attempt?: number;
+  kind: "stage" | "gate";
+  status: RunNodeState;
+  startedSeq: number;
+  finishedSeq?: number;
+  startedAt: string;
+  finishedAt?: string;
+  durationMillis?: number;
+  result: string;
+  repass?: SemanticRepass;
+}
+
+export interface LogicalArtifact {
+  id: string;
+  label: string;
+  kind: "transcript" | "artifact" | "evidence";
+  stage?: string;
+  events: RunEvent[];
+}
+
 export interface JournalEventGroup {
   kind: "group";
   id: string;
@@ -170,13 +202,7 @@ export function runFailure(run: RunDetail, events: RunEvent[]): RunFailure | und
 
 export function eventNodeId(event: RunEvent, runId?: string): string | undefined {
   if (event.stage) {
-    if (!isTranscriptEvent(event)) {
-      return event.stage;
-    }
-    const runPrefix = runId ? `${runId}:` : undefined;
-    return runPrefix && event.stage.startsWith(runPrefix)
-      ? event.stage.slice(runPrefix.length)
-      : event.stage;
+    return normalizeRunScopedId(event.stage, runId);
   }
   if (event.type === "parallel.started" || event.type === "parallel.finished") {
     // A parallel container is its own graph node (id === declared name);
@@ -185,7 +211,279 @@ export function eventNodeId(event: RunEvent, runId?: string): string | undefined
     // instead, keyed by branch name rather than a graph node id.
     return event.parallel;
   }
-  return event.artifact?.stage || event.gate;
+  return normalizeRunScopedId(event.artifact?.stage || event.gate, runId);
+}
+
+export function semanticStageVisits(
+  events: RunEvent[],
+  runId?: string,
+): SemanticStageVisit[] {
+  const visits: SemanticStageVisit[] = [];
+  const visitCounts = new Map<string, number>();
+  const active = new Map<string, SemanticStageVisit>();
+
+  for (const event of orderRunEvents(events)) {
+    if (event.type === "run.finished") {
+      for (const item of active.values()) {
+        item.status = semanticVisitStatus(event);
+        item.finishedSeq = event.seq;
+        item.finishedAt = event.time;
+        item.durationMillis = durationBetween(item.startedAt, event.time);
+        item.result =
+          event.reason?.trim() ||
+          `Run ${humanize(String(event.status ?? "finished")).toLowerCase()}`;
+      }
+      active.clear();
+      continue;
+    }
+
+    const stage = eventNodeId(event, runId);
+    if (!stage) {
+      continue;
+    }
+    const key = `${event.branch}:${stage}`;
+    const startsVisit = event.type === "stage.started" || event.type === "gate.started";
+    const finishesVisit = event.type === "stage.finished" || event.type === "gate.evaluated";
+
+    if (startsVisit) {
+      const visit = (visitCounts.get(key) ?? 0) + 1;
+      visitCounts.set(key, visit);
+      const item: SemanticStageVisit = {
+        id: `${event.branch}:${stage}:${visit}`,
+        branch: event.branch,
+        stage,
+        visit,
+        attempt: event.attempt,
+        kind: event.type === "gate.started" ? "gate" : "stage",
+        status: "running",
+        startedSeq: event.seq,
+        startedAt: event.time,
+        result: event.type === "gate.started" ? "Evaluating" : "Running",
+        repass: repassBefore(events, event, stage, visit, runId),
+      };
+      visits.push(item);
+      active.set(key, item);
+      continue;
+    }
+
+    if (!finishesVisit) {
+      continue;
+    }
+
+    let item = active.get(key);
+    if (!item) {
+      const visit = Math.max((visitCounts.get(key) ?? 0) + 1, 1);
+      visitCounts.set(key, visit);
+      item = {
+        id: `${event.branch}:${stage}:${visit}`,
+        branch: event.branch,
+        stage,
+        visit,
+        attempt: event.attempt,
+        kind: event.type === "gate.evaluated" ? "gate" : "stage",
+        status: "running",
+        startedSeq: event.seq,
+        startedAt: event.time,
+        result: "Recorded without a start event",
+        repass: repassBefore(events, event, stage, visit, runId),
+      };
+      visits.push(item);
+    }
+
+    item.status = semanticVisitStatus(event);
+    item.finishedSeq = event.seq;
+    item.finishedAt = event.time;
+    item.durationMillis = durationBetween(item.startedAt, event.time);
+    item.result = semanticVisitResult(event, stage);
+    active.delete(key);
+  }
+
+  return visits;
+}
+
+export function logicalArtifacts(events: RunEvent[], runId?: string): LogicalArtifact[] {
+  const groups = new Map<string, LogicalArtifact>();
+  for (const event of orderRunEvents(events)) {
+    const stage = eventNodeId(event, runId);
+    let kind: LogicalArtifact["kind"] | undefined;
+    let label: string | undefined;
+    let identity: string | undefined;
+    if (isTranscriptEvent(event)) {
+      kind = "transcript";
+      label = stage ? `${humanize(stage)} transcript` : "Run transcript";
+      identity = `transcript:${event.branch}:${stage ?? "run"}:${event.name ?? "transcript"}`;
+    } else if (event.type === "artifact.recorded" && event.artifact) {
+      kind = "artifact";
+      label = friendlyArtifactName(event.artifact.name);
+      identity = `artifact:${event.branch}:${stage ?? "run"}:${event.artifact.name ?? event.artifact.digest}`;
+    } else if (event.category === "evidence") {
+      kind = "evidence";
+      label = event.name ? humanize(event.name) : "Supporting evidence";
+      identity = `evidence:${event.branch}:${stage ?? "run"}:${event.name ?? event.type}`;
+    }
+    if (!kind || !label || !identity) {
+      continue;
+    }
+    const existing = groups.get(identity);
+    if (existing) {
+      existing.events.push(event);
+    } else {
+      groups.set(identity, { id: identity, label, kind, stage, events: [event] });
+    }
+  }
+  return [...groups.values()];
+}
+
+function semanticVisitStatus(event: RunEvent): RunNodeState {
+  if (event.type === "gate.evaluated") {
+    return event.escalated || event.target === "@escalate" ? "escalated" : "completed";
+  }
+  switch (event.status) {
+    case "success":
+    case "completed":
+    case "no-work":
+      return "completed";
+    case "failure":
+    case "failed":
+      return "failed";
+    case "blocked":
+      return "blocked";
+    case "aborted":
+      return "aborted";
+    case "escalated":
+      return "escalated";
+    default:
+      return "completed";
+  }
+}
+
+function semanticVisitResult(event: RunEvent, stage: string): string {
+  const error = event.error?.message?.trim() || event.error?.code?.trim();
+  if (error) {
+    return error;
+  }
+  if (event.type === "gate.evaluated") {
+    const verdict = event.verdict?.trim() || "Decision recorded";
+    return event.target
+      ? `${humanize(verdict)} → ${humanize(event.target.replace(/^@/, ""))}`
+      : humanize(verdict);
+  }
+  if (event.reason?.trim()) {
+    return event.reason.trim();
+  }
+  if (event.status === "success" || event.status === "completed") {
+    return "Completed";
+  }
+  return `${humanize(stage)} ${humanize(String(event.status ?? "completed")).toLowerCase()}`;
+}
+
+function repassBefore(
+  allEvents: RunEvent[],
+  start: RunEvent,
+  stage: string,
+  visit: number,
+  runId?: string,
+): SemanticRepass | undefined {
+  const prior = orderRunEvents(allEvents).filter((event) => event.seq < start.seq);
+  const previousStart = [...prior]
+    .reverse()
+    .find(
+      (event) =>
+        (event.type === "stage.started" || event.type === "gate.started") &&
+        event.branch === start.branch &&
+        eventNodeId(event, runId) === stage,
+    );
+  const relevant = previousStart
+    ? prior.filter((event) => event.seq > previousStart.seq)
+    : prior;
+  const rerun = [...relevant]
+    .reverse()
+    .find(
+      (event) =>
+        event.type === "stage.rerun.requested" && eventNodeId(event, runId) === stage,
+    );
+  const gate = [...relevant]
+    .reverse()
+    .find(
+      (event) =>
+        event.type === "gate.evaluated" &&
+        normalizeTarget(event.target, runId) === stage,
+    );
+  if (visit === 1 && !rerun && !gate) {
+    return undefined;
+  }
+
+  const anchor = rerun ?? gate;
+  const correction = [...relevant]
+    .reverse()
+    .find((event) => runnerString(event, "correctionFeedback"));
+  const failure = [...relevant]
+    .reverse()
+    .find(
+      (event) =>
+        event.type === "stage.finished" &&
+        (event.status === "failure" || event.status === "blocked") &&
+        (event.error?.message || event.error?.code),
+    );
+  const reason =
+    (correction && runnerString(correction, "correctionFeedback")) ||
+    failure?.error?.message ||
+    failure?.error?.code ||
+    gate?.rationale ||
+    gate?.decision ||
+    (gate
+      ? `${humanize(eventNodeId(gate, runId) ?? "gate")} returned ${gate.verdict ?? "a corrective verdict"}.`
+      : "The stage was requested again.");
+  const errorCode = failure?.error?.code?.toLowerCase() ?? "";
+  const kind =
+    /infra|network|timeout|rate|quota|worktree|runner|provider/.test(errorCode + " " + reason.toLowerCase())
+      ? "infrastructure"
+      : gate || correction
+        ? "correction"
+        : "retry";
+
+  return {
+    sourceStage: eventNodeId(anchor ?? failure ?? start, runId) ?? "workflow",
+    reason,
+    eventSeq: anchor?.seq ?? failure?.seq ?? start.seq,
+    kind,
+  };
+}
+
+function normalizeTarget(target: string | undefined, runId?: string): string | undefined {
+  return normalizeRunScopedId(target, runId);
+}
+
+function normalizeRunScopedId(
+  value: string | undefined,
+  runId?: string,
+): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const runPrefix = runId ? `${runId}:` : undefined;
+  return runPrefix && value.startsWith(runPrefix) ? value.slice(runPrefix.length) : value;
+}
+
+function runnerString(event: RunEvent, key: string): string | undefined {
+  const value = event.runner?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function durationBetween(start: string, finish: string): number | undefined {
+  const startMillis = Date.parse(start);
+  const finishMillis = Date.parse(finish);
+  return Number.isFinite(startMillis) && Number.isFinite(finishMillis)
+    ? Math.max(0, finishMillis - startMillis)
+    : undefined;
+}
+
+function friendlyArtifactName(name: string | undefined): string {
+  if (!name) {
+    return "Recorded artifact";
+  }
+  const leaf = name.split(/[\\/]/).at(-1) ?? name;
+  return leaf.replace(/\.[^.]+$/, "").replace(/[._-]+/g, " ").trim() || "Recorded artifact";
 }
 
 export function eventNodeAtSequence(
@@ -940,26 +1238,26 @@ export const UNSCOPED_EVENT_STAGE = "—";
 // is ever set, so a single column can carry either — which is what makes the
 // ledger scannable at all. Reading a run means finding "the second implement
 // attempt", and until this was a column that meant reading every row's prose.
-export function eventStage(event: RunEvent): string {
-  return event.stage ?? event.gate ?? UNSCOPED_EVENT_STAGE;
+export function eventStage(event: RunEvent, runId?: string): string {
+  return eventNodeId(event, runId) ?? UNSCOPED_EVENT_STAGE;
 }
 
 // runEventStages lists every distinct scope present in a run, in first-seen
 // durable order, so a filter can offer exactly the stages this run visited
 // rather than every stage the workflow declares. The unscoped bucket sorts
 // last: it is a fallback, never something a reader is looking for first.
-export function runEventStages(events: RunEvent[]): string[] {
+export function runEventStages(events: RunEvent[], runId?: string): string[] {
   const seen = new Set<string>();
   const stages: string[] = [];
   for (const event of orderRunEvents(events)) {
-    const stage = eventStage(event);
+    const stage = eventStage(event, runId);
     if (stage === UNSCOPED_EVENT_STAGE || seen.has(stage)) {
       continue;
     }
     seen.add(stage);
     stages.push(stage);
   }
-  if (events.some((event) => eventStage(event) === UNSCOPED_EVENT_STAGE)) {
+  if (events.some((event) => eventStage(event, runId) === UNSCOPED_EVENT_STAGE)) {
     stages.push(UNSCOPED_EVENT_STAGE);
   }
   return stages;

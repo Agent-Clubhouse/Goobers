@@ -388,8 +388,8 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	return rc, wtMgr, nil
 }
 
-func deterministicStageConfigDigest(configDir string) (string, error) {
-	digest, err := configDirectoryDigest(configDir)
+func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {
+	digest, err := configDirectoryDigestForGaggle(configDir, gaggle)
 	if err != nil {
 		return "", fmt.Errorf("digest deterministic-stage config: %w", err)
 	}

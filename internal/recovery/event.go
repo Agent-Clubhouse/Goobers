@@ -12,7 +12,10 @@ import (
 // establish artifact durability. Append this to the instance log, not by
 // reopening the active run's exclusively held writer.
 func RetainedEvent(record Record) (journal.Event, error) {
-	if err := record.Validate(); err != nil {
+	// Either durability tier: an overflow record declares no archive, and
+	// refusing to journal it would make the tier's acknowledgement — the very
+	// thing that authorizes the cleanup — impossible to write (#5370).
+	if err := record.validateRestorable(); err != nil {
 		return journal.Event{}, err
 	}
 	event := journal.Event{

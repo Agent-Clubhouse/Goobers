@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	configexamples "github.com/goobers/goobers/config-examples"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runnercap"
@@ -241,6 +242,14 @@ func MaterializeWorkflowSource(root string) (string, error) {
 }
 
 func installMaterializedConfig(layout Layout, stagingRoot string) error {
+	release, err := gaggletemplate.LockConfig(layout.ConfigDir(), filepath.Join(stagingRoot, ConfigDirName))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = release() }()
+	if err := gaggletemplate.GuardReplacement(layout.ConfigDir(), filepath.Join(stagingRoot, ConfigDirName)); err != nil {
+		return err
+	}
 	backupRoot, err := os.MkdirTemp(layout.Root, ".config-materialize-backup-")
 	if err != nil {
 		return fmt.Errorf("create config materialization backup directory: %w", err)
@@ -383,7 +392,7 @@ func copyGuidedSourceDefinitions(destination, source string) error {
 			return err
 		}
 	}
-	return nil
+	return gaggletemplate.RecordDeployments(destination)
 }
 
 func copyGuidedSourcePath(destination, source, name string) error {

@@ -26,8 +26,8 @@ func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanup
 		return nil, err
 	}
 	return func(manager *worktree.Manager) {
-		callback := recoveryCleanupHandler(layout, cfg, cleanupRoot, identities, scrubber, false, manager, tel)
-		_ = manager.SetCleanupGuard("recovery", callback)
+		callback := recoveryCleanupHandler(layout, cfg, cleanupRoot, identities, scrubber, manager, tel)
+		_ = manager.SetCleanupGuard("recovery", classifyRecoveryCapacityGuard(callback))
 	}, nil
 }
 
@@ -52,7 +52,7 @@ func recoveryRepositoryIdentities(cfg *instance.Config, cloneURL func(apiv1.Repo
 	return identities, nil
 }
 
-func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, identities map[string]string, scrubber journal.Scrubber, terminal bool, manager *worktree.Manager, tel *telemetry.Client) func(context.Context, worktree.CleanupTarget) error {
+func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, identities map[string]string, scrubber journal.Scrubber, manager *worktree.Manager, tel *telemetry.Client) func(context.Context, worktree.CleanupTarget) error {
 	return func(ctx context.Context, target worktree.CleanupTarget) error {
 		if tel != nil {
 			ctx = recovery.WithSnapshotObserver(ctx, tel)
@@ -67,21 +67,26 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		if strings.TrimSpace(target.BaseRef) == "" {
 			return recoveryCleanupHistoricalTarget(ctx, layout, cfg, cleanupRoot, scrubber, manager, key, target)
 		}
-		return recoveryCleanupCurrentTarget(ctx, layout, cfg, cleanupRoot, scrubber, terminal, manager, key, target)
+		return recoveryCleanupCurrentTarget(ctx, layout, cfg, cleanupRoot, scrubber, manager, key, target)
 	}
 }
 
-func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, cfg *instance.Config, cleanupRoot string, scrubber journal.Scrubber, terminal bool, manager *worktree.Manager, key string, target worktree.CleanupTarget) error {
+// terminal is read from the owning run's journal, not from which caller
+// installed this guard: a daemon installs the terminal guard the first time any
+// run finalizes, and a guard-carried flag would then send every later stage
+// cleanup of every other, still-running run down the terminal path — skipping
+// the clean-intermediate check below for the rest of the process's life.
+func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, cfg *instance.Config, cleanupRoot string, scrubber journal.Scrubber, manager *worktree.Manager, key string, target worktree.CleanupTarget) error {
 	reader, identity, err := recoveryCleanupRun(layout, target)
 	if err != nil {
 		return err
 	}
-	captureAt, err := recoveryCaptureTime(ctx, reader, identity.StartedAt, terminal)
+	captureAt, terminal, err := recoveryCaptureWindow(ctx, reader, identity.StartedAt)
 	if err != nil {
 		return err
 	}
 	publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
-	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target, captureAt, publication)
+	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target.Path, target.OwnerRunID, captureAt, publication)
 	if err != nil {
 		return err
 	}
@@ -92,6 +97,11 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	request.BaseRef = baseRef
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return err
+	}
+	if !terminal {
+		if err := worktree.VerifyCleanupTargetPreservedByGit(ctx, target); err == nil {
+			return nil
+		}
 	}
 	_, _, err = recovery.Retain(ctx, request, publication)
 	return err
@@ -114,7 +124,7 @@ func recoveryCleanupHistoricalTarget(ctx context.Context, layout instance.Layout
 		return retainUnknownBase(fmt.Errorf("terminal run evidence unavailable: %w", err))
 	}
 	publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
-	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target, captureAt, publication)
+	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target.Path, target.OwnerRunID, captureAt, publication)
 	if err != nil {
 		return retainUnknownBase(err)
 	}
@@ -142,7 +152,10 @@ func recoveryCleanupRun(layout instance.Layout, target worktree.CleanupTarget) (
 	return reader, identity, nil
 }
 
-func recoveryCleanupRequest(layout instance.Layout, cfg *instance.Config, cleanupRoot string, manager *worktree.Manager, key string, target worktree.CleanupTarget, captureAt time.Time, publication recovery.PublicationJournal) (recovery.RetentionRequest, error) {
+// repository is the checkout the snapshot is captured from: a stage worktree
+// about to be destroyed, or the throwaway detached checkout terminal branch
+// capture materializes for a run that has no worktree left.
+func recoveryCleanupRequest(layout instance.Layout, cfg *instance.Config, cleanupRoot string, manager *worktree.Manager, key, repository, runID string, captureAt time.Time, publication recovery.PublicationJournal) (recovery.RetentionRequest, error) {
 	root, err := prepareRecoveryInventory(layout.Root)
 	if err != nil {
 		return recovery.RetentionRequest{}, fmt.Errorf("recovery inventory unavailable: %w", err)
@@ -158,12 +171,31 @@ func recoveryCleanupRequest(layout instance.Layout, cfg *instance.Config, cleanu
 		return recovery.RetentionRequest{}, fmt.Errorf("recovery retention policy unavailable: %w", err)
 	}
 	return recovery.RetentionRequest{
-		Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID,
+		Repository: repository, RepositoryKey: key, RunID: runID,
 		IdentityTime: captureAt, RetainUntil: captureAt.Add(retainWindow),
 		InventoryRoot: root, CleanupRoots: []string{cleanupRoot},
 		MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(), SkipEmpty: true,
-		EvictFull: recoveryEvictFunc(layout, cfg, manager, key),
+		EvictFull:    recoveryEvictFunc(layout, cfg, manager, key),
+		OverflowRoot: recoveryOverflowRootFor(layout, recoveryCfg),
 	}, nil
+}
+
+// recoveryOverflowRootFor enables the overflow tier unless the operator asked
+// for the pre-#5370 refusal. An empty root is what RetentionRequest reads as
+// "refuse", so there is one representation of the decision rather than a
+// boolean that could disagree with the path.
+func recoveryOverflowRootFor(layout instance.Layout, policy instance.RecoverySnapshotConfig) string {
+	if policy.OnFullEffective() == instance.RecoveryOnFullRefuse {
+		return ""
+	}
+	return recoveryOverflowRoot(layout)
+}
+
+// recoveryOverflowRoot names the overflow tier for an instance. It is a
+// sibling of the inventory, never a directory inside it: an entry inside the
+// inventory would consume the slot the tier exists because there is none of.
+func recoveryOverflowRoot(layout instance.Layout) string {
+	return filepath.Join(layout.Root, recovery.OverflowRootName)
 }
 
 func retainUnknownBase(err error) error {
@@ -181,8 +213,13 @@ func recoveryCleanupBaseRef(target worktree.CleanupTarget) (string, error) {
 // Standalone abort/startup/stall finalizers may construct their own Manager.
 // Resolve configuration only when an actual owned worktree needs cleanup, so
 // already-clean runs can still release claims even with unavailable config.
+//
+// The handler installed here is the same phase-aware one recoveryCleanupOption
+// installs, so replacing a runner manager's existing recovery guard — which
+// every terminal finalization on a long-lived daemon does — is idempotent
+// rather than a switch that pins later cleanups to the terminal path.
 func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Manager) error {
-	return manager.SetCleanupGuard("recovery", func(ctx context.Context, target worktree.CleanupTarget) error {
+	return manager.SetCleanupGuard("recovery", classifyRecoveryCapacityGuard(func(ctx context.Context, target worktree.CleanupTarget) error {
 		cfg, err := instance.LoadConfig(layout.ConfigFile())
 		if err != nil {
 			return fmt.Errorf("load recovery configuration before cleanup: %w", err)
@@ -195,9 +232,9 @@ func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Mana
 		if err != nil {
 			return err
 		}
-		callback := recoveryCleanupHandler(layout, cfg, manager.Root, identities, journal.NewRegistryScrubber(), true, manager, nil)
+		callback := recoveryCleanupHandler(layout, cfg, manager.Root, identities, journal.NewRegistryScrubber(), manager, nil)
 		return callback(ctx, target)
-	})
+	}))
 }
 
 func prepareRecoveryInventory(instanceRoot string) (string, error) {

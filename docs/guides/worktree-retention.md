@@ -10,6 +10,17 @@ Retention defaults to enabled. An omitted `retainedWorktreeMaxAge` uses `168h`
 days before deleting them. Set `retention.dryRun: true` to keep reporting without
 deletion, or `retention.enabled: false` to disable this cleanup.
 
+## Recovery handoff
+
+Before removing a worktree that needs recovery, Goobers must durably capture its
+tracked files and selected non-ignored untracked files. An empty untracked-file
+selection means no additional files are added; it must never expand into a
+forced add of the whole worktree, including ignored dependencies or build output.
+Tracked edits and deletions are still captured when that selection is empty.
+
+A failed handoff preserves the worktree. Do not delete it or broaden capture to
+include ignored files to bypass the failure.
+
 ## Local-branch limitation
 
 Local run-branch cleanup currently proves that a branch landed only when its tip

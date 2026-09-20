@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -89,17 +90,15 @@ type RunStates interface {
 // §5, constraint (a)): cross-namespace ownerReferences are NOT used (k8s GC
 // silently deletes a dependent whose namespaced owner lives in another
 // namespace — silent-delete-reads-as-eviction), so on restart the dispatcher
-// lists the pods carrying its CURRENT owner label and disposes the ones whose
-// attempt is settled. activeDeadlineSeconds bounds execution between restarts;
-// it does not bound retention of Pod objects that no later worker owner can
-// select.
+// lists the stage pods carrying its durable instance label and disposes the
+// ones whose attempt is settled. activeDeadlineSeconds bounds execution; it
+// does not delete the retained Pod object.
 //
 // Two scopes narrow what a sweep can reach, and both are load-bearing:
 //
-//   - by OWNER (LabelOwner): decision 003 wires this on the worker, and a
-//     cluster runs more than one. Without the owner scope, worker B's restart
-//     lists worker A's live stage pods, and a resolver that cannot see A's
-//     attempts disposes them.
+//   - by INSTANCE (LabelInstance): a replacement worker can reclaim pods from
+//     an older rollout, but can never cross into another Goobers instance that
+//     shares the namespace.
 //   - by STATE: only RunStateTerminal deletes. See RunState.
 //
 // A worker now dispatches into as many namespaces as it has declared gaggles
@@ -113,14 +112,13 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 	if runs == nil {
 		return nil, errors.New("dispatcher: orphan sweep requires a RunStates resolver")
 	}
-	owner := d.cfg.ownerLabel()
-	if owner == "" {
-		return nil, errors.New("dispatcher: orphan sweep requires Config.Owner to select only pods stamped for this worker")
+	if !instance.ValidIdentity(d.cfg.InstanceID) {
+		return nil, errors.New("dispatcher: orphan sweep requires Config.InstanceID to avoid crossing instance boundaries")
 	}
 	var deleted []string
 	var errs []error
 	for _, namespace := range distinctNamespaces(d.cfg.GaggleNamespaces) {
-		pods, err := d.pods.ListPods(ctx, namespace, sweepSelector(owner))
+		pods, err := d.pods.ListPods(ctx, namespace, sweepSelector(d.cfg.InstanceID))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("dispatcher: list labeled stage pods for orphan sweep in %s: %w", namespace, err))
 			continue
@@ -146,10 +144,9 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 			}
 			// One pod's delete error must not strand the rest of the batch.
 			// Accumulate and keep going; the aggregated error is returned after the
-			// loop, and `deleted` reflects every pod actually removed. A later
-			// same-owner process restart retries the pod. A rollout changes the owner
-			// label, so its replacement cannot select this pod with the current
-			// sweep.
+			// loop, and `deleted` reflects every pod actually removed. Periodic
+			// reconciliation or a replacement worker retries it within the same
+			// durable instance scope.
 			if err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt}); err != nil {
 				errs = append(errs, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err))
 				continue
@@ -214,14 +211,16 @@ func podAttempt(pod *corev1.Pod) (PodAttempt, bool) {
 	}, true
 }
 
-// sweepSelector selects exactly the pods THIS dispatcher stamps: its own
-// managed-by marker, the stage role, and its owner.
-func sweepSelector(owner string) map[string]string {
+// sweepSelector selects product-owned stage pods for one durable instance
+// across worker generations. LabelOwner is deliberately absent because worker
+// pod names change on rollout; RunStateTerminal authorizes deletion inside the
+// stable instance scope.
+func sweepSelector(instanceID string) map[string]string {
 	return map[string]string{
 		LabelManagedBy: ManagedByValue,
 		// The role label is the shared runnercap constant, so the sweep and
 		// the stamp cannot drift.
 		runnercap.LabelRole: runnercap.RoleStage,
-		LabelOwner:          owner,
+		LabelInstance:       instanceID,
 	}
 }

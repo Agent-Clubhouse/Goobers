@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/secretstore"
 )
 
@@ -307,5 +311,117 @@ func TestCopilotPreflightSatisfiedByFileRefOnlyCredential(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("sign-in probe env should carry the file-ref credential; got %v", runner.authProbeEnv)
+	}
+}
+
+// #5163: startup resolved the agent:model credential ONCE with an empty
+// harness and reused it for every harness. An instance whose grant is scoped
+// to claude-code (#5148) therefore preflighted `claude auth status` with no
+// token, got loggedIn:false, and — because a failing preflight is fatal —
+// took the whole daemon down in a crash loop, while `goobers validate
+// --check-harness` on the running daemon resolved the same grant correctly.
+//
+// The preflight must ask for the credential PER HARNESS.
+func TestPreflightResolvesCredentialPerHarness(t *testing.T) {
+	orig := harnessAdapterFor
+	t.Cleanup(func() { harnessAdapterFor = orig })
+
+	var sawCredential []string
+	harnessAdapterFor = func(_ apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, credential func(context.Context) (string, error)) (harness.Adapter, error) {
+		token := ""
+		if credential != nil {
+			token, _ = credential(context.Background())
+		}
+		sawCredential = append(sawCredential, token)
+		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{}}, nil
+	}
+
+	goobers := map[string]apiv1.GooberSpec{
+		"writer":   {Harness: apiv1.HarnessCopilot},
+		"reviewer": {Harness: apiv1.HarnessClaudeCode},
+	}
+	workflows := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{
+		{Name: "write", Type: apiv1.TaskAgentic, Goober: "writer"},
+		{Name: "review", Type: apiv1.TaskAgentic, Goober: "reviewer"},
+	}}}}
+
+	askedFor := map[apiv1.Harness]int{}
+	credentialFor := func(h apiv1.Harness) (func(ctx context.Context) (string, error), error) {
+		askedFor[h]++
+		return func(context.Context) (string, error) { return "token-for-" + string(h), nil }, nil
+	}
+
+	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, credentialFor); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if askedFor[apiv1.HarnessCopilot] != 1 || askedFor[apiv1.HarnessClaudeCode] != 1 {
+		t.Fatalf("credential not resolved once per harness: %v", askedFor)
+	}
+	// Each adapter must receive ITS OWN harness's credential. Resolving once
+	// and reusing is exactly the defect.
+	want := map[string]bool{"token-for-copilot": true, "token-for-claude-code": true}
+	for _, token := range sawCredential {
+		if !want[token] {
+			t.Fatalf("adapter received a credential not scoped to its harness: %q (saw %v)", token, sawCredential)
+		}
+		delete(want, token)
+	}
+	if len(want) != 0 {
+		t.Fatalf("a harness never received its own credential; missing %v (saw %v)", want, sawCredential)
+	}
+}
+
+// TestPreflightFailuresAreMappedToEveryDependentWorkflow is #5163's scoping
+// boundary: one broken harness is probed once and refuses every workflow that
+// depends on it, while a different healthy harness still preflights and its
+// workflow remains eligible.
+func TestPreflightFailuresAreMappedToEveryDependentWorkflow(t *testing.T) {
+	orig := harnessAdapterFor
+	t.Cleanup(func() { harnessAdapterFor = orig })
+
+	calls := map[apiv1.Harness]int{}
+	harnessAdapterFor = func(h apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+		calls[h]++
+		if h == apiv1.HarnessCopilot {
+			return &harness.FakeAdapter{AdapterName: string(h), PreflightErr: errors.New("signed out; run copilot auth login")}, nil
+		}
+		return &harness.FakeAdapter{AdapterName: string(h), Version: "claude 1.2.3"}, nil
+	}
+
+	goobers := map[string]apiv1.GooberSpec{
+		"broken":  {Harness: apiv1.HarnessCopilot},
+		"healthy": {Harness: apiv1.HarnessClaudeCode},
+	}
+	workflows := []apiv1.Workflow{
+		{ObjectMeta: metav1.ObjectMeta{Name: "broken-one"}, Spec: apiv1.WorkflowSpec{Gaggle: "example", Tasks: []apiv1.Task{{Name: "write", Type: apiv1.TaskAgentic, Goober: "broken"}}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "broken-two"}, Spec: apiv1.WorkflowSpec{Gaggle: "example", Gates: []apiv1.Gate{{Name: "review", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "broken"}}}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "healthy"}, Spec: apiv1.WorkflowSpec{Gaggle: "example", Tasks: []apiv1.Task{{Name: "write", Type: apiv1.TaskAgentic, Goober: "healthy"}}}},
+	}
+
+	info, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
+	var failures *harnessPreflightFailures
+	if !errors.As(err, &failures) {
+		t.Fatalf("error = %T %v, want scoped *harnessPreflightFailures", err, err)
+	}
+	for _, workflowName := range []string{"broken-one", "broken-two"} {
+		identity := localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: workflowName}
+		reason, refused := failures.Refusals[identity]
+		if !refused {
+			t.Errorf("dependent workflow %q was not refused: %+v", workflowName, failures.Refusals)
+		} else if !strings.Contains(reason, `harness "copilot"`) || !strings.Contains(reason, "signed out") {
+			t.Errorf("refusal for %q is not actionable: %q", workflowName, reason)
+		}
+	}
+	if _, refused := failures.Refusals[localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: "healthy"}]; refused {
+		t.Fatalf("workflow on healthy harness was refused: %+v", failures.Refusals)
+	}
+	if got := info[apiv1.HarnessClaudeCode].Version; got != "claude 1.2.3" {
+		t.Fatalf("healthy harness preflight was discarded: version=%q info=%+v", got, info)
+	}
+	if _, ok := info[apiv1.HarnessCopilot]; ok {
+		t.Fatalf("broken harness must have no successful preflight info: %+v", info)
+	}
+	if calls[apiv1.HarnessCopilot] != 1 || calls[apiv1.HarnessClaudeCode] != 1 {
+		t.Fatalf("each distinct harness must be probed exactly once: %v", calls)
 	}
 }

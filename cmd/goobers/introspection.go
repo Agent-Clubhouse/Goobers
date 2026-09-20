@@ -11,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	buildversion "github.com/goobers/goobers/internal/version"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 const (
@@ -20,13 +21,14 @@ const (
 )
 
 type diagnosticFinding struct {
-	File     string `json:"file"`
-	Line     int    `json:"line,omitempty"`
-	Col      int    `json:"col,omitempty"`
-	Path     string `json:"path,omitempty"`
-	Code     string `json:"code"`
-	Severity string `json:"severity"`
-	Message  string `json:"message"`
+	File     string                  `json:"file"`
+	Line     int                     `json:"line,omitempty"`
+	Col      int                     `json:"col,omitempty"`
+	Path     string                  `json:"path,omitempty"`
+	Code     string                  `json:"code"`
+	Severity string                  `json:"severity"`
+	Message  string                  `json:"message"`
+	Safety   *workflowsafety.Details `json:"safety,omitempty"`
 }
 
 type diagnosticCounts struct {
@@ -89,6 +91,7 @@ func (c *diagnosticCollector) addReport(report *validate.Report, configBase stri
 			file = joinDiagnosticPath(configBase, issue.File)
 		}
 		c.addLocated(file, "", string(issue.Code), string(issue.Severity), issue.Message, issue.Line, issue.Col)
+		c.findings[len(c.findings)-1].Safety = issue.Safety
 	}
 }
 

@@ -11,6 +11,12 @@ import (
 	"github.com/goobers/goobers/internal/platform/safeopen"
 )
 
+// FileName is the mutation sidecar's name inside a stage workspace. Every
+// provider subcommand writes it in the workspace root regardless of the
+// stage's declared resultFile, which is why the worktree layer excludes it
+// from git by name (#5119).
+const FileName = "mutations.jsonl"
+
 // MaxBytes caps memory used by a single stage's receipt handoff. Oversized
 // files are rejected, never truncated into an apparently complete receipt set.
 const MaxBytes = 16 << 20
@@ -51,7 +57,7 @@ func Read(workspace string) (data []byte, err error) {
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	f, err := safeopen.OpenAt(dir, "mutations.jsonl")
+	f, err := safeopen.OpenAt(dir, FileName)
 	if err != nil {
 		return nil, err
 	}

@@ -17,6 +17,12 @@ import (
 
 const maxCopilotSessionEventBytes = DefaultMaxTranscriptBytes
 
+// maxCopilotCompletionCandidates bounds how many of a turn's trailing assistant
+// messages are retained for completion recovery. The completion is by
+// construction at or near the end of the turn, so a small window is enough; the
+// cap keeps a pathological turn from pinning the whole turn's prose in memory.
+const maxCopilotCompletionCandidates = 16
+
 // Copilot reports billing in nano-AI units: 1e9 nano-AIU is one $0.01 AI credit.
 type copilotSessionEvent struct {
 	Type string          `json:"type"`
@@ -96,15 +102,26 @@ type transcriptCapture struct {
 	modelUsage   []telemetry.ModelUsage
 	truncated    bool
 	droppedBytes int64
-	// finalMessage is the raw content of the LAST assistant.message in the
-	// session log. Copilot does not always echo its final message to stdout
-	// under --silent --output-format=text with MCP tools attached: the answer
-	// lands in the session log, the harness's stdout capture stays empty, and
-	// readCopilotResponseCompletion reports "final response is not valid JSON"
-	// for a completion the model in fact produced correctly. Both attempts of a
-	// live pr-remediation run failed this way with well-formed JSON sitting in
-	// the log, discarding committed work twice per run.
-	finalMessage []byte
+	// finalMessages holds the non-empty assistant.message contents of the
+	// session log's LAST turn, oldest first. Copilot does not always echo its
+	// final message to stdout under --silent --output-format=text with MCP
+	// tools attached: the answer lands in the session log, the harness's stdout
+	// capture stays empty, and readCopilotResponseCompletion reports "final
+	// response is not valid JSON" for a completion the model in fact produced
+	// correctly. Both attempts of a live pr-remediation run failed this way
+	// with well-formed JSON sitting in the log, discarding committed work twice
+	// per run.
+	//
+	// This is a LIST, not just the last message (#4752). A turn does not always
+	// end on its completion: Copilot routinely appends a trailing
+	// assistant.message that is empty or a plain-prose sign-off after the
+	// well-formed envelope. Keeping only the literal last message made the
+	// recovery above report "no completion" for a completion sitting two events
+	// earlier in the same log, so the stage failed anyway and discarded work the
+	// agent had already committed. Candidates are scoped to the last turn --
+	// reset at each user.message -- so recovery can never resurrect a completion
+	// the model has since been asked to supersede.
+	finalMessages [][]byte
 	// mcpServersReported reports that the harness CLI emitted at least one
 	// per-server MCP connection report for this session, making
 	// mcpServerStatus authoritative for which registered servers actually
@@ -146,6 +163,7 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	var metrics map[string]float64
 	var modelUsage []telemetry.ModelUsage
 	var prompt, finalOutput *transcriptEvent
+	var finalCandidates [][]byte
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -173,6 +191,11 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 				}
 			}
 		}
+		// A new prompt starts a new turn: completions from the previous turn
+		// are superseded and must not be recovered in place of this one.
+		if native.Type == "user.message" {
+			finalCandidates = finalCandidates[:0]
+		}
 		for _, event := range events {
 			if native.Type == "user.message" && prompt == nil {
 				captured := event
@@ -181,6 +204,7 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 			if native.Type == "assistant.message" {
 				captured := event
 				finalOutput = &captured
+				finalCandidates = appendCompletionCandidate(finalCandidates, event.Content)
 			}
 			encoded, err := marshalTranscriptEvents(event)
 			if err != nil {
@@ -207,18 +231,30 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	if err != nil {
 		return transcriptCapture{}, false
 	}
-	var finalMessage []byte
-	if finalOutput != nil {
-		finalMessage = []byte(finalOutput.Content)
-	}
 	return transcriptCapture{
-		data:         data,
-		metrics:      metrics,
-		modelUsage:   modelUsage,
-		truncated:    dropped > 0,
-		droppedBytes: dropped,
-		finalMessage: finalMessage,
+		data:          data,
+		metrics:       metrics,
+		modelUsage:    modelUsage,
+		truncated:     dropped > 0,
+		droppedBytes:  dropped,
+		finalMessages: finalCandidates,
 	}, true
+}
+
+// appendCompletionCandidate records one assistant message as a completion
+// candidate for the current turn, dropping empty messages and keeping only the
+// most recent maxCopilotCompletionCandidates so a long turn cannot pin its whole
+// prose history in memory.
+func appendCompletionCandidate(candidates [][]byte, content string) [][]byte {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return candidates
+	}
+	candidates = append(candidates, []byte(trimmed))
+	if len(candidates) > maxCopilotCompletionCandidates {
+		candidates = candidates[len(candidates)-maxCopilotCompletionCandidates:]
+	}
+	return candidates
 }
 
 func readCopilotUsageDocument(path string) (map[string]float64, []telemetry.ModelUsage, bool) {

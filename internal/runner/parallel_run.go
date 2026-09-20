@@ -547,7 +547,7 @@ func (r *Runner) runParallelBranch(
 	if state == "" {
 		state = branch.start
 	}
-	branchRecorded := true
+	branchRecorded, reboundRecorded := true, ""
 	if lastStage, lastResult, ok := lastFinishedSubject(history); ok {
 		result.lastStage, result.lastResult = lastStage, lastResult
 	}
@@ -654,7 +654,7 @@ func (r *Runner) runParallelBranch(
 						upstream:        branchContextPointers(basePointers, result.pointers),
 						upstreamResult:  result.lastResult,
 						completed:       result.completed,
-						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded,
+						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
 					},
 					branch.id, startAttempt, firstClass, "",
 					nil, committedWorkOnInfra, resumeAccounting,
@@ -663,7 +663,7 @@ func (r *Runner) runParallelBranch(
 				firstClass = ""
 				resumeAccounting = nil
 			}
-			if err != nil {
+			if err = taskDispatchError(task.Name, stageResult, err); err != nil {
 				result.status, result.err = journal.BranchFailed, err
 				return result
 			}
@@ -783,7 +783,7 @@ func (r *Runner) runParallelBranch(
 				if appendErr := branchJournal.Append(journal.Event{
 					Type:  journal.EventError,
 					Gate:  g.Name,
-					Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
+					Error: workspaceCleanupErrorDetail(removeErr),
 				}); appendErr != nil {
 					result.status, result.err = journal.BranchFailed, appendErr
 					return result

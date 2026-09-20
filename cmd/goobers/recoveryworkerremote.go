@@ -19,9 +19,9 @@ func (w *workerSeams) installRemoteRecoveryGuard(manager *worktree.Manager) erro
 	if w.recoveryEmitter == nil {
 		return nil
 	}
-	return manager.SetCleanupGuard("recovery", func(ctx context.Context, target worktree.CleanupTarget) error {
+	return manager.SetCleanupGuard("recovery", classifyRecoveryCapacityGuard(func(ctx context.Context, target worktree.CleanupTarget) error {
 		return w.publishWorkerRecovery(ctx, manager, target)
-	})
+	}))
 }
 
 func (w *workerSeams) publishWorkerRecovery(ctx context.Context, manager *worktree.Manager, target worktree.CleanupTarget) error {
