@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -160,7 +161,15 @@ func sameFiles(first, second string) error {
 
 func schemaSnapshot(path string) ([]byte, error) {
 	// No SQLite CLI/Python dependency; use the same driver as the application.
-	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro"}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	slashed := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	uri := url.URL{Scheme: "file", Path: slashed, RawQuery: "mode=ro"}
 	db, err := sql.Open("sqlite", uri.String())
 	if err != nil {
 		return nil, err
@@ -236,6 +245,14 @@ func extractArchive(input io.Reader, destination string) error {
 		}
 		if err != nil {
 			return err
+		}
+		// git archive emits this global provenance record before file entries.
+		// It has no extraction target and must not change path/link policy.
+		if entry.Typeflag == tar.TypeXGlobalHeader {
+			if count != 0 || entry.Name != "pax_global_header" || len(entry.PAXRecords) != 1 || entry.PAXRecords["comment"] != priorRevision {
+				return errors.New("unexpected prior release global PAX metadata")
+			}
+			continue
 		}
 		name := filepath.FromSlash(entry.Name)
 		if !filepath.IsLocal(name) {

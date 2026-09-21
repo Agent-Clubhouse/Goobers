@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -63,5 +64,66 @@ func TestSchemaSnapshotDoesNotCreateMissingDatabase(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("read-only schema query created database: %v", err)
+	}
+}
+
+func TestExtractGitGlobalPAXProvenance(t *testing.T) {
+	for _, revision := range []string{priorRevision, "wrong-revision"} {
+		t.Run(revision, func(t *testing.T) {
+			var data bytes.Buffer
+			writer := tar.NewWriter(&data)
+			if err := writer.WriteHeader(&tar.Header{Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": revision}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.WriteHeader(&tar.Header{Name: "fixture.txt", Typeflag: tar.TypeReg, Size: 3}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Write([]byte("old")); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			err := extractArchive(bytes.NewReader(data.Bytes()), root)
+			if revision != priorRevision {
+				if err == nil {
+					t.Fatal("unverified provenance accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(filepath.Join(root, "fixture.txt"))
+			if err != nil || string(got) != "old" {
+				t.Fatalf("fixture=%q err=%v", got, err)
+			}
+			if _, err := os.Stat(filepath.Join(root, "pax_global_header")); !os.IsNotExist(err) {
+				t.Fatal("metadata became a file")
+			}
+		})
+	}
+}
+
+func TestSchemaSnapshotReadsExistingEscapedPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing space #.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE retained (value TEXT)"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := schemaSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte("CREATE TABLE retained")) {
+		t.Fatalf("schema missing: %s", got)
 	}
 }
