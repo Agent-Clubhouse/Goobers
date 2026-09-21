@@ -17,6 +17,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/diagnostics/featureusage"
 )
 
 // ErrGiteaMergeQueueUnsupported is the typed sentinel EnqueuePullRequest and
@@ -1698,6 +1699,7 @@ func (p *GiteaProvider) send(ctx context.Context, method, endpoint string, body 
 		if token != "" {
 			req.Header.Set("Authorization", "token "+token)
 		}
+		featureusage.RecordProviderHTTP("gitea")
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
 			if transientRetries < p.maxRetries {

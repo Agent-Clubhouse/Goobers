@@ -74,5 +74,5 @@ type FeatureUsage struct {
 // FeatureIDs is the bounded catalogue understood by this contract. Capabilities
 // must be added deliberately; arbitrary capability.* names are not accepted.
 func FeatureIDs() []string {
-	return []string{"runner.local", "runner.engine", "adapter.copilot", "adapter.claude", "adapter.codex", "provider.github", "provider.gitea", "provider.azure-devops", "dsl.v1", "dsl.v2", "dsl.v3"}
+	return []string{"runner.local", "runner.engine", "adapter.copilot", "adapter.claude", "adapter.codex", "provider.github", "provider.gitea", "provider.azure-devops", "dsl.v1", "dsl.v2", "dsl.v3", "capability.nested-agents"}
 }
