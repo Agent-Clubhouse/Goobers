@@ -17,6 +17,8 @@ import (
 
 const releaseDocsVersionFile = "docs/RELEASE.md"
 
+var releaseDocsGeneratorBuilder = buildReleaseDocsGenerator
+
 const (
 	readmeSourceReleaseInstall = "## Install\n\n" +
 		"Install the latest stable release on Linux or macOS:\n\n" +
@@ -342,19 +344,9 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 	if runtime.GOOS == "windows" {
 		generator += ".exe"
 	}
-	build := exec.Command(
-		"go", "build", "-trimpath", "-ldflags", ldflags,
-		"-o", generator, "./cmd/goobers",
-	)
-	build.Dir = repoRoot
-	build.Env = append(os.Environ(),
-		"GOOS="+runtime.GOOS,
-		"GOARCH="+runtime.GOARCH,
-		"CGO_ENABLED=0",
-	)
-	if output, err := build.CombinedOutput(); err != nil {
+	if err := releaseDocsGeneratorBuilder(repoRoot, generator, ldflags); err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("build release docs generator: %w\n%s", err, output)
+		return "", nil, err
 	}
 
 	generate := exec.Command(generator, "__generate-docs", docsDir)
@@ -390,6 +382,23 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 			len(broken), strings.Join(broken, ", "))
 	}
 	return payloadDir, cleanup, nil
+}
+
+func buildReleaseDocsGenerator(repoRoot, generator, ldflags string) error {
+	build := exec.Command(
+		"go", "build", "-trimpath", "-ldflags", ldflags,
+		"-o", generator, "./cmd/goobers",
+	)
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(),
+		"GOOS="+runtime.GOOS,
+		"GOARCH="+runtime.GOARCH,
+		"CGO_ENABLED=0",
+	)
+	if output, err := build.CombinedOutput(); err != nil {
+		return fmt.Errorf("build release docs generator: %w\n%s", err, output)
+	}
+	return nil
 }
 
 // releaseRootFiles are the repository-root documents every archive carries
