@@ -24,8 +24,9 @@ type ActiveStage struct {
 
 // StageActivity is folded identically by SQLite projection and journal reads.
 type StageActivity struct {
-	Active    []ActiveStage
-	Truncated bool
+	WaitingForGate bool
+	Active         []ActiveStage
+	Truncated      bool
 }
 
 // After applies one known-schema event without mutating the prior snapshot.
@@ -34,6 +35,7 @@ func (s StageActivity) After(e journal.Event) StageActivity {
 	if !e.KnownSchema() {
 		return s
 	}
+	s.WaitingForGate = journal.GateParkingAfter(s.WaitingForGate, e)
 	switch e.Type {
 	case journal.EventRunFinished, journal.EventRunResumed, journal.EventGateOverridden:
 		return StageActivity{}

@@ -152,13 +152,16 @@ func (o *fleetHealthObserver) gaggle(ctx context.Context, gaggle readservice.Gag
 }
 
 func observeFleetRuns(o *fleetstate.Observation, runs []readservice.RunSummary, attrs map[string]any, windowStart time.Time, gaggle string) {
-	inflight, noWork, retries := 0, 0, 0
+	inflight, noWork, retries, waitingGates := 0, 0, 0, 0
 	for _, run := range runs {
 		if run.Gaggle != gaggle {
 			o.Complete = false
 			continue
 		}
 		if !run.Terminal {
+			if run.WaitingForGate {
+				waitingGates++
+			}
 			inflight++
 		}
 		if !run.StartedAt.Before(windowStart) {
@@ -176,6 +179,7 @@ func observeFleetRuns(o *fleetstate.Observation, runs []readservice.RunSummary, 
 		}
 	}
 	if o.Complete {
+		o.WaitingOnUser = inflight > 0 && waitingGates == inflight
 		o.InflightCount, o.NoWorkCount = &inflight, &noWork
 	}
 	// Partial positive counts are observed lower bounds. Zero is exported only

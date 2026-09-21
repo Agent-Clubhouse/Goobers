@@ -208,3 +208,18 @@ func TestFleetPartialRunEvidenceNeverClaimsZero(t *testing.T) {
 		t.Fatalf("partial positive evidence lost or zero invented: %+v", attrs)
 	}
 }
+
+func TestFleetHumanGateWaitNeverBecomesEligibleWorkStall(t *testing.T) {
+	now := time.Now().UTC()
+	reader := &fleetTestReader{now: now, eligible: true, runs: []readservice.RunSummary{{Gaggle: "alpha", WaitingForGate: true}}}
+	observer := &fleetHealthObserver{reader: reader, config: &instance.DiagnosticsConfig{ProgressTimeout: "1m"}, startedAt: now.Add(-time.Hour), eligibleSince: map[string]time.Time{"alpha": now.Add(-time.Hour)}}
+	attrs := observer.sample(context.Background(), now)[1].Attributes
+	if attrs["state"] != "waiting" || attrs["reasonCode"] != "waiting_for_gate" || attrs["oldestEligibleAt"] != nil {
+		t.Fatalf("human wait misclassified: %+v", attrs)
+	}
+	reader.runs = nil
+	attrs = observer.sample(context.Background(), now)[1].Attributes
+	if attrs["reasonCode"] != "eligible_within_threshold" {
+		t.Fatalf("recovery retained gate or accrued a stall during human wait: %+v", attrs)
+	}
+}

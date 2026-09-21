@@ -45,7 +45,7 @@ type DiagnosticExportStats struct {
 	Accepted  uint64 `json:"accepted"`
 	Delivered uint64 `json:"delivered"`
 	Dropped   uint64 `json:"dropped"`
-	Failures  uint64 `json:"failures"`
+	Failures  uint64 `json:"failures"` // Failed or partially rejected export RPCs.
 }
 
 // DiagnosticExporter owns an independent, bounded OTLP Logs transport. A slow
