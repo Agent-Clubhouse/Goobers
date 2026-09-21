@@ -963,6 +963,67 @@
         }
       }
     },
+    "otlp": {
+      "description": "Optional OTLP/gRPC collector push. Journal export supports GOOBERS_OTLP_ENDPOINT; diagnostic export requires an explicit endpoint. Local evidence is retained independently.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Explicit false disables this stream and overrides environment defaults; unset preserves endpoint-based opt-in." },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Collector endpoint. GOOBERS_OTLP_ENDPOINT overrides this value only for the journal stream; diagnostics never inherits environment settings.",
+          "examples": ["http://127.0.0.1:4317"]
+        },
+        "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Non-loopback endpoints with insecure=true are refused at load — use a loopback sidecar collector, or a TLS endpoint. GOOBERS_OTLP_INSECURE overrides it." },
+        "headers": {
+          "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/tokenRef" }
+        },
+        "tls": {
+          "description": "Extends TLS trust beyond the system certificate pool for a collector this host does not already trust — a private CA, an optional client certificate for mTLS, and an SNI override. Conflicts with insecure: true. Every path is validated for SHAPE only at load; a bad path degrades to local-only telemetry with a loud instance-journal error rather than failing the daemon to start.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "caFile": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path to a PEM file appended to the system trust pool as an extra root. The system pool is still trusted; this only adds to it.",
+              "examples": ["/etc/goobers/otlp-ca.crt"]
+            },
+            "serverName": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Overrides the hostname used for SNI and certificate verification. A bare hostname only — no scheme, port, path, or userinfo. Empty uses the endpoint's own host.",
+              "examples": ["goobers-collector.goobers-system.svc.cluster.local"]
+            },
+            "certFile": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path to a PEM client certificate presented for mTLS. Requires keyFile; both or neither."
+            },
+            "keyFile": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path to the PEM private key for certFile. Requires certFile; both or neither."
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "insecure": { "const": true } }, "required": ["insecure"] },
+          "then": {
+            "properties": {
+              "endpoint": {
+                "pattern": "^([Hh][Tt][Tt][Pp][Ss]?://)?(127(\\.[0-9]{1,3}){3}|\\[[0-9A-Fa-f:.]+\\]|::1|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt])(:[0-9]{1,5})?/?$"
+              }
+            }
+          }
+        }
+      ]
+    },
     "telemetry": {
       "description": "Local rollup store, optional collector push, and journal retention.",
       "type": "object",
@@ -971,67 +1032,16 @@
         "enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Toggles span emission, local SQLite ingest, and any configured collector push. Disabling it also forbids an OTLP endpoint, since there would be nothing to push."
+          "description": "Toggles run span emission, local SQLite ingest, and journal collector push. Disabling it forbids enabled journal export. Independent diagnostic export and local instance evidence remain available."
         },
-        "otlp": {
-          "description": "Optional OTLP/gRPC collector push. Absent (and no GOOBERS_OTLP_ENDPOINT in the environment) means no push at all — local rollups are unaffected.",
+        "otlp": { "$ref": "#/$defs/otlp", "description": "Explicit OTLP/gRPC destination and transport credentials for this stream." },
+        "diagnostics": {
           "type": "object",
           "additionalProperties": false,
+          "description": "Independent instance diagnostic export. Never inherits journal destinations or OTLP environment settings; local evidence remains available.",
           "properties": {
-            "endpoint": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Collector endpoint. The GOOBERS_OTLP_ENDPOINT environment variable overrides this value at load.",
-              "examples": ["http://127.0.0.1:4317"]
-            },
-            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Non-loopback endpoints with insecure=true are refused at load — use a loopback sidecar collector, or a TLS endpoint. GOOBERS_OTLP_INSECURE overrides it." },
-            "headers": {
-              "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
-              "type": "object",
-              "additionalProperties": { "$ref": "#/$defs/tokenRef" }
-            },
-            "tls": {
-              "description": "Extends TLS trust beyond the system certificate pool for a collector this host does not already trust — a private CA, an optional client certificate for mTLS, and an SNI override. Conflicts with insecure: true. Every path is validated for SHAPE only at load; a bad path degrades to local-only telemetry with a loud instance-journal error rather than failing the daemon to start.",
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "caFile": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Path to a PEM file appended to the system trust pool as an extra root. The system pool is still trusted; this only adds to it.",
-                  "examples": ["/etc/goobers/otlp-ca.crt"]
-                },
-                "serverName": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Overrides the hostname used for SNI and certificate verification. A bare hostname only — no scheme, port, path, or userinfo. Empty uses the endpoint's own host.",
-                  "examples": ["goobers-collector.goobers-system.svc.cluster.local"]
-                },
-                "certFile": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Path to a PEM client certificate presented for mTLS. Requires keyFile; both or neither."
-                },
-                "keyFile": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Path to the PEM private key for certFile. Requires certFile; both or neither."
-                }
-              }
-            }
-          },
-          "allOf": [
-            {
-              "if": { "properties": { "insecure": { "const": true } }, "required": ["insecure"] },
-              "then": {
-                "properties": {
-                  "endpoint": {
-                    "pattern": "^([Hh][Tt][Tt][Pp][Ss]?://)?(127(\\.[0-9]{1,3}){3}|\\[[0-9A-Fa-f:.]+\\]|::1|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt])(:[0-9]{1,5})?/?$"
-                  }
-                }
-              }
-            }
-          ]
+            "otlp": { "$ref": "#/$defs/otlp", "description": "Explicit OTLP/gRPC destination and transport credentials for this stream." }
+          }
         },
         "retention": {
           "description": "Bounds terminal run journals and their rollup rows. Automatic pruning is OPT-OUT (product policy decision per issue #3056/#4253, mirroring retention.projectionFullFidelityDays's precedent): it defaults on at the 90-day/500-run policy unless enabled is explicitly false. `goobers telemetry prune --dry-run` can preview the same policy at any time regardless of enabled.",
