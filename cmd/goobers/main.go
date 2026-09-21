@@ -16,7 +16,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/goobers/goobers/internal/executor"
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -83,12 +82,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func enforceAppliedStageConfig() error {
 	expected := strings.TrimSpace(os.Getenv(executor.AppliedConfigDigestEnvVar))
-	if expected == "" {
+	if expected == "" && os.Getenv(executor.ConfigGenerationEnvVar) == "" {
 		return nil
 	}
 	root := os.Getenv(executor.InstanceRootEnvVar)
 	gaggle := strings.TrimSpace(os.Getenv(executor.GaggleEnvVar))
-	current, err := configDirectoryDigestForGaggle(instance.NewLayout(root).ConfigDir(), gaggle)
+	layout := layoutFor(root)
+	if err := verifyStageExecutionGeneration(layout); err != nil {
+		return err
+	}
+	if expected == "" {
+		return nil
+	}
+	current, err := configDirectoryDigestForGaggle(layout.ConfigDir(), gaggle)
 	if err != nil {
 		return fmt.Errorf("read deterministic-stage config generation: %w", err)
 	}

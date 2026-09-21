@@ -422,6 +422,8 @@ type AgentProvenance struct {
 // definition a daemon knows about; the compiled Machine for a specific run is
 // supplied per call in StartInput, not fixed here.
 type Config struct {
+	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
+	ConfigGeneration string
 	// RecoveryEvents supplies verified retained-state observations after a
 	// successful workspace cleanup. The active writer copies them into this
 	// run's journal so later local and remote stages can read the same evidence.
@@ -847,6 +849,7 @@ func New(cfg Config) (*Runner, error) {
 
 // StartInput is what triggers one run.
 type StartInput struct {
+	configGeneration string
 	// instanceID is assigned by Start or recovered from the durable journal
 	// on resume. A worker/config reload cannot replace a run's provenance.
 	instanceID string
@@ -961,6 +964,7 @@ func boundFailureMessage(s string) string {
 // on it.
 func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	in.instanceID = r.cfg.InstanceID
+	in.configGeneration = r.cfg.ConfigGeneration
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
 	}
@@ -1032,6 +1036,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		WorkflowVersion:     in.Machine.Def.Version,
 		WorkflowDigest:      in.Machine.Digest(),
 		GooberDigest:        in.GooberDigest,
+		ConfigGeneration:    in.configGeneration,
 		Gaggle:              in.Gaggle,
 		RunControls:         &pinnedControls,
 		Trigger:             in.Trigger,
@@ -5751,25 +5756,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		return gate.Result{}, err, nil
 	}
 	if g.Evaluator == apiv1.EvaluatorAutomated {
-		gateBaseBranch := in.RepoRef.Branch
-		if gateBaseBranch == "" {
-			gateBaseBranch = "main"
-		}
-		env = apiv1.InvocationEnvelope{
-			TaskID:          in.RunID + ":" + g.Name,
-			InstanceID:      in.instanceID,
-			WorkflowID:      in.Machine.Def.Name,
-			RunID:           in.RunID,
-			TriggerRef:      in.Trigger.Ref,
-			Gaggle:          in.Gaggle,
-			BranchNamespace: r.branchNamespaceFor(in.Gaggle),
-			BaseBranch:      gateBaseBranch,
-			Goal:            "gate: " + g.Name,
-			RepoRef:         in.RepoRef.EnvelopeRef(),
-			Item:            in.Item,
-			Limits:          gateLimits,
-			ContextPointers: append([]apiv1.ContextPointer(nil), upstream...),
-		}
+		env = r.automatedGateEnvelope(in, g, gateLimits, upstream)
 	} else {
 		var wt *worktree.Worktree
 		// An agentic gate's reviewer runs a real goober subprocess, so — unlike
@@ -6345,6 +6332,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		BaseBranch:           baseBranch,
 		Goal:                 goal,
 		GooberDigest:         in.GooberDigest,
+		ConfigGeneration:     in.configGeneration,
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
@@ -6879,5 +6867,28 @@ func defaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
 		return fmt.Sprintf("%s/%s/%s.git", base, ref.Owner, ref.Name), nil
 	default:
 		return "", fmt.Errorf("runner: unsupported repo provider %q", ref.Provider)
+	}
+}
+
+func (r *Runner) automatedGateEnvelope(in StartInput, g apiv1.Gate, gateLimits apiv1.Limits, upstream []apiv1.ContextPointer) apiv1.InvocationEnvelope {
+	gateBaseBranch := in.RepoRef.Branch
+	if gateBaseBranch == "" {
+		gateBaseBranch = "main"
+	}
+	return apiv1.InvocationEnvelope{
+		TaskID:           in.RunID + ":" + g.Name,
+		InstanceID:       in.instanceID,
+		ConfigGeneration: in.configGeneration,
+		WorkflowID:       in.Machine.Def.Name,
+		RunID:            in.RunID,
+		TriggerRef:       in.Trigger.Ref,
+		Gaggle:           in.Gaggle,
+		BranchNamespace:  r.branchNamespaceFor(in.Gaggle),
+		BaseBranch:       gateBaseBranch,
+		Goal:             "gate: " + g.Name,
+		RepoRef:          in.RepoRef.EnvelopeRef(),
+		Item:             in.Item,
+		Limits:           gateLimits,
+		ContextPointers:  append([]apiv1.ContextPointer(nil), upstream...),
 	}
 }

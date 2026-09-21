@@ -104,6 +104,9 @@ type InvocationEnvelope struct {
 	// and every run started without a digest. Unpinned attempts resolve the
 	// worker's current tree exactly as before, byte for byte.
 	GooberDigest string `json:"gooberDigest,omitempty"`
+	// ConfigGeneration selects the immutable config-as-code archive admitted for this run.
+	// Empty preserves historical unpinned execution.
+	ConfigGeneration string `json:"configGeneration,omitempty"`
 	// Goal is the stage's goal statement.
 	Goal string `json:"goal"`
 	// OwnershipBoundary is the work this invocation owns and may mutate.

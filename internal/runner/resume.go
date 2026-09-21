@@ -619,13 +619,14 @@ func (r *Runner) newResumeFrame(
 		pointerEvents = seedEvents[:parallelStart]
 	}
 	ws := newWalkState(jr, StartInput{
-		instanceID:   id.InstanceID,
-		RunID:        in.RunID,
-		Machine:      in.Machine,
-		GooberDigest: in.GooberDigest,
-		Gaggle:       id.Gaggle,
-		Trigger:      id.Trigger,
-		RepoRef:      in.RepoRef,
+		instanceID:       id.InstanceID,
+		configGeneration: id.ConfigGeneration,
+		RunID:            in.RunID,
+		Machine:          in.Machine,
+		GooberDigest:     in.GooberDigest,
+		Gaggle:           id.Gaggle,
+		Trigger:          id.Trigger,
+		RepoRef:          in.RepoRef,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches
 		// here after it already started (and therefore already cleared the #735
 		// toolchain preflight in Start); re-verifying would probe the host again

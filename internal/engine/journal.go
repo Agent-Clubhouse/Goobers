@@ -227,7 +227,8 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 				Trigger:     journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 				// #3876: pinned kit provenance, matching what
 				// gooberDigestStarter stamps on a runner-driven run.
-				GooberDigest: in.GooberDigest,
+				GooberDigest:     in.GooberDigest,
+				ConfigGeneration: in.ConfigGeneration,
 			},
 			Item:                   in.Item,
 			Graph:                  graph,

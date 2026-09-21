@@ -105,16 +105,14 @@ type runnerCompositionInput struct {
 	SandboxPosture       instance.SandboxPosture
 	ProviderQuota        *localscheduler.ProviderQuotaState
 	AppliedConfigDigest  string
+	ConfigGeneration     string
 }
 
 var runnerLookPath = exec.LookPath
 
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
-	executionFence := input.ExecutionFence
-	if executionFence == nil {
-		executionFence = localSharedExecutionFence(l)
-	}
+	executionFence := runnerExecutionFence(input)
 	cfg := input.Config
 	goobers := input.Goobers
 	instructionsByGoober := input.InstructionsByGoober
@@ -290,12 +288,13 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 
 	rc := runner.Config{
-		RecoveryEvents: recoveryRunEvents(l),
-		RunControls:    cfg.RunConditions.RunControls(),
+		ConfigGeneration: input.ConfigGeneration,
+		RecoveryEvents:   recoveryRunEvents(l),
+		RunControls:      cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 			exec, err := buildDeterministicExecutor(deterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
-				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, SelfBin: selfBin, ProjectConfigured: projectConfigured,
+				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
 				ScratchDir: deterministicScratchDir,

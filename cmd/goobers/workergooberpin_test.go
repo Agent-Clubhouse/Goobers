@@ -657,7 +657,7 @@ func TestWorkerKitWriterResolvesThePinnedTree(t *testing.T) {
 		Goober:       pinGoober,
 		GooberDigest: pin,
 	}
-	kit, err := writer.buildKit(env, "invoke")
+	kit, err := writer.buildKitContext(t.Context(), env, "invoke")
 	if err != nil {
 		t.Fatalf("buildKit against the retained tree: %v", err)
 	}
@@ -669,7 +669,7 @@ func TestWorkerKitWriterResolvesThePinnedTree(t *testing.T) {
 	// A pin no retained tree resolves refuses here too, by the same name, so
 	// the pod path cannot become the soft one.
 	env.GooberDigest = "sha256:" + strings.Repeat("cd", 32)
-	if _, err := writer.buildKit(env, "invoke"); err == nil {
+	if _, err := writer.buildKitContext(t.Context(), env, "invoke"); err == nil {
 		t.Fatal("the kit writer published a kit for a pin no tree resolves")
 	} else if refusal, ok := asGooberPinRefusal(err); !ok || refusal.Expected != env.GooberDigest {
 		t.Fatalf("kit writer refusal = %v, want a gooberPinRefusal naming %s", err, env.GooberDigest)

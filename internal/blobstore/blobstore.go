@@ -250,3 +250,19 @@ func (d *Dir) pathFor(digest string) (string, error) {
 	}
 	return filepath.Join(d.Root, rel), nil
 }
+
+// Remove deletes a content address explicitly proven unreferenced by its
+// owning retention policy. It is idempotent; it never walks unrelated blobs.
+func (d *Dir) Remove(ctx context.Context, digest string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	path, err := d.pathFor(digest)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}

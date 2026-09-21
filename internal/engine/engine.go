@@ -149,6 +149,9 @@ type RunInput struct {
 	// silently. Empty — every input persisted before this field existed —
 	// is unpinned and resolves the worker's current tree exactly as before.
 	GooberDigest string `json:"gooberDigest,omitempty"`
+	// ConfigGeneration selects the immutable config-as-code archive admitted for this run.
+	// Empty preserves historical unpinned execution.
+	ConfigGeneration string `json:"configGeneration,omitempty"`
 	// HITL pins the run's human-in-the-loop posture (#3883, decision 005 R8):
 	// whether a resumable terminal is held open for an operator intent
 	// delivered over the goobers.hitl.v1 Temporal update protocol, for how
@@ -1253,23 +1256,24 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		baseBranch = "main"
 	}
 	return apiv1.InvocationEnvelope{
-		TaskID:          in.RunID + ":" + stateName,
-		InstanceID:      in.InstanceID,
-		WorkflowID:      in.WorkflowName,
-		RunID:           in.RunID,
-		TriggerRef:      in.TriggerRef,
-		Gaggle:          in.Gaggle,
-		BranchNamespace: in.BranchNamespace,
-		BaseBranch:      baseBranch,
-		Goal:            goal,
-		Goober:          goober,
-		GooberDigest:    in.GooberDigest,
-		RepoRef:         in.RepoRef.EnvelopeRef(),
-		Item:            in.Item,
-		ContextPointers: upstream,
-		Capabilities:    capabilities,
-		Limits:          limits,
-		Inputs:          inputs,
+		TaskID:           in.RunID + ":" + stateName,
+		InstanceID:       in.InstanceID,
+		WorkflowID:       in.WorkflowName,
+		RunID:            in.RunID,
+		TriggerRef:       in.TriggerRef,
+		Gaggle:           in.Gaggle,
+		BranchNamespace:  in.BranchNamespace,
+		BaseBranch:       baseBranch,
+		Goal:             goal,
+		Goober:           goober,
+		GooberDigest:     in.GooberDigest,
+		ConfigGeneration: in.ConfigGeneration,
+		RepoRef:          in.RepoRef.EnvelopeRef(),
+		Item:             in.Item,
+		ContextPointers:  upstream,
+		Capabilities:     capabilities,
+		Limits:           limits,
+		Inputs:           inputs,
 	}
 }
 

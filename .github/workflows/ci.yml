@@ -1241,7 +1241,7 @@ jobs:
       - name: Windows platform runtime
         env:
           GOOBERS_RUN_WSL_INTEGRATION_TEST: "1"
-        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
+        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock
 
       - name: Windows service transitions
         run: go test ./internal/winsvc
@@ -1328,7 +1328,9 @@ jobs:
       - name: Windows read model and stores
         # Config mirrors must exercise native file replacement, read-only
         # cleanup, and Unix-source asset identity on Windows, not just compile.
-        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets
+        # Immutable generations also require native archive, shared-lease,
+        # retention and relative-path execution coverage (#5382).
+        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration
 
       - name: Windows worktree and event stream
         env:

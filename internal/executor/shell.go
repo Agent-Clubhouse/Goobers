@@ -162,6 +162,8 @@ type ShellExecutor struct {
 	// from. It is injected only into goobers CLI stages; those stages fail
 	// closed if the on-disk tree has since diverged after a rejected reload.
 	AppliedConfigDigest string
+	// ConfigDirectory is the immutable config-as-code tree selected for CLI stages.
+	ConfigDirectory string
 	// SelfBin, if set, is the absolute path substituted for a bare "goobers"
 	// command token before exec. Deterministic stages declare their command as
 	// e.g. ["goobers", "backlog-query", …], but a stage runs with cwd set to a
@@ -802,6 +804,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	ExcludeStageArtifacts(ctx, env.Workspace, resultFile)
 
 	registry, scrubber := journal.DefaultScrubber()
+	registerJournalPlane(ctx, registry)
 	// Only a stage whose command IS the goobers CLI receives the run's
 	// operational identity (GOOBERS_RUN_ID etc.). A stage that runs the
 	// project's own build/test suite (local-ci's `make ci` → `go test ./...`)
@@ -815,20 +818,14 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// wrapper, not "goobers") but still needs the same context its nested
 	// invocation does — declared per-stage rather than guessed from argv[0].
 	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
-	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
-	for key, value := range e.DefaultEnv {
-		declaredEnv[key] = value
-	}
-	for key, value := range run.Env {
-		declaredEnv[key] = value
-	}
+	declaredEnv := declaredStageEnvironment(e.DefaultEnv, run.Env)
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
 	stageEnv = append(stageEnv, commandEnv...)
 	if injectRunContext {
-		stageEnv = append(stageEnv, e.runContextEnv(env)...)
+		stageEnv = append(stageEnv, e.runContextEnv(ctx, env)...)
 	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
@@ -1726,7 +1723,7 @@ func (d *diagBuffer) Bytes() []byte {
 // gate for the whole repository. Decomposition is the fix the gate asks for,
 // and this block is self-contained — it reads nothing but the executor and the
 // run environment.
-func (e *ShellExecutor) runContextEnv(env apiv1.InvocationEnvelope) []string {
+func (e *ShellExecutor) runContextEnv(ctx context.Context, env apiv1.InvocationEnvelope) []string {
 	task := strings.TrimPrefix(env.TaskID, env.RunID+":")
 	if task == "" {
 		task = env.TaskID
@@ -1745,6 +1742,12 @@ func (e *ShellExecutor) runContextEnv(env apiv1.InvocationEnvelope) []string {
 	// would read as "the digest is the empty string" rather than "unknown".
 	if e.AppliedConfigDigest != "" {
 		runEnv = append(runEnv, AppliedConfigDigestEnvVar+"="+e.AppliedConfigDigest)
+	}
+	if env.ConfigGeneration != "" {
+		runEnv = append(runEnv, ConfigGenerationEnvVar+"="+env.ConfigGeneration, ConfigDirectoryEnvVar+"="+e.ConfigDirectory)
+	}
+	if plane, ok := JournalPlaneFromContext(ctx); ok {
+		runEnv = append(runEnv, "GOOBERS_JOURNAL_ENDPOINT="+plane.Endpoint, "GOOBERS_JOURNAL_TOKEN="+plane.Token)
 	}
 	return runEnv
 }

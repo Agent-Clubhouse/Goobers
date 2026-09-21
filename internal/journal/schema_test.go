@@ -32,6 +32,7 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 	// leave the primary engine path uncovered.
 	identity := testIdentity()
 	identity.Driver = DriverEngine
+	identity.ConfigGeneration = Digest([]byte("execution-config"))
 	run, err := Create(root, identity, map[string][]byte{
 		"issue.md": []byte("issue body"),
 	}, WithScrubber(scrub), WithClock(fixedClock()))

@@ -154,7 +154,7 @@ func TestWorkerKitNarrowsHarnessScopedCredentialForPod(t *testing.T) {
 			writeFileContent(t, definition, strings.Replace(readFileContent(t, definition), "harness: copilot", "harness: "+string(tc.harness), 1))
 
 			writer := agenticKitWriter{instanceRoot: root, seams: workerReloadSeams(t, root), blobEndpoint: "http://blobs.invalid"}
-			kit, err := writer.buildKit(apiv1.InvocationEnvelope{
+			kit, err := writer.buildKitContext(t.Context(), apiv1.InvocationEnvelope{
 				RunID: "scoped-model-run", TaskID: "implement", WorkflowID: pinWorkflow,
 				Gaggle: pinGaggle, Goober: pinGoober,
 			}, agentickit.ModeInvoke)

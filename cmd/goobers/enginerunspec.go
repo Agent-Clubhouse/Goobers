@@ -26,13 +26,14 @@ import (
 // keeps the graph, the placements and the run controls sourced from one object
 // instead of from a name that a second lookup might resolve elsewhere.
 type engineRunRequest struct {
-	instanceID  string
-	cfg         *instance.Config
-	set         *instance.ConfigSet
-	gaggle      string
-	project     apiv1.RepoRef
-	def         workflow.Definition
-	liveJournal bool
+	configGeneration string
+	instanceID       string
+	cfg              *instance.Config
+	set              *instance.ConfigSet
+	gaggle           string
+	project          apiv1.RepoRef
+	def              workflow.Definition
+	liveJournal      bool
 
 	// runID pins a run identity the caller already minted. The daemon's
 	// scheduler mints its own run id when it admits a run (and records it in
@@ -107,16 +108,17 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		triggerRef = req.def.Name
 	}
 	return engine.StartSpec{
-		RunID:           runID,
-		Gaggle:          req.gaggle,
-		RepoRef:         req.project,
-		Item:            req.item,
-		TriggerKind:     triggerKind,
-		TriggerRef:      triggerRef,
-		BranchNamespace: branchNamespacesByGaggle(req.set)[req.gaggle],
-		LiveJournal:     req.liveJournal,
-		Placements:      placements,
-		RunControls:     controls,
+		ConfigGeneration: req.configGeneration,
+		RunID:            runID,
+		Gaggle:           req.gaggle,
+		RepoRef:          req.project,
+		Item:             req.item,
+		TriggerKind:      triggerKind,
+		TriggerRef:       triggerRef,
+		BranchNamespace:  branchNamespacesByGaggle(req.set)[req.gaggle],
+		LiveJournal:      req.liveJournal,
+		Placements:       placements,
+		RunControls:      controls,
 		// #294/#3528: an agentic gate's reviewer capabilities are instance
 		// policy, pinned into the run at start and read back from the run's
 		// own snapshot afterwards — the daemon's credential plane resolves a

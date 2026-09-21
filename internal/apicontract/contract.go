@@ -231,6 +231,8 @@ const (
 	// scan (decomposition.FindEscalationCandidates), run daemon-side instead
 	// of exposed to a pod as raw run-directory traversal (#4342).
 	JournalEscalationCandidatesPath = V1Prefix + "/journal/escalation-candidates"
+	// JournalMergeAuthorityPath checks a pinned stage against current merge policy.
+	JournalMergeAuthorityPath = V1Prefix + "/journal/merge-authority"
 	// JournalBranchOwnershipPath answers "does this run's journal actually
 	// own this branch, and if so its identity and terminal/ref facts" —
 	// reconcile-branches's own check before a candidate branch is preserved
@@ -337,6 +339,7 @@ const (
 	RouteJournalConflictTouches      RouteID = "journalConflictTouches"
 	RouteJournalUnpushedWork         RouteID = "journalUnpushedWork"
 	RouteJournalEscalationCandidates RouteID = "journalEscalationCandidates"
+	RouteJournalMergeAuthority       RouteID = "journalMergeAuthority"
 	RouteJournalBranchOwnership      RouteID = "journalBranchOwnership"
 )
 
@@ -574,6 +577,7 @@ var v1Routes = []Route{
 	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalEscalationCandidates, Method: http.MethodPost, Path: JournalEscalationCandidatesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
