@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/safeopen"
 )
 
 // Scan limits bound work and retained data per gaggle observation.
@@ -129,7 +130,7 @@ func scanRun(ctx context.Context, dir, gaggle string, start, end time.Time, budg
 			return ctx.Err()
 		}
 		var event journal.Event
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil || !event.KnownSchema() || event.Seq <= lastSeq {
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil || !event.KnownSchema() || event.Seq != lastSeq+1 {
 			return errors.New("incomplete event sequence")
 		}
 		if event.Time.IsZero() || event.Time.After(end) || event.RunID != "" && event.RunID != identity.RunID {
@@ -225,7 +226,12 @@ func boundedFile(path string, limit int64, budget *int64) ([]byte, error) {
 	if !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, errors.New("file outside scan bounds")
 	}
-	file, err := os.Open(path)
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	file, err := safeopen.OpenRegularInRoot(root, filepath.Base(path))
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +266,7 @@ func pinnedBytes(dir string, ref journal.Ref, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	file, err := root.Open(ref.Path)
+	file, err := safeopen.OpenRegularInRoot(root, ref.Path)
 	if err != nil {
 		return nil, err
 	}

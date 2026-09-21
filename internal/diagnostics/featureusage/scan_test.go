@@ -133,3 +133,39 @@ func TestScanRejectsCrossGaggleEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestScanSequenceGapsNeverClaimCompleteCoverage(t *testing.T) {
+	for _, missing := range []int{0, 1} {
+		t.Run(fmt.Sprintf("missing-event-%d", missing), func(t *testing.T) {
+			now := time.Now().UTC()
+			dir := t.TempDir()
+			run, err := journal.Create(dir, journal.RunIdentity{RunID: "run", Gaggle: "g", Workflow: "w"}, nil, journal.WithClock(func() time.Time { return now }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, typ := range []journal.EventType{journal.EventRunnerAnnotation, journal.EventRunFinished} {
+				if err := run.Append(journal.Event{Type: typ}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := run.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "run", "events.jsonl")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			lines = append(lines[:missing], lines[missing+1:]...)
+			if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for id, count := range Scan(context.Background(), dir, "g", now.Add(-time.Minute), now.Add(time.Second)) {
+				if count.Complete {
+					t.Fatalf("gap claimed complete %s: %+v", id, count)
+				}
+			}
+		})
+	}
+}
