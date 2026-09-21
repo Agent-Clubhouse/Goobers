@@ -27,6 +27,28 @@ func protectHistoryPath(root *os.Root, dir, name string, directory bool) error {
 		return err
 	}
 	defer func() { _ = file.Close() }()
+	if err := applyHistoryPrivacy(file, path, directory); err != nil {
+		return err
+	}
+	after, err := root.Lstat(name)
+	if err != nil || !os.SameFile(before, after) {
+		return errors.New("diagnostic privacy target changed")
+	}
+	return nil
+}
+
+// Prepare before os.OpenRoot: its Windows directory handle does not share
+// DELETE, which conflicts with the MAXIMUM_ALLOWED security handle.
+func protectHistoryDirectory(dir string, before os.FileInfo) error {
+	file, err := openPrivacyTarget(dir, before, true)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	return applyHistoryPrivacy(file, dir, true)
+}
+
+func applyHistoryPrivacy(file *os.File, path string, directory bool) error {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return err
@@ -49,10 +71,6 @@ func protectHistoryPath(root *os.Root, dir, name string, directory bool) error {
 	}
 	if err := secfile.VerifyPrivate(path); err != nil {
 		return err
-	}
-	after, err := root.Lstat(name)
-	if err != nil || !os.SameFile(before, after) {
-		return errors.New("diagnostic privacy target changed")
 	}
 	return nil
 }

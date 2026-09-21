@@ -91,13 +91,17 @@ func Open(ctx context.Context, dir string, scrubber journal.Scrubber) (*Store, e
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("unsafe diagnostic history directory")
 	}
+	if err := protectHistoryDirectory(dir, info); err != nil {
+		return nil, err
+	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, err
 	}
-	if err := protectHistoryPath(root, dir, ".", true); err != nil {
+	opened, err := root.Lstat(".")
+	if err != nil || !os.SameFile(info, opened) {
 		_ = root.Close()
-		return nil, err
+		return nil, errors.New("diagnostic history directory changed")
 	}
 	owner, err := acquireOwner(root, dir)
 	if err != nil {
