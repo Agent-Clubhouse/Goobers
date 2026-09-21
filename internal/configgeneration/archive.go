@@ -46,13 +46,6 @@ type Archive struct {
 	Files      []file `json:"files"`
 }
 
-// Capture snapshots the config tree and its optional shared goober sibling.
-// The caller must validate the captured tree against the admitted config
-// digest before assigning it to a run; capture alone is not admission.
-func Capture(ctx context.Context, configDir string) ([]byte, string, error) {
-	return CaptureForInstance(ctx, configDir, "")
-}
-
 // CaptureForInstance namespaces archive ownership by the admitting instance.
 // Identical definitions from separate instances must not share a deletable pin.
 func CaptureForInstance(ctx context.Context, configDir, instanceID string) ([]byte, string, error) {

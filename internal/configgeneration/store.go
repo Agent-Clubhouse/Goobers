@@ -118,7 +118,7 @@ func (s Store) keepLocked(ctx context.Context, archive *Archive, data []byte, di
 		if err := s.publish(ctx, digest, data); err != nil {
 			return "", err
 		}
-		return filepath.Join(destination, "config"), nil
+		return filepath.Abs(filepath.Join(destination, "config"))
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
@@ -154,7 +154,7 @@ func (s Store) keepLocked(ctx context.Context, archive *Archive, data []byte, di
 	if err := s.publish(ctx, digest, data); err != nil {
 		return "", err
 	}
-	return filepath.Join(destination, "config"), nil
+	return filepath.Abs(filepath.Join(destination, "config"))
 }
 
 // Load verifies the retained execution tree before returning it. A missing or
@@ -185,7 +185,7 @@ func (s Store) Load(ctx context.Context, digest string) (string, error) {
 	if actual != digest {
 		return "", errors.New("retained config generation is corrupt")
 	}
-	return configDir, nil
+	return filepath.Abs(configDir)
 }
 
 func (s Store) prune(ctx context.Context, protected map[string]bool, needed int64) error {

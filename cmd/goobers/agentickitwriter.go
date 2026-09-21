@@ -112,10 +112,6 @@ func kitModeFor(attempt dispatcher.Attempt) agentickit.Mode {
 	return agentickit.ModeInvoke
 }
 
-func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
-	return w.buildKitContext(context.Background(), env, mode)
-}
-
 func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
 	l := instance.NewLayout(w.instanceRoot)
 	if w.seams == nil {

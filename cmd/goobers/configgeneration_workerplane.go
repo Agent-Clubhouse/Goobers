@@ -15,8 +15,8 @@ import (
 	"github.com/goobers/goobers/internal/podauth"
 )
 
-func (s *workerSeams) mergeAuthorityContext(ctx context.Context, env apiv1.InvocationEnvelope) (context.Context, error) {
-	if s.recoveryEmitter == nil || s.recoveryEmitter.BaseURL == "" {
+func (w *workerSeams) mergeAuthorityContext(ctx context.Context, env apiv1.InvocationEnvelope) (context.Context, error) {
+	if w.recoveryEmitter == nil || w.recoveryEmitter.BaseURL == "" {
 		return ctx, nil
 	}
 	if !slices.Contains(env.Capabilities, string(capability.GitHubPRMerge)) && !slices.Contains(env.Capabilities, string(capability.ADOPRComplete)) {
@@ -25,23 +25,23 @@ func (s *workerSeams) mergeAuthorityContext(ctx context.Context, env apiv1.Invoc
 	// The parent worker's ambient token may authorize surrender and credential
 	// materialization. It must never reach the CLI child. Mint the read-plane
 	// capability separately, with the same scope/TTL as dispatched stage pods.
-	if s.journalMinter == nil {
+	if w.journalMinter == nil {
 		// Preserve explicitly unauthenticated loopback workers. The client rejects
 		// hostnames and non-loopback addresses; authenticated daemons still deny it.
-		_, err := journalclient.NewHTTP(journalclient.HTTPConfig{BaseURL: s.recoveryEmitter.BaseURL, RunID: env.RunID, Gaggle: env.Gaggle, AllowAnonymousLoopback: true})
+		_, err := journalclient.NewHTTP(journalclient.HTTPConfig{BaseURL: w.recoveryEmitter.BaseURL, RunID: env.RunID, Gaggle: env.Gaggle, AllowAnonymousLoopback: true})
 		if err != nil {
 			return ctx, err
 		}
-		return executor.WithJournalPlane(ctx, executor.JournalPlane{Endpoint: s.recoveryEmitter.BaseURL}), nil
+		return executor.WithJournalPlane(ctx, executor.JournalPlane{Endpoint: w.recoveryEmitter.BaseURL}), nil
 	}
-	token, err := s.journalMinter.MintScoped(env.RunID, dispatcher.PlaneTokenTTL, podauth.ScopeJournal)
+	token, err := w.journalMinter.MintScoped(env.RunID, dispatcher.PlaneTokenTTL, podauth.ScopeJournal)
 	if err != nil {
 		return ctx, err
 	}
-	if s.shared != nil {
-		s.shared.Register([]byte(token))
+	if w.shared != nil {
+		w.shared.Register([]byte(token))
 	}
-	return executor.WithJournalPlane(ctx, executor.JournalPlane{Endpoint: s.recoveryEmitter.BaseURL, Token: token}), nil
+	return executor.WithJournalPlane(ctx, executor.JournalPlane{Endpoint: w.recoveryEmitter.BaseURL, Token: token}), nil
 }
 
 func wireWorkerJournalAuthority(seams *workerSeams, emitter *livejournal.HTTPEmitter, root string) error {

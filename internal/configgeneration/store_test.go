@@ -26,7 +26,7 @@ func TestStoreBoundsRetainedGenerationsAndProtectsRunPins(t *testing.T) {
 	var lastDigest string
 	for i := 0; i < MaxGenerations; i++ {
 		writeFixture(t, source, "config/workflow.yaml", fmt.Sprintf("generation: %d", i))
-		data, digest, err := Capture(t.Context(), filepath.Join(source, "config"))
+		data, digest, err := CaptureForInstance(t.Context(), filepath.Join(source, "config"), "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,7 +37,7 @@ func TestStoreBoundsRetainedGenerationsAndProtectsRunPins(t *testing.T) {
 		lastData, lastDigest = data, digest
 	}
 	writeFixture(t, source, "config/workflow.yaml", "generation: overflow")
-	data, digest, err := Capture(t.Context(), filepath.Join(source, "config"))
+	data, digest, err := CaptureForInstance(t.Context(), filepath.Join(source, "config"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestStoreRefusesCorruptRetainedGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := Store{Root: filepath.Join(root, "generations"), Blobs: blobs}
-	data, digest, err := Capture(t.Context(), filepath.Join(source, "config"))
+	data, digest, err := CaptureForInstance(t.Context(), filepath.Join(source, "config"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestStoreLeasesProtectConcurrentCacheReadersAtCapacity(t *testing.T) {
 	var evict string
 	for i := 0; i < MaxGenerations; i++ {
 		writeFixture(t, source, "config/workflow.yaml", fmt.Sprintf("generation: %d", i))
-		data, digest, err := Capture(t.Context(), filepath.Join(source, "config"))
+		data, digest, err := CaptureForInstance(t.Context(), filepath.Join(source, "config"), "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -128,7 +128,7 @@ func TestStoreLeasesProtectConcurrentCacheReadersAtCapacity(t *testing.T) {
 		evict = digest
 	}
 	writeFixture(t, source, "config/workflow.yaml", "generation: beyond capacity")
-	data, digest, err := Capture(t.Context(), filepath.Join(source, "config"))
+	data, digest, err := CaptureForInstance(t.Context(), filepath.Join(source, "config"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestStoreChecksDurableOwnerAfterObtainingPruneLease(t *testing.T) {
 	store := Store{Root: filepath.Join(root, "cache"), LocalCache: true}
 	for i := 0; i < MaxGenerations; i++ {
 		writeFixture(t, source, "config/workflow.yaml", fmt.Sprintf("generation: %d", i))
-		data, digest, err := Capture(t.Context(), filepath.Join(source, "config"))
+		data, digest, err := CaptureForInstance(t.Context(), filepath.Join(source, "config"), "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -167,7 +167,7 @@ func TestStoreChecksDurableOwnerAfterObtainingPruneLease(t *testing.T) {
 	calls := 0
 	store.DurablePins = func(context.Context) (map[string]bool, error) { calls++; return protected, nil }
 	writeFixture(t, source, "config/workflow.yaml", "generation: overflow")
-	data, digest, err := Capture(t.Context(), filepath.Join(source, "config"))
+	data, digest, err := CaptureForInstance(t.Context(), filepath.Join(source, "config"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestStoreExternalHistoryPinsSurviveRestartAndPruning(t *testing.T) {
 	pins := make([]string, 0, MaxGenerations)
 	for i := 0; i < MaxGenerations; i++ {
 		writeFixture(t, source, "config/workflow.yaml", fmt.Sprintf("external: %d", i))
-		data, digest, err := Capture(t.Context(), filepath.Join(source, "config"))
+		data, digest, err := CaptureForInstance(t.Context(), filepath.Join(source, "config"), "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -207,7 +207,7 @@ func TestStoreExternalHistoryPinsSurviveRestartAndPruning(t *testing.T) {
 	}
 	restarted := Store{Root: store.Root, Blobs: blobs}
 	writeFixture(t, source, "config/workflow.yaml", "overflow")
-	data, digest, err := Capture(t.Context(), filepath.Join(source, "config"))
+	data, digest, err := CaptureForInstance(t.Context(), filepath.Join(source, "config"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +220,47 @@ func TestStoreExternalHistoryPinsSurviveRestartAndPruning(t *testing.T) {
 		}
 		if exists, err := blobs.Has(t.Context(), pin); err != nil || !exists {
 			t.Fatalf("external archive lost %s: %v", pin, err)
+		}
+	}
+}
+
+// Stage subprocesses change their working directory. A retained tree must not
+// be reinterpreted relative to the stage workspace when the CLI verifies it.
+func TestRelativeStoreReturnsPathsUsableAfterStageChangesDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	writeFixture(t, "source", "config/workflow.yaml", "original")
+	data, digest, err := CaptureForInstance(t.Context(), "source/config", "instance-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := Store{Root: "relative-generations", LocalCache: true}
+	directory, lease, err := store.KeepAndAcquire(t.Context(), data, digest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lease.Release() }()
+	loaded, err := store.Load(t.Context(), digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired, otherLease, err := store.Acquire(t.Context(), digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = otherLease.Release() }()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.Mkdir(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workspace)
+	for _, path := range []string{directory, loaded, acquired} {
+		if !filepath.IsAbs(path) {
+			t.Fatalf("stage path is relative: %s", path)
+		}
+		_, actual, err := CaptureForInstance(t.Context(), path, "instance-1")
+		if err != nil || actual != digest {
+			t.Fatalf("stage failed to verify pinned generation after chdir: %s %v", actual, err)
 		}
 	}
 }

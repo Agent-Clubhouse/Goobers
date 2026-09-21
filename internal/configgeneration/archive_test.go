@@ -28,7 +28,7 @@ func TestCapturePreservesWholeGenerationAndExcludesInstanceSecrets(t *testing.T)
 	writeFixture(t, root, "goobers/shared/instructions.md", "shared old instructions")
 	writeFixture(t, root, "instance.yaml", "never copy this credential source")
 	writeFixture(t, root, "config/.git/objects/unrelated", "do not snapshot git internals")
-	data, digest, err := Capture(t.Context(), filepath.Join(root, "config"))
+	data, digest, err := CaptureForInstance(t.Context(), filepath.Join(root, "config"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,11 +60,11 @@ func TestCaptureHasStableIdentityAndPreservesEmptyDirectories(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	first, digest, err := Capture(t.Context(), filepath.Join(root, "config"))
+	first, digest, err := CaptureForInstance(t.Context(), filepath.Join(root, "config"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, again, err := Capture(t.Context(), filepath.Join(root, "config"))
+	_, again, err := CaptureForInstance(t.Context(), filepath.Join(root, "config"), "")
 	if err != nil || again != digest {
 		t.Fatalf("unstable capture: %s %s %v", digest, again, err)
 	}
@@ -102,12 +102,12 @@ func TestCaptureRefusesOversizedAndCancelledGeneration(t *testing.T) {
 	if err := os.Truncate(filepath.Join(root, "config/too-large"), MaxFileBytes+1); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Capture(t.Context(), filepath.Join(root, "config")); err == nil {
+	if _, _, err := CaptureForInstance(t.Context(), filepath.Join(root, "config"), ""); err == nil {
 		t.Fatal("oversized file accepted")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, _, err := Capture(ctx, filepath.Join(root, "config")); err == nil {
+	if _, _, err := CaptureForInstance(ctx, filepath.Join(root, "config"), ""); err == nil {
 		t.Fatal("cancelled capture accepted")
 	}
 }
