@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"github.com/goobers/goobers/internal/instance"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
