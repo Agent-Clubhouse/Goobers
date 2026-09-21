@@ -89,7 +89,7 @@ func (c *CopilotAdapter) verifyLauncherUsageOutput(ctx context.Context, version 
 	if err != nil {
 		return
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	stdout := newTranscriptBuffer(maxPreflightDiagnosticBytes)
 	command := append(append([]string(nil), resolveHarnessCommand(c.Command)...),
