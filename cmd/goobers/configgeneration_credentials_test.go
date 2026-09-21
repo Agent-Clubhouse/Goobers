@@ -3,17 +3,29 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
+	stdlog "log"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
+	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/mergepolicy"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/providers"
 )
 
 func TestPinnedCredentialPlaneKeepsReferencesAndRotatesValuesButRevokesMerge(t *testing.T) {
@@ -97,12 +109,102 @@ func TestPinnedCredentialPlaneKeepsReferencesAndRotatesValuesButRevokesMerge(t *
 		}
 		service.Replace(credentialPlaneDefinitionsFromSet(current))
 	}
+
+	verifyRevocation := checkRemoteMergeAuthorityBeforeRevocation(t, layout, log, input.ConfigGeneration, runID)
 	writeFixture(t, workflowPath, deterministicWorkflowYAML)
+	verifyRevocation()
+
 	_, err = service.Resolve(t.Context(), request)
 	if refusal := planeErrorOf(t, err); refusal.Code != "merge_authority_revoked" {
 		t.Fatalf("unexpected revocation: %+v", refusal)
 	}
 	if materializations != 2 {
 		t.Fatalf("revoked grant materialized credentials: %d", materializations)
+	}
+}
+
+type mergeAuthorityTestLander struct{ calls *int }
+
+func (l mergeAuthorityTestLander) Land(context.Context, *providers.Dispatcher, mergepolicy.Request) (mergepolicy.Result, error) {
+	*l.calls++
+	return mergepolicy.Result{}, nil
+}
+
+func checkRemoteMergeAuthorityBeforeRevocation(t *testing.T, layout instance.Layout, instanceLog *journal.InstanceLog, generation, runID string) func() {
+	t.Helper()
+
+	// A grant was already issued above. The portable CLI has no daemon config
+	// tree, and a worker's old copy would still declare the original merge grant.
+	registryTokens := podauth.NewRegistry()
+	auth, err := podauth.NewAuthenticator(registryTokens, httpapi.DenyAllAuthenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), stdlog.New(io.Discard, "", 0), httpapi.WithAuthenticator(auth), httpapi.WithRunJournalService(newDaemonRunJournalService(layout, instanceLog)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	worker := &workerSeams{recoveryEmitter: &livejournal.HTTPEmitter{BaseURL: server.URL, Token: "parent-only"}, journalMinter: registryTokens}
+	invocation := apiv1.InvocationEnvelope{RunID: runID, Gaggle: "example", WorkflowID: "default-implement", TaskID: runID + ":local-ci", Capabilities: []string{"github:pr:merge"}, ConfigGeneration: generation}
+	workerContext, err := worker.mergeAuthorityContext(t.Context(), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requireInvocationMergeAuthority(workerContext, instance.NewLayout(t.TempDir()), invocation); err != nil {
+		t.Fatalf("worker used stale/local config: %v", err)
+	}
+	token, err := registryTokens.MintScoped(runID, time.Hour, podauth.ScopeJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(journalclient.EnvEndpoint, server.URL)
+	t.Setenv(journalclient.EnvToken, token)
+	t.Setenv(executor.RunIDEnvVar, runID)
+	t.Setenv(executor.GaggleEnvVar, "example")
+	t.Setenv(executor.TaskEnvVar, "")
+	t.Setenv("GOOBERS_STAGE", "local-ci")
+	t.Setenv(executor.InstanceRootEnvVar, t.TempDir())
+	t.Setenv(executor.ConfigGenerationEnvVar, "")
+	landed := 0
+	lander := currentMergeAuthorityLander{Lander: mergeAuthorityTestLander{calls: &landed}, capability: capability.GitHubPRMerge}
+	if _, err := lander.Land(t.Context(), nil, mergepolicy.Request{}); err != nil {
+		t.Fatalf("portable CLI requires no local live config: %v", err)
+	}
+	client, err := journalclient.NewHTTP(journalclient.HTTPConfig{BaseURL: server.URL, Token: token, RunID: runID, Gaggle: "example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RequireMergeAuthority(t.Context(), "missing-stage", string(capability.GitHubPRMerge)); err == nil {
+		t.Fatal("undeclared stage authorized")
+	}
+	wrongRun, err := journalclient.NewHTTP(journalclient.HTTPConfig{BaseURL: server.URL, Token: token, RunID: "other-run", Gaggle: "example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wrongRun.RequireMergeAuthority(t.Context(), "local-ci", string(capability.GitHubPRMerge)); err == nil {
+		t.Fatal("cross-run authority authorized")
+	}
+	wrongScope, err := registryTokens.MintScoped(runID, time.Hour, podauth.ScopeState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(journalclient.EnvToken, wrongScope)
+	if _, err := lander.Land(t.Context(), nil, mergepolicy.Request{}); err == nil {
+		t.Fatal("wrong scope authorized merge")
+	}
+	t.Setenv(journalclient.EnvToken, token)
+	return func() {
+
+		if _, err := lander.Land(t.Context(), nil, mergepolicy.Request{}); err == nil {
+			t.Fatal("issued credential survived authoritative merge revocation")
+		}
+		if err := requireInvocationMergeAuthority(workerContext, layout, invocation); err == nil {
+			t.Fatal("worker stale admitted pin overrode daemon revocation")
+		}
+		if landed != 1 {
+			t.Fatalf("provider land called %d times, want only pre-revocation call", landed)
+		}
 	}
 }

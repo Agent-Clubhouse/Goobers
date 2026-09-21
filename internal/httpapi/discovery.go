@@ -264,7 +264,7 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.journal != nil
 	case apicontract.RouteJournalRunPhase, apicontract.RouteJournalConflictTouches,
 		apicontract.RouteJournalUnpushedWork, apicontract.RouteJournalEscalationCandidates,
-		apicontract.RouteJournalBranchOwnership:
+		apicontract.RouteJournalBranchOwnership, apicontract.RouteJournalMergeAuthority:
 		available = config.runJournal != nil
 	case apicontract.RouteCredentialResolve:
 		available = config.credentials != nil

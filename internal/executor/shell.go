@@ -805,6 +805,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	ExcludeStageArtifacts(ctx, env.Workspace, resultFile)
 
 	registry, scrubber := journal.DefaultScrubber()
+	registerJournalPlane(ctx, registry)
 	// Only a stage whose command IS the goobers CLI receives the run's
 	// operational identity (GOOBERS_RUN_ID etc.). A stage that runs the
 	// project's own build/test suite (local-ci's `make ci` → `go test ./...`)
@@ -831,7 +832,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	stageEnv = append(stageEnv, commandEnv...)
 	if injectRunContext {
-		stageEnv = append(stageEnv, e.runContextEnv(env)...)
+		stageEnv = append(stageEnv, e.runContextEnv(ctx, env)...)
 	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
@@ -1730,7 +1731,7 @@ func (d *diagBuffer) Bytes() []byte {
 // gate for the whole repository. Decomposition is the fix the gate asks for,
 // and this block is self-contained — it reads nothing but the executor and the
 // run environment.
-func (e *ShellExecutor) runContextEnv(env apiv1.InvocationEnvelope) []string {
+func (e *ShellExecutor) runContextEnv(ctx context.Context, env apiv1.InvocationEnvelope) []string {
 	task := strings.TrimPrefix(env.TaskID, env.RunID+":")
 	if task == "" {
 		task = env.TaskID
@@ -1752,6 +1753,9 @@ func (e *ShellExecutor) runContextEnv(env apiv1.InvocationEnvelope) []string {
 	}
 	if env.ConfigGeneration != "" {
 		runEnv = append(runEnv, ConfigGenerationEnvVar+"="+env.ConfigGeneration, ConfigDirectoryEnvVar+"="+e.ConfigDirectory)
+	}
+	if plane, ok := JournalPlaneFromContext(ctx); ok {
+		runEnv = append(runEnv, "GOOBERS_JOURNAL_ENDPOINT="+plane.Endpoint, "GOOBERS_JOURNAL_TOKEN="+plane.Token)
 	}
 	return runEnv
 }

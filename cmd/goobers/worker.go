@@ -315,13 +315,11 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		engineRuntime.deps.Journal = emitter
-		if seams != nil {
-			seams.recoveryEmitter = emitter
-			seams.checkpointEmitter = emitter
-			seams.executionFence = remoteSharedExecutionFence(*daemonAPI, func(runID string) (string, error) {
-				return workerExecutionBearer(emitter, runID)
-			})
+		if err := wireWorkerJournalAuthority(seams, emitter, *instanceRoot); err != nil {
+			pf(stderr, "error: configure worker journal authority: %v\n", err)
+			return 2
 		}
+
 		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)
 
 	}

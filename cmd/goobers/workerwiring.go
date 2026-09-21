@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
@@ -42,6 +43,7 @@ import (
 // the SAME ones the local runner builds, from the same buildRunnerConfig, which
 // is what conformance between the two tiers rests on.
 type workerSeams struct {
+	journalMinter  dispatcher.ScopedTokenMinter
 	executionFence executionFenceStart
 	root           string
 	scrubber       journal.Scrubber
@@ -430,6 +432,10 @@ func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run ap
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("worker: construct deterministic executor: %w", err)
 	}
+	ctx, err = d.seams.mergeAuthorityContext(ctx, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	return exec.Run(ctx, env, run)
 }
 
@@ -453,6 +459,10 @@ func (a workerGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) 
 	if err := a.seams.materialize(ctx, g, env); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
+	ctx, err = a.seams.mergeAuthorityContext(ctx, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	return exec.Invoke(ctx, env)
 }
 
@@ -467,6 +477,10 @@ func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) 
 		return apiv1.Verdict{}, err
 	}
 	if err := a.seams.materialize(ctx, g, env); err != nil {
+		return apiv1.Verdict{}, err
+	}
+	ctx, err = a.seams.mergeAuthorityContext(ctx, env)
+	if err != nil {
 		return apiv1.Verdict{}, err
 	}
 	return exec.Review(ctx, env)

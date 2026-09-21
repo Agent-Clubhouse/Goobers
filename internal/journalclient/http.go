@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -50,6 +51,8 @@ const maxErrorBodyBytes = 4 << 20
 
 // HTTPConfig configures the run-read backend.
 type HTTPConfig struct {
+	// AllowAnonymousLoopback permits a daemon on a literal loopback address only.
+	AllowAnonymousLoopback bool
 	// BaseURL is the daemon API root (EnvEndpoint in the pod).
 	BaseURL string
 	// Token is the journal-scoped bearer (EnvToken in the pod).
@@ -78,7 +81,7 @@ func NewHTTP(cfg HTTPConfig) (*HTTP, error) {
 	if cfg.BaseURL == "" {
 		return nil, errors.New("journalclient: HTTP backend requires a base URL")
 	}
-	if strings.TrimSpace(cfg.Token) == "" {
+	if strings.TrimSpace(cfg.Token) == "" && !anonymousLoopback(cfg) {
 		return nil, errors.New("journalclient: HTTP backend requires a bearer token")
 	}
 	if strings.TrimSpace(cfg.RunID) == "" {
@@ -123,7 +126,9 @@ func (h *HTTP) do(ctx context.Context, method, path string, body any, limit int6
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
+	if h.cfg.Token != "" {
+		request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
+	}
 	response, err := h.cfg.Client.Do(request)
 	if err != nil {
 		return nil, nil, fmt.Errorf("journalclient: %s: %w", endpoint, err)
@@ -548,3 +553,15 @@ func (h *HTTP) BranchOwnership(ctx context.Context, req BranchOwnershipRequest) 
 }
 
 var _ CrossRun = (*HTTP)(nil)
+
+func anonymousLoopback(cfg HTTPConfig) bool {
+	if !cfg.AllowAnonymousLoopback {
+		return false
+	}
+	endpoint, err := url.Parse(cfg.BaseURL)
+	if err != nil || endpoint.User != nil || endpoint.Scheme != "http" {
+		return false
+	}
+	ip := net.ParseIP(endpoint.Hostname())
+	return ip != nil && ip.IsLoopback()
+}

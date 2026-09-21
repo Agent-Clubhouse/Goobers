@@ -59,3 +59,13 @@ retain their existing operational lifecycle. Changing those settings can still
 require a restart or make an admitted configuration unavailable; they are not
 silently serialized into execution archives. Configured credentials and merge
 revocation are deliberately evaluated using current authority.
+
+Remote merge commands consult the daemon's authenticated journal plane again
+immediately before calling the provider land operation. The daemon derives the
+workflow and generation from the run journal, checks the admitted stage's grant,
+and checks current operator configuration. A worker's stale mounted tree or a
+portable stage pod without configuration cannot substitute for that check.
+Worker CLI children receive only a run-scoped journal bearer, never the parent
+worker's privileged token. Workers need the configured signing key to mint this
+bearer; unauthenticated development mode remains restricted to literal HTTP
+loopback addresses. Missing authority or a failed check refuses the merge.
