@@ -69,6 +69,36 @@ describe("HttpDaemonClient", () => {
     }
   });
 
+  it("retains optional gate and execution evidence without defaulting older responses", async () => {
+    for (const observed of [false, true]) {
+      const detail: RunDetail = { ...goWireFixtures.runDetail };
+      delete detail.waitingForGate;
+      detail.activeStages = [{ name: "implement", kind: "stage", startedAt: "2026-09-20T12:00:00Z" }];
+      if (observed) {
+        detail.waitingForGate = true;
+        detail.activeStages[0] = {
+          ...detail.activeStages[0],
+          executionObservedAt: "2026-09-20T12:00:03Z",
+          executionDeadline: "2026-09-20T12:01:03Z",
+          executionId: "attempt-2-execution-1",
+          executionOverlap: true,
+        };
+      }
+      const fetcher = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ runs: [detail] }))
+        .mockResolvedValueOnce(Response.json(detail));
+      const client = new HttpDaemonClient({ fetch: fetcher });
+      const list = await client.listRuns();
+      const decoded = await client.getRun(detail.id);
+      for (const run of [list.runs[0], decoded]) {
+        expect(run.waitingForGate).toBe(observed ? true : undefined);
+        expect(run.activeStages).toEqual(detail.activeStages);
+        expect(Object.hasOwn(run.activeStages![0], "executionDeadline")).toBe(observed);
+        expect(Object.hasOwn(run.activeStages![0], "executionOverlap")).toBe(observed);
+      }
+    }
+  });
+
   it("reads workflow-scoped queue evidence without a mutation", async () => {
     const evidence = { gaggle: "core", workflow: "implementation", status: "not-observed", asOf: "2026-09-08T00:00:00Z" };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(evidence));

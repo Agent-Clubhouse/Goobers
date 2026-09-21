@@ -794,6 +794,8 @@ export interface RetryBackoffState {
 export interface RunSummary {
   /** Optional for older daemon responses; absent evidence is not zero retries. */
   retryBackoff?: RetryBackoffState;
+  /** Durable human-gate wait; omitted by older daemons and when false. */
+  waitingForGate?: boolean;
   activeStages?: Array<{
     name: string;
     kind: string;
@@ -801,6 +803,12 @@ export interface RunSummary {
     attempt?: number;
     goober?: string;
     startedAt: string;
+    /** Actual execution observation, separate from stage start. */
+    executionObservedAt?: string;
+    executionDeadline?: string;
+    executionId?: string;
+    /** Overlapping executions cannot establish one authoritative deadline. */
+    executionOverlap?: boolean;
   }>;
   activityTruncated?: boolean;
   engineFallback?: EngineFallback;
