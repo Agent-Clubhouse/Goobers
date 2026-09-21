@@ -323,6 +323,30 @@ func TestWindowsScheduledTaskStatusReportsLastFailure(t *testing.T) {
 	}
 }
 
+func TestWindowsScheduledTaskStatusDoesNotReportRunningResultAsFailure(t *testing.T) {
+	for _, result := range []string{"267009", "0x41301"} {
+		t.Run(result, func(t *testing.T) {
+			runner := &fakeRunner{responses: []commandResponse{{
+				output: "Run As User: CONTOSO\\alice\nStatus: Running\nLast Result: " + result + "\n",
+			}}}
+			manager := newTestManager(t, Config{
+				GOOS:         "windows",
+				Executable:   `C:\goobers.exe`,
+				InstanceRoot: `C:\Users\alice\AppData\Local\Goobers`,
+				UserName:     `CONTOSO\alice`,
+				Runner:       runner,
+			})
+			status, err := manager.TaskStatus(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !status.Running || status.LastFailure != "" {
+				t.Fatalf("status = %+v, want running without last failure", status)
+			}
+		})
+	}
+}
+
 func TestInstallRejectsExistingDefinition(t *testing.T) {
 	manager := newTestManager(t, Config{
 		GOOS:         "linux",

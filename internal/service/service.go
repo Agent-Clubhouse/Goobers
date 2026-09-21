@@ -693,10 +693,20 @@ func (m *Manager) statusTask(ctx context.Context) (Status, error) {
 		status.State = "ready"
 	}
 	status.Running = status.State == "running"
-	if failure := firstProperty(values, "Last Result", "Last Run Result"); failure != "" && failure != "0" {
+	if failure := windowsTaskLastFailure(firstProperty(values, "Last Result", "Last Run Result")); failure != "" {
 		status.LastFailure = failure
 	}
 	return status, nil
+}
+
+func windowsTaskLastFailure(result string) string {
+	result = strings.TrimSpace(result)
+	switch strings.ToLower(result) {
+	case "", "0", "267009", "0x41301":
+		return ""
+	default:
+		return result
+	}
 }
 
 func (m *Manager) removeTask(ctx context.Context) error {
