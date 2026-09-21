@@ -384,7 +384,7 @@ func decodeRecords(wire wireSnapshot) (Snapshot, []json.RawMessage, error) {
 			return Snapshot{}, nil, errors.New("invalid diagnostic record size")
 		}
 		var record Record
-		if err := json.Unmarshal(data, &record); err != nil {
+		if err := decodeRecord(data, &record); err != nil {
 			return Snapshot{}, nil, err
 		}
 		if err := validateRecord(record); err != nil {
@@ -397,4 +397,16 @@ func decodeRecords(wire wireSnapshot) (Snapshot, []json.RawMessage, error) {
 		return Snapshot{}, nil, err
 	}
 	return result, raw, nil
+}
+
+func decodeRecord(data []byte, record *Record) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(record); err != nil {
+		return err
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return errors.New("trailing diagnostic record data")
+	}
+	return nil
 }

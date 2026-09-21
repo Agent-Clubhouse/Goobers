@@ -258,3 +258,38 @@ func TestHistoryPulseMeasurement(t *testing.T) {
 		})
 	}
 }
+
+func TestSnapshotRejectsUnknownOuterFieldsWithoutPreservingPrivateRawData(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	record := validRecord(now)
+	raw, err := json.Marshal(map[string]any{"name": record.Name, "time": now, "attributes": record.Attributes, "prompt": "private-seeded-prompt-marker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := encodeSnapshot(Metadata{StoredAt: now}, []json.RawMessage{raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, snapshotName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(dir); err == nil {
+		t.Fatal("unknown outer record field accepted")
+	}
+	store := openStore(t, dir, nil)
+	if err := store.Append(context.Background(), []telemetry.DiagnosticRecord{record}); err != nil {
+		t.Fatal(err)
+	}
+	rewritten, err := os.ReadFile(filepath.Join(dir, snapshotName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rewritten), "private-seeded-prompt-marker") || strings.Contains(string(rewritten), "prompt") {
+		t.Fatal("private seeded field survived rewrite")
+	}
+	snapshot, err := Read(dir)
+	if err != nil || !snapshot.Reset || len(snapshot.Records) != 1 {
+		t.Fatal(snapshot.Metadata, len(snapshot.Records), err)
+	}
+}
