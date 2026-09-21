@@ -106,6 +106,14 @@ replayed old boot from replacing a newer one. Future observations beyond the
 configured skew budget are rejected; stale source timestamps remain unknown
 even if a delayed packet arrives now.
 
+Scheduler-derived conditions have bounded coverage. Admission saturation comes
+from refill occupancy for workflows using `desiredConcurrentRuns`; provider
+quota and storage conditions use the available scheduler observations.
+`cleanup_failure` is deployment-scoped evidence of a failed completed retention
+pass observed within the last minute, and clears after a successful pass or
+when that evidence expires. It does not assert that a particular gaggle is
+blocked or cover every trigger mode, cleanup task or filesystem operation.
+
 ## Approved versions and bounded storage
 
 The company supplies a catalogue mapping release channels to desired SemVer
