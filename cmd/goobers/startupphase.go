@@ -55,6 +55,26 @@ func (t *startupPhaseTracker) snapshot() (phase, target string, since time.Time)
 // without enabling secret-bearing tracing (#4368).
 func startupTimestamp() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
+// newSchedulerSetupProgress logs the existing human-readable setup message
+// together with total and inter-step elapsed times. The setup builder owns
+// the operation boundaries, so timing its progress transitions avoids
+// duplicating its initialization sequence in the daemon orchestrator.
+func newSchedulerSetupProgress(w io.Writer, started time.Time, now func() time.Time) func(string) {
+	previous := started
+	return func(message string) {
+		current := now()
+		pf(
+			w,
+			"%s startup: %s phase=scheduler-setup status=progress elapsed=%s since-previous=%s\n",
+			current.UTC().Format(time.RFC3339Nano),
+			message,
+			current.Sub(started),
+			current.Sub(previous),
+		)
+		previous = current
+	}
+}
+
 // runStartupPhase logs the start and completion (or failure) of a bounded,
 // potentially blocking startup operation with a timestamp, the operation
 // name, a bounded target identity (e.g. a gaggle or repository name), and

@@ -27,6 +27,7 @@ cmd/goobers/prsiblingcontext.go	runGatherSiblingContextCore	69
 cmd/goobers/reconcilebranches.go	reconcileRemoteBranches	56
 cmd/goobers/status.go	runRunTable	71
 cmd/goobers/trace.go	runTraceWithFactories	51
+!entry-justification	cmd/goobers/up.go	runUpContextWithForce	198	# merge resolution restores the implementation branch's approved startup ceiling
 cmd/goobers/up.go	runUpContextWithForce	198
 cmd/goobers/validate.go	runValidateConfig	41
 internal/agentkit/repository.go	(*Repository).planInterruptedUpdate	57
@@ -34,10 +35,10 @@ internal/authoring/explain.go	(*registry).schemaExample	50
 internal/decomposition/publisher.go	(Publisher).Publish	61
 internal/engine/dispatchstage.go	(*Activities).DispatchStage	44
 internal/engine/engine.go	walk	47
-internal/executor/shell.go	(*ShellExecutor).Run	88
+internal/executor/shell.go	(*ShellExecutor).Run	84
 internal/fleet/connector.go	(*Connector).connectOnce	47
 internal/harness/claude_transcript.go	convertClaudeStreams	40
-internal/harness/copilot.go	(*CopilotAdapter).Run	57
+internal/harness/copilot.go	(*CopilotAdapter).Run	51
 internal/harness/executor.go	(*Executor).run	53
 internal/instance/guided.go	validateGuidedOptions	44
 internal/journal/run.go	CreateContinuation	50
@@ -52,10 +53,11 @@ internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	50
 internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	58
 internal/runner/parallel_run.go	(*Runner).runParallelBranch	78
 internal/runner/resume.go	pendingParallel	61
-internal/runner/run.go	(*Runner).dispatchTask	70
+internal/runner/run.go	(*Runner).dispatchTask	61
 internal/runner/run.go	(*Runner).evaluateGate	44
-internal/runner/run.go	(*Runner).runTask	50
-internal/runner/run.go	(*Runner).taskOutcome	51
+internal/runner/run.go	(*Runner).runTask	48
+!entry-justification	internal/runner/run.go	(*Runner).taskOutcome	52	#5107 adds the no-work repass gate-routing decision (extracted into noWorkRepassOutcome, but the call site itself still adds one branch)
+internal/runner/run.go	(*Runner).taskOutcome	52
 internal/runner/run.go	(*Runner).walk	93
 internal/runner/run.go	parseReceiptInputInspection	43
 internal/telemetry/rollup/ingest.go	insertEvents	49
@@ -74,7 +76,7 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	api/validate/validate.go	(*index).checkWorkflow	240
 !body-length	cmd/goobers/applyverdict.go	runApplyVerdict	514
 !body-length	cmd/goobers/backlogquery.go	runBacklogQueryMode	299
-!body-length	cmd/goobers/daemon.go	buildSchedulerDefinitions	354
+!body-length	cmd/goobers/daemon.go	buildSchedulerDefinitions	353
 !body-length	cmd/goobers/daemon.go	buildSchedulerSetupWithConfigPolicy	401
 !body-length	cmd/goobers/dispatchexec.go	runDeclaredStage	380
 !body-length	cmd/goobers/electlander.go	runElectLander	217
@@ -94,27 +96,28 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length-justification	cmd/goobers/up.go	runUpContextWithForce	1639	#5235 registers the bounded co-brand asset handler on the daemon API
 !body-length	cmd/goobers/up.go	runUpContextWithForce	1639
 !body-length	cmd/goobers/validate.go	runValidateConfig	269
-!body-length	cmd/goobers/worker.go	runWorker	274
+!body-length	cmd/goobers/worker.go	runWorker	273
 !body-length	internal/apicontract/wire.go	newWireFixtures	776
 !body-length	internal/decomposition/publisher.go	(Publisher).Publish	233
 !body-length	internal/engine/dispatchstage.go	(*Activities).DispatchStage	284
 !body-length	internal/engine/engine.go	walk	374
-!body-length	internal/executor/shell.go	(*ShellExecutor).Run	559
+!body-length	internal/executor/shell.go	(*ShellExecutor).Run	553
 !body-length	internal/fleet/connector.go	(*Connector).connectOnce	227
 !body-length	internal/harness/claude.go	(*ClaudeAdapter).Run	234
-!body-length	internal/harness/copilot.go	(*CopilotAdapter).Run	333
+!body-length	internal/harness/copilot.go	(*CopilotAdapter).Run	317
 !body-length	internal/harness/executor.go	(*Executor).run	331
-!body-length	internal/localscheduler/scheduler.go	(*Scheduler).Tick	227
+!body-length	internal/localscheduler/scheduler.go	(*Scheduler).Tick	223
 !body-length	internal/readmodel/causal.go	(*Store).CausalCredit	214
 !body-length	internal/readmodel/project.go	ProjectRun	279
 !body-length	internal/readservice/runs.go	summarizeRunForStage	271
 !body-length	internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	260
 !body-length	internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	279
 !body-length	internal/runner/parallel_run.go	(*Runner).runParallelBranch	397
-!body-length	internal/runner/run.go	(*Runner).dispatchTask	275
+!body-length	internal/runner/run.go	(*Runner).dispatchTask	258
 !body-length	internal/runner/run.go	(*Runner).evaluateGate	254
-!body-length	internal/runner/run.go	(*Runner).runTask	284
-!body-length	internal/runner/run.go	(*Runner).taskOutcome	289
+!body-length	internal/runner/run.go	(*Runner).runTask	281
+!body-length-justification	internal/runner/run.go	(*Runner).taskOutcome	291	#5107 adds the no-work repass gate-routing call site (decision logic itself extracted into noWorkRepassOutcome to keep this growth minimal)
+!body-length	internal/runner/run.go	(*Runner).taskOutcome	291
 !body-length	internal/runner/run.go	(*Runner).walk	417
 !body-length	internal/telemetry/rollup/ingest.go	insertEvents	222
 !body-length-justification	internal/workflow/v_2_0/features.go	currentFeatures	225	#4810 registers the codex harness feature id in the v2 feature list

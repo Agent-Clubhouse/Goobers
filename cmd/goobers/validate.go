@@ -28,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workflowsafety"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -534,12 +535,18 @@ func emitStaticRealityFindings(
 	return placementErrors, capabilityErrors
 }
 
-var strictNeutralWarningCodes = []validate.WarningCode{
-	validate.WarningDeprecatedDSLVersion,
-	validate.WarningConnectionRefUnhonored,
-	validate.RunnerAVExclusionsUnverified,
-	validate.WarningImplicitWritableWorkspace,
-}
+var strictNeutralWarningCodes = func() []validate.WarningCode {
+	codes := []validate.WarningCode{
+		validate.WarningDeprecatedDSLVersion,
+		validate.WarningConnectionRefUnhonored,
+		validate.RunnerAVExclusionsUnverified,
+		validate.WarningImplicitWritableWorkspace,
+	}
+	for _, code := range workflowsafety.Codes() {
+		codes = append(codes, validate.WarningCode(code))
+	}
+	return codes
+}()
 
 func strictNeutralWarningCodeText() string {
 	codes := make([]string, 0, len(strictNeutralWarningCodes))

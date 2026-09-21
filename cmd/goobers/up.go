@@ -489,6 +489,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	tracker := &startupPhaseTracker{}
 	go watchStartupReadiness(ctx, stdout, tracker, ready.Load, livenessTimeout)
 	retentionGate := &retentionSweepGate{}
+	telemetryRetentionGate := &retentionSweepGate{}
 
 	// Single-instance lock (#23 AC3): a second `up` on the same instance root
 	// must fail fast with a clear message, not silently race the first.
@@ -576,11 +577,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// expired-claim reap — setup's included — a no-op until the renewal set
 	// has been rebuilt from ledger + liveness below.
 	claimRecoveryGate := localscheduler.NewRecoveryGate()
+	schedulerSetupStarted := time.Now()
 	setupOptions := []schedulerSetupOption{
 		withDesktopNotifications(notifications, stderr),
-		withStartupProgress(func(message string) {
-			pf(stdout, "startup: %s\n", message)
-		}),
+		withStartupProgress(newSchedulerSetupProgress(stdout, schedulerSetupStarted, time.Now)),
 		withClaimRecoveryGate(claimRecoveryGate),
 	}
 	if *skipPreflight {
@@ -1079,20 +1079,22 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// the previous daemon process is still executing on the engine, and its
 	// claims must be renewed — not reaped — across the restart. Only a
 	// renewal pass whose ledger write completed opens the gate; a failed pass
-	// leaves it closed and the periodic tick below retries both halves.
+	// leaves it closed and refuses startup: an expired lease is claimable
+	// even with reaping gated, so crash resume must not execute without it.
 	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, engineClient, setup.RunnerRegistry.RunIDs)
 	if err != nil {
 		pf(stderr, "error: build claim liveness probe: %v\n", err)
 		return 1
 	}
 	defer closeClaimLiveness()
-	if probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
+	if probeErr, renewErr := rebuildStartupClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
 		if daemonStartupStoppedByShutdown(ctx, renewErr) {
 			return 0
 		}
 		if !isJournaledClaimsLockTimeout(renewErr) {
-			pf(stdout, "warning: rebuild claim renewal set: %v\n", renewErr)
+			pf(stderr, "error: rebuild claim renewal set before crash resume: %v\n", renewErr)
 		}
+		return 1
 	} else if probeErr != nil {
 		if daemonStartupStoppedByShutdown(ctx, probeErr) {
 			return 0
@@ -1142,13 +1144,19 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// worktree directory that makes worktree.Create refuse forever (fixed
 	// separately by adopt-and-reset, but Reap is still what actually reclaims
 	// the disk space and the git worktree-list registration).
+	//
+	// cleanup-pending worktrees are already surrendered and have their own
+	// bounded retry loop that starts immediately after readiness. Retrying the
+	// entire durable queue here made restart time proportional to historical
+	// cleanup failures, including entries whose handoff remains unavailable.
 	for gaggle, manager := range setup.WorktreesByGaggle {
 		manager := manager
 		var warnings []worktree.ReapWarning
 		reapErr := runStartupPhase(stdout, tracker, "worktree-reap-crash-orphan", gaggle, func() error {
 			var reapErr error
 			_, warnings, reapErr = manager.Reap(ctx, worktree.ReapOptions{
-				IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
+				DeferCleanupPending: true,
+				IsRunTerminal:       worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
 			})
 			return reapErr
 		})
@@ -1166,7 +1174,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		reapErr := runStartupPhase(stdout, tracker, "worktree-reap-crash-orphan", "legacy", func() error {
 			var reapErr error
 			_, warnings, reapErr = setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
-				IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
+				DeferCleanupPending: true,
+				IsRunTerminal:       worktreeRunTerminal(l.RunsDir()),
 			})
 			return reapErr
 		})
@@ -1192,11 +1201,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// coalescing with the periodic 6h sweep via retentionGate so at most one
 	// ever runs at a time.
 	pf(stdout, "%s startup phase=retention-sweep status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#4373)")
-	telemetryRetentionConfig, telemetryErr := runStartupTelemetryRetention(stdout, tracker, l, setup)
-	if telemetryErr != nil {
-		pf(stderr, "error: prune retained telemetry: %v\n", telemetryErr)
+	telemetryRetentionConfig, migrationBackupGaggles := configuredTelemetryRetention(setup)
+	if telemetryErr := reconcileStartupTelemetryRetention(stdout, tracker, l, setup); telemetryErr != nil {
+		pf(stderr, "error: reconcile retained telemetry: %v\n", telemetryErr)
 		return 1
 	}
+	pf(stdout, "%s startup phase=telemetry-retention-prune status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#5233)")
 
 	// Prune crash-abandoned orphan runs and run-creation staging directories
 	// before anything else touches the runs tree (#2035): a mid-Create crash's
@@ -1409,10 +1419,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	// Renew resumed runs' claims immediately rather than waiting up to
 	// claimRecoverInterval for the first periodic tick (#2014): the startup
-	// recovery sweep above already ran BEFORE resume tracked anything, on the
-	// prior process's now possibly-stale leases, so a resumed run's claim
-	// could otherwise sit unrenewed — and so reapable — for most of a sweep
-	// interval right when a restart just made that most likely. The resumed
+	// recovery sweep used startup-only durable local journal evidence before
+	// resume tracked anything. Refresh that grace after the recovery work,
+	// using only actual execution liveness from this point onward. The resumed
 	// runs are tracked by the registry now, so the ledger-driven pass covers
 	// exactly them (plus any engine-live holders — idempotent). Best-effort,
 	// same as the periodic sweep: a renewal failure here does not fail daemon
@@ -1599,9 +1608,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-telemetryRetentionTicker.C:
-				err := runPeriodicTelemetryRetention(ctx, setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, journalGenerationCleanupErrors, now)
-				telemetryRetentionErrors.report(err)
-				migrationBackupCleanupErrors.report(sweepMigrationBackups(l, setup, now))
+				runGatedTelemetryRetentionSweep(ctx, l, setup, migrationBackupGaggles, telemetryRetentionConfig, telemetryRetentionGate, telemetryRetentionErrors, journalGenerationCleanupErrors, migrationBackupCleanupErrors, now)
 			}
 		}
 	}()
@@ -1760,10 +1767,21 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	// Now that the API is up and status/dashboard reads no longer block on
 	// it, run the broad retention sweep deferred above (#4373).
-	// startupRetentionSweepDone is always closed, whether or not readiness
-	// was actually reached, so the shutdown join below never blocks on a
-	// sweep that was never launched.
+	// The completion channels are always closed, whether or not readiness was
+	// reached, so shutdown never waits on a sweep that was never launched.
 	startupRetentionSweepDone := startDeferredRetentionSweep(ctx, l, setup, retentionGate, worktreeRetentionErrors, readyNow)
+	startupTelemetryRetentionSweepDone := startDeferredTelemetryRetentionSweep(
+		ctx,
+		l,
+		setup,
+		migrationBackupGaggles,
+		telemetryRetentionConfig,
+		telemetryRetentionGate,
+		telemetryRetentionErrors,
+		journalGenerationCleanupErrors,
+		migrationBackupCleanupErrors,
+		readyNow,
+	)
 	terminalCleanupRetryCtx, stopTerminalCleanupRetry := context.WithCancel(context.Background())
 	defer stopTerminalCleanupRetry()
 	terminalCleanupRetryDone := startTerminalCleanupRetry(terminalCleanupRetryCtx, cleanupRetries, terminalCleanupRetryErrors, readyNow)
@@ -1784,6 +1802,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// stdout itself, so it adds no concurrent writer. It never applies an
 	// update and never affects the daemon's health or exit status.
 	updateNotices, updateCheckDone, updatePendingState := startUpdateCheck(ctx, root, setup.Config, stderr)
+	templateNotices, templateChecksDone := startTemplateChecks(ctx, root)
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
 		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
@@ -1795,8 +1814,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// informational heartbeat above and NOT gated on --quiet — that flag
 	// silences stdout chatter, while this is diagnostic evidence an operator
 	// reads back from the instance log later.
-	serviceHealthDone := make(chan struct{})
-	go emitServiceHealth(ctx, root, currentDaemon, setup.InstanceLog, recoveryInventory.Stats, serviceHealthInterval, nil, serviceHealthDone)
+	serviceHealthDone := startServiceHealth(ctx, root, currentDaemon, setup, recoveryInventory.Stats)
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error
@@ -1814,6 +1832,13 @@ daemonLoop:
 		select {
 		case update := <-updateNotices:
 			update.report(stdout, stderr)
+		case update := <-templateNotices:
+			update.report(stdout, stderr)
+			if reloader.readModel != nil {
+				if err := reloader.readModel.PublishDefinitionsChanged(ctx); err != nil {
+					pf(stderr, "warning: template status changed but portal invalidation failed: %v\n", err)
+				}
+			}
 		case connectorErr := <-fleetConnectorDone:
 			fleetConnectorDone = nil
 			fleetConnectorStarted = false
@@ -1878,11 +1903,13 @@ daemonLoop:
 	<-sharedVisibilityDone
 	<-stalledTickerDone
 	<-updateCheckDone
+	<-templateChecksDone
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-storageHealthTickerDone
 	<-recoveryInventoryTickerDone
 	<-startupRetentionSweepDone
+	<-startupTelemetryRetentionSweepDone
 	<-mergedPRCostSweeps.tickerDone
 	<-startupMergedPRCostSweepDone
 	<-apiReadCacheLockSweepTickerDone

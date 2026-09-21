@@ -61,6 +61,7 @@ describe("overview page", () => {
     ).toBeInTheDocument();
     const active = within(screen.getByRole("region", { name: "Active runs" }));
     expect(active.getByText("#3088 Operator status progress")).toBeInTheDocument();
+    expect(active.getByText("core / implementation")).toBeInTheDocument();
     expect(active.getByText("review · recent heartbeat 30s ago · claim active/verified")).toBeInTheDocument();
     expect(active.getByText("review · PR via open-pr · finish review")).toBeInTheDocument();
     expect(
@@ -68,6 +69,32 @@ describe("overview page", () => {
         "Error provider.rate_limit: quota exhausted · Review needs-changes: Show operator context. · Blockers: provider quota is exhausted",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("shows an accessible local completion time for every recent outcome", async () => {
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const recent = within(await screen.findByRole("region", { name: "Recent outcomes" }));
+    const completionTimes = recent.getAllByText(/^Completed /, { selector: "time" });
+    expect(completionTimes).toHaveLength(2);
+
+    const finishedAt = "2026-07-18T03:00:00Z";
+    const completionTime = completionTimes.find(
+      (time) => time.getAttribute("datetime") === finishedAt,
+    );
+    const timestamp = new Date(finishedAt);
+    const visibleTime = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(timestamp);
+    const preciseTime = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "full",
+      timeStyle: "long",
+    }).format(timestamp);
+
+    expect(completionTime).toHaveTextContent(`Completed ${visibleTime}`);
+    expect(completionTime).toHaveAccessibleName(`Completed ${preciseTime}`);
+    expect(completionTime).toHaveAttribute("title", `Completed ${preciseTime}`);
   });
 
   it("groups repeated attention runs by linked issue and expands direct run links", async () => {

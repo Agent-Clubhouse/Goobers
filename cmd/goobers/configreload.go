@@ -20,6 +20,7 @@ import (
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
@@ -106,6 +107,8 @@ type configReloader struct {
 	// do," which poll's own plain error return cannot (reject reports success
 	// once the rejection is durably journaled).
 	lastRejectionMessage string
+	rejectionReason      string
+	candidateWarnings    []validate.CodedWarning
 	// Kept separately from the per-apply response message, which pollOnce
 	// clears even when unchanged rejected contents remain on disk.
 	rejectedDigest  string
@@ -327,6 +330,13 @@ func (r *configReloader) poll(now time.Time) error {
 	}
 	r.appliedDigest = digest
 	r.digests.Set(digest)
+	r.rejectionReason = ""
+	r.candidateWarnings = nil
+	// Advisory persistence cannot turn a successfully applied configuration
+	// into a reload failure. poll's generation check deduplicates this work.
+	if err := journalValidationWarnings(r.setup.InstanceLog, definitions.Validation.Warnings()); err != nil {
+		log.Printf("config reload: record advisory warnings: %v", err)
+	}
 	return nil
 }
 
@@ -349,15 +359,22 @@ func (r *configReloader) reloadStatus(now time.Time) readservice.DefinitionReloa
 	case !r.watching:
 		state = "not-watching"
 	}
-	return readservice.DefinitionReloadStatus{
+	status := readservice.DefinitionReloadStatus{
 		AppliedDigest: r.appliedDigest, ObservedDigest: r.observedDigest,
 		ObservedAt: now.UTC(), Watching: r.watching, State: state,
 	}
+	if state == "rejected" || state == "unreadable" {
+		status.RejectionReason = r.rejectionReason
+		status.CandidateWarnings = r.candidateWarnings
+	}
+	return status
 }
 
 func (r *configReloader) reject(newDigest string, reloadErr error) error {
 	message := configReloadErrorMessage(reloadErr)
 	r.lastRejectionMessage = message
+	r.rejectionReason = message
+	r.candidateWarnings = validationReportFromError(reloadErr).Warnings()
 	r.rejectedDigest = newDigest
 	event := journal.Event{
 		Type: journal.EventConfigReloadRejected,
@@ -369,6 +386,9 @@ func (r *configReloader) reject(newDigest string, reloadErr error) error {
 	}
 	if newDigest != "" {
 		event.Runner["newDigest"] = newDigest
+	}
+	if len(r.candidateWarnings) > 0 {
+		event.Runner["candidateWarnings"] = r.candidateWarnings
 	}
 	// The instance journal is the durable provenance contract. If it cannot
 	// record the rejection, propagate the error so the daemon fails closed.

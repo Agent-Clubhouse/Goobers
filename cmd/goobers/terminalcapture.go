@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -59,40 +60,54 @@ func captureTerminalRunBranch(l instance.Layout, wtMgr *worktree.Manager, runID 
 	if _, err := recovery.RefForRun(runID); err != nil {
 		return nil
 	}
-	branch, events, startedAt, ok := terminalCaptureBranch(l, runID)
+	branches, events, startedAt, ok := terminalCaptureBranches(l, runID)
 	if !ok {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	// Everything below here only runs for a run whose branch was actually
-	// found in a managed mirror, so a failure means real work is at risk.
-	plan := &terminalCapturePlan{ctx: ctx, layout: l, manager: wtMgr, runID: runID, events: events, startedAt: startedAt}
-	_, err := wtMgr.WithRunBranchCheckout(ctx, branch, plan.worthCapturing, plan.publish)
-	return err
+	for _, branch := range branches {
+		// Everything below here only runs for a run whose branch was actually
+		// found in a managed mirror, so a failure means real work is at risk.
+		// Each branch gets its own plan: the decision phase stores the
+		// retention request the publication phase spends, so at most one
+		// record is published per branch.
+		plan := &terminalCapturePlan{
+			ctx: ctx, layout: l, manager: wtMgr, runID: runID,
+			events: events, startedAt: startedAt, boundSHA: branch.boundSHA,
+		}
+		if _, err := wtMgr.WithRunBranchCheckout(ctx, branch.name, plan.worthCapturing, plan.publish); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// terminalCaptureBranch reads the run branch the runner recorded for this run.
-// The journal is the single source consulted: deriving the name from the
-// namespace, workflow and run ID would reproduce a convention rather than read
-// the branch the run actually used.
+// terminalCaptureBranches reads every distinct local branch this run's
+// worktrees were created on, in the order the journal records them: the
+// nominal run branch (ref.touched{kind:branch}) first, then any branch a stage
+// was rebound to (runner.ReboundWorkspaceBranchAnnotation). The journal is the
+// single source consulted: deriving the names from the namespace, workflow and
+// run ID would reproduce a convention rather than read the branches the run
+// actually used, and that convention cannot describe a rebound branch at all —
+// it belongs to the pull request being remediated, not to this run (#5399).
 //
 // Every failure reports "no branch", not an error. A run whose journal cannot
 // be read or carries no branch reference has nothing on disk for this capture
 // to protect, and terminal finalization of such a run must not start failing
 // because a capture could not read a journal it did not need.
-func terminalCaptureBranch(l instance.Layout, runID string) (string, []journal.Event, time.Time, bool) {
+func terminalCaptureBranches(l instance.Layout, runID string) ([]runBranchTarget, []journal.Event, time.Time, bool) {
 	reader, err := journal.OpenReadOnly(filepath.Join(l.RunsDir(), runID))
 	if err != nil {
-		return "", nil, time.Time{}, false
+		return nil, nil, time.Time{}, false
 	}
 	identity, err := reader.Identity()
 	if err != nil || identity.RunID != runID || identity.StartedAt.IsZero() {
-		return "", nil, time.Time{}, false
+		return nil, nil, time.Time{}, false
 	}
 	events, err := reader.Events()
 	if err != nil {
-		return "", nil, time.Time{}, false
+		return nil, nil, time.Time{}, false
 	}
 	if journal.PhaseFromEvents(events) == journal.PhaseCompleted {
 		// A run that completed delivered its work through its own outputs —
@@ -103,15 +118,55 @@ func terminalCaptureBranch(l instance.Layout, runID string) (string, []journal.E
 		// protect work nobody will ever restore — crowding out exactly the
 		// failed runs the inventory exists for. It would also pay for a
 		// checkout inside terminal finalization on the hot path.
-		return "", nil, time.Time{}, false
+		return nil, nil, time.Time{}, false
+	}
+	branches := runBranchesFromEvents(events)
+	if len(branches) == 0 {
+		return nil, nil, time.Time{}, false
+	}
+	return branches, events, identity.StartedAt, true
+}
+
+// runBranchesFromEvents collects the distinct branches a run's worktrees were
+// created on. The nominal branch is recorded once per run as a branch
+// reference; a rebound branch is recorded by the runner the first time a stage
+// workspace is actually provisioned on it, so a run that rebinds and then
+// fails before provisioning anything contributes nothing here. A rebound
+// branch that equals the recorded nominal branch is not evaluated twice.
+func runBranchesFromEvents(events []journal.Event) []runBranchTarget {
+	var branches []runBranchTarget
+	seen := map[string]bool{}
+	add := func(branch, boundSHA string) {
+		if branch == "" || seen[branch] {
+			return
+		}
+		seen[branch] = true
+		branches = append(branches, runBranchTarget{name: branch, boundSHA: boundSHA})
 	}
 	for i := range events {
-		ref := events[i].ExternalRef
-		if ref != nil && ref.Kind == "branch" && ref.ID != "" {
-			return ref.ID, events, identity.StartedAt, true
+		if ref := events[i].ExternalRef; ref != nil && ref.Kind == "branch" {
+			add(ref.ID, "")
+			continue
 		}
+		if events[i].Type != journal.EventRunnerAnnotation ||
+			events[i].Runner["annotation"] != runner.ReboundWorkspaceBranchAnnotation {
+			continue
+		}
+		branch, _ := events[i].Runner[runner.WorkspaceBranchOutput].(string)
+		boundSHA, _ := events[i].Runner[runner.ReboundBranchBoundSHAKey].(string)
+		add(branch, boundSHA)
 	}
-	return "", nil, time.Time{}, false
+	return branches
+}
+
+// runBranchTarget is one branch to evaluate. boundSHA is set only for a
+// rebound branch, and is the commit that branch was at when this run's first
+// worktree was created on it: everything up to there belongs to the pull
+// request, not to this run. The run's own branch has no bound commit — it is
+// created from base by this run, so everything on it is this run's.
+type runBranchTarget struct {
+	name     string
+	boundSHA string
 }
 
 // terminalCapturePlan carries what the two phases of one capture share: the
@@ -125,6 +180,9 @@ type terminalCapturePlan struct {
 	runID     string
 	events    []journal.Event
 	startedAt time.Time
+	// boundSHA suppresses the capture of a rebound branch this run never
+	// advanced; empty for the run's own branch.
+	boundSHA string
 
 	request     recovery.RetentionRequest
 	publication recovery.PublicationJournal
@@ -134,13 +192,20 @@ type terminalCapturePlan struct {
 // needs a recovery snapshot — and builds the retention request if it does.
 // Nothing here checks anything out.
 //
-// Three conditions suppress the capture, in increasing cost order. A branch
-// already contained in its base carries nothing to protect. A branch some
-// record retained for this run was already captured from is protected already.
+// Four conditions suppress the capture, in increasing cost order. A rebound
+// branch still at the commit this run bound to carries only the pull request's
+// own work, which this run is not the last copy of and did not produce — and
+// which, being ahead of base by construction, every other test here would wave
+// through. A branch already contained in its base carries nothing to protect.
+// A branch some record retained for this run was already captured from is
+// protected already.
 // SkipEmpty (set by recoveryCleanupRequest) is the final backstop during
 // publication, for a tip whose cumulative implementation turns out to be empty
 // for a reason the containment test could not see.
 func (p *terminalCapturePlan) worthCapturing(managedKey, mirror, tip string) (bool, error) {
+	if p.boundSHA != "" && strings.EqualFold(p.boundSHA, tip) {
+		return false, nil
+	}
 	cfg, err := instance.LoadConfig(p.layout.ConfigFile())
 	if err != nil {
 		return false, fmt.Errorf("load terminal recovery configuration: %w", err)
@@ -192,6 +257,13 @@ func (p *terminalCapturePlan) publish(path, _ string) error {
 // reuses the gaggle-project resolution terminal branch cleanup already applies
 // and reproduces the runner's own base-ref rule (the project's branch, "main"
 // when unset).
+//
+// A rebound branch resolves to that same base. It is a pull request's head
+// branch, and that pull request targets the run's configured base branch, so
+// the diff a record of it must carry is the one the run's own stage capture
+// would have recorded: everything on the branch that is not yet in base. There
+// is no second base to choose from — the runner provisions every workspace,
+// rebound or not, with BaseRef taken from the run's RepoRef.
 func terminalCaptureIdentity(l instance.Layout, cfg *instance.Config, managedKey string) (string, string, bool, error) {
 	if len(cfg.Repos) == 0 {
 		return "", "", false, nil
@@ -231,8 +303,16 @@ func terminalCaptureIdentity(l instance.Layout, cfg *instance.Config, managedKey
 // terminalCaptureCovered reports whether some record already retained for this
 // run protects the branch tip, so terminal capture does not spend a second
 // scarce inventory slot on work that is already published.
+//
+// Read at the structural ceiling, tolerantly: this looks only at the run's OWN
+// records, and a read bounded by the operator cap refused outright on an
+// inventory already holding more entries than the cap, which failed the
+// capture and deferred terminal finalization for every completed run at every
+// startup (#5354). Not finding coverage is the conservative answer — it
+// publishes rather than skipping — so an entry no scan can interpret simply
+// does not count as coverage.
 func terminalCaptureCovered(ctx context.Context, request recovery.RetentionRequest, path, tip string) (bool, error) {
-	entries, err := recovery.ReadInventory(ctx, request.InventoryRoot, request.MaxSnapshots)
+	entries, _, err := recovery.ReadInventoryTolerant(ctx, request.InventoryRoot, recovery.MaxInventoryEntries)
 	if err != nil {
 		return false, err
 	}

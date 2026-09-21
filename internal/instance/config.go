@@ -1280,6 +1280,8 @@ type TelemetryConfig struct {
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
 	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
+	// Diagnostics has its own opt-in collector; it never inherits journal export.
+	Diagnostics *DiagnosticsConfig `json:"diagnostics,omitempty" yaml:"diagnostics,omitempty"`
 	// Retention bounds terminal run journals and their rollup rows. Automatic
 	// daemon pruning is opt-out (#4253, ruling on #3056): it defaults on, at
 	// DefaultTelemetryRetentionWindow/DefaultTelemetryRetentionMaxRuns,
@@ -1358,9 +1360,12 @@ func (c TelemetryRetentionConfig) MaxRunLimit() int {
 // OTLPConfig configures an optional OTLP/gRPC collector. Endpoint absence
 // disables collector push. Header values are always indirect secret refs.
 type OTLPConfig struct {
-	Endpoint string              `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
-	Insecure bool                `json:"insecure,omitempty" yaml:"insecure,omitempty"`
-	Headers  map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
+	// ExportEnabled explicitly disables push, overriding environment configuration.
+	// Nil preserves the legacy endpoint-based opt-in.
+	ExportEnabled *bool               `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Endpoint      string              `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	Insecure      bool                `json:"insecure,omitempty" yaml:"insecure,omitempty"`
+	Headers       map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
 	// TLS configures trust for a collector that presents a certificate the
 	// system trust store does not already recognize (e.g. a private CA),
 	// and optionally a client certificate for mTLS. It is additive: absent,
@@ -2045,6 +2050,9 @@ func (c *Config) ResolveOTLPConfig(lookupEnv func(string) (string, bool)) (OTLPC
 	if c.Telemetry.OTLP != nil {
 		resolved = *c.Telemetry.OTLP
 	}
+	if resolved.ExportEnabled != nil && !*resolved.ExportEnabled {
+		return resolved, resolved.Validate()
+	}
 	if endpoint, ok := lookupEnv(OTLPEndpointEnv); ok {
 		endpoint = strings.TrimSpace(endpoint)
 		if endpoint == "" {
@@ -2220,11 +2228,17 @@ func (c EngineHITLConfig) HITLWindow() time.Duration {
 
 // Enabled reports whether collector push is configured.
 func (c OTLPConfig) Enabled() bool {
-	return c.Endpoint != ""
+	return (c.ExportEnabled == nil || *c.ExportEnabled) && c.Endpoint != ""
 }
 
 // Validate checks the collector endpoint, transport, and credential references.
 func (c OTLPConfig) Validate() error {
+	if c.ExportEnabled != nil && !*c.ExportEnabled {
+		return nil
+	}
+	if c.ExportEnabled != nil && *c.ExportEnabled && c.Endpoint == "" {
+		return fmt.Errorf("endpoint is required when export is enabled")
+	}
 	if c.Endpoint == "" {
 		if c.Insecure || len(c.Headers) != 0 || c.TLS != nil {
 			return fmt.Errorf("endpoint is required when insecure mode, headers, or tls are configured")

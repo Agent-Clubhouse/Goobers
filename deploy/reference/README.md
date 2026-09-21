@@ -200,6 +200,14 @@ Deployment's container arguments against the registered CLI flags, requires
 execution-critical worker flags such as `--instance`, and (#4827) asserts that no
 reference NetworkPolicy selects pods from a chart release without also admitting
 that release's own required intra-cluster traffic.
+
+A stage pod's Go module cache is not mounted under `/tmp`: each gaggle namespace
+supplies a dedicated RWX persistent volume at `/var/goobers/cache`, exported as
+`GOMODCACHE`, so concurrent fresh stage pods reuse downloaded modules. `GOCACHE`
+continues to live under the attempt-private `tmp:ephemeral` root at `/tmp`, so
+the #3969 growth bound remains in force. Without the separate module-cache
+volume, a stage pod starts every build cold and spends its budget re-downloading
+modules. The PVC's 20Gi request is the documented growth bound.
 Run the same render and schema gate locally with:
 
 ```sh

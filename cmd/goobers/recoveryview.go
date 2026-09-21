@@ -59,9 +59,19 @@ func runRecoveryView(ctx context.Context, layout instance.Layout, runID string, 
 }
 
 func loadRecoveryViews(ctx context.Context, layout instance.Layout, now time.Time) (map[string]*recoveryView, error) {
-	entries, _, err := readConfiguredRecoveryInventory(ctx, layout)
+	// Observation: `goobers status` and the status JSON. Bounding this read by
+	// the operator cap reported an over-cap inventory as "unavailable", hiding
+	// the retained state of every run on exactly the instance whose retained
+	// state an operator most needs to see (#5354).
+	entries, unreadable, _, err := observeRecoveryInventory(ctx, layout)
 	if err != nil {
 		return nil, err
+	}
+	// An incomplete scan is still reported as unavailable, never as absence:
+	// a run whose only record sits in a reservation nothing can interpret must
+	// not be shown as having no recovery state. Only the CAP stopped refusing.
+	if len(unreadable) > 0 {
+		return nil, fmt.Errorf("recovery inventory holds %d unreadable reservation(s)", len(unreadable))
 	}
 	overflow, _, err := readConfiguredRecoveryOverflow(ctx, layout)
 	if err != nil {

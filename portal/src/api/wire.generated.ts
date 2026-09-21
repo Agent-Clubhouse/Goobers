@@ -259,6 +259,17 @@ export const goWireFixtures = {
   "gaggles": {
     "items": [
       {
+        "template": {
+          "state": "update-available",
+          "installed": "1111111111111111111111111111111111111111",
+          "candidate": "2222222222222222222222222222222222222222",
+          "checkedAt": "2026-07-18T12:34:56Z",
+          "lastSuccess": "2026-07-18T12:34:56Z",
+          "changes": [
+            "workflows/implementation.yaml"
+          ],
+          "pendingBackprop": true
+        },
         "name": "core",
         "displayName": "Core",
         "enabled": false,

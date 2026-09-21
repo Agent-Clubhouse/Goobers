@@ -33,7 +33,7 @@ func TestTelemetryCostRouteParsesAndReturnsSharedContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	requestURL := apicontract.TelemetryCostsPath +
-		"?provider=github&scope=pr&id=4398&since=" + since.Format(time.RFC3339) +
+		"?provider=github&scope=pr&id=4398&gaggle=core&workflow=implementation&stage=review&since=" + since.Format(time.RFC3339) +
 		"&until=" + until.Format(time.RFC3339)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, requestURL, nil))
@@ -42,6 +42,8 @@ func TestTelemetryCostRouteParsesAndReturnsSharedContract(t *testing.T) {
 	}
 	if reader.costReq.Provider != "github" || reader.costReq.Scope != "pr" ||
 		reader.costReq.ExternalID != "4398" ||
+		reader.costReq.Gaggle != "core" || reader.costReq.Workflow != "implementation" ||
+		reader.costReq.Stage != "review" ||
 		!reader.costReq.Since.Equal(since) || !reader.costReq.Until.Equal(until) {
 		t.Fatalf("request = %+v", reader.costReq)
 	}

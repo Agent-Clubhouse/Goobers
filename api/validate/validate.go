@@ -35,8 +35,10 @@ import (
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workcopyroot"
 	wf "github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 // Severity ranks an issue.
@@ -369,15 +371,16 @@ const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
 
 // Issue is a single validation finding.
 type Issue struct {
-	Code     WarningCode `json:"code,omitempty"`
-	Severity Severity    `json:"severity"`
-	File     string      `json:"file,omitempty"`
-	Line     int         `json:"-"`
-	Col      int         `json:"-"`
-	Kind     string      `json:"kind,omitempty"`
-	Name     string      `json:"name,omitempty"`
-	Gaggle   string      `json:"gaggle,omitempty"`
-	Message  string      `json:"message"`
+	Code     WarningCode             `json:"code,omitempty"`
+	Severity Severity                `json:"severity"`
+	File     string                  `json:"file,omitempty"`
+	Line     int                     `json:"-"`
+	Col      int                     `json:"-"`
+	Kind     string                  `json:"kind,omitempty"`
+	Name     string                  `json:"name,omitempty"`
+	Gaggle   string                  `json:"gaggle,omitempty"`
+	Message  string                  `json:"message"`
+	Safety   *workflowsafety.Details `json:"safety,omitempty"`
 }
 
 func (i Issue) String() string {
@@ -466,10 +469,11 @@ func (i Issue) Scope() string {
 
 // CodedWarning is the stable warning shape projected by CLI and API consumers.
 type CodedWarning struct {
-	Code        WarningCode `json:"code"`
-	Severity    Severity    `json:"severity"`
-	Scope       string      `json:"scope"`
-	Explanation string      `json:"explanation"`
+	Code        WarningCode             `json:"code"`
+	Severity    Severity                `json:"severity"`
+	Scope       string                  `json:"scope"`
+	Explanation string                  `json:"explanation"`
+	Safety      *workflowsafety.Details `json:"safety,omitempty"`
 }
 
 func (w CodedWarning) String() string {
@@ -511,6 +515,7 @@ func (r *Report) Warnings() []CodedWarning {
 			Severity:    issue.Severity,
 			Scope:       issue.Scope(),
 			Explanation: issue.Message,
+			Safety:      issue.Safety,
 		})
 	}
 	sort.Slice(warnings, func(i, j int) bool {
@@ -916,6 +921,8 @@ type workflowIdentity struct {
 type indexedWorkflow struct {
 	definition apiv1.Workflow
 	file       string
+	node       *yamlv3.Node
+	lineOffset int
 }
 
 // index holds the typed objects keyed by their config identities for
@@ -1041,7 +1048,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			_, ok := ix.workflows[identity]
 			return ok
 		})
-		ix.workflows[identity] = indexedWorkflow{definition: w, file: doc.file}
+		ix.workflows[identity] = indexedWorkflow{definition: w, file: doc.file, node: doc.node, lineOffset: doc.lineOffset}
 		if explicitZeroMaxRunsPerHour(doc.json) {
 			r.addWarning(WarningZeroMaxRunsPerHour, doc.file, w.Spec.Gaggle, "Workflow", w.Name,
 				"spec.readiness.maxRunsPerHour is explicitly 0, which does NOT mean unlimited — the scheduler treats it the same as omitted and substitutes its default of 10 (internal/localscheduler's Conditions.Admit, #339). This is the opposite of instance.yaml's runConditions.maxParallelRuns, where 0 means unlimited. Set an explicit large value if you want a high hourly ceiling.")
@@ -2434,10 +2441,43 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 			)
 		}
 		def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec, Annotations: w.Annotations}
-		if _, err := wf.Compile(def, opts...); err != nil {
+		machine, err := wf.Compile(def, opts...)
+		if err != nil {
 			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
+			continue
+		}
+		safetyOptions := workflowsafety.Options{BinaryIdentity: version.Version + ":" + version.Commit}
+		if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
+			safetyOptions.GaggleRunControls = gaggle.Spec.RunControls
+		}
+		for _, finding := range workflowsafety.Analyze(machine, safetyOptions) {
+			details := finding.Details
+			line, col := safetyPosition(indexed, details.Stage)
+			details.File, details.Line, details.Col = indexed.file, line, col
+			finding.Details = details
+			r.Issues = append(r.Issues, Issue{
+				Code: WarningCode(finding.Code), Severity: Warning,
+				File: indexed.file, Line: line, Col: col, Kind: "Workflow", Name: w.Name, Gaggle: w.Spec.Gaggle,
+				Message: finding.Message(), Safety: &details,
+			})
 		}
 	}
+}
+
+func safetyPosition(indexed indexedWorkflow, stage string) (int, int) {
+	for _, collection := range []string{"tasks", "gates", "parallels"} {
+		list := yamlNodeAt(indexed.node, []string{"spec", collection})
+		if list == nil {
+			continue
+		}
+		for _, node := range list.Content {
+			name := yamlChild(node, "name")
+			if name != nil && name.Value == stage {
+				return name.Line + indexed.lineOffset, name.Column
+			}
+		}
+	}
+	return 0, 0
 }
 
 func sortedWorkflowIdentities(workflows map[workflowIdentity]indexedWorkflow) []workflowIdentity {

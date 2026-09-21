@@ -472,45 +472,12 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err := journalLegacyRuntimeMigration(l, instanceLog, runtimeMigration); err != nil {
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
 	}
-	var recoveredClaims []localscheduler.ClaimEntry
 	reportStartupProgress(options.startupProgress, "recovering scheduler claims")
-	if err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(instanceLog),
-		)
-		if err != nil {
-			return err
-		}
-		// DS6 (distributed-state-and-coordination.md §10): a daemon start must
-		// rebuild its renewal set from ledger + liveness BEFORE any reap runs,
-		// so `goobers up` closes this gate and reaps in its own startup
-		// recovery pass after the rebuild. The one-shot callers (`run`,
-		// `signal`) do the same when `engine:` is configured
-		// (oneShotClaimRecovery); only a pure mode-1 one-shot passes no gate
-		// and keeps reaping here as before.
-		if options.claimRecoveryGate.RecoveryPermitted() {
-			recoveredClaims, err = ledger.RecoverExpired(time.Now())
-			if err != nil {
-				return err
-			}
-		}
-		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
-			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
-			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
-				instanceLog.AppendBestEffort(journal.Event{
-					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
-					Error: &journal.ErrorDetail{
-						Code:    "legacy_claim_ownership_unresolved",
-						Message: resolveErr.Error(),
-					},
-				})
-			}
-			return namespace, resolveErr
-		})
-	}); err != nil {
+	recoveredClaims, err := recoverSchedulerClaims(l, options.claimRecoveryGate, instanceLog, claimProviders)
+	if err != nil {
 		return nil, err
 	}
+	reportStartupProgress(options.startupProgress, "scheduler claims recovered")
 
 	// #712: shared with the Scheduler via SchedulerOptions below — see
 	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
@@ -618,6 +585,50 @@ func legacyRuntimeMigrationEvent(migration instance.RuntimeMigration) journal.Ev
 			"movedDirectories": migration.MovedDirs,
 		},
 	}
+}
+
+func recoverSchedulerClaims(
+	l instance.Layout,
+	recoveryGate *localscheduler.RecoveryGate,
+	instanceLog *journal.InstanceLog,
+	claimProviders map[string]apiv1.Provider,
+) ([]localscheduler.ClaimEntry, error) {
+	var recoveredClaims []localscheduler.ClaimEntry
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(
+			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+			localscheduler.WithInstanceLog(instanceLog),
+		)
+		if err != nil {
+			return err
+		}
+		// DS6 (distributed-state-and-coordination.md §10): a daemon start must
+		// rebuild its renewal set from ledger + liveness BEFORE any reap runs,
+		// so `goobers up` closes this gate and reaps in its own startup recovery
+		// pass after the rebuild. One-shot callers do the same when `engine:` is
+		// configured; only a pure mode-1 one-shot passes no gate and keeps
+		// reaping here as before.
+		if recoveryGate.RecoveryPermitted() {
+			recoveredClaims, err = ledger.RecoverExpired(time.Now())
+			if err != nil {
+				return err
+			}
+		}
+		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
+			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
+			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
+				instanceLog.AppendBestEffort(journal.Event{
+					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
+					Error: &journal.ErrorDetail{
+						Code:    "legacy_claim_ownership_unresolved",
+						Message: resolveErr.Error(),
+					},
+				})
+			}
+			return namespace, resolveErr
+		})
+	})
+	return recoveredClaims, err
 }
 
 func legacyClaimNamespace(l instance.Layout, providers map[string]apiv1.Provider, entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
@@ -739,9 +750,8 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		l.ConfigDir(), set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		true, modelCredential,
+	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compileSchedulerMachinesWithProgress(
+		l, cfg, set, goobers, instructions, modelCredential, startupProgress,
 	)
 	if err != nil {
 		return nil, err
@@ -749,7 +759,7 @@ func buildSchedulerDefinitions(
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	harnessInfo, harnessRefusals, err := preflightSchedulerHarnesses(cfg, set, goobers, stores)
+	harnessInfo, harnessRefusals, err := preflightSchedulerHarnessesWithProgress(cfg, set, goobers, stores, startupProgress)
 	if err != nil {
 		return nil, err
 	}
@@ -1057,6 +1067,37 @@ func buildSchedulerDefinitions(
 		Worktrees:         firstWorktrees,
 		WorktreesByGaggle: wtManagers,
 	}, nil
+}
+
+func preflightSchedulerHarnessesWithProgress(
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
+	stores credentials.StoreResolver,
+	startupProgress func(string),
+) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+	reportStartupProgress(startupProgress, "preflighting agentic harnesses")
+	harnessInfo, harnessRefusals, err := preflightSchedulerHarnesses(cfg, set, goobers, stores)
+	if err == nil {
+		reportStartupProgress(startupProgress, "agentic harnesses ready")
+	}
+	return harnessInfo, harnessRefusals, err
+}
+
+func compileSchedulerMachinesWithProgress(
+	l instance.Layout,
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
+	instructions map[string]string,
+	modelCredential func(context.Context) (string, error),
+	startupProgress func(string),
+) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+	reportStartupProgress(startupProgress, "compiling workflow machines")
+	return compiledMachinesWithGooberDigestsAndWarnings(
+		l.ConfigDir(), set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
+		true, modelCredential,
+	)
 }
 
 func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, cfg *instance.Config, project apiv1.RepoRef) error {

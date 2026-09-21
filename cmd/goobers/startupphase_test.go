@@ -46,6 +46,36 @@ func TestRunStartupPhaseLogsStartDoneAndFailure(t *testing.T) {
 	}
 }
 
+func TestSchedulerSetupProgressReportsTotalAndInterStepElapsed(t *testing.T) {
+	started := time.Date(2026, 9, 17, 4, 0, 0, 0, time.UTC)
+	times := []time.Time{
+		started.Add(2 * time.Second),
+		started.Add(7 * time.Second),
+	}
+	index := 0
+	var stdout bytes.Buffer
+	progress := newSchedulerSetupProgress(&stdout, started, func() time.Time {
+		current := times[index]
+		index++
+		return current
+	})
+
+	progress("opening telemetry state")
+	progress("opening read-model state")
+
+	got := stdout.String()
+	for _, want := range []string{
+		"startup: opening telemetry state",
+		"elapsed=2s since-previous=2s",
+		"startup: opening read-model state",
+		"elapsed=7s since-previous=5s",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("progress output %q does not contain %q", got, want)
+		}
+	}
+}
+
 func TestRunStartupPhaseTransitionsFromCompletedPhaseToBlockedPhase(t *testing.T) {
 	tracker := &startupPhaseTracker{}
 	if err := runStartupPhase(io.Discard, tracker, "completed", "", func() error { return nil }); err != nil {
