@@ -52,6 +52,9 @@ func TestRemoteExecutionDeadlineReachesCurrentActiveStage(t *testing.T) {
 	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "stage", Attempt: 1}); err != nil {
 		t.Fatal(err)
 	}
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "stage", Branch: 2, Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -120,14 +123,14 @@ func TestRemoteExecutionDeadlineReachesCurrentActiveStage(t *testing.T) {
 		return activity
 	}
 	active := read()
-	if len(active.Active) != 1 || active.Active[0].ExecutionDeadline == nil {
-		t.Fatalf("remote active deadline absent: %+v", active)
+	if len(active.Active) != 2 || active.Active[0].ExecutionDeadline == nil || active.Active[1].ExecutionDeadline != nil {
+		t.Fatalf("serial remote deadline missing or branch0 falsely covered parallel branch: %+v", active)
 	}
 	unblock()
 	if err := <-processDone; err != nil {
 		t.Fatal(err)
 	}
-	if ended := read(); len(ended.Active) != 1 || ended.Active[0].ExecutionDeadline != nil {
+	if ended := read(); len(ended.Active) != 2 || ended.Active[0].ExecutionDeadline != nil || ended.Active[1].ExecutionDeadline != nil {
 		t.Fatalf("finished process retained bound: %+v", ended)
 	}
 }

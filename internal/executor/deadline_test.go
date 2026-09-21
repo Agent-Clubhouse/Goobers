@@ -14,6 +14,7 @@ import (
 func TestShellExecutionDeadlineUsesActualContext(t *testing.T) {
 	executor, recorder := newPortableTestExecutor(t, nil)
 	env := baseEnvelope(t)
+	env.RunID, env.TaskID, env.Attempt = "run-id", "run-id:work", 1
 	deadline := time.Now().Add(10 * time.Second)
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
@@ -34,7 +35,7 @@ func TestShellExecutionDeadlineUsesActualContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !actual.Equal(deadline) || events[0].Runner["executionState"] != "active" || events[1].Runner["executionState"] != "finished" {
+	if events[0].Stage != "work" || !actual.Equal(deadline) || events[0].Runner["executionState"] != "active" || events[1].Runner["executionState"] != "finished" {
 		t.Fatal(events)
 	}
 }

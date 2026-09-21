@@ -299,3 +299,9 @@ execution ends. The fleet classifier uses the earliest deadline only when all
 active stages of all in-flight runs are covered; a valid quiet sibling never
 hides an uncovered one. Deadline evidence is intentional waiting, not useful
 progress or a proof of the eventual success of a process.
+
+Local parallel journals stamp the actual branch ordinal and can retain these
+bounds. The current remote pod invocation contract has no authoritative journal
+branch ordinal; its unscoped observations cannot cover nonzero parallel branches.
+Those remote parallel deadlines remain unknown. A Git workspace branch is not
+used as a substitute for workflow branch identity.
