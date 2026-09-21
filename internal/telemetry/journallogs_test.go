@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/journal"
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -22,6 +21,8 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 type journalLogsReceiver struct {

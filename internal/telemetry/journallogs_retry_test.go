@@ -7,11 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/journal"
 	collectorlogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 type rejectingJournalLogsReceiver struct {

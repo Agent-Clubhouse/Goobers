@@ -13,11 +13,12 @@ import (
 	collectorlog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/protobuf/encoding/prototext"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/telemetry"
-	"sigs.k8s.io/yaml"
 )
 
 func TestConfigureOTLPJournalLogsGate(t *testing.T) {

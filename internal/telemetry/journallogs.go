@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/goobers/goobers/internal/journal"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	apilog "go.opentelemetry.io/otel/log"
@@ -20,6 +19,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 const (

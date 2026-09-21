@@ -41,6 +41,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Investigation artifacts](investigation-artifacts.md)
 - [Instance isolation mandates](isolation-mandates.md)
 - [Export local traces to Jaeger](jaeger-quickstart.md)
+- [Export committed journals through OTLP Logs](journal-otlp.md)
 - [Large-repo mode](large-repo-mode.md)
 - [Learn Goobers: operate, harden, and extend an Instance](learn-goobers-operations.md)
 - [Learn Goobers](learn-goobers.md)
