@@ -130,6 +130,7 @@
       "portal-contract-generate:go-modules",
       "portal-embed-vet:go-modules",
       "runtime-acquisitions:go-modules",
+      "release-image-probes:go-modules",
       "schema-description-coverage:go-modules",
       "shipped-workflows:go-modules",
       "stack-parity:go-modules",

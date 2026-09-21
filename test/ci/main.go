@@ -502,9 +502,17 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		env:     testEnvironment,
 		group:   groupShipped,
 	}
+	releaseImageProbeCheck := check{
+		label:   "release-image-probes",
+		command: tools.goCommand,
+		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./release", "-run", "^TestShippedImageProbesRunWithRealBinary$"},
+		env:     testEnvironment,
+		group:   groupShipped,
+	}
 
 	result = append(result,
 		shippedWorkflowCheck,
+		releaseImageProbeCheck,
 		schemaDescriptionCoverageCheck,
 		testCheck,
 		check{

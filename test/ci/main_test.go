@@ -77,6 +77,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"validate-configs",
 		"build-operator",
 		"shipped-workflows",
+		"release-image-probes",
 		"schema-description-coverage",
 		"test",
 		"lint",
@@ -135,6 +136,12 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	if shippedCheck.label != "shipped-workflows" ||
 		!reflect.DeepEqual(shippedCheck.args, wantShippedArgs) {
 		t.Fatalf("shipped workflow check = %#v, want args %q", shippedCheck, wantShippedArgs)
+	}
+	releaseImageProbeCheck := checkByLabel(t, gotChecks, "release-image-probes")
+	wantReleaseImageProbeArgs := []string{"test", "-race", "-timeout", "20m", "-count=1", "./release", "-run", "^TestShippedImageProbesRunWithRealBinary$"}
+	if releaseImageProbeCheck.label != "release-image-probes" ||
+		!reflect.DeepEqual(releaseImageProbeCheck.args, wantReleaseImageProbeArgs) {
+		t.Fatalf("release image probe check = %#v, want args %q", releaseImageProbeCheck, wantReleaseImageProbeArgs)
 	}
 	schemaCoverageCheck := checkByLabel(t, gotChecks, "schema-description-coverage")
 	if schemaCoverageCheck.label != "schema-description-coverage" ||
@@ -336,7 +343,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check runtime-acquisitions tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check runtime-acquisitions tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows release-image-probes schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -1039,7 +1046,7 @@ func TestGroupChecksOnlyIsolatesHeavyweights(t *testing.T) {
 	}{
 		{groupLint, []string{"lint"}},
 		{groupUnit, []string{"schema-description-coverage", "test"}},
-		{groupShipped, []string{"shipped-workflows"}},
+		{groupShipped, []string{"shipped-workflows", "release-image-probes"}},
 	} {
 		var got []string
 		for _, current := range groupChecksOnly(all, tc.group) {
