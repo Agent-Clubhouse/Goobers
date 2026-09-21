@@ -249,6 +249,79 @@ describe("run detail", () => {
     }
   });
 
+  it("reveals and focuses exact causal event details while preserving normal replay focus", async () => {
+    const user = userEvent.setup();
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.["01JZ402DASHBOARD"];
+    if (!detail) {
+      throw new Error("Expected escalated run detail fixture.");
+    }
+    detail.escalation = {
+      selector: { kind: "gate", name: "review" },
+      selectedBranch: "@escalate",
+      repassCount: 1,
+      retryCount: 0,
+      terminalReason: "Review budget exhausted.",
+      causalEventSeq: 11,
+    };
+    const previousScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView",
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      renderRun("01JZ402DASHBOARD", new FixtureDaemonClient(fixtures));
+      await user.click(await screen.findByRole("button", { name: /Causal event/ }));
+
+      const details = await screen.findByRole("region", {
+        name: "Selected replay event",
+      });
+      expect(details).toHaveFocus();
+      expect(scrollIntoView).toHaveBeenLastCalledWith({
+        block: "start",
+        inline: "nearest",
+      });
+      expect(within(details).getByText(/Sequence 11/)).toBeInTheDocument();
+      expect(within(details).getByText("Gate evaluated")).toBeInTheDocument();
+      expect(screen.getByText("State at sequence 11")).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "Diagnostics" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      expect(window.location.hash).toBe("#/run/01JZ402DASHBOARD");
+
+      await openRunTab("Journal");
+      expect(screen.getByRole("button", { name: /^Select sequence 11:/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      );
+
+      await openRunTab("Diagnostics");
+      const replayDetails = screen.getByRole("region", {
+        name: "Selected replay event",
+      });
+      scrollIntoView.mockClear();
+      await user.click(screen.getByRole("button", { name: "Previous raw event" }));
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(replayDetails).not.toHaveFocus();
+    } finally {
+      if (previousScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollIntoView",
+          previousScrollIntoView,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      }
+    }
+  });
+
   it("keeps a tall inspector and long journal in page flow", async () => {
     const runId = "01JZ441DAEMONAPI";
     const fixtures = populatedDaemonFixtures();
@@ -1244,28 +1317,73 @@ describe("run detail", () => {
     expect(screen.queryByText("Workflow pin")).not.toBeInTheDocument();
   });
 
-  it("surfaces the coded failure reason and deep-links from a failed run", async () => {
+  it("surfaces the coded failure reason and reveals its exact failing event", async () => {
     const user = userEvent.setup();
-    renderRun("01JZ400FAILED");
-
-    const banner = await screen.findByRole("region", { name: "Run failed" });
-
-    expect(within(banner).getByText("harness.crash", { selector: ".mono" })).toBeInTheDocument();
-    expect(
-      within(banner).getByText("Harness exited before producing a result envelope.", {
-        selector: "p",
-      }),
-    ).toBeInTheDocument();
-    expect(within(banner).getByRole("link", { name: /view matching errors/i })).toHaveAttribute(
-      "href",
-      "#/errors?gaggle=core&workflow=implementation&stage=implement&code=harness.crash",
+    const previousScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView",
     );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
 
-    await user.click(within(banner).getByRole("button", { name: /Failing event/ }));
+    try {
+      renderRun("01JZ400FAILED");
 
-    expect(
-      screen.getByRole("button", { name: "implement, agentic, Failed at sequence 5" }),
-    ).toBeInTheDocument();
+      const banner = await screen.findByRole("region", { name: "Run failed" });
+
+      expect(within(banner).getByText("harness.crash", { selector: ".mono" })).toBeInTheDocument();
+      expect(
+        within(banner).getByText("Harness exited before producing a result envelope.", {
+          selector: "p",
+        }),
+      ).toBeInTheDocument();
+      expect(within(banner).getByRole("link", { name: /view matching errors/i })).toHaveAttribute(
+        "href",
+        "#/errors?gaggle=core&workflow=implementation&stage=implement&code=harness.crash",
+      );
+
+      await user.click(within(banner).getByRole("button", { name: /Failing event/ }));
+
+      const details = await screen.findByRole("region", {
+        name: "Selected replay event",
+      });
+      expect(details).toHaveFocus();
+      expect(scrollIntoView).toHaveBeenLastCalledWith({
+        block: "start",
+        inline: "nearest",
+      });
+      expect(within(details).getByText(/Sequence 5/)).toBeInTheDocument();
+      expect(within(details).getByText("Stage finished")).toBeInTheDocument();
+      expect(
+        within(details).getByText("Implement finished with failure."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "implement, agentic, Failed at sequence 5" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "Diagnostics" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+
+      await openRunTab("Journal");
+      expect(screen.getByRole("button", { name: /^Select sequence 5:/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      );
+    } finally {
+      if (previousScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollIntoView",
+          previousScrollIntoView,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      }
+    }
   });
 
   it("marks the failing ledger event with a severity class and a text label, not color alone", async () => {
