@@ -81,7 +81,7 @@ func contextWindow(data []byte, section string, anchor int) (int, int) {
 			}
 		}
 	}
-	if anchor >= start+maxFailureDigestBytes || start == 0 && len(data) > maxFailureDigestBytes {
+	if end-start > maxFailureDigestBytes && anchor > start && anchor < end {
 		start = anchor
 	}
 	if end-start > maxFailureDigestBytes {

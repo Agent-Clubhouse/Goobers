@@ -100,3 +100,29 @@ func TestFailureContextPreservesLateFindingInLargeSection(t *testing.T) {
 		t.Fatalf("lost late recognized finding: %+v", got)
 	}
 }
+
+func TestFailureContextSourceFindingStraddlesBound(t *testing.T) {
+	finding := "main.go:3:1: export needs comment (revive)"
+	stdout := []byte("==> lint\n" + strings.Repeat("x", 8170) + "\n" + finding + "\n<== lint (elapsed 1s)\n")
+	got := summarizeCommandFailure(stdout, []byte("ci: lint: exit status 1\nmake: *** [ci] Error 1\n"))
+	if !strings.Contains(strings.Join(got.digest, "\n"), finding) || !strings.Contains(got.failure.text, finding) || !strings.Contains(string(stdout[got.failure.start:got.failure.end]), finding) {
+		t.Fatalf("lost straddling source finding: %+v", got)
+	}
+}
+
+func TestFailureContextRetainsSectionAlongsideUnknownStderr(t *testing.T) {
+	finding := "Unfamiliar analyser requires target production"
+	stdout := []byte(strings.Repeat("passed package\n", 5000) + "==> widget-lint\n" + finding + "\n<== widget-lint (elapsed 1s)\n")
+	stderr := []byte("unrelated setup message\nci: widget-lint: exit status 1\nmake: *** [ci] Error 1\n")
+	got := summarizeCommandFailure(stdout, stderr)
+	// Neither arbitrary line can be classified reliably: keep both streams in
+	// the digest, and prefer stderr for the single pointer rather than guessing
+	// that everything outside stdout's CI framing must be irrelevant.
+	digest := strings.Join(got.digest, "\n")
+	if !strings.Contains(digest, finding) || !strings.Contains(digest, "unrelated setup message") {
+		t.Fatalf("lost ambiguous stream context: %q", digest)
+	}
+	if got.failure.stream != "stderr" {
+		t.Fatalf("ambiguous pointer = %+v", got.failure)
+	}
+}

@@ -107,7 +107,7 @@ func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
 	digest, count := collectFailureDigest(stdout, stderr)
 	if best.priority > specificityNone && best.priority <= specificityBuildTrailer || best.priority == specificitySourceFinding {
 		contextBest, contextDigest := fallbackFailureEvidence(stdout, stderr, best)
-		if best.priority == specificitySourceFinding && len(digest) > 1 {
+		if best.priority == specificitySourceFinding {
 			digest = boundFailureDigest(append(digest, contextDigest...))
 		} else {
 			digest = contextDigest
