@@ -2,8 +2,10 @@ package testgit
 
 import (
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io/fs"
 	"path/filepath"
 	"runtime"
@@ -133,9 +135,19 @@ func directGitInvocations(parsed *ast.File, fset *token.FileSet) []token.Positio
 		fset:          fset,
 		execAliases:   execAliases,
 		dotImportExec: dotImportExec,
-		varAliases:    make(map[*ast.Object]string),
-		positions:     nil,
+		info: types.Info{
+			Defs: make(map[*ast.Ident]types.Object),
+			Uses: make(map[*ast.Ident]types.Object),
+		},
+		varAliases: make(map[types.Object]string),
+		positions:  nil,
 	}
+	_, _ = (&types.Config{Importer: importer.Default()}).Check(
+		"sample",
+		fset,
+		[]*ast.File{parsed},
+		&visitor.info,
+	)
 	ast.Walk(&visitor, parsed)
 	return visitor.positions
 }
@@ -144,7 +156,8 @@ type directGitInvocationVisitor struct {
 	fset          *token.FileSet
 	execAliases   map[string]bool
 	dotImportExec bool
-	varAliases    map[*ast.Object]string
+	info          types.Info
+	varAliases    map[types.Object]string
 	positions     []token.Position
 }
 
@@ -156,24 +169,24 @@ func (v *directGitInvocationVisitor) Visit(node ast.Node) ast.Visitor {
 				break
 			}
 			ident, ok := lhs.(*ast.Ident)
-			if !ok || ident.Obj == nil {
+			if !ok {
 				continue
 			}
-			method, ok := execCommandAlias(value.Rhs[i], v.execAliases, v.dotImportExec, v.varAliases)
+			method, ok := v.execCommandAlias(value.Rhs[i])
 			if ok {
-				v.varAliases[ident.Obj] = method
+				v.varAliases[v.binding(ident)] = method
 			} else {
-				delete(v.varAliases, ident.Obj)
+				delete(v.varAliases, v.binding(ident))
 			}
 		}
 	case *ast.ValueSpec:
 		for i, ident := range value.Names {
-			if i >= len(value.Values) || ident.Obj == nil {
+			if i >= len(value.Values) {
 				continue
 			}
-			method, ok := execCommandAlias(value.Values[i], v.execAliases, v.dotImportExec, v.varAliases)
+			method, ok := v.execCommandAlias(value.Values[i])
 			if ok {
-				v.varAliases[ident.Obj] = method
+				v.varAliases[v.binding(ident)] = method
 			}
 		}
 	case *ast.CallExpr:
@@ -186,7 +199,7 @@ func (v *directGitInvocationVisitor) checkCall(call *ast.CallExpr) {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if ok && (selector.Sel.Name == "Command" || selector.Sel.Name == "CommandContext") {
 		pkgName, ok := selector.X.(*ast.Ident)
-		if ok && pkgName.Obj == nil && v.execAliases[pkgName.Name] && directGitArg(call, selector.Sel.Name) {
+		if ok && v.execAliases[pkgName.Name] && directGitArg(call, selector.Sel.Name) {
 			v.positions = append(v.positions, v.fset.Position(call.Pos()))
 		}
 		return
@@ -195,8 +208,9 @@ func (v *directGitInvocationVisitor) checkCall(call *ast.CallExpr) {
 	if !ok {
 		return
 	}
-	method, alias := v.varAliases[ident.Obj]
-	if !alias && ident.Obj == nil && (ident.Name == "Command" || ident.Name == "CommandContext") {
+	method, alias := v.varAliases[v.binding(ident)]
+	if !alias && (ident.Name == "Command" || ident.Name == "CommandContext") &&
+		(v.dotImportExec && isExecCommand(v.binding(ident))) {
 		alias = v.dotImportExec
 		method = ident.Name
 	}
@@ -205,27 +219,40 @@ func (v *directGitInvocationVisitor) checkCall(call *ast.CallExpr) {
 	}
 }
 
-func execCommandAlias(expr ast.Expr, execAliases map[string]bool, dotImportExec bool, varAliases map[*ast.Object]string) (string, bool) {
+func isExecCommand(object types.Object) bool {
+	if object == nil || object.Pkg() == nil {
+		return false
+	}
+	return object.Pkg().Path() == "os/exec" &&
+		(object.Name() == "Command" || object.Name() == "CommandContext")
+}
+
+func (v *directGitInvocationVisitor) binding(ident *ast.Ident) types.Object {
+	if object := v.info.Defs[ident]; object != nil {
+		return object
+	}
+	return v.info.Uses[ident]
+}
+
+func (v *directGitInvocationVisitor) execCommandAlias(expr ast.Expr) (string, bool) {
 	switch value := expr.(type) {
 	case *ast.SelectorExpr:
 		if value.Sel.Name != "Command" && value.Sel.Name != "CommandContext" {
 			return "", false
 		}
 		pkgName, ok := value.X.(*ast.Ident)
-		if !ok || !execAliases[pkgName.Name] {
+		if !ok || !v.execAliases[pkgName.Name] {
 			return "", false
 		}
 		return value.Sel.Name, true
 	case *ast.Ident:
-		if varAliases != nil {
-			if method, ok := varAliases[value.Obj]; ok {
-				return method, true
-			}
+		if method, ok := v.varAliases[v.binding(value)]; ok {
+			return method, true
 		}
 		if value.Name != "Command" && value.Name != "CommandContext" {
 			return "", false
 		}
-		if dotImportExec {
+		if v.dotImportExec {
 			return value.Name, true
 		}
 		return "", false
