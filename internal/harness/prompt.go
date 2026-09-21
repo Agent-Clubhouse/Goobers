@@ -134,10 +134,6 @@ func renderResponseCompletionContract(req RunRequest) string {
 		completionKind, schemaHint)
 }
 
-func renderCompletionRecoveryPrompt(req RunRequest) string {
-	return renderCompletionRepairPrompt(req, nil)
-}
-
 func renderCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	completionKind, schemaHint := completionContract(req)
 	problem := "Your previous turn ended without writing the mandatory completion file."
@@ -156,10 +152,6 @@ func renderCompletionRepairPrompt(req RunRequest, validationErr error) string {
 			"Do not finish this turn until the file exists and is valid JSON.",
 		problem, completionKind, req.CompletionPath, schemaHint,
 	)
-}
-
-func renderResponseCompletionRecoveryPrompt(req RunRequest) string {
-	return renderResponseCompletionRepairPrompt(req, nil)
 }
 
 func renderResponseCompletionRepairPrompt(req RunRequest, validationErr error) string {
