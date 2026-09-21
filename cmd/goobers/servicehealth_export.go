@@ -111,11 +111,14 @@ func emitFleetHealth(ctx context.Context, setup *schedulerSetup, exporter *telem
 	sampleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	for _, sample := range fleet {
-		for _, record := range sample(sampleCtx, now) {
+		records := sample(sampleCtx, now)
+		for _, record := range records {
 			setup.InstanceLog.AppendBestEffort(journal.Event{Time: record.Time, Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": record.Name, "diagnostic": record.Attributes}})
-			if exporter != nil {
-				exporter.Emit(record)
-			}
+		}
+		for len(records) > 0 {
+			count := min(len(records), telemetry.DiagnosticBatchLimit)
+			exporter.EmitBatch(records[:count])
+			records = records[count:]
 		}
 	}
 }

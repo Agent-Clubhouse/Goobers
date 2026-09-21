@@ -131,7 +131,10 @@ cadence and explicit company/owner metadata. Feature usage and approved-version
 assessment are separate parts of the diagnostic rollout.
 
 Export is best effort: each request has a two-second deadline, records are
-limited to 64 KiB, and at most 128 records await export. Full queues, rejected
+limited to 64 KiB. Fleet records are batched into at most 128 records and
+1 MiB per request; queued requests are capped at 128 and 8 MiB of encoded
+payload, plus one in-flight request. A 100-gaggle heartbeat and eleven feature
+records per gaggle fit in ten small requests rather than 1,201 RPCs. Full queues, rejected
 records, transport failures, and shutdown losses are counted. Clean daemon
 shutdown writes a local `diagnostics-export-summary` annotation with accepted,
 delivered, dropped, and failed counts. A collector outage does not block

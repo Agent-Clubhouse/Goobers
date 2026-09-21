@@ -37,9 +37,14 @@ func TestFleetHealthProductionExportAndLocalEvidence(t *testing.T) {
 	defer cancel()
 	done := startServiceHealth(ctx, t.TempDir(), &daemonIdentity{StartedAt: now}, setup, nil, observer.sample)
 	foundOwner := false
-	for i := 0; i < 3; i++ {
+	for received := 0; received < 3; {
 		select {
 		case req := <-collector.requests:
+			for _, resource := range req.ResourceLogs {
+				for _, scope := range resource.ScopeLogs {
+					received += len(scope.LogRecords)
+				}
+			}
 			if strings.Contains(req.String(), "team:alpha") {
 				foundOwner = true
 			}
