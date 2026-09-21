@@ -245,7 +245,7 @@ func (b *Backend) feature(tenant string, f FeatureUsage) (bool, error) {
 	var prior *Window
 	if old, ok := e.features[f.FeatureID]; ok {
 		prior = &old.Window
-		if f.WindowStart.Before(old.WindowStart) || f.WindowStart.Equal(old.WindowStart) && f.Count != nil && old.Count != nil && *f.Count < *old.Count {
+		if f.WindowEnd.Before(old.WindowEnd) || f.WindowStart.Before(old.WindowStart) || f.WindowStart.Equal(old.WindowStart) && f.Count != nil && old.Count != nil && *f.Count < *old.Count {
 			return false, errors.New("feature window/count regressed")
 		}
 	}

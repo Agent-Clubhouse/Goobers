@@ -12,6 +12,7 @@ import (
 
 	collectorlogpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logpb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -140,5 +141,38 @@ func TestReceiverRecordCountLimit(t *testing.T) {
 	}
 	if !oneReport(t, b).ReceivedAt.IsZero() {
 		t.Fatal("oversized request partially mutated inventory")
+	}
+}
+
+func referenceRequest(name string, attrs map[string]any) *collectorlogpb.ExportLogsServiceRequest {
+	record := &logpb.LogRecord{Body: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: name}}}
+	for key, value := range attrs {
+		v := &commonpb.AnyValue{}
+		switch x := value.(type) {
+		case string:
+			v.Value = &commonpb.AnyValue_StringValue{StringValue: x}
+		case int64:
+			v.Value = &commonpb.AnyValue_IntValue{IntValue: x}
+		case bool:
+			v.Value = &commonpb.AnyValue_BoolValue{BoolValue: x}
+		default:
+			panic("invalid reference scalar")
+		}
+		record.Attributes = append(record.Attributes, &commonpb.KeyValue{Key: key, Value: v})
+	}
+	return &collectorlogpb.ExportLogsServiceRequest{ResourceLogs: []*logpb.ResourceLogs{{ScopeLogs: []*logpb.ScopeLogs{{LogRecords: []*logpb.LogRecord{record}}}}}}
+}
+
+func TestServiceHealthFilteringDoesNotEstablishLiveness(t *testing.T) {
+	now := testTime
+	b := backendFixture(t, &now)
+	receiver, _ := NewReceiver(b, func(context.Context) (string, error) { return "tenant-a", nil })
+	req := referenceRequest("goobers.service.health", map[string]any{"instanceId": "instance"})
+	response, err := receiver.Export(context.Background(), req)
+	if err != nil || response.GetPartialSuccess().GetRejectedLogRecords() != 0 {
+		t.Fatalf("%v %v", response, err)
+	}
+	if r := oneReport(t, b); !r.ReceivedAt.IsZero() {
+		t.Fatal("service health established fleet liveness")
 	}
 }

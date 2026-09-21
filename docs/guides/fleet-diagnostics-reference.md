@@ -138,3 +138,18 @@ A local parser/store benchmark (`go test ./internal/fleetdiagnostics -run '^$'
 M4, two Go processors). This measures in-process decode/store cost for an
 already enrolled identity, not network, daemon sampling or whole-fleet cost;
 it is a reproducible reference measurement, not a cross-platform guarantee.
+
+The fixture sends records through the production `DiagnosticExporter`, including
+its transport schema attribute and authenticated headers. The fleet receiver
+intentionally discards the separate `goobers.service.health` six-hour operational
+stream after authentication and request/record/scalar bounds checks. This does
+not refresh fleet liveness or persist its payload; a company collector can route
+that stream to its own operational log store instead. Unknown event names still
+reject. Filtered service-health records count as delivered, not transport losses.
+
+Freshness recognizes stable SemVer and `alpha.N`, `beta.N`, or `rc.N` prereleases.
+Development, nightly, arbitrary prerelease suffixes and local build metadata stay
+unknown, including when an operator pins them. Approved prereleases remain
+comparable through the explicitly supplied channel catalogue. Feature records
+within allowed future clock skew are retained but remain unknown until their
+observation time; the skew allowance never makes future usage already true.

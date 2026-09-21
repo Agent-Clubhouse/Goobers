@@ -115,7 +115,7 @@ func featureReports(e *entry, live bool, now time.Time, skew time.Duration) []Us
 			continue
 		}
 		u := Usage{FeatureID: id, Configured: &f.Configured, State: "unknown", Coverage: f.Coverage, BootID: f.BootID, WindowStart: f.WindowStart, WindowEnd: f.WindowEnd}
-		if live && now.Sub(f.ObservedAt) < e.enrollment.HeartbeatInterval*time.Duration(e.enrollment.MissedIntervals)+skew && f.Count != nil {
+		if live && !f.ObservedAt.After(now) && now.Sub(f.ObservedAt) < e.enrollment.HeartbeatInterval*time.Duration(e.enrollment.MissedIntervals)+skew && f.Count != nil {
 			if *f.Count > 0 {
 				count := *f.Count
 				u.Count = &count

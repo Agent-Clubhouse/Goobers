@@ -279,3 +279,49 @@ func TestUnobservedInventoryAndComponentIsolation(t *testing.T) {
 		t.Fatal("different component overwrote daemon")
 	}
 }
+
+func TestFeatureWindowCannotRegressEnd(t *testing.T) {
+	now := testTime
+	b := backendFixture(t, &now)
+	ingest(t, b, HeartbeatEvent, heartbeatFields(now))
+	a := featureFields(now)
+	ingest(t, b, FeatureEvent, a)
+	a["sequence"] = int64(2)
+	a["observedAt"] = now.Add(time.Second).Format(time.RFC3339Nano)
+	a["windowEnd"] = now.Add(-time.Second).Format(time.RFC3339Nano)
+	if ok, err := b.Ingest("tenant-a", FeatureEvent, a); ok || err == nil {
+		t.Fatal("regressing coverage accepted")
+	}
+	if got := oneReport(t, b).Features[0]; !got.WindowEnd.Equal(now) {
+		t.Fatal(got)
+	}
+}
+func TestFutureFeatureRemainsUnknownUntilObserved(t *testing.T) {
+	for _, count := range []int64{0, 1} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			now := testTime
+			b := backendFixture(t, &now)
+			ingest(t, b, HeartbeatEvent, heartbeatFields(now))
+			a := featureFields(now.Add(time.Second))
+			a["count"] = count
+			ingest(t, b, FeatureEvent, a)
+			if got := oneReport(t, b).Features[0]; got.State != "unknown" || got.Count != nil {
+				t.Fatal(got)
+			}
+			now = now.Add(time.Second)
+			if got := oneReport(t, b).Features[0]; got.State == "unknown" || got.Count == nil || *got.Count != count {
+				t.Fatal(got)
+			}
+		})
+	}
+}
+func TestOversizedFieldsRejectedBeforeCopy(t *testing.T) {
+	values := map[string]any{}
+	for i := 0; i < 49; i++ {
+		values[fmt.Sprint(i)] = "value"
+	}
+	f := newFields(values)
+	if f.err == nil || f.values != nil {
+		t.Fatal("oversized map copied")
+	}
+}

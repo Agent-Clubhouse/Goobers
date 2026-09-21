@@ -67,6 +67,12 @@ func (r *Receiver) Export(ctx context.Context, req *collectorlogpb.ExportLogsSer
 					continue
 				}
 				attrs, err := scalarFields(record.Attributes)
+				// Service health belongs to a separate, six-hour operational stream.
+				// This fleet-only reference deliberately discards it after
+				// authentication and bounds checks, without changing liveness.
+				if err == nil && record.GetBody().GetStringValue() == "goobers.service.health" {
+					continue
+				}
 				if err == nil {
 					_, err = r.backend.Ingest(tenant, record.GetBody().GetStringValue(), attrs)
 				}

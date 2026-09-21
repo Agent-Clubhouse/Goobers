@@ -16,11 +16,12 @@ type fields struct {
 }
 
 func newFields(values map[string]any) *fields {
-	f := &fields{values: make(map[string]any, len(values))}
+	f := &fields{}
 	if len(values) > 48 {
 		f.err = errors.New("too many diagnostic fields")
 		return f
 	}
+	f.values = make(map[string]any, len(values))
 	for k, v := range values {
 		f.values[k] = v
 	}

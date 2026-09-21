@@ -11,11 +11,10 @@ import (
 	"time"
 
 	collectorlogpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
-	logpb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // ReferenceFixture executes real loopback OTLP/gRPC exports from two synthetic
@@ -45,13 +44,7 @@ func ReferenceFixture(ctx context.Context, out io.Writer) error {
 	collectorlogpb.RegisterLogsServiceServer(server, receiver)
 	go func() { _ = server.Serve(listener) }()
 	defer server.Stop()
-	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close() }()
-	client := collectorlogpb.NewLogsServiceClient(conn)
-	if err := exportReferenceCompanies(ctx, client, now); err != nil {
+	if err := exportReferenceCompanies(ctx, listener.Addr().String(), now); err != nil {
 		return err
 	}
 	encoder := json.NewEncoder(out)
@@ -107,7 +100,7 @@ func enrollReferenceCompanies(b *Backend, now time.Time) error {
 func referenceFields(tenant, gaggle string, now time.Time) map[string]any {
 	return map[string]any{"schemaVersion": int64(1), "organization": tenant, "environment": "production", "deploymentId": "same-deployment", "instanceId": "same-instance", "gaggleId": gaggle, "ownerRef": "team-" + gaggle, "component": "daemon", "bootId": "synthetic-boot", "bootStartedAt": now.Add(-time.Minute).Format(time.RFC3339Nano), "sequence": int64(1), "observedAt": now.Format(time.RFC3339Nano), "windowStart": now.Add(-time.Minute).Format(time.RFC3339Nano), "windowCoverage": "complete"}
 }
-func exportReferenceCompanies(ctx context.Context, client collectorlogpb.LogsServiceClient, now time.Time) error {
+func exportReferenceCompanies(ctx context.Context, endpoint string, now time.Time) error {
 	states := []struct{ tenant, gaggle, state, reason, version string }{{"company-a", "one", "idle", "no_eligible_work", "v0.5.0"}, {"company-a", "two", "waiting", "worker_unavailable", "v0.4.1"}, {"company-b", "one", "productive", "progress_observed", "v0.5.0"}, {"company-b", "two", "paused", "operator_paused", "v0.5.0"}}
 	for _, sample := range states {
 		attrs := referenceFields(sample.tenant, sample.gaggle, now)
@@ -115,7 +108,7 @@ func exportReferenceCompanies(ctx context.Context, client collectorlogpb.LogsSer
 		attrs["reasonCode"] = sample.reason
 		attrs["version"] = sample.version
 		attrs["channel"] = "stable"
-		if err := exportReference(ctx, client, sample.tenant, HeartbeatEvent, attrs); err != nil {
+		if err := exportReference(ctx, endpoint, sample.tenant, HeartbeatEvent, attrs); err != nil {
 			return err
 		}
 		usage := referenceFields(sample.tenant, sample.gaggle, now)
@@ -126,42 +119,28 @@ func exportReferenceCompanies(ctx context.Context, client collectorlogpb.LogsSer
 		if sample.state == "productive" {
 			usage["count"] = int64(3)
 		}
-		if err := exportReference(ctx, client, sample.tenant, FeatureEvent, usage); err != nil {
+		if err := exportReference(ctx, endpoint, sample.tenant, FeatureEvent, usage); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-func exportReference(ctx context.Context, client collectorlogpb.LogsServiceClient, tenant, name string, attrs map[string]any) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer synthetic-"+tenant))
-	response, err := client.Export(ctx, referenceRequest(name, attrs))
+func exportReference(ctx context.Context, endpoint string, tenant, name string, attrs map[string]any) error {
+	exporter, err := telemetry.NewDiagnosticExporter(telemetry.Config{OTLPEndpoint: endpoint, OTLPInsecure: true, OTLPHeaders: map[string]string{"authorization": "Bearer synthetic-" + tenant}})
 	if err != nil {
 		return err
 	}
-	if response.GetPartialSuccess().GetRejectedLogRecords() != 0 {
-		return errors.New("reference record rejected")
+	exporter.Emit(telemetry.DiagnosticRecord{Time: time.Now(), Name: "goobers.service.health", Attributes: map[string]any{"schemaVersion": 1, "instanceId": "same-instance"}})
+	exporter.Emit(telemetry.DiagnosticRecord{Time: time.Now(), Name: name, Attributes: attrs})
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := exporter.Shutdown(ctx); err != nil {
+		return err
+	}
+	if stats := exporter.Stats(); stats.Accepted != 2 || stats.Delivered != 2 || stats.Dropped != 0 || stats.Failures != 0 {
+		return errors.New("reference diagnostic delivery failed")
 	}
 	return nil
-}
-func referenceRequest(name string, attrs map[string]any) *collectorlogpb.ExportLogsServiceRequest {
-	record := &logpb.LogRecord{Body: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: name}}}
-	for key, value := range attrs {
-		v := &commonpb.AnyValue{}
-		switch x := value.(type) {
-		case string:
-			v.Value = &commonpb.AnyValue_StringValue{StringValue: x}
-		case int64:
-			v.Value = &commonpb.AnyValue_IntValue{IntValue: x}
-		case bool:
-			v.Value = &commonpb.AnyValue_BoolValue{BoolValue: x}
-		default:
-			panic("invalid reference scalar")
-		}
-		record.Attributes = append(record.Attributes, &commonpb.KeyValue{Key: key, Value: v})
-	}
-	return &collectorlogpb.ExportLogsServiceRequest{ResourceLogs: []*logpb.ResourceLogs{{ScopeLogs: []*logpb.ScopeLogs{{LogRecords: []*logpb.LogRecord{record}}}}}}
 }
 func writeReferenceQueries(encoder *json.Encoder, b *Backend, phase string) error {
 	for _, tenant := range []string{"company-a", "company-b"} {

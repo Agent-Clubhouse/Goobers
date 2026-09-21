@@ -2,6 +2,7 @@ package fleetdiagnostics
 
 import (
 	"errors"
+	"regexp"
 	"time"
 
 	"golang.org/x/mod/semver"
@@ -55,7 +56,7 @@ func freshness(h *Heartbeat, e Enrollment, c Catalogue, now time.Time) Freshness
 		return f
 	}
 	f.Observed = h.Version
-	if !semver.IsValid(h.Version) {
+	if !releaseVersion(h.Version) {
 		return f
 	}
 	if e.Pin != "" {
@@ -102,4 +103,16 @@ func freshness(h *Heartbeat, e Enrollment, c Catalogue, now time.Time) Freshness
 		}
 	}
 	return f
+}
+
+// Only published release forms carry freshness meaning. Local build metadata
+// and development/nightly versions stay unknown, even under an explicit pin.
+var releasePrerelease = regexp.MustCompile(`^-(alpha|beta|rc)\.[0-9]+$`)
+
+func releaseVersion(version string) bool {
+	if !semver.IsValid(version) || semver.Build(version) != "" {
+		return false
+	}
+	prerelease := semver.Prerelease(version)
+	return prerelease == "" || releasePrerelease.MatchString(prerelease)
 }
