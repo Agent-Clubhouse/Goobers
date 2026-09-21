@@ -223,3 +223,30 @@ func TestFleetHumanGateWaitNeverBecomesEligibleWorkStall(t *testing.T) {
 		t.Fatalf("recovery retained gate or accrued a stall during human wait: %+v", attrs)
 	}
 }
+
+// Two terminal no-work runs are observations of an idle loop, not useful
+// progress. Later completed work plus an active successor is productive even
+// while the boot's historical no-work count remains visible.
+func TestFleetRepeatedNoWorkSamplerRecoversOnUsefulProgress(t *testing.T) {
+	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	finished := now
+	reader := &fleetTestReader{now: now, runs: []readservice.RunSummary{
+		{Gaggle: "alpha", StartedAt: now.Add(-2 * time.Second), FinishedAt: &finished, Terminal: true, NoWork: true, Phase: journal.PhaseCompleted},
+		{Gaggle: "alpha", StartedAt: now.Add(-time.Second), FinishedAt: &finished, Terminal: true, NoWork: true, Phase: journal.PhaseCompleted},
+	}}
+	observer := &fleetHealthObserver{reader: reader, config: &instance.DiagnosticsConfig{ProgressTimeout: "1m"}, startedAt: now.Add(-time.Minute), eligibleSince: map[string]time.Time{}}
+	attrs := observer.sample(context.Background(), now)[1].Attributes
+	if attrs["state"] != "idle" || attrs["reasonCode"] != "repeated_no_work" || attrs["noWorkCount"] != 2 || attrs["lastUsefulProgressAt"] != nil {
+		t.Fatalf("actual no-work summaries did not produce idle loop evidence: %+v", attrs)
+	}
+	progressed := now.Add(30 * time.Second)
+	reader.now = progressed
+	reader.runs = append(reader.runs,
+		readservice.RunSummary{Gaggle: "alpha", StartedAt: now.Add(time.Second), FinishedAt: &progressed, Terminal: true, Phase: journal.PhaseCompleted},
+		readservice.RunSummary{Gaggle: "alpha", StartedAt: progressed},
+	)
+	attrs = observer.sample(context.Background(), progressed)[1].Attributes
+	if attrs["state"] != "productive" || attrs["reasonCode"] != "progress_observed" || attrs["lastUsefulProgressAt"] != progressed.Format(time.RFC3339Nano) || attrs["inflightCount"] != 1 || attrs["noWorkCount"] != 2 {
+		t.Fatalf("useful progress did not recover while preserving historical loop count: %+v", attrs)
+	}
+}
