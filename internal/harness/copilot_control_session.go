@@ -11,6 +11,8 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 	"github.com/github/copilot-sdk/go/rpc"
+
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 type copilotModelSession interface {
@@ -55,6 +57,7 @@ type copilotControlledRunner struct {
 	ready           bool
 	runCtx          context.Context
 	runCancel       context.CancelFunc
+	deadlineDone    func()
 	readiness       MCPReadiness
 }
 
@@ -82,6 +85,7 @@ func (r *copilotControlledRunner) initialize(ctx context.Context, req ProcessReq
 func (r *copilotControlledRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
 	if r.runCtx == nil {
 		r.runCtx, r.runCancel = copilotSessionContext(ctx, req.Timeout)
+		r.runCtx, r.deadlineDone = invoke.BeginExecution(r.runCtx)
 	}
 	callCtx, cancel := copilotSessionContext(r.runCtx, req.Timeout)
 	defer cancel()
@@ -123,6 +127,9 @@ func (r *copilotControlledRunner) open(ctx context.Context, req ProcessRequest) 
 }
 
 func (r *copilotControlledRunner) close() {
+	if r.deadlineDone != nil {
+		defer r.deadlineDone()
+	}
 	if r.runCancel != nil {
 		r.runCancel()
 	}

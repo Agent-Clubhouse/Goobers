@@ -154,6 +154,29 @@ comparable through the explicitly supplied channel catalogue. Feature records
 within allowed future clock skew are retained but remain unknown until their
 observation time; the skew allowance never makes future usage already true.
 
+### Required MCP conditions
+
+The heartbeat's optional `requiredMcp` report is independent of work health. An
+`active` condition means a retained required-tool failure has no newer verified
+recovery for the same workflow, stage, parallel branch, adapter and server. It
+does not mean every workflow in the gaggle is blocked. The report includes the
+selected context, coded reason, decisive evidence timestamp, and coverage.
+
+Availability and authorization have separate evidence clocks. A later
+unsupported authorization check cannot clear a prior denial; a newer verified
+recovery in another run can. Equal-time contradictory evidence retains failure
+because cross-run ordering is unknown. At most 256 contexts across the bounded
+run list are folded; missing, truncated, future or uninstrumented evidence stays
+partial/unknown. Zero unresolved contexts is reported only with complete
+coverage. Missing heartbeats also make the current MCP report unknown.
+
+For example, a company can select unresolved tool conditions with
+`select(.requiredMcp.state == "active")`, then route using `ownerRoute` and the
+reported workflow/stage. `transitions` records changes under
+`condition: "required_mcp"`, including recovery and loss of observation, within
+the same bounded history as work-health transitions. This is a query/routing
+example, not automatic outreach. Offline support bundles retain the coded
+condition and context without raw MCP errors or responses.
 ## Observed feature windows
 
 Feature use is separate from configuration. The daemon reads configured labels
@@ -211,10 +234,160 @@ reader only, not daemon/network overhead or other operating systems. Portable
 subprocess and remote journal-plane regressions exercise the real provider and
 recorder paths; CI remains the cross-platform gate.
 
-The same machine's real local journal append benchmark (including existing
+Before adopting the bounded snapshot below, the same machine's real local
+journal append benchmark (including existing
 fsync and tail accounting, ten iterations) measured two records at 0.193 ms /
 1,005 journal bytes per batch and 197 records at 94.2 ms / 99,550 journal bytes.
 The latter allocated 85.7 MB per batch in the existing append path. Sustaining
 that synthetic loaded batch every 30 seconds produces about 287 MB/day before
 retention or compaction; queue batching does not remove local journal cost.
-These are measured local costs, not a fleet-wide throughput guarantee.
+These historical measurements motivated replacing that frequent journal append
+path with the bounded snapshot; they do not describe the current fleet writer.
+
+## Pending issue observations
+
+The independent `backlog` condition consumes the scheduler's actual bounded
+issue-counter polls. Health sampling never queries a provider or acquires a
+claim. A complete first/only page can establish an empty matching backlog.
+Positive partial pages provide a lower bound; continuation pages, failures,
+and unknown counters never establish zero. Overlapping workflow selectors use
+the maximum observed page count, avoiding duplicate issue counts across workflows.
+
+Five scalar fields carry pending count, source time, coverage, state and reason.
+`attention / pending_without_confirmed_progress` means continuously observed
+matching issue work has outlasted the configured progress period without
+confirmed useful progress. It is independent of the main gaggle state and does
+not prove claim availability or a stuck worker. The existing last-useful-progress
+timestamp supplies context. Pauses, accepted definition changes, complete empty
+pages, partial coverage, stale evidence and observation gaps reset pending age.
+The source expires after 60 seconds, even if daemon heartbeats remain live.
+Sparse sampling therefore remains conservative and cannot bridge unobserved gaps.
+
+This counter does not apply the full stage claim transaction's blocked-item,
+local-lease and shared-lease policy. Positive work therefore remains explicitly
+claimability-unknown. A reusable bounded read-only claimability adapter is tracked in
+[#5489](https://github.com/Agent-Clubhouse/Goobers/issues/5489) for v0.6.0; this release does not assert definitive issue-work stalls from the
+provider label/field selector alone. No issue identifiers, titles or URLs are
+retained or exported by this observation.
+
+### Export loss evidence
+
+The deployment heartbeat includes `diagnosticsDroppedRecords` only when its
+diagnostic exporter exists. This is a cumulative record count for the daemon
+boot, sampled before the current heartbeat is queued; it includes queue, size,
+shutdown and collector-rejection losses observed so far. It is historical, not
+a claim that the collector is currently reachable. A recovery heartbeat can
+carry losses accumulated during an outage. Disabled or uninitialized export
+omits the count rather than reporting zero. Gaggle records do not duplicate
+the deployment counter. Offline bundles preserve the last observed count and
+its boot/time context; an abrupt death can lose evidence after that observation.
+## Actual execution deadlines
+
+A quiet running stage can report `waiting / stage_within_deadline` only when
+its current stage/branch/attempt has actual runtime deadline evidence. The
+harness owned-process launcher and deterministic executor record their bounded
+context deadline after a successful process launch, then clear it on return.
+Copilot's controlled SDK session records the existing whole-session context
+bound and clears it after session/process cleanup; nested process observations
+are suppressed under that same bound.
+
+The evidence follows the existing local or remote journal recorder and the
+current active-stage projection. Stage configuration plus start time is never
+used to synthesize a deadline. Retry, resume, terminal events, old attempt
+records, future observation clocks, truncated active-stage inventory, missing
+coverage and overlapping process-only observations cannot establish a bound.
+Serial recovery calls establish their own actual bounds only after the previous
+execution ends. The fleet classifier uses the earliest deadline only when all
+active stages of all in-flight runs are covered; a valid quiet sibling never
+hides an uncovered one. Deadline evidence is intentional waiting, not useful
+progress or a proof of the eventual success of a process.
+
+Local parallel journals stamp the actual branch ordinal and can retain these
+bounds. The current remote pod invocation contract has no authoritative journal
+branch ordinal; its unscoped observations cannot cover nonzero parallel branches.
+Those remote parallel deadlines remain unknown. A Git workspace branch is not
+used as a substitute for workflow branch identity.
+
+### Observed retry backoff
+
+A daemon can classify a gaggle as `backoff` while every nonterminal run is
+in an observed retry timer and no active stage or human gate remains. This
+is based on `retry-backoff.v1` journal annotations emitted at the actual
+local or engine wait decision, with the failed stage, attempt, retry class,
+observation time and scheduled deadline. It is never inferred from a retry
+count. Parallel branch timers remain visible in run status, but do not establish
+whole-gaggle backoff: an unobserved sibling may be between stages or awaiting
+admission. Once a run has parallel-branch evidence, this conservative coverage
+limit remains for that run, including after resume. The earliest root-stage timer deadline ends the classification. Expired, missing
+or truncated evidence does not establish either continued backoff or progress.
+
+The bounded run projection retains at most 64 stage/branch timers and clears
+them on the next attempt, terminal event or explicit resume. A daemon restart
+disregards old local process timers; local crash resume durably clears them.
+Engine timers survive worker/daemon restart through Temporal history. The
+engine records the annotation without adding a publication activity or changing
+the scheduled sleep, so existing journal delivery/repair may expose the event
+only after the wait. Live health remains unknown about that retry until evidence
+arrives. Older engine histories replay without the new annotation. Retry budgets
+and cancellation behavior are unchanged.
+## Bounded local diagnostic history
+
+Frequent fleet and feature observations live in the private
+`scheduler/diagnostics/history.json` snapshot, separate from the durable scheduler
+journal and its configurable retention. Each pulse replaces at most 4 MiB and
+4,096 validated records atomically. One fixed scratch file is also limited to
+4 MiB: data-file usage peaks at 8 MiB, plus an empty writer-lock file. A record
+is at most 64 KiB and a pulse at most 256 records. Writer-lock acquisition never
+waits; cancellation is checked before writes, synchronization and replacement.
+OS filesystem flush calls themselves still depend on the filesystem completing.
+
+The writer scrubs a batch before persistence and synchronizes once per pulse.
+Oldest observations are evicted to satisfy both limits. Startup reads are
+bounded, clean only the fixed scratch, and mark a reset after corrupt or
+oversized prior evidence. Failed replacement preserves the prior snapshot;
+known local write failures and invalid/oversized record omissions are reported
+in the next successful snapshot. A failed filesystem cannot guarantee that its
+last failure was durably recorded. Sparse, reset, expired or missing history is
+never evidence of healthy inactivity or lossless delivery.
+
+The offline bundle reads this retained window without contacting a daemon and
+falls back to the bounded legacy scheduler tail when the dedicated store is
+unavailable. Its public export-loss history carries existing per-boot
+`diagnosticsDroppedRecords` observations, separately from local eviction and
+write-failure metadata. It omits owner routing details and never treats zero
+recorded drops as proof that a collector received every observation. The
+six-hour service-health record remains in the existing scheduler journal.
+
+A full snapshot can rewrite up to 4 MiB per pulse; the bounds limit disk
+occupancy, not lifetime write volume. The `BenchmarkBoundedHistoryPulse`
+benchmark exercises the real atomic replace and fsync path for a 197-record
+pulse. Cross-platform CI validates the implementation; no local benchmark was
+run while the shared build disk was critically full.
+
+The normal `TestHistoryPulseMeasurement` also measures replacement with a full
+4,096-record retained window. A [hosted Linux coverage run](https://github.com/Agent-Clubhouse/Goobers/actions/runs/35557571839/job/106204661982)
+measured 29.94 ms and 1,777,807 snapshot bytes for one incoming record, and
+44.80 ms and 1,794,193 bytes for 197 incoming records. Each pulse made one file
+sync call and one directory sync call. These are coverage-instrumented test
+measurements, not throughput guarantees or evidence of a physical directory
+flush on Windows, where that sync operation is a no-op. The Windows privacy
+implementation was subsequently corrected; complete CI on the final commit
+remains required.
+
+A [native Windows run](https://github.com/Agent-Clubhouse/Goobers/actions/runs/35558360961/job/106207104280)
+with the corrected privacy implementation measured 52.09 ms and 1,761,421
+snapshot bytes for one incoming record, and 62.56 ms and 1,761,423 bytes for
+197 incoming records, again retaining 4,096 records. Its ACL repair and unsafe
+alias regressions passed. Fixture timestamps vary between runs;
+these measurements do not establish a Linux-versus-Windows performance ratio.
+That run was superseded by the portal API correction, so its successful history
+tests do not replace complete validation of the final commit.
+
+On Windows, the dedicated history directory has a protected DACL granting the
+current user, SYSTEM, and Administrators access, with inheritance for newly
+created files. Existing snapshot and lock ACLs are repaired explicitly; each
+scratch file is verified private before its first payload write. Repair uses
+validated, single-link, non-reparse handles and does not recursively change
+existing children or anything outside the dedicated directory. Native Windows
+regressions exercise permissive parent ACLs, protected child ACL repair, private
+scratch creation, and refusal of outside file/directory aliases.

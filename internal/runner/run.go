@@ -4744,10 +4744,8 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 					// checkpoint/pause point — a graceful drain only ever
 					// pauses BETWEEN stages, per resume.go's interruptedAttempt
 					// doc).
-					select {
-					case <-time.After(retryDelay):
-					case <-ctx.Done():
-					case <-attemptCtx.Done():
+					if err := waitForRetry(ctx, attemptCtx, jr, t.Name, int(attempt), nextRetryClass, retryDelay); err != nil {
+						return apiv1.ResultEnvelope{}, nil, err
 					}
 				}
 				if _, ok := stalledRequestFromContext(ctx); ok {

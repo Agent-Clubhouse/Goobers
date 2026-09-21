@@ -17,7 +17,8 @@ import {
 } from "./errors";
 import { HttpDaemonClient } from "./httpClient";
 import { onUpdateAvailability, resetUpdateAvailability } from "../updateNotice";
-import { API_VERSION, SCHEMA_VERSION, type Health } from "./types";
+import { API_VERSION, SCHEMA_VERSION, type Health, type RequiredMCPState, type RetryBackoffState, type RunDetail } from "./types";
+import { goWireFixtures } from "./wire.generated";
 
 const health: Health = {
   apiVersion: API_VERSION,
@@ -41,6 +42,91 @@ afterEach(async () => {
 });
 
 describe("HttpDaemonClient", () => {
+  it("preserves retry timer evidence and older responses without inventing coverage", async () => {
+    const observed: RetryBackoffState = {
+      waits: [{
+        stage: "implement", branch: 2, attempt: 3, driver: "engine", class: "infra",
+        observedAt: "2026-09-20T12:00:00Z", deadline: "2026-09-20T12:01:00Z",
+      }],
+      parallel: true,
+      truncated: true,
+    };
+    // Missing (older daemon), explicitly empty, and bounded partial evidence
+    // are different wire states. Both list and detail must retain that distinction.
+    for (const state of [undefined, {}, observed]) {
+      const detail: RunDetail = { ...goWireFixtures.runDetail };
+      delete detail.retryBackoff;
+      if (state !== undefined) detail.retryBackoff = state;
+      const fetcher = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ runs: [detail] }))
+        .mockResolvedValueOnce(Response.json(detail));
+      const client = new HttpDaemonClient({ fetch: fetcher });
+      const list = await client.listRuns();
+      const decoded = await client.getRun(detail.id);
+      expect(list.runs[0].retryBackoff).toEqual(state);
+      expect(decoded.retryBackoff).toEqual(state);
+      expect(Object.hasOwn(decoded, "retryBackoff")).toBe(state !== undefined);
+    }
+  });
+
+  it("retains optional gate and execution evidence without defaulting older responses", async () => {
+    for (const observed of [false, true]) {
+      const detail: RunDetail = { ...goWireFixtures.runDetail };
+      delete detail.waitingForGate;
+      detail.activeStages = [{ name: "implement", kind: "stage", startedAt: "2026-09-20T12:00:00Z" }];
+      if (observed) {
+        detail.waitingForGate = true;
+        detail.activeStages[0] = {
+          ...detail.activeStages[0],
+          executionObservedAt: "2026-09-20T12:00:03Z",
+          executionDeadline: "2026-09-20T12:01:03Z",
+          executionId: "attempt-2-execution-1",
+          executionOverlap: true,
+        };
+      }
+      const fetcher = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ runs: [detail] }))
+        .mockResolvedValueOnce(Response.json(detail));
+      const client = new HttpDaemonClient({ fetch: fetcher });
+      const list = await client.listRuns();
+      const decoded = await client.getRun(detail.id);
+      for (const run of [list.runs[0], decoded]) {
+        expect(run.waitingForGate).toBe(observed ? true : undefined);
+        expect(run.activeStages).toEqual(detail.activeStages);
+        expect(Object.hasOwn(run.activeStages![0], "executionDeadline")).toBe(observed);
+        expect(Object.hasOwn(run.activeStages![0], "executionOverlap")).toBe(observed);
+      }
+    }
+  });
+
+  it("preserves scoped MCP denial when the latest native authorization is unobservable", async () => {
+    const observed: RequiredMCPState = {
+      conditions: [{
+        adapter: "copilot-cli", server: "goobers-io", stage: "implement", branch: 2,
+        observedAt: "2026-09-20T12:01:00Z", category: "check_unobservable",
+        connection: "ready", inventory: "ready", authorization: "unobservable",
+        active: true, reason: "tool_authorization_failure",
+        availabilityObservedAt: "2026-09-20T12:01:00Z",
+        authorizationObservedAt: "2026-09-20T12:00:00Z",
+        authorizationReason: "tool_authorization_failure",
+      }],
+      truncated: true,
+    };
+    for (const state of [undefined, { conditions: null }, observed]) {
+      const detail: RunDetail = { ...goWireFixtures.runDetail };
+      delete detail.requiredMcp;
+      if (state !== undefined) detail.requiredMcp = state;
+      const client = new HttpDaemonClient({ fetch: vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ runs: [detail] }))
+        .mockResolvedValueOnce(Response.json(detail)) });
+      const list = await client.listRuns();
+      const decoded = await client.getRun(detail.id);
+      expect(list.runs[0].requiredMcp).toEqual(state);
+      expect(decoded.requiredMcp).toEqual(state);
+      expect(Object.hasOwn(decoded, "requiredMcp")).toBe(state !== undefined);
+    }
+  });
+
   it("reads workflow-scoped queue evidence without a mutation", async () => {
     const evidence = { gaggle: "core", workflow: "implementation", status: "not-observed", asOf: "2026-09-08T00:00:00Z" };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(evidence));

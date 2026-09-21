@@ -26,7 +26,8 @@ type diagnosticBatch struct {
 // EmitBatch snapshots at most 128 records without waiting for the collector.
 // Invalid input rejects the whole batch; valid records are split into <=1 MiB
 // requests. Queue limits are 128 requests AND 8 MiB encoded bytes, plus one
-// in-flight request. Counters remain record counts, not request counts.
+// in-flight request. Accepted/Delivered/Dropped count records; Failures counts failed or
+// partially rejected RPCs.
 func (d *DiagnosticExporter) EmitBatch(records []DiagnosticRecord) int {
 	if d == nil || len(records) == 0 {
 		return 0

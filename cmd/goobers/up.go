@@ -831,7 +831,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	defer stopReadServiceWorker(stopActiveSampler, "active-run sampler", stderr)
 	stopSchedulerProjector := reads.StartSchedulerStateProjector(0)
 	defer stopReadServiceWorker(stopSchedulerProjector, "scheduler-state projector", stderr)
-	defer startDaemonHealth(ctx, root, currentDaemon, setup, recoveryInventory.Stats, reads, ready.Load)()
+	defer startDaemonHealth(ctx, root, currentDaemon, setup, recoveryInventory.Stats, reads, ready.Load, engineClient)()
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
 	// swaps in the OIDC authenticator plus the role-floor authorizer, and

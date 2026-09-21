@@ -133,8 +133,9 @@ assessment are separate parts of the diagnostic rollout.
 Export is best effort: each request has a two-second deadline, records are
 limited to 64 KiB. Fleet records are batched into at most 128 records and
 1 MiB per request; queued requests are capped at 128 and 8 MiB of encoded
-payload, plus one in-flight request. A 100-gaggle heartbeat and eleven feature
-records per gaggle fit in ten small requests rather than 1,201 RPCs. Full queues, rejected
+payload, plus one in-flight request. Each pulse emits at most 101 health records
+and 96 feature records, sampling feature use for eight gaggles per pulse in a
+rotation. Requests batch these records subject to both record and byte limits. Full queues, rejected
 records, transport failures, and shutdown losses are counted. Clean daemon
 shutdown writes a local `diagnostics-export-summary` annotation with accepted,
 delivered, dropped, and failed counts. A collector outage does not block
@@ -161,8 +162,8 @@ company access. The existing durable root identity identifies the deployment
 and instance; gaggle names are scoped by that identity. Each daemon lifetime
 has a random boot identifier and monotonically increasing observation sequence.
 
-Fleet observations begin during daemon startup and remain in the instance
-journal even without an exporter. The cadence is configurable between ten
+Fleet observations begin during daemon startup and remain in the private
+`scheduler/diagnostics/history.json` snapshot even without an exporter. The cadence is configurable between ten
 seconds and one hour. Eligible-work stall thresholds range from one minute to
 seven days. Startup, intentional pause, retry backoff, and observation gaps do
 not accrue time toward a stall. Successful completed work advances useful
@@ -175,14 +176,19 @@ alone does not establish that work is available to claim. The current queue
 observation comes from recorded PR selection evidence; workflows without that
 evidence remain unknown. Each pulse is limited to 100 gaggles and 100 runs or
 workflows per gaggle, with a five-second read deadline. Truncation is partial
-coverage. Local retention follows the existing instance-journal policy.
+coverage. Local history retains at most 4 MiB and 4,096 records, with one bounded
+scratch file during replacement. Evictions, omissions, known write failures and
+resets are reported explicitly. The six-hour service-health record remains in
+the instance journal. See the [fleet diagnostics reference](fleet-diagnostics-reference.md)
+for sampling, retention and evidence limits.
 
 The offline support bundle includes a projected `operational` section with
 build/platform, instance/gaggle/boot identifiers, observation window, last useful
-progress, state and coded reason. It reads at most the latest four MiB and 1000
-instance events, retaining at most 100 identities, and reports missing or
-truncated evidence. It excludes routing contacts, prompts, code and raw errors.
-The six-hour historical health observation uses the same read bounds and never
+progress, state and coded reason. It reads the bounded diagnostic snapshot,
+retaining at most 100 identities and reporting missing or truncated evidence.
+If the snapshot is unavailable, it falls back to the latest 4 MiB and 1,000
+legacy instance events. It excludes routing contacts, prompts, code and raw errors.
+The six-hour historical health observation uses that bounded legacy tail and never
 reports zero restarts when earlier history was omitted. Preview the generated
 JSON/summary before deliberately sharing it upstream; collection sends nothing.
 
@@ -190,3 +196,30 @@ JSON/summary before deliberately sharing it upstream; collection sends nothing.
 
 - [GitHub token scopes](github-token-scopes.md)
 - [Backlog routing diagnostics](backlog-routing-diagnostics.md)
+
+### Engine worker observations
+
+Fleet heartbeats consult the accepted scheduler definition snapshot. Local-only
+workflows do not trigger a Temporal query, even when engine configuration exists.
+For admitted engine workflows, the daemon reuses its existing Temporal client to
+inspect the shared engine queue's workflow and activity pollers once per pulse.
+Both queries together have a one-second limit (500 ms per RPC); definition and
+poller inventories are capped at 1,000 entries. This runs in the health observer,
+without delaying model execution or scheduler admission.
+
+`workerObservation` is `recent_poller` when both task types have a poller whose
+last access is within two minutes; `no_recent_poller` means a query found an empty
+inventory or only older pollers. A five-second clock tolerance permits poller access to advance during the RPC;
+farther-future timestamps remain unknown. Missing/invalid timestamps, unavailable
+queries, or incomplete admission inventory produce `unknown`, without retaining
+a previous missing-worker claim. A local-only gaggle reports `not_required`.
+`missingWorkerCount` is 0 or 1 for the observed shared queue requirement; it is
+omitted when unknown or not required. A known missing requirement yields
+`worker_unavailable`, not a claim that a process crashed.
+
+`workerCoverage=engine_workflow_activity_queue` makes this limit explicit:
+recent polling does not prove a dispatch worker or pod can execute a particular
+stage. Configured but unused dispatch queues are not treated as missing workers.
+Mixed gaggles observe this engine dependency only for their admitted engine
+workflows; local workflows continue independently. Poller identities, queue names,
+frontend addresses and raw RPC errors are not exported.

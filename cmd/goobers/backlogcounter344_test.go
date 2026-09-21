@@ -425,6 +425,9 @@ func TestBacklogCounterAdvancesBoundedPagesAndTracksProviderQuota(t *testing.T) 
 	if count != 0 || requests != 1 {
 		t.Fatalf("count=%d requests=%d, want one bounded nonmatching page", count, requests)
 	}
+	if observation := counter.backlogObservation(); observation.complete || observation.failed || observation.observedAt.IsZero() || observation.count != 0 {
+		t.Fatalf("first bounded page diagnostic observation=%+v", observation)
+	}
 	secondAdmission := quota.ReservePolls(apiv1.ProviderGitHub, now, 1)
 	count, err = counter.EligibleCount(localscheduler.WithProviderPollBudget(context.Background(), secondAdmission))
 	if err != nil {
@@ -432,6 +435,9 @@ func TestBacklogCounterAdvancesBoundedPagesAndTracksProviderQuota(t *testing.T) 
 	}
 	if count != 1 || requests != 2 {
 		t.Fatalf("count=%d requests=%d, want matching issue from the next bounded page", count, requests)
+	}
+	if observation := counter.backlogObservation(); observation.complete || observation.failed || observation.count != 1 {
+		t.Fatalf("continuation page diagnostic observation=%+v", observation)
 	}
 	next := quota.ReservePolls(apiv1.ProviderGitHub, now, 1)
 	if next.RemainingBefore != 8 {

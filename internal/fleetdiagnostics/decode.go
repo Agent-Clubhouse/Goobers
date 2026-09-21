@@ -131,7 +131,7 @@ func oneOf(v string, choices ...string) bool {
 // versions fail closed rather than silently presenting a partial observation.
 func DecodeHeartbeat(attrs map[string]any) (Heartbeat, error) {
 	f := newFields(attrs)
-	h := Heartbeat{Identity: f.identity(), Window: f.window(), State: f.text("state", true), ReasonCode: f.text("reasonCode", true), LastUsefulProgressAt: f.optionalStamp("lastUsefulProgressAt"), OldestEligibleAt: f.optionalStamp("oldestEligibleAt"), EligibleCount: f.optionalNumber("eligibleCount"), InflightCount: f.optionalNumber("inflightCount"), AdmissionLimit: f.optionalNumber("admissionLimit"), MissingWorkerCount: f.optionalNumber("missingWorkerCount"), RetryCount: f.optionalNumber("retryCount"), NoWorkCount: f.optionalNumber("noWorkCount"), Version: f.text("version", false), BuildCommit: f.text("buildCommit", false), Channel: f.text("channel", false), Platform: f.text("platform", false)}
+	h := Heartbeat{DiagnosticsDroppedRecords: f.optionalNumber("diagnosticsDroppedRecords"), Identity: f.identity(), Window: f.window(), State: f.text("state", true), ReasonCode: f.text("reasonCode", true), LastUsefulProgressAt: f.optionalStamp("lastUsefulProgressAt"), OldestEligibleAt: f.optionalStamp("oldestEligibleAt"), EligibleCount: f.optionalNumber("eligibleCount"), InflightCount: f.optionalNumber("inflightCount"), AdmissionLimit: f.optionalNumber("admissionLimit"), MissingWorkerCount: f.optionalNumber("missingWorkerCount"), RetryCount: f.optionalNumber("retryCount"), NoWorkCount: f.optionalNumber("noWorkCount"), Version: f.text("version", false), BuildCommit: f.text("buildCommit", false), Channel: f.text("channel", false), Platform: f.text("platform", false)}
 	if !oneOf(h.State, "productive", "idle", "paused", "waiting", "backoff", "stalled", "unknown") {
 		f.err = errors.New("invalid health state")
 	}
@@ -143,6 +143,9 @@ func DecodeHeartbeat(attrs map[string]any) (Heartbeat, error) {
 			f.err = errors.New("evidence timestamp exceeds observation")
 		}
 	}
+	h.RequiredMCP = f.mcpHealth(h.ObservedAt)
+	h.Worker = f.workerHealth(h.ObservedAt, h.MissingWorkerCount)
+	h.Backlog = f.backlogHealth(h.ObservedAt)
 	return h, f.finish()
 }
 

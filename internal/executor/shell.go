@@ -937,6 +937,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
+	defer e.observeExecutionDeadline(runCtx, env)()
 	// Released only after the stage is fully accounted for: the bound's own
 	// record of whether it fired (the child cgroup's memory.events) has to
 	// outlive the process it bounded, or the reason a stage died is destroyed

@@ -20,6 +20,10 @@ type Usage struct {
 // Report is scoped to exactly one authenticated tenant. OwnerRoute is a routing
 // hint for the company's tools, never an automatic message or inferred owner.
 type Report struct {
+	DiagnosticsDroppedRecords *int64         `json:"diagnosticsDroppedRecords,omitempty"`
+	RequiredMCP               *MCPHealth     `json:"requiredMcp,omitempty"`
+	Worker                    *WorkerHealth  `json:"worker,omitempty"`
+	Backlog                   *BacklogHealth `json:"backlog,omitempty"`
 	Identity
 	State                 string       `json:"state"`
 	Reason                string       `json:"reason"`
@@ -48,6 +52,9 @@ func (b *Backend) Reports(tenant string) ([]Report, error) {
 	for _, key := range sortedKeys(b.entries[tenant]) {
 		e := b.entries[tenant][key]
 		r := evaluate(e, policy, now, b.maxClockSkew)
+		if e.heartbeat != nil {
+			r.Worker = workerReport(e.heartbeat.Worker, r.Liveness == "live")
+		}
 		r.Freshness = freshness(e.heartbeat, e.enrollment, policy.Catalogue, now)
 		r.Features = featureReports(e, r.Liveness == "live", now, b.maxClockSkew)
 		r.OwnerRoute = policy.Owners[r.OwnerRef]
@@ -58,12 +65,25 @@ func (b *Backend) Reports(tenant string) ([]Report, error) {
 	return reports, nil
 }
 func evaluate(e *entry, policy Tenant, now time.Time, skew time.Duration) Report {
+	r := evaluateHealth(e, policy, now, skew)
+	if e.heartbeat != nil {
+		r.RequiredMCP = mcpReport(e.heartbeat.RequiredMCP, r.Liveness == "live")
+		r.Backlog = backlogReport(e.heartbeat.Backlog, r.Liveness == "live", now)
+	}
+	return r
+}
+
+func evaluateHealth(e *entry, policy Tenant, now time.Time, skew time.Duration) Report {
 	r := Report{Identity: e.enrollment.Identity, State: "unknown", Reason: "awaiting_first_observation", Liveness: "unobserved", Coverage: "unknown", ReceivedAt: e.receivedAt}
 	lastSeen := e.enrolledAt
 	if h := e.heartbeat; h != nil {
 		r.Identity = h.Identity
 		if r.OwnerRef == "" {
 			r.OwnerRef = e.enrollment.OwnerRef
+		}
+		if h.DiagnosticsDroppedRecords != nil {
+			count := *h.DiagnosticsDroppedRecords
+			r.DiagnosticsDroppedRecords = &count
 		}
 		r.Coverage = h.Coverage
 		r.State = h.State
@@ -132,6 +152,7 @@ func featureReports(e *entry, live bool, now time.Time, skew time.Duration) []Us
 }
 
 func recordTransition(e *entry, r Report, now time.Time) {
+	recordMCPTransition(e, r.RequiredMCP, now)
 	state := r.Liveness + ":" + r.State + ":" + r.Reason
 	if state == e.lastState {
 		return

@@ -159,7 +159,9 @@ type WorkflowRunActivity struct {
 // RunSummary is the journal-derived diagnostic summary shared by run lists and
 // run detail.
 type RunSummary struct {
+	RetryBackoff      readmodel.RetryBackoffState `json:"retryBackoff"`
 	RequiredMCP       *readmodel.RequiredMCPState `json:"requiredMcp,omitempty"`
+	WaitingForGate    bool                        `json:"waitingForGate,omitempty"`
 	ActiveStages      []readmodel.ActiveStage     `json:"activeStages,omitempty"`
 	ActivityTruncated bool                        `json:"activityTruncated,omitempty"`
 	EngineFallback    *readmodel.EngineFallback   `json:"engineFallback,omitempty"`
@@ -1860,35 +1862,34 @@ func summarizeRunForStage(
 		return RunSummary{}, err
 	}
 
-	return RunSummary{
-		ID:                run.identity.RunID,
-		Workflow:          run.identity.Workflow,
-		WorkflowVersion:   run.identity.WorkflowVersion,
-		WorkflowDigest:    run.identity.WorkflowDigest,
-		Gaggle:            run.identity.Gaggle,
-		Trigger:           run.identity.Trigger,
-		Phase:             phase,
-		Terminal:          phase != journal.PhaseRunning,
-		CurrentStage:      currentStage,
-		StartedAt:         run.identity.StartedAt,
-		FinishedAt:        finishedAt,
-		DurationMillis:    duration,
-		LastActivityAt:    lastActivityAt,
-		LastSeq:           lastSeq,
-		RepassCount:       repasses,
-		RetryCount:        retries,
-		PolicyRetryCount:  policyRetries,
-		InfraRetryCount:   infraRetries,
-		NoWork:            noWork,
-		TerminalReason:    terminalReason,
-		Operator:          operator,
-		EngineFallback:    observations.engineFallback,
-		RequiredMCP:       observations.requiredMCP,
-		ActiveStages:      observations.activity.Active,
-		ActivityTruncated: observations.activity.Truncated,
-		Stages:            stages,
-		stageAttempts:     stageAttempts,
-	}, nil
+	return withRunActivity(RunSummary{
+		ID:               run.identity.RunID,
+		Workflow:         run.identity.Workflow,
+		WorkflowVersion:  run.identity.WorkflowVersion,
+		WorkflowDigest:   run.identity.WorkflowDigest,
+		Gaggle:           run.identity.Gaggle,
+		Trigger:          run.identity.Trigger,
+		Phase:            phase,
+		Terminal:         phase != journal.PhaseRunning,
+		CurrentStage:     currentStage,
+		StartedAt:        run.identity.StartedAt,
+		FinishedAt:       finishedAt,
+		DurationMillis:   duration,
+		LastActivityAt:   lastActivityAt,
+		LastSeq:          lastSeq,
+		RepassCount:      repasses,
+		RetryCount:       retries,
+		PolicyRetryCount: policyRetries,
+		InfraRetryCount:  infraRetries,
+		NoWork:           noWork,
+		TerminalReason:   terminalReason,
+		Operator:         operator,
+		EngineFallback:   observations.engineFallback,
+		RequiredMCP:      observations.requiredMCP,
+		RetryBackoff:     observations.retryBackoff,
+		Stages:           stages,
+		stageAttempts:    stageAttempts,
+	}, observations.activity), nil
 }
 
 // isNoWorkTick reports whether a run is a routine no-work tick: a completed

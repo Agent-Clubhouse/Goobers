@@ -236,6 +236,9 @@ func initAdjacentConflictPRBranch(t *testing.T, prBranch, name, ancestor, incomi
 	root := t.TempDir()
 	origin = filepath.Join(root, "origin.git")
 	runGitT(t, root, "init", "--bare", "-b", "main", origin)
+	// Local push strips client -c/GIT_CONFIG_* before spawning receive-pack.
+	// Pin the receiver itself so its detached maintenance cannot race cloning.
+	runGitT(t, root, "--git-dir="+origin, "config", "receive.autogc", "false")
 
 	work := filepath.Join(root, "work")
 	runGitT(t, root, "clone", origin, work)
