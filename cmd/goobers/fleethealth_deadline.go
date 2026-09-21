@@ -23,7 +23,7 @@ func fleetExecutionDeadline(runs []readservice.RunSummary, gaggle string, now ti
 			return time.Time{}
 		}
 		for _, stage := range run.ActiveStages {
-			if stage.ExecutionObservedAt.IsZero() || stage.ExecutionObservedAt.After(now) || stage.Kind != "stage" || stage.ExecutionOverlap || stage.ExecutionID == "" || stage.ExecutionDeadline == nil || stage.ExecutionDeadline.IsZero() {
+			if stage.ExecutionObservedAt == nil || stage.ExecutionObservedAt.IsZero() || stage.ExecutionObservedAt.After(now) || stage.Kind != "stage" || stage.ExecutionOverlap || stage.ExecutionID == "" || stage.ExecutionDeadline == nil || stage.ExecutionDeadline.IsZero() {
 				return time.Time{}
 			}
 			if earliest.IsZero() || stage.ExecutionDeadline.Before(earliest) {

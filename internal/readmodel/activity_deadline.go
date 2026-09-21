@@ -30,7 +30,8 @@ func (s StageActivity) withExecutionDeadline(e journal.Event) StageActivity {
 			if active.ExecutionID != "" && active.ExecutionID != id {
 				active.ExecutionOverlap = true
 			}
-			active.ExecutionObservedAt = e.Time
+			observedAt := e.Time
+			active.ExecutionObservedAt = &observedAt
 			active.ExecutionID = id
 			active.ExecutionDeadline = &deadline
 			if active.ExecutionOverlap {
@@ -40,7 +41,7 @@ func (s StageActivity) withExecutionDeadline(e journal.Event) StageActivity {
 			if active.ExecutionID != id {
 				return s
 			}
-			active.ExecutionID, active.ExecutionDeadline, active.ExecutionObservedAt = "", nil, time.Time{}
+			active.ExecutionID, active.ExecutionDeadline, active.ExecutionObservedAt = "", nil, nil
 		default:
 			active.ExecutionDeadline, active.ExecutionOverlap = nil, true
 		}

@@ -24,7 +24,7 @@ import (
 func TestFleetActualExecutionDeadlineDoesNotMaskUnknownSibling(t *testing.T) {
 	now := time.Now().UTC()
 	deadline := now.Add(time.Hour)
-	run := readservice.RunSummary{Gaggle: "g", ActiveStages: []readmodel.ActiveStage{{Name: "quiet", Kind: "stage", ExecutionID: "execution", ExecutionObservedAt: now, ExecutionDeadline: &deadline}}}
+	run := readservice.RunSummary{Gaggle: "g", ActiveStages: []readmodel.ActiveStage{{Name: "quiet", Kind: "stage", ExecutionID: "execution", ExecutionObservedAt: &now, ExecutionDeadline: &deadline}}}
 	runs := []readservice.RunSummary{run}
 	one := 1
 	observation := fleetstate.Observation{ObservedAt: now, Complete: true, InflightCount: &one, EligibleCount: &one, OldestEligibleAt: now.Add(-time.Hour), ActiveDeadline: fleetExecutionDeadline(runs, "g", now)}

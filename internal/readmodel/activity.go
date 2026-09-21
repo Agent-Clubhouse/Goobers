@@ -14,7 +14,7 @@ const MaxActiveStageTimings = 1024
 // ActiveStage records a start, not a frozen elapsed duration. The client clock
 // can advance a quiet run without waiting for another journal event.
 type ActiveStage struct {
-	ExecutionObservedAt time.Time  `json:"executionObservedAt,omitempty"`
+	ExecutionObservedAt *time.Time `json:"executionObservedAt,omitempty"`
 	ExecutionDeadline   *time.Time `json:"executionDeadline,omitempty"`
 	ExecutionID         string     `json:"executionId,omitempty"`
 	ExecutionOverlap    bool       `json:"executionOverlap,omitempty"`
