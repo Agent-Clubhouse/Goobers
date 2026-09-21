@@ -98,6 +98,8 @@ type RunRequest struct {
 	// eligibility alone (#2774) — an adapter that never registers the server
 	// must never instruct the model to call tools that don't exist there.
 	GoobersIORegistered bool
+	// MCPReadinessSink records pre-model readiness without tool responses or secrets.
+	MCPReadinessSink func(MCPReadiness) error
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.
