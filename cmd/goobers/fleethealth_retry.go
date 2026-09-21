@@ -9,6 +9,8 @@ import (
 // A gaggle is wholly in retry backoff only when every nonterminal run has
 // current timer evidence and no other active stage/gate can make progress.
 // The earliest deadline ends that assertion; later timers cannot mask it.
+// Parallel branch timers remain visible per run, but cannot prove that every
+// sibling is waiting: absence of an active stage does not prove branch coverage.
 func fleetRetryBackoff(runs []readservice.RunSummary, gaggle string, now, boot time.Time) time.Time {
 	var earliest time.Time
 	for _, run := range runs {
@@ -22,7 +24,7 @@ func fleetRetryBackoff(runs []readservice.RunSummary, gaggle string, now, boot t
 			return time.Time{}
 		}
 		for _, wait := range run.RetryBackoff.Waits {
-			if wait.ObservedAt.After(now) || !wait.Deadline.After(now) || wait.Driver == "local" && wait.ObservedAt.Before(boot) {
+			if wait.Branch != 0 || wait.ObservedAt.After(now) || !wait.Deadline.After(now) || wait.Driver == "local" && wait.ObservedAt.Before(boot) {
 				return time.Time{}
 			}
 			if earliest.IsZero() || wait.Deadline.Before(earliest) {

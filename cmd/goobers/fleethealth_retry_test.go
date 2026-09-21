@@ -73,3 +73,19 @@ func TestFleetRetryBackoffProductionSamplerExpiresAndRecovers(t *testing.T) {
 		t.Fatalf("recovery did not clear: %+v", attrs)
 	}
 }
+
+func TestFleetRetryBackoffDoesNotInferIdleSiblingCoverage(t *testing.T) {
+	now := time.Now().UTC()
+	// Branch 1 is in a known timer. Branch 2 can be between stages or waiting
+	// for admission, so neither branch currently has an ActiveStage entry.
+	run := readservice.RunSummary{Gaggle: "alpha", RetryBackoff: readmodel.RetryBackoffState{Waits: []readmodel.RetryBackoff{{Stage: "branch-work", Branch: 1, Driver: "local", ObservedAt: now, Deadline: now.Add(time.Minute)}}}}
+	if got := fleetRetryBackoff([]readservice.RunSummary{run}, "alpha", now, now.Add(-time.Hour)); !got.IsZero() {
+		t.Fatalf("uncovered parallel sibling declared in backoff: %v", got)
+	}
+	reader := &fleetTestReader{now: now, eligible: true, runs: []readservice.RunSummary{run}}
+	observer := &fleetHealthObserver{reader: reader, config: &instance.DiagnosticsConfig{ProgressTimeout: "1m"}, startedAt: now.Add(-time.Hour), eligibleSince: map[string]time.Time{}}
+	attrs := observer.sample(context.Background(), now)[1].Attributes
+	if attrs["state"] == "backoff" {
+		t.Fatalf("sampler inferred whole-run branch coverage: %+v", attrs)
+	}
+}

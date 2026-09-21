@@ -313,7 +313,9 @@ in an observed retry timer and no active stage or human gate remains. This
 is based on `retry-backoff.v1` journal annotations emitted at the actual
 local or engine wait decision, with the failed stage, attempt, retry class,
 observation time and scheduled deadline. It is never inferred from a retry
-count. The earliest timer deadline ends the classification. Expired, missing
+count. Parallel branch timers remain visible in run status, but do not establish
+whole-gaggle backoff: an unobserved sibling may be between stages or awaiting
+admission. The earliest root-stage timer deadline ends the classification. Expired, missing
 or truncated evidence does not establish either continued backoff or progress.
 
 The bounded run projection retains at most 64 stage/branch timers and clears
