@@ -315,7 +315,8 @@ local or engine wait decision, with the failed stage, attempt, retry class,
 observation time and scheduled deadline. It is never inferred from a retry
 count. Parallel branch timers remain visible in run status, but do not establish
 whole-gaggle backoff: an unobserved sibling may be between stages or awaiting
-admission. The earliest root-stage timer deadline ends the classification. Expired, missing
+admission. Once a run has parallel-branch evidence, this conservative coverage
+limit remains for that run, including after resume. The earliest root-stage timer deadline ends the classification. Expired, missing
 or truncated evidence does not establish either continued backoff or progress.
 
 The bounded run projection retains at most 64 stage/branch timers and clears

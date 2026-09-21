@@ -24,6 +24,8 @@ type RetryBackoff struct {
 
 // RetryBackoffState is folded into the existing operator-facts JSON column.
 type RetryBackoffState struct {
+	// Parallel records incomplete branch coverage even between stage events.
+	Parallel  bool           `json:"parallel,omitempty"`
 	Waits     []RetryBackoff `json:"waits,omitempty"`
 	Truncated bool           `json:"truncated,omitempty"`
 }
@@ -33,12 +35,17 @@ func (s RetryBackoffState) After(event journal.Event) RetryBackoffState {
 	if !event.KnownSchema() {
 		return s
 	}
+	if event.Branch != 0 || event.Type == journal.EventBranchStarted || event.Type == journal.EventParallelStarted {
+		s.Parallel = true
+	}
 	switch event.Type {
-	case journal.EventRunFinished, journal.EventRunResumed, journal.EventGateOverridden:
+	case journal.EventRunFinished:
 		return RetryBackoffState{}
+	case journal.EventRunResumed, journal.EventGateOverridden:
+		return RetryBackoffState{Parallel: s.Parallel}
 	case journal.EventRunnerAnnotation:
 		if event.Runner["kind"] == journal.RetryBackoffResetKind {
-			return RetryBackoffState{}
+			return RetryBackoffState{Parallel: s.Parallel}
 		}
 	}
 	if event.Type == journal.EventStageStarted || event.Type == journal.EventStageRerunRequested || event.Type == journal.EventBranchFinished {

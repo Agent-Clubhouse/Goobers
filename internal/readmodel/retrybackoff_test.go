@@ -84,3 +84,22 @@ func TestRetryBackoffRejectsUnknownEvidenceAndBounds(t *testing.T) {
 		t.Fatal(state)
 	}
 }
+
+func TestRetryBackoffKeepsConservativeParallelCoverageThroughResume(t *testing.T) {
+	now := time.Now().UTC()
+	state := RetryBackoffState{}.After(journal.Event{Schema: journal.EventSchema, Type: journal.EventBranchStarted, Branch: 2, Time: now})
+	for _, event := range []journal.Event{
+		{Schema: journal.EventSchema, Type: journal.EventBranchFinished, Branch: 2, Time: now},
+		{Schema: journal.EventSchema, Type: journal.EventRunResumed, Time: now},
+		{Schema: journal.EventSchema, Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": journal.RetryBackoffResetKind}, Time: now},
+		retryBackoffFixture(now, 5, "root", 0, 1),
+	} {
+		state = state.After(event)
+		if !state.Parallel {
+			t.Fatalf("incomplete branch inventory forgotten after %+v", event)
+		}
+	}
+	if len(state.Waits) != 1 || state.Waits[0].Branch != 0 {
+		t.Fatal(state)
+	}
+}

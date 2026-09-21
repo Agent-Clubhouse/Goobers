@@ -20,7 +20,7 @@ func fleetRetryBackoff(runs []readservice.RunSummary, gaggle string, now, boot t
 		if run.Terminal {
 			continue
 		}
-		if run.WaitingForGate || run.ActivityTruncated || len(run.ActiveStages) > 0 || run.RetryBackoff.Truncated || len(run.RetryBackoff.Waits) == 0 {
+		if run.RetryBackoff.Parallel || run.WaitingForGate || run.ActivityTruncated || len(run.ActiveStages) > 0 || run.RetryBackoff.Truncated || len(run.RetryBackoff.Waits) == 0 {
 			return time.Time{}
 		}
 		for _, wait := range run.RetryBackoff.Waits {

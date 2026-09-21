@@ -21,6 +21,7 @@ func TestFleetRetryBackoffRequiresEveryActiveRunAndFreshTimer(t *testing.T) {
 		func(r *readservice.RunSummary) { r.ActiveStages = []readmodel.ActiveStage{{Name: "parallel"}} },
 		func(r *readservice.RunSummary) { r.WaitingForGate = true },
 		func(r *readservice.RunSummary) { r.RetryBackoff.Truncated = true },
+		func(r *readservice.RunSummary) { r.RetryBackoff.Parallel = true },
 		func(r *readservice.RunSummary) { r.RetryBackoff.Waits = nil },
 		func(r *readservice.RunSummary) { r.Gaggle = "other" },
 	} {
