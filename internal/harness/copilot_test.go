@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1347,6 +1348,59 @@ func TestCopilotAdapterEmptyToolAllowlistPreservesCommand(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterRepairsInvalidResponseAndRecordsScrubbedDiagnostic(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("COPILOT_HOME", "")
+	const secret = "copilot-invalid-completion-secret"
+	invalid := []byte(`{"status":"success","outputs":{"token":{"value":"` + secret + `"}}}`)
+	valid := []byte(`{"status":"success","outputs":{},"summary":"done"}`)
+	var calls []ProcessRequest
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
+	runner.act = func(req ProcessRequest) error {
+		calls = append(calls, req)
+		payload := invalid
+		if len(calls) == 2 {
+			payload = valid
+		}
+		_, err := req.StdoutCapture.Write(payload)
+		return err
+	}
+	rec := &fakeRecorder{}
+	scrubber := journal.NewRegistryScrubber()
+	scrubber.Register([]byte(secret))
+	exec, err := NewExecutor(
+		&CopilotAdapter{Command: []string{"copilot"}, Runner: runner},
+		testInjector(t, "", "", noopRegistrar{}),
+		rec, rec, rec, scrubber, "",
+		WithTools([]string{"view"}),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err != nil || result.Status != apiv1.ResultSuccess {
+		t.Fatalf("Invoke = (%+v, %v), want repaired success", result, err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("process calls = %d, want initial call plus one repair", len(calls))
+	}
+	prompt, ok := copilotPromptArgValue(calls[1].Command)
+	if !ok || !strings.Contains(prompt, "/outputs/token") || !strings.Contains(prompt, "expected") {
+		t.Fatalf("repair prompt = %q, want schema path and validation message", prompt)
+	}
+	if len(rec.artifacts) != 1 || rec.artifacts[0].name != "implement/invalid-completion.json" {
+		t.Fatalf("recorded artifacts = %+v, want invalid completion diagnostic", rec.artifacts)
+	}
+	if bytes.Contains(rec.artifacts[0].data, []byte(secret)) ||
+		!bytes.Contains(rec.artifacts[0].data, []byte(journal.Redacted)) {
+		t.Fatalf("invalid completion was not redacted: %q", rec.artifacts[0].data)
+	}
+	if len(result.Artifacts) != 1 || result.Artifacts[0].MediaType != "application/json" {
+		t.Fatalf("result artifacts = %+v, want diagnostic pointer", result.Artifacts)
+	}
+}
+
 func TestCopilotAdapterToolAllowlistRejectsCommaDelimitedEntry(t *testing.T) {
 	runner := &fakeProcessRunner{}
 	workspace := t.TempDir()
@@ -1441,8 +1495,8 @@ func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing
 	if !ok {
 		t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
 	}
-	if !strings.Contains(prompt, "entire response") ||
-		!strings.Contains(prompt, "without returning the mandatory completion") {
+	if !strings.Contains(prompt, "failed schema validation") ||
+		!strings.Contains(prompt, "missing properties: 'status'") {
 		t.Fatalf("recovery prompt = %q", prompt)
 	}
 }
@@ -1451,7 +1505,7 @@ func TestCopilotAdapterResponseCompletionRejectsTruncation(t *testing.T) {
 	capture := newTranscriptBuffer(8)
 	_, _ = capture.Write([]byte(`{"status":"success"}`))
 
-	_, err := readCopilotResponseCompletion(ModeInvoke, capture)
+	_, err := readCopilotResponseCompletion(capture)
 	if !errors.Is(err, ErrNoCompletion) {
 		t.Fatalf("read completion error = %v, want ErrNoCompletion", err)
 	}

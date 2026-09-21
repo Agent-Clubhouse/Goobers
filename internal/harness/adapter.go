@@ -107,6 +107,10 @@ type RunRequest struct {
 	// CompletionPath is the workspace-relative path the harness must write
 	// its result/verdict JSON to.
 	CompletionPath string
+	// ValidateCompletion checks a payload before the adapter accepts the
+	// completion. Subprocess adapters use a failure to drive their single
+	// same-session completion-repair turn.
+	ValidateCompletion func([]byte) error
 	// TelemetryDir is the writable, stage-scoped directory exposed to harness
 	// subprocesses as GOOBERS_TELEMETRY_DIR.
 	TelemetryDir string
@@ -152,9 +156,15 @@ type RunRequest struct {
 
 // Outcome is what an Adapter hands back after a harness session ends.
 type Outcome struct {
-	// Payload is the raw bytes read from CompletionPath — unvalidated; the
-	// Executor validates it against the mode's schema.
+	// Payload is the raw bytes read from CompletionPath. Subprocess adapters
+	// validate it before returning; the Executor validates again at its boundary.
 	Payload []byte
+	// InvalidCompletionPayload is the first schema-invalid payload observed
+	// before a bounded repair turn. The Executor records it after redaction.
+	InvalidCompletionPayload []byte
+	// DiagnosticArtifacts are runner-authored pointers recorded while handling
+	// an adapter failure, such as a scrubbed schema-invalid completion.
+	DiagnosticArtifacts []apiv1.ArtifactPointer
 	// Metrics contains adapter-observed numeric measures under canonical
 	// telemetry names. An absent measure is omitted; an observed zero is kept.
 	Metrics map[string]float64
@@ -464,4 +474,21 @@ func readCompletion(workspace, relPath string) ([]byte, error) {
 		return nil, fmt.Errorf("harness: read completion file %s: %w", relPath, err)
 	}
 	return b, nil
+}
+
+func validateCompletion(req RunRequest, payload []byte, readErr error) error {
+	if readErr != nil {
+		return readErr
+	}
+	if req.ValidateCompletion == nil {
+		return nil
+	}
+	if err := req.ValidateCompletion(payload); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
+	}
+	return nil
+}
+
+func repairableCompletionError(err error) bool {
+	return errors.Is(err, ErrNoCompletion) || errors.Is(err, ErrInvalidCompletion)
 }
