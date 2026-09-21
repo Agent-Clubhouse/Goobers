@@ -361,3 +361,12 @@ occupancy, not lifetime write volume. The `BenchmarkBoundedHistoryPulse`
 benchmark exercises the real atomic replace and fsync path for a 197-record
 pulse. Cross-platform CI validates the implementation; no local benchmark was
 run while the shared build disk was critically full.
+
+On Windows, the dedicated history directory has a protected DACL granting the
+current user, SYSTEM, and Administrators access, with inheritance for newly
+created files. Existing snapshot and lock ACLs are repaired explicitly; each
+scratch file is verified private before its first payload write. Repair uses
+validated, single-link, non-reparse handles and does not recursively change
+existing children or anything outside the dedicated directory. Native Windows
+regressions exercise permissive parent ACLs, protected child ACL repair, private
+scratch creation, and refusal of outside file/directory aliases.

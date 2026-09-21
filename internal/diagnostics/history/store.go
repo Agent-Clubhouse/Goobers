@@ -91,11 +91,12 @@ func Open(ctx context.Context, dir string, scrubber journal.Scrubber) (*Store, e
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("unsafe diagnostic history directory")
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, err
-	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
+		return nil, err
+	}
+	if err := protectHistoryPath(root, dir, ".", true); err != nil {
+		_ = root.Close()
 		return nil, err
 	}
 	owner, err := acquireOwner(root, dir)
@@ -111,6 +112,10 @@ func Open(ctx context.Context, dir string, scrubber journal.Scrubber) (*Store, e
 		if !info.Mode().IsRegular() {
 			_ = store.Close()
 			return nil, errors.New("unsafe diagnostic history snapshot")
+		}
+		if err := protectHistoryPath(root, dir, snapshotName, false); err != nil {
+			_ = store.Close()
+			return nil, err
 		}
 		if info.Size() > MaxBytes {
 			if err := root.Remove(snapshotName); err != nil {
@@ -150,6 +155,9 @@ func acquireOwner(root *os.Root, dir string) (*lock.Handle, error) {
 	before, err := root.Lstat(lockName)
 	if err != nil || !before.Mode().IsRegular() || before.Size() != 0 {
 		return nil, errors.New("unsafe diagnostic history lock")
+	}
+	if err := protectHistoryPath(root, dir, lockName, false); err != nil {
+		return nil, err
 	}
 	owner, err := lock.TryAcquireExisting(filepath.Join(dir, lockName))
 	if err != nil {
@@ -290,7 +298,7 @@ func (s *Store) commit(ctx context.Context, data []byte) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	file, err := s.root.OpenFile(scratchName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := s.createScratch()
 	if err != nil {
 		return false, err
 	}
@@ -415,4 +423,17 @@ func decodeRecord(data []byte, record *Record) error {
 		return errors.New("trailing diagnostic record data")
 	}
 	return nil
+}
+
+func (s *Store) createScratch() (*os.File, error) {
+	file, err := s.root.OpenFile(scratchName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := protectHistoryPath(s.root, s.dir, scratchName, false); err != nil {
+		_ = file.Close()
+		_ = s.root.Remove(scratchName)
+		return nil, err
+	}
+	return file, nil
 }
