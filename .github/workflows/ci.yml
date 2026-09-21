@@ -1247,9 +1247,10 @@ jobs:
         run: go test ./internal/winsvc
 
       - name: Windows bounded diagnostic history
-        run: |
-          go test -v ./internal/diagnostics/history ./internal/diagnostics/featureusage -count=1
-          go test ./internal/diagnostics -run '^TestOperational' -count=1
+        run: go test -v ./internal/diagnostics/history ./internal/diagnostics/featureusage -count=1
+
+      - name: Windows offline diagnostic evidence
+        run: go test ./internal/diagnostics -run '^TestOperational' -count=1
 
       - name: Windows host image preparation
         run: go test ./release/internal/imageinputs -count=1
