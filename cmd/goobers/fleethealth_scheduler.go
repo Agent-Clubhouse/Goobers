@@ -41,9 +41,11 @@ func observeFleetCleanup(attrs map[string]any, status *readservice.SchedulerStat
 	if status == nil || status.Maintenance == nil {
 		return
 	}
+	// Failed counts reset at the next pass; running is not a failed completion.
+	// Use completion time, not progress time, to avoid refreshing old failures.
 	maintenance := status.Maintenance
-	at := maintenance.LastProgressAt
-	if at == nil || at.After(now) || now.Sub(*at) > time.Minute || maintenance.State != "running" || maintenance.Failures <= 0 {
+	at := maintenance.LastCompletedAt
+	if at == nil || at.IsZero() || at.After(now) || now.Sub(*at) > time.Minute || maintenance.State != "failed" || maintenance.LastResult != "failed" || maintenance.Failures <= 0 {
 		return
 	}
 	attrs["state"], attrs["reasonCode"] = "unknown", "cleanup_failure"
