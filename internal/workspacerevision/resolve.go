@@ -69,18 +69,9 @@ func matches(identity apiv1.RepositoryIdentity, configured apiv1.RepoRef) bool {
 	}
 	selected, err := url.Parse(identity.URL)
 	if err != nil || !strings.EqualFold(selected.Scheme, configuredURL.Scheme) ||
-		!strings.EqualFold(selected.Host, configuredURL.Host) {
+		!strings.EqualFold(selected.Host, configuredURL.Host) ||
+		!strings.EqualFold(strings.TrimSuffix(selected.Path, "/"), strings.TrimSuffix(configuredURL.Path, "/")) {
 		return false
 	}
-	path := strings.TrimSuffix(strings.TrimSuffix(selected.Path, "/"), ".git")
-	switch identity.Provider {
-	case apiv1.ProviderGitHub, apiv1.ProviderGitea:
-		return strings.EqualFold(path, strings.TrimSuffix(configuredURL.Path, "/")+"/"+identity.Owner+"/"+identity.Name)
-	case apiv1.ProviderADO:
-		root := strings.TrimSuffix(configuredURL.Path, "/") + "/" + identity.Owner + "/" + identity.Project
-		return strings.EqualFold(path, root+"/_git/"+identity.Name) ||
-			(identity.ID != "" && strings.EqualFold(path, root+"/_git/"+identity.ID))
-	default:
-		return false
-	}
+	return true
 }

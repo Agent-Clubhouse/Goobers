@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1053,6 +1054,33 @@ func TestShellExecutor_ResultFileLiftedToArtifact(t *testing.T) {
 	}
 	if !strings.Contains(string(rec.recorded["task-1/result"]), `"ok":true`) {
 		t.Fatalf("result artifact missing expected content: %v", rec.recorded["task-1/result"])
+	}
+}
+
+func TestShellExecutor_ResultFilePromotesWorkspaceRevision(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "out.json"}
+	sha := strings.Repeat("a", 40)
+	command := fmt.Sprintf(`echo '{"legacy":"kept","workspaceRevision":{"repository":{"provider":"github","url":"https://github.com","owner":"org","name":"repo"},"commitSha":"%s"}}' > out.json`, sha)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", command},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs["legacy"] != "kept" {
+		t.Fatalf("legacy scalar output = %#v, want kept", result.Outputs["legacy"])
+	}
+	if _, ok := result.Outputs["workspaceRevision"]; ok {
+		t.Fatal("workspaceRevision was promoted as a scalar output")
+	}
+	if result.WorkspaceRevision == nil || result.WorkspaceRevision.CommitSHA != sha {
+		t.Fatalf("workspace revision = %+v, want commit %s", result.WorkspaceRevision, sha)
 	}
 }
 

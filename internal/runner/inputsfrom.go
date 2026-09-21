@@ -8,6 +8,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // stageOutput is one completed stage's journaled Outputs together with the
@@ -304,7 +305,7 @@ func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) 
 	return out
 }
 
-func reconstructWorkspaceRevision(events []journal.Event) *apiv1.WorkspaceRevision {
+func reconstructWorkspaceRevision(events []journal.Event) (*apiv1.WorkspaceRevision, error) {
 	var revision *apiv1.WorkspaceRevision
 	for _, event := range events {
 		if event.Type != journal.EventStageFinished || event.WorkspaceRevision == nil {
@@ -315,10 +316,13 @@ func reconstructWorkspaceRevision(events []journal.Event) *apiv1.WorkspaceRevisi
 			continue
 		}
 		if !reflect.DeepEqual(revision, event.WorkspaceRevision) {
-			return nil
+			return nil, &workspacerevision.Error{
+				Code:    workspacerevision.CodeConflict,
+				Message: "journal contains conflicting workspace revision authority",
+			}
 		}
 	}
-	return revision
+	return revision, nil
 }
 
 // resolvedInputGrades maps each of a task's inputsFrom entries to the provenance

@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 var (
@@ -125,21 +126,22 @@ func appendInterruptedAttemptClosure(branchJournal *branchJournal, history []jou
 }
 
 type parallelBranchResult struct {
-	index          int
-	status         journal.BranchStatus
-	lastStage      string
-	lastResult     apiv1.ResultEnvelope
-	pointers       []apiv1.ContextPointer
-	completed      stageOutputs
-	artifacts      int
-	produced       bool
-	failed         bool
-	noOutput       bool
-	terminalTarget string
-	terminalTask   *parallelTaskTerminal
-	terminalGate   *parallelGateTerminal
-	paused         bool
-	err            error
+	index             int
+	status            journal.BranchStatus
+	lastStage         string
+	lastResult        apiv1.ResultEnvelope
+	pointers          []apiv1.ContextPointer
+	completed         stageOutputs
+	artifacts         int
+	produced          bool
+	failed            bool
+	noOutput          bool
+	workspaceRevision *apiv1.WorkspaceRevision
+	terminalTarget    string
+	terminalTask      *parallelTaskTerminal
+	terminalGate      *parallelGateTerminal
+	paused            bool
+	err               error
 }
 
 type parallelTaskTerminal struct {
@@ -154,16 +156,17 @@ type parallelGateTerminal struct {
 }
 
 type concurrentParallelResult struct {
-	target       string
-	runJoin      bool
-	lastStage    string
-	lastResult   apiv1.ResultEnvelope
-	pointers     []apiv1.ContextPointer
-	completed    stageOutputs
-	parallel     *parallelExec
-	terminalTask *parallelTaskTerminal
-	terminalGate *parallelGateTerminal
-	paused       bool
+	target            string
+	runJoin           bool
+	lastStage         string
+	lastResult        apiv1.ResultEnvelope
+	pointers          []apiv1.ContextPointer
+	completed         stageOutputs
+	parallel          *parallelExec
+	terminalTask      *parallelTaskTerminal
+	terminalGate      *parallelGateTerminal
+	workspaceRevision *apiv1.WorkspaceRevision
+	paused            bool
 }
 
 func validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Parallel) error {
@@ -438,9 +441,17 @@ func (r *Runner) runConcurrentParallel(
 
 	mergedCompleted := cloneStageOutputs(baseCompleted)
 	lastStage, lastResult := baseLastStage, baseLastResult
+	workspaceRevision := in.workspaceRevision.DeepCopy()
 	for _, outcome := range outcomes {
 		if outcome == nil {
 			continue
+		}
+		if outcome.workspaceRevision != nil {
+			var err error
+			workspaceRevision, err = workspacerevision.Accept(workspaceRevision, outcome.workspaceRevision, true, true)
+			if err != nil {
+				return concurrentParallelResult{}, fmt.Errorf("runner: reconcile parallel workspace revision: %w", err)
+			}
 		}
 		for stage, outputs := range outcome.completed {
 			mergedCompleted.put(stage, outputs)
@@ -479,15 +490,16 @@ func (r *Runner) runConcurrentParallel(
 		mergedPointers = par.joinPointers(basePointers)
 	}
 	return concurrentParallelResult{
-		target:       target,
-		runJoin:      runJoin,
-		lastStage:    lastStage,
-		lastResult:   lastResult,
-		pointers:     mergedPointers,
-		completed:    mergedCompleted,
-		parallel:     par,
-		terminalTask: terminalTask,
-		terminalGate: terminalGate,
+		target:            target,
+		runJoin:           runJoin,
+		lastStage:         lastStage,
+		lastResult:        lastResult,
+		pointers:          mergedPointers,
+		completed:         mergedCompleted,
+		parallel:          par,
+		terminalTask:      terminalTask,
+		terminalGate:      terminalGate,
+		workspaceRevision: workspaceRevision,
 	}, nil
 }
 
@@ -505,8 +517,11 @@ func (r *Runner) runParallelBranch(
 	reg SecretRegistrar,
 	history []journal.Event,
 	stepBudget *atomic.Int64,
-) parallelBranchResult {
-	result := parallelBranchResult{
+) (result parallelBranchResult) {
+	defer func() {
+		result.workspaceRevision = in.workspaceRevision.DeepCopy()
+	}()
+	result = parallelBranchResult{
 		index:      branch.id - 1,
 		lastStage:  baseLastStage,
 		lastResult: baseLastResult,

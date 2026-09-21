@@ -1695,6 +1695,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		}
 		ws.pointers, ws.completed = outcome.pointers, outcome.completed
 		ws.lastStage, ws.lastResult = outcome.lastStage, outcome.lastResult
+		ws.workspaceRevision = outcome.workspaceRevision.DeepCopy()
 		ws.parallel = nil
 		if outcome.runJoin {
 			ws.fanIn = outcome.parallel

@@ -20,7 +20,10 @@ func TestReconstructWorkspaceRevisionDeepCopiesAndRejectsConflicts(t *testing.T)
 		{Type: journal.EventStageFinished, WorkspaceRevision: revision.DeepCopy()},
 		{Type: journal.EventStageFinished, WorkspaceRevision: revision.DeepCopy()},
 	}
-	got := reconstructWorkspaceRevision(events)
+	got, err := reconstructWorkspaceRevision(events)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got == nil {
 		t.Fatal("reconstructWorkspaceRevision returned nil")
 	}
@@ -30,7 +33,7 @@ func TestReconstructWorkspaceRevisionDeepCopiesAndRejectsConflicts(t *testing.T)
 	}
 	conflict := revision.DeepCopy()
 	events[1].WorkspaceRevision = conflict
-	if got := reconstructWorkspaceRevision(events); got != nil {
+	if got, err := reconstructWorkspaceRevision(events); err == nil || got != nil {
 		t.Fatalf("conflicting revisions reconstructed as %+v", got)
 	}
 }

@@ -65,7 +65,7 @@ func TestAcceptFailedAndInvalidDoNotEstablish(t *testing.T) {
 func TestResolveAuthorizesConfiguredRepositoryIdentity(t *testing.T) {
 	revision := &apiv1.WorkspaceRevision{
 		Repository: apiv1.RepositoryIdentity{
-			Provider: apiv1.ProviderGitea, URL: "https://git.example.test/team/repo",
+			Provider: apiv1.ProviderGitea, URL: "https://git.example.test",
 			Owner: "team", Name: "repo",
 		},
 		CommitSHA: strings.Repeat("a", 40),
@@ -83,10 +83,54 @@ func TestResolveAuthorizesConfiguredRepositoryIdentity(t *testing.T) {
 	}
 }
 
+func TestResolveMatchesServiceRootURLs(t *testing.T) {
+	tests := []struct {
+		name       string
+		provider   apiv1.Provider
+		url        string
+		configured apiv1.RepoRef
+	}{
+		{
+			name:       "github",
+			provider:   apiv1.ProviderGitHub,
+			url:        "https://github.com",
+			configured: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "org", Name: "repo"},
+		},
+		{
+			name:       "ado",
+			provider:   apiv1.ProviderADO,
+			url:        "https://dev.azure.com",
+			configured: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "org", Project: "project", Name: "repo"},
+		},
+		{
+			name:       "self-hosted",
+			provider:   apiv1.ProviderGitea,
+			url:        "https://git.example.test",
+			configured: apiv1.RepoRef{Provider: apiv1.ProviderGitea, BaseURL: "https://git.example.test", Owner: "org", Name: "repo"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			revision := validRevision()
+			revision.BaseRepository = nil
+			revision.Repository = apiv1.RepositoryIdentity{
+				Provider: tt.provider,
+				URL:      tt.url,
+				Owner:    tt.configured.Owner,
+				Project:  tt.configured.Project,
+				Name:     tt.configured.Name,
+			}
+			if _, err := Resolve(*revision, tt.configured, nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestResolveRequiresADOProjectAndRepositoryName(t *testing.T) {
 	revision := &apiv1.WorkspaceRevision{
 		Repository: apiv1.RepositoryIdentity{
-			Provider: apiv1.ProviderADO, URL: "https://dev.azure.com/acme/project/_git/repo",
+			Provider: apiv1.ProviderADO, URL: "https://dev.azure.com",
 			Owner: "acme", Project: "project", Name: "repo",
 		},
 		CommitSHA: strings.Repeat("a", 40),
