@@ -374,6 +374,15 @@ flush on Windows, where that sync operation is a no-op. The Windows privacy
 implementation was subsequently corrected; complete CI on the final commit
 remains required.
 
+A [native Windows run](https://github.com/Agent-Clubhouse/Goobers/actions/runs/35558360961/job/106207104280)
+with the corrected privacy implementation measured 52.09 ms and 1,761,421
+snapshot bytes for one incoming record, and 62.56 ms and 1,761,423 bytes for
+197 incoming records, again retaining 4,096 records. Its ACL repair and unsafe
+alias regressions passed. Fixture timestamps vary between runs;
+these measurements do not establish a Linux-versus-Windows performance ratio.
+That run was superseded by the portal API correction, so its successful history
+tests do not replace complete validation of the final commit.
+
 On Windows, the dedicated history directory has a protected DACL granting the
 current user, SYSTEM, and Administrators access, with inheritance for newly
 created files. Existing snapshot and lock ACLs are repaired explicitly; each
