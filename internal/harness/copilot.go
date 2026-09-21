@@ -621,7 +621,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if versionStdout.Truncated() {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: version stdout exceeded the diagnostic output bound")
 	}
-	version := firstOutputLine(versionStdout.Bytes())
+	version := copilotVersionLine(versionStdout.Bytes())
 	if version == "" {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
@@ -753,6 +753,23 @@ func firstOutputLine(output []byte) string {
 		}
 	}
 	return ""
+}
+
+func copilotVersionLine(output []byte) string {
+	first := ""
+	for line := range strings.SplitSeq(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if first == "" {
+			first = line
+		}
+		if copilotUsageVersion.MatchString(line) {
+			return line
+		}
+	}
+	return first
 }
 
 func copilotAvailableTools(req RunRequest) []string {

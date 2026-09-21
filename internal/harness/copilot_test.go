@@ -2429,6 +2429,29 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterPreflightSelectsUnderlyingVersionFromLauncherOutput(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{program},
+		Runner: &fakeProcessRunner{result: ProcessResult{ExitCode: 0, Transcript: []byte(
+			"Agency 2026.9.16.4\nResolving Copilot CLI...\nGitHub Copilot CLI 1.0.87-0.\n",
+		)}},
+	}
+	info, err := adapter.Preflight(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Version != "GitHub Copilot CLI 1.0.87-0." {
+		t.Fatalf("version = %q, want underlying Copilot version", info.Version)
+	}
+	if !copilotSupportsUsageOutput(info.Version) {
+		t.Fatalf("underlying version %q did not enable usage capture", info.Version)
+	}
+}
+
 func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	program, err := os.Executable()
 	if err != nil {
