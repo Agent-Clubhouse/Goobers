@@ -133,8 +133,9 @@ assessment are separate parts of the diagnostic rollout.
 Export is best effort: each request has a two-second deadline, records are
 limited to 64 KiB. Fleet records are batched into at most 128 records and
 1 MiB per request; queued requests are capped at 128 and 8 MiB of encoded
-payload, plus one in-flight request. A 100-gaggle heartbeat and eleven feature
-records per gaggle fit in ten small requests rather than 1,201 RPCs. Full queues, rejected
+payload, plus one in-flight request. Each pulse emits at most 101 health records
+and 96 feature records, sampling feature use for eight gaggles per pulse in a
+rotation. Requests batch these records subject to both record and byte limits. Full queues, rejected
 records, transport failures, and shutdown losses are counted. Clean daemon
 shutdown writes a local `diagnostics-export-summary` annotation with accepted,
 delivered, dropped, and failed counts. A collector outage does not block
@@ -161,8 +162,8 @@ company access. The existing durable root identity identifies the deployment
 and instance; gaggle names are scoped by that identity. Each daemon lifetime
 has a random boot identifier and monotonically increasing observation sequence.
 
-Fleet observations begin during daemon startup and remain in the instance
-journal even without an exporter. The cadence is configurable between ten
+Fleet observations begin during daemon startup and remain in the private
+`scheduler/diagnostics/history.json` snapshot even without an exporter. The cadence is configurable between ten
 seconds and one hour. Eligible-work stall thresholds range from one minute to
 seven days. Startup, intentional pause, retry backoff, and observation gaps do
 not accrue time toward a stall. Successful completed work advances useful
@@ -175,14 +176,19 @@ alone does not establish that work is available to claim. The current queue
 observation comes from recorded PR selection evidence; workflows without that
 evidence remain unknown. Each pulse is limited to 100 gaggles and 100 runs or
 workflows per gaggle, with a five-second read deadline. Truncation is partial
-coverage. Local retention follows the existing instance-journal policy.
+coverage. Local history retains at most 4 MiB and 4,096 records, with one bounded
+scratch file during replacement. Evictions, omissions, known write failures and
+resets are reported explicitly. The six-hour service-health record remains in
+the instance journal. See the [fleet diagnostics reference](fleet-diagnostics-reference.md)
+for sampling, retention and evidence limits.
 
 The offline support bundle includes a projected `operational` section with
 build/platform, instance/gaggle/boot identifiers, observation window, last useful
-progress, state and coded reason. It reads at most the latest four MiB and 1000
-instance events, retaining at most 100 identities, and reports missing or
-truncated evidence. It excludes routing contacts, prompts, code and raw errors.
-The six-hour historical health observation uses the same read bounds and never
+progress, state and coded reason. It reads the bounded diagnostic snapshot,
+retaining at most 100 identities and reporting missing or truncated evidence.
+If the snapshot is unavailable, it falls back to the latest 4 MiB and 1,000
+legacy instance events. It excludes routing contacts, prompts, code and raw errors.
+The six-hour historical health observation uses that bounded legacy tail and never
 reports zero restarts when earlier history was omitted. Preview the generated
 JSON/summary before deliberately sharing it upstream; collection sends nothing.
 

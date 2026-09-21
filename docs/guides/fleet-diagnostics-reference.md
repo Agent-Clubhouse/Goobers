@@ -234,13 +234,15 @@ reader only, not daemon/network overhead or other operating systems. Portable
 subprocess and remote journal-plane regressions exercise the real provider and
 recorder paths; CI remains the cross-platform gate.
 
-The same machine's real local journal append benchmark (including existing
+Before adopting the bounded snapshot below, the same machine's real local
+journal append benchmark (including existing
 fsync and tail accounting, ten iterations) measured two records at 0.193 ms /
 1,005 journal bytes per batch and 197 records at 94.2 ms / 99,550 journal bytes.
 The latter allocated 85.7 MB per batch in the existing append path. Sustaining
 that synthetic loaded batch every 30 seconds produces about 287 MB/day before
 retention or compaction; queue batching does not remove local journal cost.
-These are measured local costs, not a fleet-wide throughput guarantee.
+These historical measurements motivated replacing that frequent journal append
+path with the bounded snapshot; they do not describe the current fleet writer.
 
 ## Pending issue observations
 
@@ -361,6 +363,16 @@ occupancy, not lifetime write volume. The `BenchmarkBoundedHistoryPulse`
 benchmark exercises the real atomic replace and fsync path for a 197-record
 pulse. Cross-platform CI validates the implementation; no local benchmark was
 run while the shared build disk was critically full.
+
+The normal `TestHistoryPulseMeasurement` also measures replacement with a full
+4,096-record retained window. A [hosted Linux coverage run](https://github.com/Agent-Clubhouse/Goobers/actions/runs/35557571839/job/106204661982)
+measured 29.94 ms and 1,777,807 snapshot bytes for one incoming record, and
+44.80 ms and 1,794,193 bytes for 197 incoming records. Each pulse made one file
+sync call and one directory sync call. These are coverage-instrumented test
+measurements, not throughput guarantees or evidence of a physical directory
+flush on Windows, where that sync operation is a no-op. The Windows privacy
+implementation was subsequently corrected; complete CI on the final commit
+remains required.
 
 On Windows, the dedicated history directory has a protected DACL granting the
 current user, SYSTEM, and Administrators access, with inheritance for newly
