@@ -773,7 +773,27 @@ export interface EngineFallback {
   unpinnedGates?: string[];
 }
 
+/** An observed retry timer; an expired deadline does not establish progress. */
+export interface RetryBackoffWait {
+  stage: string;
+  branch?: number;
+  attempt: number;
+  driver: "local" | "engine";
+  class: "policy" | "infra";
+  observedAt: string;
+  deadline: string;
+}
+
+/** Bounded retained evidence, including explicit gaps in parallel coverage. */
+export interface RetryBackoffState {
+  waits?: RetryBackoffWait[];
+  parallel?: boolean;
+  truncated?: boolean;
+}
+
 export interface RunSummary {
+  /** Optional for older daemon responses; absent evidence is not zero retries. */
+  retryBackoff?: RetryBackoffState;
   activeStages?: Array<{
     name: string;
     kind: string;

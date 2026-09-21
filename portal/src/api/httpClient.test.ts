@@ -17,7 +17,8 @@ import {
 } from "./errors";
 import { HttpDaemonClient } from "./httpClient";
 import { onUpdateAvailability, resetUpdateAvailability } from "../updateNotice";
-import { API_VERSION, SCHEMA_VERSION, type Health } from "./types";
+import { API_VERSION, SCHEMA_VERSION, type Health, type RetryBackoffState, type RunDetail } from "./types";
+import { goWireFixtures } from "./wire.generated";
 
 const health: Health = {
   apiVersion: API_VERSION,
@@ -41,6 +42,33 @@ afterEach(async () => {
 });
 
 describe("HttpDaemonClient", () => {
+  it("preserves retry timer evidence and older responses without inventing coverage", async () => {
+    const observed: RetryBackoffState = {
+      waits: [{
+        stage: "implement", branch: 2, attempt: 3, driver: "engine", class: "infra",
+        observedAt: "2026-09-20T12:00:00Z", deadline: "2026-09-20T12:01:00Z",
+      }],
+      parallel: true,
+      truncated: true,
+    };
+    // Missing (older daemon), explicitly empty, and bounded partial evidence
+    // are different wire states. Both list and detail must retain that distinction.
+    for (const state of [undefined, {}, observed]) {
+      const detail: RunDetail = { ...goWireFixtures.runDetail };
+      delete detail.retryBackoff;
+      if (state !== undefined) detail.retryBackoff = state;
+      const fetcher = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ runs: [detail] }))
+        .mockResolvedValueOnce(Response.json(detail));
+      const client = new HttpDaemonClient({ fetch: fetcher });
+      const list = await client.listRuns();
+      const decoded = await client.getRun(detail.id);
+      expect(list.runs[0].retryBackoff).toEqual(state);
+      expect(decoded.retryBackoff).toEqual(state);
+      expect(Object.hasOwn(decoded, "retryBackoff")).toBe(state !== undefined);
+    }
+  });
+
   it("reads workflow-scoped queue evidence without a mutation", async () => {
     const evidence = { gaggle: "core", workflow: "implementation", status: "not-observed", asOf: "2026-09-08T00:00:00Z" };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(evidence));
