@@ -12,11 +12,11 @@ import (
 
 // startServiceHealth owns the independent diagnostic transport. Local evidence
 // remains available when export is disabled, misconfigured, or unavailable.
-func startServiceHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler) <-chan struct{} {
-	return startServiceHealthWithStores(ctx, root, identity, setup, inventory, setup.SecretStores)
+func startServiceHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, fleet ...fleetHealthSample) <-chan struct{} {
+	return startServiceHealthWithStores(ctx, root, identity, setup, inventory, setup.SecretStores, fleet...)
 }
 
-func startServiceHealthWithStores(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, stores credentials.StoreResolver) <-chan struct{} {
+func startServiceHealthWithStores(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, stores credentials.StoreResolver, fleet ...fleetHealthSample) <-chan struct{} {
 	done := make(chan struct{})
 	// Keep local observations and scheduler startup independent of credential
 	// resolution. The startup observation waits in this single-record handoff;
@@ -35,11 +35,8 @@ func startServiceHealthWithStores(ctx context.Context, root string, identity *da
 		if err != nil {
 			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: "diagnostics_export_unavailable", Message: err.Error()}})
 		}
-		for record := range records {
-			if exporter != nil {
-				exporter.Emit(record)
-			}
-		}
+		runHealthExports(ctx, setup, exporter, records, fleet)
+
 		if exporter != nil {
 			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -85,4 +82,51 @@ func serviceHealthDiagnosticRecord(event journal.Event) telemetry.DiagnosticReco
 		}
 	}
 	return telemetry.DiagnosticRecord{Time: event.Time, Name: "goobers.service.health", Attributes: attrs}
+}
+
+func runHealthExports(ctx context.Context, setup *schedulerSetup, exporter *telemetry.DiagnosticExporter, records <-chan telemetry.DiagnosticRecord, fleet []fleetHealthSample) {
+	var ticks <-chan time.Time
+	if len(fleet) > 0 {
+		ticker := time.NewTicker(setup.Config.Telemetry.Diagnostics.HeartbeatPeriod())
+		defer ticker.Stop()
+		ticks = ticker.C
+		emitFleetHealth(ctx, setup, exporter, fleet, time.Now().UTC())
+	}
+	for {
+		select {
+		case record, ok := <-records:
+			if !ok {
+				return
+			}
+			if exporter != nil {
+				exporter.Emit(record)
+			}
+		case now := <-ticks:
+			emitFleetHealth(ctx, setup, exporter, fleet, now.UTC())
+		}
+	}
+}
+
+func emitFleetHealth(ctx context.Context, setup *schedulerSetup, exporter *telemetry.DiagnosticExporter, fleet []fleetHealthSample, now time.Time) {
+	sampleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for _, sample := range fleet {
+		records := sample(sampleCtx, now)
+		for _, record := range records {
+			setup.InstanceLog.AppendBestEffort(journal.Event{Time: record.Time, Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": record.Name, "diagnostic": record.Attributes}})
+		}
+		for len(records) > 0 {
+			count := min(len(records), telemetry.DiagnosticBatchLimit)
+			exporter.EmitBatch(records[:count])
+			records = records[count:]
+		}
+	}
+}
+
+// startDaemonHealth starts while startup is still in progress; its deferred
+// stop joins observers before the read service and instance journal close.
+func startDaemonHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, reader fleetHealthReader, ready func() bool) func() {
+	healthCtx, cancel := context.WithCancel(ctx)
+	done := startServiceHealth(healthCtx, root, identity, setup, inventory, newFleetHealthSampler(root, identity, setup.Config.Telemetry.Diagnostics, reader, ready))
+	return func() { cancel(); <-done }
 }

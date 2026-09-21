@@ -831,6 +831,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	defer stopReadServiceWorker(stopActiveSampler, "active-run sampler", stderr)
 	stopSchedulerProjector := reads.StartSchedulerStateProjector(0)
 	defer stopReadServiceWorker(stopSchedulerProjector, "scheduler-state projector", stderr)
+	defer startDaemonHealth(ctx, root, currentDaemon, setup, recoveryInventory.Stats, reads, ready.Load)()
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
 	// swaps in the OIDC authenticator plus the role-floor authorizer, and
@@ -1810,11 +1811,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		heartbeatDone = done
 		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), sched.WorkflowCount, tail, tailErr, heartbeatInterval, updatePendingState, done)
 	}
-	// #5244: the durable six-hour service-health record, separate from the fast
-	// informational heartbeat above and NOT gated on --quiet — that flag
-	// silences stdout chatter, while this is diagnostic evidence an operator
-	// reads back from the instance log later.
-	serviceHealthDone := startServiceHealth(ctx, root, currentDaemon, setup, recoveryInventory.Stats)
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error
@@ -1920,7 +1916,6 @@ daemonLoop:
 	if heartbeatDone != nil {
 		<-heartbeatDone
 	}
-	<-serviceHealthDone
 	if fleetConnectorStarted && fleetConnectorDone != nil {
 		select {
 		case connectorErr := <-fleetConnectorDone:

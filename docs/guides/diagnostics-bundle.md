@@ -126,17 +126,65 @@ exported strings also pass through registered-secret and pattern scrubbing.
 Unknown history coverage does not emit a zero restart count.
 
 This cadence is historical health evidence; it is not a live fleet heartbeat
-or proof that a deployment is healthy between observations. Fleet progress,
-feature usage, owner routing, and approved-version assessment are separate
-parts of the diagnostic rollout.
+or proof that a deployment is healthy between observations. The separate `goobers.fleet.heartbeat` record supplies a faster observation
+cadence and explicit company/owner metadata. Feature usage and approved-version
+assessment are separate parts of the diagnostic rollout.
 
 Export is best effort: each request has a two-second deadline, records are
-limited to 64 KiB, and at most 128 records await export. Full queues, rejected
+limited to 64 KiB. Fleet records are batched into at most 128 records and
+1 MiB per request; queued requests are capped at 128 and 8 MiB of encoded
+payload, plus one in-flight request. A 100-gaggle heartbeat and eleven feature
+records per gaggle fit in ten small requests rather than 1,201 RPCs. Full queues, rejected
 records, transport failures, and shutdown losses are counted. Clean daemon
 shutdown writes a local `diagnostics-export-summary` annotation with accepted,
 delivered, dropped, and failed counts. A collector outage does not block
 workflow execution or local journaling. Collection and sharing of the support
 bundle above remain explicit operator actions.
+
+## Fleet observations and offline evidence
+
+```yaml
+telemetry:
+  diagnostics:
+    organization: example-company
+    environment: production
+    ownerRef: team:operations
+    gaggleOwners:
+      application: team:application
+    heartbeatInterval: 30s
+    progressTimeout: 30m
+```
+
+These labels identify operator-provided routing references; they never infer
+ownership from machine or account names. Collector authentication determines
+company access. The existing durable root identity identifies the deployment
+and instance; gaggle names are scoped by that identity. Each daemon lifetime
+has a random boot identifier and monotonically increasing observation sequence.
+
+Fleet observations begin during daemon startup and remain in the instance
+journal even without an exporter. The cadence is configurable between ten
+seconds and one hour. Eligible-work stall thresholds range from one minute to
+seven days. Startup, intentional pause, retry backoff, and observation gaps do
+not accrue time toward a stall. Successful completed work advances useful
+progress; repeated no-work completions do not.
+
+The sampler uses bounded indexed read-model queries. An unavailable index,
+stale or incomplete eligibility evidence, or unknown claim availability yields
+unknown, rather than an exhaustive scan or a healthy zero. Selection eligibility
+alone does not establish that work is available to claim. The current queue
+observation comes from recorded PR selection evidence; workflows without that
+evidence remain unknown. Each pulse is limited to 100 gaggles and 100 runs or
+workflows per gaggle, with a five-second read deadline. Truncation is partial
+coverage. Local retention follows the existing instance-journal policy.
+
+The offline support bundle includes a projected `operational` section with
+build/platform, instance/gaggle/boot identifiers, observation window, last useful
+progress, state and coded reason. It reads at most the latest four MiB and 1000
+instance events, retaining at most 100 identities, and reports missing or
+truncated evidence. It excludes routing contacts, prompts, code and raw errors.
+The six-hour historical health observation uses the same read bounds and never
+reports zero restarts when earlier history was omitted. Preview the generated
+JSON/summary before deliberately sharing it upstream; collection sends nothing.
 
 ## Related
 

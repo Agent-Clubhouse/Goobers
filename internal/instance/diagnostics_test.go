@@ -1,6 +1,9 @@
 package instance
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestDiagnosticOTLPIndependentOptIn(t *testing.T) {
 	for _, tc := range []struct {
@@ -79,5 +82,28 @@ telemetry:
 	}
 	if cfg.DiagnosticOTLP().Headers["authorization"].Env != "COMPANY_DIAGNOSTICS_AUTH" || cfg.DiagnosticOTLP().TLS.ServerName != "diagnostics.example.com" {
 		t.Fatal("diagnostic credentials/TLS not decoded")
+	}
+}
+
+func TestDiagnosticFleetConfigBounds(t *testing.T) {
+	for _, cfg := range []DiagnosticsConfig{
+		{Organization: " company"}, {OwnerRef: "owner\nother"}, {Environment: string(make([]byte, 257))},
+		{HeartbeatInterval: "0s"}, {HeartbeatInterval: "2h"}, {ProgressTimeout: "30s"}, {ProgressTimeout: "169h"},
+		{GaggleOwners: map[string]string{"bad/name": "owner"}}, {GaggleOwners: map[string]string{"gaggle": ""}},
+	} {
+		if err := cfg.validate(nil); err == nil {
+			t.Fatalf("invalid fleet config accepted: %+v", cfg)
+		}
+	}
+	cfg := DiagnosticsConfig{Organization: "company-a", Environment: "production", OwnerRef: "team:operations", GaggleOwners: map[string]string{"gaggle-a": "team:alpha"}, HeartbeatInterval: "10s", ProgressTimeout: "2h"}
+	if err := cfg.validate(nil); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HeartbeatPeriod() != 10*time.Second || cfg.ProgressPeriod() != 2*time.Hour {
+		t.Fatal("configured timing not used")
+	}
+	var defaults *DiagnosticsConfig
+	if defaults.HeartbeatPeriod() != 30*time.Second || defaults.ProgressPeriod() != 30*time.Minute {
+		t.Fatal("unsafe defaults")
 	}
 }

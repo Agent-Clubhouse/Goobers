@@ -57,6 +57,7 @@ const Schema = "goobers.dev/diagnostics/v1"
 
 // Bundle is the machine-readable half of a diagnostics bundle.
 type Bundle struct {
+	Operational *OperationalEvidence `json:"operational,omitempty"`
 	Schema      string               `json:"schema"`
 	GeneratedAt string               `json:"generatedAt"`
 	Binary      BinaryInfo           `json:"binary"`
@@ -321,6 +322,7 @@ func (c Collector) Collect(opts Options) (Bundle, error) {
 		return Bundle{}, err
 	}
 	bundle.Runs = runs
+	bundle.Operational = collectOperationalEvidence(opts.Root)
 	if bundle.Credentials == nil {
 		bundle.Credentials = []CredentialPresence{}
 	}
