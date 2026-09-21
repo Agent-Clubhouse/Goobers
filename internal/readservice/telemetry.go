@@ -1194,7 +1194,7 @@ func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsReq
 	}
 	runs := make([]runtimeRun, 0, len(ids))
 	for _, id := range ids {
-		detail, err := s.GetRun(ctx, id)
+		detail, err := s.getRunUnannotated(ctx, id)
 		if err != nil {
 			return readmodel.AnalyticsGraph{}, fmt.Errorf("read analytics run %q: %w", id, err)
 		}
@@ -1272,7 +1272,6 @@ func (s *Local) runtimeAnalyticsRunIDs(ctx context.Context, req TelemetryStatsRe
 		return ids, err
 	}
 
-	matching := make(map[string]bool)
 	options := RunListOptions{
 		Gaggle:     req.Gaggle,
 		Workflow:   req.Workflow,
@@ -1281,20 +1280,15 @@ func (s *Local) runtimeAnalyticsRunIDs(ctx context.Context, req TelemetryStatsRe
 		Limit:      maxRunLimit,
 		ShowNoWork: true,
 	}
-	for {
-		page, err := s.listRunsUnannotated(ctx, options)
-		if err != nil {
-			return nil, fmt.Errorf("list analytics runs: %w", err)
-		}
-		for _, run := range page.Runs {
-			matching[run.ID] = true
-		}
-		if page.NextCursor == "" {
-			break
-		}
-		options.Cursor = page.NextCursor
+	page, err := s.listRunsUnannotated(ctx, options)
+	if err != nil {
+		return nil, fmt.Errorf("list analytics runs: %w", err)
 	}
 
+	matching := make(map[string]bool, len(page.Runs))
+	for _, run := range page.Runs {
+		matching[run.ID] = true
+	}
 	filtered := make([]string, 0, len(matching))
 	for _, id := range ids {
 		if matching[id] {
