@@ -24,7 +24,6 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
-	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -866,10 +865,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		defer func() { _ = os.Remove(builtinErrorFile) }()
 		stageEnv = append(stageEnv, BuiltinErrorFileEnvVar+"="+builtinErrorFile)
 	}
-	telemetryDir := telemetry.PrepareStageTelemetryDir(env.Workspace)
-	if telemetryDir != "" {
-		stageEnv = append(stageEnv, telemetry.StageTelemetryEnv+"="+telemetryDir)
-	}
+	stageEnv, recordFeatureUsage := e.prepareFeatureUsage(env, stageEnv)
+	defer recordFeatureUsage()
 
 	// The tmp:ephemeral binding for runner `self`. It is applied LAST, over the
 	// fully assembled environment, because it is an effect on the environment

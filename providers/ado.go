@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/goobers/goobers/internal/diagnostics/featureusage"
 )
 
 const (
@@ -569,6 +571,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		if header != "" {
 			req.Header.Set("Authorization", header)
 		}
+		featureusage.RecordProviderHTTP("ado")
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
 			// A transport failure (connection reset, DNS blip, timeout) is only
