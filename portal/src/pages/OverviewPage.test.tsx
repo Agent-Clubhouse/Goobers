@@ -343,7 +343,6 @@ describe("overview page", () => {
       errorSummary: "git remote timed out",
     };
     render(<App client={new FixtureDaemonClient(failed)} />);
-    render(<App client={new FixtureDaemonClient(failed)} />);
     const alert = await screen.findByRole("alert", { name: "Retention sweep failed" });
     expect(alert).toHaveTextContent("git remote timed out");
     expect(alert).toHaveTextContent(/periodic trigger/i);
