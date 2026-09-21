@@ -1040,7 +1040,13 @@
           "additionalProperties": false,
           "description": "Independent instance diagnostic export. Never inherits journal destinations or OTLP environment settings; local evidence remains available.",
           "properties": {
-            "otlp": { "$ref": "#/$defs/otlp", "description": "Explicit OTLP/gRPC destination and transport credentials for this stream." }
+            "otlp": { "$ref": "#/$defs/otlp", "description": "Explicit OTLP/gRPC destination and transport credentials for this stream." },
+            "organization": { "type": "string", "maxLength": 256, "description": "Operator-provided organization identity; collector authentication determines tenant access." },
+            "environment": { "type": "string", "maxLength": 256, "description": "Operator-provided deployment environment label." },
+            "ownerRef": { "type": "string", "maxLength": 256, "description": "Explicit routing reference; never inferred from a runtime account." },
+            "gaggleOwners": { "type": "object", "description": "Explicit per-gaggle owner routing references, overriding the instance default.", "maxProperties": 1000, "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 256 } },
+            "heartbeatInterval": { "type": "string", "description": "Fleet observation cadence, 10s through 1h; default 30s." },
+            "progressTimeout": { "type": "string", "description": "Eligible-work stall threshold, 1m through 168h; default 30m. Known stage deadlines take precedence." }
           }
         },
         "retention": {

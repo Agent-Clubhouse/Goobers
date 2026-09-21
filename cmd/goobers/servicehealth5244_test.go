@@ -228,3 +228,23 @@ func TestServiceHealthSurvivesAnUnwritableLog(t *testing.T) {
 		t.Fatalf("precondition: the missing root should not exist: %v", err)
 	}
 }
+
+func TestServiceHealthBoundedHistoryCannotClaimZeroRestarts(t *testing.T) {
+	log := openTestInstanceLog(t)
+	if err := log.Append(journal.Event{Type: journal.EventDaemonDirtyRestart}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 1000; i++ {
+		if err := log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "test-window"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observation := observeServiceHealth(t.TempDir(), nil, log, nil, time.Now())
+	if observation.WindowCoverage != "partial" {
+		t.Fatalf("bounded history claimed %s coverage", observation.WindowCoverage)
+	}
+	payload := serviceHealthPayload(observation)
+	if _, present := payload["observedUncleanRestarts"]; present {
+		t.Fatal("omitted earlier restart became a measured zero")
+	}
+}
