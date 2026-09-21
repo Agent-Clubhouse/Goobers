@@ -29,7 +29,7 @@ func TestFailureContextSmallTools(t *testing.T) {
 func TestFailureContextFindsNamedSectionAcrossStreams(t *testing.T) {
 	finding := "\x1b[31mUnknown analyser says: configure the widget\x1b[0m\n  expected target: production\n"
 	stdout := []byte(strings.Repeat("passed package\n", 5000) + "==> widget-lint\n" + finding + "<== widget-lint (elapsed 1s)\n")
-	stderr := []byte("unrelated setup message\nci: widget-lint: exit status 1\nmake: *** [Makefile:391: ci] Error 1\n")
+	stderr := []byte("ci: widget-lint: exit status 1\nmake: *** [Makefile:391: ci] Error 1\n")
 	got := summarizeCommandFailure(stdout, stderr)
 	if got.failure.stream != "stdout" || string(stdout[got.failure.start:got.failure.end]) != finding {
 		t.Fatalf("wrong section: %+v", got.failure)
@@ -68,7 +68,11 @@ func TestFailureEvidenceBounds(t *testing.T) {
 
 func TestRecognizedFailureDigestHugeLineBound(t *testing.T) {
 	output := []byte("--- FAIL: Test" + strings.Repeat("❯", maxFailureDigestBytes))
-	digest := strings.Join(summarizeCommandFailure(output, nil).digest, "\n")
+	diagnostic := summarizeCommandFailure(output, nil)
+	if diagnostic.count != 1 {
+		t.Fatalf("truncation marker counted as finding: %d", diagnostic.count)
+	}
+	digest := strings.Join(diagnostic.digest, "\n")
 	if len(digest) > maxFailureDigestBytes || !utf8.ValidString(digest) || !strings.HasPrefix(digest, "--- FAIL: Test") || !strings.Contains(digest, "truncated") {
 		t.Fatalf("invalid bounded roster (%d bytes): %q", len(digest), digest)
 	}
@@ -85,5 +89,14 @@ func TestFailureContextRetainsMultipleSourceFindings(t *testing.T) {
 	}
 	if got.failure.stream != "stdout" || !strings.Contains(string(stdout[got.failure.start:got.failure.end]), second) {
 		t.Fatalf("pointer lost recognized late finding: %+v", got.failure)
+	}
+}
+
+func TestFailureContextPreservesLateFindingInLargeSection(t *testing.T) {
+	finding := "main.go:3:1: export needs comment (revive)"
+	stdout := []byte("==> lint\n" + strings.Repeat("Analysing dependency\n", 1000) + finding + "\n<== lint (elapsed 1s)\n")
+	got := summarizeCommandFailure(stdout, []byte("ci: lint: exit status 1\nmake: *** [ci] Error 1\n"))
+	if !strings.Contains(strings.Join(got.digest, "\n"), finding) || !strings.Contains(got.failure.text, finding) || !strings.Contains(string(stdout[got.failure.start:got.failure.end]), finding) {
+		t.Fatalf("lost late recognized finding: %+v", got)
 	}
 }

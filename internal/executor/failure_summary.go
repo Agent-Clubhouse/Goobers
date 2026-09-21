@@ -104,8 +104,7 @@ func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
 		}
 	}
 
-	digest := collectFailureDigest(stdout, stderr)
-	count := len(digest)
+	digest, count := collectFailureDigest(stdout, stderr)
 	if best.priority > specificityNone && best.priority <= specificityBuildTrailer || best.priority == specificitySourceFinding {
 		contextBest, contextDigest := fallbackFailureEvidence(stdout, stderr, best)
 		if best.priority == specificitySourceFinding && len(digest) > 1 {
@@ -169,7 +168,7 @@ const (
 // and the byte-range pointer. That is right for a journal line and wrong for a
 // repass: the implementer needs the whole roster, or it fixes what it can see
 // and meets the next failure on the following attempt (#5101).
-func collectFailureDigest(stdout, stderr []byte) []string {
+func collectFailureDigest(stdout, stderr []byte) ([]string, int) {
 	type scored struct {
 		text     string
 		priority int
@@ -217,7 +216,7 @@ func collectFailureDigest(stdout, stderr []byte) []string {
 	for _, entry := range found {
 		digest = append(digest, entry.text)
 	}
-	return boundFailureDigest(digest)
+	return boundFailureDigest(digest), len(found)
 }
 
 func failureLineSpecificity(line string) int {

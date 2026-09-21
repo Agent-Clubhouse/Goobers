@@ -44,9 +44,6 @@ func fallbackFailureEvidence(stdout, stderr []byte, preferred diagnosticRange) (
 			if anchor > 0 && len(stream.data) > maxFailureDigestBytes || end < len(stream.data) && end-start >= maxFailureDigestBytes-3 {
 				context += "\n... (failure evidence truncated; see output artifacts)"
 			}
-			if section != "" && start > 0 {
-				return diagnosticRange{text: boundDiagnostic(cleanOutputLine(raw)), stream: stream.name, start: start, end: end}, boundFailureDigest([]string{context})
-			}
 			contexts = append(contexts, context)
 		}
 	}
@@ -84,7 +81,7 @@ func contextWindow(data []byte, section string, anchor int) (int, int) {
 			}
 		}
 	}
-	if start == 0 && len(data) > maxFailureDigestBytes {
+	if anchor >= start+maxFailureDigestBytes || start == 0 && len(data) > maxFailureDigestBytes {
 		start = anchor
 	}
 	if end-start > maxFailureDigestBytes {

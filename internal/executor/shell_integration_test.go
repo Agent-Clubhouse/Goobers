@@ -206,3 +206,25 @@ func TestIntegrationShellExecutorFailureEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestIntegrationShellExecutorFailureEvidenceOnStderrWithStdoutFraming(t *testing.T) {
+	testdep.Require(t, "sh")
+	executor, recorder := newTestExecutor(t, nil)
+	finding := "Widget configuration rejected: add a target to the manifest"
+	result, err := executor.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `printf '%s\n' '==> custom-check' 'Analysing configuration...' '<== custom-check (elapsed 1s)'; printf '%s\n' "$TEST_DIAGNOSIS" 'ci: custom-check: exit status 1' 'make: *** [ci] Error 1' >&2; exit 1`},
+		Env:     map[string]string{"TEST_DIAGNOSIS": finding},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, _ := result.Outputs[outputFailureDigest].(string)
+	if !strings.Contains(digest, finding) || !strings.Contains(result.Summary, finding) {
+		t.Fatalf("lost stderr finding: %+v", result)
+	}
+	path, _ := result.Outputs[outputFailureArtifact].(string)
+	start, end := int(result.Outputs[outputFailureStartByte].(float64)), int(result.Outputs[outputFailureEndByte].(float64))
+	if !strings.Contains(string(recorder.recorded[path][start:end]), finding) {
+		t.Fatal("artifact pointer lost stderr diagnostic")
+	}
+}
