@@ -168,3 +168,41 @@ func readProcessPID(t *testing.T, path string) int {
 	}
 	return pid
 }
+
+func TestIntegrationShellExecutorFailureEvidence(t *testing.T) {
+	testdep.Require(t, "sh")
+	for _, finding := range []string{
+		"main.go:4:1: exported method needs comment (revive)",
+		"main.go:4: run: cyclomatic complexity grew from 20 to 21",
+		"Unfamiliar analyser requires a target in the manifest",
+	} {
+		t.Run(finding, func(t *testing.T) {
+			executor, recorder := newTestExecutor(t, nil)
+			env := baseEnvelope(t)
+			stdout := strings.Repeat("successful earlier check\n", 2000) + "==> custom-check\n" + finding + "\n<== custom-check (elapsed 1s)\n"
+			result, err := executor.Run(context.Background(), env, apiv1.DeterministicRun{
+				Command: []string{"sh", "-c", `printf '%s' "$TEST_FAILURE_STDOUT"; printf '%s' "$TEST_FAILURE_STDERR" >&2; exit 1`},
+				Env:     map[string]string{"TEST_FAILURE_STDOUT": stdout, "TEST_FAILURE_STDERR": "ci: custom-check: exit status 1\nmake: *** [ci] Error 1\n"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != apiv1.ResultFailure || result.Error.Code != "nonzero_exit" {
+				t.Fatalf("result = %+v", result)
+			}
+			digest, _ := result.Outputs[outputFailureDigest].(string)
+			if !strings.Contains(digest, finding) || len(digest) > maxFailureDigestBytes {
+				t.Fatalf("digest = %q", digest)
+			}
+			if count, ok := result.Outputs[outputFailureCount].(float64); !ok || count < 1 {
+				t.Fatalf("missing count: %+v", result.Outputs)
+			}
+			path, _ := result.Outputs[outputFailureArtifact].(string)
+			data := recorder.recorded[path]
+			start, end := int(result.Outputs[outputFailureStartByte].(float64)), int(result.Outputs[outputFailureEndByte].(float64))
+			if start < 0 || end > len(data) || !strings.Contains(string(data[start:end]), finding) {
+				t.Fatalf("artifact %q bytes %d-%d miss finding", path, start, end)
+			}
+		})
+	}
+}
