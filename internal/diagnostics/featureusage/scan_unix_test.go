@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/journal"
 	"golang.org/x/sys/unix"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestScanNonRegularInputsCompleteWithinBound(t *testing.T) {
