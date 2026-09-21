@@ -20,7 +20,7 @@ import (
 func TestDiagnosticsRollbackCLIRebuild(t *testing.T) {
 	root := os.Getenv("GOOBERS_ROLLBACK_FIXTURE")
 	if root == "" {
-		t.Fatal("run scripts/test-diagnostics-rollback.sh")
+		t.Fatal("use go run ./test/diagnosticsrollback")
 	}
 	layout := instance.NewLayout(t.TempDir())
 	if err := os.MkdirAll(filepath.Dir(layout.ReadDB()), 0700); err != nil {

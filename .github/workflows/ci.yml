@@ -644,7 +644,7 @@ jobs:
       - name: Diagnostics downgrade and re-upgrade compatibility
         timeout-minutes: 15
         shell: bash
-        run: bash scripts/test-diagnostics-rollback.sh
+        run: go run ./test/diagnosticsrollback
 
       - name: Report test timing budget
         if: ${{ !cancelled() && hashFiles(format('test-timings/unit-{0}.json', runner.os)) != '' }}

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// These tests run only in scripts/test-diagnostics-rollback.sh, on either side
+// These tests run only in go run ./test/diagnosticsrollback, on either side
 // of the real v0.4.1 reader. No downgraded decoder is reimplemented here.
 func TestDiagnosticsRollbackConfigPrepare(t *testing.T) {
 	root := rollbackConfigRoot(t)
