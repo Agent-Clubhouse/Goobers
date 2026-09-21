@@ -111,3 +111,17 @@ acceptance is not proof of final downstream storage.
 Flush and shutdown use deadlines; shutdown stops intake before draining.
 These counters describe this process's live export, not durable delivery
 receipts from a collector or downstream storage.
+
+## CI coverage
+
+The required Windows gate runs the journal export, configuration, schema,
+recovery, lifecycle, and direct CLI regression tests in its `Windows journal
+OTLP export` step. It uses a named selection rather than the full CLI suite.
+Workflow contract tests compare that selection with the journal regression
+files, so adding a test without selecting it fails the gate.
+
+The required Linux unit shards run these packages with the race detector.
+Contract tests verify both the race-enabled workflow and package membership
+in the shards. Local Windows tests do not substitute for executing those
+Linux jobs; hosted execution requires publishing the changes through the
+normal authorized Git workflow.
