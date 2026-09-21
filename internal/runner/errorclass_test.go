@@ -112,6 +112,18 @@ func TestProvisionFailureCodeSplitsOwners(t *testing.T) {
 	}
 }
 
+func TestGatePreparationFailureIsInfraClassified(t *testing.T) {
+	prepErr := errors.New("create read-only workspace: a rebound branch requires a writable repo workspace")
+	err := fmt.Errorf("runner: prepare gate %q: %w", "reviewer", codedStageFailure(provisionFailureCode(prepErr), prepErr))
+	code, class := classifyDispatchFailure(err)
+	if code != errCodeInfraWorkspace {
+		t.Fatalf("classifyDispatchFailure(gate prep) code = %q, want %q", code, errCodeInfraWorkspace)
+	}
+	if class != telemetry.ErrorClassInfra {
+		t.Fatalf("classifyDispatchFailure(gate prep) class = %q, want %q", class, telemetry.ErrorClassInfra)
+	}
+}
+
 // TestDispatchFailureJournalsTypedCause is the end-to-end acceptance for the
 // bucket this cluster exists to kill: a stage whose workspace cannot be
 // provisioned journals WHY on its error event, in the runner namespace that
