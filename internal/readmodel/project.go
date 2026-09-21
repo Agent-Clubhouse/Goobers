@@ -108,6 +108,7 @@ type RunRow struct {
 // OperatorFacts are journal-derived facts needed by operator run summaries.
 // They are stored with the run row so bounded list reads never reopen journals.
 type OperatorFacts struct {
+	RetryBackoff          RetryBackoffState
 	RequiredMCP           *RequiredMCPState
 	QueueEligibility      *QueueEligibilityEvidence
 	Activity              StageActivity
@@ -346,6 +347,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			continue
 		}
 		row.Operator.Activity = row.Operator.Activity.After(event)
+		row.Operator.RetryBackoff = row.Operator.RetryBackoff.After(event)
 		if event.Stage != "" {
 			seenStages[event.Stage] = struct{}{}
 		}

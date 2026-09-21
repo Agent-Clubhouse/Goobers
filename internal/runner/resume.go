@@ -342,6 +342,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if res, refused, verr := r.verifyResumePin(jr, &in, rd, id); refused || verr != nil {
 		return res, verr
 	}
+	if err := resetRetryBackoffOnResume(jr, events); err != nil {
+		return Result{}, fmt.Errorf("runner: clear retry backoff on resume: %w", err)
+	}
 	if res, replayed, ierr := r.replayIntervention(jr, in, id, events); replayed || ierr != nil {
 		return res, ierr
 	}

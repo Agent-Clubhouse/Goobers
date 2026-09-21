@@ -107,6 +107,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 	return RunSummary{
 		EngineFallback:    row.Operator.EngineFallback,
 		RequiredMCP:       row.Operator.RequiredMCP,
+		RetryBackoff:      row.Operator.RetryBackoff,
 		ActiveStages:      row.Operator.Activity.Active,
 		WaitingForGate:    row.Operator.Activity.WaitingForGate,
 		ActivityTruncated: row.Operator.Activity.Truncated,

@@ -305,3 +305,23 @@ bounds. The current remote pod invocation contract has no authoritative journal
 branch ordinal; its unscoped observations cannot cover nonzero parallel branches.
 Those remote parallel deadlines remain unknown. A Git workspace branch is not
 used as a substitute for workflow branch identity.
+
+### Observed retry backoff
+
+A daemon can classify a gaggle as `backoff` while every nonterminal run is
+in an observed retry timer and no active stage or human gate remains. This
+is based on `retry-backoff.v1` journal annotations emitted at the actual
+local or engine wait decision, with the failed stage, attempt, retry class,
+observation time and scheduled deadline. It is never inferred from a retry
+count. The earliest timer deadline ends the classification. Expired, missing
+or truncated evidence does not establish either continued backoff or progress.
+
+The bounded run projection retains at most 64 stage/branch timers and clears
+them on the next attempt, terminal event or explicit resume. A daemon restart
+disregards old local process timers; local crash resume durably clears them.
+Engine timers survive worker/daemon restart through Temporal history. The
+engine records the annotation without adding a publication activity or changing
+the scheduled sleep, so existing journal delivery/repair may expose the event
+only after the wait. Live health remains unknown about that retry until evidence
+arrives. Older engine histories replay without the new annotation. Retry budgets
+and cancellation behavior are unchanged.

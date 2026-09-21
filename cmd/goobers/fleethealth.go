@@ -128,6 +128,9 @@ func (o *fleetHealthObserver) gaggle(ctx context.Context, gaggle readservice.Gag
 	}
 	fleetMCPAttributes(attrs, fleetMCPHealth(runs, gaggle.Name, observation.Complete, now))
 	o.observeEligibility(ctx, gaggle.Name, now, &observation)
+	if observation.Complete {
+		observation.BackoffUntil = fleetRetryBackoff(runs, gaggle.Name, now, o.startedAt)
+	}
 	observeFleetScheduler(&observation, o.scheduler, gaggle.Name, now)
 	o.workers.observe(gaggle.Name, &observation, attrs)
 	verdict := fleetstate.Classify(observation, now, o.config.ProgressPeriod(), 2*o.config.HeartbeatPeriod())

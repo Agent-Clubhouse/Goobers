@@ -159,6 +159,7 @@ type WorkflowRunActivity struct {
 // RunSummary is the journal-derived diagnostic summary shared by run lists and
 // run detail.
 type RunSummary struct {
+	RetryBackoff      readmodel.RetryBackoffState `json:"retryBackoff"`
 	RequiredMCP       *readmodel.RequiredMCPState `json:"requiredMcp,omitempty"`
 	WaitingForGate    bool                        `json:"waitingForGate,omitempty"`
 	ActiveStages      []readmodel.ActiveStage     `json:"activeStages,omitempty"`
@@ -1885,6 +1886,7 @@ func summarizeRunForStage(
 		Operator:         operator,
 		EngineFallback:   observations.engineFallback,
 		RequiredMCP:      observations.requiredMCP,
+		RetryBackoff:     observations.retryBackoff,
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
 	}, observations.activity), nil
