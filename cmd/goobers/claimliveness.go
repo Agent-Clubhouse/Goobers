@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
@@ -55,6 +59,49 @@ var buildClaimLivenessProbe = func(cfg *instance.Config, shared *daemonEngineCli
 		closeProbe = closeEngine
 	}
 	return localscheduler.CompositeRunLiveness(probes...), closeProbe, nil
+}
+
+// startupLocalRunLiveness bridges the empty registry before crash resume. It is
+// used for the initial renewal ONLY: after recovery, a nonterminal journal is
+// not evidence of execution and only tracked runners may renew local claims.
+// Unresolvable or unreadable runs therefore receive at most one lease of grace
+// during this startup, rather than being kept alive by each periodic sweep.
+type startupLocalRunLiveness struct{ layout instance.Layout }
+
+func (p startupLocalRunLiveness) RunLive(ctx context.Context, runID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	// Reconciliation's synthetic leases belong to a prior invocation, not a
+	// resumable runner. Do not preserve these temporary mutation locks.
+	if strings.Contains(runID, "/") {
+		return false, nil
+	}
+	dir, err := p.layout.FindRunDir(runID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	reader, err := journal.OpenRead(dir)
+	if err != nil {
+		return false, err
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return false, err
+	}
+	if identity.RunID != runID {
+		return false, fmt.Errorf("claim holder %q has journal identity %q", runID, identity.RunID)
+	}
+	// Distributed journals do not establish engine liveness. The ordinary
+	// engine probe remains authoritative for them.
+	if identity.EngineDriven() {
+		return false, nil
+	}
+	phase, err := reader.Phase()
+	return phase == journal.PhaseRunning, err
 }
 
 // withClaimRecoveryGate threads DS6's startup-ordering gate into
@@ -157,4 +204,8 @@ func (r *oneShotClaimRecovery) finish(ctx context.Context, l instance.Layout, se
 		return fmt.Errorf("recover expired claims: %w", err)
 	}
 	return nil
+}
+
+func rebuildStartupClaimRenewalSet(ctx context.Context, l instance.Layout, steady localscheduler.RunLivenessProbe, gate *localscheduler.RecoveryGate) (probeErr, renewErr error) {
+	return rebuildClaimRenewalSet(ctx, l, localscheduler.CompositeRunLiveness(steady, startupLocalRunLiveness{layout: l}), gate)
 }
