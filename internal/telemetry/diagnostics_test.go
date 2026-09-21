@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/journal"
 	collectorlogpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 type diagnosticTestCollector struct {

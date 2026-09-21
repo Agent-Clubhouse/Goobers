@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/goobers/goobers/internal/journal"
 	collectorlogpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logpb "go.opentelemetry.io/proto/otlp/logs/v1"
@@ -21,8 +20,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
+// Diagnostic transport limits bound queued memory and per-record work.
 const (
 	DiagnosticQueueLimit    = 128
 	DiagnosticRecordLimit   = 64 << 10
@@ -200,6 +202,7 @@ func (d *DiagnosticExporter) run() {
 	}
 }
 
+// Stats returns transport counters; after Shutdown returns they are final.
 func (d *DiagnosticExporter) Stats() DiagnosticExportStats {
 	if d == nil {
 		return DiagnosticExportStats{}
