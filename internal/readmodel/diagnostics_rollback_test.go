@@ -18,7 +18,7 @@ import (
 )
 
 // Invoked in separate processes around the actual pinned release package by
-// scripts/test-diagnostics-rollback.sh. This is not a simulated old decoder.
+// go run ./test/diagnosticsrollback. This is not a simulated old decoder.
 func TestDiagnosticsRollbackPrepare(t *testing.T) {
 	root := rollbackFixtureRoot(t)
 	ctx := context.Background()
@@ -165,7 +165,7 @@ func rollbackFixtureRoot(t *testing.T) string {
 	t.Helper()
 	root := os.Getenv("GOOBERS_ROLLBACK_FIXTURE")
 	if root == "" {
-		t.Fatal("run scripts/test-diagnostics-rollback.sh")
+		t.Fatal("use go run ./test/diagnosticsrollback")
 	}
 	return root
 }
