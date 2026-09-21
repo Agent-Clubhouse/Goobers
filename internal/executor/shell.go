@@ -163,6 +163,8 @@ type ShellExecutor struct {
 	// from. It is injected only into goobers CLI stages; those stages fail
 	// closed if the on-disk tree has since diverged after a rejected reload.
 	AppliedConfigDigest string
+	// ConfigDirectory is the immutable config-as-code tree selected for CLI stages.
+	ConfigDirectory string
 	// SelfBin, if set, is the absolute path substituted for a bare "goobers"
 	// command token before exec. Deterministic stages declare their command as
 	// e.g. ["goobers", "backlog-query", …], but a stage runs with cwd set to a
@@ -1747,6 +1749,9 @@ func (e *ShellExecutor) runContextEnv(env apiv1.InvocationEnvelope) []string {
 	// would read as "the digest is the empty string" rather than "unknown".
 	if e.AppliedConfigDigest != "" {
 		runEnv = append(runEnv, AppliedConfigDigestEnvVar+"="+e.AppliedConfigDigest)
+	}
+	if env.ConfigGeneration != "" {
+		runEnv = append(runEnv, ConfigGenerationEnvVar+"="+env.ConfigGeneration, ConfigDirectoryEnvVar+"="+e.ConfigDirectory)
 	}
 	return runEnv
 }

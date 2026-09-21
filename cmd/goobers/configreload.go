@@ -257,6 +257,7 @@ func (r *configReloader) poll(now time.Time) error {
 		r.setup.TerminalNotifier,
 		r.setup.SecretStores,
 		nil,
+		r.setup.Generations,
 	)
 	if err != nil {
 		return r.reject(digest, &configReportError{report: report, err: err})
@@ -289,6 +290,7 @@ func (r *configReloader) poll(now time.Time) error {
 		// must govern the next resolve, not the boot-time snapshot.
 		r.setup.CredentialPlane.Replace(credentialPlaneDefinitionsFromSet(definitions.Set))
 	}
+	r.setup.RunnerRegistry.setGenerationResolver(definitions.GenerationResolver)
 	r.setup.Runner = definitions.Runner
 	r.setup.Runners = definitions.Runners
 	r.setup.Definitions = definitions.Set

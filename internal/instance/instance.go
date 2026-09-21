@@ -59,6 +59,7 @@ type Layout struct {
 
 	gaggle         string
 	workcopiesRoot string
+	configDir      string
 }
 
 // NewLayout returns the Layout rooted at root.
@@ -89,7 +90,16 @@ func (l Layout) ConfigFile() string { return filepath.Join(l.Root, ConfigFileNam
 
 // ConfigDir is the path to the config-as-code directory (gaggles, goobers,
 // workflows, gates) — the only path the Tutor may write to (INST-014).
-func (l Layout) ConfigDir() string { return filepath.Join(l.Root, ConfigDirName) }
+func (l Layout) ConfigDir() string {
+	if l.configDir != "" {
+		return l.configDir
+	}
+	return filepath.Join(l.Root, ConfigDirName)
+}
+
+// WithConfigDir selects immutable execution definitions without redirecting
+// credentials, runtime state, claim ledgers, journals, or workspaces.
+func (l Layout) WithConfigDir(dir string) Layout { l.configDir = dir; return l }
 
 // GagglesDir is the parent of all per-gaggle runtime state.
 func (l Layout) GagglesDir() string { return filepath.Join(l.Root, GagglesDirName) }

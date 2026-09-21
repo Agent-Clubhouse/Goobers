@@ -105,12 +105,12 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	reg, project, err := bootstrap.RegisterGaggleWorkflows(set, target)
+	reg, _, err := bootstrap.RegisterGaggleWorkflows(set, target)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	def, ok := reg.Latest(workflowName)
+	_, ok := reg.Latest(workflowName)
 	if !ok {
 		pf(stderr, "error: workflow %q is not registered\n", workflowName)
 		return 1
@@ -145,30 +145,12 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "note: no daemon holds %s; starting directly on Temporal (no scheduler slot, no terminal hooks)\n", l.SchedulerDir())
 	}
 
-	instanceID, err := l.EnsureIdentity(ctx)
+	in, release, err := pinnedDirectEngineInput(ctx, l, cfg, target, workflowName, *dedupe, *liveJournal)
 	if err != nil {
-		pf(stderr, "error: pin instance identity: %v\n", err)
+		pf(stderr, "error: pin engine run: %v\n", err)
 		return 1
 	}
-	spec, err := engineRunSpec(engineRunRequest{
-		instanceID:  instanceID,
-		cfg:         cfg,
-		set:         set,
-		gaggle:      target,
-		dedupeKey:   *dedupe,
-		project:     project,
-		def:         def,
-		liveJournal: *liveJournal,
-	})
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	in, err := reg.StartInput(workflowName, spec)
-	if err != nil {
-		pf(stderr, "error: pin workflow %q: %v\n", workflowName, err)
-		return 1
-	}
+	defer release()
 
 	c, err := client.DialContext(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
 	if err != nil {

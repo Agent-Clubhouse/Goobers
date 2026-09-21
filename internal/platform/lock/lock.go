@@ -10,7 +10,7 @@ import (
 // ErrHeld is returned by TryAcquire when another handle owns the lock.
 var ErrHeld = errors.New("lock is held")
 
-// Handle owns an exclusive file lock. File returns the locked file and is valid
+// Handle owns a shared or exclusive file lock. File returns the locked file and is valid
 // until Release is called.
 type Handle struct {
 	mu   sync.Mutex
@@ -19,21 +19,27 @@ type Handle struct {
 
 // TryAcquire opens path and attempts to take an exclusive lock without waiting.
 func TryAcquire(path string) (*Handle, error) {
-	return acquire(path, true, os.O_CREATE|os.O_RDWR)
+	return acquire(path, true, os.O_CREATE|os.O_RDWR, false)
 }
 
 // TryAcquireExisting opens an existing path and attempts to take an exclusive
 // lock without waiting. It never creates the lock file.
 func TryAcquireExisting(path string) (*Handle, error) {
-	return acquire(path, true, os.O_RDWR)
+	return acquire(path, true, os.O_RDWR, false)
 }
 
-func acquire(path string, nonBlocking bool, flags int) (*Handle, error) {
+// TryAcquireShared permits concurrent readers while excluding an exclusive
+// holder. Like exclusive locks, it is released automatically on process exit.
+func TryAcquireShared(path string) (*Handle, error) {
+	return acquire(path, true, os.O_CREATE|os.O_RDWR, true)
+}
+
+func acquire(path string, nonBlocking bool, flags int, shared bool) (*Handle, error) {
 	file, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("lock: open %q: %w", path, err)
 	}
-	if err := lockFile(file, nonBlocking); err != nil {
+	if err := lockFile(file, nonBlocking, shared); err != nil {
 		closeErr := file.Close()
 		return nil, errors.Join(fmt.Errorf("lock: acquire %q: %w", path, err), closeErr)
 	}

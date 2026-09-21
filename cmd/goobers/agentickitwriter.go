@@ -74,7 +74,7 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 		return "", fmt.Errorf("envelope for run %s stage %s names no goober", env.RunID, env.TaskID)
 	}
 
-	kit, err := w.buildKit(env, kitModeFor(attempt))
+	kit, err := w.buildKitContext(ctx, env, kitModeFor(attempt))
 	if err != nil {
 		return "", err
 	}
@@ -113,6 +113,10 @@ func kitModeFor(attempt dispatcher.Attempt) agentickit.Mode {
 }
 
 func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
+	return w.buildKitContext(context.Background(), env, mode)
+}
+
+func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
 	l := instance.NewLayout(w.instanceRoot)
 	if w.seams == nil {
 		return nil, fmt.Errorf("agentic kit writer for run %s stage %s has no config snapshot store; refusing to resolve a kit from ambient config", env.RunID, env.TaskID)
@@ -120,9 +124,13 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 	// The whole point of the pin: this resolves the config tree the RUN was
 	// admitted against, or refuses by name (#3884). Never the tree that
 	// happens to be mounted at attempt time.
-	snapshot, err := w.seams.snapshotForPin(env.Gaggle, env.WorkflowID, env.GooberDigest)
+	snapshot, release, err := w.seams.snapshotForInvocation(ctx, env)
 	if err != nil {
 		return nil, err
+	}
+	defer release()
+	if snapshot.configDir != "" {
+		l = l.WithConfigDir(snapshot.configDir)
 	}
 	cfg, set := snapshot.cfg, snapshot.set
 

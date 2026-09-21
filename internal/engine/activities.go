@@ -403,16 +403,18 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		workspaceDelta = ""
 	}
 	ws, err := a.Workspaces.Provision(ctx, WorkspaceRequest{
-		RunID:           env.RunID,
-		Stage:           strings.TrimPrefix(env.TaskID, env.RunID+":"),
-		Gaggle:          env.Gaggle,
-		Workflow:        env.WorkflowID,
-		BranchNamespace: env.BranchNamespace,
-		WorkspaceBranch: workspaceBranch,
-		RepoRef:         env.RepoRef,
-		Mode:            mode,
-		SyncBase:        syncBase,
-		WorkspaceDelta:  workspaceDelta,
+		ConfigGeneration: env.ConfigGeneration,
+		InstanceID:       env.InstanceID,
+		RunID:            env.RunID,
+		Stage:            strings.TrimPrefix(env.TaskID, env.RunID+":"),
+		Gaggle:           env.Gaggle,
+		Workflow:         env.WorkflowID,
+		BranchNamespace:  env.BranchNamespace,
+		WorkspaceBranch:  workspaceBranch,
+		RepoRef:          env.RepoRef,
+		Mode:             mode,
+		SyncBase:         syncBase,
+		WorkspaceDelta:   workspaceDelta,
 	})
 	if err != nil {
 		if worktree.IsTransientProvisionError(err) {
