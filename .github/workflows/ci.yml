@@ -1246,6 +1246,9 @@ jobs:
       - name: Windows service transitions
         run: go test ./internal/winsvc
 
+      - name: Windows bounded diagnostic history
+        run: go test -v ./internal/diagnostics/history -count=1
+
       - name: Windows host image preparation
         run: go test ./release/internal/imageinputs -count=1
 
