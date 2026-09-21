@@ -15,10 +15,14 @@ type MergeAuthorityRequest struct {
 	Stage      string `json:"stage"`
 	Capability string `json:"capability"`
 }
+
+// MergeAuthorityResponse reports a current grant without exposing credential material.
 type MergeAuthorityResponse struct {
 	Allowed bool `json:"allowed"`
 }
 
+// RequireMergeAuthority refuses unless the daemon verifies the admitted stage
+// still holds the requested merge capability in current operator configuration.
 func (h *HTTP) RequireMergeAuthority(ctx context.Context, stage, capability string) error {
 	scope, err := h.gaggle("")
 	if err != nil {
