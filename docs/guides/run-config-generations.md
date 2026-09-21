@@ -74,3 +74,11 @@ Merge-capable agentic harnesses receive the same scoped authority context for
 nested Goobers CLI calls. Agentic pods receive only the journal-plane pair;
 non-merge agentic stages receive neither. Codex's tool-shell environment retains
 this narrow runtime context while continuing to exclude provider/model secrets.
+
+Immutable generation metadata is independent of merge authority: ordinary
+local/worker agentic subprocesses and Codex tool shells also receive the pinned
+configuration directory, generation and instance identity. The built-in
+`mcp-io` server consumes its per-invocation context file and materialized inputs,
+not the live instance configuration. Portable agentic pods consume their pinned
+execution kit; commands requiring a complete instance configuration still need
+an instance-backed execution path.

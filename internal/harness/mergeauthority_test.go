@@ -25,7 +25,7 @@ func TestAgenticMergeCLIUsesTrustedAuthorityAndPinnedConfiguration(t *testing.T)
 	if slices.Contains(env, "GOOBERS_JOURNAL_ENDPOINT=http://stale-worker") {
 		t.Fatal("ambient routing overrode admitted authority")
 	}
-	shell := codexMergeAuthorityShellEnvironment(ctx, req, codexShellEnvironment(append(env, "GH_TOKEN=provider-secret"), []string{"GH_TOKEN"}), "/instance")
+	shell := codexExecutionContextShellEnvironment(ctx, req, codexShellEnvironment(append(env, "GH_TOKEN=provider-secret"), []string{"GH_TOKEN"}), "/instance")
 	if shell["GOOBERS_JOURNAL_TOKEN"] != "scoped-read-token" || shell["GOOBERS_TASK"] != "merge" {
 		t.Fatal("Codex shell lost authority")
 	}
@@ -36,6 +36,18 @@ func TestAgenticMergeCLIUsesTrustedAuthorityAndPinnedConfiguration(t *testing.T)
 	env, err = buildCredentialEnv(ctx, credentialEnvConfig{}, req)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, expected := range []string{"GOOBERS_INSTANCE_ID=instance-1", "GOOBERS_CONFIG_GENERATION=sha256:pinned", "GOOBERS_CONFIG_DIRECTORY=/immutable/config"} {
+		if !slices.Contains(env, expected) {
+			t.Fatalf("non-merge execution lost pin %s", expected)
+		}
+	}
+	shell = codexExecutionContextShellEnvironment(ctx, req, codexShellEnvironment(env, nil), "/instance")
+	if shell["GOOBERS_CONFIG_DIRECTORY"] != "/immutable/config" || shell["GOOBERS_INSTANCE_ID"] != "instance-1" {
+		t.Fatal("ordinary Codex nested CLI lost admitted generation")
+	}
+	if shell["GOOBERS_JOURNAL_TOKEN"] != "" {
+		t.Fatal("ordinary Codex nested CLI acquired merge authority")
 	}
 	if slices.Contains(env, "GOOBERS_JOURNAL_TOKEN=scoped-read-token") {
 		t.Fatal("authority leaked to non-merge invocation")

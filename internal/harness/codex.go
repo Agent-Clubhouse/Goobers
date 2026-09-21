@@ -346,7 +346,7 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 		secretEnv = append(secretEnv, name)
 	}
 	secretEnv = append(secretEnv, mcpSecretEnv...)
-	shellEnv := codexMergeAuthorityShellEnvironment(ctx, req, codexShellEnvironment(env, secretEnv), c.InstanceRoot)
+	shellEnv := codexExecutionContextShellEnvironment(ctx, req, codexShellEnvironment(env, secretEnv), c.InstanceRoot)
 	argv := buildCodexArgv(resolveStdioHarnessCommand(c.Command), req.Model, options["effort"], req.Workspace, shellEnv)
 	if req.Sandbox != nil {
 		writableRoots, err := gitWritableRoots(req.Workspace)

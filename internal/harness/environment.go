@@ -220,27 +220,24 @@ func isCopilotModelFallbackEnv(name string) bool {
 // The three shipped adapters all build their subprocess environments here.
 // Authority comes from the runtime context, never the ambient worker token.
 func appendRunAuthorityEnv(ctx context.Context, env []string, req RunRequest) []string {
+	env = appendPinnedExecutionEnv(ctx, env, req)
 	if !slices.Contains(req.Envelope.Capabilities, string(capabilitypkg.GitHubPRMerge)) && !slices.Contains(req.Envelope.Capabilities, string(capabilitypkg.ADOPRComplete)) {
 		return env
 	}
-	env = withoutEnvVars(env, executor.RunIDEnvVar, executor.InstanceIDEnvVar, executor.GaggleEnvVar, executor.WorkflowEnvVar, executor.TaskEnvVar, executor.ConfigGenerationEnvVar, executor.ConfigDirectoryEnvVar, "GOOBERS_JOURNAL_ENDPOINT", "GOOBERS_JOURNAL_TOKEN")
+	env = withoutEnvVars(env, executor.RunIDEnvVar, executor.GaggleEnvVar, executor.WorkflowEnvVar, executor.TaskEnvVar, "GOOBERS_JOURNAL_ENDPOINT", "GOOBERS_JOURNAL_TOKEN")
 	env = append(env,
 		executor.RunIDEnvVar+"="+req.Envelope.RunID,
-		executor.InstanceIDEnvVar+"="+req.Envelope.InstanceID,
 		executor.GaggleEnvVar+"="+req.Envelope.Gaggle,
 		executor.WorkflowEnvVar+"="+req.Envelope.WorkflowID,
 		executor.TaskEnvVar+"="+strings.TrimPrefix(req.Envelope.TaskID, req.Envelope.RunID+":"),
 	)
-	if directory := executor.ConfigDirectoryFromContext(ctx); directory != "" && req.Envelope.ConfigGeneration != "" {
-		env = append(env, executor.ConfigGenerationEnvVar+"="+req.Envelope.ConfigGeneration, executor.ConfigDirectoryEnvVar+"="+directory)
-	}
 	if plane, ok := executor.JournalPlaneFromContext(ctx); ok {
 		env = append(env, "GOOBERS_JOURNAL_ENDPOINT="+plane.Endpoint, "GOOBERS_JOURNAL_TOKEN="+plane.Token)
 	}
 	return env
 }
 
-func codexMergeAuthorityShellEnvironment(ctx context.Context, req RunRequest, shell map[string]string, instanceRoot string) map[string]string {
+func codexExecutionContextShellEnvironment(ctx context.Context, req RunRequest, shell map[string]string, instanceRoot string) map[string]string {
 	authority := appendRunAuthorityEnv(ctx, nil, req)
 	if len(authority) == 0 {
 		return shell
@@ -253,4 +250,17 @@ func codexMergeAuthorityShellEnvironment(ctx context.Context, req RunRequest, sh
 		shell[executor.InstanceRootEnvVar] = instanceRoot
 	}
 	return shell
+}
+
+func appendPinnedExecutionEnv(ctx context.Context, env []string, req RunRequest) []string {
+	directory := executor.ConfigDirectoryFromContext(ctx)
+	if directory == "" || req.Envelope.ConfigGeneration == "" {
+		return env
+	}
+	env = withoutEnvVars(env, executor.InstanceIDEnvVar, executor.ConfigGenerationEnvVar, executor.ConfigDirectoryEnvVar)
+	return append(env,
+		executor.InstanceIDEnvVar+"="+req.Envelope.InstanceID,
+		executor.ConfigGenerationEnvVar+"="+req.Envelope.ConfigGeneration,
+		executor.ConfigDirectoryEnvVar+"="+directory,
+	)
 }
