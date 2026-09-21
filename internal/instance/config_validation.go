@@ -213,6 +213,9 @@ func (c RunnerConfig) validateStageMemoryLimit() error {
 }
 
 func (c TelemetryConfig) validate(stores map[string]bool, telemetryEnabled bool) error {
+	if err := c.Diagnostics.validate(stores); err != nil {
+		return err
+	}
 	if c.OTLP == nil {
 		return nil
 	}
