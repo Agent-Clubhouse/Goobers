@@ -4,8 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,6 +83,9 @@ func TestRunEndToEnd(t *testing.T) {
 	orig := buildPackage
 	buildPackage = "./"
 	defer func() { buildPackage = orig }()
+	origDocsGenerator := releaseDocsGeneratorBuilder
+	releaseDocsGeneratorBuilder = buildTestDocsGenerator
+	defer func() { releaseDocsGeneratorBuilder = origDocsGenerator }()
 	origPortalAssets := portalAssetsDirectory
 	portalAssetsDirectory = t.TempDir()
 	defer func() { portalAssetsDirectory = origPortalAssets }()
@@ -150,6 +155,13 @@ func TestRunEndToEnd(t *testing.T) {
 		if !strings.Contains(string(marker), want) {
 			t.Errorf("%s missing %q:\n%s", releaseDocsVersionFile, want, marker)
 		}
+	}
+	generatedCLI, err := readZipEntry(archiveEntries["docs/cli/README.md"])
+	if err != nil {
+		t.Fatalf("read generated CLI reference: %v", err)
+	}
+	if !strings.Contains(string(generatedCLI), "release docs generator fixture") {
+		t.Fatalf("release docs generator output was not staged:\n%s", generatedCLI)
 	}
 	readme, err := readZipEntry(archiveEntries["README.md"])
 	if err != nil {
@@ -392,6 +404,15 @@ func readZipEntry(entry *zip.File) ([]byte, error) {
 	}
 	defer func() { _ = reader.Close() }()
 	return io.ReadAll(reader)
+}
+
+func buildTestDocsGenerator(repoRoot, output, _ string) error {
+	build := exec.Command("go", "build", "-trimpath", "-o", output, "./release/testdata/docs-generator")
+	build.Dir = repoRoot
+	if result, err := build.CombinedOutput(); err != nil {
+		return fmt.Errorf("build test docs generator: %w\n%s", err, result)
+	}
+	return nil
 }
 
 // TestRunSkipUnbuildable proves the skip path: an impossible target is skipped
