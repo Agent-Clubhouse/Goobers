@@ -59,11 +59,12 @@ func (d *stalledSweepDeps) journalAdvanced() func(string, uint64) {
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
-	mu             sync.RWMutex
-	current        map[string]*runner.Runner
-	owners         map[string]trackedRun
-	nextGeneration uint64
-	hardStopping   bool
+	resolveGeneration executionGenerationResolver
+	mu                sync.RWMutex
+	current           map[string]*runner.Runner
+	owners            map[string]trackedRun
+	nextGeneration    uint64
+	hardStopping      bool
 }
 
 func newDaemonRunnerRegistry() *daemonRunnerRegistry {

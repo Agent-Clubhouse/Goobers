@@ -97,6 +97,7 @@ func podRunContained(w http.ResponseWriter, request *http.Request, run, action s
 
 func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *log.Logger) {
 	service := config.runJournal
+	router.Handle(apicontract.RouteJournalMergeAuthority, journalMergeAuthorityHandler(service, errorLog))
 	router.Handle(apicontract.RouteJournalRunPhase, journalRunPhaseHandler(service, errorLog))
 	router.Handle(apicontract.RouteJournalConflictTouches, journalConflictTouchesHandler(service, errorLog))
 	router.Handle(apicontract.RouteJournalUnpushedWork, journalUnpushedWorkHandler(service, errorLog))

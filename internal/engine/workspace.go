@@ -11,6 +11,8 @@ import (
 // (internal/runner/run.go): the same identity (run + stage), the same target
 // repository, and the same workspace mode vocabulary.
 type WorkspaceRequest struct {
+	ConfigGeneration string
+	InstanceID       string
 	// RunID is the run this stage attempt belongs to.
 	RunID string
 	// Stage is the stage (task or gate) name within the run.

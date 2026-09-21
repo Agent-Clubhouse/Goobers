@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
@@ -42,6 +43,7 @@ import (
 // the SAME ones the local runner builds, from the same buildRunnerConfig, which
 // is what conformance between the two tiers rests on.
 type workerSeams struct {
+	journalMinter  dispatcher.ScopedTokenMinter
 	executionFence executionFenceStart
 	root           string
 	scrubber       journal.Scrubber
@@ -106,6 +108,8 @@ type workerSeams struct {
 // cache in place, which is what lets an in-flight attempt keep the kit it was
 // handed while the next attempt gets the new tree.
 type workerConfigSnapshot struct {
+	configDir     string
+	generation    string
 	digest        string
 	gaggleDigests map[string]string
 	cfg           *instance.Config
@@ -144,6 +148,8 @@ type builtGaggleSeams struct {
 // withGaggle returns a copy of the snapshot carrying one more built gaggle.
 func (s *workerConfigSnapshot) withGaggle(gaggle string, built *builtGaggleSeams) *workerConfigSnapshot {
 	next := &workerConfigSnapshot{
+		configDir:     s.configDir,
+		generation:    s.generation,
 		digest:        s.digest,
 		gaggleDigests: s.gaggleDigests,
 		cfg:           s.cfg,
@@ -247,6 +253,9 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 // deliberately not config-tree state.
 func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle string) (*builtGaggleSeams, error) {
 	l := instance.NewLayout(w.root)
+	if snapshot.configDir != "" {
+		l = l.WithConfigDir(snapshot.configDir)
+	}
 	cfg, set := snapshot.cfg, snapshot.set
 
 	goobers, err := resolveGoobersForGaggle(set, gaggle)
@@ -308,6 +317,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		CredentialStores:    stores,
 		SandboxPosture:      instance.EffectiveAgenticSandbox(cfg, nil),
 		AppliedConfigDigest: appliedConfigDigest,
+		ConfigGeneration:    snapshot.generation,
 		// Provider quota is a scheduler-side concern, not the executor's.
 		ProviderQuota: nil,
 	})
@@ -386,10 +396,11 @@ type workerWorkspaces struct {
 }
 
 func (p *workerWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRequest) (engine.Workspace, error) {
-	g, err := p.seams.forGaggle(req.Gaggle)
+	g, release, err := p.seams.forInvocationGaggle(ctx, apiv1.InvocationEnvelope{Gaggle: req.Gaggle, WorkflowID: req.Workflow, ConfigGeneration: req.ConfigGeneration, InstanceID: req.InstanceID}, false)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	// Store is the same --blob-store the worker's artifact recorder writes
 	// through: the RWX volume the daemon's blob plane serves pods from, so a
 	// bundle a pod PUT is what this provisioner GETs (#3803), and vice versa.
@@ -400,25 +411,16 @@ func (p *workerWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRe
 	return delegate.Provision(ctx, req)
 }
 
-// Run executes a deterministic stage against the worker's CURRENT config tree,
-// deliberately unpinned.
-//
-// GooberDigest is the content identity of a goober KIT — resolved goober
-// specs, instruction bodies, skill packages (workflow.ComputeGooberDigest).
-// A deterministic stage executes none of them: it runs a declared command
-// under the gaggle's credentials. Refusing it on a kit pin would fail stages
-// over a fact they do not read, and pinning it to a retained tree would run
-// commands from a config the operator has already replaced. The staleness that
-// DID hurt these stages — credentials resolved against a superseded gaggle,
-// Infra LEDGER I-51 — is what the config reload (#3912) fixed, and they stay
-// on the reloaded current tree for exactly that reason.
+// workerDet resolves execution inputs by the run generation. Credential
+// sources remain live instance policy, separate from those pinned definitions.
 type workerDet struct{ seams *workerSeams }
 
 func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	g, err := d.seams.forGaggle(env.Gaggle)
+	g, release, err := d.seams.forInvocationGaggle(ctx, env, false)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
+	defer release()
 	if g.cfg.NewDeterministic == nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("worker: no deterministic executor configured for gaggle %q", env.Gaggle)
 	}
@@ -429,6 +431,10 @@ func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run ap
 	exec, err := g.cfg.NewDeterministic(rec, reg)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("worker: construct deterministic executor: %w", err)
+	}
+	ctx, err = d.seams.mergeAuthorityContext(ctx, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
 	}
 	return exec.Run(ctx, env, run)
 }
@@ -441,30 +447,40 @@ func (a workerGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) 
 	// mid-invocation hand the same attempt two different trees; resolving
 	// without the pin would let a reload landing between two attempts hand
 	// the same RUN two different curators (#3884).
-	g, err := a.seams.forPinnedGaggle(env.Gaggle, env.WorkflowID, env.GooberDigest)
+	g, release, err := a.seams.forInvocationGaggle(ctx, env, true)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
+	defer release()
 	exec, err := a.executor(g, env)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
 	if err := a.seams.materialize(ctx, g, env); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	ctx, err = a.seams.mergeAuthorityContext(ctx, env)
+	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
 	return exec.Invoke(ctx, env)
 }
 
 func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	g, err := a.seams.forPinnedGaggle(env.Gaggle, env.WorkflowID, env.GooberDigest)
+	g, release, err := a.seams.forInvocationGaggle(ctx, env, true)
 	if err != nil {
 		return apiv1.Verdict{}, err
 	}
+	defer release()
 	exec, err := a.executor(g, env)
 	if err != nil {
 		return apiv1.Verdict{}, err
 	}
 	if err := a.seams.materialize(ctx, g, env); err != nil {
+		return apiv1.Verdict{}, err
+	}
+	ctx, err = a.seams.mergeAuthorityContext(ctx, env)
+	if err != nil {
 		return apiv1.Verdict{}, err
 	}
 	return exec.Review(ctx, env)

@@ -61,6 +61,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Releases & packaging](releases.md)
 - [Retained implementation recovery](retained-implementation.md)
 - [Reviewer dispositions](reviewer-dispositions.md)
+- [Configuration generations for admitted runs](run-config-generations.md)
 - [CI runtime acquisitions](runtime-acquisition.md)
 - [Scheduled backlog re-sweep](scheduled-backlog-resweep.md)
 - [Run-journal schema compatibility](schema-migrations.md)

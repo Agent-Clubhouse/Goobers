@@ -8,8 +8,11 @@ import (
 	"syscall"
 )
 
-func lockFile(file *os.File, nonBlocking bool) error {
+func lockFile(file *os.File, nonBlocking, shared bool) error {
 	operation := syscall.LOCK_EX
+	if shared {
+		operation = syscall.LOCK_SH
+	}
 	if nonBlocking {
 		operation |= syscall.LOCK_NB
 	}

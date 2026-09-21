@@ -57,7 +57,7 @@ func TestWorkerRetainsSharedPersonaAcrossInstructionReload(t *testing.T) {
 		t.Fatalf("retained shared persona kit changed: %v", err)
 	}
 	writer := agenticKitWriter{instanceRoot: root, seams: seams, blobEndpoint: "http://blobs.invalid"}
-	kit, err := writer.buildKit(apiv1.InvocationEnvelope{
+	kit, err := writer.buildKitContext(t.Context(), apiv1.InvocationEnvelope{
 		TaskID: "shared-run:implement", RunID: "shared-run", WorkflowID: pinWorkflow,
 		Gaggle: pinGaggle, Goober: pinGoober, GooberDigest: oldPin,
 	}, "invoke")
@@ -129,7 +129,7 @@ func TestWorkerSharesOnePersonaBetweenTwoGaggles(t *testing.T) {
 	}
 	writer := agenticKitWriter{instanceRoot: root, seams: seams, blobEndpoint: "http://blobs.invalid"}
 	for _, gaggle := range []string{pinGaggle, "second"} {
-		kit, err := writer.buildKit(apiv1.InvocationEnvelope{
+		kit, err := writer.buildKitContext(t.Context(), apiv1.InvocationEnvelope{
 			TaskID: gaggle + ":implement", RunID: gaggle, WorkflowID: pinWorkflow,
 			Gaggle: gaggle, Goober: pinGoober, GooberDigest: firstPin,
 		}, "invoke")

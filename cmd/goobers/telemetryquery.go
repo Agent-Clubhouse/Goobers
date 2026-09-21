@@ -563,7 +563,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 }
 
 func resolveTelemetryQueryGaggle(root, workflowName string) (string, error) {
-	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
 	if err != nil {
 		return "", fmt.Errorf("load configuration: %w (report: %+v)", err, report)
 	}
@@ -741,7 +741,7 @@ func candidateWorkflowGraph(root, gaggle, workflowName string) (*workflow.Graph,
 	if root == "" || workflowName == "" {
 		return nil, nil
 	}
-	definitions, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	definitions, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
 	if err != nil {
 		return nil, fmt.Errorf("load workflow graph: %w (report: %+v)", err, report)
 	}
