@@ -1305,7 +1305,7 @@ describe("run detail", () => {
       "SequenceStage / sourceEvent kindElapsed / recordsAttempt / scopeDetails",
     );
     expect(portalStyles).toMatch(
-      /\.event-ledger-table-header\s*\{[^}]*background:\s*var\(--surface\)[^}]*border-bottom:[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*10/s,
+      /\.event-ledger-table-header\s*\{[^}]*background:\s*var\(--surface\)[^}]*border-bottom:[^}]*position:\s*sticky[^}]*top:\s*52px[^}]*z-index:\s*10/s,
     );
     expect(portalStyles).toMatch(
       /@media \(max-width: 820px\) \{[\s\S]*?\.event-ledger-table-header\s*\{\s*display:\s*none;/s,

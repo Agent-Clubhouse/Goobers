@@ -6589,7 +6589,7 @@ code,
   border-bottom: 1px solid var(--line-strong);
   padding: 10px 8px;
   position: sticky;
-  top: 0;
+  top: 52px;
   z-index: 10;
 }
 
