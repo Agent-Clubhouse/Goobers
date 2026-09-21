@@ -40,7 +40,10 @@ func TestUpPinsExecutionGenerationAcrossReloadAndRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			workflows := filepath.Join(l.ConfigDir(), "gaggles", "example", "workflows")
-			wf := strings.Replace(acceptanceWorkflowYAML, `command: ["true"]`, fmt.Sprintf(`command: ["goobers", "validate", %q]`, root), 1)
+			// This fixture is manually triggered and has a fake provider token.
+			// Disable backlog polling so external auth cannot race local admission.
+			manual := strings.Replace(acceptanceWorkflowYAML, "    - type: backlog-item\n      selector:\n        goobers: \"true\"", "    - type: manual", 1)
+			wf := strings.Replace(manual, `command: ["true"]`, fmt.Sprintf(`command: ["goobers", "validate", %q]`, root), 1)
 			writeFixture(t, filepath.Join(workflows, "acceptance.yaml"), wf)
 			unrelated := strings.ReplaceAll(deterministicWorkflowYAML, "default-implement", "unrelated")
 			writeFixture(t, filepath.Join(workflows, "unrelated.yaml"), unrelated)

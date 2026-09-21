@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -41,9 +42,9 @@ func (s *daemonRunJournalService) MergeAuthority(ctx context.Context, request jo
 		defer release()
 		defs = pinned
 	} else {
-		set, _, loadErr := loadConfigDirectory(s.layout.ConfigDir())
+		set, report, loadErr := loadConfigDirectory(s.layout.ConfigDir())
 		if loadErr != nil {
-			return denied, loadErr
+			return denied, fmt.Errorf("load merge authority definitions: %w (%s)", loadErr, validationIssueSummary(report))
 		}
 		defs = credentialPlaneDefinitionsFromSet(set)
 	}

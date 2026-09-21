@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -38,10 +37,10 @@ func checkCurrentMergeAuthority(layout instance.Layout, env apiv1.InvocationEnve
 	if len(requested) == 0 {
 		return nil
 	}
-	env.TaskID = strings.TrimPrefix(env.TaskID, env.RunID+":")
-	set, _, err := instance.LoadConfigDir(instance.NewLayout(layout.Root).ConfigDir())
+	env.TaskID = stageArtifactName(env.RunID, env.TaskID)
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(layout.Root).ConfigDir())
 	if err != nil {
-		return fmt.Errorf("current merge authority unavailable: %w", err)
+		return fmt.Errorf("current merge authority unavailable: %w (%s)", err, validationIssueSummary(report))
 	}
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
@@ -137,7 +136,7 @@ func requireInvocationMergeAuthority(ctx context.Context, layout instance.Layout
 		if err != nil {
 			return err
 		}
-		if err := client.RequireMergeAuthority(ctx, strings.TrimPrefix(env.TaskID, env.RunID+":"), name); err != nil {
+		if err := client.RequireMergeAuthority(ctx, stageArtifactName(env.RunID, env.TaskID), name); err != nil {
 			return err
 		}
 	}

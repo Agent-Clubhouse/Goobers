@@ -42,9 +42,9 @@ func TestPinnedCredentialPlaneKeepsReferencesAndRotatesValuesButRevokesMerge(t *
 		t.Fatal(err)
 	}
 	defer release()
-	set, _, err := loadConfigDirectory(layout.ConfigDir())
+	set, report, err := loadConfigDirectory(layout.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("load credential fixture: %v (%s)", err, validationIssueSummary(report))
 	}
 	registry, _, err := bootstrap.RegisterGaggleWorkflows(set, "example")
 	if err != nil {
@@ -103,9 +103,9 @@ func TestPinnedCredentialPlaneKeepsReferencesAndRotatesValuesButRevokesMerge(t *
 		// not redirect a previously admitted run's credential scope.
 		changed := readFileContent(t, gagglePath(root, "example"))
 		writeFixture(t, gagglePath(root, "example"), strings.ReplaceAll(changed, "your-org", "new-org"))
-		current, _, err := loadConfigDirectory(layout.ConfigDir())
+		current, report, err := loadConfigDirectory(layout.ConfigDir())
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("reload credential fixture: %v (%s)", err, validationIssueSummary(report))
 		}
 		service.Replace(credentialPlaneDefinitionsFromSet(current))
 	}

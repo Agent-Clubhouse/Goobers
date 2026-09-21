@@ -189,10 +189,10 @@ func pinnedCredentialDefinitions(ctx context.Context, layout instance.Layout, ge
 		return credentialPlaneDefinitions{}, nil, err
 	}
 	release := func() { _ = lease.Release() }
-	set, _, err := loadConfigDirectory(directory)
+	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
 		release()
-		return credentialPlaneDefinitions{}, nil, err
+		return credentialPlaneDefinitions{}, nil, fmt.Errorf("load pinned credential definitions: %w (%s)", err, validationIssueSummary(report))
 	}
 	return credentialPlaneDefinitionsFromSet(set), release, nil
 }
@@ -256,9 +256,9 @@ func pinnedDirectEngineInput(ctx context.Context, layout instance.Layout, cfg *i
 	return input, release, nil
 }
 func engineInputFromGeneration(directory string, cfg *instance.Config, gaggle, workflowName, dedupe, owner, generation string, liveJournal bool) (engine.RunInput, error) {
-	set, _, err := loadConfigDirectory(directory)
+	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
-		return engine.RunInput{}, err
+		return engine.RunInput{}, fmt.Errorf("load pinned engine definitions: %w (%s)", err, validationIssueSummary(report))
 	}
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
