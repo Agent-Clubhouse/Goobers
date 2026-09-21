@@ -3,6 +3,7 @@ package instance
 import (
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,8 +16,8 @@ func TestShippedInstructionTemplatesDeclareScratchLocation(t *testing.T) {
 	sources := []string{
 		"config-examples",
 		"reference-workflows",
-		filepath.Join("internal", "instance", "starter"),
-		filepath.Join("internal", "instance", "quickstart-v1"),
+		path.Join("internal", "instance", "starter"),
+		path.Join("internal", "instance", "quickstart-v1"),
 	}
 	found := 0
 	for _, source := range sources {
