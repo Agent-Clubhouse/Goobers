@@ -303,15 +303,25 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		"GOOBERS_CI_RACE: \"0\"",
 		"GOOBERS_CI_COVERAGE: \"0\"",
 		"go run ./test/ci group unit",
-		"go run ./test/ci group shipped",
-		"make sandbox-check",
 	} {
 		if !strings.Contains(unitMacOS, required) {
 			t.Errorf("consolidated macOS runtime job must contain %q", required)
 		}
 	}
-	if got := strings.Count(unitMacOS, "if: ${{ !cancelled()"); got != 2 {
-		t.Errorf("consolidated macOS runtime job has %d post-failure checks, want shipped plus PR-only sandbox", got)
+	for _, required := range []string{
+		"- name: Shipped-workflow contracts (macOS)\n        if: ${{ !cancelled() }}",
+		"GOOBERS_CI_TEST_TIMEOUT: \"20m\"",
+		"run: go run ./test/ci group shipped",
+		"- name: Require native Seatbelt sandbox confinement (macOS)\n        if: ${{ !cancelled() && github.event_name != 'push' }}",
+		"run: make sandbox-check",
+	} {
+		if !strings.Contains(unitMacOS, required) {
+			t.Errorf("consolidated macOS runtime job must preserve independent gate %q", required)
+		}
+	}
+	requiredCI = workflowJob(workflow, "required-ci")
+	if !strings.Contains(requiredCI, `check "unit + shipped + sandbox runtime (macos)" "$UNIT_MACOS_RESULT"`) {
+		t.Error("required-ci must report the consolidated macOS runtime as one required gate")
 	}
 	for _, portable := range []string{"make cover-gate", "GOOBERS_TEST_TIMING_FILE", "Upload coverage profile", "Upload test timing"} {
 		if strings.Contains(unitMacOS, portable) {

@@ -229,6 +229,51 @@ their corresponding Make targets. The vulnerability target also runs daily from
 `.github/workflows/vulnerability-scan.yml`, so newly disclosed findings surface
 without a code change.
 
+#### macOS allocation benchmark
+
+The behavioral, shipped-workflow, and Seatbelt gates share the `unit-macos`
+allocation. This preserves three separately named steps; each later step is
+guarded with `!cancelled()` so a failed earlier command does not suppress the
+remaining coverage. The macOS build and lint jobs remain separate because they
+cover different responsibilities.
+
+The following sample was collected from ten successful pull-request `ci.yml`
+runs before and after the consolidation on 2026-09-21. Queue is
+`run_started_at - created_at`; wall-clock is `updated_at - created_at`; and
+runner-minutes is the sum of the behavioral, shipped-contract, and sandbox job
+durations only (the unrelated macOS build and lint jobs are excluded). Run IDs
+are included so the measurements are reproducible from GitHub Actions.
+
+| sample | queue (min) | wall-clock (min) | macOS gate runner-minutes | CI run |
+|---|---:|---:|---:|---:|
+| before 1 | 0.0 | 23.4 | 23.8 | 34653973504 |
+| before 2 | 0.0 | 24.0 | 18.1 | 34650766361 |
+| before 3 | 0.0 | 24.2 | 22.3 | 34649459317 |
+| before 4 | 0.0 | 26.4 | 14.2 | 34642148416 |
+| before 5 | 0.0 | 24.4 | 22.2 | 34642019967 |
+| before 6 | 0.0 | 31.6 | 16.4 | 34635300361 |
+| before 7 | 0.0 | 32.3 | 19.7 | 34634662857 |
+| before 8 | 0.0 | 29.5 | 14.6 | 34633981292 |
+| before 9 | 0.0 | 34.9 | 22.2 | 34633367445 |
+| before 10 | 0.0 | 28.8 | 17.2 | 34630207201 |
+| after 1 | 0.0 | 29.8 | 23.4 | 35567216154 |
+| after 2 | 0.0 | 28.9 | 23.8 | 35565604474 |
+| after 3 | 0.0 | 24.2 | 20.4 | 35561335021 |
+| after 4 | 0.0 | 37.2 | 32.6 | 35559023921 |
+| after 5 | 0.0 | 26.4 | 18.3 | 35558215404 |
+| after 6 | 0.0 | 29.0 | 23.6 | 35554670675 |
+| after 7 | 0.0 | 31.8 | 21.9 | 35553881756 |
+| after 8 | 0.0 | 26.1 | 22.0 | 35553555564 |
+| after 9 | 0.0 | 37.0 | 21.7 | 35551314833 |
+| after 10 | 0.0 | 36.5 | 22.6 | 35550807780 |
+
+The medians are 0.0/27.6/19.0 before and 0.0/29.4/22.9 after
+(queue/wall-clock/runner-minutes). Wall-clock increased 6.5%, below the
+10% material-regression threshold used for this decision, while the required
+macOS allocation count fell from three to one. The consolidation is therefore
+retained: it removes two scarce runner allocations without dropping any
+behavioral, workflow-contract, or sandbox command.
+
 `make test-conformance`, `make test-e2e`, `make test-envtest` and
 `make cover-check` remain as local and full-tier targets, but **no longer have
 dedicated CI jobs.** Each was an unsharded whole-tree run of a suite another
@@ -236,8 +281,8 @@ required job already runs, and together they cost ~48 of the ~142 runner-minutes
 a pull request consumed and set both ends of its critical path. What each one
 uniquely enforced moved rather than lapsed:
 
-- **coverage** → a `make cover-gate` step on `unit-macos`, which runs the suite
-  unsharded and so already emitted the whole-tree profile the gate needs.
+- **coverage** → the `make cover-gate` step on `unit-linux-coverage`, which runs
+  the suite unsharded and so emits the whole-tree profile the gate needs.
 - **envtest** → `KUBEBUILDER_ASSETS` provisioning on `integration`, which already
   selects `internal/operator` and already enforces the `-run=^TestIntegration`
   contract through a runtime AST scan. That job now asserts
