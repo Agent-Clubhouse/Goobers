@@ -1299,7 +1299,17 @@ describe("run detail", () => {
     const row = await screen.findByRole("button", { name: /^Select sequence 6:/ });
     expect(within(row).getByText("6")).toBeInTheDocument();
     expect(within(row).getByText("review")).toBeInTheDocument();
-    expect(document.querySelector(".event-ledger-table-header")).toHaveTextContent("Elapsed");
+    const header = screen.getByRole("row");
+    expect(within(header).getAllByRole("columnheader")).toHaveLength(6);
+    expect(header).toHaveTextContent(
+      "SequenceStage / sourceEvent kindElapsed / recordsAttempt / scopeDetails",
+    );
+    expect(portalStyles).toMatch(
+      /\.event-ledger-table-header\s*\{[^}]*background:\s*var\(--surface\)[^}]*border-bottom:[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*10/s,
+    );
+    expect(portalStyles).toMatch(
+      /@media \(max-width: 820px\) \{[\s\S]*?\.event-ledger-table-header\s*\{\s*display:\s*none;/s,
+    );
     expect(row.querySelector(".ledger-time")).not.toBeEmptyDOMElement();
     expect(
       row.parentElement?.querySelector("details.ledger-mobile-detail"),

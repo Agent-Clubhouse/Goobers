@@ -6585,7 +6585,12 @@ code,
 }
 
 .event-ledger-table-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-strong);
   padding: 10px 8px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 .ledger-item {
@@ -8660,6 +8665,10 @@ code,
       "stage seq"
       "elapsed elapsed";
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .event-ledger-table-header {
+    display: none;
   }
 
   .ledger-item .run-ledger-button .ledger-copy {
