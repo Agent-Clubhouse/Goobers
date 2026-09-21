@@ -254,7 +254,7 @@ func TestHistoryPulseMeasurement(t *testing.T) {
 			if len(snapshot.Records) != MaxRecords || snapshot.EvictedRecords != uint64(count) {
 				t.Fatal("measurement did not exercise a full retained window", snapshot.Metadata, len(snapshot.Records))
 			}
-			t.Logf("bounded history: pulse_records=%d retained_records=%d wall=%s snapshot_bytes=%d file_syncs=1 directory_syncs=1", count, len(snapshot.Records), elapsed, info.Size())
+			t.Logf("bounded history: pulse_records=%d retained_records=%d wall=%s snapshot_bytes=%d file_sync_calls=1 directory_sync_calls=1", count, len(snapshot.Records), elapsed, info.Size())
 		})
 	}
 }
