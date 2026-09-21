@@ -1080,20 +1080,22 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// the previous daemon process is still executing on the engine, and its
 	// claims must be renewed — not reaped — across the restart. Only a
 	// renewal pass whose ledger write completed opens the gate; a failed pass
-	// leaves it closed and the periodic tick below retries both halves.
+	// leaves it closed and refuses startup: an expired lease is claimable
+	// even with reaping gated, so crash resume must not execute without it.
 	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, engineClient, setup.RunnerRegistry.RunIDs)
 	if err != nil {
 		pf(stderr, "error: build claim liveness probe: %v\n", err)
 		return 1
 	}
 	defer closeClaimLiveness()
-	if probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
+	if probeErr, renewErr := rebuildStartupClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
 		if daemonStartupStoppedByShutdown(ctx, renewErr) {
 			return 0
 		}
 		if !isJournaledClaimsLockTimeout(renewErr) {
-			pf(stdout, "warning: rebuild claim renewal set: %v\n", renewErr)
+			pf(stderr, "error: rebuild claim renewal set before crash resume: %v\n", renewErr)
 		}
+		return 1
 	} else if probeErr != nil {
 		if daemonStartupStoppedByShutdown(ctx, probeErr) {
 			return 0
@@ -1418,10 +1420,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	// Renew resumed runs' claims immediately rather than waiting up to
 	// claimRecoverInterval for the first periodic tick (#2014): the startup
-	// recovery sweep above already ran BEFORE resume tracked anything, on the
-	// prior process's now possibly-stale leases, so a resumed run's claim
-	// could otherwise sit unrenewed — and so reapable — for most of a sweep
-	// interval right when a restart just made that most likely. The resumed
+	// recovery sweep used startup-only durable local journal evidence before
+	// resume tracked anything. Refresh that grace after the recovery work,
+	// using only actual execution liveness from this point onward. The resumed
 	// runs are tracked by the registry now, so the ledger-driven pass covers
 	// exactly them (plus any engine-live holders — idempotent). Best-effort,
 	// same as the periodic sweep: a renewal failure here does not fail daemon
