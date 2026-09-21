@@ -183,6 +183,7 @@ func observeFleetRuns(o *fleetstate.Observation, runs []readservice.RunSummary, 
 		}
 	}
 	if o.Complete {
+		o.ActiveDeadline = fleetExecutionDeadline(runs, gaggle, o.ObservedAt)
 		o.WaitingOnUser = inflight > 0 && waitingGates == inflight
 		o.InflightCount, o.NoWorkCount = &inflight, &noWork
 	}

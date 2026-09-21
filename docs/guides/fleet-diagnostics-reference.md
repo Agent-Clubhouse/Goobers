@@ -279,3 +279,23 @@ carry losses accumulated during an outage. Disabled or uninitialized export
 omits the count rather than reporting zero. Gaggle records do not duplicate
 the deployment counter. Offline bundles preserve the last observed count and
 its boot/time context; an abrupt death can lose evidence after that observation.
+## Actual execution deadlines
+
+A quiet running stage can report `waiting / stage_within_deadline` only when
+its current stage/branch/attempt has actual runtime deadline evidence. The
+harness owned-process launcher and deterministic executor record their bounded
+context deadline after a successful process launch, then clear it on return.
+Copilot's controlled SDK session records the existing whole-session context
+bound and clears it after session/process cleanup; nested process observations
+are suppressed under that same bound.
+
+The evidence follows the existing local or remote journal recorder and the
+current active-stage projection. Stage configuration plus start time is never
+used to synthesize a deadline. Retry, resume, terminal events, old attempt
+records, future observation clocks, truncated active-stage inventory, missing
+coverage and overlapping process-only observations cannot establish a bound.
+Serial recovery calls establish their own actual bounds only after the previous
+execution ends. The fleet classifier uses the earliest deadline only when all
+active stages of all in-flight runs are covered; a valid quiet sibling never
+hides an uncovered one. Deadline evidence is intentional waiting, not useful
+progress or a proof of the eventual success of a process.
