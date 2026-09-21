@@ -165,7 +165,6 @@ function RunDetailWorkspace({
   const [pendingInspectorFocus, setPendingInspectorFocus] = useState(false);
   const { config: portalConfig, loading: portalConfigLoading } = useCobrand();
   const inspectorRef = useRef<HTMLElement>(null);
-  const selectedEventDetailsRef = useRef<HTMLElement>(null);
   const fullscreenRootRef = useRef<HTMLDivElement>(null);
   const [fullscreenMode, setFullscreenMode] =
     useState<WorkflowGraphFullscreenMode>("none");
@@ -227,16 +226,6 @@ function RunDetailWorkspace({
     if (shouldRevealInspector) {
       revealInspector();
     }
-  };
-
-  const revealSelectedEvent = (event: RunEvent) => {
-    selectEvent(event);
-    const details = selectedEventDetailsRef.current;
-    if (!details) {
-      return;
-    }
-    details.scrollIntoView?.({ block: "start", inline: "nearest" });
-    details.focus({ preventScroll: true });
   };
 
   const replaySeek = (seq: number) => {
@@ -434,7 +423,7 @@ function RunDetailWorkspace({
           })}
           failure={failure}
           onFocusCausalEvent={
-            failureCausalEvent === undefined
+            failure.causalEventSeq === undefined
               ? undefined
               : () => {
                   replaySeek(failure.causalEventSeq!);
@@ -534,7 +523,6 @@ function RunDetailWorkspace({
                 onSeek={replaySeek}
                 runId={runId}
                 selectedSeq={selectedSeq}
-                selectedEventDetailsRef={selectedEventDetailsRef}
                 terminal={run.finishedAt != null}
                 workflow={run.workflow}
               />

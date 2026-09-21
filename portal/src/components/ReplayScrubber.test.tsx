@@ -1,6 +1,5 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { createRef, useState } from "react";
-import type { Ref } from "react";
+import { useState } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RunEvent, WorkflowGraph } from "../api/types";
 import styles from "../styles.css?inline";
@@ -31,7 +30,6 @@ function Harness({
   initial,
   terminal,
   onSeek,
-  selectedEventDetailsRef,
   workflow,
 }: {
   events: RunEvent[];
@@ -39,7 +37,6 @@ function Harness({
   initial: number;
   terminal: boolean;
   onSeek?: (seq: number) => void;
-  selectedEventDetailsRef?: Ref<HTMLElement>;
   workflow?: string;
 }) {
   const [seq, setSeq] = useState(initial);
@@ -53,7 +50,6 @@ function Harness({
       }}
       runId="run-1"
       selectedSeq={seq}
-      selectedEventDetailsRef={selectedEventDetailsRef}
       terminal={terminal}
       workflow={workflow}
     />
@@ -183,30 +179,6 @@ describe("replay scrubber", () => {
     chapter.focus();
     expect(chapter).toHaveFocus();
     expect(chapter).toHaveAttribute("aria-current", "step");
-  });
-
-  it("exposes selected event details as a programmatic focus target", () => {
-    const selectedEventDetailsRef = createRef<HTMLElement>();
-    render(
-      <Harness
-        events={[
-          ev(1, "2026-01-01T00:00:00Z", {
-            stage: "implement",
-          }),
-        ]}
-        initial={1}
-        selectedEventDetailsRef={selectedEventDetailsRef}
-        terminal
-      />,
-    );
-
-    const details = screen.getByRole("region", { name: "Selected replay event" });
-    expect(selectedEventDetailsRef.current).toBe(details);
-    expect(details).toHaveAttribute("tabindex", "-1");
-    selectedEventDetailsRef.current?.focus();
-    expect(details).toHaveFocus();
-    expect(within(details).getByText(/Sequence 1/)).toBeInTheDocument();
-    expect(within(details).getByText("Stage started")).toBeInTheDocument();
   });
 
   it("labels chapters and stage segments with the run's own stage and goober (#2538)", () => {
