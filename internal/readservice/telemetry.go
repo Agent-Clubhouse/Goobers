@@ -98,6 +98,8 @@ type TelemetryStatsRequest struct {
 	TrendPreviousUntil      time.Time
 }
 
+const runtimeAnalyticsRunLimit = 100
+
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
 	Gaggles            []TelemetryGaggleStats          `json:"gaggles"`
@@ -1277,7 +1279,7 @@ func (s *Local) runtimeAnalyticsRunIDs(ctx context.Context, req TelemetryStatsRe
 		Workflow:   req.Workflow,
 		Since:      req.Since,
 		Until:      req.Until,
-		Limit:      maxRunLimit,
+		Limit:      runtimeAnalyticsRunLimit,
 		ShowNoWork: true,
 	}
 	page, err := s.listRunsUnannotated(ctx, options)
