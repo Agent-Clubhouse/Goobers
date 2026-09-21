@@ -629,6 +629,14 @@ jobs:
           run-id: ${{ steps.previous-timing.outputs.result }}
           github-token: ${{ github.token }}
 
+      # Execute actual pinned v0.4.1 packages against current diagnostic data.
+      # This runs outside the hermetic unit sandbox so the pinned release can
+      # resolve its own module versions; failure blocks the required gate.
+      - name: Diagnostics downgrade and re-upgrade compatibility
+        timeout-minutes: 15
+        shell: bash
+        run: go run ./test/diagnosticsrollback
+
       - name: Unit suite and Linux coverage profile
         env:
           GOOBERS_CI_RACE: "0"
@@ -637,14 +645,6 @@ jobs:
 
       - name: Enforce the repository coverage threshold
         run: make cover-gate
-
-      # Execute actual pinned v0.4.1 packages against current diagnostic data.
-      # This runs outside the hermetic unit sandbox so the pinned release can
-      # resolve its own module versions; failure blocks the required gate.
-      - name: Diagnostics downgrade and re-upgrade compatibility
-        timeout-minutes: 15
-        shell: bash
-        run: go run ./test/diagnosticsrollback
 
       - name: Report test timing budget
         if: ${{ !cancelled() && hashFiles(format('test-timings/unit-{0}.json', runner.os)) != '' }}
