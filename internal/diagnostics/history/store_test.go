@@ -293,3 +293,35 @@ func TestSnapshotRejectsUnknownOuterFieldsWithoutPreservingPrivateRawData(t *tes
 		t.Fatal(snapshot.Metadata, len(snapshot.Records), err)
 	}
 }
+
+func TestSnapshotRewriteDropsShadowedDuplicateJSONValues(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	raw, err := encodeRecord(validRecord(now), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append([]byte(`{"name":"private-shadowed-name-marker",`), raw[1:]...)
+	data, err := encodeSnapshot(Metadata{StoredAt: now}, []json.RawMessage{raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, snapshotName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := openStore(t, dir, nil)
+	if err := store.Append(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	rewritten, err := os.ReadFile(filepath.Join(dir, snapshotName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rewritten), "private-shadowed-name-marker") {
+		t.Fatal("shadowed unvalidated value survived canonical rewrite")
+	}
+	snapshot, err := Read(dir)
+	if err != nil || len(snapshot.Records) != 1 {
+		t.Fatal(len(snapshot.Records), err)
+	}
+}

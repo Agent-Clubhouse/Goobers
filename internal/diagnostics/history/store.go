@@ -390,7 +390,13 @@ func decodeRecords(wire wireSnapshot) (Snapshot, []json.RawMessage, error) {
 		if err := validateRecord(record); err != nil {
 			return Snapshot{}, nil, err
 		}
-		raw = append(raw, data)
+		// Re-encode only validated fields: duplicate JSON keys must not retain
+		// shadowed private values in the next atomic snapshot.
+		canonical, err := json.Marshal(record)
+		if err != nil || len(canonical) > MaxRecordBytes {
+			return Snapshot{}, nil, errors.New("invalid canonical diagnostic record")
+		}
+		raw = append(raw, canonical)
 		result.Records = append(result.Records, record)
 	}
 	if _, err := decoder.Token(); err != nil {
