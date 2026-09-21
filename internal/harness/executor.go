@@ -543,9 +543,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			return Outcome{}, nil, nil, fmt.Errorf("harness: validate nested execution: %w", err)
 		}
 	}
-	if req.Attempt < 1 {
-		req.Attempt = 1
-	}
+	e.prepareReadinessRequest(&req)
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
 		// posture with no usable platform sandbox must block the stage, never
@@ -783,6 +781,8 @@ func classifyHarnessRunError(runErr, wrapped error) error {
 	switch {
 	case errors.Is(runErr, ErrTimeout):
 		return invoke.Timeout(wrapped)
+	case errors.Is(runErr, errRequiredMCPRejected):
+		return executor.StageFailure(ErrorCodeRequiredMCPRejected, wrapped)
 	case errors.Is(runErr, errRequiredMCPUnavailable):
 		return invoke.InfrastructureFailure(
 			executor.StageFailure(ErrorCodeRequiredMCPUnavailable, wrapped),

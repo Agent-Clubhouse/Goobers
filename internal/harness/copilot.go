@@ -202,6 +202,8 @@ type CopilotAdapter struct {
 	OptionalCredentialCapabilities map[string]bool
 	// Runner executes the subprocess; defaults to ExecProcessRunner.
 	Runner ProcessRunner
+	// mcpSessionFactory substitutes the session boundary in adapter contract tests.
+	mcpSessionFactory copilotSessionFactory
 	// ModelLister discovers models from the authenticated Copilot runtime.
 	// Defaults to the official Copilot SDK.
 	ModelLister CopilotModelLister
@@ -1023,7 +1025,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// Finish while the wrapper-owned log still exists, before cleanupSession.
 	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
-	runner := c.runner()
+	runner, closeControlledSession := c.prepareRequiredMCPRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions)
+	defer closeControlledSession()
 	started := time.Now()
 	var responseCapture *syncBuffer
 	var stdoutCapture io.Writer
@@ -1117,25 +1120,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// structured system/init event; Copilot has no transcript equivalent, so
 	// this reads the CLI's private run log rather than guessing from shared
 	// user-level logs.
-	out.MCPServerFailures = copilotMCPServerFailures(req, captures.mcpLogPath)
+	out.MCPServerFailures = copilotRunnerMCPFailures(ctx, runner, req, captures.mcpLogPath)
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
-	if nativeTranscriptPath != "" {
-		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
-			out.Metrics = native.metrics
-			out.ModelUsage = native.modelUsage
-			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err))
-			}
-			if len(native.data) > 0 {
-				out.Transcript = native.data
-				out.TranscriptSchema = telemetry.GenAIEventSchema
-				out.TranscriptTruncated = native.truncated
-				out.TranscriptDroppedBytes = native.droppedBytes
-			}
-		}
-	}
+	runErr = errors.Join(runErr, applyCopilotNativeTelemetry(&out, req, nativeTranscriptPath, agentTelemetry))
 	applyCopilotUsageDocument(&out, usageOutputPath)
 	if runErr != nil {
 		return out, runErr
@@ -1584,4 +1573,23 @@ func (c *CopilotAdapter) requireMCPModelCredential(ctx context.Context, req RunR
 		return fmt.Errorf("harness: copilot-cli: external MCP servers require a materialized %s credential: %w", modelCapability, err)
 	}
 	return nil
+}
+
+func applyCopilotNativeTelemetry(out *Outcome, req RunRequest, nativeTranscriptPath string, agentTelemetry *adapterAgentEmitter) (runErr error) {
+	if nativeTranscriptPath != "" {
+		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+			out.Metrics = native.metrics
+			out.ModelUsage = native.modelUsage
+			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
+				runErr = fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err)
+			}
+			if len(native.data) > 0 {
+				out.Transcript = native.data
+				out.TranscriptSchema = telemetry.GenAIEventSchema
+				out.TranscriptTruncated = native.truncated
+				out.TranscriptDroppedBytes = native.droppedBytes
+			}
+		}
+	}
+	return runErr
 }
