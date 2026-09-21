@@ -26,6 +26,9 @@ func TestDiagnosticsRollbackCLIRebuild(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(layout.ReadDB()), 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(layout.SchedulerDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(filepath.Join(root, readmodel.FileName))
 	if err != nil {
 		t.Fatal(err)
