@@ -40,11 +40,12 @@ type runInterventionService struct {
 }
 
 type interventionDefinitionSet struct {
-	runners       map[string]*runner.Runner
-	legacyRunner  *runner.Runner
-	machines      map[localscheduler.WorkflowIdentity]*workflow.Machine
-	gooberDigests map[localscheduler.WorkflowIdentity]string
-	repoRefs      map[localscheduler.WorkflowIdentity]apiv1.RepoRef
+	featureDrivers map[localscheduler.WorkflowIdentity]string
+	runners        map[string]*runner.Runner
+	legacyRunner   *runner.Runner
+	machines       map[localscheduler.WorkflowIdentity]*workflow.Machine
+	gooberDigests  map[localscheduler.WorkflowIdentity]string
+	repoRefs       map[localscheduler.WorkflowIdentity]apiv1.RepoRef
 }
 
 type interventionDefinitionRegistry struct {
@@ -77,11 +78,12 @@ func (r *interventionDefinitionRegistry) Snapshot() interventionDefinitionSet {
 
 func interventionDefinitions(definitions *schedulerDefinitions, legacyRunner *runner.Runner) interventionDefinitionSet {
 	return interventionDefinitionSet{
-		runners:       definitions.Runners,
-		legacyRunner:  legacyRunner,
-		machines:      definitions.Machines,
-		gooberDigests: definitions.GooberDigests,
-		repoRefs:      definitions.RepoRefs,
+		runners:        definitions.Runners,
+		featureDrivers: featureDriverConfiguration(definitions.Entries),
+		legacyRunner:   legacyRunner,
+		machines:       definitions.Machines,
+		gooberDigests:  definitions.GooberDigests,
+		repoRefs:       definitions.RepoRefs,
 	}
 }
 

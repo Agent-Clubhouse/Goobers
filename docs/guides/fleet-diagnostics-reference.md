@@ -153,3 +153,68 @@ unknown, including when an operator pins them. Approved prereleases remain
 comparable through the explicitly supplied channel catalogue. Feature records
 within allowed future clock skew are retained but remain unknown until their
 observation time; the skew allowance never makes future usage already true.
+
+## Observed feature windows
+
+Feature use is separate from configuration. The daemon reads configured labels
+from the current admitted definition snapshot on each sample; rejected edits do
+not replace it. Effective runner configuration is supplied by daemon startup
+wiring. Configuring a feature never increments its use counter.
+
+The version-one catalogue adds `capability.nested-agents`. Counts describe:
+
+- `runner.local` / `runner.engine`: actual `run.started` records, classified by
+  the pinned journal driver.
+- `dsl.v1` / `dsl.v2` / `dsl.v3`: those starts' digest-verified pinned workflow
+  language versions (`1.4`, `2.0`, `3.0`). Definition revision numbers are unused.
+- `adapter.*`: calls that reached the actual adapter dispatch boundary and
+  returned, including failed calls. Executor preflight/configuration is excluded.
+- `provider.*`: actual Goobers provider HTTP-client attempts observed inside a
+  deterministic stage. Requests, URLs, credentials and bodies are excluded.
+  Counts are journaled when the stage returns; interrupted stages, contended
+  sidecars, daemon polling and arbitrary external clients may be unobserved.
+- `capability.nested-agents`: recorded child-agent starts with explicit parent
+  identity, deduplicated by stage/agent/attempt inside each run.
+
+Counters are absolute observations in a window of at least five minutes,
+clipped to the current daemon boot. For large fleets the window extends to one
+full sampling rotation plus one heartbeat (at most 14 hours at the largest
+allowed heartbeat interval). Re-reading the same journal does not add another count.
+New windows can have lower counts; a restart starts a new boot/window. Journal
+sequence checks and the remote journal plane's operation keys prevent replay
+from silently adding usage. Child identifiers remain local to the scan.
+
+Each scan covers at most 128 run directories, 8 MiB including metadata and
+pinned definitions, 1 MiB per journal/definition and 64 KiB per event. At most
+4,096 child identities are retained per run. A stage's provider counter sidecar
+is at most 1 KiB, with three closed keys capped at one million attempts each;
+its cross-process file lock never waits. Missing, unreadable, oversized,
+truncated, future-clock or legacy evidence yields partial/unknown coverage.
+Provider counts always remain partial because the stage boundary cannot prove
+coverage of every provider client. Active or recently active runs likewise
+prevent complete adapter/capability-zero claims. A completely inspected idle
+window can report zero for run/DSL/adapter/child activity; a missing directory
+cannot.
+
+The sampler rotates through at most eight of 100 gaggles each heartbeat. At the
+default 30-second interval, a full round of 100 gaggles takes 13 ticks (6 minutes
+30 seconds). Only sampled gaggles emit feature records (at most 96 per tick); the backend
+expires older feature counts to unknown between visits. The default window for
+100 gaggles is seven minutes, overlapping successive rotations. Read-budget or
+source gaps still remain partial; these bounded observations are not a billing
+or audit ledger. Unknown configuration omits the feature record.
+
+A local Apple M4/darwin-arm64 benchmark with `GOMAXPROCS=2`, 100 iterations,
+measured an empty scan at 31.4 microseconds / 2,320 allocated bytes and 16 small
+journal scans at 1.30 milliseconds / 453,328 allocated bytes. This measures the
+reader only, not daemon/network overhead or other operating systems. Portable
+subprocess and remote journal-plane regressions exercise the real provider and
+recorder paths; CI remains the cross-platform gate.
+
+The same machine's real local journal append benchmark (including existing
+fsync and tail accounting, ten iterations) measured two records at 0.193 ms /
+1,005 journal bytes per batch and 197 records at 94.2 ms / 99,550 journal bytes.
+The latter allocated 85.7 MB per batch in the existing append path. Sustaining
+that synthetic loaded batch every 30 seconds produces about 287 MB/day before
+retention or compaction; queue batching does not remove local journal cost.
+These are measured local costs, not a fleet-wide throughput guarantee.
