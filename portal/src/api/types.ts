@@ -791,7 +791,35 @@ export interface RetryBackoffState {
   truncated?: boolean;
 }
 
+export type RequiredMCPObservationStatus = "ready" | "unobservable" | "denied";
+
+/** Scoped session evidence; availability and authorization have independent clocks. */
+export interface RequiredMCPCondition {
+  adapter: string;
+  server: string;
+  stage: string;
+  branch: number;
+  observedAt: string;
+  category: "ready" | "check_unobservable" | "transport_failure" | "required_tool_unavailable" | "authentication_failure" | "tool_authorization_failure";
+  connection: RequiredMCPObservationStatus;
+  inventory: RequiredMCPObservationStatus;
+  authorization: RequiredMCPObservationStatus;
+  active: boolean;
+  reason?: string;
+  availabilityObservedAt?: string;
+  availabilityReason?: string;
+  authorizationObservedAt?: string;
+  authorizationReason?: string;
+}
+
+export interface RequiredMCPState {
+  /** Go encodes a nil slice as null; absence of observations is not readiness. */
+  conditions: RequiredMCPCondition[] | null;
+  truncated?: boolean;
+}
+
 export interface RunSummary {
+  requiredMcp?: RequiredMCPState;
   /** Optional for older daemon responses; absent evidence is not zero retries. */
   retryBackoff?: RetryBackoffState;
   /** Durable human-gate wait; omitted by older daemons and when false. */

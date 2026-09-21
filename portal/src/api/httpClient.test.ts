@@ -17,7 +17,7 @@ import {
 } from "./errors";
 import { HttpDaemonClient } from "./httpClient";
 import { onUpdateAvailability, resetUpdateAvailability } from "../updateNotice";
-import { API_VERSION, SCHEMA_VERSION, type Health, type RetryBackoffState, type RunDetail } from "./types";
+import { API_VERSION, SCHEMA_VERSION, type Health, type RequiredMCPState, type RetryBackoffState, type RunDetail } from "./types";
 import { goWireFixtures } from "./wire.generated";
 
 const health: Health = {
@@ -96,6 +96,34 @@ describe("HttpDaemonClient", () => {
         expect(Object.hasOwn(run.activeStages![0], "executionDeadline")).toBe(observed);
         expect(Object.hasOwn(run.activeStages![0], "executionOverlap")).toBe(observed);
       }
+    }
+  });
+
+  it("preserves scoped MCP denial when the latest native authorization is unobservable", async () => {
+    const observed: RequiredMCPState = {
+      conditions: [{
+        adapter: "copilot-cli", server: "goobers-io", stage: "implement", branch: 2,
+        observedAt: "2026-09-20T12:01:00Z", category: "check_unobservable",
+        connection: "ready", inventory: "ready", authorization: "unobservable",
+        active: true, reason: "tool_authorization_failure",
+        availabilityObservedAt: "2026-09-20T12:01:00Z",
+        authorizationObservedAt: "2026-09-20T12:00:00Z",
+        authorizationReason: "tool_authorization_failure",
+      }],
+      truncated: true,
+    };
+    for (const state of [undefined, { conditions: null }, observed]) {
+      const detail: RunDetail = { ...goWireFixtures.runDetail };
+      delete detail.requiredMcp;
+      if (state !== undefined) detail.requiredMcp = state;
+      const client = new HttpDaemonClient({ fetch: vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ runs: [detail] }))
+        .mockResolvedValueOnce(Response.json(detail)) });
+      const list = await client.listRuns();
+      const decoded = await client.getRun(detail.id);
+      expect(list.runs[0].requiredMcp).toEqual(state);
+      expect(decoded.requiredMcp).toEqual(state);
+      expect(Object.hasOwn(decoded, "requiredMcp")).toBe(state !== undefined);
     }
   });
 
