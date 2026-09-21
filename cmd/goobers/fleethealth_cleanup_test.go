@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
@@ -48,7 +49,12 @@ func TestFleetCleanupActualRetentionFailureAndRecovery(t *testing.T) {
 	}()
 	writer := &fleetCleanupWriter{RetentionWriter: store}
 	loop := readmodel.NewRetentionLoop(store, writer, readmodel.UnboundedRetention(), readmodel.RetentionOptions{Interval: time.Hour})
-	service, err := readservice.NewLocal(readservice.LocalSources{Layout: instance.NewLayout(t.TempDir()), Config: &instance.Config{}, RetentionStats: loop.Stats}, func() bool { return true })
+	service, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:         instance.NewLayout(t.TempDir()),
+		Config:         &instance.Config{},
+		Definitions:    &instance.ConfigSet{Manifest: &apiv1.Manifest{}},
+		RetentionStats: loop.Stats,
+	}, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
