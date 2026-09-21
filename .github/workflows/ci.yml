@@ -806,7 +806,7 @@ jobs:
           cache: true
 
       - name: Set up Java
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
         with:
           distribution: temurin
           java-version: "21"
@@ -940,6 +940,40 @@ jobs:
           fi
           echo "KUBEBUILDER_ASSETS=$assets" >> "$GITHUB_ENV"
 
+      # Cancellation needs a real Temporal server. RequireEnv otherwise skips
+      # it even under TESTDEP_STRICT, so provision and assert execution below.
+      - name: Provision Temporal cancellation dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cancellation-regression"
+          cd "$RUNNER_TEMP/cancellation-regression"
+          curl --fail --location --retry 3 --max-time 120 \
+            https://github.com/temporalio/cli/releases/download/v1.8.2/temporal_cli_1.8.2_linux_amd64.tar.gz -o temporal.tar.gz
+          echo 'd8421bda989e6514b4bdb4d63a9012a8a05a806892e881a5aad8510496349a94  temporal.tar.gz' | sha256sum --check
+          tar -xzf temporal.tar.gz temporal
+          echo "GOOBERS_TEMPORAL_CLI=$PWD/temporal" >> "$GITHUB_ENV"
+
+      - name: Debian bookworm cancellation and snapshot regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Build once on the host; run with Debian's real git and userspace.
+          # Static test binaries avoid depending on the host's newer glibc.
+          CGO_ENABLED=0 go test -c -tags=integration -o "$RUNNER_TEMP/cancellation-regression/engine.test" ./internal/engine
+          CGO_ENABLED=0 go test -c -tags=integration -o "$RUNNER_TEMP/cancellation-regression/recovery.test" ./internal/recovery
+          docker run --rm -v "$RUNNER_TEMP/cancellation-regression:/regression:ro" \
+            -e TESTDEP_STRICT=1 -e GOOBERS_TEMPORAL_CLI=/regression/temporal \
+            debian:bookworm bash -euc '
+              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends git ca-certificates
+              git --version
+              /regression/engine.test -test.v -test.run="^TestIntegrationDispatchCancellation" -test.count=3 -test.timeout=5m
+              /regression/recovery.test -test.v -test.run="^TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex$" -test.count=3 -test.timeout=2m
+            ' 2>&1 | tee debian-cancellation.log
+          grep -q -- '--- PASS: TestIntegrationDispatchCancellationWaitsForPodCleanup' debian-cancellation.log
+          grep -q -- '--- PASS: TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex' debian-cancellation.log
+
       - name: Run strict integration tier
         env:
           GOOBERS_JAVA_E2E: "1"
@@ -947,6 +981,8 @@ jobs:
         run: |
           set -euo pipefail
           make test-integration-strict 2>&1 | tee integration-tier.log
+          grep -q -- '--- PASS: TestIntegrationDispatchCancellationWaitsForPodCleanup' integration-tier.log
+          grep -q -- '--- PASS: TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex' integration-tier.log
           # Assert the envtest reconcile actually EXECUTED. It is the only test
           # in CI that stands up a real API server, and the only thing that
           # caught #3168 (both shipped CRDs rejected: uniqueItems forbidden and
@@ -1047,7 +1083,7 @@ jobs:
       # same java-version, same checked-out pom — publishes the entry every PR's
       # `integration` job already looks for.
       - name: Set up Java
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
         with:
           distribution: temurin
           java-version: "21"
