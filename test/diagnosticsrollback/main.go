@@ -21,7 +21,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const priorRevision = "e24c075a12b1188771e5fc2246108fc24cfa29b6"
+// v0.4.1 peeled commit; Git archive provenance records the commit, not its
+// annotated tag object e24c075a12b1188771e5fc2246108fc24cfa29b6.
+const priorRevision = "74f44963a0a357418f5097da1f6ca212117e23a3"
 
 func main() {
 	if err := run(); err != nil {
