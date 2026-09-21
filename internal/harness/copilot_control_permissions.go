@@ -17,7 +17,7 @@ import (
 // Preserve that distinction when answering native SDK permission requests.
 // Managed approval and sandbox bypass always require a human, unavailable in
 // this unattended adapter. The enclosing OS sandbox remains authoritative.
-func copilotSessionPermissions(req RunRequest) copilot.PermissionHandlerFunc {
+func copilotSessionPermissions(req RunRequest, permissionRoots []string) copilot.PermissionHandlerFunc {
 	available := copilotAvailableTools(req)
 	return func(request copilot.PermissionRequest, invocation copilot.PermissionInvocation) (rpc.PermissionDecision, error) {
 		denied := &rpc.PermissionDecisionUserNotAvailable{}
@@ -29,7 +29,7 @@ func copilotSessionPermissions(req RunRequest) copilot.PermissionHandlerFunc {
 		if err != nil || json.Unmarshal(data, &detail) != nil || detail.RequestSandboxBypass {
 			return denied, nil
 		}
-		if !copilotPermissionAllowed(request.Kind(), detail, req.Workspace, available) {
+		if !copilotPermissionAllowed(request.Kind(), detail, req.Workspace, permissionRoots, available) {
 			return denied, nil
 		}
 		return &rpc.PermissionDecisionApproveOnce{}, nil
@@ -46,7 +46,7 @@ type copilotPermissionDetail struct {
 	RequestSandboxBypass bool              `json:"requestSandboxBypass"`
 }
 
-func copilotPermissionAllowed(kind rpc.PermissionRequestKind, detail copilotPermissionDetail, workspace string, available []string) bool {
+func copilotPermissionAllowed(kind rpc.PermissionRequestKind, detail copilotPermissionDetail, workspace string, permissionRoots, available []string) bool {
 	switch kind {
 	case rpc.PermissionRequestKindMCP:
 		name := detail.ToolName
@@ -57,15 +57,15 @@ func copilotPermissionAllowed(kind rpc.PermissionRequestKind, detail copilotPerm
 	case rpc.PermissionRequestKindCustomTool:
 		return slices.Contains(available, detail.ToolName)
 	case rpc.PermissionRequestKindRead:
-		return hasAnyCopilotTool(available, "view", "grep", "rg", "glob") && copilotPermissionPath(workspace, detail.Path)
+		return hasAnyCopilotTool(available, "view", "grep", "rg", "glob") && copilotPermissionPathInRoots(workspace, detail.Path, permissionRoots)
 	case rpc.PermissionRequestKindWrite:
-		return hasAnyCopilotTool(available, "create", "edit", "str_replace_editor", "apply_patch") && copilotPermissionPath(workspace, detail.FileName)
+		return hasAnyCopilotTool(available, "create", "edit", "str_replace_editor", "apply_patch") && copilotPermissionPathInRoots(workspace, detail.FileName, permissionRoots)
 	case rpc.PermissionRequestKindShell:
 		if !hasAnyCopilotTool(available, "bash", "powershell") || len(detail.PossibleURLs) > 0 {
 			return false
 		}
 		for _, path := range detail.PossiblePaths {
-			if !copilotPermissionPath(workspace, path) {
+			if !copilotPermissionPathInRoots(workspace, path, permissionRoots) {
 				return false
 			}
 		}
@@ -115,4 +115,20 @@ func copilotPermissionPath(workspace, path string) bool {
 		}
 		candidate = filepath.Dir(candidate)
 	}
+}
+
+func copilotPermissionPathInRoots(workspace, path string, roots []string) bool {
+	if copilotPermissionPath(workspace, path) {
+		return true
+	}
+	// Resolve relative paths against the workspace, never against each grant.
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workspace, path)
+	}
+	for _, root := range roots {
+		if copilotPermissionPath(root, path) {
+			return true
+		}
+	}
+	return false
 }

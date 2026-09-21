@@ -12,17 +12,21 @@ import (
 // recovery cannot clear a different stage's failure. ObservedAt is evidence
 // time, not list-read time. Active never means a provider root cause is known.
 type RequiredMCPCondition struct {
-	Adapter       string    `json:"adapter"`
-	Server        string    `json:"server"`
-	Stage         string    `json:"stage"`
-	Branch        int       `json:"branch"`
-	ObservedAt    time.Time `json:"observedAt"`
-	Category      string    `json:"category"`
-	Connection    string    `json:"connection"`
-	Inventory     string    `json:"inventory"`
-	Authorization string    `json:"authorization"`
-	Active        bool      `json:"active"`
-	Reason        string    `json:"reason,omitempty"`
+	Adapter                 string    `json:"adapter"`
+	Server                  string    `json:"server"`
+	Stage                   string    `json:"stage"`
+	Branch                  int       `json:"branch"`
+	ObservedAt              time.Time `json:"observedAt"`
+	Category                string    `json:"category"`
+	Connection              string    `json:"connection"`
+	Inventory               string    `json:"inventory"`
+	Authorization           string    `json:"authorization"`
+	Active                  bool      `json:"active"`
+	Reason                  string    `json:"reason,omitempty"`
+	AvailabilityObservedAt  time.Time `json:"availabilityObservedAt,omitzero"`
+	AvailabilityReason      string    `json:"availabilityReason,omitempty"`
+	AuthorizationObservedAt time.Time `json:"authorizationObservedAt,omitzero"`
+	AuthorizationReason     string    `json:"authorizationReason,omitempty"`
 }
 
 const MaxRequiredMCPConditions = 64
@@ -93,7 +97,7 @@ func requiredMCPObservation(event journal.Event) (RequiredMCPCondition, bool) {
 	}
 	result.Stage, result.Branch, result.ObservedAt = event.Stage, event.Branch, event.Time
 	result.Active, result.Reason = false, "" // Never trust producer-supplied derived state.
-	return result, true
+	return decisiveMCPObservation(result), true
 }
 
 func sameRequiredMCPContext(a, b RequiredMCPCondition) bool {
@@ -104,21 +108,46 @@ func sameRequiredMCPContext(a, b RequiredMCPCondition) bool {
 // context. Fleet consumers sort by ObservedAt and reuse this rule across runs;
 // a newer unsupported authorization check cannot clear an older denial.
 func MergeRequiredMCPCondition(prior, next RequiredMCPCondition) RequiredMCPCondition {
-	if next.ObservedAt.Before(prior.ObservedAt) {
-		return prior
+	result := prior
+	if !next.ObservedAt.Before(prior.ObservedAt) {
+		result = next
 	}
-	switch next.Category {
+	availability := prior
+	if !next.AvailabilityObservedAt.Before(prior.AvailabilityObservedAt) {
+		availability = next
+	}
+	authorization := prior
+	if !next.AuthorizationObservedAt.Before(prior.AuthorizationObservedAt) {
+		authorization = next
+	}
+	result.AvailabilityObservedAt, result.AvailabilityReason = availability.AvailabilityObservedAt, availability.AvailabilityReason
+	result.AuthorizationObservedAt, result.AuthorizationReason = authorization.AuthorizationObservedAt, authorization.AuthorizationReason
+	result.Active = result.AvailabilityReason != "" || result.AuthorizationReason != ""
+	result.Reason = result.AuthorizationReason
+	if result.Reason == "" {
+		result.Reason = result.AvailabilityReason
+	}
+	return result
+}
+
+// Availability and authorization have independent evidence clocks. A later
+// unobservable check must neither erase a prior denial nor relatch it after a
+// different run has supplied newer verified recovery for the same context.
+func decisiveMCPObservation(result RequiredMCPCondition) RequiredMCPCondition {
+	result.AvailabilityObservedAt, result.AuthorizationObservedAt = time.Time{}, time.Time{}
+	result.AvailabilityReason, result.AuthorizationReason = "", ""
+	if result.Connection == "ready" && result.Inventory == "ready" {
+		result.AvailabilityObservedAt = result.ObservedAt
+	}
+	switch result.Category {
 	case "ready":
-		next.Active, next.Reason = false, ""
-	case "check_unobservable":
-		next.Active, next.Reason = prior.Active, prior.Reason
-		if next.Connection == "ready" && next.Inventory == "ready" && (prior.Reason == "transport_failure" || prior.Reason == "required_tool_unavailable") {
-			next.Active, next.Reason = false, ""
-		}
-	default:
-		next.Active, next.Reason = true, next.Category
+		result.AvailabilityObservedAt, result.AuthorizationObservedAt = result.ObservedAt, result.ObservedAt
+	case "transport_failure", "required_tool_unavailable":
+		result.AvailabilityObservedAt, result.AvailabilityReason = result.ObservedAt, result.Category
+	case "authentication_failure", "tool_authorization_failure":
+		result.AuthorizationObservedAt, result.AuthorizationReason = result.ObservedAt, result.Category
 	}
-	return next
+	return result
 }
 
 func validMCPObservationStatus(value string) bool {

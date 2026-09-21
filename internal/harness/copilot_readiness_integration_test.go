@@ -111,6 +111,10 @@ func TestIntegrationCopilotRequiredMCPReadOnlyAuthorization(t *testing.T) {
 	if failures := copilotRunnerMCPFailures(ctx, runner, RunRequest{GoobersIORegistered: true}, filepath.Join(workspace, "logs")); len(failures) != 0 {
 		t.Fatalf("post-run evidence disagrees: %+v", failures)
 	}
+	runner.ready = true
+	if err := finalizeControlledCopilot(ctx, runner); err != nil {
+		t.Fatalf("real runtime usage/finalization: %v", err)
+	}
 	if report.Category == "check_unobservable" && report.Authorization == "unobservable" && calls.Load() == 0 {
 		t.Log("native authorization RPC unavailable; connection and inventory verified without a model turn")
 		return

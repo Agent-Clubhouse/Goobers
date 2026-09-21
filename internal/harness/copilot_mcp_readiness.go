@@ -95,7 +95,7 @@ func probeRequiredMCPTools(ctx context.Context, session requiredMCPSession, repo
 	if err != nil {
 		return mcpProbeFailure(report, "transport_failure", errRequiredMCPUnavailable)
 	}
-	if expanded, ok := result.(rpc.ToolResultExpanded); ok {
+	if expanded := expandedMCPToolResult(result); expanded != nil {
 		switch expanded.ResultType {
 		case rpc.ToolResultTypeDenied, rpc.ToolResultTypeRejected:
 			return mcpProbeFailure(report, "tool_authorization_failure", errRequiredMCPRejected)
@@ -134,4 +134,15 @@ func nativeMCPProbeUnsupported(err error) bool {
 	}
 	encoded, marshalErr := json.Marshal(err)
 	return marshalErr == nil && json.Unmarshal(encoded, &response) == nil && response.Code == -32601
+}
+
+func expandedMCPToolResult(result rpc.ToolResult) *rpc.ToolResultExpanded {
+	switch value := result.(type) {
+	case *rpc.ToolResultExpanded:
+		return value
+	case rpc.ToolResultExpanded:
+		return &value
+	default:
+		return nil
+	}
 }

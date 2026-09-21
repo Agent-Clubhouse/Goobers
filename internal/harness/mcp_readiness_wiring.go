@@ -11,7 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex int, config, model string, options map[string]string) (ProcessRunner, func()) {
+func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex int, config, model string, options map[string]string, confinement *copilotConfinement) (ProcessRunner, func()) {
 	base := c.runner()
 	if !req.GoobersIORegistered {
 		return base, func() {}
@@ -25,6 +25,9 @@ func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex in
 	}
 	controlled := &copilotControlledRunner{base: base, request: req, promptIndex: promptIndex, mcpConfig: config, model: model, options: options, factory: c.mcpSessionFactory,
 		readiness: MCPReadiness{Server: goobersIOServerName, Category: "transport_failure", Source: "adapter-session", Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"}}
+	if confinement != nil {
+		controlled.permissionRoots = append([]string(nil), confinement.writableRoots...)
+	}
 	return controlled, controlled.close
 }
 

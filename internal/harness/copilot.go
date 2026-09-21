@@ -1025,7 +1025,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// Finish while the wrapper-owned log still exists, before cleanupSession.
 	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
-	runner, closeControlledSession := c.prepareRequiredMCPRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions)
+	runner, closeControlledSession := c.prepareRequiredMCPRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions, confinement)
 	defer closeControlledSession()
 	started := time.Now()
 	var responseCapture *syncBuffer
@@ -1121,10 +1121,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// this reads the CLI's private run log rather than guessing from shared
 	// user-level logs.
 	out.MCPServerFailures = copilotRunnerMCPFailures(ctx, runner, req, captures.mcpLogPath)
+	runErr = errors.Join(runErr, finalizeControlledCopilot(ctx, runner))
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
 	runErr = errors.Join(runErr, applyCopilotNativeTelemetry(&out, req, nativeTranscriptPath, agentTelemetry))
+	applyControlledCopilotUsage(&out, runner)
 	applyCopilotUsageDocument(&out, usageOutputPath)
 	if runErr != nil {
 		return out, runErr

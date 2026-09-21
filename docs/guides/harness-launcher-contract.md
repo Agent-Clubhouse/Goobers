@@ -156,7 +156,8 @@ that session's tools, checks the server's connection, and requires all five
 throwaway MCP connection is not readiness evidence for this session.
 
 The controlled session's permission handler permits only the declared tools,
-keeps file requests within the workspace (including symlink checks), and does
+keeps file requests within the workspace and the sandbox's existing narrow
+linked-worktree Git grants (including symlink checks), and does
 not approve URL access, managed approvals, or sandbox bypass. `--allow-all-tools`
 is not treated as `--allow-all-paths` or `--allow-all-urls`. Custom permission
 arguments keep the ordinary CLI execution path. Unsupported or ambiguous
@@ -200,6 +201,12 @@ retain their existing execution paths and explicitly report
 `check_unobservable`. Their existing post-turn checks remain in place. Direct
 controlled Copilot sessions also inspect their actual server list after the
 turn, because CLI-global lifecycle logs do not reliably describe SDK sessions.
+After any completion-recovery turn, a bounded five-second finalization collects
+session usage and gracefully shuts down the native session before reading
+native captures. The usage RPC preserves per-model accounting even when a
+persistent headless session has not yet written its ordinary CLI shutdown
+record. Missing or invalid usage is not invented; capture/finalization errors
+remain visible to the stage.
 
 The opt-in read-only live checks send no model prompt:
 

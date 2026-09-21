@@ -41,19 +41,21 @@ func (s sdkRequiredMCPSession) ExecuteTool(ctx context.Context, name string) (rp
 }
 
 type copilotControlledRunner struct {
-	base        ProcessRunner
-	request     RunRequest
-	promptIndex int
-	mcpConfig   string
-	model       string
-	options     map[string]string
-	process     *copilotControlProcess
-	session     copilotModelSession
-	factory     copilotSessionFactory
-	ready       bool
-	runCtx      context.Context
-	runCancel   context.CancelFunc
-	readiness   MCPReadiness
+	permissionRoots []string
+	usage           transcriptCapture
+	base            ProcessRunner
+	request         RunRequest
+	promptIndex     int
+	mcpConfig       string
+	model           string
+	options         map[string]string
+	process         *copilotControlProcess
+	session         copilotModelSession
+	factory         copilotSessionFactory
+	ready           bool
+	runCtx          context.Context
+	runCancel       context.CancelFunc
+	readiness       MCPReadiness
 }
 
 func (r *copilotControlledRunner) initialize(ctx context.Context, req ProcessRequest) error {
@@ -208,7 +210,7 @@ func (r *copilotControlledRunner) sessionConfig(id string, req ProcessRequest, s
 	config := &copilot.SessionConfig{
 		SessionID: id, Model: r.model, ReasoningEffort: r.options["reasoningEffort"],
 		WorkingDirectory: req.Dir, MCPServers: servers, AvailableTools: copilotAvailableTools(r.request),
-		OnPermissionRequest: copilotSessionPermissions(r.request),
+		OnPermissionRequest: copilotSessionPermissions(r.request, r.permissionRoots),
 	}
 	if r.options["context"] == "long_context" {
 		config.ContextTier = copilot.ContextTierLongContext

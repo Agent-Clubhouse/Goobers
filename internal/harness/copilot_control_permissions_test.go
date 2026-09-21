@@ -64,3 +64,38 @@ func TestControlledCopilotPermissionRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal("canonical workspace denied")
 	}
 }
+
+func TestControlledCopilotPermissionsPreserveNarrowGitRoots(t *testing.T) {
+	mirror, workspace := t.TempDir(), t.TempDir()
+	gitdir := filepath.Join(mirror, "worktrees", "run-1")
+	for _, dir := range []string{gitdir, filepath.Join(mirror, "objects"), filepath.Join(mirror, "refs")} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gitdir, "commondir"), []byte("../..\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git"), []byte("gitdir: "+gitdir+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	confinement, err := prepareCopilotConfinement(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &copilotControlledRunner{request: RunRequest{Workspace: workspace, Tools: []string{"shell"}}, permissionRoots: confinement.writableRoots}
+	handler := runner.sessionConfig("session", ProcessRequest{Dir: workspace}, nil).OnPermissionRequest
+	for _, tc := range []struct {
+		path    string
+		allowed bool
+	}{
+		{filepath.Join(gitdir, "index.lock"), true}, {filepath.Join(mirror, "objects", "new"), true}, {filepath.Join(mirror, "refs", "heads", "main"), true},
+		{filepath.Join(mirror, "hooks", "pre-commit"), false}, {filepath.Join(mirror, "config"), false}, {filepath.Join(mirror, "worktrees", "run-2", "index"), false},
+	} {
+		decision, err := handler(rpc.PermissionRequestWrite{FileName: tc.path}, copilot.PermissionInvocation{})
+		_, approved := decision.(*rpc.PermissionDecisionApproveOnce)
+		if err != nil || approved != tc.allowed {
+			t.Fatalf("path=%s decision=%T error=%v", tc.path, decision, err)
+		}
+	}
+}

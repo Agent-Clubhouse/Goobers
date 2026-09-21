@@ -110,3 +110,23 @@ func TestRequiredMCPCrossRunRecoveryUsesSameTruthRules(t *testing.T) {
 		t.Fatal(merged)
 	}
 }
+
+func TestRequiredMCPCrossRunUnknownDoesNotEraseOrRelatchDenial(t *testing.T) {
+	var oldRun, newRun *RequiredMCPState
+	oldRun = oldRun.After(readinessEvent(1, "tool_authorization_failure"))
+	newRun = newRun.After(readinessEvent(3, "ready"))
+	oldRun = oldRun.After(readinessEvent(5, "check_unobservable"))
+	if !oldRun.Conditions[0].Active {
+		t.Fatal("unknown erased the old run's observed denial")
+	}
+	oldCondition := oldRun.Conditions[0]
+	if !oldCondition.AuthorizationObservedAt.Equal(projectBase.Add(time.Second)) || !oldCondition.AvailabilityObservedAt.Equal(projectBase.Add(5*time.Second)) {
+		t.Fatalf("wrong evidence clocks: %+v", oldCondition)
+	}
+	for _, order := range [][2]RequiredMCPCondition{{oldCondition, newRun.Conditions[0]}, {newRun.Conditions[0], oldCondition}} {
+		combined := MergeRequiredMCPCondition(order[0], order[1])
+		if combined.Active || !combined.AuthorizationObservedAt.Equal(projectBase.Add(3*time.Second)) {
+			t.Fatalf("old run relatched recovered denial: %+v", combined)
+		}
+	}
+}
