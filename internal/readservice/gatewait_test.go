@@ -18,7 +18,11 @@ func TestGateWaitStatusUsesDurableProjectionWithoutJournalReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close read model: %v", err)
+		}
+	})
 	service, err := NewLocal(LocalSources{Layout: instance.NewLayout(t.TempDir()), Definitions: testDefinitions(), ReadModel: store}, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)
