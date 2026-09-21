@@ -29,6 +29,7 @@ cannot leave it outside the documented navigation surfaces.
 - [EvalSuite PR review checklist](evals-review-checklist.md)
 - [External telemetry connectors](external-telemetry-connectors.md)
 - [Flake management](flake-management.md)
+- [Fleet diagnostics reference collector and queries](fleet-diagnostics-reference.md)
 - [Tracked gaggle templates](gaggle-templates.md)
 - [Guide: GitHub token scopes for V0 (local runner)](github-token-scopes.md)
 - [GitHub webhook triggers](github-webhooks.md)
