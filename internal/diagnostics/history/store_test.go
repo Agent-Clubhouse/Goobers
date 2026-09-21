@@ -210,3 +210,51 @@ func BenchmarkBoundedHistoryPulse(b *testing.B) {
 		}
 	}
 }
+
+// TestHistoryPulseMeasurement reports actual file sync and replacement costs in
+// the normal hosted unit suite. Measurements are evidence, not timing gates.
+func TestHistoryPulseMeasurement(t *testing.T) {
+	for _, count := range []int{1, 197} {
+		name := "idle"
+		if count > 1 {
+			name = "100-gaggle-pulse"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			store := openStore(t, dir, nil)
+			batch := make([]telemetry.DiagnosticRecord, count)
+			now := time.Now().UTC()
+			for i := range batch {
+				batch[i] = validRecord(now)
+			}
+			// Fill the retained population before measuring so a loaded pulse includes
+			// rewriting the retained snapshot, not only the first empty-store write.
+			for filled := 0; filled < MaxRecords; filled += MaxBatch {
+				seed := make([]telemetry.DiagnosticRecord, MaxBatch)
+				for i := range seed {
+					seed[i] = validRecord(now)
+				}
+				if err := store.Append(context.Background(), seed); err != nil {
+					t.Fatal(err)
+				}
+			}
+			started := time.Now()
+			if err := store.Append(context.Background(), batch); err != nil {
+				t.Fatal(err)
+			}
+			elapsed := time.Since(started)
+			info, err := os.Stat(filepath.Join(dir, snapshotName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := Read(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.Records) != MaxRecords || snapshot.EvictedRecords != uint64(count) {
+				t.Fatal("measurement did not exercise a full retained window", snapshot.Metadata, len(snapshot.Records))
+			}
+			t.Logf("bounded history: pulse_records=%d retained_records=%d wall=%s snapshot_bytes=%d file_syncs=1 directory_syncs=1", count, len(snapshot.Records), elapsed, info.Size())
+		})
+	}
+}
