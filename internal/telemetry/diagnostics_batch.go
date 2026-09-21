@@ -10,8 +10,10 @@ import (
 
 const (
 	// DiagnosticBatchLimit matches the bounded reference receiver contract.
-	DiagnosticBatchLimit      = 128
-	DiagnosticRequestLimit    = 1 << 20
+	DiagnosticBatchLimit = 128
+	// DiagnosticRequestLimit bounds each encoded export request in bytes.
+	DiagnosticRequestLimit = 1 << 20
+	// DiagnosticQueuedByteLimit bounds encoded requests waiting for export.
 	DiagnosticQueuedByteLimit = 8 << 20
 )
 
