@@ -2429,6 +2429,34 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterPreflightVerifiesLauncherUsageOutput(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var usageProbe bool
+	adapter := &CopilotAdapter{
+		Command:            []string{program, "forwarding-launcher"},
+		DisableUsageOutput: true,
+		Runner: &fakeProcessRunner{
+			result: ProcessResult{ExitCode: 0, Transcript: []byte("GitHub Copilot CLI 1.0.87-0.\n")},
+			act: func(req ProcessRequest) error {
+				usageProbe = slices.Contains(req.Command, "--usage-output-file")
+				return nil
+			},
+		},
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !usageProbe {
+		t.Fatal("preflight did not probe launcher usage-output forwarding")
+	}
+	if adapter.usageOutputDisabled() {
+		t.Fatal("verified launcher usage output remained disabled")
+	}
+}
+
 func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	program, err := os.Executable()
 	if err != nil {

@@ -104,10 +104,12 @@ on its complete configured launch prefix.
 
 The handshake is an explicit compatibility declaration. The behavioral fallback
 is proof only of direct local session forwarding, not of every launcher feature.
-Configured launchers therefore use native-session usage accounting and do not
-receive optional Copilot flags inferred only from the reported CLI version.
-Validate a new launcher end to end with a harmless workflow in its target OS and
-isolation posture.
+Goobers separately probes whether a launcher accepts the version-supported
+`--usage-output-file` option together with `--version`, without starting an
+agent. Launchers that pass receive authoritative usage-file accounting;
+launchers that do not retain native-session usage accounting. Validate a new
+launcher end to end with a harmless workflow in its target OS and isolation
+posture.
 
 ## Durable partial transcripts
 
