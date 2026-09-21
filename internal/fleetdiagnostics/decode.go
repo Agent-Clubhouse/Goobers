@@ -145,6 +145,7 @@ func DecodeHeartbeat(attrs map[string]any) (Heartbeat, error) {
 	}
 	h.RequiredMCP = f.mcpHealth(h.ObservedAt)
 	h.Worker = f.workerHealth(h.ObservedAt, h.MissingWorkerCount)
+	h.Backlog = f.backlogHealth(h.ObservedAt)
 	return h, f.finish()
 }
 

@@ -129,6 +129,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 // escalationCommenter above), honoring credentials.Resolver's re-read-on-
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
+	observation     backlogPollObservation
 	mu              sync.Mutex
 	ref             string
 	repo            providers.RepositoryRef
@@ -202,7 +203,9 @@ func (b *backlogCounter) giteaCounterBaseURL() (string, error) {
 	return b.giteaBaseURL, nil
 }
 
-func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
+func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr error) {
+	observation := backlogPollObservation{}
+	defer func() { b.retainBacklogObservation(observation, count, pollErr) }()
 	provider, cleanup, err := b.newCounterProvider(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
@@ -235,7 +238,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 		b.cursor = ""
 	}
 	b.mu.Unlock()
-	count := 0
+	observation.complete = cursor == "" && !pageInfo.HasNext
 	for _, item := range items {
 		if b.respectAssignee && item.Assignee != b.assignedTo {
 			continue

@@ -133,6 +133,6 @@ func startDaemonHealth(ctx context.Context, root string, identity *daemonIdentit
 	}
 	workers := newFleetWorkerHealthObserver(setup, engine)
 	health := newFleetHealthSampler(root, identity, setup.Config.Telemetry.Diagnostics, reader, workers, ready)
-	done := startServiceHealth(healthCtx, root, identity, setup, inventory, combinedFleetSampler(root, setup, reader, health))
+	done := startServiceHealth(healthCtx, root, identity, setup, inventory, combinedFleetSampler(root, setup, reader, withBacklogHealth(setup, health)))
 	return func() { cancel(); <-done }
 }

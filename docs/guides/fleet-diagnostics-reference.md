@@ -241,3 +241,29 @@ The latter allocated 85.7 MB per batch in the existing append path. Sustaining
 that synthetic loaded batch every 30 seconds produces about 287 MB/day before
 retention or compaction; queue batching does not remove local journal cost.
 These are measured local costs, not a fleet-wide throughput guarantee.
+
+## Pending issue observations
+
+The independent `backlog` condition consumes the scheduler's actual bounded
+issue-counter polls. Health sampling never queries a provider or acquires a
+claim. A complete first/only page can establish an empty matching backlog.
+Positive partial pages provide a lower bound; continuation pages, failures,
+and unknown counters never establish zero. Overlapping workflow selectors use
+the maximum observed page count, avoiding duplicate issue counts across workflows.
+
+Five scalar fields carry pending count, source time, coverage, state and reason.
+`attention / pending_without_confirmed_progress` means continuously observed
+matching issue work has outlasted the configured progress period without
+confirmed useful progress. It is independent of the main gaggle state and does
+not prove claim availability or a stuck worker. The existing last-useful-progress
+timestamp supplies context. Pauses, accepted definition changes, complete empty
+pages, partial coverage, stale evidence and observation gaps reset pending age.
+The source expires after 60 seconds, even if daemon heartbeats remain live.
+Sparse sampling therefore remains conservative and cannot bridge unobserved gaps.
+
+This counter does not apply the full stage claim transaction's blocked-item,
+local-lease and shared-lease policy. Positive work therefore remains explicitly
+claimability-unknown. A reusable bounded read-only claimability adapter is tracked in
+[#5489](https://github.com/Agent-Clubhouse/Goobers/issues/5489) for v0.6.0; this release does not assert definitive issue-work stalls from the
+provider label/field selector alone. No issue identifiers, titles or URLs are
+retained or exported by this observation.
