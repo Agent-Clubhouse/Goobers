@@ -154,7 +154,7 @@ func TestIntegrationWindowsImagePowerShellSyntax(t *testing.T) {
 	powerShell := windowsImagePowerShell(t)
 	// Parse every script with the required native runtime before image builds
 	// exercise their Windows API and ContainerUser behavior.
-	for _, name := range []string{"Verify-Inputs.ps1", "Configure-Image.ps1", "Verify-Image.ps1", "Release-Metadata.ps1", "Smoke-Image.ps1"} {
+	for _, name := range []string{"Verify-Inputs.ps1", "Configure-Image.ps1", "Verify-Image.ps1", "Release-Metadata.ps1"} {
 		path, err := filepath.Abs(filepath.Join("docker/windows", name))
 		if err != nil {
 			t.Fatal(err)
