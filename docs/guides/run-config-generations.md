@@ -69,3 +69,8 @@ Worker CLI children receive only a run-scoped journal bearer, never the parent
 worker's privileged token. Workers need the configured signing key to mint this
 bearer; unauthenticated development mode remains restricted to literal HTTP
 loopback addresses. Missing authority or a failed check refuses the merge.
+
+Merge-capable agentic harnesses receive the same scoped authority context for
+nested Goobers CLI calls. Agentic pods receive only the journal-plane pair;
+non-merge agentic stages receive neither. Codex's tool-shell environment retains
+this narrow runtime context while continuing to exclude provider/model secrets.

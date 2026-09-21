@@ -28,3 +28,16 @@ func registerJournalPlane(ctx context.Context, registry *journal.RegistryScrubbe
 		registry.Register([]byte(plane.Token))
 	}
 }
+
+type configDirectoryKey struct{}
+
+// WithConfigDirectory binds nested CLI processes to the admitted execution tree.
+func WithConfigDirectory(ctx context.Context, directory string) context.Context {
+	return context.WithValue(ctx, configDirectoryKey{}, directory)
+}
+
+// ConfigDirectoryFromContext returns the immutable tree selected by the runner.
+func ConfigDirectoryFromContext(ctx context.Context) string {
+	directory, _ := ctx.Value(configDirectoryKey{}).(string)
+	return directory
+}

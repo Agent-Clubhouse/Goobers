@@ -819,13 +819,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// wrapper, not "goobers") but still needs the same context its nested
 	// invocation does — declared per-stage rather than guessed from argv[0].
 	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
-	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
-	for key, value := range e.DefaultEnv {
-		declaredEnv[key] = value
-	}
-	for key, value := range run.Env {
-		declaredEnv[key] = value
-	}
+	declaredEnv := declaredStageEnvironment(e.DefaultEnv, run.Env)
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)

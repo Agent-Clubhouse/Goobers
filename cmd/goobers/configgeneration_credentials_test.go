@@ -167,6 +167,10 @@ func checkRemoteMergeAuthorityBeforeRevocation(t *testing.T, layout instance.Lay
 	t.Setenv("GOOBERS_STAGE", "local-ci")
 	t.Setenv(executor.InstanceRootEnvVar, t.TempDir())
 	t.Setenv(executor.ConfigGenerationEnvVar, "")
+	podContext := podAgenticMergeAuthorityContext(t.Context(), invocation)
+	if err := requireInvocationMergeAuthority(podContext, instance.NewLayout(t.TempDir()), invocation); err != nil {
+		t.Fatalf("agentic pod cannot check daemon authority: %v", err)
+	}
 	landed := 0
 	lander := currentMergeAuthorityLander{Lander: mergeAuthorityTestLander{calls: &landed}, capability: capability.GitHubPRMerge}
 	if _, err := lander.Land(t.Context(), nil, mergepolicy.Request{}); err != nil {
@@ -202,6 +206,9 @@ func checkRemoteMergeAuthorityBeforeRevocation(t *testing.T, layout instance.Lay
 		}
 		if err := requireInvocationMergeAuthority(workerContext, layout, invocation); err == nil {
 			t.Fatal("worker stale admitted pin overrode daemon revocation")
+		}
+		if err := requireInvocationMergeAuthority(podContext, layout, invocation); err == nil {
+			t.Fatal("agentic pod retained revoked merge authority")
 		}
 		if landed != 1 {
 			t.Fatalf("provider land called %d times, want only pre-revocation call", landed)

@@ -974,6 +974,9 @@ func stageContainerImage(pod *corev1.Pod) string {
 //     result, and stamping a partial set would produce a stage that fails at
 //     the far side inside the pod.
 func (d *Dispatcher) mintPlaneTokens(attempt *Attempt) error {
+	if agenticMergeAuthority(*attempt) {
+		return d.mintAgenticMergeJournal(attempt)
+	}
 	if !attempt.CLIStage || d.cfg.WriteAPIBase == "" || d.cfg.TokenMinter == nil {
 		return nil
 	}

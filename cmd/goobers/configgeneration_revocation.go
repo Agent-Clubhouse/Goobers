@@ -76,6 +76,7 @@ func checkCurrentMergeAuthority(layout instance.Layout, env apiv1.InvocationEnve
 
 func withCurrentMergeAuthority(layout instance.Layout, next executionFenceStart) executionFenceStart {
 	return func(ctx context.Context, env apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
+		ctx = executor.WithConfigDirectory(ctx, layout.ConfigDir())
 		if err := requireInvocationMergeAuthority(ctx, layout, env); err != nil {
 			return ctx, func() {}, err
 		}
