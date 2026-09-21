@@ -36,3 +36,23 @@ func TestBacklogWireAndIndependentExpiry(t *testing.T) {
 		t.Fatal("future evidence accepted")
 	}
 }
+
+func TestOfflineBacklogRejectsPrivateAndInvalidEvidence(t *testing.T) {
+	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	attrs := map[string]any{"backlogState": "pending", "backlogReasonCode": "claimability_unknown", "backlogCoverage": "partial", "backlogPendingCount": 1, "backlogObservedAt": now.Format(time.RFC3339Nano), "prompt": "private"}
+	if got, err := DecodeBacklogHealth(attrs, now); err != nil || got == nil || got.PendingCount == nil || *got.PendingCount != 1 {
+		t.Fatalf("valid evidence: %v %v", got, err)
+	}
+	attrs["backlogPrivateIssue"] = "private"
+	if _, err := DecodeBacklogHealth(attrs, now); err == nil {
+		t.Fatal("unexpected backlog payload accepted")
+	}
+	delete(attrs, "backlogPrivateIssue")
+	attrs["backlogPendingCount"] = 0
+	if _, err := DecodeBacklogHealth(attrs, now); err == nil {
+		t.Fatal("partial zero accepted")
+	}
+	if _, err := DecodeBacklogHealth(attrs, time.Time{}); err == nil {
+		t.Fatal("missing observation time accepted")
+	}
+}

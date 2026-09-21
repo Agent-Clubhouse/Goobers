@@ -21,21 +21,22 @@ type OperationalEvidence struct {
 
 // OperationalObservation carries operational provenance, never work content.
 type OperationalObservation struct {
-	Worker               *fleetdiagnostics.WorkerHealth `json:"worker,omitempty"`
-	RequiredMCP          *fleetdiagnostics.MCPHealth    `json:"requiredMcp,omitempty"`
-	InstanceID           string                         `json:"instanceId,omitempty"`
-	GaggleID             string                         `json:"gaggleId,omitempty"`
-	Component            string                         `json:"component,omitempty"`
-	BootID               string                         `json:"bootId,omitempty"`
-	Version              string                         `json:"version,omitempty"`
-	Commit               string                         `json:"commit,omitempty"`
-	Platform             string                         `json:"platform,omitempty"`
-	ObservedAt           string                         `json:"observedAt,omitempty"`
-	WindowStart          string                         `json:"windowStart,omitempty"`
-	WindowCoverage       string                         `json:"windowCoverage,omitempty"`
-	LastUsefulProgressAt string                         `json:"lastUsefulProgressAt,omitempty"`
-	State                string                         `json:"state,omitempty"`
-	ReasonCode           string                         `json:"reasonCode,omitempty"`
+	Backlog              *fleetdiagnostics.BacklogHealth `json:"backlog,omitempty"`
+	Worker               *fleetdiagnostics.WorkerHealth  `json:"worker,omitempty"`
+	RequiredMCP          *fleetdiagnostics.MCPHealth     `json:"requiredMcp,omitempty"`
+	InstanceID           string                          `json:"instanceId,omitempty"`
+	GaggleID             string                          `json:"gaggleId,omitempty"`
+	Component            string                          `json:"component,omitempty"`
+	BootID               string                          `json:"bootId,omitempty"`
+	Version              string                          `json:"version,omitempty"`
+	Commit               string                          `json:"commit,omitempty"`
+	Platform             string                          `json:"platform,omitempty"`
+	ObservedAt           string                          `json:"observedAt,omitempty"`
+	WindowStart          string                          `json:"windowStart,omitempty"`
+	WindowCoverage       string                          `json:"windowCoverage,omitempty"`
+	LastUsefulProgressAt string                          `json:"lastUsefulProgressAt,omitempty"`
+	State                string                          `json:"state,omitempty"`
+	ReasonCode           string                          `json:"reasonCode,omitempty"`
 }
 
 func collectOperationalEvidence(root string) *OperationalEvidence {
@@ -102,7 +103,7 @@ func projectOperationalObservation(attrs map[string]any) OperationalObservation 
 	if err != nil {
 		worker = nil
 	}
-	return OperationalObservation{RequiredMCP: projectOperationalMCP(attrs), Worker: worker, InstanceID: field("instanceId"), GaggleID: field("gaggleId"), Component: field("component"), BootID: field("bootId"), Version: field("version"), Commit: field("buildCommit"), Platform: field("platform"), ObservedAt: field("observedAt"), WindowStart: field("windowStart"), WindowCoverage: field("windowCoverage"), LastUsefulProgressAt: field("lastUsefulProgressAt"), State: field("state"), ReasonCode: field("reasonCode")}
+	return OperationalObservation{Backlog: projectOperationalBacklog(attrs, at), RequiredMCP: projectOperationalMCP(attrs), Worker: worker, InstanceID: field("instanceId"), GaggleID: field("gaggleId"), Component: field("component"), BootID: field("bootId"), Version: field("version"), Commit: field("buildCommit"), Platform: field("platform"), ObservedAt: field("observedAt"), WindowStart: field("windowStart"), WindowCoverage: field("windowCoverage"), LastUsefulProgressAt: field("lastUsefulProgressAt"), State: field("state"), ReasonCode: field("reasonCode")}
 }
 
 func summaryOperational(b *strings.Builder, bundle Bundle) {
@@ -113,6 +114,9 @@ func summaryOperational(b *strings.Builder, bundle Bundle) {
 	writeLine(b, "Coverage: %s", bundle.Operational.Coverage)
 	for _, observation := range bundle.Operational.Observations {
 		writeLine(b, "- %s/%s: %s (%s), observed %s; build %s/%s; last useful progress %s.", observation.InstanceID, observation.GaggleID, observation.State, observation.ReasonCode, observation.ObservedAt, observation.Version, observation.Commit, orUnknown(observation.LastUsefulProgressAt))
+		if backlog := observation.Backlog; backlog != nil {
+			writeLine(b, "  Pending work: %s (%s), coverage %s; claim availability unknown.", backlog.State, backlog.ReasonCode, backlog.Coverage)
+		}
 		if mcp := observation.RequiredMCP; mcp != nil {
 			writeLine(b, "  Required MCP: %s (%s), coverage %s; context %s/%s/%s.", mcp.State, mcp.Reason, mcp.Coverage, mcp.Workflow, mcp.Stage, mcp.Adapter)
 		}
@@ -130,6 +134,14 @@ func projectOperationalMCP(attrs map[string]any) *fleetdiagnostics.MCPHealth {
 		return nil
 	}
 	health, err := fleetdiagnostics.DecodeMCPHealth(attrs, at)
+	if err != nil {
+		return nil
+	}
+	return health
+}
+
+func projectOperationalBacklog(attrs map[string]any, at time.Time) *fleetdiagnostics.BacklogHealth {
+	health, err := fleetdiagnostics.DecodeBacklogHealth(attrs, at)
 	if err != nil {
 		return nil
 	}

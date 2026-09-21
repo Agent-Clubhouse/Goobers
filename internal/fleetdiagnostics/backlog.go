@@ -2,6 +2,7 @@ package fleetdiagnostics
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -58,4 +59,20 @@ func backlogReport(source *BacklogHealth, live bool, now time.Time) *BacklogHeal
 		result.State, result.ReasonCode, result.Coverage, result.PendingCount = "unknown", "observation_stale", "unknown", nil
 	}
 	return &result
+}
+
+// DecodeBacklogHealth validates the allowlisted pending-work subset for offline
+// reports. Private work content and unrecognized backlog fields are excluded.
+func DecodeBacklogHealth(attrs map[string]any, observed time.Time) (*BacklogHealth, error) {
+	if len(attrs) > 48 || observed.IsZero() {
+		return nil, errors.New("invalid backlog observation envelope")
+	}
+	f := &fields{values: make(map[string]any)}
+	for key, value := range attrs {
+		if strings.HasPrefix(key, "backlog") {
+			f.values[key] = value
+		}
+	}
+	health := f.backlogHealth(observed)
+	return health, f.finish()
 }
