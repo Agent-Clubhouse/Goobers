@@ -476,31 +476,8 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		env:     testEnvironment,
 		group:   groupUnit,
 	}
-	// Deliberately NOT routed through test/hermetic, though every other suite is.
-	//
-	// It was tempting: the unit group sets
-	// GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS=1, so the shards never run these
-	// contracts, and the whole-tree `make test` pass behind the deleted
-	// `coverage` job was the only place they ran under the restricted PATH.
-	// But that pass only existed from 2026-08-16 (#3152) — before it, nothing in
-	// CI ran these contracts hermetically either, so there is no long-standing
-	// property here to preserve, only a five-day-old side effect of the job this
-	// change removes.
-	//
-	// And it does not work on Windows. hermetic links each allowlisted tool into
-	// a temp directory and points PATH at it; `git.exe` resolves its libexec
-	// helpers relative to its own install layout, so a linked-in-isolation git
-	// dies with "error launching git: The system cannot find the path specified."
-	// Measured on PR #3461: every reference-workflow contract failed at
-	// `git init` on windows-latest while ubuntu and macOS passed. Making these
-	// contracts hermetic therefore needs a fix in the hermetic runner's Windows
-	// tool materialisation first, and belongs in its own change.
-	shippedWorkflowCheck := newShippedWorkflowCheck(tools, testEnvironment)
-	releaseImageProbeCheck := newReleaseImageProbeCheck(tools, testEnvironment)
-
+	result = append(result, shippedWorkflowChecks(tools, testEnvironment)...)
 	result = append(result,
-		shippedWorkflowCheck,
-		releaseImageProbeCheck,
 		schemaDescriptionCoverageCheck,
 		testCheck,
 		check{
@@ -591,6 +568,16 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		}
 	}
 	return result
+}
+
+func shippedWorkflowChecks(tools toolchain, environment []string) []check {
+	// Deliberately NOT routed through test/hermetic, though every other suite is.
+	// hermetic links each allowlisted tool into a temp directory and points PATH
+	// at it; a linked-in-isolation git cannot find its libexec helpers on Windows.
+	return []check{
+		newShippedWorkflowCheck(tools, environment),
+		newReleaseImageProbeCheck(tools, environment),
+	}
 }
 
 func newShippedWorkflowCheck(tools toolchain, environment []string) check {
