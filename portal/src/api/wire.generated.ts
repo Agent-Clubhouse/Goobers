@@ -590,6 +590,7 @@ export const goWireFixtures = {
   "runs": {
     "runs": [
       {
+        "retryBackoff": {},
         "activeStages": [
           {
             "name": "implement",
@@ -665,6 +666,7 @@ export const goWireFixtures = {
     "nextCursor": "next-run"
   },
   "runDetail": {
+    "retryBackoff": {},
     "activeStages": [
       {
         "name": "implement",
