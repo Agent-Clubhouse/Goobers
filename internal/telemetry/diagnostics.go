@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,26 +45,27 @@ type DiagnosticExportStats struct {
 	Accepted  uint64 `json:"accepted"`
 	Delivered uint64 `json:"delivered"`
 	Dropped   uint64 `json:"dropped"`
-	Failures  uint64 `json:"failures"`
+	Failures  uint64 `json:"failures"` // Failed or partially rejected export RPCs.
 }
 
 // DiagnosticExporter owns an independent, bounded OTLP Logs transport. A slow
 // collector never blocks the producer or the journal/trace export stream.
 type DiagnosticExporter struct {
-	mu        sync.Mutex
-	closed    bool
-	queue     chan *collectorlogpb.ExportLogsServiceRequest
-	done      chan struct{}
-	cancel    context.CancelFunc
-	conn      *grpc.ClientConn
-	client    collectorlogpb.LogsServiceClient
-	ctx       context.Context
-	resource  *resourcepb.Resource
-	scrubber  journal.Scrubber
-	accepted  atomic.Uint64
-	delivered atomic.Uint64
-	dropped   atomic.Uint64
-	failures  atomic.Uint64
+	mu          sync.Mutex
+	closed      bool
+	queue       chan diagnosticBatch
+	queuedBytes int
+	done        chan struct{}
+	cancel      context.CancelFunc
+	conn        *grpc.ClientConn
+	client      collectorlogpb.LogsServiceClient
+	ctx         context.Context
+	resource    *resourcepb.Resource
+	scrubber    journal.Scrubber
+	accepted    atomic.Uint64
+	delivered   atomic.Uint64
+	dropped     atomic.Uint64
+	failures    atomic.Uint64
 }
 
 // NewDiagnosticExporter reads no ambient OTLP variables. An empty endpoint
@@ -95,7 +97,7 @@ func NewDiagnosticExporter(cfg Config) (*DiagnosticExporter, error) {
 		return nil, fmt.Errorf("create diagnostic collector: %w", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &DiagnosticExporter{queue: make(chan *collectorlogpb.ExportLogsServiceRequest, DiagnosticQueueLimit), done: make(chan struct{}), cancel: cancel, conn: conn, client: collectorlogpb.NewLogsServiceClient(conn), scrubber: cfg.Scrubber}
+	d := &DiagnosticExporter{queue: make(chan diagnosticBatch, DiagnosticQueueLimit), done: make(chan struct{}), cancel: cancel, conn: conn, client: collectorlogpb.NewLogsServiceClient(conn), scrubber: cfg.Scrubber}
 	d.ctx = metadata.NewOutgoingContext(ctx, metadata.New(cfg.OTLPHeaders))
 	d.resource = &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
 		d.field("service.name", "goobers"), d.field("service.version", cfg.ServiceVersion), d.field("goobers.build.commit", cfg.BuildCommit), d.field("goobers.telemetry.stream", "diagnostics"),
@@ -128,41 +130,29 @@ func (d *DiagnosticExporter) field(key string, value any) *commonpb.KeyValue {
 // Emit takes an immutable snapshot and returns immediately. Oversize records,
 // a full queue and shutdown are losses, counted rather than silently hidden.
 func (d *DiagnosticExporter) Emit(record DiagnosticRecord) bool {
-	if d == nil {
-		return false
-	}
+	return d.EmitBatch([]DiagnosticRecord{record}) == 1
+}
+
+func (d *DiagnosticExporter) diagnosticEntry(record DiagnosticRecord) *logpb.LogRecord {
 	if record.Time.IsZero() || record.Name == "" || len(record.Name) > 256 || len(record.Attributes) > 64 {
-		d.dropped.Add(1)
-		return false
+		return nil
 	}
 	entry := &logpb.LogRecord{TimeUnixNano: nonNegativeUnixNano(record.Time), ObservedTimeUnixNano: nonNegativeUnixNano(time.Now()), Body: d.field("", record.Name).Value, SeverityNumber: logpb.SeverityNumber_SEVERITY_NUMBER_INFO}
 	entry.Attributes = append(entry.Attributes, d.field("goobers.diagnostics.schema_version", 1))
 	for key, value := range record.Attributes {
 		if !validDiagnosticField(key, value) {
-			d.dropped.Add(1)
-			return false
+			return nil
 		}
 		entry.Attributes = append(entry.Attributes, d.field(key, value))
 	}
-	req := &collectorlogpb.ExportLogsServiceRequest{ResourceLogs: []*logpb.ResourceLogs{{Resource: d.resource, ScopeLogs: []*logpb.ScopeLogs{{Scope: &commonpb.InstrumentationScope{Name: "goobers.diagnostics", Version: "1"}, LogRecords: []*logpb.LogRecord{entry}}}}}}
-	if proto.Size(req) > DiagnosticRecordLimit {
-		d.dropped.Add(1)
-		return false
+	if proto.Size(d.diagnosticRequest([]*logpb.LogRecord{entry})) > DiagnosticRecordLimit {
+		return nil
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.closed {
-		d.dropped.Add(1)
-		return false
-	}
-	select {
-	case d.queue <- req:
-		d.accepted.Add(1)
-		return true
-	default:
-		d.dropped.Add(1)
-		return false
-	}
+	return entry
+}
+
+func (d *DiagnosticExporter) diagnosticRequest(entries []*logpb.LogRecord) *collectorlogpb.ExportLogsServiceRequest {
+	return &collectorlogpb.ExportLogsServiceRequest{ResourceLogs: []*logpb.ResourceLogs{{Resource: d.resource, ScopeLogs: []*logpb.ScopeLogs{{Scope: &commonpb.InstrumentationScope{Name: "goobers.diagnostics", Version: "1"}, LogRecords: slices.Clone(entries)}}}}}
 }
 
 // Reject nested or unbounded payloads before formatting or copying them.
@@ -185,20 +175,11 @@ func validDiagnosticField(key string, value any) bool {
 func (d *DiagnosticExporter) run() {
 	defer close(d.done)
 	defer func() { _ = d.conn.Close() }()
-	for req := range d.queue {
-		if d.ctx.Err() != nil {
-			d.dropped.Add(1)
-			continue
-		}
-		ctx, cancel := context.WithTimeout(d.ctx, diagnosticExportTimeout)
-		response, err := d.client.Export(ctx, req)
-		cancel()
-		if err != nil || (response.GetPartialSuccess().GetRejectedLogRecords() > 0) {
-			d.failures.Add(1)
-			d.dropped.Add(1)
-		} else {
-			d.delivered.Add(1)
-		}
+	for batch := range d.queue {
+		d.mu.Lock()
+		d.queuedBytes -= batch.bytes
+		d.mu.Unlock()
+		d.exportBatch(batch)
 	}
 }
 

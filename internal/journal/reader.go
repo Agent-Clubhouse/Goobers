@@ -593,18 +593,35 @@ func reconstructPhase(events []Event) RunPhase {
 // cannot be configured away.
 func ParkedAtGate(events []Event) bool {
 	for i := len(events) - 1; i >= 0; i-- {
-		switch events[i].Type {
-		case EventGatePaused:
-			return true
-		case EventGateStarted, EventGateEvaluated, EventGateOverridden,
-			EventRunStarted, EventRunResumed, EventRunFinished,
-			EventStageStarted, EventStageFinished, EventStageRerunRequested,
-			EventParallelStarted, EventParallelFinished,
-			EventBranchStarted, EventBranchFinished:
-			return false
+		if parked, decisive := gateParkingEffect(events[i]); decisive {
+			return parked
 		}
 	}
 	return false
+}
+
+// GateParkingAfter applies the same gate-wait semantics used by ParkedAtGate
+// to an incremental projection. Unrelated telemetry cannot clear a human wait.
+func GateParkingAfter(prior bool, event Event) bool {
+	if parked, decisive := gateParkingEffect(event); decisive {
+		return parked
+	}
+	return prior
+}
+
+func gateParkingEffect(event Event) (parked, decisive bool) {
+	switch event.Type {
+	case EventGatePaused:
+		return true, true
+	case EventGateStarted, EventGateEvaluated, EventGateOverridden,
+		EventRunStarted, EventRunResumed, EventRunFinished,
+		EventStageStarted, EventStageFinished, EventStageRerunRequested,
+		EventParallelStarted, EventParallelFinished,
+		EventBranchStarted, EventBranchFinished:
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // terminalGateExecuted reports whether the gate.evaluated at index i was

@@ -386,7 +386,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		if policyErr != nil {
 			return nil
 		}
-		lander, err := mergepolicy.ForPolicy(policy)
+		lander, err := mergeLanderForCurrentAuthority(policy, providerCapability)
 		if err != nil {
 			policyErr = err
 			return nil

@@ -259,3 +259,20 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	}
 	return env, nil
 }
+
+// ConfigGenerationEnvVar identifies the immutable execution archive for a run.
+const ConfigGenerationEnvVar = "GOOBERS_CONFIG_GENERATION"
+
+// ConfigDirectoryEnvVar locates that archive's verified local extraction.
+const ConfigDirectoryEnvVar = "GOOBERS_CONFIG_DIRECTORY"
+
+func declaredStageEnvironment(defaults, declared map[string]string) map[string]string {
+	result := make(map[string]string, len(defaults)+len(declared))
+	for key, value := range defaults {
+		result[key] = value
+	}
+	for key, value := range declared {
+		result[key] = value
+	}
+	return result
+}

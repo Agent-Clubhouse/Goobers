@@ -90,7 +90,10 @@ func (w *workerSeams) currentSnapshotLocked() (*workerConfigSnapshot, error) {
 // loadConfigSnapshot reads one whole view of the config tree and reports
 // whether the tree held still for the entire read. It never publishes.
 func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) {
-	l := instance.NewLayout(w.root)
+	return w.loadConfigSnapshotAt(instance.NewLayout(w.root))
+}
+
+func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnapshot, bool, error) {
 	digest, err := configDirectoryDigest(l.ConfigDir())
 	if err != nil {
 		return nil, false, fmt.Errorf("worker: digest config directory: %w", err)
@@ -140,6 +143,7 @@ func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) 
 		return nil, false, fmt.Errorf("worker: digest config directory: %w", err)
 	}
 	snapshot := &workerConfigSnapshot{
+		configDir:     l.ConfigDir(),
 		digest:        digest,
 		gaggleDigests: gaggleDigests,
 		cfg:           cfg,

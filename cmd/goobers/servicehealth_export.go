@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"math"
+	"path/filepath"
 	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/diagnostics/history"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/version"
@@ -12,11 +15,11 @@ import (
 
 // startServiceHealth owns the independent diagnostic transport. Local evidence
 // remains available when export is disabled, misconfigured, or unavailable.
-func startServiceHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler) <-chan struct{} {
-	return startServiceHealthWithStores(ctx, root, identity, setup, inventory, setup.SecretStores)
+func startServiceHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, fleet ...fleetHealthSample) <-chan struct{} {
+	return startServiceHealthWithStores(ctx, root, identity, setup, inventory, setup.SecretStores, fleet...)
 }
 
-func startServiceHealthWithStores(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, stores credentials.StoreResolver) <-chan struct{} {
+func startServiceHealthWithStores(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, stores credentials.StoreResolver, fleet ...fleetHealthSample) <-chan struct{} {
 	done := make(chan struct{})
 	// Keep local observations and scheduler startup independent of credential
 	// resolution. The startup observation waits in this single-record handoff;
@@ -35,11 +38,8 @@ func startServiceHealthWithStores(ctx context.Context, root string, identity *da
 		if err != nil {
 			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: "diagnostics_export_unavailable", Message: err.Error()}})
 		}
-		for record := range records {
-			if exporter != nil {
-				exporter.Emit(record)
-			}
-		}
+		runHealthExports(ctx, setup, exporter, records, fleet)
+
 		if exporter != nil {
 			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -85,4 +85,82 @@ func serviceHealthDiagnosticRecord(event journal.Event) telemetry.DiagnosticReco
 		}
 	}
 	return telemetry.DiagnosticRecord{Time: event.Time, Name: "goobers.service.health", Attributes: attrs}
+}
+
+func runHealthExports(ctx context.Context, setup *schedulerSetup, exporter *telemetry.DiagnosticExporter, records <-chan telemetry.DiagnosticRecord, fleet []fleetHealthSample) {
+	var scrubber journal.Scrubber = journal.NewPatternScrubber()
+	if setup.SharedRegistry != nil {
+		scrubber = journal.Chain(setup.SharedRegistry, scrubber)
+	}
+	store, err := history.Open(ctx, filepath.Join(setup.InstanceLog.Dir(), "diagnostics"), scrubber)
+	if store != nil {
+		defer func() { _ = store.Close() }()
+	}
+	historyFailed := false
+	recordHistoryFailure := func(err error) {
+		if err != nil && !historyFailed {
+			historyFailed = true
+			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: "diagnostic_history_unavailable", Message: "Local diagnostic history could not retain an observation batch; retained evidence may have gaps."}})
+		}
+	}
+	recordHistoryFailure(err)
+	var ticks <-chan time.Time
+	if len(fleet) > 0 {
+		ticker := time.NewTicker(setup.Config.Telemetry.Diagnostics.HeartbeatPeriod())
+		defer ticker.Stop()
+		ticks = ticker.C
+		recordHistoryFailure(emitFleetHealth(ctx, store, exporter, fleet, time.Now().UTC()))
+	}
+	for {
+		select {
+		case record, ok := <-records:
+			if !ok {
+				return
+			}
+			if exporter != nil {
+				exporter.Emit(record)
+			}
+		case now := <-ticks:
+			recordHistoryFailure(emitFleetHealth(ctx, store, exporter, fleet, now.UTC()))
+		}
+	}
+}
+
+func emitFleetHealth(ctx context.Context, store *history.Store, exporter *telemetry.DiagnosticExporter, fleet []fleetHealthSample, now time.Time) error {
+	var historyErr error
+	sampleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for _, sample := range fleet {
+		records := sample(sampleCtx, now)
+		for _, record := range records {
+			if exporter != nil && record.Name == "goobers.fleet.heartbeat" && record.Attributes["gaggleId"] == "" {
+				record.Attributes["diagnosticsDroppedRecords"] = int64(min(exporter.Stats().Dropped, uint64(math.MaxInt64)))
+			}
+		}
+		if store != nil {
+			if err := store.Append(sampleCtx, records); err != nil {
+				historyErr = err
+			}
+		}
+		for len(records) > 0 {
+			count := min(len(records), telemetry.DiagnosticBatchLimit)
+			exporter.EmitBatch(records[:count])
+			records = records[count:]
+		}
+	}
+	return historyErr
+}
+
+// startDaemonHealth starts while startup is still in progress; its deferred
+// stop joins observers before the read service and instance journal close.
+func startDaemonHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, reader fleetHealthReader, ready func() bool, engines ...*daemonEngineClient) func() {
+	healthCtx, cancel := context.WithCancel(ctx)
+	var engine *daemonEngineClient
+	if len(engines) > 0 {
+		engine = engines[0]
+	}
+	workers := newFleetWorkerHealthObserver(setup, engine)
+	health := newFleetHealthSampler(root, identity, setup.Config.Telemetry.Diagnostics, reader, workers, ready)
+	done := startServiceHealth(healthCtx, root, identity, setup, inventory, combinedFleetSampler(root, setup, reader, withBacklogHealth(setup, health)))
+	return func() { cancel(); <-done }
 }

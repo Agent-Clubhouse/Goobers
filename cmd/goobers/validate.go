@@ -500,7 +500,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 }
 
 func validateConfigPaths(options validateOptions, stdout io.Writer, diagnostics *diagnosticCollector) (configFile, configDir string) {
-	l := instance.NewLayout(options.root)
+	l := layoutFor(options.root)
 	if !options.sourceTree {
 		return l.ConfigFile(), l.ConfigDir()
 	}

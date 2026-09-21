@@ -773,7 +773,57 @@ export interface EngineFallback {
   unpinnedGates?: string[];
 }
 
+/** An observed retry timer; an expired deadline does not establish progress. */
+export interface RetryBackoffWait {
+  stage: string;
+  branch?: number;
+  attempt: number;
+  driver: "local" | "engine";
+  class: "policy" | "infra";
+  observedAt: string;
+  deadline: string;
+}
+
+/** Bounded retained evidence, including explicit gaps in parallel coverage. */
+export interface RetryBackoffState {
+  waits?: RetryBackoffWait[];
+  parallel?: boolean;
+  truncated?: boolean;
+}
+
+export type RequiredMCPObservationStatus = "ready" | "unobservable" | "denied";
+
+/** Scoped session evidence; availability and authorization have independent clocks. */
+export interface RequiredMCPCondition {
+  adapter: string;
+  server: string;
+  stage: string;
+  branch: number;
+  observedAt: string;
+  category: "ready" | "check_unobservable" | "transport_failure" | "required_tool_unavailable" | "authentication_failure" | "tool_authorization_failure";
+  connection: RequiredMCPObservationStatus;
+  inventory: RequiredMCPObservationStatus;
+  authorization: RequiredMCPObservationStatus;
+  active: boolean;
+  reason?: string;
+  availabilityObservedAt?: string;
+  availabilityReason?: string;
+  authorizationObservedAt?: string;
+  authorizationReason?: string;
+}
+
+export interface RequiredMCPState {
+  /** Go encodes a nil slice as null; absence of observations is not readiness. */
+  conditions: RequiredMCPCondition[] | null;
+  truncated?: boolean;
+}
+
 export interface RunSummary {
+  requiredMcp?: RequiredMCPState;
+  /** Optional for older daemon responses; absent evidence is not zero retries. */
+  retryBackoff?: RetryBackoffState;
+  /** Durable human-gate wait; omitted by older daemons and when false. */
+  waitingForGate?: boolean;
   activeStages?: Array<{
     name: string;
     kind: string;
@@ -781,6 +831,12 @@ export interface RunSummary {
     attempt?: number;
     goober?: string;
     startedAt: string;
+    /** Actual execution observation, separate from stage start. */
+    executionObservedAt?: string;
+    executionDeadline?: string;
+    executionId?: string;
+    /** Overlapping executions cannot establish one authoritative deadline. */
+    executionOverlap?: boolean;
   }>;
   activityTruncated?: boolean;
   engineFallback?: EngineFallback;

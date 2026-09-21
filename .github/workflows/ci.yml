@@ -629,6 +629,14 @@ jobs:
           run-id: ${{ steps.previous-timing.outputs.result }}
           github-token: ${{ github.token }}
 
+      # Execute actual pinned v0.4.1 packages against current diagnostic data.
+      # This runs outside the hermetic unit sandbox so the pinned release can
+      # resolve its own module versions; failure blocks the required gate.
+      - name: Diagnostics downgrade and re-upgrade compatibility
+        timeout-minutes: 15
+        shell: bash
+        run: go run ./test/diagnosticsrollback
+
       - name: Unit suite and Linux coverage profile
         env:
           GOOBERS_CI_RACE: "0"
@@ -1241,10 +1249,16 @@ jobs:
       - name: Windows platform runtime
         env:
           GOOBERS_RUN_WSL_INTEGRATION_TEST: "1"
-        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
+        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock
 
       - name: Windows service transitions
         run: go test ./internal/winsvc
+
+      - name: Windows bounded diagnostic history
+        run: go test -v ./internal/diagnostics/history ./internal/diagnostics/featureusage -count=1
+
+      - name: Windows offline diagnostic evidence
+        run: go test ./internal/diagnostics -run '^TestOperational' -count=1
 
       - name: Windows host image preparation
         run: go test ./release/internal/imageinputs -count=1
@@ -1322,7 +1336,10 @@ jobs:
       - name: Windows read model and stores
         # Config mirrors must exercise native file replacement, read-only
         # cleanup, and Unix-source asset identity on Windows, not just compile.
-        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets
+        # Immutable generations also require native archive, shared-lease,
+        # retention and relative-path execution coverage (#5382).
+        # The rollback runner must also open native drive-letter SQLite paths.
+        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./test/diagnosticsrollback
 
       - name: Windows worktree and event stream
         env:
@@ -1365,7 +1382,7 @@ jobs:
       # Credential-plane alias tests drive actual runtime migration and Windows
       # directory junction/SameFile behavior; cross-compilation cannot cover it.
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed|TestOTLPJournalDiagnosticRoutingMatrix|TestFleetHealthProductionExportAndLocalEvidence|TestFleetProducerThroughCollectorKeepsTenantHealthAndOwners|TestFleetUsageProductionStartupReachesStrictBackend|TestRemoteFeatureEvidenceCrossesRealJournalPlaneAndDeduplicates|TestRemoteExecutionDeadlineReachesCurrentActiveStage|TestFeatureDriversFollowAdmittedSelectionAndReload|TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers

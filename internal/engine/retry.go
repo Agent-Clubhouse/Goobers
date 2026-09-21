@@ -165,7 +165,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 					t.Name, lastErr, infrastructureFailures, runner.DefaultMaxInfrastructureAttempts)
 			}
 			if retryDelay := infrastructureRetryDelay(emitErr, backoff, workflow.Now(ctx)); retryDelay > 0 {
-				if serr := workflow.Sleep(ctx, retryDelay); serr != nil {
+				if serr := sleepBeforeRetry(ctx, rec, t.Name, int(attempt), nextRetryClass, retryDelay); serr != nil {
 					return apiv1.ResultEnvelope{}, serr
 				}
 			}
@@ -198,7 +198,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		}
 		retryDelay := infrastructureRetryDelay(err, backoff, workflow.Now(ctx))
 		if retryDelay > 0 {
-			if serr := workflow.Sleep(ctx, retryDelay); serr != nil {
+			if serr := sleepBeforeRetry(ctx, rec, t.Name, int(attempt), nextRetryClass, retryDelay); serr != nil {
 				return apiv1.ResultEnvelope{}, serr
 			}
 		}

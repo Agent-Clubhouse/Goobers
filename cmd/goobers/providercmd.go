@@ -139,7 +139,22 @@ func isJournaledClaimsLockTimeout(err error) bool {
 // layoutFor is instance.NewLayout, named for readability at each provider-
 // chain subcommand's call site.
 func layoutFor(root string) instance.Layout {
-	return instance.NewLayout(root)
+	layout := instance.NewLayout(root)
+	if os.Getenv(executor.ConfigGenerationEnvVar) != "" && sameInstanceRoot(root, os.Getenv(executor.InstanceRootEnvVar)) {
+		if directory := os.Getenv(executor.ConfigDirectoryEnvVar); directory != "" {
+			return layout.WithConfigDir(directory)
+		}
+	}
+	return layout
+}
+
+func sameInstanceRoot(root, admitted string) bool {
+	first, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	second, err := filepath.Abs(admitted)
+	return err == nil && first == second
 }
 
 // providerStageRoot resolves the instance root a provider-chain subcommand
@@ -234,6 +249,9 @@ func validateRoutedRepo(routed providers.RepositoryRef) error {
 // independently, so it stays covered by the run's registrar-based secret
 // scrubbing rather than becoming a second, unregistered copy of the secret.
 func providerToken(cap capability.Capability) (string, error) {
+	if err := requireCurrentStageMergeAuthority(cap); err != nil {
+		return "", err
+	}
 	envVar := executor.CredentialEnvVar(string(cap))
 	token := os.Getenv(envVar)
 	if token == "" {

@@ -665,6 +665,17 @@
       "recoverySafe": false
     },
     {
+      "id": "journalMergeAuthority",
+      "method": "POST",
+      "path": "/api/v1/journal/merge-authority",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "journalBranchOwnership",
       "method": "POST",
       "path": "/api/v1/journal/branch-ownership",

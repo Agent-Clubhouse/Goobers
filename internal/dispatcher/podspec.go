@@ -1145,6 +1145,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		env = append(env, corev1.EnvVar{Name: EnvPodToken, Value: literalPodEnv(attempt.PodToken)})
 	}
 	env = append(env, planeEnv(cfg, attempt)...)
+	env = append(env, agenticMergeJournalEnv(cfg, attempt)...)
 	if len(attempt.Command) > 0 {
 		// []string always marshals; a marshal failure here would mean the Go
 		// runtime itself is broken, not a data problem — ignoring the error

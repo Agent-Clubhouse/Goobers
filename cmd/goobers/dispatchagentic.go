@@ -139,6 +139,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		}
 	}
 
+	ctx = podAgenticMergeAuthorityContext(ctx, kit.Envelope)
 	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
 	if err != nil {
 		return fail("agentic_executor_unavailable", err)
@@ -305,6 +306,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		}
 	}
 	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(os.Getenv(dispatcher.JournalTokenEnv)))
 	for _, c := range minted {
 		resolver.vals[c.Capability] = c.Value
 		// Register before use so the value is scrubbed out of transcripts and

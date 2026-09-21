@@ -466,7 +466,7 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 		secretEnv = append(secretEnv, name)
 	}
 	secretEnv = append(secretEnv, mcpSecretEnv...)
-	shellEnv := codexShellEnvironment(env, secretEnv)
+	shellEnv := codexExecutionContextShellEnvironment(ctx, req, codexShellEnvironment(env, secretEnv), c.InstanceRoot)
 	argv := buildCodexArgv(resolveStdioHarnessCommand(c.Command), req.Model, options.effort, req.Workspace, shellEnv, mcpOverrides, options.auth == CodexAuthAmbientChatGPT)
 	if req.Sandbox != nil {
 		writableRoots, err := gitWritableRoots(req.Workspace)

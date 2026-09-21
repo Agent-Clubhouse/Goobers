@@ -144,3 +144,78 @@ one, the final bytes travel inline over the journal connection. This does not
 grant additional authentication scopes. Checkpoint and finalization calls have
 separate 10-second and 30-second deadlines. Failed or uncertain checkpoint writes
 are surfaced as capture errors rather than silently advancing the source cursor.
+
+## Required MCP readiness before model dispatch
+
+Direct Copilot invocations with the default arguments on macOS and Linux use
+one owned headless process and one native SDK session for both the required
+`goobers-io` check and model turns. Startup and each readiness phase have a
+15-second cap within the invocation's total timeout. The adapter initializes
+that session's tools, checks the server's connection, and requires all five
+`goobers-io` tools in its inventory before sending the model prompt. A separate
+throwaway MCP connection is not readiness evidence for this session.
+
+The controlled session's permission handler permits only the declared tools,
+keeps file requests within the workspace and the sandbox's existing narrow
+linked-worktree Git grants (including symlink checks), and does
+not approve URL access, managed approvals, or sandbox bypass. `--allow-all-tools`
+is not treated as `--allow-all-paths` or `--allow-all-urls`. Custom permission
+arguments keep the ordinary CLI execution path. Unsupported or ambiguous
+permission requests fail closed in this unattended session.
+
+A `runner.annotation` with kind `required-mcp-readiness` records the `server`,
+`source`, `category`, `connection`, `inventory`, and `authorization` observations
+with phase `before-model`, schema version 1, and the adapter identity. Server
+errors, tool responses, credentials, and task content are excluded. Bounded
+per-stage conditions are projected into the existing read model and status run
+summaries without opening journals. A verified recovery clears an active
+condition; unobservable authorization cannot clear an earlier authorization
+failure. The 1.0.66 partial check can clear only transport/tool-availability
+failures. Truncated or absent observations are explicit coverage limitations.
+Fleet consumers must combine observations in time order within the same
+workflow/stage/branch/adapter/server context, so a newer run's recovery can
+clear an older run's failure without clearing a different stage.
+
+When the runtime supports native tool execution, the adapter invokes only
+`get_run_info` through the session's authorization pipeline. This read-only
+probe creates no input-inspection receipts or artifacts. An observed denial is
+`tool_authorization_failure`; a server requiring authentication is
+`authentication_failure`. These are ordinary failed attempts, not free
+infrastructure retries. Missing servers/tools and transport failures stop
+before a model turn and use the runner's existing bounded infrastructure retry
+allowance, independently of policy attempts. Exhausting that allowance fails
+the stage; the adapter does not add an internal retry loop.
+
+Copilot CLI 1.0.66 supports the connection and inventory checks but returns
+JSON-RPC method-not-found for the native authorization probe. For that specific
+structured response, the adapter records connection and inventory as `ready`,
+authorization as `unobservable`, and the overall category as
+`check_unobservable`, then permits the turn on the same session. This preserves
+working deployments while preventing the observed registered-but-absent case;
+it cannot promise to prevent authorization surprises on that runtime. Other
+probe errors do not take this compatibility path. A fully `ready` observation
+requires a successful native authorization probe.
+
+Claude, Windows Copilot, custom Copilot launchers, and custom Copilot arguments
+retain their existing execution paths and explicitly report
+`check_unobservable`. Their existing post-turn checks remain in place. Direct
+controlled Copilot sessions also inspect their actual server list after the
+turn, because CLI-global lifecycle logs do not reliably describe SDK sessions.
+After any completion-recovery turn, a bounded five-second finalization collects
+session usage and gracefully shuts down the native session before reading
+native captures. The usage RPC preserves per-model accounting even when a
+persistent headless session has not yet written its ordinary CLI shutdown
+record. Missing or invalid usage is not invented; capture/finalization errors
+remain visible to the stage.
+
+The opt-in read-only live checks send no model prompt:
+
+```sh
+GOOBERS_COPILOT_MCP_READINESS=1 go test -tags integration ./internal/harness \
+  -run '^TestIntegrationCopilotRequiredMCP' -count=1 -v
+```
+
+They require an installed Copilot CLI and check absent-server rejection,
+connection/tool inventory, native authorization capability, and post-turn
+session evidence. The always-on adapter tests cover model-dispatch counts,
+authorization rejection, timeout bounds, and the partial-observation policy.

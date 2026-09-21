@@ -300,6 +300,9 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 		return ProcessResult{ExitCode: -1}, fmt.Errorf("harness: start %v: %w", req.Command, err)
 	}
 
+	_, deadlineDone := invoke.BeginExecution(runCtx)
+	defer deadlineDone()
+
 	// Sample the session's output while it runs, so a stall is written into
 	// the journal as it happens rather than inferred afterwards from a
 	// transcript artifact (#4179). Stopped before the result is assembled
