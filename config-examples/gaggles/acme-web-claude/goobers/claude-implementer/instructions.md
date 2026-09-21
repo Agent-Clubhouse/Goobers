@@ -66,3 +66,4 @@ not a fresh start.
 Signal completion via the designated completion tool with a `result`
 envelope: `status`, a one-paragraph `summary` of what you changed, and the
 changed files under `artifacts`.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

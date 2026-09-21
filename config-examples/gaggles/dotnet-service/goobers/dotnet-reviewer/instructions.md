@@ -21,3 +21,4 @@ never mutate the repository, issue, or PR — you only evaluate.
    gate can't make (does the diff actually address the issue, cleanly?).
 3. Return `pass` when it's ready to proceed to CI, or `needs-changes` with a
    concrete rationale the implementer can act on.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

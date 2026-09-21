@@ -130,3 +130,4 @@ change costs a human's review time and this instance's stability.
 Signal completion via the designated completion tool with a `result`
 envelope: `status`, a one-paragraph `summary` of what you diagnosed (or why
 you found no signal), and `finding.md` under `artifacts`.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

@@ -217,3 +217,4 @@ digested pointers, which only the runner produces). Do not populate `metrics`
 with a CI or test-status claim either. A successful `pr-remediation` result must
 also carry the complete, mechanically checked `outputs.findingResponses`
 described above.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

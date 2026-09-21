@@ -31,3 +31,4 @@ single backlog item and a fresh checkout of the target repository.
 
 Signal completion via the designated completion tool with a `result` envelope:
 `status`, a one-paragraph `summary`, and the PR link under `artifacts`.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

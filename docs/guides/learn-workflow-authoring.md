@@ -584,6 +584,10 @@ Prefer the journal and supported recovery commands over manual edits under
 `runs/`, `scheduler/`, or `workcopies/`. Those directories are runtime state,
 not configuration.
 
+Put temporary or exploratory files under `.goobers/scratch/`; `.goobers/` is
+excluded from git and recovery capture. Never write scratch files at the
+repository root.
+
 ## 14. Production-readiness review
 
 Before turning a tutorial workflow into an autonomous production workflow:
