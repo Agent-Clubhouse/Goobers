@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/goobers/goobers/internal/diagnostics/history"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -71,7 +73,14 @@ func TestFleetHealthProductionExportAndLocalEvidence(t *testing.T) {
 			count++
 		}
 	}
-	if count != 2 {
-		t.Fatalf("local fleet records=%d want deployment plus gaggle", count)
+	if count != 0 {
+		t.Fatalf("fleet records polluted scheduler journal: %d", count)
+	}
+	snapshot, err := history.Read(filepath.Join(log.Dir(), "diagnostics"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Records) != 2 {
+		t.Fatalf("bounded local records=%d want deployment plus gaggle", len(snapshot.Records))
 	}
 }

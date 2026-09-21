@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"math"
+	"path/filepath"
 	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/diagnostics/history"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/version"
@@ -86,12 +88,28 @@ func serviceHealthDiagnosticRecord(event journal.Event) telemetry.DiagnosticReco
 }
 
 func runHealthExports(ctx context.Context, setup *schedulerSetup, exporter *telemetry.DiagnosticExporter, records <-chan telemetry.DiagnosticRecord, fleet []fleetHealthSample) {
+	var scrubber journal.Scrubber = journal.NewPatternScrubber()
+	if setup.SharedRegistry != nil {
+		scrubber = journal.Chain(setup.SharedRegistry, scrubber)
+	}
+	store, err := history.Open(ctx, filepath.Join(setup.InstanceLog.Dir(), "diagnostics"), scrubber)
+	if store != nil {
+		defer func() { _ = store.Close() }()
+	}
+	historyFailed := false
+	recordHistoryFailure := func(err error) {
+		if err != nil && !historyFailed {
+			historyFailed = true
+			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: "diagnostic_history_unavailable", Message: "Local diagnostic history could not retain an observation batch; retained evidence may have gaps."}})
+		}
+	}
+	recordHistoryFailure(err)
 	var ticks <-chan time.Time
 	if len(fleet) > 0 {
 		ticker := time.NewTicker(setup.Config.Telemetry.Diagnostics.HeartbeatPeriod())
 		defer ticker.Stop()
 		ticks = ticker.C
-		emitFleetHealth(ctx, setup, exporter, fleet, time.Now().UTC())
+		recordHistoryFailure(emitFleetHealth(ctx, store, exporter, fleet, time.Now().UTC()))
 	}
 	for {
 		select {
@@ -103,12 +121,13 @@ func runHealthExports(ctx context.Context, setup *schedulerSetup, exporter *tele
 				exporter.Emit(record)
 			}
 		case now := <-ticks:
-			emitFleetHealth(ctx, setup, exporter, fleet, now.UTC())
+			recordHistoryFailure(emitFleetHealth(ctx, store, exporter, fleet, now.UTC()))
 		}
 	}
 }
 
-func emitFleetHealth(ctx context.Context, setup *schedulerSetup, exporter *telemetry.DiagnosticExporter, fleet []fleetHealthSample, now time.Time) {
+func emitFleetHealth(ctx context.Context, store *history.Store, exporter *telemetry.DiagnosticExporter, fleet []fleetHealthSample, now time.Time) error {
+	var historyErr error
 	sampleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	for _, sample := range fleet {
@@ -117,7 +136,11 @@ func emitFleetHealth(ctx context.Context, setup *schedulerSetup, exporter *telem
 			if exporter != nil && record.Name == "goobers.fleet.heartbeat" && record.Attributes["gaggleId"] == "" {
 				record.Attributes["diagnosticsDroppedRecords"] = int64(min(exporter.Stats().Dropped, uint64(math.MaxInt64)))
 			}
-			setup.InstanceLog.AppendBestEffort(journal.Event{Time: record.Time, Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": record.Name, "diagnostic": record.Attributes}})
+		}
+		if store != nil {
+			if err := store.Append(sampleCtx, records); err != nil {
+				historyErr = err
+			}
 		}
 		for len(records) > 0 {
 			count := min(len(records), telemetry.DiagnosticBatchLimit)
@@ -125,6 +148,7 @@ func emitFleetHealth(ctx context.Context, setup *schedulerSetup, exporter *telem
 			records = records[count:]
 		}
 	}
+	return historyErr
 }
 
 // startDaemonHealth starts while startup is still in progress; its deferred

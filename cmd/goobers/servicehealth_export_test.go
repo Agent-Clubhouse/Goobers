@@ -169,8 +169,7 @@ func TestFleetExportReportsDroppedRecordsBeforeShutdown(t *testing.T) {
 	sample := func(context.Context, time.Time) []telemetry.DiagnosticRecord {
 		return []telemetry.DiagnosticRecord{rootRecord, gaggleRecord}
 	}
-	setup := &schedulerSetup{InstanceLog: openTestInstanceLog(t)}
-	emitFleetHealth(context.Background(), setup, exporter, []fleetHealthSample{sample}, rootRecord.Time)
+	emitFleetHealth(context.Background(), nil, exporter, []fleetHealthSample{sample}, rootRecord.Time)
 	if rootRecord.Attributes["diagnosticsDroppedRecords"] != int64(1) {
 		t.Fatal(rootRecord.Attributes)
 	}
@@ -198,7 +197,7 @@ func TestFleetExportReportsDroppedRecordsBeforeShutdown(t *testing.T) {
 		t.Fatal("no heartbeat delivered")
 	}
 	disabled := telemetry.DiagnosticRecord{Time: rootRecord.Time, Name: rootRecord.Name, Attributes: map[string]any{"gaggleId": ""}}
-	emitFleetHealth(context.Background(), setup, nil, []fleetHealthSample{func(context.Context, time.Time) []telemetry.DiagnosticRecord {
+	emitFleetHealth(context.Background(), nil, nil, []fleetHealthSample{func(context.Context, time.Time) []telemetry.DiagnosticRecord {
 		return []telemetry.DiagnosticRecord{disabled}
 	}}, rootRecord.Time)
 	if _, ok := disabled.Attributes["diagnosticsDroppedRecords"]; ok {

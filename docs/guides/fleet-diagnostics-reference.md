@@ -328,3 +328,36 @@ the scheduled sleep, so existing journal delivery/repair may expose the event
 only after the wait. Live health remains unknown about that retry until evidence
 arrives. Older engine histories replay without the new annotation. Retry budgets
 and cancellation behavior are unchanged.
+## Bounded local diagnostic history
+
+Frequent fleet and feature observations live in the private
+`scheduler/diagnostics/history.json` snapshot, separate from the durable scheduler
+journal and its configurable retention. Each pulse replaces at most 4 MiB and
+4,096 validated records atomically. One fixed scratch file is also limited to
+4 MiB: data-file usage peaks at 8 MiB, plus an empty writer-lock file. A record
+is at most 64 KiB and a pulse at most 256 records. Writer-lock acquisition never
+waits; cancellation is checked before writes, synchronization and replacement.
+OS filesystem flush calls themselves still depend on the filesystem completing.
+
+The writer scrubs a batch before persistence and synchronizes once per pulse.
+Oldest observations are evicted to satisfy both limits. Startup reads are
+bounded, clean only the fixed scratch, and mark a reset after corrupt or
+oversized prior evidence. Failed replacement preserves the prior snapshot;
+known local write failures and invalid/oversized record omissions are reported
+in the next successful snapshot. A failed filesystem cannot guarantee that its
+last failure was durably recorded. Sparse, reset, expired or missing history is
+never evidence of healthy inactivity or lossless delivery.
+
+The offline bundle reads this retained window without contacting a daemon and
+falls back to the bounded legacy scheduler tail when the dedicated store is
+unavailable. Its public export-loss history carries existing per-boot
+`diagnosticsDroppedRecords` observations, separately from local eviction and
+write-failure metadata. It omits owner routing details and never treats zero
+recorded drops as proof that a collector received every observation. The
+six-hour service-health record remains in the existing scheduler journal.
+
+A full snapshot can rewrite up to 4 MiB per pulse; the bounds limit disk
+occupancy, not lifetime write volume. The `BenchmarkBoundedHistoryPulse`
+benchmark exercises the real atomic replace and fsync path for a 197-record
+pulse. Cross-platform CI validates the implementation; no local benchmark was
+run while the shared build disk was critically full.
