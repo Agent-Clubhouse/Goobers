@@ -131,7 +131,7 @@ func TestRespondToFindingsPostsCompleteDurableAccount(t *testing.T) {
 		},
 	}
 	responses := `[` +
-		`{"finding":2,"disposition":"declined","detail":"The fallback remains required by the documented V0 compatibility contract."},` +
+		`{"finding":2,"disposition":"declined","detail":"Non-actionable: the fallback remains required by the documented V0 compatibility contract."},` +
 		`{"finding":1,"disposition":"addressed","detail":"Added an explicit empty-input guard and regression coverage."}` +
 		`]`
 	root, server, resultFile := respondToFindingsFixture(t, verdict, responses, true)
@@ -298,7 +298,7 @@ func TestRespondToFindingsCheckValidatesBeforePush(t *testing.T) {
 	}{
 		{
 			name:      "complete",
-			responses: `[{"finding":1,"disposition":"addressed","detail":"fixed first"},{"finding":2,"disposition":"declined","detail":"second does not apply"}]`,
+			responses: `[{"finding":1,"disposition":"addressed","detail":"fixed first"},{"finding":2,"disposition":"declined","detail":"non-actionable: second does not apply"}]`,
 			wantCode:  0,
 			wantText:  "validated complete finding response account for 2 verdict finding(s) and 0 additional response(s)",
 		},
@@ -311,7 +311,7 @@ func TestRespondToFindingsCheckValidatesBeforePush(t *testing.T) {
 		{
 			name: "with in-run additions",
 			responses: `[{"finding":1,"disposition":"addressed","detail":"fixed first"},` +
-				`{"finding":2,"disposition":"declined","detail":"second does not apply"},` +
+				`{"finding":2,"disposition":"declined","detail":"non-actionable: second does not apply"},` +
 				`{"finding":3,"disposition":"addressed","detail":"installed the fake Copilot fixture the in-run reviewer asked for"}]`,
 			wantCode: 0,
 			wantText: "validated complete finding response account for 2 verdict finding(s) and 1 additional response(s)",
@@ -365,7 +365,7 @@ func TestRespondToFindingsCheckPassesDeclaredResultFileExecutorContract(t *testi
 			{Severity: apiv1.SeverityWarning, Message: "second"},
 		},
 	}
-	responses := `[{"finding":1,"disposition":"addressed","detail":"fixed first"},{"finding":2,"disposition":"declined","detail":"second does not apply"}]`
+	responses := `[{"finding":1,"disposition":"addressed","detail":"fixed first"},{"finding":2,"disposition":"declined","detail":"non-actionable: second does not apply"}]`
 	seedRemediationResponseRunBeforePush(t, root, runID, verdict, responses)
 
 	testBinary, err := filepath.Abs(os.Args[0])
@@ -502,7 +502,7 @@ func TestValidateFindingResponses(t *testing.T) {
 		{name: "malformed", raw: "{", want: "decode JSON"},
 		{name: "duplicate", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":1,"disposition":"declined","detail":"b"}]`, want: "more than once"},
 		{name: "not 1-based", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":0,"disposition":"declined","detail":"b"}]`, want: "1-based finding number"},
-		{name: "unanswered verdict finding", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":3,"disposition":"declined","detail":"b"}]`, want: "verdict finding 2 (second) has no response"},
+		{name: "unanswered verdict finding", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":3,"disposition":"addressed","detail":"additional"}]`, want: "verdict finding 2 (second) has no response"},
 		{name: "bad disposition", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":2,"disposition":"skipped","detail":"b"}]`, want: "addressed or declined"},
 		{name: "missing detail", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":2,"disposition":"declined","detail":" "}]`, want: "no detail"},
 	}
@@ -515,7 +515,7 @@ func TestValidateFindingResponses(t *testing.T) {
 	}
 
 	responses, err := validateFindingResponses(findings,
-		`[{"finding":2,"disposition":"DECLINED","detail":" reason "},{"finding":1,"disposition":"addressed","detail":" change "}]`)
+		`[{"finding":2,"disposition":"DECLINED","detail":" non-actionable: reason "},{"finding":1,"disposition":"addressed","detail":" change "}]`)
 	if err != nil {
 		t.Fatalf("valid responses: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestValidateFindingResponsesWithoutVerdictAcceptsOptionalAccount(t *testing
 		{
 			name: "documents several",
 			raw: `[{"finding":1,"disposition":"addressed","detail":"Fixed the failing CI job."},` +
-				`{"finding":2,"disposition":"declined","detail":"The sibling overlap is intentional."}]`,
+				`{"finding":2,"disposition":"declined","detail":"Non-actionable: the sibling overlap is intentional."}]`,
 			want: 2,
 		},
 	}
@@ -595,7 +595,7 @@ func TestValidateFindingResponsesAcceptsInRunReviewAdditions(t *testing.T) {
 	responses, err := validateFindingResponses(findings,
 		`[{"finding":3,"disposition":"addressed","detail":"answers the in-run reviewer"},`+
 			`{"finding":1,"disposition":"addressed","detail":"fixed first"},`+
-			`{"finding":2,"disposition":"declined","detail":"second does not apply"}]`)
+			`{"finding":2,"disposition":"declined","detail":"non-actionable: second does not apply"}]`)
 	if err != nil {
 		t.Fatalf("validateFindingResponses error = %v, want nil for a superset account", err)
 	}

@@ -3,6 +3,8 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -252,14 +254,15 @@ func RejectDependencyResult(result apiv1.ResultEnvelope, validationErr *apiv1.Er
 const MaxRemediationEvidenceRejections = maxRemediationEvidenceRejections
 
 // RemediationEvidenceRejectionAddendum is the corrective addendum a rejected
-// unchanged remediation is re-dispatched with. Naming the rejection ordinal
-// and the bound is part of the instruction: an agent that knows it has two
-// tries left behaves differently from one that believes the loop is infinite.
+// remediation is re-dispatched with. Naming the rejection ordinal and the
+// bound is part of the instruction: an agent that knows it has two tries left
+// behaves differently from one that believes the loop is infinite.
 func RemediationEvidenceRejectionAddendum(message string, rejection, bound int) string {
 	return fmt.Sprintf(
-		"Your unchanged remediation result was rejected by the runner: %s. Inspect every required "+
-			"failure-evidence pointer with list_inputs and read_input or grep_input, then explain why the "+
-			"failure is non-actionable if no source change is needed. This was rejection %d of %d — after "+
+		"Your remediation result was rejected by the runner: %s. Inspect every required failure-feedback "+
+			"pointer with list_inputs and read_input or grep_input, account for every triggering finding in "+
+			"outputs.findingResponses, and explain why a finding is obsolete or environmental if no source "+
+			"change is needed. This was rejection %d of %d — after "+
 			"the last one this gate escalates the run instead of dispatching you again.",
 		message, rejection, bound,
 	)
@@ -493,6 +496,12 @@ type LearningEpisodeInput struct {
 	// VerdictPointer is the "<gate>.verdict" pointer injected alongside, if
 	// any: its artifact leads the episode's evidence list.
 	VerdictPointer *apiv1.ContextPointer
+	// FailureFeedback is the artifact-derived primary failure summary for a
+	// stage-failure repass. Empty preserves the legacy result-message fallback.
+	FailureFeedback string
+	// FailureFindings are the exact actionable diagnostics extracted from the
+	// failed stage artifacts. Empty preserves the legacy synthesized finding.
+	FailureFindings []apiv1.Finding
 }
 
 // BuildLearningEpisode assembles the learning episode a repass injects into
@@ -518,6 +527,9 @@ func BuildLearningEpisode(in LearningEpisodeInput) learning.Episode {
 		nextAttempt = sourceAttempt + 1
 	}
 	findings := learningFindingsForRepass(in.Gate, in.Stage, in.Verdict, in.SourceResult)
+	if in.Verdict == nil && len(in.FailureFindings) > 0 {
+		findings = append([]apiv1.Finding(nil), in.FailureFindings...)
+	}
 	evidence := learningEvidence(in.VerdictPointer, in.Verdict, in.SourceResult)
 	classification := apiv1.LearningValidation
 	if len(findings) > 0 {
@@ -526,6 +538,9 @@ func BuildLearningEpisode(in LearningEpisodeInput) learning.Episode {
 	correction := strings.TrimSpace(in.SourceResult.Summary)
 	if in.SourceResult.Error != nil && strings.TrimSpace(in.SourceResult.Error.Message) != "" {
 		correction = strings.TrimSpace(in.SourceResult.Error.Message)
+	}
+	if in.Verdict == nil && strings.TrimSpace(in.FailureFeedback) != "" {
+		correction = strings.TrimSpace(in.FailureFeedback)
 	}
 	if in.Verdict != nil {
 		correction = strings.TrimSpace(in.Verdict.Rationale)
@@ -553,6 +568,81 @@ func BuildLearningEpisode(in LearningEpisodeInput) learning.Episode {
 	}
 	episode.ID = learning.EpisodeID(episode)
 	return episode
+}
+
+var sourceDiagnostic = regexp.MustCompile(`(?i)(?:^|\s)(?:[a-z]:)?[^:\r\n]+\.(?:go|cs|ts|tsx|js|jsx|py|rs|java):\d+(?::\d+)?(?::|\s)`)
+
+// PrimaryFailureFeedback promotes exact actionable diagnostics from retained
+// stage artifacts into the learning episode while preserving the full artifact
+// pointers as the authoritative logs.
+func PrimaryFailureFeedback(
+	stage string,
+	result apiv1.ResultEnvelope,
+	resolve func(apiv1.ArtifactPointer) ([]byte, error),
+) (string, []apiv1.Finding) {
+	if result.Status != apiv1.ResultFailure || resolve == nil {
+		return "", nil
+	}
+	var diagnostics []string
+	seen := map[string]bool{}
+	for _, artifact := range result.Artifacts {
+		data, err := resolve(artifact)
+		if err != nil {
+			continue
+		}
+		if len(data) > 256*1024 {
+			data = data[:256*1024]
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || !sourceDiagnostic.MatchString(line) || seen[line] {
+				continue
+			}
+			seen[line] = true
+			diagnostics = append(diagnostics, line)
+			if len(diagnostics) == 50 {
+				break
+			}
+		}
+		if len(diagnostics) == 50 {
+			break
+		}
+	}
+	if len(diagnostics) == 0 {
+		return "", nil
+	}
+	slices.Sort(diagnostics)
+	code := ""
+	if result.Error != nil {
+		code = strings.TrimSpace(result.Error.Code)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "PRIMARY FAILURE\nstage: %s\nclassification: validation\n", stage)
+	if code != "" {
+		fmt.Fprintf(&b, "error code: %s\n", code)
+	}
+	if summary := strings.TrimSpace(result.Summary); summary != "" {
+		fmt.Fprintf(&b, "failing check: %s\n", summary)
+	}
+	b.WriteString("actionable diagnostics:\n")
+	findings := make([]apiv1.Finding, 0, len(diagnostics))
+	evidenceDigest := learningEvidenceDigest(result.Artifacts)
+	for _, diagnostic := range diagnostics {
+		fmt.Fprintf(&b, "- %s\n", diagnostic)
+		finding := apiv1.Finding{
+			Severity:               apiv1.SeverityError,
+			Message:                diagnostic,
+			Location:               stage,
+			LearningClassification: apiv1.LearningValidation,
+		}
+		learning.NormalizeFinding(&finding, stage, evidenceDigest)
+		findings = append(findings, finding)
+	}
+	b.WriteString("full logs:\n")
+	for _, artifact := range result.Artifacts {
+		fmt.Fprintf(&b, "- %s (%s)\n", artifact.Path, artifact.Digest)
+	}
+	return strings.TrimSpace(b.String()), findings
 }
 
 // LearningEpisodeAddressing is the attempt arithmetic an injected learning

@@ -255,6 +255,10 @@ func completeVerdict() apiv1.Verdict {
 			Class:                  apiv1.FindingCrossPRBlocked,
 			BlockingPRs:            []int{1703},
 		}},
+		ResolvedFindingIDs: []string{"finding-previous"},
+		AcceptanceChecks: []apiv1.AcceptanceCheck{{
+			Category: "behavioral-tests", Status: "satisfied", Detail: "The named regression test covers the behavior.",
+		}},
 		Summary:        "Changes are required.",
 		HeadSHA:        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		BaseSHA:        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

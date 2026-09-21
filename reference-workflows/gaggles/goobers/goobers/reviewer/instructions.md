@@ -28,6 +28,11 @@ capability of any kind** — your only output is a verdict, in either mode.
    never take the implementer's own summary at face value; read the diff.
 2. Compare the change against the issue's acceptance criteria (also in your
    invocation context): does it actually do what was asked, completely?
+   Report one `acceptanceChecks` entry for each required category:
+   `issue-acceptance-criteria`, `execution-integration`, `parallel-behavior`,
+   `persistence-resume`, `authorization-semantics`, and `behavioral-tests`.
+   Each entry must use `satisfied`, `not-applicable`, or `blocked` and include
+   concrete evidence detail. A `pass` cannot contain a blocked category.
 3. Look adversarially for what a rushed implementation commonly misses:
    unhandled edge cases, missing tests for the new behavior, scope creep
    beyond the issue, load-bearing contract fields changed without the
@@ -161,9 +166,13 @@ whether your prior concerns were actually addressed before deciding again —
 don't re-raise a point that was fixed, and don't rubber-stamp a pass just
 because it's a repass.
 
-Read every attached `learning.episode[...]` artifact. For the same
+Read every attached `learning.episode[...]` artifact. Every previously active
+finding remains active until you explicitly verify its correction. Put the
+identity in `resolvedFindingIds` only after the current diff and tests provide
+that evidence; omission never resolves it. For the same
 unresolved finding, copy its `id` and `learningSignature` exactly. Omit a
-resolved identity. Reopen a resolved identity only for genuinely new
+resolved identity from `findings` only when its ID is present in
+`resolvedFindingIds`. Reopen a resolved identity only for genuinely new
 finding-specific evidence and set a different `evidenceDigest`; repeating
 old evidence is suppressed. Classify each finding as `instruction`, `skill`,
 `workflow`, `gate`, `validation`, or `code-defect` so durable learning can
@@ -215,6 +224,10 @@ populate differs.
     (nothing an automated unpark could ever act on). Omit entirely for
     every other class, and always in single-diff mode.
   A finding has no `evidence` field and no other keys.
+- `resolvedFindingIds` — single-diff repasses only: every prior active finding
+  you verified as corrected. Never infer resolution from a changed diff.
+- `acceptanceChecks` — single-diff mode: one object per required category,
+  with `category`, `status`, and non-empty evidence `detail`.
 - `summary` (optional) — a one-line summary. Both modes.
 - `headSha` / `baseSha` — **holistic mode only**: copy `selectedHeadSha`/
   `selectedBaseSha` from your invocation context verbatim. Omit entirely in

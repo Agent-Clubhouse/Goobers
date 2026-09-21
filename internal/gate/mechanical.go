@@ -18,10 +18,19 @@ func (e *Evaluator) setEvidenceInspectionVerdict(g apiv1.Gate, result *Result) e
 			verdict.Rationale += "\n\nMechanical stop: " + mechanicalReason
 		}
 	}
-	verdict = MechanicalVerdict(verdict, apiv1.VerdictReasonEvidenceNotInspected, true)
+	verdict = MechanicalVerdict(verdict, RemediationVerdictReason(result.Reason), true)
 	result.Verdict = &verdict
 	result.Outcome = string(verdict.Decision)
 	return nil
+}
+
+// RemediationVerdictReason maps runner validation reasons onto the closed
+// verdict reason-code taxonomy.
+func RemediationVerdictReason(reason string) apiv1.VerdictReasonCode {
+	if reason == ReasonRemediationFindingsUnaccounted {
+		return apiv1.VerdictReasonFindingsUnaccounted
+	}
+	return apiv1.VerdictReasonEvidenceNotInspected
 }
 
 func (e *Evaluator) setInterruptedVerdict(g apiv1.Gate, result *Result) error {
@@ -72,12 +81,16 @@ func MechanicalVerdict(v apiv1.Verdict, reason apiv1.VerdictReasonCode, enabled 
 // BudgetEscalationVerdict preserves the review which exhausted the policy
 // budget, instead of turning its findings into a substantive rejection.
 func BudgetEscalationVerdict(g apiv1.Gate, exhausted bool, v *apiv1.Verdict) *apiv1.Verdict {
-	if !exhausted || v == nil || !StructuredMechanicalEscalation(g) {
+	_, hasEscalation := g.Branches[string(apiv1.VerdictEscalate)]
+	if !exhausted || v == nil || v.Decision != apiv1.VerdictNeedsChanges || !hasEscalation {
 		return v
 	}
 	copy := MechanicalVerdict(*v, apiv1.VerdictReasonRepassBudget, true)
+	stop := "The run stopped because the configured repass budget was exhausted; these findings remain actionable and were not judged inherently unresolvable."
 	if copy.Rationale == "" {
-		copy.Rationale = "The configured repass budget is exhausted; the review findings remain unresolved."
+		copy.Rationale = stop
+	} else {
+		copy.Rationale += "\n\nMechanical stop: " + stop
 	}
 	return &copy
 }

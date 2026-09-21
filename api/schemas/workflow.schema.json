@@ -548,6 +548,12 @@
             "goober": { "type": "string", "minLength": 1, "description": "Reviewer goober that returns the gate verdict." },
             "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "Wall-clock limit for one reviewer attempt." },
             "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for the reviewer. Omitted preserves the writable repository default." },
+            "requiredAcceptanceChecks": {
+              "type": "array",
+              "uniqueItems": true,
+              "description": "Acceptance categories every reviewer verdict must explicitly account for.",
+              "items": { "type": "string", "minLength": 1 }
+            },
             "retry": {
               "type": "object",
               "description": "Retry policy for failed reviewer attempts.",

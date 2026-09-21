@@ -3,10 +3,12 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/findingresponse"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -187,6 +189,8 @@ func cachedVerdictFor(subject apiv1.ResultEnvelope, instructionAddendum string) 
 const (
 	learningEpisodeTargetAttemptChange = "learning-episode-target-attempt"
 	learningEpisodeTargetAttempt       = 1
+	remediationFindingResponseChange   = "remediation-finding-response-validation"
+	remediationFindingResponseVersion  = 1
 )
 
 // learningEpisodeTargetAttemptFor is the versioned half of the #3931 seam,
@@ -238,7 +242,7 @@ func (r *runJournal) learningEpisode(
 	sourceResult apiv1.ResultEnvelope,
 	verdictPointer *apiv1.ContextPointer,
 ) (*apiv1.ContextPointer, error) {
-	events, _, err := projectedEvents(r.proj)
+	events, resolve, err := projectedEvents(r.proj)
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +257,9 @@ func (r *runJournal) learningEpisode(
 			workflow.DefaultVersion, learningEpisodeTargetAttempt),
 		addressing,
 	)
+	failureFeedback, failureFindings := runner.PrimaryFailureFeedback(
+		sourceStage, sourceResult, projectedArtifactBytes(resolve),
+	)
 	episode := runner.BuildLearningEpisode(runner.LearningEpisodeInput{
 		RunID:             in.RunID,
 		Workflow:          in.WorkflowName,
@@ -265,6 +272,8 @@ func (r *runJournal) learningEpisode(
 		Verdict:           verdict,
 		SourceResult:      sourceResult,
 		VerdictPointer:    verdictPointer,
+		FailureFeedback:   failureFeedback,
+		FailureFindings:   failureFindings,
 	})
 	data, err := json.Marshal(episode)
 	if err != nil {
@@ -476,9 +485,15 @@ func (r *runJournal) remediationEvidenceRequirement(
 	if cause == nil || len(required) == 0 {
 		return nil
 	}
-	_, resolve, err := projectedEvents(r.proj)
+	events, resolve, err := projectedEvents(r.proj)
 	if err != nil {
 		return err
+	}
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Stage == stage && event.Gate == gateName &&
+			event.Runner["kind"] == runner.RemediationEvidenceRequiredKind {
+			return nil
+		}
 	}
 	r.append(ctx, journal.Event{
 		Type: journal.EventRunnerAnnotation, Stage: stage, Gate: gateName,
@@ -520,6 +535,12 @@ type gateEvidence struct {
 	// that changed nothing is a fast-fail, since a deterministic one that
 	// verifies or publishes legitimately produces no diff.
 	SubjectAgentic bool
+	// RemediationEpisode is the latest learning episode the re-entered subject
+	// must account for before an independent reviewer is dispatched.
+	RemediationEpisode findingresponse.Episode
+	// RemediationValidation is non-nil when the subject omitted or malformed
+	// that account, or when the episode itself could not be projected.
+	RemediationValidation *apiv1.ErrorInfo
 }
 
 // collectGateEvidence gathers the above. A free function over the walk's state
@@ -544,7 +565,7 @@ func collectGateEvidence(
 
 	subjectTask, subjectIsTask := m.Task(subjectStage)
 	ev.SubjectAgentic = subjectIsTask && subjectTask.Type == apiv1.TaskAgentic
-	if !ev.SubjectAgentic || instructionAddendum != "" {
+	if !ev.SubjectAgentic {
 		return ev, nil
 	}
 	// #3375: why was the subject sent back? Resolved even when a cached
@@ -564,12 +585,57 @@ func collectGateEvidence(
 	// memory would be silently dropped by a replay on another worker, and the
 	// receipt check on the far side would then have nothing to check against.
 	required := runner.RemediationFailureEvidencePointers(cause, pointers)
-	if len(required) > 0 {
+	if instructionAddendum == "" && len(required) > 0 {
 		if err := rec.remediationEvidenceRequirement(ctx, subjectStage, g.Name, cause, required); err != nil {
 			return gateEvidence{}, err
 		}
 	}
+	if strings.EqualFold(subjectTask.Inputs["requireFindingResponses"], "true") &&
+		workflow.GetVersion(ctx, remediationFindingResponseChange,
+			workflow.DefaultVersion, remediationFindingResponseVersion) >= remediationFindingResponseVersion {
+		_, resolve, err := projectedEvents(rec.proj)
+		if err != nil {
+			return gateEvidence{}, err
+		}
+		episode, validationErr := findingresponse.ValidateResult(
+			pointers, subject, findingresponse.ArtifactBytes(projectedArtifactBytes(resolve)),
+		)
+		ev.RemediationEpisode = episode
+		if validationErr != nil {
+			episodeID := episode.ID
+			if episodeID == "" {
+				episodeID = "unreadable"
+			}
+			ev.RemediationValidation = &apiv1.ErrorInfo{
+				Code: gate.ReasonRemediationFindingsUnaccounted,
+				Message: fmt.Sprintf("outputs.%s does not account for learning episode %s: %v",
+					findingresponse.Output, episodeID, validationErr),
+			}
+		}
+	}
 	return ev, nil
+}
+
+func (r *runJournal) remediationFeedbackValidation(
+	ctx workflow.Context,
+	stage, gateName string,
+	cause *gate.RepassCause,
+	validation *apiv1.ErrorInfo,
+	episode findingresponse.Episode,
+) {
+	entry := map[string]any{
+		"kind":      runner.RemediationEvidenceValidationKind,
+		"code":      validation.Code,
+		"message":   validation.Message,
+		"episodeId": episode.ID,
+	}
+	if cause != nil {
+		entry["triggeringGate"] = cause.Gate
+		entry["triggeringStage"] = cause.Stage
+	}
+	r.append(ctx, journal.Event{
+		Type: journal.EventRunnerAnnotation, Stage: stage, Gate: gateName, Runner: entry,
+	})
 }
 
 // applyImplementationLaneOutcome writes the implementation lane's evidence
@@ -663,7 +729,19 @@ func reconcileGateFindings(
 	bytesFor := projectedArtifactBytes(resolve)
 
 	reason := ""
-	normalized, resolution := gate.ReconcileLearningFindings(*verdict, pointers, bytesFor, g.Name, diffDigest)
+	if feedback := gate.ValidateAcceptanceChecks(g, *verdict); feedback != "" {
+		verdict.Decision = apiv1.VerdictNeedsChanges
+		verdict.Rationale = strings.TrimSpace(strings.TrimSpace(verdict.Rationale) + "\n\n" + feedback)
+		verdict.Findings = append(verdict.Findings, apiv1.Finding{
+			Severity:               apiv1.SeverityError,
+			Message:                feedback,
+			Location:               "review verdict",
+			LearningClassification: apiv1.LearningInstruction,
+		})
+	}
+	normalized, resolution := gate.ReconcileLearningFindings(
+		*verdict, pointers, bytesFor, g.Name, diffDigest, gate.RequiresExplicitFindingResolution(g),
+	)
 	verdict = &normalized
 	lifecycle.Resolved = resolution.Resolved
 	lifecycle.Suppressed = resolution.Suppressed

@@ -65,15 +65,24 @@ sends the run back to you:
   finding-level contract containing source sequence, attempts, evidence,
   correction feedback, stable finding identities/signatures, and the
   governed downstream action. Address every active finding; do not discard
-  or rename an identity merely to make it disappear. Then re-run your
+  or rename an identity merely to make it disappear. Before editing, enumerate
+  the episode findings in order. On completion, set `outputs.findingResponses`
+  to the same complete numbered `addressed`/`declined` account used by PR
+  remediation, with non-empty correction detail for every finding. Then re-run your
   targeted tests (not the full `-race` suite — see step 4) and commit again.
-- **From the CI gate** (`fail`): call `list_inputs`, then inspect every
+- **From the local-CI gate** (`fail`): read the attached learning episode's
+  prominently labeled `PRIMARY FAILURE` first. It names the failing check,
+  classification, error code, exact actionable diagnostics, and full-log
+  pointers. Call `list_inputs`, then inspect every
   required CI evidence pointer with `read_input` or `grep_input`, including
   all provided stdout/stderr artifacts and the repass context carrying
   `failureDigest`.
   A digest is a navigation aid, not a substitute for required artifact reads;
   listing inputs alone does not inspect them. Read the relevant diagnostic
-  ranges before changing code or reporting that no change is needed. Fix the
+  ranges before changing code or reporting that no change is needed. Account for every numbered
+  diagnostic in `outputs.findingResponses`. A successful result is invalid if
+  any triggering diagnostic is omitted; decline only when the detail explicitly
+  classifies it as obsolete, environmental, flaky, or non-actionable. Fix the
   actual failure — don't just retry blindly.
 
 Each repass is a fix on top of your own prior commits on the same branch,

@@ -12,7 +12,7 @@
       "then": {
         "required": ["reasonCode", "rationale"],
         "properties": {
-          "reasonCode": { "enum": ["empty-diff", "unchanged-repass", "repass-budget-exhausted", "finding-set-oscillation", "remediation-evidence-not-inspected"] },
+          "reasonCode": { "enum": ["empty-diff", "unchanged-repass", "repass-budget-exhausted", "finding-set-oscillation", "remediation-evidence-not-inspected", "remediation-findings-unaccounted"] },
           "rationale": { "pattern": "\\S" },
           "elected": { "const": false }
         }
@@ -56,7 +56,7 @@
     },
     "reasonCode": {
       "type": "string",
-      "enum": ["implementation-rejected", "policy-rejected", "unsalvageable-design", "ordering", "no-lander", "empty-diff", "unchanged-repass", "repass-budget-exhausted", "finding-set-oscillation", "remediation-evidence-not-inspected"],
+      "enum": ["implementation-rejected", "policy-rejected", "unsalvageable-design", "ordering", "no-lander", "empty-diff", "unchanged-repass", "repass-budget-exhausted", "finding-set-oscillation", "remediation-evidence-not-inspected", "remediation-findings-unaccounted"],
       "description": "Machine-readable rejection or deferral reason. Legacy fail verdicts may omit this field and must be treated as ambiguous, not inferred substantive rejection."
     },
     "rationale": {
@@ -72,6 +72,17 @@
       "type": "array",
       "description": "Specific review findings that require attention.",
       "items": { "$ref": "#/$defs/finding" }
+    },
+    "resolvedFindingIds": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "description": "Prior active finding identities explicitly verified as resolved. Omission does not imply resolution."
+    },
+    "acceptanceChecks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/acceptanceCheck" },
+      "description": "Explicit reviewer coverage of workflow-required acceptance categories."
     },
     "summary": {
       "type": "string",
@@ -103,6 +114,16 @@
     }
   },
   "$defs": {
+    "acceptanceCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "status", "detail"],
+      "properties": {
+        "category": { "type": "string", "minLength": 1, "description": "Workflow-required acceptance category." },
+        "status": { "type": "string", "enum": ["satisfied", "not-applicable", "blocked"], "description": "Reviewer disposition for this acceptance category." },
+        "detail": { "type": "string", "minLength": 1, "description": "Concrete evidence supporting the category disposition." }
+      }
+    },
     "finding": {
       "description": "One actionable or informational review observation.",
       "type": "object",

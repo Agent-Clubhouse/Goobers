@@ -63,6 +63,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	if implement.MinimumIntegrity != apiv1.IntegrityMaintainer {
 		t.Errorf("implement.minimumIntegrity = %q, want maintainer", implement.MinimumIntegrity)
 	}
+	if implement.Inputs["requireFindingResponses"] != "true" {
+		t.Errorf("implement.requireFindingResponses = %q, want true", implement.Inputs["requireFindingResponses"])
+	}
 	wantImplementContext := []string{"query-backlog", "implement", "remediate-ci", "review", "local-ci"}
 	if !slices.Equal(implement.ContextFrom, wantImplementContext) {
 		t.Errorf("implement.contextFrom = %v, want %v", implement.ContextFrom, wantImplementContext)
@@ -88,11 +91,25 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	}
 	for outcome, want := range map[string]string{
 		"pass":  "open-pr",
-		"fail":  "implement",
+		"fail":  "remediate-local-ci",
 		"infra": "local-ci",
 	} {
 		if got := localGate.Branches[outcome]; got != want {
 			t.Errorf("local-gate %s branch = %q, want %q", outcome, got, want)
+		}
+		if localGate.MaxRepasses != 2 {
+			t.Errorf("local-gate.maxRepasses = %d, want 2", localGate.MaxRepasses)
+		}
+		remediateLocalCI, ok := m.Task("remediate-local-ci")
+		if !ok {
+			t.Fatal("remediate-local-ci task not found")
+		}
+		if remediateLocalCI.Next != "review" || remediateLocalCI.MinimumIntegrity != apiv1.IntegrityMaintainer {
+			t.Errorf("remediate-local-ci = %+v, want maintainer-integrity remediation returning to review", remediateLocalCI)
+		}
+		if remediateLocalCI.Inputs["requireFindingResponses"] != "true" {
+			t.Errorf("remediate-local-ci.requireFindingResponses = %q, want true",
+				remediateLocalCI.Inputs["requireFindingResponses"])
 		}
 	}
 	review, ok := m.Gate("review")
@@ -257,7 +274,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// gaggle's ciCommand already resolved to the same argv at config-load
 	// time, so the RUNTIME command is unchanged; only the hashed definition
 	// moved, and the example no longer reads as a Go project.
-	const wantDigest = "sha256:a8607589552819e69e8792b8f26bbde4637668b3a64e7f3ffcfdfc310faa9b55"
+	const wantDigest = "sha256:569aa6aee1a4463dc1458c7ad196336fd478d8fc3e6a15e7e7310134ef29d0b5"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

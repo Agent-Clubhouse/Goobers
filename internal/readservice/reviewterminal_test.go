@@ -29,6 +29,7 @@ func TestTerminalReviewPreservesDispositionAndEvidence(t *testing.T) {
 			{apiv1.VerdictEscalate, apiv1.VerdictReasonRepassBudget},
 			{apiv1.VerdictEscalate, apiv1.VerdictReasonFindingOscillation},
 			{apiv1.VerdictEscalate, apiv1.VerdictReasonEvidenceNotInspected},
+			{apiv1.VerdictEscalate, apiv1.VerdictReasonFindingsUnaccounted},
 		} {
 			t.Run(string(phase)+"/"+string(disposition.decision)+"/"+string(disposition.reason), func(t *testing.T) {
 				service, layout, machine := fixtureService(t)
@@ -46,7 +47,14 @@ func TestTerminalReviewPreservesDispositionAndEvidence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := run.Append(journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: string(verdict.Decision), Ref: &ref}); err != nil {
+				event := journal.Event{
+					Type: journal.EventGateEvaluated, Gate: "review", Verdict: string(verdict.Decision), Ref: &ref,
+				}
+				if phase == journal.PhaseEscalated && verdict.Decision == apiv1.VerdictEscalate {
+					event.Target = "@escalate"
+					event.Escalated = true
+				}
+				if err := run.Append(event); err != nil {
 					t.Fatal(err)
 				}
 				finishFixtureRun(t, run, clock, phase)
@@ -64,6 +72,19 @@ func TestTerminalReviewPreservesDispositionAndEvidence(t *testing.T) {
 				}
 				if got.LegacyFailAmbiguous != (verdict.Decision == apiv1.VerdictFail && verdict.ReasonCode == "") {
 					t.Fatalf("wrong legacy ambiguity: %+v", got)
+				}
+				if phase == journal.PhaseEscalated && verdict.Decision == apiv1.VerdictEscalate {
+					detail, err := service.GetRun(context.Background(), "terminal-review")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if detail.Escalation == nil || detail.Escalation.Review == nil ||
+						detail.Escalation.Review.Verdict != string(verdict.Decision) ||
+						detail.Escalation.Review.ReasonCode != verdict.ReasonCode ||
+						detail.Escalation.Review.Rationale != verdict.Rationale ||
+						!reflect.DeepEqual(detail.Escalation.Review.Findings, verdict.Findings) {
+						t.Fatalf("escalation cause lost causal review: %+v", detail.Escalation)
+					}
 				}
 			})
 		}

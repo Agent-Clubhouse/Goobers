@@ -206,6 +206,37 @@ func TestRepassBudgetSharesTargetBudgetAcrossGates(t *testing.T) {
 	}
 }
 
+func TestRepassBudgetKeepsReviewAndLocalCIRemediationTargetsIndependent(t *testing.T) {
+	review := apiv1.Gate{Name: "review", Branches: map[string]string{
+		OutcomePass: "local-ci", string(apiv1.VerdictNeedsChanges): "implement",
+	}}
+	localCI := apiv1.Gate{Name: "local-gate", MaxRepasses: 2, Branches: map[string]string{
+		OutcomePass: "open-pr", OutcomeFail: "remediate-local-ci",
+	}}
+	var budget RepassBudget
+	if got := charge(&budget, review, string(apiv1.VerdictNeedsChanges), DefaultMaxRepasses); got.Attempt != 1 || got.Exceeded {
+		t.Fatalf("review remediation charge = %+v, want implement attempt 1", got)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		got := charge(&budget, localCI, OutcomeFail, DefaultMaxRepasses)
+		if got.Attempt != attempt || got.Exceeded || got.Bound != 2 {
+			t.Fatalf("local-CI remediation charge %d = %+v, want independent bound 2", attempt, got)
+		}
+	}
+	if got := budget.RepassAttempts["implement"]; got != 1 {
+		t.Fatalf("review remediation budget = %d, want unchanged at 1", got)
+	}
+	if got := budget.RepassAttempts["remediate-local-ci"]; got != 2 {
+		t.Fatalf("local-CI remediation budget = %d, want 2", got)
+	}
+	if exhausted := charge(&budget, localCI, OutcomeFail, DefaultMaxRepasses); !exhausted.Exceeded {
+		t.Fatalf("third local-CI remediation = %+v, want local budget exhaustion", exhausted)
+	}
+	if nextReview := charge(&budget, review, string(apiv1.VerdictNeedsChanges), DefaultMaxRepasses); nextReview.Attempt != 2 || nextReview.Exceeded {
+		t.Fatalf("second review remediation after local-CI exhaustion = %+v, want remaining review capacity", nextReview)
+	}
+}
+
 // A forward branch — a target that has NOT completed — charges nothing, in
 // either class, while still advancing the gate's own class counter.
 func TestRepassBudgetChargesNothingOnAForwardBranch(t *testing.T) {

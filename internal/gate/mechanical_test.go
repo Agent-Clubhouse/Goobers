@@ -55,6 +55,22 @@ func TestUninspectedEvidenceUsesMechanicalRouteAndKeepsPriorReview(t *testing.T)
 	}
 }
 
+func TestUnaccountedFindingsUseDistinctMechanicalReason(t *testing.T) {
+	g := fixtureSpec().Gates[1]
+	g.Branches["defer"], g.Branches["escalate"] = "park", "mechanical-stop"
+	ev := &Evaluator{Journal: newTestJournal(t)}
+	got, err := ev.EscalateUninspectedRemediation(g, &apiv1.ErrorInfo{
+		Code: ReasonRemediationFindingsUnaccounted, Message: "finding 2 was omitted",
+	}, 3, "sha256:aaaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Verdict == nil || got.Verdict.ReasonCode != apiv1.VerdictReasonFindingsUnaccounted ||
+		got.Reason != ReasonRemediationFindingsUnaccounted {
+		t.Fatalf("unaccounted-finding escalation = %+v, want distinct reason code", got)
+	}
+}
+
 func TestBudgetMechanicalEscalationPreservesReviewerRationale(t *testing.T) {
 	g := fixtureSpec().Gates[1]
 	g.Branches["defer"], g.Branches["escalate"] = "park", "mechanical-stop"
@@ -66,7 +82,11 @@ func TestBudgetMechanicalEscalationPreservesReviewerRationale(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.HasSuffix(digest, "bbbb") && (got.Outcome != "escalate" || got.Target != "mechanical-stop" || !got.Escalated || got.Verdict.ReasonCode != apiv1.VerdictReasonRepassBudget || got.Verdict.Rationale != original) {
+		if strings.HasSuffix(digest, "bbbb") && (got.Outcome != "escalate" || got.Target != "mechanical-stop" || !got.Escalated ||
+			got.Verdict.ReasonCode != apiv1.VerdictReasonRepassBudget ||
+			!strings.Contains(got.Verdict.Rationale, original) ||
+			!strings.Contains(got.Verdict.Rationale, "findings remain actionable") ||
+			!strings.Contains(got.Verdict.Rationale, "not judged inherently unresolvable")) {
 			t.Fatalf("budget exhaustion lost original review: %+v verdict=%+v", got, got.Verdict)
 		}
 	}

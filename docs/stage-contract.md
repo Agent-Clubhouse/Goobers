@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha9` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha10` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -1081,7 +1081,7 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha9` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha10` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -1096,7 +1096,9 @@ from the diff alone.
   `checkoutCones` invocation field declaring a stage's sparse-checkout cones
   (project.checkout.sparse, #649); `v1alpha9` adds attempt, ownership,
   policy-action, nested-policy, and runner-authored parent-authority fields for
-  mechanically enforced nested agents.
+  mechanically enforced nested agents; `v1alpha10` adds optional
+  `resolvedFindingIds` and `acceptanceChecks` to reviewer verdicts so repasses
+  cannot silently discard active findings or acceptance categories.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

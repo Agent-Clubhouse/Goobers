@@ -159,7 +159,7 @@ func issueCloseOutReason(root, runID, gateName string) (string, error) {
 
 func issueCloseOutVerdictReason(verdict apiv1.Verdict) string {
 	primary, fallback := verdict.Summary, verdict.Rationale
-	if verdict.Decision == apiv1.VerdictFail {
+	if verdict.Decision == apiv1.VerdictFail || verdict.Decision == apiv1.VerdictEscalate {
 		primary, fallback = fallback, primary
 	}
 	if reason := strings.TrimSpace(primary); reason != "" {

@@ -786,6 +786,10 @@ type AgenticGate struct {
 	// +kubebuilder:validation:Enum=repo;scratch;repo-readonly
 	// +optional
 	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
+	// RequiredAcceptanceChecks names review categories that every verdict must
+	// explicitly account for. A pass may only satisfy or mark them not applicable.
+	// +optional
+	RequiredAcceptanceChecks []string `json:"requiredAcceptanceChecks,omitempty" yaml:"requiredAcceptanceChecks,omitempty"`
 }
 
 // HumanGate pauses for an explicit human decision, surfaced in the portal.

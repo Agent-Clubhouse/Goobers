@@ -106,8 +106,15 @@ func ReconcileLearningFindings(
 	pointers []apiv1.ContextPointer,
 	resolve ArtifactBytes,
 	gateName, diffDigest string,
+	requireExplicitResolution bool,
 ) (apiv1.Verdict, FindingResolution) {
-	return reconcileLearningFindings(verdict, pointers, resolve, gateName, diffDigest)
+	return reconcileLearningFindings(verdict, pointers, resolve, gateName, diffDigest, requireExplicitResolution)
+}
+
+// RequiresExplicitFindingResolution reports whether a gate opted into the
+// reviewer contract that forbids resolving active findings by omission.
+func RequiresExplicitFindingResolution(g apiv1.Gate) bool {
+	return g.Agentic != nil && len(g.Agentic.RequiredAcceptanceChecks) > 0
 }
 
 // DisproveReviewerFindings removes findings that the reviewer's OWN diff

@@ -453,6 +453,11 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	lastDiffDigest := map[string]string{}
 	addenda := map[string]string{}
 	contextRejected := map[string]int{}
+	type remediationRejection struct {
+		episodeID string
+		count     int
+	}
+	remediationRejected := map[string]remediationRejection{}
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
@@ -614,6 +619,69 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			ev, everr := collectGateEvidence(ctx, m, g, lastStage, lastResult, pointers, addendum, rec)
 			if everr != nil {
 				return RunResult{}, everr
+			}
+			if ev.RemediationValidation != nil {
+				rec.remediationFeedbackValidation(ctx, lastStage, g.Name, ev.RepassCause,
+					ev.RemediationValidation, ev.RemediationEpisode)
+				rejection := remediationRejected[g.Name]
+				if rejection.episodeID != ev.RemediationEpisode.ID {
+					rejection = remediationRejection{episodeID: ev.RemediationEpisode.ID}
+				}
+				rejection.count++
+				remediationRejected[g.Name] = rejection
+				if rejection.count < runner.MaxRemediationEvidenceRejections {
+					addenda[lastStage] = runner.RemediationEvidenceRejectionAddendum(
+						ev.RemediationValidation.Message, rejection.count, runner.MaxRemediationEvidenceRejections)
+					state = lastStage
+					continue
+				}
+
+				rationale := fmt.Sprintf(
+					"runner: %d consecutive remediation attempts were rejected because required feedback was not completely accounted for; last rejection: %s",
+					rejection.count, ev.RemediationValidation.Message,
+				)
+				verdict := &apiv1.Verdict{
+					Decision:  apiv1.VerdictNeedsChanges,
+					Rationale: rationale,
+					Findings:  append([]apiv1.Finding(nil), ev.RemediationEpisode.Findings...),
+				}
+				gr := gateResult{
+					Gate: g.Name, Outcome: string(verdict.Decision), Target: escalationTarget(g),
+					Escalated: true, RepassCause: ev.RepassCause, Reason: ev.RemediationValidation.Code,
+				}
+				if gate.StructuredMechanicalEscalation(g) {
+					converted := gate.MechanicalVerdict(*verdict,
+						gate.RemediationVerdictReason(ev.RemediationValidation.Code), true)
+					verdict = &converted
+					gr.Outcome = string(converted.Decision)
+				}
+				verdictArtifact, jerr := rec.gateEvaluated(ctx, gr, verdict)
+				if jerr != nil {
+					return RunResult{}, jerr
+				}
+				evaluatedGates[g.Name] = true
+				if err := rec.emitPending(ctx); err != nil {
+					return RunResult{}, err
+				}
+				next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
+				if terminal {
+					resumeState, resumed, serr := settle(out)
+					if serr != nil {
+						return RunResult{}, serr
+					}
+					if resumed {
+						state = resumeState
+						continue
+					}
+					return out, nil
+				}
+				if verdictArtifact != nil {
+					pointers = append(pointers, apiv1.ContextPointer{
+						Name: g.Name + ".verdict", Integrity: verdictArtifact.Integrity, Artifact: verdictArtifact,
+					})
+				}
+				state = next
+				continue
 			}
 			var (
 				outcome string

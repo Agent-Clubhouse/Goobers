@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/findingresponse"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -2295,7 +2296,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		}
 	}
 	if err != nil {
-		var evidenceErr *remediationEvidenceInspectionError
+		var evidenceErr *remediationFeedbackValidationError
 		if errors.As(err, &evidenceErr) {
 			// #3375: this re-dispatch is the runner's own, taken before the
 			// gate resolves any outcome, so nothing downstream charges it —
@@ -2528,6 +2529,15 @@ func recordLearningInjection(
 	if sourceAttempt == 0 {
 		sourceAttempt = result.Attempt
 	}
+	var failureFeedback string
+	var failureFindings []apiv1.Finding
+	if rd, err := journal.OpenRead(jr.Dir()); err == nil {
+		failureFeedback, failureFindings = PrimaryFailureFeedback(sourceStage, sourceResult, func(ptr apiv1.ArtifactPointer) ([]byte, error) {
+			return rd.ArtifactBytes(journal.Ref{
+				Path: ptr.Path, Digest: ptr.Digest, Size: ptr.Size, Integrity: ptr.Integrity,
+			})
+		})
+	}
 	// The episode's BYTES are built by the shared builder (parity3882.go), not
 	// here: the artifact's digest is conformance-normative, so the engine's own
 	// injection has to produce the identical struct rather than a second
@@ -2545,6 +2555,8 @@ func recordLearningInjection(
 		Verdict:           result.Verdict,
 		SourceResult:      sourceResult,
 		VerdictPointer:    pointer,
+		FailureFeedback:   failureFeedback,
+		FailureFindings:   failureFindings,
 	})
 	data, err := json.Marshal(episode)
 	if err != nil {
@@ -2791,8 +2803,9 @@ func terminalGateNotificationReason(machine *workflow.Machine, gr gate.Result) (
 		// #3375: an evidence-rejection escalation is not budget exhaustion —
 		// no repass was ever charged. Report what actually stopped the run,
 		// carrying the synthesized rationale's rejection count and cause.
-		if gr.Reason == gate.ReasonRemediationEvidenceNotInspected {
-			detail := "the remediation stage never inspected the required failure evidence"
+		if gr.Reason == gate.ReasonRemediationEvidenceNotInspected ||
+			gr.Reason == gate.ReasonRemediationFindingsUnaccounted {
+			detail := "the remediation stage did not completely account for the required feedback"
 			if gr.Verdict != nil {
 				if rationale := strings.TrimSpace(gr.Verdict.Rationale); rationale != "" {
 					// The synthesized rationale is already runner-attributed;
@@ -3306,7 +3319,7 @@ type transcriptEvent struct {
 	ToolCall *transcriptToolCall `json:"tool_call,omitempty"`
 }
 
-type remediationEvidenceInspectionError struct {
+type remediationFeedbackValidationError struct {
 	info *apiv1.ErrorInfo
 	// digest is the rejected attempt's diff digest — the identity the
 	// rejection budget is pinned to (#3375), so a later attempt that actually
@@ -3314,9 +3327,9 @@ type remediationEvidenceInspectionError struct {
 	digest string
 }
 
-func (e *remediationEvidenceInspectionError) Error() string {
+func (e *remediationFeedbackValidationError) Error() string {
 	if e == nil || e.info == nil {
-		return "remediation failure evidence was not inspected"
+		return "remediation feedback was not completely accounted for"
 	}
 	return e.info.Message
 }
@@ -3612,12 +3625,14 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 			),
 		}
 	}
+
 	missing := make([]string, 0, len(requiredNames))
 	for _, name := range requiredNames {
 		if !inspected[name] {
 			missing = append(missing, name)
 		}
 	}
+
 	if sawListInputs && len(missing) == 0 {
 		if classificationErr := validateUnchangedRemediationClassification(result); classificationErr != "" {
 			return &apiv1.ErrorInfo{
@@ -3636,6 +3651,28 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 				"before accepting unchanged remediation",
 				1,
 			),
+			result,
+		),
+	}
+}
+
+func validateRemediationFindingResponses(
+	pointers []apiv1.ContextPointer,
+	result apiv1.ResultEnvelope,
+	resolve gate.ArtifactBytes,
+) *apiv1.ErrorInfo {
+	episode, err := findingresponse.ValidateResult(pointers, result, findingresponse.ArtifactBytes(resolve))
+	if err == nil {
+		return nil
+	}
+	episodeID := episode.ID
+	if episodeID == "" {
+		episodeID = "unreadable"
+	}
+	return &apiv1.ErrorInfo{
+		Code: gate.ReasonRemediationFindingsUnaccounted,
+		Message: dependencyValidationMessage(
+			fmt.Sprintf("outputs.%s does not account for learning episode %s: %v", findingresponse.Output, episodeID, err),
 			result,
 		),
 	}
@@ -5848,6 +5885,42 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		span.Fail(err)
 		return gate.Result{}, err, nil
 	}
+	if gateEval.RepassCause != nil {
+		if subjectTask, ok := in.Machine.Task(subjectStage); ok &&
+			subjectTask.Type == apiv1.TaskAgentic &&
+			strings.EqualFold(subjectTask.Inputs["requireFindingResponses"], "true") {
+			rd, readErr := journal.OpenRead(jr.Dir())
+			if readErr != nil {
+				err = fmt.Errorf("runner: open remediation findings for %q: %w", subjectStage, readErr)
+				span.Fail(err)
+				return gate.Result{}, err, nil
+			}
+			if validationErr := validateRemediationFindingResponses(upstream, subjectResult, func(ptr apiv1.ArtifactPointer) ([]byte, error) {
+				return rd.ArtifactBytes(journal.Ref{
+					Path: ptr.Path, Digest: ptr.Digest, Size: ptr.Size, Integrity: ptr.Integrity,
+				})
+			}); validationErr != nil {
+				if appendErr := jr.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Stage: subjectStage, Gate: g.Name,
+					Runner: map[string]any{
+						"kind":            RemediationEvidenceValidationKind,
+						"code":            validationErr.Code,
+						"triggeringGate":  gateEval.RepassCause.Gate,
+						"triggeringStage": gateEval.RepassCause.Stage,
+						"message":         validationErr.Message,
+						"diffDigest":      diffDigest,
+					},
+				}); appendErr != nil {
+					err = fmt.Errorf("runner: journal remediation finding responses for %q: %w", subjectStage, appendErr)
+					span.Fail(err)
+					return gate.Result{}, err, nil
+				}
+				err = &remediationFeedbackValidationError{info: validationErr, digest: diffDigest}
+				span.Fail(err)
+				return gate.Result{}, err, nil
+			}
+		}
+	}
 	if instructionAddendum == "" && diffDigest != "" &&
 		gateEval.LastDiffDigest != nil && gateEval.LastDiffDigest[g.Name] == diffDigest {
 		if subjectTask, ok := in.Machine.Task(subjectStage); ok && subjectTask.Type == apiv1.TaskAgentic &&
@@ -5875,7 +5948,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 						span.Fail(err)
 						return gate.Result{}, err, nil
 					}
-					err = &remediationEvidenceInspectionError{info: validationErr, digest: diffDigest}
+					err = &remediationFeedbackValidationError{info: validationErr, digest: diffDigest}
 					span.Fail(err)
 					return gate.Result{}, err, nil
 				}

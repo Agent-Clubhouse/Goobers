@@ -23,11 +23,16 @@ func reconcileLearningFindings(
 	pointers []apiv1.ContextPointer,
 	resolve ArtifactBytes,
 	gateName, diffDigest string,
+	requireExplicitResolution bool,
 ) (apiv1.Verdict, findingResolution) {
 	history := readEpisodeHistory(pointers, resolve, gateName)
 	originalCount := len(verdict.Findings)
 	remaining := make([]apiv1.Finding, 0, originalCount)
 	current := map[string]bool{}
+	explicitlyResolved := map[string]bool{}
+	for _, id := range verdict.ResolvedFindingIDs {
+		explicitlyResolved[strings.TrimSpace(id)] = true
+	}
 	var resolution findingResolution
 
 	for _, finding := range verdict.Findings {
@@ -67,11 +72,27 @@ func reconcileLearningFindings(
 	}
 
 	for id := range history.active {
-		if !current[id] {
+		if explicitlyResolved[id] {
+			resolution.Resolved = append(resolution.Resolved, id)
+			continue
+		}
+		if requireExplicitResolution && !current[id] {
+			current[id] = true
+			remaining = append(remaining, history.active[id])
+		} else if !requireExplicitResolution && !current[id] {
 			resolution.Resolved = append(resolution.Resolved, id)
 		}
 	}
 	verdict.Findings = remaining
+	if requireExplicitResolution && verdict.Decision == apiv1.VerdictPass && len(remaining) > 0 {
+		verdict.Decision = apiv1.VerdictNeedsChanges
+		note := "Reviewer pass rejected: prior active findings remain unresolved and were not listed in resolvedFindingIds."
+		if verdict.Rationale == "" {
+			verdict.Rationale = note
+		} else {
+			verdict.Rationale += "\n\n" + note
+		}
+	}
 	if verdict.Decision == apiv1.VerdictNeedsChanges && originalCount > 0 && len(remaining) == 0 && len(resolution.Suppressed) > 0 {
 		verdict.Decision = apiv1.VerdictPass
 		resolution.AllSuppressed = true

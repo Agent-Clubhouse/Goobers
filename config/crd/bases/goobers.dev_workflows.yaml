@@ -98,6 +98,13 @@ spec:
                           description: Goober names the reviewer goober that returns
                             a Verdict.
                           type: string
+                        requiredAcceptanceChecks:
+                          description: |-
+                            RequiredAcceptanceChecks names review categories that every verdict must
+                            explicitly account for. A pass may only satisfy or mark them not applicable.
+                          items:
+                            type: string
+                          type: array
                         retry:
                           description: |-
                             Retry declares the evaluator retry bound. Runtime retry semantics are

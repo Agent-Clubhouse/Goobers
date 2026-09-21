@@ -31,9 +31,10 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	first := writeLearningEpisodePointer(t, root, 10, []apiv1.Finding{a, b})
 
 	verdict, resolution := reconcileLearningFindings(apiv1.Verdict{
-		Decision: apiv1.VerdictNeedsChanges,
-		Findings: []apiv1.Finding{b},
-	}, []apiv1.ContextPointer{first}, ArtifactBytesFromRoot(root), "review", "sha256:diff-2")
+		Decision:           apiv1.VerdictNeedsChanges,
+		Findings:           []apiv1.Finding{b},
+		ResolvedFindingIDs: []string{"finding-a"},
+	}, []apiv1.ContextPointer{first}, ArtifactBytesFromRoot(root), "review", "sha256:diff-2", true)
 	if verdict.Decision != apiv1.VerdictNeedsChanges ||
 		!slices.Equal(resolution.Resolved, []string{"finding-a"}) ||
 		len(verdict.Findings) != 1 || verdict.Findings[0].ID != "finding-b" {
@@ -44,10 +45,10 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution = reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{a},
-	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-3")
-	if verdict.Decision != apiv1.VerdictPass || !resolution.AllSuppressed ||
+	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-3", true)
+	if verdict.Decision != apiv1.VerdictNeedsChanges || resolution.AllSuppressed ||
 		!slices.Equal(resolution.Suppressed, []string{"finding-a"}) ||
-		len(verdict.Findings) != 0 {
+		len(verdict.Findings) != 1 || verdict.Findings[0].ID != "finding-b" {
 		t.Fatalf("old-evidence reopening was not suppressed: verdict %+v, resolution %+v", verdict, resolution)
 	}
 
@@ -55,10 +56,10 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution = reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{a},
-	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-new")
+	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-new", true)
 	if verdict.Decision != apiv1.VerdictNeedsChanges ||
 		!slices.Equal(resolution.Reopened, []string{"finding-a"}) ||
-		len(verdict.Findings) != 1 ||
+		len(verdict.Findings) != 2 ||
 		verdict.Findings[0].EvidenceDigest != "sha256:diff-new" {
 		t.Fatalf("changed diff fallback did not reopen finding: verdict %+v, resolution %+v", verdict, resolution)
 	}
@@ -67,11 +68,31 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution = reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{a},
-	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-4")
+	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-4", true)
 	if verdict.Decision != apiv1.VerdictNeedsChanges ||
 		!slices.Equal(resolution.Reopened, []string{"finding-a"}) ||
-		len(verdict.Findings) != 1 {
+		len(verdict.Findings) != 2 {
 		t.Fatalf("new-evidence reopening was not retained: verdict %+v, resolution %+v", verdict, resolution)
+	}
+}
+
+func TestReviewerPassCannotDropActiveFindingByOmission(t *testing.T) {
+	root := t.TempDir()
+	active := apiv1.Finding{
+		ID: "active", LearningSignature: "active-signature",
+		LearningClassification: apiv1.LearningCodeDefect,
+		EvidenceDigest:         "sha256:old", Severity: apiv1.SeverityError,
+		Message: "executor integration is missing",
+	}
+	pointer := writeLearningEpisodePointer(t, root, 10, []apiv1.Finding{active})
+	verdict, resolution := reconcileLearningFindings(
+		apiv1.Verdict{Decision: apiv1.VerdictPass},
+		[]apiv1.ContextPointer{pointer}, ArtifactBytesFromRoot(root), "review", "sha256:new",
+		true,
+	)
+	if verdict.Decision != apiv1.VerdictNeedsChanges || len(verdict.Findings) != 1 ||
+		verdict.Findings[0].ID != active.ID || len(resolution.Resolved) != 0 {
+		t.Fatalf("omitted active finding was lost: verdict=%+v resolution=%+v", verdict, resolution)
 	}
 }
 

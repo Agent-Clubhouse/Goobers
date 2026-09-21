@@ -86,6 +86,8 @@ spec:
       type: agentic
       goober: implementer
       minimumIntegrity: maintainer
+      inputs:
+        requireFindingResponses: "true"
       # Provider-derived enrichment remains unapproved and is intentionally not
       # routed into this maintainer-only consumer.
       contextFrom:
@@ -121,6 +123,32 @@ spec:
         - changed-files
       # A recognized non-retryable failure bypasses review evaluation but uses
       # review's escalate control branch below to park the issue first.
+      next: review
+
+    - name: remediate-local-ci
+      type: agentic
+      goober: implementer
+      minimumIntegrity: maintainer
+      inputs:
+        requireFindingResponses: "true"
+      contextFrom:
+        - query-backlog
+        - implement
+        - remediate-local-ci
+        - review
+        - local-ci
+      goal: >-
+        Remediate the attached local-CI learning episode and return a complete
+        outputs.findingResponses account for every triggering diagnostic.
+      capabilities:
+        - repo:push
+        - agent:model
+      policyActions:
+        - modify-repository
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
+      onTimeout: salvage
       next: review
 
     # CI check details are provider-authored and therefore remain unapproved.
@@ -326,6 +354,13 @@ spec:
       agentic:
         goober: reviewer
         workspace: repo
+        requiredAcceptanceChecks:
+          - issue-acceptance-criteria
+          - execution-integration
+          - parallel-behavior
+          - persistence-resume
+          - authorization-semantics
+          - behavioral-tests
       branches:
         pass: push-branch
         needs-changes: implement
@@ -341,9 +376,10 @@ spec:
         check: failure-class
       branches:
         pass: open-pr
-        fail: implement
+        fail: remediate-local-ci
         infra: local-ci
         escalate: park-escalated
+      maxRepasses: 2
 
     # #947: open-pr re-checks the claimed issue's state immediately before
     # opening (the claim was validated once, at query-backlog, but implement +

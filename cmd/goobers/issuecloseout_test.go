@@ -729,9 +729,11 @@ func TestIssueCloseOutEscalationCommentEmbedsReviewFindings(t *testing.T) {
 		t.Fatalf("create journal: %v", err)
 	}
 	verdictData, err := json.Marshal(apiv1.Verdict{
-		Decision:  apiv1.VerdictNeedsChanges,
-		Summary:   "reviewer returned needs-changes for the third time",
-		Rationale: "the cache root still disagrees with the installer root",
+		Decision:   apiv1.VerdictEscalate,
+		ReasonCode: apiv1.VerdictReasonRepassBudget,
+		Summary:    "reviewer returned needs-changes for the third time",
+		Rationale: "the cache root still disagrees with the installer root\n\nMechanical stop: " +
+			"The run stopped because the configured repass budget was exhausted; these findings remain actionable and were not judged inherently unresolvable.",
 		Findings: []apiv1.Finding{{
 			Severity: apiv1.SeverityError,
 			Message:  "MSAL cache root must match the installer root",
@@ -746,9 +748,11 @@ func TestIssueCloseOutEscalationCommentEmbedsReviewFindings(t *testing.T) {
 		t.Fatalf("record verdict: %v", err)
 	}
 	if err := run.Append(journal.Event{
-		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes",
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "escalate",
 		Target: "park-escalated", Ref: &ref,
-		Runner: map[string]any{"escalated": true, "repassAttempt": 3},
+		Runner: map[string]any{
+			"escalated": true, "repassAttempt": 3, "reason": "REPASS_BUDGET_EXHAUSTED",
+		},
 	}); err != nil {
 		t.Fatalf("append gate event: %v", err)
 	}
@@ -778,6 +782,9 @@ func TestIssueCloseOutEscalationCommentEmbedsReviewFindings(t *testing.T) {
 		"internal/auth/cache.go:118",
 		string(apiv1.SeverityError),
 		runID,
+		"configured repass budget was exhausted",
+		"findings remain actionable",
+		"not judged inherently unresolvable",
 	} {
 		if !strings.Contains(comment, want) {
 			t.Fatalf("parking comment = %q, want it to contain %q", comment, want)

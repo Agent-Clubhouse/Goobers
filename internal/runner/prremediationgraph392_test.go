@@ -949,11 +949,37 @@ func (g *implementationGoober) Invoke(_ context.Context, env apiv1.InvocationEnv
 	}
 	runGit(g.t, env.Workspace, "add", "-A")
 	runGit(g.t, env.Workspace, "commit", "-m", stage)
-	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "implemented"}, nil
+	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "implemented"}
+	if stage == "remediate-local-ci" {
+		result.Outputs = map[string]interface{}{
+			"findingResponses": "1: addressed: corrected the triggering local-CI diagnostic",
+		}
+	}
+	return result, nil
 }
 
 func (g *implementationGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	return apiv1.Verdict{Decision: apiv1.VerdictPass, Rationale: "looks good"}, nil
+	categories := []string{
+		"issue-acceptance-criteria",
+		"execution-integration",
+		"parallel-behavior",
+		"persistence-resume",
+		"authorization-semantics",
+		"behavioral-tests",
+	}
+	checks := make([]apiv1.AcceptanceCheck, 0, len(categories))
+	for _, category := range categories {
+		checks = append(checks, apiv1.AcceptanceCheck{
+			Category: category,
+			Status:   "satisfied",
+			Detail:   "fixture verified this acceptance category",
+		})
+	}
+	return apiv1.Verdict{
+		Decision:         apiv1.VerdictPass,
+		Rationale:        "looks good",
+		AcceptanceChecks: checks,
+	}, nil
 }
 
 // currentBranch reports the git branch a stage's workspace is checked out on.

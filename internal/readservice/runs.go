@@ -346,6 +346,7 @@ type EscalationCause struct {
 	TerminalReason string                 `json:"terminalReason,omitempty"`
 	CausalEventSeq uint64                 `json:"causalEventSeq,omitempty"`
 	Remediation    *RemediationEscalation `json:"remediation,omitempty"`
+	Review         *OperatorReview        `json:"review,omitempty"`
 }
 
 // RemediationEscalation describes what the PR remediation workflow actually
@@ -1175,6 +1176,13 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	if err != nil {
 		return RunDetail{}, err
 	}
+	if cause != nil {
+		review, err := causalReview(run.reader, run.records, cause.CausalEventSeq)
+		if err != nil {
+			return RunDetail{}, err
+		}
+		cause.Review = review
+	}
 	var escalation *EscalationCause
 	if summary.Phase == journal.PhaseEscalated {
 		escalation = cause
@@ -1190,6 +1198,30 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 		Transitions:       runTransitionsFrom(transitions),
 		TransitionsStatus: transitionsStatus,
 	}, nil
+}
+
+func causalReview(reader *journal.Reader, records []journal.EventRecord, seq uint64) (*OperatorReview, error) {
+	if reader == nil || seq == 0 {
+		return nil, nil
+	}
+	for _, record := range records {
+		event := record.Event
+		if event.Seq != seq || event.Type != journal.EventGateEvaluated || event.Ref == nil {
+			continue
+		}
+		data, err := reader.ArtifactBytes(*event.Ref)
+		if err != nil {
+			return nil, fmt.Errorf("read causal verdict for gate %q: %w", event.Gate, err)
+		}
+		var verdict apiv1.Verdict
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			return nil, fmt.Errorf("decode causal verdict for gate %q: %w", event.Gate, err)
+		}
+		review := &OperatorReview{Verdict: event.Verdict}
+		populateOperatorReview(review, verdict)
+		return review, nil
+	}
+	return nil, nil
 }
 
 // recordEvents unwraps a run's raw-preserving event records into the plain

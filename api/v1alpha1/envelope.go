@@ -24,7 +24,8 @@ import "fmt"
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
 // v1alpha9 adds runner-authored nested-agent authority and ownership fields.
-const StageContractVersion = "v1alpha9"
+// v1alpha10 adds explicit reviewer finding resolution and acceptance checks.
+const StageContractVersion = "v1alpha10"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -380,6 +381,7 @@ const (
 	VerdictReasonRepassBudget           VerdictReasonCode = "repass-budget-exhausted"
 	VerdictReasonFindingOscillation     VerdictReasonCode = "finding-set-oscillation"
 	VerdictReasonEvidenceNotInspected   VerdictReasonCode = "remediation-evidence-not-inspected"
+	VerdictReasonFindingsUnaccounted    VerdictReasonCode = "remediation-findings-unaccounted"
 )
 
 // Severity ranks a finding.
@@ -524,6 +526,12 @@ type Verdict struct {
 	Evidence []ArtifactPointer `json:"evidence,omitempty"`
 	// Findings enumerate specific issues the evaluator found.
 	Findings []Finding `json:"findings,omitempty"`
+	// ResolvedFindingIDs explicitly identifies prior active findings the
+	// reviewer verified as corrected. Omission never implies resolution.
+	ResolvedFindingIDs []string `json:"resolvedFindingIds,omitempty"`
+	// AcceptanceChecks records the reviewer's explicit coverage of required
+	// acceptance categories for workflows that opt into that contract.
+	AcceptanceChecks []AcceptanceCheck `json:"acceptanceChecks,omitempty"`
 	// Summary is a human-readable summary of the review.
 	Summary string `json:"summary,omitempty"`
 	// HeadSHA is the PR head commit this verdict was computed against
@@ -571,6 +579,14 @@ type Verdict struct {
 	// refuses to land it, so GitHub's native merge queue can never crown a
 	// cluster member on its own.
 	Elected bool `json:"elected,omitempty"`
+}
+
+// AcceptanceCheck records a reviewer's evidence-backed disposition for one
+// workflow-required acceptance category.
+type AcceptanceCheck struct {
+	Category string `json:"category"`
+	Status   string `json:"status"`
+	Detail   string `json:"detail"`
 }
 
 // Finding is a single issue raised by an evaluator.

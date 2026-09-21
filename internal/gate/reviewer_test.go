@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -103,6 +104,24 @@ func TestReviewerEvaluatorPropagatesError(t *testing.T) {
 	re := &ReviewerEvaluator{Goober: fg}
 	if _, err := re.Review(context.Background(), apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}); err == nil {
 		t.Fatal("want error propagated from Goober.Review")
+	}
+}
+
+func TestValidateAcceptanceChecksRejectsChecklistFreePass(t *testing.T) {
+	g := apiv1.Gate{Agentic: &apiv1.AgenticGate{
+		RequiredAcceptanceChecks: []string{"execution-integration", "parallel-behavior"},
+	}}
+	if got := ValidateAcceptanceChecks(g, apiv1.Verdict{Decision: apiv1.VerdictPass}); !strings.Contains(got, "omitted") {
+		t.Fatalf("checklist-free pass feedback = %q, want omitted categories", got)
+	}
+	if got := ValidateAcceptanceChecks(g, apiv1.Verdict{
+		Decision: apiv1.VerdictPass,
+		AcceptanceChecks: []apiv1.AcceptanceCheck{
+			{Category: "execution-integration", Status: "satisfied", Detail: "executor path is covered"},
+			{Category: "parallel-behavior", Status: "not-applicable", Detail: "the issue has no parallel branch"},
+		},
+	}); got != "" {
+		t.Fatalf("complete acceptance checklist rejected: %s", got)
 	}
 }
 

@@ -543,7 +543,10 @@ func TestRepassJournalsTheRemediationEvidenceObligation(t *testing.T) {
 					Findings: []apiv1.Finding{{ID: "f1", Message: "missing test", Severity: apiv1.SeverityError}},
 				}, nil
 			}
-			return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+			return apiv1.Verdict{
+				Decision:           apiv1.VerdictPass,
+				ResolvedFindingIDs: []string{"f1"},
+			}, nil
 		},
 	}
 	ws := testWorkspaces(t)
@@ -553,10 +556,18 @@ func TestRepassJournalsTheRemediationEvidenceObligation(t *testing.T) {
 	inv.invoke = func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 		attempts++
 		ws.scriptDiff("review", []byte(fmt.Sprintf("attempt %d\n", attempts)))
-		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
+		if attempts > 1 {
+			result.Outputs = map[string]interface{}{
+				"findingResponses": `1: addressed: added the missing test`,
+			}
+		}
+		return result, nil
 	}
 	env := laneEnv(t, inv, ws)
-	env.ExecuteWorkflow(Run, runInput("gated", laneSpec()))
+	spec := laneSpec()
+	spec.Tasks[0].Inputs = map[string]string{"requireFindingResponses": "true"}
+	env.ExecuteWorkflow(Run, runInput("gated", spec))
 
 	proj := laneJournal(t, env)
 	evals := laneGateEvaluations(proj)
@@ -591,6 +602,55 @@ func TestRepassJournalsTheRemediationEvidenceObligation(t *testing.T) {
 	names, _ := reqs[0]["requiredFailureEvidencePointers"].([]any)
 	if len(names) == 0 {
 		t.Fatalf("obligation = %v, want at least one required pointer", reqs[0])
+	}
+}
+
+func TestRemediationFindingResponsesAreBoundedBeforeReview(t *testing.T) {
+	reviews := 0
+	attempts := 0
+	ws := testWorkspaces(t)
+	inv := &fakeInvoker{
+		invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+			attempts++
+			ws.scriptDiff("review", []byte(fmt.Sprintf("attempt %d\n", attempts)))
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		},
+		review: func(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+			reviews++
+			return apiv1.Verdict{
+				Decision:  apiv1.VerdictNeedsChanges,
+				Rationale: "the executor integration is still missing",
+				Findings: []apiv1.Finding{{
+					ID: "executor-integration", Message: "wire the executor path", Severity: apiv1.SeverityError,
+				}},
+			}, nil
+		},
+	}
+	env := laneEnv(t, inv, ws)
+	spec := laneSpec()
+	spec.Tasks[0].Inputs = map[string]string{"requireFindingResponses": "true"}
+	env.ExecuteWorkflow(Run, runInput("gated", spec))
+
+	if reviews != 1 {
+		t.Fatalf("reviewer invoked %d times, want only the triggering review", reviews)
+	}
+	if attempts != 1+runner.MaxRemediationEvidenceRejections {
+		t.Fatalf("implementer attempts = %d, want initial plus %d rejected remediations",
+			attempts, runner.MaxRemediationEvidenceRejections)
+	}
+	if res := laneResult(t, env); res.Status != StatusEscalated {
+		t.Fatalf("status = %q, want escalated after bounded remediation rejection", res.Status)
+	}
+	proj := laneJournal(t, env)
+	rejections := laneAnnotations(proj, runner.RemediationEvidenceValidationKind)
+	if len(rejections) != runner.MaxRemediationEvidenceRejections {
+		t.Fatalf("remediation rejection annotations = %d, want %d: %v",
+			len(rejections), runner.MaxRemediationEvidenceRejections, rejections)
+	}
+	evals := laneGateEvaluations(proj)
+	last := evals[len(evals)-1]
+	if last["reason"] != gate.ReasonRemediationFindingsUnaccounted || last["escalated"] != true {
+		t.Fatalf("terminal gate evaluation = %v, want finding-account exhaustion", last)
 	}
 }
 

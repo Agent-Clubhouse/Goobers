@@ -167,6 +167,7 @@ const ReasonFindingResolved = "REVIEW_FINDING_RESOLVED"
 // this code, and the terminal gate.evaluated event records why the run gave
 // up under the same one.
 const ReasonRemediationEvidenceNotInspected = "REMEDIATION_EVIDENCE_NOT_INSPECTED"
+const ReasonRemediationFindingsUnaccounted = "REMEDIATION_FINDINGS_UNACCOUNTED"
 
 // Escalation reason codes are journaled so telemetry can distinguish policy
 // repass churn from an exhausted infrastructure retry budget.
@@ -429,6 +430,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	if verdict != nil && !duplicateDiff && !emptyDiff {
 		normalized, resolution := reconcileLearningFindings(
 			*verdict, env.ContextPointers, ArtifactBytesFromRoot(journalDir(e.Journal)), g.Name, diffDigest,
+			RequiresExplicitFindingResolution(g),
 		)
 		verdict = &normalized
 		learningResolution = resolution
@@ -630,13 +632,17 @@ func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result,
 // ErrorInfo; rejections is how many were charged.
 func (e *Evaluator) EscalateUninspectedRemediation(g apiv1.Gate, cause *apiv1.ErrorInfo, rejections int, diffDigest string) (Result, error) {
 	rationale := fmt.Sprintf(
-		"runner: %d consecutive unchanged remediation attempts were rejected without inspecting the required failure evidence",
+		"runner: %d consecutive remediation attempts were rejected because required feedback was not completely accounted for",
 		rejections,
 	)
 	if cause != nil && cause.Message != "" {
 		rationale += "; last rejection: " + cause.Message
 	}
 	attempt := e.Attempts[g.Name]
+	reason := ReasonRemediationEvidenceNotInspected
+	if cause != nil && cause.Code != "" {
+		reason = cause.Code
+	}
 	r := Result{
 		Gate:        g.Name,
 		Outcome:     string(apiv1.VerdictNeedsChanges),
@@ -645,7 +651,7 @@ func (e *Evaluator) EscalateUninspectedRemediation(g apiv1.Gate, cause *apiv1.Er
 		GateAttempt: attempt,
 		Escalated:   true,
 		RepassCause: e.RepassCause,
-		Reason:      ReasonRemediationEvidenceNotInspected,
+		Reason:      reason,
 		Verdict: &apiv1.Verdict{
 			Decision:  apiv1.VerdictNeedsChanges,
 			Rationale: rationale,
@@ -747,6 +753,16 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 				return false, err
 			}
 		} else {
+			if feedback := ValidateAcceptanceChecks(g, current); feedback != "" {
+				current.Decision = apiv1.VerdictNeedsChanges
+				current.Rationale = strings.TrimSpace(strings.TrimSpace(current.Rationale) + "\n\n" + feedback)
+				current.Findings = append(current.Findings, apiv1.Finding{
+					Severity:               apiv1.SeverityError,
+					Message:                feedback,
+					Location:               "review verdict",
+					LearningClassification: apiv1.LearningInstruction,
+				})
+			}
 			*verdict = current
 			if !e.invalidNeedsHumanVerdict(g, current) {
 				return false, nil
@@ -770,6 +786,42 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 			}
 		}
 	}
+}
+
+// ValidateAcceptanceChecks returns corrective feedback when a reviewer verdict
+// omits or contradicts a workflow-declared acceptance category.
+func ValidateAcceptanceChecks(g apiv1.Gate, verdict apiv1.Verdict) string {
+	if g.Agentic == nil || len(g.Agentic.RequiredAcceptanceChecks) == 0 {
+		return ""
+	}
+	checks := make(map[string]apiv1.AcceptanceCheck, len(verdict.AcceptanceChecks))
+	for _, check := range verdict.AcceptanceChecks {
+		category := strings.TrimSpace(check.Category)
+		if category == "" || checks[category].Category != "" {
+			return "Reviewer verdict rejected: acceptanceChecks must contain each required category exactly once."
+		}
+		checks[category] = check
+	}
+	var missing []string
+	for _, category := range g.Agentic.RequiredAcceptanceChecks {
+		check, ok := checks[category]
+		if !ok {
+			missing = append(missing, category)
+			continue
+		}
+		status := strings.TrimSpace(check.Status)
+		detail := strings.TrimSpace(check.Detail)
+		if detail == "" || status != "satisfied" && status != "not-applicable" && status != "blocked" {
+			return fmt.Sprintf("Reviewer verdict rejected: acceptance check %q must have status satisfied, not-applicable, or blocked and non-empty detail.", category)
+		}
+		if verdict.Decision == apiv1.VerdictPass && status == "blocked" {
+			return fmt.Sprintf("Reviewer verdict rejected: pass cannot leave acceptance check %q blocked.", category)
+		}
+	}
+	if len(missing) > 0 {
+		return "Reviewer verdict rejected: acceptanceChecks omitted required categories: " + strings.Join(missing, ", ") + "."
+	}
+	return ""
 }
 
 // gateRetryPolicy returns the gate's declared evaluator retry policy, read off

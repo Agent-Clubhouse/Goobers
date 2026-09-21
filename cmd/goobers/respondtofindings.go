@@ -7,19 +7,19 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/findingresponse"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
 const (
-	findingResponsesOutput           = "findingResponses"
+	findingResponsesOutput           = findingresponse.Output
 	errorCodeFindingResponsesInvalid = "finding_responses_invalid"
 	remediationResponseArtifactName  = "remediation-response.json"
 )
@@ -38,11 +38,7 @@ const respondToFindingsHelp = "Usage: goobers respond-to-findings [--check] [pat
 	"[path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = response\n" +
 	"processed, 1 = business error, 2 = usage/IO error.\n"
 
-type findingDisposition struct {
-	Finding     int    `json:"finding"`
-	Disposition string `json:"disposition"`
-	Detail      string `json:"detail"`
-}
+type findingDisposition = findingresponse.Response
 
 type recordedFindingDisposition struct {
 	Finding     int           `json:"finding"`
@@ -325,22 +321,7 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 // JSON stays first so existing workflows and the canonical examples are
 // untouched; the fallback only runs when JSON decoding fails.
 func parseFindingResponses(raw string) ([]findingDisposition, error) {
-	trimmed := strings.TrimSpace(raw)
-
-	var responses []findingDisposition
-	jsonErr := json.Unmarshal([]byte(trimmed), &responses)
-	if jsonErr == nil {
-		return responses, nil
-	}
-
-	lineResponses, lineErr := parseFindingResponseLines(trimmed)
-	if lineErr == nil && len(lineResponses) > 0 {
-		return lineResponses, nil
-	}
-
-	// Report the JSON failure: it is the canonical form, so its error is the
-	// more useful diagnostic when neither shape parses.
-	return nil, fmt.Errorf("decode JSON array: %w (a line-oriented \"N: disposition: detail\" form is also accepted)", jsonErr)
+	return findingresponse.Parse(raw)
 }
 
 // parseFindingResponseLines parses the line-oriented fallback form. Each
@@ -348,38 +329,7 @@ func parseFindingResponses(raw string) ([]findingDisposition, error) {
 // markers ("-", "*") and a "#" before the number are tolerated, since a model
 // asked for a list tends to produce one.
 func parseFindingResponseLines(raw string) ([]findingDisposition, error) {
-	var out []findingDisposition
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		line = strings.TrimLeft(line, "-*	 ")
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		line = strings.TrimPrefix(line, "#")
-
-		numberPart, rest, ok := strings.Cut(line, ":")
-		if !ok {
-			return nil, fmt.Errorf("line %q is not \"<n>: <disposition>: <detail>\"", line)
-		}
-		number, err := strconv.Atoi(strings.TrimSpace(numberPart))
-		if err != nil {
-			return nil, fmt.Errorf("line %q does not start with a finding number", line)
-		}
-		dispositionPart, detail, ok := strings.Cut(rest, ":")
-		if !ok {
-			return nil, fmt.Errorf("line %q has no detail after the disposition", line)
-		}
-		out = append(out, findingDisposition{
-			Finding:     number,
-			Disposition: strings.TrimSpace(dispositionPart),
-			Detail:      strings.TrimSpace(detail),
-		})
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no finding response lines found")
-	}
-	return out, nil
+	return findingresponse.Parse(raw)
 }
 
 // validateFindingResponses enforces the remediation account contract against
@@ -391,49 +341,7 @@ func parseFindingResponseLines(raw string) ([]findingDisposition, error) {
 // sibling-overlap) have nothing to account for, so responses are optional
 // there rather than required to be absent.
 func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDisposition, error) {
-	if strings.TrimSpace(raw) == "" {
-		if len(findings) == 0 {
-			return []findingDisposition{}, nil
-		}
-		return nil, fmt.Errorf("latest implement result omitted %s for %d finding(s)", findingResponsesOutput, len(findings))
-	}
-
-	responses, err := parseFindingResponses(raw)
-	if err != nil {
-		return nil, err
-	}
-
-	seen := make(map[int]bool, len(responses))
-	for i := range responses {
-		response := &responses[i]
-		response.Disposition = strings.ToLower(strings.TrimSpace(response.Disposition))
-		response.Detail = strings.TrimSpace(response.Detail)
-		if response.Finding < 1 {
-			return nil, fmt.Errorf("response %d names finding %d, want a 1-based finding number", i+1, response.Finding)
-		}
-		if seen[response.Finding] {
-			return nil, fmt.Errorf("finding %d is accounted for more than once", response.Finding)
-		}
-		seen[response.Finding] = true
-		if response.Disposition != "addressed" && response.Disposition != "declined" {
-			return nil, fmt.Errorf("finding %d disposition is %q, want addressed or declined", response.Finding, response.Disposition)
-		}
-		if response.Detail == "" {
-			return nil, fmt.Errorf("finding %d has no detail describing what changed or why it was declined", response.Finding)
-		}
-	}
-	for i := range findings {
-		if !seen[i+1] {
-			return nil, fmt.Errorf(
-				"%s has no response; every one of the verdict's %d finding(s) needs exactly one",
-				describeVerdictFinding(i+1, findings[i]), len(findings),
-			)
-		}
-	}
-	sort.Slice(responses, func(i, j int) bool {
-		return responses[i].Finding < responses[j].Finding
-	})
-	return responses, nil
+	return findingresponse.ValidateWithAdditional(findings, raw)
 }
 
 func describeVerdictFinding(number int, finding apiv1.Finding) string {

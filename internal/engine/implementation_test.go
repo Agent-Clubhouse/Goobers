@@ -53,6 +53,26 @@ func implementationRunInput(spec apiv1.WorkflowSpec) RunInput {
 	}
 }
 
+func implementationAcceptanceChecks() []apiv1.AcceptanceCheck {
+	categories := []string{
+		"issue-acceptance-criteria",
+		"execution-integration",
+		"parallel-behavior",
+		"persistence-resume",
+		"authorization-semantics",
+		"behavioral-tests",
+	}
+	checks := make([]apiv1.AcceptanceCheck, 0, len(categories))
+	for _, category := range categories {
+		checks = append(checks, apiv1.AcceptanceCheck{
+			Category: category,
+			Status:   "satisfied",
+			Detail:   "fixture verified this acceptance category",
+		})
+	}
+	return checks
+}
+
 // fixtureAuto dispatches automated-gate checks by AutomatedGate.Check against
 // externally-owned fixture state (see file doc comment; a real
 // internal/gate-style checker over the now-flattened env.Inputs is exercised
@@ -147,7 +167,10 @@ func TestImplementationDryRunCIFailThenPass(t *testing.T) {
 			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"changed-files": []interface{}{"main.go"}}}, nil
 		},
 		review: func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-			return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+			return apiv1.Verdict{
+				Decision:         apiv1.VerdictPass,
+				AcceptanceChecks: implementationAcceptanceChecks(),
+			}, nil
 		},
 	}
 
@@ -222,8 +245,13 @@ func TestImplementationDryRunReviewerRepassThenApprove(t *testing.T) {
 		invoke: func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 			mu.Lock()
 			implementCalls++
+			n := implementCalls
 			mu.Unlock()
-			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"changed-files": []interface{}{"main.go"}}}, nil
+			outputs := map[string]interface{}{"changed-files": []interface{}{"main.go"}}
+			if n > 1 {
+				outputs["findingResponses"] = "1: addressed: added the missing test coverage"
+			}
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: outputs}, nil
 		},
 		review: func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 			mu.Lock()
@@ -231,11 +259,20 @@ func TestImplementationDryRunReviewerRepassThenApprove(t *testing.T) {
 			n := reviewCalls
 			mu.Unlock()
 			if n == 1 {
-				v := apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Rationale: "missing test coverage for the new branch"}
+				v := apiv1.Verdict{
+					Decision:         apiv1.VerdictNeedsChanges,
+					Rationale:        "missing test coverage for the new branch",
+					Findings:         []apiv1.Finding{{ID: "missing-test", Message: "missing test coverage for the new branch", Severity: apiv1.SeverityError}},
+					AcceptanceChecks: implementationAcceptanceChecks(),
+				}
 				reviewDecisions = append(reviewDecisions, v.Decision)
 				return v, nil
 			}
-			v := apiv1.Verdict{Decision: apiv1.VerdictPass}
+			v := apiv1.Verdict{
+				Decision:           apiv1.VerdictPass,
+				ResolvedFindingIDs: []string{"missing-test"},
+				AcceptanceChecks:   implementationAcceptanceChecks(),
+			}
 			reviewDecisions = append(reviewDecisions, v.Decision)
 			return v, nil
 		},

@@ -38,7 +38,7 @@ func TestParseFindingResponsesAcceptsLineForm(t *testing.T) {
 		},
 		{
 			name: "two findings",
-			raw:  "1: addressed: added malformed-JSON rejection\n2: declined: out of scope for this item",
+			raw:  "1: addressed: added malformed-JSON rejection\n2: declined: non-actionable: out of scope for this item",
 			want: []findingDisposition{
 				{Finding: 1, Disposition: "addressed", Detail: "added malformed-JSON rejection"},
 				{Finding: 2, Disposition: "declined", Detail: "out of scope for this item"},
@@ -46,7 +46,7 @@ func TestParseFindingResponsesAcceptsLineForm(t *testing.T) {
 		},
 		{
 			name: "tolerates list markers and blank lines",
-			raw:  "- 1: addressed: first\n\n* 2: declined: second\n",
+			raw:  "- 1: addressed: first\n\n* 2: declined: obsolete: second\n",
 			want: []findingDisposition{
 				{Finding: 1, Disposition: "addressed", Detail: "first"},
 				{Finding: 2, Disposition: "declined", Detail: "second"},
@@ -82,7 +82,7 @@ func TestParseFindingResponsesAcceptsLineForm(t *testing.T) {
 // The canonical JSON array must keep working unchanged -- the fallback is
 // additive, not a replacement.
 func TestParseFindingResponsesStillAcceptsJSON(t *testing.T) {
-	raw := `[{"finding":1,"disposition":"addressed","detail":"added assertions"},{"finding":2,"disposition":"declined","detail":"out of scope"}]`
+	raw := `[{"finding":1,"disposition":"addressed","detail":"added assertions"},{"finding":2,"disposition":"declined","detail":"non-actionable: out of scope"}]`
 	got, err := parseFindingResponses(raw)
 	if err != nil {
 		t.Fatalf("JSON form rejected: %v", err)
@@ -109,7 +109,7 @@ func TestParseFindingResponsesRejectsGarbage(t *testing.T) {
 func TestValidateFindingResponsesLineFormEnforcesRules(t *testing.T) {
 	findings := makeFindings(2)
 
-	ok, err := validateFindingResponses(findings, "1: addressed: did the thing\n2: declined: not in scope")
+	ok, err := validateFindingResponses(findings, "1: addressed: did the thing\n2: declined: non-actionable: not in scope")
 	if err != nil {
 		t.Fatalf("valid line form rejected: %v", err)
 	}

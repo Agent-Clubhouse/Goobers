@@ -151,6 +151,45 @@ func TestBuildLearningEpisodeFallsBackWithoutAVerdict(t *testing.T) {
 	}
 }
 
+func TestPrimaryFailureFeedbackPromotesIncidentLintDiagnostics(t *testing.T) {
+	diagnostics := []string{
+		`api\v1alpha1\workspace_revision.go:12:1: exported function ValidateCommitSHA should have comment or be of the form "ValidateCommitSHA ..." (revive)`,
+		`api\v1alpha1\workspace_revision.go:20:1: exported method RepositoryIdentity.Validate should have comment or be of the form "Validate ..." (revive)`,
+		`api\v1alpha1\workspace_revision.go:30:1: exported method WorkspaceRevision.Validate should have comment or be of the form "Validate ..." (revive)`,
+		`api\v1alpha1\workspace_revision.go:40:1: exported method WorkspaceRevision.DeepCopy should have comment or be of the form "DeepCopy ..." (revive)`,
+		`internal\workspacerevision\revision.go:10:1: exported const CodeInvalid should have comment (revive)`,
+		`internal\workspacerevision\revision.go:20:1: exported type Error should have comment (revive)`,
+		`internal\workspacerevision\revision.go:30:1: exported method Error.NonRetryable should have comment (revive)`,
+		`internal\workspacerevision\revision.go:40:1: exported method Error.StageErrorCode should have comment (revive)`,
+		`internal\workspacerevision\resolve.go:1:1: ST1000: at least one file in a package should have a package comment`,
+		`internal\workspacerevision\revision.go:1:1: ST1000: at least one file in a package should have a package comment`,
+	}
+	log := strings.Join(diagnostics, "\n")
+	artifact := apiv1.ArtifactPointer{Path: "artifacts/sha256/46/stdout", Digest: "sha256:stdout"}
+	result := apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure, Summary: "windows lint failed with exit code 1",
+		Error:     &apiv1.ErrorInfo{Code: "NATIVE_COMMAND_FAILED", Message: "wrapper command failed"},
+		Artifacts: []apiv1.ArtifactPointer{artifact},
+	}
+	feedback, findings := PrimaryFailureFeedback("local-ci", result, func(got apiv1.ArtifactPointer) ([]byte, error) {
+		if got.Digest != artifact.Digest {
+			t.Fatalf("resolved artifact %q, want %q", got.Digest, artifact.Digest)
+		}
+		return []byte(log), nil
+	})
+	for _, want := range append([]string{
+		"PRIMARY FAILURE", "classification: validation", "error code: NATIVE_COMMAND_FAILED",
+		"failing check: windows lint failed with exit code 1", artifact.Path,
+	}, diagnostics...) {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("primary feedback omitted %q:\n%s", want, feedback)
+		}
+	}
+	if len(findings) != 10 {
+		t.Fatalf("findings = %d, want all ten lint diagnostics", len(findings))
+	}
+}
+
 // With a reviewer verdict, the verdict's findings replace the synthesized one,
 // the rationale becomes the correction feedback, and the verdict POINTER leads
 // the evidence list.

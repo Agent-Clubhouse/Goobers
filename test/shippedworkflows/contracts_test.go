@@ -1852,6 +1852,9 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 			Summary: "scripted fake-harness completion",
 			Outputs: expectedOutputs(task),
 		}
+		if strings.EqualFold(task.Inputs["requireFindingResponses"], "true") {
+			result.Outputs["findingResponses"] = "1: addressed: scripted contract remediation"
+		}
 		if err := s.threadRequiredValueHandoffs(task, request.Envelope.Inputs, result.Outputs); err != nil {
 			return err
 		}
@@ -1896,10 +1899,29 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		if decision == apiv1.VerdictFail {
 			rationale = "scripted fake-harness verdict. What human decision is required?"
 		}
-		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
+		verdict := apiv1.Verdict{
 			Decision:  decision,
 			Rationale: rationale,
-		})
+		}
+		if decision == apiv1.VerdictNeedsChanges {
+			verdict.Findings = []apiv1.Finding{{
+				ID:       "scripted-contract-finding",
+				Severity: apiv1.SeverityError,
+				Message:  "scripted contract finding",
+			}}
+		} else if decision == apiv1.VerdictPass {
+			verdict.ResolvedFindingIDs = []string{"scripted-contract-finding"}
+		}
+		if gateDefinition, exists := s.gates[stage]; exists && gateDefinition.Agentic != nil {
+			for _, category := range gateDefinition.Agentic.RequiredAcceptanceChecks {
+				verdict.AcceptanceChecks = append(verdict.AcceptanceChecks, apiv1.AcceptanceCheck{
+					Category: category,
+					Status:   "satisfied",
+					Detail:   "scripted contract evidence",
+				})
+			}
+		}
+		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, verdict)
 	default:
 		return fmt.Errorf("unsupported harness mode %q", request.Mode)
 	}
