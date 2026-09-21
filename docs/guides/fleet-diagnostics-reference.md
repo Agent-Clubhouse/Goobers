@@ -267,3 +267,15 @@ claimability-unknown. A reusable bounded read-only claimability adapter is track
 [#5489](https://github.com/Agent-Clubhouse/Goobers/issues/5489) for v0.6.0; this release does not assert definitive issue-work stalls from the
 provider label/field selector alone. No issue identifiers, titles or URLs are
 retained or exported by this observation.
+
+### Export loss evidence
+
+The deployment heartbeat includes `diagnosticsDroppedRecords` only when its
+diagnostic exporter exists. This is a cumulative record count for the daemon
+boot, sampled before the current heartbeat is queued; it includes queue, size,
+shutdown and collector-rejection losses observed so far. It is historical, not
+a claim that the collector is currently reachable. A recovery heartbeat can
+carry losses accumulated during an outage. Disabled or uninitialized export
+omits the count rather than reporting zero. Gaggle records do not duplicate
+the deployment counter. Offline bundles preserve the last observed count and
+its boot/time context; an abrupt death can lose evidence after that observation.

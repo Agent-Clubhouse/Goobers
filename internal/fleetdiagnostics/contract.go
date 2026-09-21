@@ -40,9 +40,10 @@ type Window struct {
 // Heartbeat reports observations, not an inferred root cause. Nil counters and
 // timestamps mean unknown. Idle is distinct from no progress with eligible work.
 type Heartbeat struct {
-	RequiredMCP *MCPHealth     `json:"requiredMcp,omitempty"`
-	Worker      *WorkerHealth  `json:"worker,omitempty"`
-	Backlog     *BacklogHealth `json:"backlog,omitempty"`
+	DiagnosticsDroppedRecords *int64         `json:"diagnosticsDroppedRecords,omitempty"`
+	RequiredMCP               *MCPHealth     `json:"requiredMcp,omitempty"`
+	Worker                    *WorkerHealth  `json:"worker,omitempty"`
+	Backlog                   *BacklogHealth `json:"backlog,omitempty"`
 	Identity
 	Window
 	State                string     `json:"state"`

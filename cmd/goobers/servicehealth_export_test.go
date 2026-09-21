@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 type serviceHealthCollector struct {
@@ -135,5 +136,72 @@ func TestServiceHealthCredentialFailureDoesNotBlockLocalStartup(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("credential lookup prevented shutdown")
+	}
+}
+
+func TestFleetExportReportsDroppedRecordsBeforeShutdown(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector := &serviceHealthCollector{requests: make(chan *collectorlogpb.ExportLogsServiceRequest, 2), headers: make(chan metadata.MD, 2)}
+	server := grpc.NewServer()
+	collectorlogpb.RegisterLogsServiceServer(server, collector)
+	go func() { _ = server.Serve(listener) }()
+	defer server.Stop()
+	exporter, err := telemetry.NewDiagnosticExporter(telemetry.Config{OTLPEndpoint: listener.Addr().String(), OTLPInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := exporter.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	// Rejected producer input is a real counted loss, without waiting for shutdown.
+	if exporter.Emit(telemetry.DiagnosticRecord{}) {
+		t.Fatal("invalid input accepted")
+	}
+	rootRecord := telemetry.DiagnosticRecord{Time: time.Now(), Name: "goobers.fleet.heartbeat", Attributes: map[string]any{"gaggleId": ""}}
+	gaggleRecord := telemetry.DiagnosticRecord{Time: rootRecord.Time, Name: rootRecord.Name, Attributes: map[string]any{"gaggleId": "gaggle"}}
+	sample := func(context.Context, time.Time) []telemetry.DiagnosticRecord {
+		return []telemetry.DiagnosticRecord{rootRecord, gaggleRecord}
+	}
+	setup := &schedulerSetup{InstanceLog: openTestInstanceLog(t)}
+	emitFleetHealth(context.Background(), setup, exporter, []fleetHealthSample{sample}, rootRecord.Time)
+	if rootRecord.Attributes["diagnosticsDroppedRecords"] != int64(1) {
+		t.Fatal(rootRecord.Attributes)
+	}
+	if _, ok := gaggleRecord.Attributes["diagnosticsDroppedRecords"]; ok {
+		t.Fatal("deployment losses attributed to gaggle")
+	}
+	select {
+	case req := <-collector.requests:
+		found := false
+		for _, resource := range req.ResourceLogs {
+			for _, scope := range resource.ScopeLogs {
+				for _, record := range scope.LogRecords {
+					for _, attr := range record.Attributes {
+						if attr.Key == "diagnosticsDroppedRecords" && attr.Value.GetIntValue() == 1 {
+							found = true
+						}
+					}
+				}
+			}
+		}
+		if !found {
+			t.Fatal("loss count absent from actual OTLP request")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no heartbeat delivered")
+	}
+	disabled := telemetry.DiagnosticRecord{Time: rootRecord.Time, Name: rootRecord.Name, Attributes: map[string]any{"gaggleId": ""}}
+	emitFleetHealth(context.Background(), setup, nil, []fleetHealthSample{func(context.Context, time.Time) []telemetry.DiagnosticRecord {
+		return []telemetry.DiagnosticRecord{disabled}
+	}}, rootRecord.Time)
+	if _, ok := disabled.Attributes["diagnosticsDroppedRecords"]; ok {
+		t.Fatal("disabled export falsely reports zero losses")
 	}
 }

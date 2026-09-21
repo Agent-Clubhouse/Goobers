@@ -20,9 +20,10 @@ type Usage struct {
 // Report is scoped to exactly one authenticated tenant. OwnerRoute is a routing
 // hint for the company's tools, never an automatic message or inferred owner.
 type Report struct {
-	RequiredMCP *MCPHealth     `json:"requiredMcp,omitempty"`
-	Worker      *WorkerHealth  `json:"worker,omitempty"`
-	Backlog     *BacklogHealth `json:"backlog,omitempty"`
+	DiagnosticsDroppedRecords *int64         `json:"diagnosticsDroppedRecords,omitempty"`
+	RequiredMCP               *MCPHealth     `json:"requiredMcp,omitempty"`
+	Worker                    *WorkerHealth  `json:"worker,omitempty"`
+	Backlog                   *BacklogHealth `json:"backlog,omitempty"`
 	Identity
 	State                 string       `json:"state"`
 	Reason                string       `json:"reason"`
@@ -79,6 +80,10 @@ func evaluateHealth(e *entry, policy Tenant, now time.Time, skew time.Duration) 
 		r.Identity = h.Identity
 		if r.OwnerRef == "" {
 			r.OwnerRef = e.enrollment.OwnerRef
+		}
+		if h.DiagnosticsDroppedRecords != nil {
+			count := *h.DiagnosticsDroppedRecords
+			r.DiagnosticsDroppedRecords = &count
 		}
 		r.Coverage = h.Coverage
 		r.State = h.State

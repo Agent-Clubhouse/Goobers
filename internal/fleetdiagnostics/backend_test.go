@@ -325,3 +325,30 @@ func TestOversizedFieldsRejectedBeforeCopy(t *testing.T) {
 		t.Fatal("oversized map copied")
 	}
 }
+
+func TestExportLossReportIsHistoricalAndCopied(t *testing.T) {
+	now := testTime
+	b := backendFixture(t, &now)
+	attrs := heartbeatFields(now)
+	attrs["diagnosticsDroppedRecords"] = int64(7)
+	ingest(t, b, HeartbeatEvent, attrs)
+	first := oneReport(t, b)
+	if first.DiagnosticsDroppedRecords == nil || *first.DiagnosticsDroppedRecords != 7 {
+		t.Fatal(first)
+	}
+	*first.DiagnosticsDroppedRecords = 99
+	now = now.Add(time.Minute)
+	stale := oneReport(t, b)
+	if stale.Liveness != "unreachable" || stale.DiagnosticsDroppedRecords == nil || *stale.DiagnosticsDroppedRecords != 7 {
+		t.Fatal(stale)
+	}
+	attrs["diagnosticsDroppedRecords"] = int64(-1)
+	if _, err := DecodeHeartbeat(attrs); err == nil {
+		t.Fatal("negative loss accepted")
+	}
+	delete(attrs, "diagnosticsDroppedRecords")
+	h, err := DecodeHeartbeat(attrs)
+	if err != nil || h.DiagnosticsDroppedRecords != nil {
+		t.Fatal("legacy absence interpreted as zero", h, err)
+	}
+}

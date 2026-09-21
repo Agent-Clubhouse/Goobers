@@ -17,7 +17,7 @@ func TestOperationalBundleOfflineProjectionAndRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "goobers.fleet.heartbeat", "diagnostic": map[string]any{
-		"schemaVersion": 1, "instanceId": "instance-one", "gaggleId": "gaggle-one", "component": "daemon", "bootId": "boot-one", "version": "v0.5.0", "buildCommit": "commit-one", "platform": "linux/amd64",
+		"diagnosticsDroppedRecords": 3, "schemaVersion": 1, "instanceId": "instance-one", "gaggleId": "gaggle-one", "component": "daemon", "bootId": "boot-one", "version": "v0.5.0", "buildCommit": "commit-one", "platform": "linux/amd64",
 		"observedAt": "2026-09-20T00:00:00Z", "windowStart": "2026-09-19T23:00:00Z", "windowCoverage": "partial", "lastUsefulProgressAt": "2026-09-19T23:30:00Z", "state": "stalled", "reasonCode": "no_progress",
 		"requiredMcpState": "active", "requiredMcpCoverage": "partial", "requiredMcpReason": "tool_authorization_failure", "requiredMcpObservedAt": "2026-09-19T23:50:00Z", "requiredMcpActiveCount": 1, "requiredMcpAdapter": "copilot-cli", "requiredMcpStage": "implement",
 		"backlogState": "attention", "backlogReasonCode": "pending_without_confirmed_progress", "backlogCoverage": "complete", "backlogPendingCount": 2, "backlogObservedAt": "2026-09-19T23:59:45Z",
@@ -43,6 +43,9 @@ func TestOperationalBundleOfflineProjectionAndRedaction(t *testing.T) {
 	}
 	if observation.RequiredMCP == nil || observation.RequiredMCP.Reason != "tool_authorization_failure" || observation.RequiredMCP.Stage != "implement" {
 		t.Fatal("offline MCP context missing", observation)
+	}
+	if observation.DiagnosticsDroppedRecords == nil || *observation.DiagnosticsDroppedRecords != 3 {
+		t.Fatal("missing historical export loss", observation)
 	}
 	if observation.Backlog == nil || observation.Backlog.PendingCount == nil || *observation.Backlog.PendingCount != 2 || observation.Backlog.State != "attention" {
 		t.Fatal("offline pending-work evidence missing", observation)

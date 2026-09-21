@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
@@ -113,6 +114,9 @@ func emitFleetHealth(ctx context.Context, setup *schedulerSetup, exporter *telem
 	for _, sample := range fleet {
 		records := sample(sampleCtx, now)
 		for _, record := range records {
+			if exporter != nil && record.Name == "goobers.fleet.heartbeat" && record.Attributes["gaggleId"] == "" {
+				record.Attributes["diagnosticsDroppedRecords"] = int64(min(exporter.Stats().Dropped, uint64(math.MaxInt64)))
+			}
 			setup.InstanceLog.AppendBestEffort(journal.Event{Time: record.Time, Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": record.Name, "diagnostic": record.Attributes}})
 		}
 		for len(records) > 0 {
