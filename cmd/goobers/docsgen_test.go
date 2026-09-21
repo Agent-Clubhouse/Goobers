@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -133,6 +135,7 @@ func TestWriteCLIDocsWritesAndPrunes(t *testing.T) {
 	if err := writeCLIDocs(dir); err != nil {
 		t.Fatalf("writeCLIDocs (initial): %v", err)
 	}
+
 	if _, err := os.Stat(filepath.Join(dir, "man", "goobers-init.1")); err != nil {
 		t.Fatalf("expected goobers-init.1 to be written: %v", err)
 	}
@@ -175,6 +178,40 @@ func TestWriteCLIDocsWritesAndPrunes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "man", "goobers-init.1")); err != nil {
 		t.Errorf("real page missing after rewrite: %v", err)
+	}
+}
+
+func TestCLIDocsGeneratorContract(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator := filepath.Join(t.TempDir(), "goobers")
+	if runtime.GOOS == "windows" {
+		generator += ".exe"
+	}
+	build := exec.Command("go", "build", "-trimpath", "-o", generator, "./cmd/goobers")
+	build.Dir = repoRoot
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI docs generator: %v\n%s", err, output)
+	}
+	generate := exec.Command(generator, "__generate-docs", dir)
+	if output, err := generate.CombinedOutput(); err != nil {
+		t.Fatalf("run CLI docs generator: %v\n%s", err, output)
+	}
+	for _, rel := range []string{
+		"cli/README.md",
+		"completion/goobers.bash",
+		"completion/goobers.fish",
+		"completion/_goobers",
+		"man/goobers.1",
+		"feature-matrix.md",
+		"provider-capability-matrix.md",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("generator contract missing %s: %v", rel, err)
+		}
 	}
 }
 

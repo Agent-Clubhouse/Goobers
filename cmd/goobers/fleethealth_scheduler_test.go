@@ -50,7 +50,7 @@ func TestFleetSchedulerRejectsStaleStorageAndOtherGaggle(t *testing.T) {
 
 func TestFleetCleanupFailureIsDeploymentScopedAndFresh(t *testing.T) {
 	now := time.Now().UTC()
-	status := &readservice.SchedulerStatus{Maintenance: &readservice.MaintenanceStatus{State: "running", Failures: 1, LastProgressAt: &now}}
+	status := &readservice.SchedulerStatus{Maintenance: &readservice.MaintenanceStatus{State: "failed", LastResult: "failed", Failures: 1, LastCompletedAt: &now}}
 	attrs := map[string]any{"state": "unknown", "reasonCode": "progress_unconfirmed"}
 	observeFleetCleanup(attrs, status, now)
 	if attrs["reasonCode"] != "cleanup_failure" || attrs["state"] != "unknown" {
@@ -61,8 +61,8 @@ func TestFleetCleanupFailureIsDeploymentScopedAndFresh(t *testing.T) {
 	if observation.CleanupFailure {
 		t.Fatal("deployment cleanup failure attributed to gaggle")
 	}
-	for _, at := range []time.Time{now.Add(-2 * time.Minute), now.Add(time.Minute)} {
-		status.Maintenance.LastProgressAt = &at
+	for _, at := range []time.Time{{}, now.Add(-2 * time.Minute), now.Add(time.Minute)} {
+		status.Maintenance.LastCompletedAt = &at
 		attrs["reasonCode"] = "progress_unconfirmed"
 		observeFleetCleanup(attrs, status, now)
 		if attrs["reasonCode"] != "progress_unconfirmed" {
