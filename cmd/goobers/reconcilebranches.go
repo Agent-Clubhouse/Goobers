@@ -149,6 +149,8 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: repository provider %q does not support branch reconciliation\n", repo.Provider)
 		return 1
 	}
+	stopTelemetry := startCommandJournalTelemetry(layoutFor(root), stderr)
+	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(layoutFor(root).SchedulerDir(), journal.WithScrubber(scrubber))
 	if err != nil {
 		pf(stderr, "error: open instance log: %v\n", err)

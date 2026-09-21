@@ -1362,10 +1362,12 @@ func (c TelemetryRetentionConfig) MaxRunLimit() int {
 type OTLPConfig struct {
 	// ExportEnabled explicitly disables push, overriding environment configuration.
 	// Nil preserves the legacy endpoint-based opt-in.
-	ExportEnabled *bool               `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	Endpoint      string              `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
-	Insecure      bool                `json:"insecure,omitempty" yaml:"insecure,omitempty"`
-	Headers       map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
+	ExportEnabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// JournalLogs defaults to true for an explicitly configured native collector.
+	JournalLogs *bool               `json:"journalLogs,omitempty" yaml:"journalLogs,omitempty"`
+	Endpoint    string              `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	Insecure    bool                `json:"insecure,omitempty" yaml:"insecure,omitempty"`
+	Headers     map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
 	// TLS configures trust for a collector that presents a certificate the
 	// system trust store does not already recognize (e.g. a private CA),
 	// and optionally a client certificate for mTLS. It is additive: absent,
@@ -2229,6 +2231,11 @@ func (c EngineHITLConfig) HITLWindow() time.Duration {
 // Enabled reports whether collector push is configured.
 func (c OTLPConfig) Enabled() bool {
 	return (c.ExportEnabled == nil || *c.ExportEnabled) && c.Endpoint != ""
+}
+
+// JournalLogsEnabled reports whether live journal events use the native collector.
+func (c OTLPConfig) JournalLogsEnabled() bool {
+	return c.Enabled() && (c.JournalLogs == nil || *c.JournalLogs)
 }
 
 // Validate checks the collector endpoint, transport, and credential references.

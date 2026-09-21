@@ -45,6 +45,8 @@ func runRecoveryAbandon(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	stopTelemetry := startCommandJournalTelemetry(layout, stderr)
+	defer stopTelemetry()
 	if err := abandonRecoveryRecord(ctx, layout, *runID, *ref, *digest); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

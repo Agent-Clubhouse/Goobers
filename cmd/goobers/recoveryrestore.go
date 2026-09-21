@@ -63,6 +63,10 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 	registry, scrubber := journal.DefaultScrubber()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	if !claimsPlaneSelected() {
+		stopTelemetry := startCommandJournalTelemetry(layout, stderr)
+		defer stopTelemetry()
+	}
 	var commit string
 	var err error
 	if issueSelection {

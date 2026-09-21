@@ -969,6 +969,7 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean", "description": "Explicit false disables this stream and overrides environment defaults; unset preserves endpoint-based opt-in." },
+        "journalLogs": { "type": "boolean", "default": true, "description": "Export newly committed native journal events as best-effort OTLP Logs when the native collector is enabled. False keeps native trace and metric export unchanged." },
         "endpoint": {
           "type": "string",
           "minLength": 1,

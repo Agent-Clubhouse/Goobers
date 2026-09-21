@@ -1,0 +1,581 @@
+package telemetry
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"math"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/goobers/goobers/internal/journal"
+	"go.opentelemetry.io/otel/attribute"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	"go.opentelemetry.io/otel/sdk/resource"
+	collectorlogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
+)
+
+type journalLogsReceiver struct {
+	collectorlogspb.UnimplementedLogsServiceServer
+	requests chan *collectorlogspb.ExportLogsServiceRequest
+	headers  chan metadata.MD
+}
+
+func (s *journalLogsReceiver) Export(ctx context.Context, req *collectorlogspb.ExportLogsServiceRequest) (*collectorlogspb.ExportLogsServiceResponse, error) {
+	s.requests <- req
+	md, _ := metadata.FromIncomingContext(ctx)
+	s.headers <- md
+	return &collectorlogspb.ExportLogsServiceResponse{}, nil
+}
+
+func TestJournalLogsOTLPWireContract(t *testing.T) {
+	t.Run("full-client", func(t *testing.T) { testJournalLogsOTLPWireContract(t, false) })
+	t.Run("logs-only", func(t *testing.T) { testJournalLogsOTLPWireContract(t, true) })
+}
+
+func testJournalLogsOTLPWireContract(t *testing.T, logsOnly bool) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	receiver := &journalLogsReceiver{
+		requests: make(chan *collectorlogspb.ExportLogsServiceRequest, 8),
+		headers:  make(chan metadata.MD, 8),
+	}
+	collectorlogspb.RegisterLogsServiceServer(server, receiver)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte("journal-resource-secret"))
+	cfg := Config{
+		Exporter: ExporterOTLP, OTLPEndpoint: "http://" + listener.Addr().String(), OTLPInsecure: true,
+		OTLPHeaders: map[string]string{"x-journal-test": "present"}, JournalLogs: true,
+		JournalLogsOnly: logsOnly,
+		ServiceName:     "journal-test", ServiceVersion: "test-version", Environment: "test",
+		Scrubber: scrubber,
+		ResourceAttributes: []attribute.KeyValue{
+			attribute.String("test.resource", "retained"),
+			attribute.String("test.secret", "journal-resource-secret"),
+		},
+	}
+	client, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logsOnly && (client.tracerProvider != nil || client.meterProvider != nil || client.instruments != nil || client.localSpanProcessor != nil) {
+		t.Fatal("logs-only client constructed trace or metric providers")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = client.Shutdown(ctx)
+	})
+	body := []byte(`{"seq":18446744073709551615,"message":"[REDACTED]","data":{"integer":9007199254740993}}`)
+	event := journal.CommittedEvent{
+		Kind: "run", JournalID: "stable-journal", InstanceID: "instance", Gaggle: "gaggle",
+		RunID: "0123456789abcdef0123456789abcdef", Seq: math.MaxUint64,
+		Time: time.Unix(1700000000, 123), ObservedTime: time.Unix(1700000001, 456), Body: body,
+	}
+	client.Commit(event)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.journalLogs.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var request *collectorlogspb.ExportLogsServiceRequest
+	select {
+	case request = <-receiver.requests:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	rs := request.ResourceLogs[0]
+	resourceAttrs := journalWireAttrs(rs.Resource.Attributes)
+	if resourceAttrs["service.name"].GetStringValue() != cfg.ServiceName ||
+		resourceAttrs["service.version"].GetStringValue() != cfg.ServiceVersion ||
+		resourceAttrs["test.resource"].GetStringValue() != "retained" ||
+		resourceAttrs["service.instance.id"].GetStringValue() == "" {
+		t.Fatalf("resource = %v", rs.Resource)
+	}
+	if got := resourceAttrs["test.secret"].GetStringValue(); got != string(scrubber.Scrub([]byte("journal-resource-secret"))) {
+		t.Fatalf("resource not scrubbed: %q", got)
+	}
+	scope := rs.ScopeLogs[0]
+	if scope.Scope.Name != "goobers.journal" || scope.Scope.Version != "1" {
+		t.Fatalf("scope = %v", scope.Scope)
+	}
+	record := scope.LogRecords[0]
+	if record.Body.GetStringValue() != string(body) {
+		t.Fatalf("body changed: %q", record.Body.GetStringValue())
+	}
+	if record.TimeUnixNano != uint64(event.Time.UnixNano()) || record.ObservedTimeUnixNano != uint64(event.ObservedTime.UnixNano()) {
+		t.Fatalf("timestamps = %v", record)
+	}
+	if !bytes.Equal(record.TraceId, []byte{1, 35, 69, 103, 137, 171, 205, 239, 1, 35, 69, 103, 137, 171, 205, 239}) || len(record.SpanId) != 0 {
+		t.Fatalf("correlation = trace %x span %x", record.TraceId, record.SpanId)
+	}
+	attrs := journalWireAttrs(record.Attributes)
+	if attrs["goobers.journal.schema_version"].GetIntValue() != 1 ||
+		attrs["goobers.journal.seq"].GetStringValue() != "18446744073709551615" ||
+		attrs["goobers.journal.kind"].GetStringValue() != "run" ||
+		attrs["goobers.journal.id"].GetStringValue() != event.JournalID ||
+		attrs["goobers.instance.id"].GetStringValue() != event.InstanceID ||
+		attrs["goobers.gaggle"].GetStringValue() != event.Gaggle ||
+		attrs["goobers.run.id"].GetStringValue() != event.RunID || len(attrs) != 7 {
+		t.Fatalf("attributes = %v", attrs)
+	}
+	if got := (<-receiver.headers).Get("x-journal-test"); len(got) != 1 || got[0] != "present" {
+		t.Fatalf("headers = %v", got)
+	}
+	event.Kind, event.RunID, event.InstanceID, event.Gaggle = "scheduler", "", "", ""
+	client.Commit(event)
+	if err := client.journalLogs.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	record = (<-receiver.requests).ResourceLogs[0].ScopeLogs[0].LogRecords[0]
+	if len(record.TraceId) != 0 || len(record.SpanId) != 0 || len(record.Attributes) != 4 {
+		t.Fatalf("scheduler metadata = %v", record)
+	}
+	if stats := client.JournalExportStats(); stats.Accepted != 2 || stats.Dropped != 0 || stats.ExportFailures != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func journalWireAttrs(attrs []*commonpb.KeyValue) map[string]*commonpb.AnyValue {
+	result := make(map[string]*commonpb.AnyValue, len(attrs))
+	for _, kv := range attrs {
+		result[kv.Key] = kv.Value
+	}
+	return result
+}
+
+type journalTestExporter struct {
+	mu          sync.Mutex
+	records     []sdklog.Record
+	started     chan struct{}
+	release     chan struct{}
+	startOnce   sync.Once
+	exportErr   error
+	flushErr    error
+	shutdownErr error
+	flushes     int
+	shutdowns   int
+}
+
+func (e *journalTestExporter) Export(ctx context.Context, records []sdklog.Record) error {
+	if e.started != nil {
+		e.startOnce.Do(func() { close(e.started) })
+	}
+	if e.release != nil {
+		select {
+		case <-e.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, r := range records {
+		e.records = append(e.records, r.Clone())
+	}
+	return e.exportErr
+}
+
+func (e *journalTestExporter) ForceFlush(context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.flushes++
+	return e.flushErr
+}
+
+func (e *journalTestExporter) Shutdown(context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.shutdowns++
+	return e.shutdownErr
+}
+
+func journalTestClient(t *testing.T, exporter sdklog.Exporter) *Client {
+	t.Helper()
+	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty())}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = client.journalLogs.shutdown(ctx)
+	})
+	return client
+}
+
+func waitJournalStarted(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("export did not start")
+	}
+}
+
+func TestJournalLogsQueueBoundsAndOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body int
+	}{
+		{"count", 1},
+		{"bytes", journalLogRecordLimit / 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			exporter := &journalTestExporter{started: make(chan struct{}), release: make(chan struct{})}
+			client := journalTestClient(t, exporter)
+			body := bytes.Repeat([]byte("x"), test.body)
+			event := journal.CommittedEvent{Body: body, Kind: "run", JournalID: "id"}
+			client.Commit(event)
+			waitJournalStarted(t, exporter.started)
+			body[0] = 'z'
+			for i := 0; i < journalLogQueueLimit+10; i++ {
+				client.Commit(event)
+			}
+			stats := client.JournalExportStats()
+			if stats.Dropped == 0 || stats.QueuedRecords > journalLogQueueLimit ||
+				stats.QueuedBytes > journalLogBytesLimit ||
+				stats.Accepted+stats.Dropped != journalLogQueueLimit+11 {
+				t.Fatalf("queue accounting = %+v", stats)
+			}
+			if test.name == "count" && stats.QueuedRecords != journalLogQueueLimit {
+				t.Fatalf("item bound not reached: %+v", stats)
+			}
+			if test.name == "bytes" && stats.QueuedRecords >= journalLogQueueLimit {
+				t.Fatalf("byte bound not applied: %+v", stats)
+			}
+			close(exporter.release)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := client.journalLogs.flush(ctx); err != nil {
+				t.Fatal(err)
+			}
+			stats = client.JournalExportStats()
+			if stats.QueuedBytes != 0 || stats.QueuedRecords != 0 {
+				t.Fatalf("queue not drained: %+v", stats)
+			}
+			exporter.mu.Lock()
+			defer exporter.mu.Unlock()
+			if got := exporter.records[0].Body().AsString(); got[0] != 'x' {
+				t.Fatal("queued body was not copied")
+			}
+		})
+	}
+}
+
+func TestJournalLogsRejectLargeRecordsAndContention(t *testing.T) {
+	client := journalTestClient(t, &journalTestExporter{})
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: make([]byte, journalLogRecordLimit+1)})
+	client.Commit(journal.CommittedEvent{JournalID: strings.Repeat("x", journalLogRecordLimit+1)})
+	client.journalLogs.mu.Lock()
+	// This must return without waiting for the worker's mutex.
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	client.journalLogs.mu.Unlock()
+	stats := client.JournalExportStats()
+	if stats.Accepted != 0 || stats.Dropped != 3 || stats.QueuedBytes != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestJournalLogsRejectsMissingJournalIdentity(t *testing.T) {
+	exporter := &journalTestExporter{}
+	client := journalTestClient(t, exporter)
+	reports := make(chan string, 8)
+	client.journalLogs.reporter.log = func(_ string, args ...any) {
+		for i := 0; i+1 < len(args); i += 2 {
+			if args[i] == "error" {
+				reports <- args[i+1].(string)
+			}
+		}
+	}
+	// Invalid metadata must be rejected without waiting on even the queue lock.
+	client.journalLogs.mu.Lock()
+	client.Commit(journal.CommittedEvent{Kind: "scheduler", Body: []byte("{}")})
+	client.journalLogs.mu.Unlock()
+	stats := client.JournalExportStats()
+	if stats.Accepted != 0 || stats.Dropped != 1 || stats.InvalidMetadata != 1 || stats.QueuedBytes != 0 {
+		t.Fatalf("missing identity accounting = %+v", stats)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	for {
+		select {
+		case message := <-reports:
+			if strings.Contains(message, "missing persistent journal identity") {
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("missing identity was not reported by the worker")
+		}
+	}
+}
+
+func TestJournalLogsFlushShutdownTimeout(t *testing.T) {
+	exporter := &journalTestExporter{started: make(chan struct{}), release: make(chan struct{})}
+	client := journalTestClient(t, exporter)
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	waitJournalStarted(t, exporter.started)
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := client.journalLogs.flush(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("flush = %v", err)
+	}
+	if err := client.journalLogs.shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown = %v", err)
+	}
+	select {
+	case <-client.journalLogs.done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop after cancellation")
+	}
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal"})
+	stats := client.JournalExportStats()
+	if stats.ExportFailures != 1 || stats.Dropped != 2 || stats.QueuedRecords != 0 || stats.QueuedBytes != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestJournalLogsExportAndLifecycleErrors(t *testing.T) {
+	exporter := &journalTestExporter{
+		exportErr: errors.New("collector unavailable"), flushErr: errors.New("flush failed"),
+		shutdownErr: errors.New("shutdown failed"),
+	}
+	client := journalTestClient(t, exporter)
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.journalLogs.flush(ctx); !errors.Is(err, exporter.flushErr) {
+		t.Fatalf("flush = %v", err)
+	}
+	if stats := client.JournalExportStats(); stats.ExportFailures != 1 || stats.Accepted != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if err := client.journalLogs.shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.journalLogs.shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	exporter.mu.Lock()
+	defer exporter.mu.Unlock()
+	if exporter.shutdowns != 1 || exporter.flushes == 0 {
+		t.Fatalf("flushes=%d shutdowns=%d", exporter.flushes, exporter.shutdowns)
+	}
+}
+
+func TestJournalLogsClientLifecycleRemainsBestEffort(t *testing.T) {
+	client, err := New(context.Background(), Config{Stdout: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.journalLogs = newJournalLogPipeline(&journalTestExporter{
+		exportErr:   errors.New("collector unavailable"),
+		flushErr:    errors.New("collector flush failed"),
+		shutdownErr: errors.New("collector shutdown failed"),
+	}, resource.Empty())
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.Flush(ctx); err != nil {
+		t.Fatalf("remote logs failure escaped Client.Flush: %v", err)
+	}
+	if err := client.Shutdown(ctx); err != nil {
+		t.Fatalf("remote logs failure escaped Client.Shutdown: %v", err)
+	}
+	if stats := client.JournalExportStats(); stats.ExportFailures != 1 {
+		t.Fatalf("remote failure was not counted: %+v", stats)
+	}
+}
+
+func TestJournalLogsShutdownDrainsAndInvalidRunIDStaysMetadata(t *testing.T) {
+	exporter := &journalTestExporter{started: make(chan struct{}), release: make(chan struct{})}
+	client := journalTestClient(t, exporter)
+	event := journal.CommittedEvent{JournalID: "test-journal", RunID: "not-a-trace-id", Kind: "scheduler", Body: []byte("{}")}
+	client.Commit(event)
+	waitJournalStarted(t, exporter.started)
+	for range 10 {
+		client.Commit(event)
+	}
+	close(exporter.release)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.journalLogs.shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if stats := client.JournalExportStats(); stats.Accepted != 11 || stats.Dropped != 0 || stats.QueuedRecords != 0 {
+		t.Fatalf("drain stats = %+v", stats)
+	}
+	exporter.mu.Lock()
+	defer exporter.mu.Unlock()
+	if len(exporter.records) != 11 || exporter.shutdowns != 1 {
+		t.Fatalf("exported=%d shutdowns=%d", len(exporter.records), exporter.shutdowns)
+	}
+	for _, record := range exporter.records {
+		if record.TraceID().IsValid() || record.SpanID().IsValid() {
+			t.Fatalf("fabricated correlation: %v", record)
+		}
+		var runID string
+		record.WalkAttributes(func(kv attribute.KeyValue) bool {
+			if kv.Key == "goobers.run.id" {
+				runID = kv.Value.AsString()
+			}
+			return true
+		})
+		if runID != event.RunID {
+			t.Fatalf("run ID metadata = %q", runID)
+		}
+	}
+}
+
+func TestJournalLogsDisabledAndDegraded(t *testing.T) {
+	for _, cfg := range []Config{
+		{Stdout: io.Discard},
+		{Stdout: io.Discard, JournalLogs: true},
+		{Exporter: ExporterOTLP, OTLPEndpoint: "127.0.0.1:1", OTLPInsecure: true},
+	} {
+		client, err := New(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		client.Commit(journal.CommittedEvent{Body: []byte("{}")})
+		if client.JournalLogsEnabled() || client.JournalExportStats() != (JournalExportStats{}) {
+			t.Fatal("disabled logs pipeline was created")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		_ = client.Shutdown(ctx)
+		cancel()
+	}
+	if client, err := New(context.Background(), Config{Exporter: ExporterOTLP, JournalLogs: true}); err == nil || client != nil {
+		t.Fatalf("OTLP without endpoint = %v, %v", client, err)
+	}
+	client, err := New(context.Background(), Config{
+		Exporter: ExporterOTLP, OTLPEndpoint: "localhost:4317", JournalLogs: true,
+		OTLPCAFile: "does-not-exist-journal-ca.pem",
+	})
+	if !errors.Is(err, ErrOTLPUnavailable) || client == nil || client.journalLogs != nil {
+		t.Fatalf("degraded = %v, %v", client, err)
+	}
+	if err := client.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var nilClient *Client
+	nilClient.Commit(journal.CommittedEvent{})
+	if nilClient.JournalLogsEnabled() || nilClient.JournalExportStats() != (JournalExportStats{}) {
+		t.Fatal("nil client has stats")
+	}
+}
+
+func TestJournalLogsOnlyDisabledAndDegraded(t *testing.T) {
+	for _, cfg := range []Config{
+		{JournalLogsOnly: true},
+		{JournalLogsOnly: true, JournalLogs: true, Exporter: ExporterStdout},
+		{JournalLogsOnly: true, JournalLogs: true, Exporter: ExporterOTLP},
+		{JournalLogsOnly: true, JournalLogs: false, Exporter: ExporterOTLP, OTLPEndpoint: "127.0.0.1:1"},
+	} {
+		var stdout bytes.Buffer
+		cfg.Stdout = &stdout
+		client, err := New(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if client.JournalLogsEnabled() || client.tracerProvider != nil || client.meterProvider != nil {
+			t.Fatal("disabled logs-only client constructed providers")
+		}
+		if err := client.Flush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if stdout.Len() != 0 {
+			t.Fatal("logs-only client wrote stdout telemetry")
+		}
+	}
+	client, err := New(context.Background(), Config{
+		JournalLogsOnly: true, JournalLogs: true, Exporter: ExporterOTLP,
+		OTLPEndpoint: "127.0.0.1:1", OTLPCAFile: "does-not-exist-journal-ca.pem",
+	})
+	if !errors.Is(err, ErrOTLPUnavailable) || client == nil || client.JournalLogsEnabled() {
+		t.Fatalf("degraded logs-only client = %v, %v", client, err)
+	}
+	if err := client.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJournalLogsProviderOwnsRegistration(t *testing.T) {
+	id, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := ".journal-registration-" + id
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	cfg := Config{
+		Exporter: ExporterOTLP, OTLPEndpoint: "127.0.0.1:1", OTLPInsecure: true,
+		JournalLogs: true, JournalRoot: root, JournalInstanceID: "known-instance",
+	}
+	client, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = client.Shutdown(ctx)
+	})
+	if !journal.HasCommittedEventSink(root) {
+		t.Fatal("client did not register its sink")
+	}
+	if !client.JournalLogsEnabled() {
+		t.Fatal("registered client's logs are not enabled")
+	}
+
+	duplicate, err := New(context.Background(), cfg)
+	if !errors.Is(err, ErrOTLPUnavailable) || duplicate == nil || duplicate.JournalLogsEnabled() {
+		t.Fatalf("overlapping registration = %v, %v", duplicate, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = duplicate.Shutdown(ctx)
+	if !journal.HasCommittedEventSink(root) {
+		t.Fatal("degraded duplicate removed the existing owner")
+	}
+	_ = client.Shutdown(ctx)
+	if journal.HasCommittedEventSink(root) {
+		t.Fatal("cancelled shutdown did not unregister first")
+	}
+	if client.JournalLogsEnabled() {
+		t.Fatal("shutdown client reports enabled journal logs")
+	}
+	_ = client.Shutdown(ctx)
+
+	cfg.JournalRoot = filepath.Join(root, "does-not-exist")
+	degraded, err := New(context.Background(), cfg)
+	if !errors.Is(err, ErrOTLPUnavailable) || degraded == nil || degraded.journalLogs != nil {
+		t.Fatalf("invalid registration root = %v, %v", degraded, err)
+	}
+	_ = degraded.Shutdown(ctx)
+
+	cfg.JournalLogs = false
+	disabled, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("disabled logs inspected the registration root: %v", err)
+	}
+	_ = disabled.Shutdown(ctx)
+}

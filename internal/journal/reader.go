@@ -432,6 +432,9 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 		phase:    reconstructPhase(events),
 		reason:   reconstructReason(events),
 	}
+	if !cfg.disableCommittedExport {
+		r.commits = runCommitTarget(dir, id)
+	}
 	if len(events) > 0 {
 		r.lastActivity = events[len(events)-1].Time
 	}
