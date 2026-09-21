@@ -20,7 +20,11 @@ type fleetUsageSample func(context.Context, time.Time, []telemetry.DiagnosticRec
 
 // configured is evaluated on each sample so an accepted config reload changes
 // configured feature labels without treating those labels as observed use.
-func newFleetUsageSampler(root string, configured func() map[string]map[string]bool) fleetUsageSample {
+func newFleetUsageSampler(root string, configured func() map[string]map[string]bool, periods ...time.Duration) fleetUsageSample {
+	period := 30 * time.Second
+	if len(periods) > 0 && periods[0] >= 10*time.Second && periods[0] <= time.Hour {
+		period = periods[0]
+	}
 	cursor := 0
 	return func(ctx context.Context, now time.Time, heartbeats []telemetry.DiagnosticRecord) []telemetry.DiagnosticRecord {
 		var current map[string]map[string]bool
@@ -35,7 +39,8 @@ func newFleetUsageSampler(root string, configured func() map[string]map[string]b
 		startCursor := cursor % len(heartbeats)
 		cursor = (startCursor + fleetUsageGaggleLimit) % len(heartbeats)
 		inspected := 0
-		for index := range heartbeats {
+		window := max(fleetUsageWindow, time.Duration((len(heartbeats)+fleetUsageGaggleLimit-1)/fleetUsageGaggleLimit+1)*period)
+		for index := range min(len(heartbeats), fleetUsageGaggleLimit) {
 			heartbeat := heartbeats[(startCursor+index)%len(heartbeats)]
 			if heartbeat.Name != "goobers.fleet.heartbeat" {
 				continue
@@ -45,7 +50,7 @@ func newFleetUsageSampler(root string, configured func() map[string]map[string]b
 			if gaggle == "" {
 				continue
 			}
-			start := now.Add(-fleetUsageWindow)
+			start := now.Add(-window)
 			boot, _ := heartbeat.Attributes["bootStartedAt"].(string)
 			bootTime, err := time.Parse(time.RFC3339Nano, boot)
 			if err != nil || bootTime.After(now) {
@@ -56,7 +61,7 @@ func newFleetUsageSampler(root string, configured func() map[string]map[string]b
 			}
 			counts := map[string]featureusage.Count{}
 			if inspected < fleetUsageGaggleLimit && ctx.Err() == nil && gaggle == filepath.Base(gaggle) && gaggle != "." && gaggle != ".." && !strings.ContainsAny(gaggle, "/\\") {
-				counts = featureusage.Scan(ctx, instance.NewLayout(root).ForGaggle(gaggle).RunsDir(), start, now)
+				counts = featureusage.Scan(ctx, instance.NewLayout(root).ForGaggle(gaggle).RunsDir(), gaggle, start, now)
 				inspected++
 			}
 			for _, id := range featureusage.IDs() {

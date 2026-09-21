@@ -38,7 +38,7 @@ func TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage(t *testing.T) {
 	}
 	sampler := newFleetUsageSampler(root, func() map[string]map[string]bool { return configured })
 	first := sampler(context.Background(), now, heartbeats)
-	if len(first) != 9 {
+	if len(first) != 8 {
 		t.Fatal(len(first))
 	}
 	for _, record := range first {
@@ -47,10 +47,9 @@ func TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage(t *testing.T) {
 			t.Fatal(err)
 		}
 		if usage.GaggleID == "g8" {
-			if usage.Count != nil || usage.Coverage == "complete" {
-				t.Fatal("uninspected gaggle claimed zero", usage)
-			}
-		} else if usage.Count == nil || *usage.Count != 0 || !usage.Configured {
+			t.Fatal("unsampled gaggle emitted a feature record")
+		}
+		if usage.Count == nil || *usage.Count != 0 || !usage.Configured {
 			t.Fatal(usage)
 		}
 	}
@@ -110,7 +109,7 @@ func TestRemoteFeatureEvidenceCrossesRealJournalPlaneAndDeduplicates(t *testing.
 	if _, err := writer.Emit(context.Background(), lastUsageRequest(delivered)); err != nil {
 		t.Fatal(err)
 	}
-	counts := featureusage.Scan(context.Background(), runsDir, now.Add(-time.Minute), time.Now().Add(time.Second))
+	counts := featureusage.Scan(context.Background(), runsDir, "g", now.Add(-time.Minute), time.Now().Add(time.Second))
 	if counts["adapter.codex"].Value != 2 || counts["runner.engine"].Value != 1 || counts["dsl.v3"].Value != 1 || counts["capability.nested-agents"].Value != 1 || counts["capability.nested-agents"].Complete {
 		t.Fatal(counts)
 	}

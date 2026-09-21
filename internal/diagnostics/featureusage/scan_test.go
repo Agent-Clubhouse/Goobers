@@ -39,7 +39,7 @@ func TestScanActualDriverPinnedDSLAndAbsoluteWindows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	first := Scan(context.Background(), dir, now.Add(-time.Minute), now.Add(time.Second))
+	first := Scan(context.Background(), dir, "g", now.Add(-time.Minute), now.Add(time.Second))
 	for _, id := range []string{"runner.local", "runner.engine", "dsl.v2", "dsl.v3"} {
 		if first[id].Value != 1 || !first[id].Complete {
 			t.Fatalf("%s=%+v", id, first[id])
@@ -51,11 +51,11 @@ func TestScanActualDriverPinnedDSLAndAbsoluteWindows(t *testing.T) {
 	if first["capability.nested-agents"].Value != 2 || first["capability.nested-agents"].Complete {
 		t.Fatal("child lifecycle dedup/coverage wrong", first)
 	}
-	second := Scan(context.Background(), dir, now.Add(-time.Minute), now.Add(time.Second))
+	second := Scan(context.Background(), dir, "g", now.Add(-time.Minute), now.Add(time.Second))
 	if !reflect.DeepEqual(first, second) {
 		t.Fatal("rescan double-counted", first, second)
 	}
-	after := Scan(context.Background(), dir, now.Add(time.Second), now.Add(time.Minute))
+	after := Scan(context.Background(), dir, "g", now.Add(time.Second), now.Add(time.Minute))
 	if after["runner.local"].Value != 0 || !after["adapter.codex"].Complete {
 		t.Fatal(after)
 	}
@@ -76,7 +76,7 @@ func TestScanMissingTruncatedOversizedAndCanceledRemainUnknown(t *testing.T) {
 	} {
 		dir := filepath.Join(t.TempDir(), "runs")
 		setup(dir)
-		counts := Scan(context.Background(), dir, now.Add(-time.Minute), now)
+		counts := Scan(context.Background(), dir, "g", now.Add(-time.Minute), now)
 		for id, count := range counts {
 			if count.Complete {
 				t.Fatalf("%s claimed coverage", id)
@@ -87,7 +87,7 @@ func TestScanMissingTruncatedOversizedAndCanceledRemainUnknown(t *testing.T) {
 	cancel()
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, "one"), 0o700)
-	for id, count := range Scan(ctx, dir, now.Add(-time.Minute), now) {
+	for id, count := range Scan(ctx, dir, "g", now.Add(-time.Minute), now) {
 		if count.Complete {
 			t.Fatalf("%s claimed canceled coverage", id)
 		}
@@ -111,8 +111,25 @@ func BenchmarkFeatureScan(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				Scan(context.Background(), dir, now.Add(-time.Minute), now.Add(time.Second))
+				Scan(context.Background(), dir, "g", now.Add(-time.Minute), now.Add(time.Second))
 			}
 		})
+	}
+}
+
+func TestScanRejectsCrossGaggleEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	run, err := journal.Create(dir, journal.RunIdentity{RunID: "wrong-gaggle", Gaggle: "other", Workflow: "w"}, nil, journal.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	for id, count := range Scan(context.Background(), dir, "g", now.Add(-time.Minute), now.Add(time.Second)) {
+		if count.Value != 0 || count.Complete {
+			t.Fatalf("cross-gaggle evidence attributed to %s: %+v", id, count)
+		}
 	}
 }

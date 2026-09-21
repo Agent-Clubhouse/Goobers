@@ -127,6 +127,7 @@ func emitFleetHealth(ctx context.Context, setup *schedulerSetup, exporter *telem
 // stop joins observers before the read service and instance journal close.
 func startDaemonHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, reader fleetHealthReader, ready func() bool) func() {
 	healthCtx, cancel := context.WithCancel(ctx)
-	done := startServiceHealth(healthCtx, root, identity, setup, inventory, newFleetHealthSampler(root, identity, setup.Config.Telemetry.Diagnostics, reader, ready))
+	health := newFleetHealthSampler(root, identity, setup.Config.Telemetry.Diagnostics, reader, ready)
+	done := startServiceHealth(healthCtx, root, identity, setup, inventory, combinedFleetSampler(root, setup, reader, health))
 	return func() { cancel(); <-done }
 }

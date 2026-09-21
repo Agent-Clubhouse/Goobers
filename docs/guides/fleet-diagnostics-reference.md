@@ -176,8 +176,10 @@ The version-one catalogue adds `capability.nested-agents`. Counts describe:
 - `capability.nested-agents`: recorded child-agent starts with explicit parent
   identity, deduplicated by stage/agent/attempt inside each run.
 
-Counters are absolute observations in the last five minutes, clipped to the
-current daemon boot. Re-reading the same journal does not add another count.
+Counters are absolute observations in a window of at least five minutes,
+clipped to the current daemon boot. For large fleets the window extends to one
+full sampling rotation plus one heartbeat (at most 14 hours at the largest
+allowed heartbeat interval). Re-reading the same journal does not add another count.
 New windows can have lower counts; a restart starts a new boot/window. Journal
 sequence checks and the remote journal plane's operation keys prevent replay
 from silently adding usage. Child identifiers remain local to the scan.
@@ -196,10 +198,11 @@ cannot.
 
 The sampler rotates through at most eight of 100 gaggles each heartbeat. At the
 default 30-second interval, a full round of 100 gaggles takes 13 ticks (6 minutes
-30 seconds). Unsampled gaggles explicitly omit counts and report partial
-coverage; they do not reuse old counts as current or claim zero. Thus a large
-fleet may have unobserved intervals; these bounded observations are not a
-billing or audit ledger. Unknown configuration omits the feature record.
+30 seconds). Only sampled gaggles emit feature records (at most 96 per tick); the backend
+expires older feature counts to unknown between visits. The default window for
+100 gaggles is seven minutes, overlapping successive rotations. Read-budget or
+source gaps still remain partial; these bounded observations are not a billing
+or audit ledger. Unknown configuration omits the feature record.
 
 A local Apple M4/darwin-arm64 benchmark with `GOMAXPROCS=2`, 100 iterations,
 measured an empty scan at 31.4 microseconds / 2,320 allocated bytes and 16 small
@@ -207,3 +210,11 @@ journal scans at 1.30 milliseconds / 453,328 allocated bytes. This measures the
 reader only, not daemon/network overhead or other operating systems. Portable
 subprocess and remote journal-plane regressions exercise the real provider and
 recorder paths; CI remains the cross-platform gate.
+
+The same machine's real local journal append benchmark (including existing
+fsync and tail accounting, ten iterations) measured two records at 0.193 ms /
+1,005 journal bytes per batch and 197 records at 94.2 ms / 99,550 journal bytes.
+The latter allocated 85.7 MB per batch in the existing append path. Sustaining
+that synthetic loaded batch every 30 seconds produces about 287 MB/day before
+retention or compaction; queue batching does not remove local journal cost.
+These are measured local costs, not a fleet-wide throughput guarantee.

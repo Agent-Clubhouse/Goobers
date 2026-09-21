@@ -42,7 +42,7 @@ func IDs() []string {
 // Scan reads an explicitly bounded journal window. It never migrates journals,
 // follows arbitrary artifact paths, or exports raw event fields. Re-scanning the
 // same sequence produces the same absolute count; no per-poll summation occurs.
-func Scan(ctx context.Context, runsDir string, start, end time.Time) map[string]Count {
+func Scan(ctx context.Context, runsDir, gaggle string, start, end time.Time) map[string]Count {
 	result := map[string]Count{}
 	for _, id := range IDs() {
 		result[id] = Count{Complete: !strings.HasPrefix(id, "provider.")}
@@ -75,7 +75,7 @@ func Scan(ctx context.Context, runsDir string, start, end time.Time) map[string]
 		if !entry.IsDir() {
 			continue
 		}
-		if err := scanRun(ctx, filepath.Join(runsDir, entry.Name()), start, end, &budget, result); err != nil {
+		if err := scanRun(ctx, filepath.Join(runsDir, entry.Name()), gaggle, start, end, &budget, result); err != nil {
 			result = incomplete(result)
 		}
 	}
@@ -105,13 +105,13 @@ func partialDynamic(result map[string]Count) {
 	}
 }
 
-func scanRun(ctx context.Context, dir string, start, end time.Time, budget *int64, result map[string]Count) error {
+func scanRun(ctx context.Context, dir, gaggle string, start, end time.Time, budget *int64, result map[string]Count) error {
 	data, err := boundedFile(filepath.Join(dir, "run.yaml"), 64<<10, budget)
 	if err != nil {
 		return err
 	}
 	var identity journal.RunIdentity
-	if err := yaml.Unmarshal(data, &identity); err != nil || !identity.KnownSchema() {
+	if err := yaml.Unmarshal(data, &identity); err != nil || !identity.KnownSchema() || identity.Gaggle != gaggle {
 		return errors.New("unknown run identity")
 	}
 	data, err = boundedFile(filepath.Join(dir, "events.jsonl"), MaxRunBytes, budget)
