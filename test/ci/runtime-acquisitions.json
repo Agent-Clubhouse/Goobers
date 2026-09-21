@@ -53,6 +53,7 @@
       ".github/workflows/ci.yml#windows-smoke/Download modules:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Validate Windows daemon and implementation workflow:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows CLI runtime:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows bounded diagnostic history:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows containment and journals:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows credential files:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows harness and toolkit:go-modules",
