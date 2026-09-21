@@ -24,9 +24,6 @@ func observeFleetScheduler(observation *fleetstate.Observation, status *readserv
 	if storage := status.StorageHealth; storage != nil && !storage.MeasuredAt.IsZero() && !storage.MeasuredAt.After(now) && now.Sub(storage.MeasuredAt) <= time.Minute {
 		observation.StorageFailure = storage.Tier == "admission-stopped"
 	}
-	if maintenance := status.Maintenance; maintenance != nil {
-		observation.CleanupFailure = maintenance.State == "running" && maintenance.Failures > 0
-	}
 	for _, occupancy := range status.RefillOccupancy {
 		if occupancy.Gaggle != gaggle || !occupancy.AdmissionBlocked {
 			continue
@@ -36,4 +33,18 @@ func observeFleetScheduler(observation *fleetstate.Observation, status *readserv
 			observation.AdmissionSaturated = true
 		}
 	}
+}
+
+// Cleanup evidence belongs to the deployment. A failed sweep does not prove
+// that a particular gaggle is blocked or that unrelated work cannot progress.
+func observeFleetCleanup(attrs map[string]any, status *readservice.SchedulerStatus, now time.Time) {
+	if status == nil || status.Maintenance == nil {
+		return
+	}
+	maintenance := status.Maintenance
+	at := maintenance.LastProgressAt
+	if at == nil || at.After(now) || now.Sub(*at) > time.Minute || maintenance.State != "running" || maintenance.Failures <= 0 {
+		return
+	}
+	attrs["state"], attrs["reasonCode"] = "unknown", "cleanup_failure"
 }

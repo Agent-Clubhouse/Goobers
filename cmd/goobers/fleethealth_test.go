@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/diagnostics/fleetstate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/prqueue"
@@ -191,5 +192,19 @@ func TestFleetIntentionalWaitResetsStallWindow(t *testing.T) {
 	reader.now = now.Add(6 * time.Minute)
 	if got := observer.sample(context.Background(), reader.now)[1].Attributes["state"]; got != "waiting" {
 		t.Fatalf("unknown interval became a stall: %v", got)
+	}
+}
+
+func TestFleetPartialRunEvidenceNeverClaimsZero(t *testing.T) {
+	now := time.Now().UTC()
+	observation := fleetstate.Observation{Complete: false}
+	attrs := map[string]any{}
+	observeFleetRuns(&observation, nil, attrs, now, "alpha")
+	if len(attrs) != 0 || observation.InflightCount != nil || observation.NoWorkCount != nil {
+		t.Fatalf("partial window invented zero counts: %+v %+v", attrs, observation)
+	}
+	observeFleetRuns(&observation, []readservice.RunSummary{{Gaggle: "alpha", StartedAt: now, RetryCount: 2}}, attrs, now, "alpha")
+	if attrs["inflightCount"] != 1 || attrs["retryCount"] != 2 || attrs["noWorkCount"] != nil {
+		t.Fatalf("partial positive evidence lost or zero invented: %+v", attrs)
 	}
 }

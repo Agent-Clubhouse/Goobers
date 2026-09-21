@@ -19,7 +19,6 @@ func TestFleetSchedulerFactsAndClearing(t *testing.T) {
 	}{
 		{"quota", readservice.SchedulerStatus{ProviderQuotaResumeAt: &resume}, "provider_throttled"},
 		{"storage", readservice.SchedulerStatus{StorageHealth: &readservice.StorageHealthStatus{Tier: "admission-stopped", MeasuredAt: now}}, "storage_failure"},
-		{"cleanup", readservice.SchedulerStatus{Maintenance: &readservice.MaintenanceStatus{State: "running", Failures: 1}}, "cleanup_failure"},
 		{"admission", readservice.SchedulerStatus{RefillOccupancy: []readservice.RefillOccupancyStatus{{Gaggle: "alpha", AdmissionBlocked: true, BlockingCondition: localscheduler.ReasonInstanceMaxParallel}}}, "admission_saturated"},
 	}
 	zero := 0
@@ -46,5 +45,28 @@ func TestFleetSchedulerRejectsStaleStorageAndOtherGaggle(t *testing.T) {
 	observeFleetScheduler(&observation, &status, "alpha", now)
 	if observation.StorageFailure || observation.AdmissionSaturated {
 		t.Fatal("stale or differently scoped evidence attributed to gaggle")
+	}
+}
+
+func TestFleetCleanupFailureIsDeploymentScopedAndFresh(t *testing.T) {
+	now := time.Now().UTC()
+	status := &readservice.SchedulerStatus{Maintenance: &readservice.MaintenanceStatus{State: "running", Failures: 1, LastProgressAt: &now}}
+	attrs := map[string]any{"state": "unknown", "reasonCode": "progress_unconfirmed"}
+	observeFleetCleanup(attrs, status, now)
+	if attrs["reasonCode"] != "cleanup_failure" || attrs["state"] != "unknown" {
+		t.Fatal(attrs)
+	}
+	observation := fleetstate.Observation{}
+	observeFleetScheduler(&observation, status, "alpha", now)
+	if observation.CleanupFailure {
+		t.Fatal("deployment cleanup failure attributed to gaggle")
+	}
+	for _, at := range []time.Time{now.Add(-2 * time.Minute), now.Add(time.Minute)} {
+		status.Maintenance.LastProgressAt = &at
+		attrs["reasonCode"] = "progress_unconfirmed"
+		observeFleetCleanup(attrs, status, now)
+		if attrs["reasonCode"] != "progress_unconfirmed" {
+			t.Fatal("stale/future cleanup evidence classified as current failure")
+		}
 	}
 }

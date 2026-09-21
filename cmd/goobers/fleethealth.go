@@ -73,6 +73,7 @@ func (o *fleetHealthObserver) sample(ctx context.Context, now time.Time) []telem
 		attrs["windowCoverage"] = "complete"
 		attrs["reasonCode"] = "progress_unconfirmed"
 	}
+	observeFleetCleanup(attrs, o.scheduler, now)
 	if o.ready != nil && !o.ready() {
 		attrs["state"], attrs["reasonCode"] = "waiting", "startup"
 	}
@@ -174,8 +175,16 @@ func observeFleetRuns(o *fleetstate.Observation, runs []readservice.RunSummary, 
 			o.LastUsefulProgressAt = progress
 		}
 	}
-	o.InflightCount, o.NoWorkCount = &inflight, &noWork
-	attrs["inflightCount"], attrs["noWorkCount"], attrs["retryCount"] = inflight, noWork, retries
+	if o.Complete {
+		o.InflightCount, o.NoWorkCount = &inflight, &noWork
+	}
+	// Partial positive counts are observed lower bounds. Zero is exported only
+	// when every relevant run in the window was observed.
+	for key, count := range map[string]int{"inflightCount": inflight, "noWorkCount": noWork, "retryCount": retries} {
+		if o.Complete || count > 0 {
+			attrs[key] = count
+		}
+	}
 }
 
 func (o *fleetHealthObserver) observeEligibility(ctx context.Context, gaggle string, now time.Time, observation *fleetstate.Observation) {
