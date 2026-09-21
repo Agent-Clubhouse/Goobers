@@ -117,7 +117,7 @@ func copilotControlCommand(argv []string, promptIndex int) ([]string, string, er
 		command = append(command, arg)
 	}
 	if session == "" {
-		return nil, "", fmt.Errorf("Copilot controlled session requires adapter-owned session identity")
+		return nil, "", fmt.Errorf("copilot controlled session requires adapter-owned session identity")
 	}
 	return append(command, "--headless", "--no-auto-update", "--port", "0"), session, nil
 }

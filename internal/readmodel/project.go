@@ -1154,13 +1154,13 @@ func terminalGatePhase(target string) (journal.RunPhase, bool) {
 	}
 }
 
-func (row *RunRow) observeRunnerAnnotation(event journal.Event) {
-	row.Operator.EngineFallback = row.Operator.EngineFallback.After(event)
-	row.Operator.RequiredMCP = row.Operator.RequiredMCP.After(event)
+func (r *RunRow) observeRunnerAnnotation(event journal.Event) {
+	r.Operator.EngineFallback = r.Operator.EngineFallback.After(event)
+	r.Operator.RequiredMCP = r.Operator.RequiredMCP.After(event)
 	if queue, ok := RunnerQueueStatus(event); ok {
-		row.CurrentStage = queue
+		r.CurrentStage = queue
 	}
 	if suggestion, ok := RunnerResetSuggestion(event); ok {
-		row.CurrentStage = suggestion
+		r.CurrentStage = suggestion
 	}
 }
