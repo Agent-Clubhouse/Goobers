@@ -1338,7 +1338,8 @@ jobs:
         # cleanup, and Unix-source asset identity on Windows, not just compile.
         # Immutable generations also require native archive, shared-lease,
         # retention and relative-path execution coverage (#5382).
-        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration
+        # The rollback runner must also open native drive-letter SQLite paths.
+        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./test/diagnosticsrollback
 
       - name: Windows worktree and event stream
         env:
