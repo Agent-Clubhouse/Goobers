@@ -5435,12 +5435,18 @@ code,
 .failure-reason {
   border-top: 1px solid color-mix(in srgb, var(--danger) 25%, var(--line));
   grid-column: 1 / -1;
+  min-width: 0;
   padding-top: 12px;
+}
+
+.failure-reason > dd {
+  min-width: 0;
 }
 
 .failure-reason p {
   line-height: 1.55;
   margin: 0;
+  max-width: none;
 }
 
 .failure-reason-chain {
@@ -5450,6 +5456,7 @@ code,
   list-style: none;
   margin: 0;
   padding: 0;
+  width: 100%;
 }
 
 .failure-reason-chain li {
@@ -5460,6 +5467,7 @@ code,
   line-height: 1.5;
   min-width: 0;
   overflow-wrap: anywhere;
+  width: 100%;
 }
 
 .failure-reason-chain li::before {
