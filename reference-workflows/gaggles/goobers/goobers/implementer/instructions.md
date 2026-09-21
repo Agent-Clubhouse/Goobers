@@ -22,7 +22,7 @@ fresh, isolated worktree checked out from `Agent-Clubhouse/Goobers`.
    its hot-file map identifies current sibling touches and exact conflict files
    from recent run journals. Use the map to sequence or minimize overlap where
    the issue allows, never to skip issue-required work.
-3. Orient in the codebase before changing anything: read `CLAUDE.md` and
+3. Orient in the codebase before changing anything: read `CONTRIBUTING.md` and
    `docs/ARCHITECTURE.md` for the conventions and architecture of record,
    and read the code you're about to touch, not just the issue text.
 4. Make a short plan, then implement the change in the working tree. Follow
@@ -67,12 +67,56 @@ sends the run back to you:
   governed downstream action. Address every active finding; do not discard
   or rename an identity merely to make it disappear. Then re-run your
   targeted tests (not the full `-race` suite — see step 4) and commit again.
-- **From the CI gate** (`fail`): the CI failure detail (which check failed,
-  why) is attached as context. Fix the actual failure — don't just retry
-  blindly.
+- **From the CI gate** (`fail`): call `list_inputs`, then inspect every
+  required CI evidence pointer with `read_input` or `grep_input`, including
+  all provided stdout/stderr artifacts and the repass context carrying
+  `failureDigest`.
+  A digest is a navigation aid, not a substitute for required artifact reads;
+  listing inputs alone does not inspect them. Read the relevant diagnostic
+  ranges before changing code or reporting that no change is needed. Fix the
+  actual failure — don't just retry blindly.
 
 Each repass is a fix on top of your own prior commits on the same branch,
 not a fresh start.
+
+## Repairing a complexity-gate failure
+
+A `complexitygate` finding is a structural repair request. When CI reports
+`cyclomatic complexity grew`, `body length grew`, or a new oversized function:
+
+1. From the required CI evidence, record each affected file and function,
+   whether the limit is complexity or body length, and the old and measured
+   values. Read its entry in `test/complexitygate/baseline.txt` and the whole
+   function. Fix every reported finding, not just the first one.
+2. Extract a coherent responsibility into a small, named helper in a new
+   appropriately named file in the same package. Start with the behavior your
+   change added or expanded: validation, timeout resolution, result
+   construction, or one phase of orchestration. Pass the inputs it needs and
+   return explicit results/errors; preserve side effects, ordering, cleanup,
+   error propagation, and cancellation behavior. Keep the original function
+   as the caller. Merely moving or renaming the oversized function does not
+   create headroom: the baseline is keyed by path and symbol.
+3. Keep the baseline unchanged during this repair. Do not run
+   `make complexity-update`, raise scores or budgets, change gate thresholds,
+   add `//complexitygate:allow`, or mark hand-written logic as generated to
+   evade the finding. Extract enough real logic to satisfy both complexity
+   and physical body length; condensing statements or deleting explanatory
+   comments is not decomposition. If a necessary extraction creates a stale
+   baseline entry, report that evidence explicitly for separate review rather
+   than silently editing the baseline.
+4. Add or preserve behavioral tests at the original caller, including failure
+   and cleanup paths affected by extraction. Run the touched package's tests
+   and `go run ./test/complexitygate`; inspect the resulting diagnostics and
+   repeat extraction as needed. Confirm the baseline diff is empty. The
+   deterministic `local-ci` stage still owns the full `make ci` result.
+
+For a concrete example, [PR #5324](https://github.com/Agent-Clubhouse/Goobers/pull/5324)
+passed after moving timeout resolution and result construction out of
+`(*ShellExecutor).Run` into `internal/executor/timeoutresolution.go`.
+`internal/executor/shell.go` became smaller, the caller behavior remained
+covered by tests, and `test/complexitygate/baseline.txt` was unchanged. Apply
+that extraction pattern to the responsibility at hand; do not copy its
+repository-specific timeout logic into unrelated work.
 
 ## PR remediation finding checklist
 

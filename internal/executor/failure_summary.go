@@ -46,6 +46,7 @@ var (
 	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	// "FAIL\tpkg\t1315.643s" / "FAIL\tpkg [build failed]" — go test's
 	// package-level verdict, which names no individual test.
+	sourceFindingPattern  = regexp.MustCompile(`^\S+:\d+(?::\d+)?:\s+\S`)
 	packageFailurePattern = regexp.MustCompile(`^FAIL\s+\S+`)
 )
 
@@ -68,6 +69,7 @@ type commandFailureDiagnostic struct {
 	// deduplicated and bounded. failure above remains the single best window
 	// for the short summary and the byte-range artifact pointer.
 	digest []string
+	count  int
 }
 
 func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
@@ -102,7 +104,16 @@ func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
 		}
 	}
 
-	digest := collectFailureDigest(stdout, stderr)
+	digest, count := collectFailureDigest(stdout, stderr)
+	if best.priority > specificityNone && best.priority <= specificityBuildTrailer || best.priority == specificitySourceFinding {
+		contextBest, contextDigest := fallbackFailureEvidence(stdout, stderr, best)
+		if best.priority == specificitySourceFinding {
+			digest = boundFailureDigest(append(digest, contextDigest...))
+		} else {
+			digest = contextDigest
+		}
+		best = contextBest
+	}
 
 	var warning diagnosticRange
 	for _, stream := range []struct {
@@ -122,7 +133,7 @@ func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
 			}
 		}
 	}
-	return commandFailureDiagnostic{failure: best, warning: warning, digest: digest}
+	return commandFailureDiagnostic{failure: best, warning: warning, digest: digest, count: count}
 }
 
 // FailureDiagnostic extracts the failure section a command's output carries —
@@ -143,6 +154,7 @@ const (
 	specificityBuildSummary     = 10
 	specificityBuildTrailer     = 15
 	specificityPackageFailure   = 20
+	specificitySourceFinding    = 25
 	specificityTestFailure      = 30
 	specificityDependencyDenial = 40
 	specificityStaleWorktree    = 45
@@ -156,7 +168,7 @@ const (
 // and the byte-range pointer. That is right for a journal line and wrong for a
 // repass: the implementer needs the whole roster, or it fixes what it can see
 // and meets the next failure on the following attempt (#5101).
-func collectFailureDigest(stdout, stderr []byte) []string {
+func collectFailureDigest(stdout, stderr []byte) ([]string, int) {
 	type scored struct {
 		text     string
 		priority int
@@ -201,16 +213,10 @@ func collectFailureDigest(stdout, stderr []byte) []string {
 		return found[i].order < found[j].order
 	})
 	var digest []string
-	size := 0
 	for _, entry := range found {
-		if size+len(entry.text)+1 > maxFailureDigestBytes {
-			digest = append(digest, fmt.Sprintf("... (%d more failure line(s) omitted at the %d-byte bound)", len(found)-len(digest), maxFailureDigestBytes))
-			break
-		}
 		digest = append(digest, entry.text)
-		size += len(entry.text) + 1
 	}
-	return digest
+	return boundFailureDigest(digest), len(found)
 }
 
 func failureLineSpecificity(line string) int {
@@ -249,6 +255,8 @@ func failureLineSpecificity(line string) int {
 	// — no "--- FAIL:", no panic, no timeout. The implementer was handed
 	// stderr's 3,931 bytes of module-download noise and the make trailer, and
 	// repassed blind until its budget was exhausted.
+	case sourceFindingPattern.MatchString(line):
+		return specificitySourceFinding
 	case packageFailurePattern.MatchString(line):
 		return specificityPackageFailure
 	case buildFailurePattern.MatchString(line):
@@ -345,10 +353,10 @@ func applyCommandFailureDiagnostic(result *apiv1.ResultEnvelope, exitCode int, d
 	// journal one-liner and status text, and #5101 is precisely that a short
 	// message is the ONLY thing a repass ever saw. Outputs travel into the
 	// repass context artifact the implementer reads.
-	if len(diagnostic.digest) > 1 {
+	if len(diagnostic.digest) > 0 {
 		result.Outputs[outputFailureDigest] = strings.Join(diagnostic.digest, "\n")
-		result.Outputs[outputFailureCount] = float64(len(diagnostic.digest))
-		message += fmt.Sprintf("; %d distinct failure line(s) recorded in %s", len(diagnostic.digest), outputFailureDigest)
+		result.Outputs[outputFailureCount] = float64(diagnostic.count)
+		message += fmt.Sprintf("; %d distinct failure line(s) recorded in %s", diagnostic.count, outputFailureDigest)
 	}
 	result.Error.Message = message
 	result.Summary = message
