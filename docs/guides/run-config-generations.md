@@ -89,3 +89,9 @@ changed or symlinked paths. Unix hosts check all archived permission bits;
 Windows checks the file read-only attribute that Go can represent, while keeping
 the original Unix modes in the immutable manifest. This applies both when a
 worker/recovery path loads a generation and when a nested CLI verifies its pin.
+
+Asset bundles also retain their validated logical source modes, so their goober
+fingerprints remain stable after extraction on a different operating system.
+Missing mode metadata is synthesized inside the bounded archive before hashing;
+existing metadata must match the captured asset contents. Capture never writes
+metadata into the operator's source tree.

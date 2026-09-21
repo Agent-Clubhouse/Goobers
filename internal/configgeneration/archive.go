@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/configtree"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/platform/safeopen"
 )
 
@@ -72,7 +73,7 @@ func CaptureForInstance(ctx context.Context, configDir, instanceID string) ([]by
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if entry.Name() == ".git" {
+			if entry.Name() == ".git" && !gooberassets.IsWithinSourceDir(filepath.Join(prefix, filepath.FromSlash(name))) {
 				if entry.IsDir() {
 					return fs.SkipDir
 				}
@@ -121,6 +122,14 @@ func CaptureForInstance(ctx context.Context, configDir, instanceID string) ([]by
 		})
 	})
 	if err != nil {
+		return nil, "", err
+	}
+	return encodeCapturedArchive(a)
+}
+
+func encodeCapturedArchive(a Archive) ([]byte, string, error) {
+	sort.Slice(a.Files, func(i, j int) bool { return a.Files[i].Path < a.Files[j].Path })
+	if err := a.includeAssetSourceModes(); err != nil {
 		return nil, "", err
 	}
 	sort.Slice(a.Files, func(i, j int) bool { return a.Files[i].Path < a.Files[j].Path })
