@@ -1314,6 +1314,11 @@ func TestLocalTelemetryStatsInfersCrossRunCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	for _, runID := range []string{"cycle-a", "cycle-b"} {
+		if err := store.ProjectRunDir(ctx, filepath.Join(layout.RunsDir(), runID)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	reader := &analyticsReadModel{Reader: store}
 	service, err := NewLocal(LocalSources{
 		Layout: layout, Definitions: definitions, ReadModel: reader,
@@ -1333,6 +1338,57 @@ func TestLocalTelemetryStatsInfersCrossRunCycle(t *testing.T) {
 	cycle := got.GraphAnalytics.Cycles[0]
 	if len(cycle) != 2 || cycle[0] != "implement" || cycle[1] != "review" {
 		t.Fatalf("inferred cycle = %v, want [implement review]", cycle)
+	}
+}
+
+func TestLocalTelemetryStatsPrefiltersRuntimeAnalyticsRuns(t *testing.T) {
+	ctx := context.Background()
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"matching-run",
+		"implementation",
+		"core",
+		time.Date(2026, 8, 22, 6, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "5530"},
+		true,
+	)
+	finishFixtureRun(t, run, clock, journal.PhaseCompleted)
+
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), readmodel.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.ProjectRunDir(ctx, filepath.Join(layout.RunsDir(), "matching-run")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A directory outside the indexed scope must not be opened while deriving
+	// graph analytics for the requested workflow.
+	if err := os.MkdirAll(filepath.Join(layout.RunsDir(), "unrelated-run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := NewLocal(LocalSources{
+		Layout: layout, Definitions: analyticsTestDefinitions(), ReadModel: store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.telemetry = &Telemetry{store: &fakeTelemetryStore{}}
+
+	got, err := service.TelemetryStats(ctx, TelemetryStatsRequest{
+		Gaggle: "core", Workflow: "implementation",
+	})
+	if err != nil {
+		t.Fatalf("telemetry stats: %v", err)
+	}
+	if got.GraphAnalytics == nil {
+		t.Fatal("graph analytics is nil")
 	}
 }
 

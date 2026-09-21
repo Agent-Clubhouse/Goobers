@@ -1177,7 +1177,7 @@ func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsReq
 			}
 		}
 	}
-	ids, err := s.RunIDs(ctx)
+	ids, err := s.runtimeAnalyticsRunIDs(ctx, req)
 	if err != nil {
 		return readmodel.AnalyticsGraph{}, err
 	}
@@ -1264,6 +1264,44 @@ func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsReq
 		}
 	}
 	return graph, nil
+}
+
+func (s *Local) runtimeAnalyticsRunIDs(ctx context.Context, req TelemetryStatsRequest) ([]string, error) {
+	ids, err := s.RunIDs(ctx)
+	if err != nil || !s.readModelReads {
+		return ids, err
+	}
+
+	matching := make(map[string]bool)
+	options := RunListOptions{
+		Gaggle:     req.Gaggle,
+		Workflow:   req.Workflow,
+		Since:      req.Since,
+		Until:      req.Until,
+		Limit:      maxRunLimit,
+		ShowNoWork: true,
+	}
+	for {
+		page, err := s.listRunsUnannotated(ctx, options)
+		if err != nil {
+			return nil, fmt.Errorf("list analytics runs: %w", err)
+		}
+		for _, run := range page.Runs {
+			matching[run.ID] = true
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		options.Cursor = page.NextCursor
+	}
+
+	filtered := make([]string, 0, len(matching))
+	for _, id := range ids {
+		if matching[id] {
+			filtered = append(filtered, id)
+		}
+	}
+	return filtered, nil
 }
 
 // getWorkflowGraphForQuery returns the compiled workflow graph for a given gaggle/workflow pair.
