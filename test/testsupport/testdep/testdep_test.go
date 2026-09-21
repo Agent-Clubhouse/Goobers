@@ -94,6 +94,7 @@ func TestDependenciesAreSorted(t *testing.T) {
 		{Name: "bash", InstallHint: "install Bash (Debian/Ubuntu: apt-get install bash)"},
 		{Name: "bwrap", InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)"},
 		{Name: "claude", InstallHint: "install and sign in to Claude Code"},
+		{Name: "codex", InstallHint: "install and sign in to the OpenAI Codex CLI"},
 		{Name: "copilot", InstallHint: "install and sign in to the GitHub Copilot CLI (https://docs.github.com/copilot/using-github-copilot/using-github-copilot-in-the-command-line)"},
 		{Name: "cp", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "dirname", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},

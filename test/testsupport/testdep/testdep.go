@@ -27,6 +27,10 @@ var declared = map[string]Dependency{
 		Name:        "claude",
 		InstallHint: "install and sign in to Claude Code",
 	},
+	"codex": {
+		Name:        "codex",
+		InstallHint: "install and sign in to the OpenAI Codex CLI",
+	},
 	"bwrap": {
 		Name:        "bwrap",
 		InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)",
