@@ -35,17 +35,18 @@ type fleetHealthObserver struct {
 	startedAt          time.Time
 	sequence           int64
 	eligibleSince      map[string]time.Time
+	workers            *fleetWorkerHealthObserver
 	scheduler          *readservice.SchedulerStatus
 	ready              func() bool
 }
 
-func newFleetHealthSampler(root string, identity *daemonIdentity, config *instance.DiagnosticsConfig, reader fleetHealthReader, readiness ...func() bool) fleetHealthSample {
+func newFleetHealthSampler(root string, identity *daemonIdentity, config *instance.DiagnosticsConfig, reader fleetHealthReader, workers *fleetWorkerHealthObserver, readiness ...func() bool) fleetHealthSample {
 	id, _ := instance.ReadRootIdentity(root)
 	started := time.Now().UTC()
 	if identity != nil && !identity.StartedAt.IsZero() {
 		started = identity.StartedAt.UTC()
 	}
-	observer := &fleetHealthObserver{reader: reader, config: config, instanceID: id, bootID: rand.Text(), startedAt: started, eligibleSince: make(map[string]time.Time)}
+	observer := &fleetHealthObserver{workers: workers, reader: reader, config: config, instanceID: id, bootID: rand.Text(), startedAt: started, eligibleSince: make(map[string]time.Time)}
 	if len(readiness) > 0 {
 		observer.ready = readiness[0]
 	}
@@ -60,6 +61,7 @@ func (o *fleetHealthObserver) sample(ctx context.Context, now time.Time) []telem
 		attrs["state"], attrs["reasonCode"], attrs["windowCoverage"] = "unknown", "observation_unavailable", "unknown"
 		return []telemetry.DiagnosticRecord{{Time: now, Name: "goobers.fleet.heartbeat", Attributes: attrs}}
 	}
+	o.workers.beginPulse(ctx, now)
 	o.scheduler = nil
 	if reader, ok := o.reader.(fleetSchedulerReader); ok {
 		if status, err := reader.SchedulerStatus(ctx); err == nil {
@@ -127,6 +129,7 @@ func (o *fleetHealthObserver) gaggle(ctx context.Context, gaggle readservice.Gag
 	fleetMCPAttributes(attrs, fleetMCPHealth(runs, gaggle.Name, observation.Complete, now))
 	o.observeEligibility(ctx, gaggle.Name, now, &observation)
 	observeFleetScheduler(&observation, o.scheduler, gaggle.Name, now)
+	o.workers.observe(gaggle.Name, &observation, attrs)
 	verdict := fleetstate.Classify(observation, now, o.config.ProgressPeriod(), 2*o.config.HeartbeatPeriod())
 	if o.ready != nil && !o.ready() {
 		verdict = fleetstate.Verdict{State: "waiting", ReasonCode: "startup"}

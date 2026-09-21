@@ -190,3 +190,29 @@ JSON/summary before deliberately sharing it upstream; collection sends nothing.
 
 - [GitHub token scopes](github-token-scopes.md)
 - [Backlog routing diagnostics](backlog-routing-diagnostics.md)
+
+### Engine worker observations
+
+Fleet heartbeats consult the accepted scheduler definition snapshot. Local-only
+workflows do not trigger a Temporal query, even when engine configuration exists.
+For admitted engine workflows, the daemon reuses its existing Temporal client to
+inspect the shared engine queue's workflow and activity pollers once per pulse.
+Both queries together have a one-second limit (500 ms per RPC); definition and
+poller inventories are capped at 1,000 entries. This runs in the health observer,
+without delaying model execution or scheduler admission.
+
+`workerObservation` is `recent_poller` when both task types have a poller whose
+last access is within two minutes; `no_recent_poller` means a query found an empty
+inventory or only older pollers. Missing/invalid/future timestamps, unavailable
+queries, or incomplete admission inventory produce `unknown`, without retaining
+a previous missing-worker claim. A local-only gaggle reports `not_required`.
+`missingWorkerCount` is 0 or 1 for the observed shared queue requirement; it is
+omitted when unknown or not required. A known missing requirement yields
+`worker_unavailable`, not a claim that a process crashed.
+
+`workerCoverage=engine_workflow_activity_queue` makes this limit explicit:
+recent polling does not prove a dispatch worker or pod can execute a particular
+stage. Configured but unused dispatch queues are not treated as missing workers.
+Mixed gaggles observe this engine dependency only for their admitted engine
+workflows; local workflows continue independently. Poller identities, queue names,
+frontend addresses and raw RPC errors are not exported.

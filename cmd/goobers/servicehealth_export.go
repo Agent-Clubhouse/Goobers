@@ -125,9 +125,14 @@ func emitFleetHealth(ctx context.Context, setup *schedulerSetup, exporter *telem
 
 // startDaemonHealth starts while startup is still in progress; its deferred
 // stop joins observers before the read service and instance journal close.
-func startDaemonHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, reader fleetHealthReader, ready func() bool) func() {
+func startDaemonHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, reader fleetHealthReader, ready func() bool, engines ...*daemonEngineClient) func() {
 	healthCtx, cancel := context.WithCancel(ctx)
-	health := newFleetHealthSampler(root, identity, setup.Config.Telemetry.Diagnostics, reader, ready)
+	var engine *daemonEngineClient
+	if len(engines) > 0 {
+		engine = engines[0]
+	}
+	workers := newFleetWorkerHealthObserver(setup, engine)
+	health := newFleetHealthSampler(root, identity, setup.Config.Telemetry.Diagnostics, reader, workers, ready)
 	done := startServiceHealth(healthCtx, root, identity, setup, inventory, combinedFleetSampler(root, setup, reader, health))
 	return func() { cancel(); <-done }
 }
