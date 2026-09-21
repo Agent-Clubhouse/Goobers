@@ -203,7 +203,8 @@ without delaying model execution or scheduler admission.
 
 `workerObservation` is `recent_poller` when both task types have a poller whose
 last access is within two minutes; `no_recent_poller` means a query found an empty
-inventory or only older pollers. Missing/invalid/future timestamps, unavailable
+inventory or only older pollers. A five-second clock tolerance permits poller access to advance during the RPC;
+farther-future timestamps remain unknown. Missing/invalid timestamps, unavailable
 queries, or incomplete admission inventory produce `unknown`, without retaining
 a previous missing-worker claim. A local-only gaggle reports `not_required`.
 `missingWorkerCount` is 0 or 1 for the observed shared queue requirement; it is

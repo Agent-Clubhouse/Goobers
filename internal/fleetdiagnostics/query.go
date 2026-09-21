@@ -20,7 +20,8 @@ type Usage struct {
 // Report is scoped to exactly one authenticated tenant. OwnerRoute is a routing
 // hint for the company's tools, never an automatic message or inferred owner.
 type Report struct {
-	RequiredMCP *MCPHealth `json:"requiredMcp,omitempty"`
+	RequiredMCP *MCPHealth    `json:"requiredMcp,omitempty"`
+	Worker      *WorkerHealth `json:"worker,omitempty"`
 	Identity
 	State                 string       `json:"state"`
 	Reason                string       `json:"reason"`
@@ -49,6 +50,9 @@ func (b *Backend) Reports(tenant string) ([]Report, error) {
 	for _, key := range sortedKeys(b.entries[tenant]) {
 		e := b.entries[tenant][key]
 		r := evaluate(e, policy, now, b.maxClockSkew)
+		if e.heartbeat != nil {
+			r.Worker = workerReport(e.heartbeat.Worker, r.Liveness == "live")
+		}
 		r.Freshness = freshness(e.heartbeat, e.enrollment, policy.Catalogue, now)
 		r.Features = featureReports(e, r.Liveness == "live", now, b.maxClockSkew)
 		r.OwnerRoute = policy.Owners[r.OwnerRef]

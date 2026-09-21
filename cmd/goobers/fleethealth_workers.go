@@ -16,6 +16,7 @@ const (
 	fleetWorkerPulseTimeout    = time.Second
 	fleetWorkerRPCTimeout      = 500 * time.Millisecond
 	fleetWorkerPollerMaxAge    = 2 * time.Minute
+	fleetWorkerClockTolerance  = 5 * time.Second
 )
 
 // fleetWorkerHealthObserver observes the engine's shared workflow/activity
@@ -94,7 +95,7 @@ func fleetPollerState(response *workflowservice.DescribeTaskQueueResponse, now t
 	unknown := false
 	for _, poller := range response.GetPollers() {
 		at := poller.GetLastAccessTime()
-		if at == nil || at.CheckValid() != nil || at.AsTime().IsZero() || at.AsTime().After(now) {
+		if at == nil || at.CheckValid() != nil || at.AsTime().IsZero() || at.AsTime().After(now.Add(fleetWorkerClockTolerance)) {
 			unknown = true
 			continue
 		}

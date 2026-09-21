@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/goobers/goobers/internal/diagnostics/fleetstate"
+	"github.com/goobers/goobers/internal/fleetdiagnostics"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
@@ -54,7 +55,8 @@ func TestFleetWorkerHealthEvidence(t *testing.T) {
 		{"absent", "no_recent_poller", fleetPollers(), nil},
 		{"present", "recent_poller", fleetPollers(now.Add(-time.Second)), nil},
 		{"expired", "no_recent_poller", fleetPollers(now.Add(-fleetWorkerPollerMaxAge - time.Second)), nil},
-		{"future", "unknown", fleetPollers(now.Add(time.Second)), nil},
+		{"poll during RPC", "recent_poller", fleetPollers(now.Add(time.Second)), nil},
+		{"future", "unknown", fleetPollers(now.Add(fleetWorkerClockTolerance + time.Second)), nil},
 		{"timestamp missing", "unknown", &workflowservice.DescribeTaskQueueResponse{Pollers: []*taskqueuepb.PollerInfo{{}}}, nil},
 		{"nil response", "unknown", nil, nil},
 		{"unavailable", "unknown", fleetPollers(now), errors.New("private frontend detail")},
@@ -148,8 +150,12 @@ func TestFleetWorkerHealthProductionSampler(t *testing.T) {
 	reader := &fleetTestReader{now: now, eligible: true}
 	client := &fleetWorkerDescriber{responses: map[enumspb.TaskQueueType]*workflowservice.DescribeTaskQueueResponse{enumspb.TASK_QUEUE_TYPE_WORKFLOW: fleetPollers(), enumspb.TASK_QUEUE_TYPE_ACTIVITY: fleetPollers()}}
 	workers := workerObserver(client, map[localscheduler.WorkflowIdentity]string{{Gaggle: "alpha", Workflow: "work"}: "runner.engine"})
-	sample := newFleetHealthSampler(t.TempDir(), nil, &instance.DiagnosticsConfig{}, reader, workers)
+	sample := newFleetHealthSampler(t.TempDir(), &daemonIdentity{StartedAt: now.Add(-time.Minute)}, &instance.DiagnosticsConfig{}, reader, workers)
 	attrs := sample(context.Background(), now)[1].Attributes
+	attrs["instanceId"], attrs["deploymentId"] = "test-instance", "test-deployment"
+	if _, err := fleetdiagnostics.DecodeHeartbeat(attrs); err != nil {
+		t.Fatalf("production worker heartbeat rejected: %v", err)
+	}
 	if attrs["state"] != "waiting" || attrs["reasonCode"] != "worker_unavailable" || attrs["missingWorkerCount"] != 1 {
 		t.Fatal(attrs)
 	}
