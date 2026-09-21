@@ -116,6 +116,9 @@ var errRequiredMCPRejected = errors.New("required MCP tool authorization rejecte
 
 func mcpProbeFailure(report MCPReadiness, category string, cause error) (MCPReadiness, error) {
 	report.Category = category
+	if category == "authentication_failure" || category == "tool_authorization_failure" {
+		report.Authorization = "denied"
+	}
 	return report, fmt.Errorf("%w: %s (%s)", cause, report.Server, category)
 }
 

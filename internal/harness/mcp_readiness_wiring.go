@@ -3,9 +3,10 @@ package harness
 import (
 	"context"
 	"errors"
-	"github.com/github/copilot-sdk/go/rpc"
 	"path/filepath"
 	"runtime"
+
+	"github.com/github/copilot-sdk/go/rpc"
 
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -23,7 +24,7 @@ func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex in
 		return &mcpUnobservableRunner{base: base, request: req}, func() {}
 	}
 	controlled := &copilotControlledRunner{base: base, request: req, promptIndex: promptIndex, mcpConfig: config, model: model, options: options, factory: c.mcpSessionFactory,
-		readiness: MCPReadiness{Server: goobersIOServerName, Category: "transport_failure", Source: "adapter-session"}}
+		readiness: MCPReadiness{Server: goobersIOServerName, Category: "transport_failure", Source: "adapter-session", Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"}}
 	return controlled, controlled.close
 }
 
@@ -57,7 +58,7 @@ func (e *Executor) mcpReadinessSink(stage string) func(MCPReadiness) error {
 	}
 	return func(report MCPReadiness) error {
 		return appender.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: stage, Runner: map[string]any{
-			"kind": "required-mcp-readiness", "server": report.Server, "category": report.Category, "source": report.Source, "phase": "before-model", "connection": report.Connection, "inventory": report.Inventory, "authorization": report.Authorization}})
+			"kind": "required-mcp-readiness", "schemaVersion": 1, "adapter": e.adapter.Name(), "server": report.Server, "category": report.Category, "source": report.Source, "phase": "before-model", "connection": report.Connection, "inventory": report.Inventory, "authorization": report.Authorization}})
 	}
 }
 

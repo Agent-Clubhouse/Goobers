@@ -155,11 +155,25 @@ that session's tools, checks the server's connection, and requires all five
 `goobers-io` tools in its inventory before sending the model prompt. A separate
 throwaway MCP connection is not readiness evidence for this session.
 
+The controlled session's permission handler permits only the declared tools,
+keeps file requests within the workspace (including symlink checks), and does
+not approve URL access, managed approvals, or sandbox bypass. `--allow-all-tools`
+is not treated as `--allow-all-paths` or `--allow-all-urls`. Custom permission
+arguments keep the ordinary CLI execution path. Unsupported or ambiguous
+permission requests fail closed in this unattended session.
+
 A `runner.annotation` with kind `required-mcp-readiness` records the `server`,
 `source`, `category`, `connection`, `inventory`, and `authorization` observations
-with phase `before-model`. Server errors, tool responses, credentials, and task
-content are excluded. This is durable per-attempt evidence; it does not yet
-create a daemon-wide instance condition.
+with phase `before-model`, schema version 1, and the adapter identity. Server
+errors, tool responses, credentials, and task content are excluded. Bounded
+per-stage conditions are projected into the existing read model and status run
+summaries without opening journals. A verified recovery clears an active
+condition; unobservable authorization cannot clear an earlier authorization
+failure. The 1.0.66 partial check can clear only transport/tool-availability
+failures. Truncated or absent observations are explicit coverage limitations.
+Fleet consumers must combine observations in time order within the same
+workflow/stage/branch/adapter/server context, so a newer run's recovery can
+clear an older run's failure without clearing a different stage.
 
 When the runtime supports native tool execution, the adapter invokes only
 `get_run_info` through the session's authorization pipeline. This read-only

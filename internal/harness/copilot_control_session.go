@@ -208,7 +208,7 @@ func (r *copilotControlledRunner) sessionConfig(id string, req ProcessRequest, s
 	config := &copilot.SessionConfig{
 		SessionID: id, Model: r.model, ReasoningEffort: r.options["reasoningEffort"],
 		WorkingDirectory: req.Dir, MCPServers: servers, AvailableTools: copilotAvailableTools(r.request),
-		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
+		OnPermissionRequest: copilotSessionPermissions(r.request),
 	}
 	if r.options["context"] == "long_context" {
 		config.ContextTier = copilot.ContextTierLongContext
