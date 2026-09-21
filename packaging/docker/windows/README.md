@@ -4,9 +4,9 @@ This is a prepared-input Dockerfile for the `goobers-base` family in
 [the approved image contract](../../../docs/design/goobernetes-deployment-images.md).
 Its presence alone does not publish an image, close #3275, or promote Windows
 support. The release engine's `-image-contexts` path prepares Windows and Linux
-inputs. Native Windows builds now run both in an optional prepublication workflow
-and as a mandatory gate in the tagged-release workflow; neither path publishes a
-container image or changes the Windows support tier.
+inputs. Native Windows builds run as a mandatory gate in the tagged-release
+workflow; the path does not publish a container image or change the Windows
+support tier.
 
 The runtime uses Server Core because its Windows API surface and built-in
 PowerShell support the MSYS2-based POSIX shell and offline ZIP/certificate setup.
@@ -92,7 +92,7 @@ checksums before extraction. Its explicit COPY list does not include arbitrary
 context contents, and `.dockerignore` excludes files outside that list from the
 builder context. ZIPs and the checksum verifier stay in the intermediate stage.
 
-## Native CI, optional precheck, and the release gate
+## Native CI and the release gate
 
 The existing required Windows CI lane runs `TestIntegrationWindowsImage*` with
 `-tags=integration` under explicit Windows PowerShell 5.1. These Windows-only
@@ -102,27 +102,6 @@ PowerShell 7. Ordinary unit tests execute no external PowerShell process. This c
 script parsing. It does not execute Docker, certificate-store setup or the
 ContainerUser runtime.
 
-The opt-in [Windows image workflow](../../../.github/workflows/windows-image-verify.yml)
-uses `workflow_dispatch` and a `windows-2022` host. Its candidate defaults to
-`v0.4.0-rc.1` and published baseline to `v0.3.3`, both explicit dispatch inputs.
-It downloads the baseline snapshots with a read-only GitHub token and invokes
-`go run ./release` with `-build-images -image-prefix` using a unique local prefix
-for the run. The release engine builds the image and verifies its native runtime
-and binary hashes. The workflow requires `image-evidence.json` to identify exactly
-one native Windows base image, then checks archive parity and runs quickstart
-plus the shipped mock demo as ContainerUser using that same image. It retains
-the engine evidence and checks the image ID before the additional smoke. It uploads logs and image/container inspection evidence even
-when verification fails, and never pushes an image. The demo allows unisolated
-`network: none` execution for this trusted, credential-free mock workload;
-this is not proof of Windows network enforcement.
-
-This optional precheck first completed successfully on 2026-09-12 for
-`candidate_version=v0.4.0-rc.2` and `baseline_tag=v0.3.3`; its retained evidence
-is attached to [workflow run 34679030863](https://github.com/Agent-Clubhouse/Goobers/actions/runs/34679030863).
-It remains a manually requested early check, not a prerequisite that the tagged
-release workflow consumes. Whether maintainers should require, automate, or
-retire this extra pre-tag check remains tracked in #4895.
-
 Every release tag independently runs the mandatory `native-windows-image` job in
 [`release.yml`](../../../.github/workflows/release.yml). That job consumes the
 final Authenticode-signed artifact by its exact artifact ID, rebuilds the Windows
@@ -130,7 +109,7 @@ image through the release engine on `windows-2022`, requires native
 `windows/amd64` evidence for exactly one `goobers-base-windows` image, and retains
 the provenance. Both release validation and `verify-and-publish` depend on this
 job, so a failure prevents GitHub release publication. This is the authoritative
-publication gate; the optional workflow supplies earlier, additional evidence.
+publication gate.
 
 ## Additional native evidence for support claims
 
