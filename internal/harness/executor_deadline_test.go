@@ -14,13 +14,16 @@ import (
 
 func TestActualAdapterDeadlineNormalizesProductionTaskIdentity(t *testing.T) {
 	recorder := &fakeRecorder{}
-	adapter := &FakeAdapter{Act: func(ctx context.Context, _ RunRequest) error {
+	adapter := &FakeAdapter{Act: func(ctx context.Context, req RunRequest) error {
 		_, err := (ExecProcessRunner{}).Run(ctx, ProcessRequest{Command: []string{os.Args[0], "-test.run=^TestDeadlineProcessHelper$", "--", "deadline-helper"}, Timeout: time.Minute})
-		return err
+		if err != nil {
+			return err
+		}
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 	}}
 	executor := &Executor{adapter: adapter, recorder: recorder}
 	now := time.Now().UTC()
-	_, err := executor.runAdapter(context.Background(), RunRequest{Envelope: apiv1.InvocationEnvelope{RunID: "run-id", TaskID: "run-id:work"}, Attempt: 1}, nil)
+	_, err := executor.runAdapter(context.Background(), RunRequest{Envelope: apiv1.InvocationEnvelope{RunID: "run-id", TaskID: "run-id:work"}, Attempt: 1, Workspace: t.TempDir(), CompletionPath: DefaultResultPath}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
