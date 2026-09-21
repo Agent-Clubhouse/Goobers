@@ -83,7 +83,7 @@ func TestServiceHealthDisabledExportDoesNotResolveSecrets(t *testing.T) {
 	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{Diagnostics: &instance.DiagnosticsConfig{OTLP: &instance.OTLPConfig{
 		Endpoint: "disabled.invalid:4317", ExportEnabled: &disabled, Headers: map[string]instance.TokenRef{"authorization": {File: "/nonexistent/diagnostic-secret"}},
 	}}}}
-	exporter, err := buildDiagnosticExporter(context.Background(), &schedulerSetup{Config: cfg})
+	exporter, err := buildDiagnosticExporterWithStores(context.Background(), &schedulerSetup{Config: cfg}, nil)
 	if err != nil || exporter != nil {
 		t.Fatalf("disabled export resolved credentials: %v %v", exporter, err)
 	}

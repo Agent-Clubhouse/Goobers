@@ -1034,13 +1034,13 @@
           "default": true,
           "description": "Toggles run span emission, local SQLite ingest, and journal collector push. Disabling it forbids enabled journal export. Independent diagnostic export and local instance evidence remain available."
         },
-        "otlp": { "$ref": "#/$defs/otlp" },
+        "otlp": { "$ref": "#/$defs/otlp", "description": "Explicit OTLP/gRPC destination and transport credentials for this stream." },
         "diagnostics": {
           "type": "object",
           "additionalProperties": false,
           "description": "Independent instance diagnostic export. Never inherits journal destinations or OTLP environment settings; local evidence remains available.",
           "properties": {
-            "otlp": { "$ref": "#/$defs/otlp" }
+            "otlp": { "$ref": "#/$defs/otlp", "description": "Explicit OTLP/gRPC destination and transport credentials for this stream." }
           }
         },
         "retention": {

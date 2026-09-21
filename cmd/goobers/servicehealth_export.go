@@ -51,10 +51,6 @@ func startServiceHealthWithStores(ctx context.Context, root string, identity *da
 	return done
 }
 
-func buildDiagnosticExporter(ctx context.Context, setup *schedulerSetup) (*telemetry.DiagnosticExporter, error) {
-	return buildDiagnosticExporterWithStores(ctx, setup, setup.SecretStores)
-}
-
 func buildDiagnosticExporterWithStores(ctx context.Context, setup *schedulerSetup, stores credentials.StoreResolver) (*telemetry.DiagnosticExporter, error) {
 	otlp := setup.Config.DiagnosticOTLP()
 	if !otlp.Enabled() {
