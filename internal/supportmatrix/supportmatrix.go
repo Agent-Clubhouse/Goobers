@@ -66,7 +66,7 @@ const (
 	// unshippable in this declared version fails on that PR, not at tag
 	// time. Reviewed and bumped like any other change; documented in
 	// docs/guides/releases.md.
-	NextPlannedRelease = "v0.4.1"
+	NextPlannedRelease = "v0.4.2"
 )
 
 // SupportTransition records when a DSL version entered one lifecycle level.
