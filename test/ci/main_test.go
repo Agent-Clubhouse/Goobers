@@ -812,9 +812,20 @@ func TestResolveBuildMetadataUsesOverridesAndFallbacks(t *testing.T) {
 	}
 
 	exec = &fakeExecutor{
+		outputs: map[string][]byte{
+			"git describe --tags --match v[0-9]* --always --dirty": []byte("v0.4.1-12-gabc1234\n"),
+			"git rev-parse --short HEAD":                           []byte("abc1234\n"),
+		},
+	}
+	got = resolveBuildMetadata(exec, toolchain{gitCommand: "git"}, now, func(string) string { return "" })
+	if got.version != "v0.4.1-12-gabc1234" {
+		t.Fatalf("product-tag metadata = %#v", got)
+	}
+
+	exec = &fakeExecutor{
 		failCommands: map[string]bool{
-			"git describe --tags --always --dirty": true,
-			"git rev-parse --short HEAD":           true,
+			"git describe --tags --match v[0-9]* --always --dirty": true,
+			"git rev-parse --short HEAD":                           true,
 		},
 	}
 	got = resolveBuildMetadata(exec, toolchain{gitCommand: "git"}, now, func(string) string { return "" })
