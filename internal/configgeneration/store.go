@@ -178,13 +178,10 @@ func (s Store) Load(ctx context.Context, digest string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_, actual, err := CaptureForInstance(ctx, configDir, archive.InstanceID)
-	if err != nil {
+	if err := verifyRetainedTree(ctx, configDir, archive); err != nil {
 		return "", err
 	}
-	if actual != digest {
-		return "", errors.New("retained config generation is corrupt")
-	}
+
 	return filepath.Abs(configDir)
 }
 

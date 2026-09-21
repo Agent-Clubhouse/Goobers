@@ -82,3 +82,10 @@ configuration directory, generation and instance identity. The built-in
 not the live instance configuration. Portable agentic pods consume their pinned
 execution kit; commands requiring a complete instance configuration still need
 an instance-backed execution path.
+
+Cross-platform extraction preserves the original archive digest. Verification
+compares the retained tree against that manifest, refusing added, missing,
+changed or symlinked paths. Unix hosts check all archived permission bits;
+Windows checks the file read-only attribute that Go can represent, while keeping
+the original Unix modes in the immutable manifest. This applies both when a
+worker/recovery path loads a generation and when a nested CLI verifies its pin.

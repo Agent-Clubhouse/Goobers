@@ -113,14 +113,7 @@ func verifyStageExecutionGeneration(layout instance.Layout) error {
 	if os.Getenv(executor.ConfigDirectoryEnvVar) == "" {
 		return errors.New("run config generation has no immutable execution directory")
 	}
-	_, actual, err := configgeneration.CaptureForInstance(context.Background(), layout.ConfigDir(), os.Getenv(executor.InstanceIDEnvVar))
-	if err != nil {
-		return err
-	}
-	if actual != expected {
-		return errors.New("run config generation differs from immutable execution tree")
-	}
-	return nil
+	return configgeneration.VerifyDirectory(context.Background(), layout.ConfigDir(), expected, os.Getenv(executor.InstanceIDEnvVar))
 }
 
 type executionGenerationRuntime struct {
