@@ -103,8 +103,11 @@ func observeServiceHealth(root string, identity *daemonIdentity, log *journal.In
 		obs.RecoveryInventory = inventory()
 	}
 	if log != nil {
-		if events, err := journal.ReadInstanceLog(log.Dir()); err == nil {
+		if events, truncated, err := journal.ReadInstanceLogWindow(log.Dir(), 4<<20, 1000); err == nil {
 			obs.WindowCoverage = serviceHealthWindowComplete
+			if truncated {
+				obs.WindowCoverage = "partial"
+			}
 			obs.UncleanRestarts, obs.WindowStart = summarizeLifecycleWindow(events)
 		}
 	}
