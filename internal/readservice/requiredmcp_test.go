@@ -18,7 +18,7 @@ func TestRequiredMCPStatusProjectionRecoversWithoutJournalReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	service, err := NewLocal(LocalSources{Layout: instance.NewLayout(t.TempDir()), Definitions: testDefinitions(), ReadModel: store}, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)

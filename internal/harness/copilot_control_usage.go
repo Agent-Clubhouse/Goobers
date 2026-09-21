@@ -43,10 +43,10 @@ func finalizeControlledCopilot(ctx context.Context, runner ProcessRunner) error 
 	// Preserve categorical capture errors without echoing native server details.
 	var result error
 	if usageErr != nil {
-		result = fmt.Errorf("Copilot session usage capture failed")
+		result = fmt.Errorf("copilot session usage capture failed")
 	}
 	if shutdownErr != nil {
-		result = errors.Join(result, fmt.Errorf("Copilot session finalization failed"))
+		result = errors.Join(result, fmt.Errorf("copilot session finalization failed"))
 	}
 	return result
 }

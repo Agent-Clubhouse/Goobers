@@ -29,6 +29,7 @@ type RequiredMCPCondition struct {
 	AuthorizationReason     string    `json:"authorizationReason,omitempty"`
 }
 
+// MaxRequiredMCPConditions bounds retained scoped conditions per run.
 const MaxRequiredMCPConditions = 64
 
 // RequiredMCPState is persisted in the existing operator-facts JSON, so list
@@ -39,6 +40,7 @@ type RequiredMCPState struct {
 	Truncated  bool                   `json:"truncated,omitempty"`
 }
 
+// After folds a supported readiness annotation without mutating prior state.
 func (current *RequiredMCPState) After(event journal.Event) *RequiredMCPState {
 	next, ok := requiredMCPObservation(event)
 	if !ok {

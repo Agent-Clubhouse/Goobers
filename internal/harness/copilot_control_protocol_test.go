@@ -33,7 +33,7 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	var sends atomic.Int32
 	done := make(chan error, 1)
 	go func() {
@@ -42,7 +42,7 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 			done <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		done <- serveCopilotReadinessFixture(conn, &sends, probeResult)
 	}()
 	process := &fakeProcessRunner{act: func(req ProcessRequest) error {
@@ -108,7 +108,7 @@ func serveCopilotReadinessFixture(conn net.Conn, sends *atomic.Int32, probeResul
 	probed := false
 	for {
 		data, err := readReadinessFrame(reader)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {
