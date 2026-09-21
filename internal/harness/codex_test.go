@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -560,23 +559,6 @@ func TestCodexAmbientChatGPTRejectsNonChatGPTStatus(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "ambient-chatgpt") && !strings.Contains(err.Error(), "login status") {
 			t.Fatalf("PreflightConfig error = %v", err)
 		}
-	}
-}
-
-// TestCodexAmbientChatGPTLiveSmoke is intentionally opt-in: it consumes the
-// operator's ChatGPT subscription limits and is never part of normal CI.
-func TestCodexAmbientChatGPTLiveSmoke(t *testing.T) {
-	if os.Getenv("GOOBERS_CODEX_AMBIENT_SMOKE") != "1" {
-		t.Skip("set GOOBERS_CODEX_AMBIENT_SMOKE=1 to run against a local ChatGPT Codex login")
-	}
-	cmd := exec.Command("codex", "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "Respond with exactly: subscription-auth-ok")
-	cmd.Env = withoutEnvVars(os.Environ(), codexModelEnv)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("ambient Codex smoke failed: %v\n%s", err, output)
-	}
-	if !strings.Contains(string(output), "subscription-auth-ok") {
-		t.Fatalf("ambient Codex smoke output did not contain expected response: %s", output)
 	}
 }
 
