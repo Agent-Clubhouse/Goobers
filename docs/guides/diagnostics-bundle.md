@@ -87,6 +87,57 @@ instead of a generic "no eligible PR to select this cycle". That is the
 distinction between *nothing to do* and *everything is parked*, which a healthy
 daemon reports identically without it (#2969).
 
+## Independent diagnostic export
+
+Local instance health evidence is retained whether or not export is enabled.
+To send operational observations to your company's OTLP/gRPC **Logs** collector,
+configure its destination explicitly in `instance.yaml`:
+
+```yaml
+telemetry:
+  diagnostics:
+    otlp:
+      endpoint: https://collector.example.com:4317
+      headers:
+        authorization:
+          env: COMPANY_DIAGNOSTICS_AUTH
+      tls:
+        caFile: /etc/company/collector-ca.pem
+```
+
+The diagnostic destination and credentials are independent of the run journal
+collector in `telemetry.otlp`. Both destinations may be the same. Neither
+`GOOBERS_OTLP_*` nor `OTEL_EXPORTER_OTLP_*` variables opt an instance into
+diagnostic export. Set `enabled: false` inside either `otlp` block to disable
+that stream explicitly; for journal export this overrides ambient defaults.
+`telemetry.enabled: false` disables run telemetry, while diagnostic export
+remains independently configurable. No destination means no diagnostic client,
+DNS lookup, or connection. Configuring a company collector sends nothing
+upstream to Goobers maintainers.
+
+The initial record is `goobers.service.health`, emitted at daemon startup and
+every six hours. Its resource identifies the Goobers version, build commit,
+and `goobers.telemetry.stream=diagnostics`. The record includes durable instance
+identity when available, machine/account names, process uptime, observed dirty
+restarts and their history coverage, and recovery inventory occupancy. Account
+name is runtime identity, **not an owner or outreach address**. It excludes
+inventory paths, arbitrary journal payloads, raw errors, prompts, and code;
+exported strings also pass through registered-secret and pattern scrubbing.
+Unknown history coverage does not emit a zero restart count.
+
+This cadence is historical health evidence; it is not a live fleet heartbeat
+or proof that a deployment is healthy between observations. Fleet progress,
+feature usage, owner routing, and approved-version assessment are separate
+parts of the diagnostic rollout.
+
+Export is best effort: each request has a two-second deadline, records are
+limited to 64 KiB, and at most 128 records await export. Full queues, rejected
+records, transport failures, and shutdown losses are counted. Clean daemon
+shutdown writes a local `diagnostics-export-summary` annotation with accepted,
+delivered, dropped, and failed counts. A collector outage does not block
+workflow execution or local journaling. Collection and sharing of the support
+bundle above remain explicit operator actions.
+
 ## Related
 
 - [GitHub token scopes](github-token-scopes.md)

@@ -1813,8 +1813,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// informational heartbeat above and NOT gated on --quiet — that flag
 	// silences stdout chatter, while this is diagnostic evidence an operator
 	// reads back from the instance log later.
-	serviceHealthDone := make(chan struct{})
-	go emitServiceHealth(ctx, root, currentDaemon, setup.InstanceLog, recoveryInventory.Stats, serviceHealthInterval, nil, serviceHealthDone)
+	serviceHealthDone := startServiceHealth(ctx, root, currentDaemon, setup, recoveryInventory.Stats)
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error

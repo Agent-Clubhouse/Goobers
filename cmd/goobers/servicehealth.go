@@ -199,14 +199,20 @@ func recoveryInventoryHealthPayload(status *readservice.RecoveryInventoryStatus)
 }
 
 // appendServiceHealth records one observation into the instance diagnostic log.
-func appendServiceHealth(root string, identity *daemonIdentity, log *journal.InstanceLog, inventory recoveryInventorySampler, now time.Time) error {
+func appendServiceHealth(root string, identity *daemonIdentity, log *journal.InstanceLog, inventory recoveryInventorySampler, now time.Time, sinks ...func(journal.Event)) error {
 	if log == nil {
 		return nil
 	}
-	return log.Append(journal.Event{
+	event := journal.Event{
+		Time:   now,
 		Type:   journal.EventServiceHealth,
 		Runner: serviceHealthPayload(observeServiceHealth(root, identity, log, inventory, now)),
-	})
+	}
+	err := log.Append(event)
+	for _, sink := range sinks {
+		sink(event)
+	}
+	return err
 }
 
 // emitServiceHealth writes the startup record and then one per interval.
@@ -227,6 +233,7 @@ func emitServiceHealth(
 	interval time.Duration,
 	now func() time.Time,
 	done chan<- struct{},
+	sinks ...func(journal.Event),
 ) {
 	if done != nil {
 		defer close(done)
@@ -236,7 +243,7 @@ func emitServiceHealth(
 	}
 	// Startup record first, before any tick: an instance that is restarted more
 	// often than the interval would otherwise never emit one at all.
-	_ = appendServiceHealth(root, identity, log, inventory, now())
+	_ = appendServiceHealth(root, identity, log, inventory, now(), sinks...)
 	if interval <= 0 {
 		return
 	}
@@ -252,7 +259,7 @@ func emitServiceHealth(
 			if ctx.Err() != nil {
 				return
 			}
-			_ = appendServiceHealth(root, identity, log, inventory, now())
+			_ = appendServiceHealth(root, identity, log, inventory, now(), sinks...)
 		}
 	}
 }
