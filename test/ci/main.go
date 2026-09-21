@@ -495,20 +495,8 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 	// `git init` on windows-latest while ubuntu and macOS passed. Making these
 	// contracts hermetic therefore needs a fix in the hermetic runner's Windows
 	// tool materialisation first, and belongs in its own change.
-	shippedWorkflowCheck := check{
-		label:   "shipped-workflows",
-		command: tools.goCommand,
-		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
-		env:     testEnvironment,
-		group:   groupShipped,
-	}
-	releaseImageProbeCheck := check{
-		label:   "release-image-probes",
-		command: tools.goCommand,
-		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./release", "-run", "^TestShippedImageProbesRunWithRealBinary$"},
-		env:     testEnvironment,
-		group:   groupShipped,
-	}
+	shippedWorkflowCheck := newShippedWorkflowCheck(tools, testEnvironment)
+	releaseImageProbeCheck := newReleaseImageProbeCheck(tools, testEnvironment)
 
 	result = append(result,
 		shippedWorkflowCheck,
@@ -603,6 +591,26 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		}
 	}
 	return result
+}
+
+func newShippedWorkflowCheck(tools toolchain, environment []string) check {
+	return check{
+		label:   "shipped-workflows",
+		command: tools.goCommand,
+		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
+		env:     environment,
+		group:   groupShipped,
+	}
+}
+
+func newReleaseImageProbeCheck(tools toolchain, environment []string) check {
+	return check{
+		label:   "release-image-probes",
+		command: tools.goCommand,
+		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./release", "-run", "^TestShippedImageProbesRunWithRealBinary$"},
+		env:     environment,
+		group:   groupShipped,
+	}
 }
 
 // Files are enumerated explicitly because the Go executor does not expand
