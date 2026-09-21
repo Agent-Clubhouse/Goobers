@@ -124,6 +124,11 @@ func TestScanRejectsCrossGaggleEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := run.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	if err := run.Append(journal.Event{Type: journal.EventRunStarted}); err != nil {
 		t.Fatal(err)
 	}
