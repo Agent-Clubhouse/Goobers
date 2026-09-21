@@ -82,10 +82,38 @@ func alias() {
 	}
 }
 
+func TestDirectGitInvocationsRespectAliasBindings(t *testing.T) {
+	src := `package sample
+import "os/exec"
+
+func aliased() {
+	cmd := exec.Command
+	cmd("git")
+	cmd = func(string) {}
+	cmd("git")
+}
+
+func shadowed(cmd func(string)) {
+	cmd("git")
+}
+`
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, "sample.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	positions := directGitInvocations(parsed, fset)
+	if len(positions) != 1 {
+		t.Fatalf("detected %d git invocations, want 1: %#v", len(positions), positions)
+	}
+	if got := positions[0].Line; got != 6 {
+		t.Fatalf("invocation line = %d, want 6", got)
+	}
+}
+
 func directGitInvocations(parsed *ast.File, fset *token.FileSet) []token.Position {
 	execAliases := map[string]bool{}
 	dotImportExec := false
-	varAliases := map[string]string{}
 	for _, imported := range parsed.Imports {
 		importPath, err := strconv.Unquote(imported.Path.Value)
 		if err != nil || importPath != "os/exec" {
@@ -101,65 +129,83 @@ func directGitInvocations(parsed *ast.File, fset *token.FileSet) []token.Positio
 		}
 		execAliases[name] = true
 	}
-	ast.Inspect(parsed, func(node ast.Node) bool {
-		switch value := node.(type) {
-		case *ast.AssignStmt:
-			for i, rhs := range value.Rhs {
-				if len(value.Lhs) <= i {
-					break
-				}
-				ident, ok := value.Lhs[i].(*ast.Ident)
-				if !ok {
-					continue
-				}
-				if method, ok := execCommandAlias(rhs, execAliases, dotImportExec); ok {
-					varAliases[ident.Name] = method
-				}
-			}
-		case *ast.ValueSpec:
-			for i, val := range value.Values {
-				if len(value.Names) <= i {
-					break
-				}
-				ident := value.Names[i]
-				if method, ok := execCommandAlias(val, execAliases, dotImportExec); ok {
-					varAliases[ident.Name] = method
-				}
-			}
-		}
-		return true
-	})
-	var positions []token.Position
-	ast.Inspect(parsed, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		fun := call.Fun
-		selector, selectorOK := fun.(*ast.SelectorExpr)
-		if selectorOK && (selector.Sel.Name == "Command" || selector.Sel.Name == "CommandContext") {
-			pkgName, ok := selector.X.(*ast.Ident)
-			if ok && execAliases[pkgName.Name] && directGitArg(call, selector.Sel.Name) {
-				positions = append(positions, fset.Position(call.Pos()))
-			}
-			return true
-		}
-		ident, identOK := fun.(*ast.Ident)
-		if identOK {
-			if method, ok := varAliases[ident.Name]; ok && directGitArg(call, method) {
-				positions = append(positions, fset.Position(call.Pos()))
-				return true
-			}
-			if (ident.Name == "Command" || ident.Name == "CommandContext") && (dotImportExec || varAliases[ident.Name] != "") && directGitArg(call, ident.Name) {
-				positions = append(positions, fset.Position(call.Pos()))
-			}
-		}
-		return true
-	})
-	return positions
+	visitor := directGitInvocationVisitor{
+		fset:          fset,
+		execAliases:   execAliases,
+		dotImportExec: dotImportExec,
+		varAliases:    make(map[*ast.Object]string),
+		positions:     nil,
+	}
+	ast.Walk(&visitor, parsed)
+	return visitor.positions
 }
 
-func execCommandAlias(expr ast.Expr, execAliases map[string]bool, dotImportExec bool) (string, bool) {
+type directGitInvocationVisitor struct {
+	fset          *token.FileSet
+	execAliases   map[string]bool
+	dotImportExec bool
+	varAliases    map[*ast.Object]string
+	positions     []token.Position
+}
+
+func (v *directGitInvocationVisitor) Visit(node ast.Node) ast.Visitor {
+	switch value := node.(type) {
+	case *ast.AssignStmt:
+		for i, lhs := range value.Lhs {
+			if i >= len(value.Rhs) {
+				break
+			}
+			ident, ok := lhs.(*ast.Ident)
+			if !ok || ident.Obj == nil {
+				continue
+			}
+			method, ok := execCommandAlias(value.Rhs[i], v.execAliases, v.dotImportExec, v.varAliases)
+			if ok {
+				v.varAliases[ident.Obj] = method
+			} else {
+				delete(v.varAliases, ident.Obj)
+			}
+		}
+	case *ast.ValueSpec:
+		for i, ident := range value.Names {
+			if i >= len(value.Values) || ident.Obj == nil {
+				continue
+			}
+			method, ok := execCommandAlias(value.Values[i], v.execAliases, v.dotImportExec, v.varAliases)
+			if ok {
+				v.varAliases[ident.Obj] = method
+			}
+		}
+	case *ast.CallExpr:
+		v.checkCall(value)
+	}
+	return v
+}
+
+func (v *directGitInvocationVisitor) checkCall(call *ast.CallExpr) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if ok && (selector.Sel.Name == "Command" || selector.Sel.Name == "CommandContext") {
+		pkgName, ok := selector.X.(*ast.Ident)
+		if ok && pkgName.Obj == nil && v.execAliases[pkgName.Name] && directGitArg(call, selector.Sel.Name) {
+			v.positions = append(v.positions, v.fset.Position(call.Pos()))
+		}
+		return
+	}
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok {
+		return
+	}
+	method, alias := v.varAliases[ident.Obj]
+	if !alias && ident.Obj == nil && (ident.Name == "Command" || ident.Name == "CommandContext") {
+		alias = v.dotImportExec
+		method = ident.Name
+	}
+	if alias && directGitArg(call, method) {
+		v.positions = append(v.positions, v.fset.Position(call.Pos()))
+	}
+}
+
+func execCommandAlias(expr ast.Expr, execAliases map[string]bool, dotImportExec bool, varAliases map[*ast.Object]string) (string, bool) {
 	switch value := expr.(type) {
 	case *ast.SelectorExpr:
 		if value.Sel.Name != "Command" && value.Sel.Name != "CommandContext" {
@@ -171,6 +217,11 @@ func execCommandAlias(expr ast.Expr, execAliases map[string]bool, dotImportExec 
 		}
 		return value.Sel.Name, true
 	case *ast.Ident:
+		if varAliases != nil {
+			if method, ok := varAliases[value.Obj]; ok {
+				return method, true
+			}
+		}
 		if value.Name != "Command" && value.Name != "CommandContext" {
 			return "", false
 		}
