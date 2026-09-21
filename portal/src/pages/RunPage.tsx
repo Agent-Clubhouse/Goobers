@@ -163,8 +163,10 @@ function RunDetailWorkspace({
   const [runIdCopied, setRunIdCopied] = useState(false);
   const [activeTab, setActiveTab] = useState<RunDetailTab>("overview");
   const [pendingInspectorFocus, setPendingInspectorFocus] = useState(false);
+  const [pendingSelectedEventFocus, setPendingSelectedEventFocus] = useState(false);
   const { config: portalConfig, loading: portalConfigLoading } = useCobrand();
   const inspectorRef = useRef<HTMLElement>(null);
+  const selectedEventDetailsRef = useRef<HTMLElement>(null);
   const fullscreenRootRef = useRef<HTMLDivElement>(null);
   const [fullscreenMode, setFullscreenMode] =
     useState<WorkflowGraphFullscreenMode>("none");
@@ -195,6 +197,19 @@ function RunDetailWorkspace({
     revealInspector();
     setPendingInspectorFocus(false);
   }, [activeTab, pendingInspectorFocus]);
+
+  useEffect(() => {
+    if (activeTab !== "diagnostics" || !pendingSelectedEventFocus) {
+      return;
+    }
+    const details = selectedEventDetailsRef.current;
+    if (!details) {
+      return;
+    }
+    details.scrollIntoView?.({ block: "start", inline: "nearest" });
+    details.focus({ preventScroll: true });
+    setPendingSelectedEventFocus(false);
+  }, [activeTab, pendingSelectedEventFocus]);
 
   useEffect(() => {
     if (!followingLatest) {
@@ -228,6 +243,12 @@ function RunDetailWorkspace({
     }
   };
 
+  const revealSelectedEvent = (event: RunEvent) => {
+    selectEvent(event);
+    setPendingSelectedEventFocus(true);
+    setActiveTab("diagnostics");
+  };
+
   const replaySeek = (seq: number) => {
     const event = events.find((candidate) => candidate.seq === seq);
     setSelectedSeq(seq);
@@ -249,13 +270,7 @@ function RunDetailWorkspace({
           runId,
         });
   const focusCausalEvent =
-    causalEventSeq === undefined
-      ? undefined
-      : () => {
-          replaySeek(causalEventSeq);
-          setPendingInspectorFocus(true);
-          setActiveTab("diagnostics");
-        };
+    causalEvent === undefined ? undefined : () => revealSelectedEvent(causalEvent);
 
   const failure = runFailure(run, events);
   const failureCausalEvent =
@@ -423,13 +438,9 @@ function RunDetailWorkspace({
           })}
           failure={failure}
           onFocusCausalEvent={
-            failure.causalEventSeq === undefined
+            failureCausalEvent === undefined
               ? undefined
-              : () => {
-                  replaySeek(failure.causalEventSeq!);
-                  setPendingInspectorFocus(true);
-                  setActiveTab("diagnostics");
-                }
+              : () => revealSelectedEvent(failureCausalEvent)
           }
           phase={run.phase}
         />
@@ -523,6 +534,7 @@ function RunDetailWorkspace({
                 onSeek={replaySeek}
                 runId={runId}
                 selectedSeq={selectedSeq}
+                selectedEventDetailsRef={selectedEventDetailsRef}
                 terminal={run.finishedAt != null}
                 workflow={run.workflow}
               />
