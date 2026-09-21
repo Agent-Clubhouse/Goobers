@@ -19,6 +19,7 @@ func TestOperationalBundleOfflineProjectionAndRedaction(t *testing.T) {
 	err = log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "goobers.fleet.heartbeat", "diagnostic": map[string]any{
 		"schemaVersion": 1, "instanceId": "instance-one", "gaggleId": "gaggle-one", "component": "daemon", "bootId": "boot-one", "version": "v0.5.0", "buildCommit": "commit-one", "platform": "linux/amd64",
 		"observedAt": "2026-09-20T00:00:00Z", "windowStart": "2026-09-19T23:00:00Z", "windowCoverage": "partial", "lastUsefulProgressAt": "2026-09-19T23:30:00Z", "state": "stalled", "reasonCode": "no_progress",
+		"requiredMcpState": "active", "requiredMcpCoverage": "partial", "requiredMcpReason": "tool_authorization_failure", "requiredMcpObservedAt": "2026-09-19T23:50:00Z", "requiredMcpActiveCount": 1, "requiredMcpAdapter": "copilot-cli", "requiredMcpStage": "implement",
 		"prompt": "private-prompt-marker", "code": "private-source-marker", "ownerRef": "private-owner-marker", "rawError": "private-error-marker",
 	}}})
 	if err != nil {
@@ -38,6 +39,9 @@ func TestOperationalBundleOfflineProjectionAndRedaction(t *testing.T) {
 	observation := bundle.Operational.Observations[0]
 	if observation.Version != "v0.5.0" || observation.ReasonCode != "no_progress" || observation.LastUsefulProgressAt == "" || observation.BootID != "boot-one" {
 		t.Fatalf("missing diagnostic context: %+v", observation)
+	}
+	if observation.RequiredMCP == nil || observation.RequiredMCP.Reason != "tool_authorization_failure" || observation.RequiredMCP.Stage != "implement" {
+		t.Fatal("offline MCP context missing", observation)
 	}
 	data, err := json.Marshal(bundle)
 	if err != nil {

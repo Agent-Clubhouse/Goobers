@@ -35,20 +35,22 @@ type Enrollment struct {
 
 // Transition is a bounded history of evaluated state changes, including recovery.
 type Transition struct {
-	At     time.Time `json:"at"`
-	From   string    `json:"from"`
-	To     string    `json:"to"`
-	Reason string    `json:"reason"`
+	Condition string    `json:"condition,omitempty"`
+	At        time.Time `json:"at"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Reason    string    `json:"reason"`
 }
 
 type entry struct {
-	enrollment  Enrollment
-	enrolledAt  time.Time
-	heartbeat   *Heartbeat
-	receivedAt  time.Time
-	features    map[string]FeatureUsage
-	transitions []Transition
-	lastState   string
+	lastMCPState string
+	enrollment   Enrollment
+	enrolledAt   time.Time
+	heartbeat    *Heartbeat
+	receivedAt   time.Time
+	features     map[string]FeatureUsage
+	transitions  []Transition
+	lastState    string
 }
 
 // Backend is a bounded in-memory reference receiver. It retains the latest

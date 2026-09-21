@@ -3,6 +3,9 @@ package diagnostics
 import (
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/goobers/goobers/internal/fleetdiagnostics"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -18,19 +21,20 @@ type OperationalEvidence struct {
 
 // OperationalObservation carries operational provenance, never work content.
 type OperationalObservation struct {
-	InstanceID           string `json:"instanceId,omitempty"`
-	GaggleID             string `json:"gaggleId,omitempty"`
-	Component            string `json:"component,omitempty"`
-	BootID               string `json:"bootId,omitempty"`
-	Version              string `json:"version,omitempty"`
-	Commit               string `json:"commit,omitempty"`
-	Platform             string `json:"platform,omitempty"`
-	ObservedAt           string `json:"observedAt,omitempty"`
-	WindowStart          string `json:"windowStart,omitempty"`
-	WindowCoverage       string `json:"windowCoverage,omitempty"`
-	LastUsefulProgressAt string `json:"lastUsefulProgressAt,omitempty"`
-	State                string `json:"state,omitempty"`
-	ReasonCode           string `json:"reasonCode,omitempty"`
+	RequiredMCP          *fleetdiagnostics.MCPHealth `json:"requiredMcp,omitempty"`
+	InstanceID           string                      `json:"instanceId,omitempty"`
+	GaggleID             string                      `json:"gaggleId,omitempty"`
+	Component            string                      `json:"component,omitempty"`
+	BootID               string                      `json:"bootId,omitempty"`
+	Version              string                      `json:"version,omitempty"`
+	Commit               string                      `json:"commit,omitempty"`
+	Platform             string                      `json:"platform,omitempty"`
+	ObservedAt           string                      `json:"observedAt,omitempty"`
+	WindowStart          string                      `json:"windowStart,omitempty"`
+	WindowCoverage       string                      `json:"windowCoverage,omitempty"`
+	LastUsefulProgressAt string                      `json:"lastUsefulProgressAt,omitempty"`
+	State                string                      `json:"state,omitempty"`
+	ReasonCode           string                      `json:"reasonCode,omitempty"`
 }
 
 func collectOperationalEvidence(root string) *OperationalEvidence {
@@ -92,7 +96,7 @@ func projectOperationalObservation(attrs map[string]any) OperationalObservation 
 		}
 		return value
 	}
-	return OperationalObservation{InstanceID: field("instanceId"), GaggleID: field("gaggleId"), Component: field("component"), BootID: field("bootId"), Version: field("version"), Commit: field("buildCommit"), Platform: field("platform"), ObservedAt: field("observedAt"), WindowStart: field("windowStart"), WindowCoverage: field("windowCoverage"), LastUsefulProgressAt: field("lastUsefulProgressAt"), State: field("state"), ReasonCode: field("reasonCode")}
+	return OperationalObservation{RequiredMCP: projectOperationalMCP(attrs), InstanceID: field("instanceId"), GaggleID: field("gaggleId"), Component: field("component"), BootID: field("bootId"), Version: field("version"), Commit: field("buildCommit"), Platform: field("platform"), ObservedAt: field("observedAt"), WindowStart: field("windowStart"), WindowCoverage: field("windowCoverage"), LastUsefulProgressAt: field("lastUsefulProgressAt"), State: field("state"), ReasonCode: field("reasonCode")}
 }
 
 func summaryOperational(b *strings.Builder, bundle Bundle) {
@@ -103,9 +107,25 @@ func summaryOperational(b *strings.Builder, bundle Bundle) {
 	writeLine(b, "Coverage: %s", bundle.Operational.Coverage)
 	for _, observation := range bundle.Operational.Observations {
 		writeLine(b, "- %s/%s: %s (%s), observed %s; build %s/%s; last useful progress %s.", observation.InstanceID, observation.GaggleID, observation.State, observation.ReasonCode, observation.ObservedAt, observation.Version, observation.Commit, orUnknown(observation.LastUsefulProgressAt))
+		if mcp := observation.RequiredMCP; mcp != nil {
+			writeLine(b, "  Required MCP: %s (%s), coverage %s; context %s/%s/%s.", mcp.State, mcp.Reason, mcp.Coverage, mcp.Workflow, mcp.Stage, mcp.Adapter)
+		}
 	}
 	for _, gap := range bundle.Operational.Gaps {
 		writeLine(b, "- Gap: %s", gap)
 	}
 	writeLine(b, "")
+}
+
+func projectOperationalMCP(attrs map[string]any) *fleetdiagnostics.MCPHealth {
+	raw, _ := attrs["observedAt"].(string)
+	at, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return nil
+	}
+	health, err := fleetdiagnostics.DecodeMCPHealth(attrs, at)
+	if err != nil {
+		return nil
+	}
+	return health
 }

@@ -20,6 +20,7 @@ type Usage struct {
 // Report is scoped to exactly one authenticated tenant. OwnerRoute is a routing
 // hint for the company's tools, never an automatic message or inferred owner.
 type Report struct {
+	RequiredMCP *MCPHealth `json:"requiredMcp,omitempty"`
 	Identity
 	State                 string       `json:"state"`
 	Reason                string       `json:"reason"`
@@ -58,6 +59,14 @@ func (b *Backend) Reports(tenant string) ([]Report, error) {
 	return reports, nil
 }
 func evaluate(e *entry, policy Tenant, now time.Time, skew time.Duration) Report {
+	r := evaluateHealth(e, policy, now, skew)
+	if e.heartbeat != nil {
+		r.RequiredMCP = mcpReport(e.heartbeat.RequiredMCP, r.Liveness == "live")
+	}
+	return r
+}
+
+func evaluateHealth(e *entry, policy Tenant, now time.Time, skew time.Duration) Report {
 	r := Report{Identity: e.enrollment.Identity, State: "unknown", Reason: "awaiting_first_observation", Liveness: "unobserved", Coverage: "unknown", ReceivedAt: e.receivedAt}
 	lastSeen := e.enrolledAt
 	if h := e.heartbeat; h != nil {
@@ -132,6 +141,7 @@ func featureReports(e *entry, live bool, now time.Time, skew time.Duration) []Us
 }
 
 func recordTransition(e *entry, r Report, now time.Time) {
+	recordMCPTransition(e, r.RequiredMCP, now)
 	state := r.Liveness + ":" + r.State + ":" + r.Reason
 	if state == e.lastState {
 		return

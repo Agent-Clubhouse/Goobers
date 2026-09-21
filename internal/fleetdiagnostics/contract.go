@@ -40,6 +40,7 @@ type Window struct {
 // Heartbeat reports observations, not an inferred root cause. Nil counters and
 // timestamps mean unknown. Idle is distinct from no progress with eligible work.
 type Heartbeat struct {
+	RequiredMCP *MCPHealth `json:"requiredMcp,omitempty"`
 	Identity
 	Window
 	State                string     `json:"state"`
@@ -75,4 +76,18 @@ type FeatureUsage struct {
 // must be added deliberately; arbitrary capability.* names are not accepted.
 func FeatureIDs() []string {
 	return []string{"runner.local", "runner.engine", "adapter.copilot", "adapter.claude", "adapter.codex", "provider.github", "provider.gitea", "provider.azure-devops", "dsl.v1", "dsl.v2", "dsl.v3"}
+}
+
+// MCPHealth is an independent unresolved-tool condition, not the gaggle's work
+// state. Partial history cannot establish that every context has recovered.
+type MCPHealth struct {
+	State       string     `json:"state"`
+	Coverage    string     `json:"coverage"`
+	Reason      string     `json:"reason,omitempty"`
+	ActiveCount *int64     `json:"activeCount,omitempty"`
+	ObservedAt  *time.Time `json:"observedAt,omitempty"`
+	Workflow    string     `json:"workflow,omitempty"`
+	Stage       string     `json:"stage,omitempty"`
+	Adapter     string     `json:"adapter,omitempty"`
+	Branch      int        `json:"branch,omitempty"`
 }

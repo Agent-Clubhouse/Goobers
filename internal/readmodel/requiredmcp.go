@@ -113,11 +113,11 @@ func MergeRequiredMCPCondition(prior, next RequiredMCPCondition) RequiredMCPCond
 		result = next
 	}
 	availability := prior
-	if !next.AvailabilityObservedAt.Before(prior.AvailabilityObservedAt) {
+	if newerMCPEvidence(next.AvailabilityObservedAt, next.AvailabilityReason, prior.AvailabilityObservedAt, prior.AvailabilityReason) {
 		availability = next
 	}
 	authorization := prior
-	if !next.AuthorizationObservedAt.Before(prior.AuthorizationObservedAt) {
+	if newerMCPEvidence(next.AuthorizationObservedAt, next.AuthorizationReason, prior.AuthorizationObservedAt, prior.AuthorizationReason) {
 		authorization = next
 	}
 	result.AvailabilityObservedAt, result.AvailabilityReason = availability.AvailabilityObservedAt, availability.AvailabilityReason
@@ -152,4 +152,10 @@ func decisiveMCPObservation(result RequiredMCPCondition) RequiredMCPCondition {
 
 func validMCPObservationStatus(value string) bool {
 	return value == "ready" || value == "unobservable" || value == "denied"
+}
+
+// Equal timestamps from different runs cannot establish recovery ordering.
+// Retain failure on a tie; the lexical tie-break makes reduction deterministic.
+func newerMCPEvidence(next time.Time, nextReason string, prior time.Time, priorReason string) bool {
+	return next.After(prior) || next.Equal(prior) && nextReason >= priorReason
 }

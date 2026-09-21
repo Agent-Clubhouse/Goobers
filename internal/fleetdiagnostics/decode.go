@@ -143,6 +143,7 @@ func DecodeHeartbeat(attrs map[string]any) (Heartbeat, error) {
 			f.err = errors.New("evidence timestamp exceeds observation")
 		}
 	}
+	h.RequiredMCP = f.mcpHealth(h.ObservedAt)
 	return h, f.finish()
 }
 

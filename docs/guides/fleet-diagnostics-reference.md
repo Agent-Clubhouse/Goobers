@@ -153,3 +153,27 @@ unknown, including when an operator pins them. Approved prereleases remain
 comparable through the explicitly supplied channel catalogue. Feature records
 within allowed future clock skew are retained but remain unknown until their
 observation time; the skew allowance never makes future usage already true.
+
+### Required MCP conditions
+
+The heartbeat's optional `requiredMcp` report is independent of work health. An
+`active` condition means a retained required-tool failure has no newer verified
+recovery for the same workflow, stage, parallel branch, adapter and server. It
+does not mean every workflow in the gaggle is blocked. The report includes the
+selected context, coded reason, decisive evidence timestamp, and coverage.
+
+Availability and authorization have separate evidence clocks. A later
+unsupported authorization check cannot clear a prior denial; a newer verified
+recovery in another run can. Equal-time contradictory evidence retains failure
+because cross-run ordering is unknown. At most 256 contexts across the bounded
+run list are folded; missing, truncated, future or uninstrumented evidence stays
+partial/unknown. Zero unresolved contexts is reported only with complete
+coverage. Missing heartbeats also make the current MCP report unknown.
+
+For example, a company can select unresolved tool conditions with
+`select(.requiredMcp.state == "active")`, then route using `ownerRoute` and the
+reported workflow/stage. `transitions` records changes under
+`condition: "required_mcp"`, including recovery and loss of observation, within
+the same bounded history as work-health transitions. This is a query/routing
+example, not automatic outreach. Offline support bundles retain the coded
+condition and context without raw MCP errors or responses.
