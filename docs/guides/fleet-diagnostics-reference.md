@@ -391,3 +391,62 @@ validated, single-link, non-reparse handles and does not recursively change
 existing children or anything outside the dedicated directory. Native Windows
 regressions exercise permissive parent ACLs, protected child ACL repair, private
 scratch creation, and refusal of outside file/directory aliases.
+
+
+## Downgrade and re-upgrade
+
+Keep a stopped-instance backup and the last working configuration tree before
+upgrading. The compatibility regression targets v0.4.1; it does not establish
+compatibility with arbitrary older releases. Follow the
+[instance restore contract](instance-restore-contract.md) when copying journals,
+SQLite databases and their sidecars. Never run two daemon versions against the
+same instance root at once.
+
+To downgrade, stop new admissions and drain or explicitly terminate active
+runs before stopping the daemon and workers. v0.4.1 does not implement the newer
+configuration-generation pins, so this procedure does not promise that it can
+safely resume an active v0.5 run. Restore configuration accepted by the selected
+older release before starting its binary. v0.4.1 rejects the
+new `telemetry.diagnostics` block, even when its exporter is disabled, and the
+new `telemetry.otlp.enabled` field. Restore the complete old configuration tree:
+new gaggle/workflow `spec.enabled` pause switches also cannot be assumed to work
+on that release. Keep admission stopped until the restored configuration's
+scheduling behavior has been checked.
+
+Do not simply delete `telemetry.otlp.enabled: false` while retaining its endpoint:
+that can turn journal export back on in the older release. For a deployment
+that must not export, restore an old-compatible configuration with no journal
+OTLP destination and remove ambient exporter settings from the service
+environment, including `GOOBERS_OTLP_ENDPOINT` and `GOOBERS_OTLP_INSECURE`.
+Unset these variables; an empty endpoint is not the same as an absent override. For a deployment that should export, restore its prior approved
+journal destination and credentials. The independent diagnostic destination is
+unavailable in v0.4.1; a company collector should show stale/missing observations
+during the downgrade, rather than interpreting silence as health.
+
+The diagnostic annotations use the existing journal format and the diagnostic
+projection adds no read-model SQL migration. Older readers ignore unfamiliar
+operator fields. An older writer can discard those fields from cached run rows,
+so a downgrade does not preserve diagnostic projections losslessly. Keep the
+canonical run journals and private `scheduler/diagnostics/history.json` snapshot.
+The older release does not consume that snapshot; existing observations retain
+their original timestamps and must not become fresh merely because a process
+restarts.
+
+On re-upgrade, stop the older processes and back up the instance again, then
+restore the newer configuration and approved exporter credentials. To recover
+cached diagnostic fields from retained journals, the existing offline command
+`goobers telemetry stats --rebuild /path/to/instance` rebuilds both analytics and
+the run read model. Require the `read model rebuilt:` completion line and no read-model rebuild
+warning, as well as a successful command exit status, before treating recovery
+as complete. This is a full rebuild: it cannot restore already-pruned journal
+evidence. Lifetime first-success milestones are carried forward from a readable
+prior analytics database, but other analytics without retained source evidence
+cannot be reconstructed. The rebuild does not preserve read-model retention
+floors/tombstones. Keep the backup and account for that retention behavior before
+using this recovery operation. Do not delete the original databases as an
+initial troubleshooting step.
+
+After restarting the newer daemon, verify new heartbeat delivery and the
+expected company/deployment identity. Retained history is bounded, and cached
+fields without surviving source evidence remain unknown. Downtime does not
+produce retroactive feature observations or proof of uninterrupted health.

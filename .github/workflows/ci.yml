@@ -629,6 +629,14 @@ jobs:
           run-id: ${{ steps.previous-timing.outputs.result }}
           github-token: ${{ github.token }}
 
+      # Execute actual pinned v0.4.1 packages against current diagnostic data.
+      # This runs outside the hermetic unit sandbox so the pinned release can
+      # resolve its own module versions; failure blocks the required gate.
+      - name: Diagnostics downgrade and re-upgrade compatibility
+        timeout-minutes: 15
+        shell: bash
+        run: go run ./test/diagnosticsrollback
+
       - name: Unit suite and Linux coverage profile
         env:
           GOOBERS_CI_RACE: "0"
@@ -1330,7 +1338,8 @@ jobs:
         # cleanup, and Unix-source asset identity on Windows, not just compile.
         # Immutable generations also require native archive, shared-lease,
         # retention and relative-path execution coverage (#5382).
-        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration
+        # The rollback runner must also open native drive-letter SQLite paths.
+        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./test/diagnosticsrollback
 
       - name: Windows worktree and event stream
         env:

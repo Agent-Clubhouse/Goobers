@@ -30,6 +30,9 @@ var auditedSQLOpeners = []string{
 	"internal/telemetry/rollup/db.go:OpenExistingReader:Open",
 	"internal/telemetry/rollup/db.go:openReaderPool:Open",
 	"internal/triggerqueue/store.go:Open:Open",
+	// Compatibility harness reads only sqlite_schema from its private temporary
+	// fixture using mode=ro; old/current writers own migration and DDL validation.
+	"test/diagnosticsrollback/main.go:schemaSnapshot:Open",
 }
 
 func TestEmbeddedSQLiteStoreOpenersAreAudited(t *testing.T) {

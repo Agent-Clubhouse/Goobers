@@ -1,0 +1,53 @@
+package readmodel
+
+import (
+	"context"
+	"github.com/goobers/goobers/internal/journal"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// Copied into the pinned v0.4.1 source archive, not compiled with current code.
+// Both SQLite decoding and projection writing are the actual released package.
+func TestDiagnosticsPriorReleaseReadWrite(t *testing.T) {
+	root := os.Getenv("GOOBERS_ROLLBACK_FIXTURE")
+	if root == "" {
+		t.Fatal("missing fixture")
+	}
+	ctx := context.Background()
+	store, err := Open(filepath.Join(root, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	row, found, err := store.GetRun(ctx, "run-0001")
+	if err != nil || !found {
+		t.Fatalf("read new DB found=%v err=%v", found, err)
+	}
+	if row.Workflow != "implementation" || row.Gaggle != "alpha" || len(row.Operator.Activity.Active) != 1 || row.Operator.Activity.Active[0].Name != "implement" {
+		t.Fatalf("core facts lost: %+v", row)
+	}
+	run, _, err := journal.Recover(filepath.Join(root, "runs", row.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "rollback-prior-writer"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.BuildFromJournals(ctx, []string{filepath.Join(root, "runs")})
+	if err != nil || result.Projected != 1 {
+		t.Fatalf("old projection=%+v err=%v", result, err)
+	}
+	written, found, err := store.GetRun(ctx, row.RunID)
+	if err != nil || !found || written.LastSeq != row.LastSeq+1 {
+		t.Fatalf("old writer did not advance: %+v %v", written, err)
+	}
+}
