@@ -6,6 +6,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/temporaltest"
@@ -14,20 +15,30 @@ import (
 )
 
 func TestEngineRetryBackoffPreservesTimerAndLegacyHistory(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
+	for _, tc := range []struct {
+		legacy bool
+		class  journal.AttemptClass
+	}{{false, journal.AttemptPolicy}, {true, journal.AttemptPolicy}, {false, journal.AttemptInfra}, {true, journal.AttemptInfra}} {
+		legacy := tc.legacy
 		name := "current"
 		if legacy {
 			name = "legacy"
 		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(name+"-"+string(tc.class), func(t *testing.T) {
 			var suite testsuite.WorkflowTestSuite
 			env := temporaltest.NewWorkflowEnvironment(&suite)
 			if legacy {
 				env.OnGetVersion(retryBackoffObservationChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 			}
-			det := &scriptedDeterministic{failures: []error{errors.New("retryable policy failure")}}
+			failure := errors.New("retryable failure")
+			policyAttempts := int32(2)
+			if tc.class == journal.AttemptInfra {
+				failure = invoke.InfrastructureFailure(failure)
+				policyAttempts = 1
+			}
+			det := &scriptedDeterministic{failures: []error{failure}}
 			env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t)})
-			env.ExecuteWorkflow(Run, runInput("observed-retry", retrySpec(&apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 5})))
+			env.ExecuteWorkflow(Run, runInput("observed-retry", retrySpec(&apiv1.RetryPolicy{MaxAttempts: policyAttempts, BackoffSeconds: 5})))
 			if err := env.GetWorkflowError(); err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +72,7 @@ func TestEngineRetryBackoffPreservesTimerAndLegacyHistory(t *testing.T) {
 						t.Fatalf("unprojectable timer: %+v", event)
 					}
 					wait := state.Waits[0]
-					if wait.Driver != "engine" || wait.Class != journal.AttemptPolicy || wait.Attempt != 1 || !wait.ObservedAt.Equal(op.Time) || wait.Deadline.Sub(wait.ObservedAt) != 5*time.Second {
+					if wait.Driver != "engine" || wait.Class != tc.class || wait.Attempt != 1 || !wait.ObservedAt.Equal(op.Time) || wait.Deadline.Sub(wait.ObservedAt) != 5*time.Second {
 						t.Fatalf("timer=%+v", wait)
 					}
 					deadline = wait.Deadline
