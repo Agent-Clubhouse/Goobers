@@ -32,6 +32,15 @@ bootstrap schedule-reconciler tests against the proposed release. The offline
 override remains authoritative; it does not validate or replace the supplied
 binary's version.
 
+The hosted strict integration job explicitly provisions that same CLI version,
+verifies its pinned SHA256, and requires the cancellation test to pass rather
+than skip. Its Debian regression reuses statically compiled test binaries in
+`debian:bookworm`, fetched from Docker Hub, and installs distro Git and CA
+certificates from the image's configured Debian apt sources. That hosted step
+requires network access; offline reproduction needs the image and packages
+preprovisioned. The normal Ubuntu strict tier also asserts both regression
+tests executed.
+
 The manifest separately records apt, Chocolatey, Maven, opt-in NuGet restore,
 browser system libraries, and external GitHub Actions. Some hosted steps have cache fast paths but retain
 network-backed miss paths. They are marked `no-offline-path` where the shipped

@@ -1,7 +1,7 @@
 [
   {
     "id": "temporal-cli",
-    "what": "Temporal CLI dev-server binary selected by SDK CachedDownload version default",
+    "what": "Temporal CLI dev-server binary pinned by temporaltest.CLIVersion",
     "from": [
       "temporal.download and its binary-download redirects"
     ],
@@ -28,6 +28,8 @@
       ".github/workflows/ci.yml#darwin-build/go build (darwin/arm64):go-modules",
       ".github/workflows/ci.yml#darwin-build/go vet (darwin/arm64):go-modules",
       ".github/workflows/ci.yml#deadcode/Download modules:go-modules",
+      ".github/workflows/ci.yml#integration/Debian bookworm cancellation and snapshot regression:go-modules",
+      ".github/workflows/ci.yml#integration/Debian bookworm cancellation and snapshot regression[2]:go-modules",
       ".github/workflows/ci.yml#integration/Download modules:go-modules",
       ".github/workflows/ci.yml#lint/Download modules:go-modules",
       ".github/workflows/ci.yml#lint/Validate lint timeout margin:go-modules",
@@ -54,6 +56,8 @@
       ".github/workflows/ci.yml#windows-smoke/Windows containment and journals:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows credential files:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows harness and toolkit:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows host image preparation:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows image input verifier (PowerShell 5.1):go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows inline script runtime:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows instance runtime:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows platform runtime:go-modules",
@@ -61,8 +65,6 @@
       ".github/workflows/ci.yml#windows-smoke/Windows release packaging:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows rollup migration alias dedup:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows self-update:go-modules",
-      ".github/workflows/ci.yml#windows-smoke/Windows host image preparation:go-modules",
-      ".github/workflows/ci.yml#windows-smoke/Windows image input verifier (PowerShell 5.1):go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows service transitions:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows worktree and event stream:go-modules",
       ".github/workflows/ci.yml#windows-smoke/go build (windows/amd64):go-modules",
@@ -179,14 +181,16 @@
   },
   {
     "id": "direct-download",
-    "what": "Pinned golangci-lint installer script and release binary used by the hosted composite action, with a Go module proxy fallback",
+    "what": "Pinned golangci-lint installer/release binary and checksum-verified Temporal CLI used by hosted integration",
     "from": [
       "raw.githubusercontent.com/golangci/golangci-lint",
-      "github.com/golangci/golangci-lint/releases"
+      "github.com/golangci/golangci-lint/releases",
+      "github.com/temporalio/cli/releases v1.8.2 and release-asset redirects; SHA256 pinned in integration provisioning"
     ],
-    "offline": "no-offline-path: the hosted setup action invokes curl unconditionally unless the pinned version is already on GOPATH/bin. Exhausting the release download falls back to go install from the configured GOPROXY, which is the separately declared go-modules acquisition and no more offline than it is. Local make ci instead requires golangci-lint already on PATH.",
+    "offline": "no-offline-path: the hosted setup action invokes curl unconditionally unless the pinned version is already on GOPATH/bin. Exhausting the release download falls back to go install from the configured GOPROXY, which is the separately declared go-modules acquisition and no more offline than it is. Local make ci instead requires golangci-lint already on PATH. Hosted Temporal provisioning always downloads its pinned release archive; offline execution requires a preprovisioned compatible CLI and bypassing that hosted provisioning step.",
     "sites": [
-      ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}@c09af852591b05c574b4485806c32518d0cd07e6c8aa032f9ccd48cdb95c0d0e:direct-download"
+      ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}@c09af852591b05c574b4485806c32518d0cd07e6c8aa032f9ccd48cdb95c0d0e:direct-download",
+      ".github/workflows/ci.yml#integration/Provision Temporal cancellation dependency@8c89725058a86889f0d18805d4a0bca408370956d4bb0cd7bfb157bcf87091ed:direct-download"
     ]
   },
   {
@@ -261,12 +265,15 @@
     "id": "apt-packages",
     "what": "Declared integration executables and native bubblewrap packages, including transitive OS dependencies",
     "from": [
-      "Runner-configured Ubuntu apt mirrors"
+      "Runner-configured Ubuntu apt mirrors",
+      "Debian bookworm image apt sources (deb.debian.org); hosted regression pulls debian:bookworm from Docker Hub"
     ],
-    "offline": "no-offline-path for the full set: integration has a restored .deb archive fast path, but a miss and the separate sandbox installation still reach apt mirrors.",
+    "offline": "no-offline-path for the full set: integration has a restored .deb archive fast path, but a miss and the separate sandbox installation still reach apt mirrors. The Debian regression also needs its Docker image and distro Git/CA packages preprovisioned for offline execution.",
     "sites": [
       ".github/workflows/ci.yml#dependency-cache-warm/Download declared-dependency .deb payloads:apt-packages",
       ".github/workflows/ci.yml#dependency-cache-warm/Download declared-dependency .deb payloads[2]:apt-packages",
+      ".github/workflows/ci.yml#integration/Debian bookworm cancellation and snapshot regression:apt-packages",
+      ".github/workflows/ci.yml#integration/Debian bookworm cancellation and snapshot regression[2]:apt-packages",
       ".github/workflows/ci.yml#integration/Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes):apt-packages",
       ".github/workflows/ci.yml#integration/Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes)[2]:apt-packages",
       ".github/workflows/ci.yml#sandbox/Install bubblewrap:apt-packages",
