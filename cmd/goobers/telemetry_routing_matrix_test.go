@@ -26,9 +26,10 @@ import (
 
 type routingObservation struct{ signal, authorization, payload string }
 type routingCollector struct {
-	mu                           sync.Mutex
-	observations                 []routingObservation
-	failJournal, failDiagnostics bool
+	mu                             sync.Mutex
+	observations                   []routingObservation
+	failJournal, failDiagnostics   bool
+	blockJournal, blockDiagnostics bool
 }
 
 func (c *routingCollector) record(ctx context.Context, signal, payload string) error {
@@ -36,6 +37,10 @@ func (c *routingCollector) record(ctx context.Context, signal, payload string) e
 	c.mu.Lock()
 	c.observations = append(c.observations, routingObservation{signal: signal, authorization: strings.Join(md.Get("authorization"), ","), payload: payload})
 	c.mu.Unlock()
+	if signal == "logs" && c.blockDiagnostics || signal != "logs" && c.blockJournal {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	if signal == "logs" && c.failDiagnostics || signal != "logs" && c.failJournal {
 		return status.Error(codes.PermissionDenied, "fixture rejects this destination")
 	}
@@ -86,6 +91,7 @@ func startRoutingCollector(t *testing.T, collector *routingCollector) string {
 type routingCase struct {
 	name                                                     string
 	journal, diagnostics, same, failJournal, failDiagnostics bool
+	blockJournal, blockDiagnostics                           bool
 }
 
 // These are production configuration/build seams and real OTLP gRPC services:
@@ -101,6 +107,8 @@ func TestOTLPJournalDiagnosticRoutingMatrix(t *testing.T) {
 		{name: "both exports explicitly disabled"},
 		{name: "journal rejected diagnostics delivered", journal: true, diagnostics: true, failJournal: true},
 		{name: "diagnostics rejected journal delivered", journal: true, diagnostics: true, failDiagnostics: true},
+		{name: "journal unresponsive diagnostics delivered", journal: true, diagnostics: true, failJournal: true, blockJournal: true},
+		{name: "diagnostics unresponsive journal delivered", journal: true, diagnostics: true, failDiagnostics: true, blockDiagnostics: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runRoutingCase(t, tc) })
 	}
@@ -108,8 +116,8 @@ func TestOTLPJournalDiagnosticRoutingMatrix(t *testing.T) {
 
 func runRoutingCase(t *testing.T, tc routingCase) {
 	t.Helper()
-	first := &routingCollector{failJournal: tc.failJournal, failDiagnostics: tc.same && tc.failDiagnostics}
-	second := &routingCollector{failDiagnostics: tc.failDiagnostics}
+	first := &routingCollector{failJournal: tc.failJournal, failDiagnostics: tc.same && tc.failDiagnostics, blockJournal: tc.blockJournal, blockDiagnostics: tc.same && tc.blockDiagnostics}
+	second := &routingCollector{failDiagnostics: tc.failDiagnostics, blockDiagnostics: tc.blockDiagnostics}
 	journalEndpoint := startRoutingCollector(t, first)
 	diagnosticEndpoint := startRoutingCollector(t, second)
 	if tc.same {
