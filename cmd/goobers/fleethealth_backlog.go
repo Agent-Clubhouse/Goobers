@@ -132,6 +132,13 @@ func (s *backlogHealthSampler) observe(attrs map[string]any, gaggle string, now 
 	if matched == 0 {
 		return
 	}
+	writeBacklogCondition(attrs, count, complete, attention, paused, observed)
+}
+
+// writeBacklogCondition projects covered source evidence into the closed wire
+// contract. Positive partial counts remain lower bounds, and pauses never
+// acquire an attention state.
+func writeBacklogCondition(attrs map[string]any, count int, complete, attention, paused bool, observed time.Time) {
 	attrs["backlogState"], attrs["backlogReasonCode"], attrs["backlogCoverage"] = "unknown", "observation_incomplete", "partial"
 	if !observed.IsZero() {
 		attrs["backlogObservedAt"] = observed.Format(time.RFC3339Nano)
