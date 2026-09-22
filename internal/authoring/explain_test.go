@@ -1,6 +1,7 @@
 package authoring
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -37,6 +38,11 @@ func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
 		{"instance.runner.capabilities", "array", nil, &optional, []any{"dotnet@8"}, "ga"},
 		{"instance.runner.defaultStageTimeout", "string", nil, &optional, "25m", "ga"},
 		{"instance.repos[].workspace.cleanPolicy", "string", []any{"none", "ignored-safe", "full"}, &optional, "none", "ga"},
+		{"journal-event.ref", "object", nil, &optional, map[string]any{
+			"path":   "x",
+			"digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			"size":   json.Number("0"),
+		}, "ga"},
 	}
 	for _, test := range tests {
 		t.Run(test.selector, func(t *testing.T) {
