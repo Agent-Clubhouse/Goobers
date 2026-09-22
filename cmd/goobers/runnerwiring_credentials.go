@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -123,7 +124,19 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		if err != nil {
 			return nil, nil, fmt.Errorf("build credentials: %w", err)
 		}
-		refs = append(refs, cg.Token.CredentialTokenRef(credentialRefName(key)))
+		ref := credentialRefName(key)
+		if cg.GitHubApp != nil {
+			mint, err := newAgentModelGitHubAppTokenSource(cg.GitHubApp, registrar, stores)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build credentials: %s: %w", key, err)
+			}
+			if sources == nil {
+				sources = make(map[string]credentials.ExpiringResolveFunc)
+			}
+			sources[ref] = mint
+		} else {
+			refs = append(refs, cg.Token.CredentialTokenRef(ref))
+		}
 	}
 	// The expiring-source form threads each minted value's stated expiry
 	// through to the materialized Set (DS10): the credential plane's mint
@@ -302,6 +315,42 @@ func credentialRefName(key string) string { return "credential:" + key }
 // production source caches until near expiry and single-flights refreshes.
 var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 	source, err := githubapp.Source(repo, registrar, stores)
+	if err != nil {
+		return nil, err
+	}
+	return source.TokenWithExpiry, nil
+}
+
+var newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	if app == nil || app.PrivateKey == nil {
+		return nil, errors.New("agent:model GitHub App configuration requires a private key source")
+	}
+	const keyRefName = "agent-model-github-app-private-key"
+	keyResolver, err := credentials.NewResolverWith([]credentials.TokenRef{app.PrivateKey.CredentialTokenRef(keyRefName)}, stores, nil)
+	if err != nil {
+		return nil, fmt.Errorf("configure agent:model App key source: %w", err)
+	}
+	_, repository, ok := strings.Cut(strings.TrimSpace(app.Repository), "/")
+	if !ok || repository == "" || strings.Contains(repository, "/") {
+		return nil, errors.New("agent:model GitHub App repository must be an exact owner/name")
+	}
+	repositoryID, err := strconv.ParseInt(string(app.RepositoryID), 10, 64)
+	if err != nil || repositoryID <= 0 {
+		return nil, errors.New("agent:model GitHub App repository ID must be a positive integer")
+	}
+	source, err := githubapp.New(githubapp.Config{
+		AppID:          string(app.AppID),
+		InstallationID: string(app.InstallationID),
+		RepositoryIDs:  []int64{repositoryID},
+		Permissions: map[string]string{
+			"copilot_requests": "write",
+			"metadata":         "read",
+		},
+		Key: func(ctx context.Context) (string, error) {
+			return keyResolver.Resolve(ctx, keyRefName)
+		},
+		Registrar: registrar,
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -2776,6 +2776,53 @@ func TestConfigValidate(t *testing.T) {
 			}},
 		},
 		{
+			name: "credentials valid copilot github app",
+			cfg: Config{Credentials: []CredentialGrant{{
+				Capability: "agent:model",
+				Harness:    "copilot",
+				GitHubApp: &AgentModelGitHubAppConfig{
+					Name:           "copilot-primary",
+					AppID:          "123456",
+					InstallationID: "789012",
+					Repository:     "acme/web",
+					RepositoryID:   "987654321",
+					PrivateKey:     &TokenRef{File: "/run/secrets/copilot-app.pem"},
+				},
+			}}},
+		},
+		{
+			name: "credentials github app requires copilot scope",
+			cfg: Config{Credentials: []CredentialGrant{{
+				Capability: "agent:model",
+				GitHubApp: &AgentModelGitHubAppConfig{
+					Name:           "copilot-primary",
+					AppID:          "123456",
+					InstallationID: "789012",
+					Repository:     "acme/web",
+					RepositoryID:   "987654321",
+					PrivateKey:     &TokenRef{File: "/run/secrets/copilot-app.pem"},
+				},
+			}}},
+			wantErr: `githubApp requires harness "copilot"`,
+		},
+		{
+			name: "credentials github app rejects second token source",
+			cfg: Config{Credentials: []CredentialGrant{{
+				Capability: "agent:model",
+				Harness:    "copilot",
+				Token:      TokenRef{Env: "COPILOT_PAT"},
+				GitHubApp: &AgentModelGitHubAppConfig{
+					Name:           "copilot-primary",
+					AppID:          "123456",
+					InstallationID: "789012",
+					Repository:     "acme/web",
+					RepositoryID:   "987654321",
+					PrivateKey:     &TokenRef{File: "/run/secrets/copilot-app.pem"},
+				},
+			}}},
+			wantErr: "set exactly one of token or githubApp",
+		},
+		{
 			name: "credentials valid repo:push override",
 			cfg: Config{Credentials: []CredentialGrant{
 				{Capability: "repo:push", Token: TokenRef{File: "/run/secrets/push-token"}},

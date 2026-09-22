@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -95,7 +96,9 @@ type fakeAppAPI struct {
 	nextToken      func(n int64) string
 	// wantRepositories, when non-nil, asserts every mint request body
 	// down-scopes the token to exactly these repository names.
-	wantRepositories []string
+	wantRepositories  []string
+	wantRepositoryIDs []int64
+	wantPermissions   map[string]string
 }
 
 func (f *fakeAppAPI) handler() http.Handler {
@@ -134,14 +137,20 @@ func (f *fakeAppAPI) handler() http.Handler {
 			// measured iat→exp so the assertion also holds under fake clocks.
 			f.t.Errorf("App JWT exp-iat = %s, want <= 10m (GitHub's cap)", lifetime)
 		}
-		if f.wantRepositories != nil {
+		if f.wantRepositories != nil || f.wantRepositoryIDs != nil || f.wantPermissions != nil {
 			var mintReq struct {
-				Repositories []string `json:"repositories"`
+				Repositories  []string          `json:"repositories"`
+				RepositoryIDs []int64           `json:"repository_ids"`
+				Permissions   map[string]string `json:"permissions"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&mintReq); err != nil {
 				f.t.Errorf("decode mint request body: %v", err)
 			} else if !slices.Equal(mintReq.Repositories, f.wantRepositories) {
 				f.t.Errorf("mint body repositories = %v, want %v", mintReq.Repositories, f.wantRepositories)
+			} else if !slices.Equal(mintReq.RepositoryIDs, f.wantRepositoryIDs) {
+				f.t.Errorf("mint body repository_ids = %v, want %v", mintReq.RepositoryIDs, f.wantRepositoryIDs)
+			} else if !maps.Equal(mintReq.Permissions, f.wantPermissions) {
+				f.t.Errorf("mint body permissions = %v, want %v", mintReq.Permissions, f.wantPermissions)
 			}
 		}
 		token := fmt.Sprintf("ghs_minted_%d", n)
@@ -213,6 +222,48 @@ func TestTokenDownScopesToConfiguredRepositories(t *testing.T) {
 	}
 	if got := api.requests.Load(); got != 1 {
 		t.Fatalf("exchanges = %d, want 1", got)
+	}
+}
+
+func TestTokenDownScopesToConfiguredPermissions(t *testing.T) {
+	permissions := map[string]string{"copilot_requests": "write", "metadata": "read"}
+	api := &fakeAppAPI{t: t, key: appTestKey(t), appID: "123456", installationID: "42",
+		expiresAt:       func() time.Time { return time.Now().Add(time.Hour) },
+		wantPermissions: permissions}
+	srv := httptest.NewServer(api.handler())
+	defer srv.Close()
+	source := newTokenSource(t, api, srv, func(c *Config) {
+		c.Permissions = permissions
+	})
+	if _, err := source.Token(context.Background()); err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+}
+
+func TestTokenDownScopesToConfiguredRepositoryIDs(t *testing.T) {
+	api := &fakeAppAPI{t: t, key: appTestKey(t), appID: "123456", installationID: "42",
+		expiresAt:         func() time.Time { return time.Now().Add(time.Hour) },
+		wantRepositoryIDs: []int64{987654321}}
+	srv := httptest.NewServer(api.handler())
+	defer srv.Close()
+	source := newTokenSource(t, api, srv, func(c *Config) {
+		c.RepositoryIDs = []int64{987654321}
+	})
+	if _, err := source.Token(context.Background()); err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+}
+
+func TestNewRejectsRepositoryNamesAndIDsTogether(t *testing.T) {
+	_, err := New(Config{
+		AppID:          "123456",
+		InstallationID: "42",
+		Repositories:   []string{"web"},
+		RepositoryIDs:  []int64{987654321},
+		Key:            staticKey(pkcs1PEM(appTestKey(t))),
+	})
+	if err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("New error = %v, want mutually exclusive repository restriction", err)
 	}
 }
 

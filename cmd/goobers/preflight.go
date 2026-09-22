@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -45,11 +46,23 @@ import (
 // which grant would be used (never the resolved value) for --check-harness's
 // reporting.
 func agentModelCredentialResolver(cfg *instance.Config, stores credentials.StoreResolver, forHarness apiv1.Harness) (resolve func(ctx context.Context) (string, error), label string, err error) {
+	expiring, label, err := agentModelCredentialExpiringResolver(cfg, stores, forHarness)
+	if err != nil || expiring == nil {
+		return nil, label, err
+	}
+	return expiring.DropExpiry(), label, nil
+}
+
+func agentModelCredentialExpiringResolver(cfg *instance.Config, stores credentials.StoreResolver, forHarness apiv1.Harness) (credentials.ExpiringResolveFunc, string, error) {
 	grant, label := agentModelGrant(cfg, forHarness)
 	if grant == nil {
 		return nil, "", nil
 	}
 	key := agentModelCredentialKey(grant)
+	if grant.GitHubApp != nil {
+		resolve, err := newAgentModelGitHubAppTokenSource(grant.GitHubApp, nil, stores)
+		return resolve, label, err
+	}
 	resolver, err := credentials.NewResolverWithStores(
 		[]credentials.TokenRef{grant.Token.CredentialTokenRef(key)},
 		stores,
@@ -57,8 +70,9 @@ func agentModelCredentialResolver(cfg *instance.Config, stores credentials.Store
 	if err != nil {
 		return nil, "", err
 	}
-	return func(ctx context.Context) (string, error) {
-		return resolver.Resolve(ctx, key)
+	return func(ctx context.Context) (string, time.Time, error) {
+		value, err := resolver.Resolve(ctx, key)
+		return value, time.Time{}, err
 	}, label, nil
 }
 
@@ -106,7 +120,7 @@ func agentModelCredentialKey(grant *instance.CredentialGrant) string {
 // (#5261). ok is false when no grant is configured.
 func agentModelCredentialRef(cfg *instance.Config, forHarness apiv1.Harness) (credentials.TokenRef, bool) {
 	grant, _ := agentModelGrant(cfg, forHarness)
-	if grant == nil {
+	if grant == nil || grant.GitHubApp != nil {
 		return credentials.TokenRef{}, false
 	}
 	return grant.Token.CredentialTokenRef(agentModelCredentialKey(grant)), true

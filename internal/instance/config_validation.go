@@ -761,6 +761,12 @@ func (c CredentialGrant) validate(i int, seen map[string]bool, stores map[string
 			"two grants must not match the same capability/mcp and harness", i, label)
 	}
 	seen[key] = true
+	if c.GitHubApp != nil && c.Token.Configured() {
+		return fmt.Errorf("credentials[%d] (%s): set exactly one of token or githubApp", i, label)
+	}
+	if c.GitHubApp != nil {
+		return c.validateAgentModelGitHubApp(i, label, stores, envPassthrough)
+	}
 	if c.Token.sourceCount() != 1 {
 		return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env, file, keychain, or store — "+
 			"inline secret values are never permitted (CFG-009, SEC-010)", i, label)
@@ -772,6 +778,49 @@ func (c CredentialGrant) validate(i int, seen map[string]bool, stores map[string
 		)
 	}
 	return validateStoreRef(fmt.Sprintf("credentials[%d] (%s): token", i, label), c.Token, stores)
+}
+
+func (c CredentialGrant) validateAgentModelGitHubApp(i int, label string, stores map[string]bool, envPassthrough []string) error {
+	app := c.GitHubApp
+	if c.Capability != string(capability.AgentModel) || c.MCP != "" {
+		return fmt.Errorf("credentials[%d] (%s): githubApp is only valid for capability %q", i, label, capability.AgentModel)
+	}
+	if c.Harness != "copilot" {
+		return fmt.Errorf("credentials[%d] (%s): githubApp requires harness %q so the App token cannot be selected by another model provider", i, label, "copilot")
+	}
+	if !mcpconfig.ValidBYOCredentialName(app.Name) {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.name %q must be a lowercase DNS label", i, label, app.Name)
+	}
+	if app.AppID == "" {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.appId is required", i, label)
+	}
+	if app.InstallationID == "" {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.installationId is required", i, label)
+	}
+	if _, err := strconv.ParseUint(string(app.InstallationID), 10, 64); err != nil {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.installationId %q must be the numeric installation ID", i, label, app.InstallationID)
+	}
+	owner, repository, ok := strings.Cut(strings.TrimSpace(app.Repository), "/")
+	if !ok || owner == "" || repository == "" || strings.Contains(repository, "/") {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.repository must be an exact owner/name", i, label)
+	}
+	repositoryID, err := strconv.ParseInt(string(app.RepositoryID), 10, 64)
+	if err != nil || repositoryID <= 0 {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.repositoryId %q must be the positive numeric repository ID", i, label, app.RepositoryID)
+	}
+	if app.PrivateKey == nil || app.PrivateKey.sourceCount() != 1 || app.PrivateKey.GitHubCLI != nil {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.privateKey must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)", i, label)
+	}
+	if err := validateStoreRef(fmt.Sprintf("credentials[%d] (%s): githubApp.privateKey", i, label), *app.PrivateKey, stores); err != nil {
+		return err
+	}
+	if app.PrivateKey.Env != "" && stageEnvironmentAllows(app.PrivateKey.Env, envPassthrough) {
+		return fmt.Errorf(
+			"credentials[%d] (%s): githubApp.privateKey.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+			i, label, app.PrivateKey.Env,
+		)
+	}
+	return nil
 }
 
 func (c CredentialGrant) identity(i int) (string, string, error) {

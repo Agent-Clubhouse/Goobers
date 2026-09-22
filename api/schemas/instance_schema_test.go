@@ -246,6 +246,22 @@ sandbox:
 workcopies:
   partialClone: true
 `},
+		{"copilot github app model credential", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+credentials:
+  - capability: agent:model
+    harness: copilot
+    githubApp:
+      name: copilot-primary
+      appId: 123456
+      installationId: "789012"
+      repository: acme/web
+      repositoryId: 987654321
+      privateKey:
+        file: /run/secrets/copilot-app.pem
+`},
 		{"telemetry otlp tls trusted collector (#3804)", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
