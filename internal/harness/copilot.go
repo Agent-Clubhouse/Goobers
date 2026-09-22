@@ -672,7 +672,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		})
 		if err != nil || res.ExitCode != 0 {
-			return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run the Copilot CLI and sign in")
+			return PreflightInfo{}, copilotAuthProbeError(ctx, authProbe, res, err)
 		}
 		if sessionTranscript != "" {
 			if err := verifyCopilotSessionTranscript(sessionTranscript); err != nil {
@@ -685,6 +685,17 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		}
 	}
 	return PreflightInfo{Version: version}, nil
+}
+
+func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {
+	switch {
+	case errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return preflightProbeError(probe, result, fmt.Errorf("timed out: %w", context.DeadlineExceeded), "")
+	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		return preflightProbeError(probe, result, fmt.Errorf("canceled: %w", context.Canceled), "")
+	default:
+		return preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
+	}
 }
 
 func verifyCopilotSessionTranscript(path string) error {

@@ -46,6 +46,8 @@ runner:
     copilot: ["forwarding-launcher", "copilot"]
   harnessSessionArgs:
     copilot: ["--session-file", "{sessionId}.jsonl"]
+  harnessPreflightArgs:
+    copilot: ["<launcher-specific-argument>"]
 ```
 
 Removals apply to harness execution, version/authentication preflight, and
@@ -60,6 +62,13 @@ appends the resulting literal arguments to the configured launcher, and reads
 the corresponding native Copilot transcript. Use it when a launcher already
 has a stable session argument but cannot implement `--goobers-launcher-contract`.
 Only the Copilot harness currently supports this setting.
+
+`runner.harnessPreflightArgs` appends literal arguments only to the bounded
+authentication/session-contract probe. Ordinary workflow invocations never
+receive them. Use this for a forwarding launcher that can skip optional startup
+work during preflight while retaining its full integration set for agentic
+runs. The setting requires a corresponding `harnessCommand`; only the Copilot
+harness currently supports it.
 
 Model discovery is not sent through a custom launcher. Goobers connects the
 Copilot SDK directly to `copilot` for that server-mode exchange, then uses the
