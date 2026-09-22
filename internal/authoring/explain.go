@@ -377,6 +377,9 @@ func (r *registry) schemaExample(doc *schemaDocument, declared, resolved map[str
 	switch primarySchemaType(schemaType, resolved) {
 	case "object":
 		example := make(map[string]any)
+		if err := r.applyObjectConstraints(doc, resolved, declared, example, depth); err != nil {
+			return nil, err
+		}
 		if err := r.applyObjectConstraints(doc, resolved, resolved, example, depth); err != nil {
 			return nil, err
 		}
