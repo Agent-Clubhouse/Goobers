@@ -147,6 +147,22 @@ func TestResolveRequiresADOProjectAndRepositoryName(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsUnverifiedADONativeRepositoryID(t *testing.T) {
+	revision := &apiv1.WorkspaceRevision{
+		Repository: apiv1.RepositoryIdentity{
+			Provider: apiv1.ProviderADO, URL: "https://dev.azure.com",
+			Owner: "acme", Project: "project", Name: "repo", ID: "wrong-id",
+		},
+		CommitSHA: strings.Repeat("a", 40),
+	}
+	configured := apiv1.RepoRef{
+		Provider: apiv1.ProviderADO, Owner: "acme", Project: "project", Name: "repo",
+	}
+	if _, err := Resolve(*revision, configured, nil); errorCode(err) != CodeUnauthorized {
+		t.Fatalf("native repository ID mismatch error = %v, want %s", err, CodeUnauthorized)
+	}
+}
+
 func TestResolveRejectsAmbiguousConfiguredPolicy(t *testing.T) {
 	revision := validRevision()
 	revision.BaseRepository = nil
