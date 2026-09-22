@@ -1389,12 +1389,22 @@ var harnessAdapterFor = adapterFor
 // per-harness resolver shape checkHarnessesAtSources takes (#5148).
 func perHarnessModelCredential(cfg *instance.Config, stores credentials.StoreResolver) func(apiv1.Harness) (harnessModelCredential, error) {
 	return func(h apiv1.Harness) (harnessModelCredential, error) {
-		resolve, label, err := agentModelCredentialResolver(cfg, stores, h)
+		resolve, label, err := agentModelCredentialExpiringResolver(cfg, stores, h)
 		if err != nil {
 			return harnessModelCredential{}, err
 		}
+		grant, _ := agentModelGrant(cfg, h)
+		if grant != nil && grant.GitHubApp != nil {
+			return harnessModelCredential{
+				ResolveExpiring: credreadiness.ExpiringResolve(resolve),
+				Kind:            credreadiness.SourceGitHubApp,
+				Source:          grant.GitHubApp.Name,
+				RefFound:        true,
+				Label:           label,
+			}, nil
+		}
 		ref, ok := agentModelCredentialRef(cfg, h)
-		return harnessModelCredential{Resolve: resolve, Ref: ref, RefFound: ok, Label: label}, nil
+		return harnessModelCredential{ResolveExpiring: credreadiness.ExpiringResolve(resolve), Ref: ref, RefFound: ok, Label: label}, nil
 	}
 }
 
@@ -1403,10 +1413,13 @@ func perHarnessModelCredential(cfg *instance.Config, stores credentials.StoreRes
 // the readiness report can name the SOURCE without ever naming its value
 // (#5261).
 type harnessModelCredential struct {
-	Resolve  func(context.Context) (string, error)
-	Ref      credentials.TokenRef
-	RefFound bool
-	Label    string
+	Resolve         func(context.Context) (string, error)
+	ResolveExpiring credreadiness.ExpiringResolve
+	Ref             credentials.TokenRef
+	Kind            credreadiness.SourceKind
+	Source          string
+	RefFound        bool
+	Label           string
 }
 
 // readiness observes this grant's credential source under the identity running
@@ -1424,7 +1437,9 @@ func (c harnessModelCredential) readiness(ctx context.Context, now time.Time) cr
 		}
 	}
 	var resolve credreadiness.ExpiringResolve
-	if c.Resolve != nil {
+	if c.ResolveExpiring != nil {
+		resolve = c.ResolveExpiring
+	} else if c.Resolve != nil {
 		// Token refs state no expiry -- only minting sources do -- so the
 		// zero time here is the accurate answer, and credreadiness reports it
 		// as an unknown validity window rather than as unbounded validity.
@@ -1433,7 +1448,12 @@ func (c harnessModelCredential) readiness(ctx context.Context, now time.Time) cr
 			return value, time.Time{}, err
 		}
 	}
-	check := credreadiness.Probe(ctx, "agent:model", c.Ref, resolve, nil, now)
+	var check credreadiness.Check
+	if c.Kind != "" {
+		check = credreadiness.ProbeSource(ctx, "agent:model", c.Kind, c.Source, resolve, nil, now)
+	} else {
+		check = credreadiness.Probe(ctx, "agent:model", c.Ref, resolve, nil, now)
+	}
 	if check.Kind.UserScoped() && check.Status.Asserted() {
 		// The check passed, but it passed for THIS identity. Saying so is the
 		// whole point: an operator reading their own keychain or CLI login is

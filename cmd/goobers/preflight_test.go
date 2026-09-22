@@ -8,11 +8,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -71,6 +73,47 @@ func TestAgentModelCredentialResolverNilWithoutGrant(t *testing.T) {
 	}
 	if resolve != nil {
 		t.Fatal("expected a nil resolver when no agent:model grant is configured")
+	}
+}
+
+func TestAgentModelCredentialResolverUsesGitHubAppSource(t *testing.T) {
+	prev := newAgentModelGitHubAppTokenSource
+	expiresAt := time.Now().Add(45 * time.Minute).UTC()
+	newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		if app.Repository != "acme/web" {
+			t.Fatalf("source repository = %q, want acme/web", app.Repository)
+		}
+		if registrar != nil {
+			t.Fatal("preflight source must not receive a journal registrar")
+		}
+		return func(context.Context) (string, time.Time, error) {
+			return "minted-preflight-token", expiresAt, nil
+		}, nil
+	}
+	t.Cleanup(func() { newAgentModelGitHubAppTokenSource = prev })
+
+	cfg := &instance.Config{Credentials: []instance.CredentialGrant{{
+		Capability: string(capability.AgentModel),
+		Harness:    string(apiv1.HarnessCopilot),
+		GitHubApp: &instance.AgentModelGitHubAppConfig{
+			Name:           "copilot-primary",
+			AppID:          "123456",
+			InstallationID: "42",
+			Repository:     "acme/web",
+			RepositoryID:   "987654321",
+			PrivateKey:     &instance.TokenRef{File: "/run/secrets/copilot-app.pem"},
+		},
+	}}}
+	resolve, _, err := agentModelCredentialExpiringResolver(cfg, nil, apiv1.HarnessCopilot)
+	if err != nil {
+		t.Fatalf("agentModelCredentialExpiringResolver: %v", err)
+	}
+	token, gotExpiry, err := resolve(context.Background())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if token != "minted-preflight-token" || !gotExpiry.Equal(expiresAt) {
+		t.Fatalf("resolved (%q, %v), want minted token expiring %v", token, gotExpiry, expiresAt)
 	}
 }
 
