@@ -580,3 +580,36 @@ func TestJournalLogsProviderOwnsRegistration(t *testing.T) {
 	}
 	_ = disabled.Shutdown(ctx)
 }
+
+// TestJournalLogsShutdownDeadlineAccountsAbandonedBacklog pins the accounting a
+// short-lived CLI depends on: it reads JournalExportStats as soon as Shutdown
+// returns. If shutdown leaves the abandoned backlog for the worker to settle,
+// that read reports Dropped: 0 for records that were never sent, and the
+// process exits before the worker's warning is ever printed.
+func TestJournalLogsShutdownDeadlineAccountsAbandonedBacklog(t *testing.T) {
+	exporter := &journalTestExporter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
+
+	// The first record parks the worker inside Export; the rest queue behind it.
+	const queued = 6
+	for range queued {
+		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	}
+	<-exporter.started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := client.journalLogs.shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error = %v; want context.DeadlineExceeded", err)
+	}
+
+	stats := client.JournalExportStats()
+	if want := uint64(queued - 1); stats.Dropped != want {
+		t.Fatalf("Dropped = %d immediately after shutdown; want %d (the queued records the deadline abandoned)",
+			stats.Dropped, want)
+	}
+	close(exporter.release)
+}

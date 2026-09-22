@@ -440,3 +440,108 @@ func TestCommittedRegistrationRejectsInvalidRoot(t *testing.T) {
 		t.Fatal("empty root must not resolve to an ambient current-directory sink")
 	}
 }
+
+// panickingSink panics on every Commit, the shape a buggy sink takes. Commit
+// runs inside appendEvent with the journal write lock held, so an uncontained
+// panic would unwind into the journal writer after the event is already durable.
+type panickingSink struct{ calls int }
+
+func (s *panickingSink) Commit(CommittedEvent) {
+	s.calls++
+	panic("synthetic sink failure")
+}
+
+func TestCommittedPanickingSinkDoesNotReachJournalWriter(t *testing.T) {
+	root := t.TempDir()
+	sink := &panickingSink{}
+	unregister, err := RegisterCommittedEventSink(root, "known-instance", sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(unregister)
+
+	before := CommittedSinkPanicCount()
+	id := testIdentity()
+	r, err := Create(filepath.Join(root, "runs"), id, nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Create must survive a panicking sink: %v", err)
+	}
+	dir := r.Dir()
+	// Every one of these appends drives a Commit that panics.
+	for i := range 3 {
+		if err := r.Append(Event{Type: EventRunnerAnnotation, Runner: map[string]any{"i": i}}); err != nil {
+			t.Fatalf("Append %d must survive a panicking sink: %v", i, err)
+		}
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close must survive a panicking sink: %v", err)
+	}
+
+	// The journal is still the source of truth: run.started plus three
+	// annotations are durable even though every export attempt panicked.
+	data, err := os.ReadFile(filepath.Join(dir, fileEvents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(bytes.Split(bytes.TrimSuffix(data, []byte{'\n'}), []byte{'\n'})); got != 4 {
+		t.Fatalf("%d durable records; want 4", got)
+	}
+	// The sink stays registered, so a data-dependent panic does not silently
+	// disable export for the rest of the process.
+	if sink.calls != 4 {
+		t.Fatalf("sink saw %d commits; want 4 (it must not be unregistered by a panic)", sink.calls)
+	}
+	if got := CommittedSinkPanicCount() - before; got != 4 {
+		t.Fatalf("counted %d contained panics; want 4", got)
+	}
+}
+
+func TestCommittedIdentitySurvivesTransientReadFailure(t *testing.T) {
+	root := t.TempDir()
+	sink, _ := registerTestCommitSink(t, root)
+	dir := filepath.Join(root, "scheduler")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Events must predate the compaction cutoff below, or nothingCanAgeOut
+	// short-circuits, the generation never rotates, and the identity refresh
+	// this test exercises is never reached.
+	base := time.Now().Add(-2 * time.Hour)
+	l, _, err := OpenInstanceLog(dir, WithClock(func() time.Time { return base }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	if err := l.Append(Event{Type: EventRunnerAnnotation, Runner: map[string]any{"n": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	first := sink.drain()
+	if len(first) != 1 || first[0].JournalID == "" {
+		t.Fatalf("expected one exported event with an identity, got %+v", first)
+	}
+	identity := first[0].JournalID
+
+	// Corrupt the identity file so readInstanceLogID reports an error rather
+	// than an absent identity (an absent one is legitimately ""), then rotate
+	// so the refresh path actually runs. A transient failure must not latch
+	// JournalID to "": the sink drops every record with an empty identity, and
+	// it is only recomputed on the next rotation, so latching would silence
+	// export for this handle's remaining lifetime while writes continued.
+	if err := os.WriteFile(filepath.Join(dir, fileInstanceLogID), []byte("truncated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := base.Add(time.Hour)
+	if _, err := CompactInstanceEvents(dir, cutoff, cutoff, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(Event{Type: EventRunnerAnnotation, Runner: map[string]any{"n": 2}}); err != nil {
+		t.Fatalf("Append must not fail on an unreadable identity: %v", err)
+	}
+	after := sink.drain()
+	if len(after) != 1 {
+		t.Fatalf("got %d events after the failed identity read; want 1", len(after))
+	}
+	if after[0].JournalID != identity {
+		t.Fatalf("JournalID = %q after a transient read failure; want the previous %q", after[0].JournalID, identity)
+	}
+}

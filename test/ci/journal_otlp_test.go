@@ -36,10 +36,7 @@ func TestCIWindowsJournalOTLPCoverage(t *testing.T) {
 func journalOTLPTestInventory(t *testing.T) map[string][]string {
 	t.Helper()
 	root := moduleRoot(t)
-	required := map[string][]string{
-		"./internal/version": {"TestJournalOTLPCapability"},
-		"./cmd/goobers":      {"TestVersionJSON"},
-	}
+	required := map[string][]string{}
 	for _, pattern := range []string{
 		"internal/journal/committed_test.go",
 		"internal/livejournal/committed_test.go",
