@@ -1525,7 +1525,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 28; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 29; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
 	}
 }
