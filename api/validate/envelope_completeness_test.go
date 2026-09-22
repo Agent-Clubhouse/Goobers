@@ -243,14 +243,14 @@ func completeResultEnvelope() apiv1.ResultEnvelope {
 func completeWorkspaceRevision() *apiv1.WorkspaceRevision {
 	return &apiv1.WorkspaceRevision{
 		Repository: apiv1.RepositoryIdentity{
-			Provider: apiv1.ProviderGitHub, URL: "https://github.com",
+			Provider: apiv1.ProviderADO, URL: "https://dev.azure.com",
 			Owner: "agent-clubhouse", Project: "project", Name: "goobers", ID: "123",
 		},
 		CommitSHA: strings.Repeat("a", 40),
 		SourceRef: "refs/heads/main",
 		SourceID:  "source-1",
 		BaseRepository: &apiv1.RepositoryIdentity{
-			Provider: apiv1.ProviderGitHub, URL: "https://github.com",
+			Provider: apiv1.ProviderADO, URL: "https://dev.azure.com",
 			Owner: "agent-clubhouse", Project: "project", Name: "goobers", ID: "456",
 		},
 		BaseSHA: strings.Repeat("b", 40),
