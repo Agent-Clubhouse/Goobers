@@ -168,6 +168,7 @@ type CopilotAdapter struct {
 	launcherMu               sync.Mutex
 	launcherContract         *launcherContract
 	launcherContractVerified bool
+	launcherUsageVerified    bool
 	// AllowAdapterManagedFallback permits a launcher that does not implement
 	// the handshake to prove direct Copilot-compatible session forwarding
 	// during the normal authentication preflight.
@@ -179,8 +180,8 @@ type CopilotAdapter struct {
 	// RequiredTools are adapter-owned tools that must remain visible even when
 	// the goober declares a restrictive tool allowlist.
 	RequiredTools []string
-	// DisableUsageOutput omits the optional version-gated usage-file flag for
-	// launchers whose reported version does not prove that they forward it.
+	// DisableUsageOutput keeps the optional usage-file flag off until preflight
+	// proves that a forwarding launcher accepts it.
 	DisableUsageOutput bool
 	// PromptFlag precedes the rendered prompt text in the built argv.
 	// Defaults to "-p" if empty.
@@ -625,6 +626,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if version == "" {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
+	c.verifyLauncherUsageOutput(ctx, version, args)
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
@@ -1011,7 +1013,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// unanswerable after the fact, because the invocation was never kept.
 	// Only permission-relevant flags are recorded; the prompt and environment
 	// are deliberately excluded (they carry task content and credentials).
-	if err := writeCopilotInvocationDiagnostics(req, argv, declaredTools, c.DisableUsageOutput); err != nil {
+	if err := writeCopilotInvocationDiagnostics(req, argv, declaredTools, c.usageOutputDisabled()); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 
