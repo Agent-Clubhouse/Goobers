@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -136,6 +137,7 @@ type parallelBranchResult struct {
 	produced          bool
 	failed            bool
 	noOutput          bool
+	repoRef           apiv1.RepoRef
 	workspaceRevision *apiv1.WorkspaceRevision
 	terminalTarget    string
 	terminalTask      *parallelTaskTerminal
@@ -165,6 +167,7 @@ type concurrentParallelResult struct {
 	parallel          *parallelExec
 	terminalTask      *parallelTaskTerminal
 	terminalGate      *parallelGateTerminal
+	repoRef           apiv1.RepoRef
 	workspaceRevision *apiv1.WorkspaceRevision
 	paused            bool
 }
@@ -440,8 +443,8 @@ func (r *Runner) runConcurrentParallel(
 	}
 
 	mergedCompleted := cloneStageOutputs(baseCompleted)
-	lastStage, lastResult, workspaceRevision, err := reconcileParallelOutcomes(
-		mergedCompleted, outcomes, baseLastStage, baseLastResult, in.workspaceRevision,
+	lastStage, lastResult, workspaceRevision, repoRef, err := reconcileParallelOutcomes(
+		mergedCompleted, outcomes, baseLastStage, baseLastResult, in.workspaceRevision, in.RepoRef, r.cfg.AdditionalRepos,
 	)
 	if err != nil {
 		return concurrentParallelResult{}, err
@@ -485,6 +488,7 @@ func (r *Runner) runConcurrentParallel(
 		parallel:          par,
 		terminalTask:      terminalTask,
 		terminalGate:      terminalGate,
+		repoRef:           repoRef,
 		workspaceRevision: workspaceRevision,
 	}, nil
 }
@@ -495,19 +499,36 @@ func reconcileParallelOutcomes(
 	baseLastStage string,
 	baseLastResult apiv1.ResultEnvelope,
 	baseRevision *apiv1.WorkspaceRevision,
-) (string, apiv1.ResultEnvelope, *apiv1.WorkspaceRevision, error) {
+	baseRepoRef apiv1.RepoRef,
+	additionalRepos []apiv1.RepoRef,
+) (string, apiv1.ResultEnvelope, *apiv1.WorkspaceRevision, apiv1.RepoRef, error) {
 	lastStage, lastResult := baseLastStage, baseLastResult
-	workspaceRevision := baseRevision.DeepCopy()
+	var workspaceRevision *apiv1.WorkspaceRevision
+	if baseRevision != nil {
+		workspaceRevision = baseRevision.DeepCopy()
+	}
+	repoRef := baseRepoRef
 	for _, outcome := range outcomes {
 		if outcome == nil {
 			continue
 		}
+		selectedRepoRef := outcome.repoRef
 		if outcome.workspaceRevision != nil {
 			var err error
 			workspaceRevision, err = workspacerevision.Accept(workspaceRevision, outcome.workspaceRevision, true, true)
 			if err != nil {
-				return "", apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: reconcile parallel workspace revision: %w", err)
+				return "", apiv1.ResultEnvelope{}, nil, baseRepoRef, fmt.Errorf("runner: reconcile parallel workspace revision: %w", err)
 			}
+			selectedRepoRef, err = workspacerevision.Resolve(*outcome.workspaceRevision, repoRef, additionalRepos)
+			if err != nil {
+				return "", apiv1.ResultEnvelope{}, nil, baseRepoRef, fmt.Errorf("runner: reconcile parallel selected repository: %w", err)
+			}
+		}
+		if !reflect.DeepEqual(selectedRepoRef, apiv1.RepoRef{}) {
+			if !reflect.DeepEqual(repoRef, baseRepoRef) && !reflect.DeepEqual(repoRef, selectedRepoRef) {
+				return "", apiv1.ResultEnvelope{}, nil, baseRepoRef, fmt.Errorf("runner: reconcile parallel workspace revision: %w", &workspacerevision.Error{Code: workspacerevision.CodeConflict, Message: "successful branches selected incompatible repositories"})
+			}
+			repoRef = selectedRepoRef
 		}
 		for stage, outputs := range outcome.completed {
 			mergedCompleted.put(stage, outputs)
@@ -516,7 +537,7 @@ func reconcileParallelOutcomes(
 			lastStage, lastResult = outcome.lastStage, outcome.lastResult
 		}
 	}
-	return lastStage, lastResult, workspaceRevision, nil
+	return lastStage, lastResult, workspaceRevision, repoRef, nil
 }
 
 func (r *Runner) runParallelBranch(
@@ -534,8 +555,18 @@ func (r *Runner) runParallelBranch(
 	history []journal.Event,
 	stepBudget *atomic.Int64,
 ) (result parallelBranchResult) {
-	defer func() { result.workspaceRevision = in.workspaceRevision.DeepCopy() }()
-	result = newParallelBranchResult(branch, baseLastStage, baseLastResult, baseCompleted, history, in.Machine)
+	defer func() {
+		result.repoRef = in.RepoRef
+		if result.workspaceRevision == nil {
+			result.workspaceRevision = in.workspaceRevision.DeepCopy()
+		}
+		if result.workspaceRevision != nil {
+			if resolved, err := workspacerevision.Resolve(*result.workspaceRevision, in.RepoRef, r.cfg.AdditionalRepos); err == nil {
+				result.repoRef = resolved
+			}
+		}
+	}()
+	result = newParallelBranchResult(branch, baseLastStage, baseLastResult, baseCompleted, history, in.Machine, in.RepoRef, r.cfg.AdditionalRepos, in.workspaceRevision)
 	branchJournal := &branchJournal{
 		run:    jr,
 		branch: branch.id,
@@ -917,8 +948,11 @@ func newParallelBranchResult(
 	baseCompleted stageOutputs,
 	history []journal.Event,
 	machine *workflow.Machine,
+	baseRepoRef apiv1.RepoRef,
+	additionalRepos []apiv1.RepoRef,
+	baseRevision *apiv1.WorkspaceRevision,
 ) parallelBranchResult {
-	return parallelBranchResult{
+	result := parallelBranchResult{
 		index:      branch.id - 1,
 		lastStage:  baseLastStage,
 		lastResult: baseLastResult,
@@ -928,7 +962,18 @@ func newParallelBranchResult(
 		produced:   branch.produced,
 		failed:     branch.failed,
 		noOutput:   branch.noOutput,
+		repoRef:    baseRepoRef,
 	}
+	if baseRevision != nil {
+		result.workspaceRevision = baseRevision.DeepCopy()
+	}
+	if revision, err := reconstructWorkspaceRevision(history); err == nil && revision != nil {
+		result.workspaceRevision = revision.DeepCopy()
+		if selected, resolveErr := workspacerevision.Resolve(*revision, baseRepoRef, additionalRepos); resolveErr == nil {
+			result.repoRef = selected
+		}
+	}
+	return result
 }
 
 func parallelBranchStatus(result parallelBranchResult) journal.BranchStatus {

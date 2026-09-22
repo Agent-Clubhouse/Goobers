@@ -4528,7 +4528,12 @@ type taskFrame struct {
 func (ws *walkState) applyParallelOutcome(outcome concurrentParallelResult) {
 	ws.pointers, ws.completed = outcome.pointers, outcome.completed
 	ws.lastStage, ws.lastResult = outcome.lastStage, outcome.lastResult
-	ws.workspaceRevision = outcome.workspaceRevision.DeepCopy()
+	ws.in.RepoRef = outcome.repoRef
+	if outcome.workspaceRevision != nil {
+		ws.workspaceRevision = outcome.workspaceRevision.DeepCopy()
+	} else {
+		ws.workspaceRevision = nil
+	}
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {

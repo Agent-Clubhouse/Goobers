@@ -274,3 +274,23 @@ func TestRunnerPropagatesConfiguredRepositoryForWorkspaceRevision(t *testing.T) 
 		}
 	}
 }
+
+func TestWalkStateApplyParallelOutcomePropagatesSelectedRepository(t *testing.T) {
+	base := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+	selected := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "other", Name: "repo", Branch: "main"}
+	revision := runnerWorkspaceRevision("other", "repo", strings.Repeat("a", 40))
+	revision.BaseRepository = nil
+	ws := &walkState{in: StartInput{RepoRef: base}, workspaceRevision: nil}
+	ws.applyParallelOutcome(concurrentParallelResult{
+		repoRef:           selected,
+		workspaceRevision: revision,
+		lastStage:         "join",
+		lastResult:        apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	if ws.in.RepoRef != selected {
+		t.Fatalf("walkState.RepoRef = %+v, want %+v", ws.in.RepoRef, selected)
+	}
+	if ws.workspaceRevision == nil || ws.workspaceRevision.CommitSHA != revision.CommitSHA {
+		t.Fatalf("walkState workspace revision = %+v, want %+v", ws.workspaceRevision, revision)
+	}
+}
