@@ -157,7 +157,6 @@ spec:
         - query-backlog
         - implement
         - remediate-ci
-        - pre-review-validation
         - review
         - local-ci
       goal: >-
@@ -198,7 +197,7 @@ spec:
       # ArtifactPointers, so the result is status + scalar summary only.
       # A recognized non-retryable failure bypasses review evaluation but uses
       # review's escalate control branch below to park the issue first.
-      next: pre-review-validation
+      next: review
 
     # CI check details are provider-authored and therefore remain unapproved.
     # Route them to a distinct remediation consumer that explicitly accepts
@@ -228,21 +227,7 @@ spec:
         maxAttempts: 2
         backoffSeconds: 15
       onTimeout: salvage
-      next: pre-review-validation
-
-    # Repository-owned fast validation runs before every agentic review,
-    # including reviewer and CI-remediation repasses. The command is declared
-    # here rather than baked into the generic workflow contract so another
-    # repository can configure its own fast mechanical validation tier.
-    - name: pre-review-validation
-      type: deterministic
-      goal: Run the repository's fast mechanical validation before agentic review.
-      run:
-        command: ["make", "verify-fast"]
-      timeoutSeconds: 900
-      retry:
-        maxAttempts: 1
-      next: pre-review-validation-gate
+      next: review
 
     # The merge tier and required declared-dependency integration gate from
     # CONTRIBUTING.md's "Validation tier contract", run on the implementation
@@ -456,20 +441,6 @@ spec:
         pass: implement
         fail: implement
         infra: warm-module-cache
-        escalate: park-escalated
-
-    # Mechanical failures return directly to implementation with the
-    # deterministic diagnostics in context. Infrastructure failures retry the
-    # unchanged validation stage under the runner's separate bounded
-    # infrastructure budget; exhaustion remains an explicit escalation.
-    - name: pre-review-validation-gate
-      evaluator: automated
-      automated:
-        check: failure-class
-      branches:
-        pass: review
-        fail: implement
-        infra: pre-review-validation
         escalate: park-escalated
 
     # Agentic gate: the reviewer invocation IS the evaluator (gate.md's

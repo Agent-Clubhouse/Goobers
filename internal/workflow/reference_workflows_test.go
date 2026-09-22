@@ -233,7 +233,7 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 		goobers[g.Name] = g.Spec
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml", "test-suite-quality.yaml"} {
+	for _, file := range []string{"implementation.yaml", "implementation-pre-review-experiment.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml", "test-suite-quality.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 			if err != nil {
@@ -699,19 +699,38 @@ func TestReferenceWorkflowsImplementationBoundsModuleDownloadSeparatelyFromImple
 	}
 }
 
-func TestReferenceWorkflowsImplementationValidatesBeforeReview(t *testing.T) {
-	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read implementation workflow: %v", err)
-	}
-	var w apiv1.Workflow
-	if err := yaml.Unmarshal(raw, &w); err != nil {
-		t.Fatalf("unmarshal implementation workflow: %v", err)
+func TestReferenceWorkflowsPreReviewValidationExperiment(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows")
+	load := func(name string) apiv1.Workflow {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		var w apiv1.Workflow
+		if err := yaml.Unmarshal(raw, &w); err != nil {
+			t.Fatalf("unmarshal %s: %v", name, err)
+		}
+		return w
 	}
 
-	tasks := make(map[string]apiv1.Task, len(w.Spec.Tasks))
-	for _, task := range w.Spec.Tasks {
+	for _, name := range []string{"implementation.yaml", "implementation-recovery.yaml"} {
+		canonical := load(name)
+		for _, task := range canonical.Spec.Tasks {
+			if task.Name == "implement" || task.Name == "remediate-ci" {
+				if task.Next != "review" {
+					t.Fatalf("%s %s.next = %q, want unchanged direct review", name, task.Name, task.Next)
+				}
+			}
+		}
+	}
+
+	experiment := load("implementation-pre-review-experiment.yaml")
+	if len(experiment.Spec.Triggers) != 1 || experiment.Spec.Triggers[0].Type != apiv1.TriggerManual {
+		t.Fatalf("experiment triggers = %+v, want manual-only opt-in", experiment.Spec.Triggers)
+	}
+	tasks := make(map[string]apiv1.Task, len(experiment.Spec.Tasks))
+	for _, task := range experiment.Spec.Tasks {
 		tasks[task.Name] = task
 	}
 	for _, producer := range []string{"implement", "remediate-ci"} {
@@ -734,9 +753,9 @@ func TestReferenceWorkflowsImplementationValidatesBeforeReview(t *testing.T) {
 	}
 
 	var validationGate *apiv1.Gate
-	for i := range w.Spec.Gates {
-		if w.Spec.Gates[i].Name == "pre-review-validation-gate" {
-			validationGate = &w.Spec.Gates[i]
+	for i := range experiment.Spec.Gates {
+		if experiment.Spec.Gates[i].Name == "pre-review-validation-gate" {
+			validationGate = &experiment.Spec.Gates[i]
 			break
 		}
 	}

@@ -1,48 +1,19 @@
-# INTENTIONAL LIVE DIVERGENCE:
-# The checked-in reference keeps two runs/day, maxConcurrentRuns=1,
-# maxRunsPerHour=1, and maxOpenPRs=1. Operator-tuned live cadence and budget
-# changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 dslVersion: "2.0"
 metadata:
-  name: implementation
+  name: implementation-pre-review-experiment
 spec:
   gaggle: goobers
-  displayName: Implementation (issue -> PR, reviewer gate, CI-poll repass)
-  # The flagship V0 workflow (ARCHITECTURE.md §12, issue #27): claim a
-  # goobers:ready issue, implement it in a worktree, pass it through a
-  # reviewer gate and the documented `make ci` merge tier, open a PR, then poll
-  # CI with a bounded repass loop back to implementation on failure. See
-  # CONTRIBUTING.md's "Validation tier contract". When this closes, the core
-  # loop exists: feed issues in, PRs come out.
-  #
-  # DOGFOOD GUARDRAIL: fires twice daily (08:17/20:17 local) with
-  # maxRunsPerHour 1 — cadence x hourly-cap together give a hard ceiling of
-  # exactly 2 runs/day. (A native maxRunsPerDay field exists now, #340 — kept
-  # to this cadence x hourly-cap combination here since it already expresses
-  # the intended ceiling and this dogfood instance's own explicit low values
-  # are deliberate, not something to migrate just because a more direct knob
-  # exists.) This workflow never merges directly; the separate merge-review
-  # workflow owns the explicitly opted-in, branch-protected merge path.
+  displayName: Implementation pre-review validation experiment
+  # Opt-in dogfood cohort for #4491. Keep the scheduled canonical
+  # implementation workflow unchanged until this workflow's journal and
+  # telemetry evidence supports or rejects promotion.
   triggers:
-    - type: schedule
-      schedule: "17 8,20 * * *"
+    - type: manual
   readiness:
-    # Claiming (SEC-047 + claim ledger, WF-031) already guarantees two runs
-    # never double-process the same issue; maxConcurrentRuns=1 here is the
-    # deliberate low starting throughput this dogfood instance runs at, not a
-    # safety floor — raise only with a maintainer's explicit sign-off.
     maxConcurrentRuns: 1
     maxRunsPerHour: 1
-    # Open-PR cap (#353): don't dispatch a new run while this workflow already
-    # has an un-merged goobers/implementation/* PR open. Looped runs branch
-    # every PR off origin/main, so once several unmerged siblings touch
-    # overlapping files they become mutually un-mergeable as a set (the V0.3
-    # ladder hit this). Capping at 1 keeps the loop merge-paced and the open set
-    # integrable; raise it once V0.5's auto-merge drains PRs without a human.
-    # The runner does NOT rebase/resolve cross-PR conflicts here — that's V0.5's
-    # merge-review/pr-remediation layer (epic #357).
     maxOpenPRs: 1
   start: preflight-repo-write
   tasks:
@@ -159,6 +130,7 @@ spec:
         - query-backlog
         - implement
         - remediate-ci
+        - pre-review-validation
         - review
         - local-ci
       goal: >-
@@ -199,7 +171,7 @@ spec:
       # ArtifactPointers, so the result is status + scalar summary only.
       # A recognized non-retryable failure bypasses review evaluation but uses
       # review's escalate control branch below to park the issue first.
-      next: review
+      next: pre-review-validation
 
     # CI check details are provider-authored and therefore remain unapproved.
     # Route them to a distinct remediation consumer that explicitly accepts
@@ -229,7 +201,21 @@ spec:
         maxAttempts: 2
         backoffSeconds: 15
       onTimeout: salvage
-      next: review
+      next: pre-review-validation
+
+    # The experiment uses the repository-owned fast tier without changing the
+    # generic workflow contract. Stage attempts, outcomes, and durations are
+    # journaled and included in telemetry rollups for comparison with the
+    # unchanged implementation workflow.
+    - name: pre-review-validation
+      type: deterministic
+      goal: Run the repository's fast mechanical validation before agentic review.
+      run:
+        command: ["make", "verify-fast"]
+      timeoutSeconds: 900
+      retry:
+        maxAttempts: 1
+      next: pre-review-validation-gate
 
     # The merge tier and required declared-dependency integration gate from
     # CONTRIBUTING.md's "Validation tier contract", run on the implementation
@@ -443,6 +429,19 @@ spec:
         pass: implement
         fail: implement
         infra: warm-module-cache
+        escalate: park-escalated
+
+    # Genuine validation failures return to implementation with deterministic
+    # diagnostics. Infrastructure failures use the runner's separate bounded
+    # retry budget; exhaustion is visible as an escalation.
+    - name: pre-review-validation-gate
+      evaluator: automated
+      automated:
+        check: failure-class
+      branches:
+        pass: review
+        fail: implement
+        infra: pre-review-validation
         escalate: park-escalated
 
     # Agentic gate: the reviewer invocation IS the evaluator (gate.md's
