@@ -546,6 +546,47 @@ func TestStandaloneDashboardAPIWithholdsRevealOffLoopback(t *testing.T) {
 	}
 }
 
+func TestStopDashboardShutsDownServerBeforeClosingAPI(t *testing.T) {
+	server := &http.Server{Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	})}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverClosed := make(chan struct{})
+	server.RegisterOnShutdown(func() {
+		close(serverClosed)
+	})
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	apiClosed := make(chan struct{})
+	api := dashboardAPI{close: func() error {
+		<-serverClosed
+		close(apiClosed)
+		return nil
+	}}
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- stopDashboard(server, func() {}, api)
+	}()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stopDashboard blocked while the API close still waited on server shutdown")
+	}
+	select {
+	case <-apiClosed:
+	case <-time.After(time.Second):
+		t.Fatal("dashboard API close did not run after server shutdown")
+	}
+}
+
 func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
