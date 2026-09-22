@@ -80,7 +80,7 @@ describe("Insight page", () => {
     expect(await screen.findByText("harness.crash")).toBeInTheDocument();
     expect(screen.getAllByText("unknown").length).toBeGreaterThan(0);
     expect(
-      screen.getByRole("link", {
+      await screen.findByRole("link", {
         name: "View 2 matching errors for harness.crash",
       }),
     ).toHaveAttribute(
@@ -90,7 +90,7 @@ describe("Insight page", () => {
       ),
     );
     expect(
-      screen.getByRole("link", {
+      await screen.findByRole("link", {
         name: "View 1 matching error for scheduler.storage",
       }),
     ).toHaveAttribute(
