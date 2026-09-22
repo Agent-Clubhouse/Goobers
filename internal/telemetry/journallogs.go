@@ -37,6 +37,9 @@ type JournalExportStats struct {
 	Accepted       uint64
 	Dropped        uint64
 	ExportFailures uint64
+	// SinkPanics is process-wide across all registered journal sinks, not
+	// attributed to this client and not included in Dropped.
+	SinkPanics uint64
 	// InvalidMetadata counts dropped records missing the persistent journal ID.
 	InvalidMetadata uint64
 	QueuedRecords   int
@@ -101,6 +104,7 @@ func (c *Client) JournalExportStats() JournalExportStats {
 		Accepted: p.accepted.Load(), Dropped: p.dropped.Load(),
 		ExportFailures: p.failures.Load(), QueuedRecords: p.pending, QueuedBytes: p.bytes,
 		InvalidMetadata: p.invalidMetadata.Load(),
+		SinkPanics:      journal.CommittedSinkPanicCount(),
 	}
 }
 

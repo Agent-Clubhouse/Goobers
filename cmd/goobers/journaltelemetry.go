@@ -113,6 +113,9 @@ func releaseCommandJournalTelemetry(root string, owner *commandJournalTelemetryO
 			if stats.Dropped > 0 || stats.ExportFailures > 0 {
 				pf(stderr, "warning: journal OTLP logs: %d dropped, %d export failures; local journal remains authoritative\n", stats.Dropped, stats.ExportFailures)
 			}
+			if stats.SinkPanics > 0 {
+				pf(stderr, "warning: journal sinks: %d contained panics across this process; local journals remain authoritative\n", stats.SinkPanics)
+			}
 		})
 	}
 }

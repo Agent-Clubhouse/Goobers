@@ -36,7 +36,9 @@ func TestCIWindowsJournalOTLPCoverage(t *testing.T) {
 func journalOTLPTestInventory(t *testing.T) map[string][]string {
 	t.Helper()
 	root := moduleRoot(t)
-	required := map[string][]string{}
+	required := map[string][]string{
+		"./cmd/goobers": {"TestRunNoWaitReturnsAfterStandaloneDispatch"},
+	}
 	for _, pattern := range []string{
 		"internal/journal/committed_test.go",
 		"internal/livejournal/committed_test.go",
@@ -112,6 +114,7 @@ func TestCIWindowsJournalOTLPCoverageRejectsGaps(t *testing.T) {
 	for name, broken := range map[string]string{
 		"missing exporter package": strings.Replace(command, "./internal/telemetry ", "", 1),
 		"missing CLI lifetime":     strings.Replace(command, "|TestCommandJournalTelemetrySharesRootLifetime", "", 1),
+		"missing no-wait lifetime": strings.Replace(command, "|TestRunNoWaitReturnsAfterStandaloneDispatch", "", 1),
 		"missing retry tests":      strings.Replace(command, "TestJournalLogs.*", "TestJournalLogsOTLPWireContract", 1),
 		"cached execution":         strings.Replace(command, "-count=1", "-count=0", 1),
 		"ignored failure":          command + " || true",

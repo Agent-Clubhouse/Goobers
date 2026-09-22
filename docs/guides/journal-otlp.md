@@ -111,6 +111,10 @@ acceptance is not proof of final downstream storage.
 Flush and shutdown use deadlines; shutdown stops intake before draining.
 These counters describe this process's live export, not durable delivery
 receipts from a collector or downstream storage.
+`JournalExportStats.SinkPanics` reports contained panics across all registered
+journal sinks in the process, not just one telemetry client. It is separate
+from queue drops. Short-lived journal commands warn about a nonzero count
+when releasing their telemetry client; durable journal writes still succeed.
 
 ## CI coverage
 
@@ -119,6 +123,8 @@ recovery, lifecycle, and direct CLI regression tests in its `Windows journal
 OTLP export` step. It uses a named selection rather than the full CLI suite.
 Workflow contract tests compare that selection with the journal regression
 files, so adding a test without selecting it fails the gate.
+The selection also covers `run --no-wait`: both in-process dispatch and the
+detached worker must finish admitted work before closing journal telemetry.
 
 The required Linux unit shards run these packages with the race detector.
 Contract tests verify both the race-enabled workflow and package membership

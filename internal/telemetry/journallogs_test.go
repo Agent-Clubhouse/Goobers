@@ -225,6 +225,42 @@ func waitJournalStarted(t *testing.T, started <-chan struct{}) {
 	}
 }
 
+type panickingJournalStatsSink struct{}
+
+func (panickingJournalStatsSink) Commit(journal.CommittedEvent) {
+	panic("synthetic journal sink failure")
+}
+
+func TestJournalLogsStatsExposeProcessSinkPanics(t *testing.T) {
+	client := journalTestClient(t, &journalTestExporter{})
+	before := client.JournalExportStats()
+	root := t.TempDir()
+	unregister, err := journal.RegisterCommittedEventSink(root, "test-instance", panickingJournalStatsSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unregister()
+	log, _, err := journal.OpenInstanceLog(filepath.Join(root, "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := log.Close(); err != nil {
+			t.Errorf("close scheduler journal: %v", err)
+		}
+	}()
+	if err := log.Append(journal.Event{Type: journal.EventRunnerAnnotation}); err != nil {
+		t.Fatal(err)
+	}
+	after := client.JournalExportStats()
+	if after.SinkPanics != before.SinkPanics+1 {
+		t.Fatalf("sink panics = %d, want %d", after.SinkPanics, before.SinkPanics+1)
+	}
+	if after.Dropped != before.Dropped || after.ExportFailures != before.ExportFailures {
+		t.Fatalf("another sink's panic changed client queue accounting: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestJournalLogsQueueBoundsAndOwnership(t *testing.T) {
 	for _, test := range []struct {
 		name string
