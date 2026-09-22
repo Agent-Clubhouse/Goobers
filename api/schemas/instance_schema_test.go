@@ -167,6 +167,8 @@ runner:
   defaultStageTimeout: 25m
   harnessCommand:
     copilot: [agency, copilot]
+  harnessPreflightArgs:
+    copilot: [--minimal-preflight]
 runConditions:
   maxParallelRuns: 2
   workflowBudgets:

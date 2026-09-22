@@ -2870,6 +2870,36 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "only the copilot harness supports",
 		},
 		{
+			name: "runner harness preflight args valid",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessCommand:       map[string][]string{"copilot": {"forwarding-launcher", "copilot"}},
+				HarnessPreflightArgs: map[string][]string{"copilot": {"--minimal-preflight"}},
+			}},
+		},
+		{
+			name: "runner harness preflight args require command",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessPreflightArgs: map[string][]string{"copilot": {"--minimal-preflight"}},
+			}},
+			wantErr: `requires runner.harnessCommand["copilot"]`,
+		},
+		{
+			name: "runner harness preflight args reject empty argument",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessCommand:       map[string][]string{"copilot": {"forwarding-launcher", "copilot"}},
+				HarnessPreflightArgs: map[string][]string{"copilot": {""}},
+			}},
+			wantErr: "invalid preflight argument",
+		},
+		{
+			name: "runner harness preflight args reject unsupported harness",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessCommand:       map[string][]string{"claude-code": {"forwarding-launcher", "claude"}},
+				HarnessPreflightArgs: map[string][]string{"claude-code": {"--minimal-preflight"}},
+			}},
+			wantErr: "only the copilot harness supports",
+		},
+		{
 			name: "runner harness command override valid",
 			cfg: Config{Runner: RunnerConfig{HarnessCommand: map[string][]string{
 				"copilot":     {"agency", "copilot"},

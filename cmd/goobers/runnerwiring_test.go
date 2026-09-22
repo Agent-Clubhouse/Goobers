@@ -930,6 +930,36 @@ func TestAdapterForAppliesLauncherOverride(t *testing.T) {
 	}
 }
 
+func TestAdapterForAppliesPreflightArgsOnlyToAuthProbe(t *testing.T) {
+	const preflightOnly = "--minimal-preflight"
+	environment := harness.EnvironmentConfig{
+		PreflightArgs: map[string][]string{
+			string(apiv1.HarnessCopilot): {preflightOnly},
+		},
+	}
+	override := map[string][]string{
+		string(apiv1.HarnessCopilot): {"forwarding-launcher", "copilot"},
+	}
+	adapter, err := adapterFor(apiv1.HarnessCopilot, environment, override, nil)
+	if err != nil {
+		t.Fatalf("adapterFor: %v", err)
+	}
+	copilot, ok := adapter.(*harness.CopilotAdapter)
+	if !ok {
+		t.Fatalf("adapter = %T, want *harness.CopilotAdapter", adapter)
+	}
+	if !slices.Contains(copilot.AuthCheckArgs, preflightOnly) {
+		t.Fatalf("auth probe args = %q, want %q", copilot.AuthCheckArgs, preflightOnly)
+	}
+	if slices.Contains(copilot.ExtraArgs, preflightOnly) {
+		t.Fatalf("normal run args unexpectedly contain preflight-only argument %q", preflightOnly)
+	}
+	environment.PreflightArgs[string(apiv1.HarnessCopilot)][0] = "--mutated"
+	if !slices.Contains(copilot.AuthCheckArgs, preflightOnly) {
+		t.Fatal("adapter retained mutable preflight configuration")
+	}
+}
+
 func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},

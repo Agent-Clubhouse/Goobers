@@ -346,6 +346,11 @@ type RunnerConfig struct {
 	// fresh session ID generated for each invocation. Arguments may contain the
 	// {sessionId} placeholder and are appended to the configured launcher.
 	HarnessSessionArgs map[string][]string `json:"harnessSessionArgs,omitempty" yaml:"harnessSessionArgs,omitempty"`
+	// HarnessPreflightArgs are literal arguments appended only to a harness's
+	// authentication/session-contract preflight probe. They do not affect
+	// workflow execution. Use them to make a custom launcher enter a bounded,
+	// non-agentic startup mode without weakening the real agentic environment.
+	HarnessPreflightArgs map[string][]string `json:"harnessPreflightArgs,omitempty" yaml:"harnessPreflightArgs,omitempty"`
 	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
 	// the daemon is reported unhealthy. Empty defaults to two minutes.
 	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`

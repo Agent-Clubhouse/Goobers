@@ -826,6 +826,32 @@ func (c RunnerConfig) validate() error {
 	if err := c.validateHarnessSessionArgs(); err != nil {
 		return err
 	}
+	if err := c.validateHarnessPreflightArgs(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c RunnerConfig) validateHarnessPreflightArgs() error {
+	for name, args := range c.HarnessPreflightArgs {
+		if !knownHarnessName(name) {
+			return fmt.Errorf("runner.harnessPreflightArgs[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
+		}
+		if name != "copilot" {
+			return fmt.Errorf("runner.harnessPreflightArgs[%q]: only the copilot harness supports preflight arguments", name)
+		}
+		if _, ok := c.HarnessCommand[name]; !ok {
+			return fmt.Errorf("runner.harnessPreflightArgs[%q]: requires runner.harnessCommand[%q]", name, name)
+		}
+		if len(args) == 0 || len(args) > 16 {
+			return fmt.Errorf("runner.harnessPreflightArgs[%q]: must contain 1 to 16 arguments", name)
+		}
+		for i, arg := range args {
+			if arg == "" || len(arg) > 1024 || strings.ContainsRune(arg, 0) {
+				return fmt.Errorf("runner.harnessPreflightArgs[%q][%d]: invalid preflight argument", name, i)
+			}
+		}
+	}
 	return nil
 }
 

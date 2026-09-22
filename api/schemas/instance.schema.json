@@ -623,6 +623,21 @@
           },
           "propertyNames": { "$ref": "#/$defs/harnessName" }
         },
+        "harnessPreflightArgs": {
+          "description": "Literal arguments appended only to a custom harness launcher's authentication/session-contract preflight probe, keyed by harness name. They do not affect workflow execution. Use them to suppress optional launcher startup work during the bounded preflight without weakening the real agentic environment.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "propertyNames": { "$ref": "#/$defs/harnessName" }
+        },
         "defaultStageTimeout": {
           "description": "Baseline deadline for a deterministic stage that declares no timeoutSeconds of its own, as a Go duration. Unset keeps the built-in 10 minutes, which is sized for short commands rather than a mature repository's build+test entrypoint: if `make ci` routinely runs 15 minutes, raise this once here instead of stamping timeoutSeconds onto every such stage in every workflow. A stage's own timeoutSeconds always wins; this only moves the floor. Sizing it too low is not free — a timed-out stage is reported retryable, so a workflow that routes the failure to an agent spends a repass on something no diff can fix.",
           "$ref": "#/$defs/duration",

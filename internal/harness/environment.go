@@ -50,6 +50,7 @@ type EnvironmentConfig struct {
 	ExtraAllowlist []string
 	Unset          []string
 	SessionArgs    map[string][]string
+	PreflightArgs  map[string][]string
 }
 
 func baseEnv(extra, unset []string) []string {

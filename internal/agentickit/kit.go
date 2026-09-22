@@ -94,6 +94,9 @@ type Kit struct {
 	HarnessEnvUnset []string `json:"harnessEnvUnset,omitempty"`
 	// HarnessSessionArgs is the selected launcher's configured session template.
 	HarnessSessionArgs []string `json:"harnessSessionArgs,omitempty"`
+	// HarnessPreflightArgs are appended only to the selected harness's
+	// authentication/session-contract preflight probe.
+	HarnessPreflightArgs []string `json:"harnessPreflightArgs,omitempty"`
 }
 
 // Marshal renders the kit and returns it with its content address.

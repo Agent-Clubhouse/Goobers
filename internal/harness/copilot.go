@@ -671,6 +671,12 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			Env:                authEnv,
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		})
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return PreflightInfo{}, preflightProbeError(authProbe, res, fmt.Errorf("timed out: %w", context.DeadlineExceeded), "")
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			return PreflightInfo{}, preflightProbeError(authProbe, res, fmt.Errorf("canceled: %w", context.Canceled), "")
+		}
 		if err != nil || res.ExitCode != 0 {
 			return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run the Copilot CLI and sign in")
 		}
