@@ -227,7 +227,7 @@ func (s *TokenSource) mint(ctx context.Context, now time.Time) (string, time.Tim
 	var reqPayload []byte
 	if s.hasMintRestrictions() {
 		payload, err := json.Marshal(struct {
-			Repositories  []string          `json:"repositories"`
+			Repositories  []string          `json:"repositories,omitempty"`
 			RepositoryIDs []int64           `json:"repository_ids,omitempty"`
 			Permissions   map[string]string `json:"permissions,omitempty"`
 		}{s.cfg.Repositories, s.cfg.RepositoryIDs, s.cfg.Permissions})

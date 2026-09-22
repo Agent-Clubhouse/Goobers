@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -99,6 +100,7 @@ type fakeAppAPI struct {
 	wantRepositories  []string
 	wantRepositoryIDs []int64
 	wantPermissions   map[string]string
+	wantAbsentFields  []string
 }
 
 func (f *fakeAppAPI) handler() http.Handler {
@@ -137,13 +139,17 @@ func (f *fakeAppAPI) handler() http.Handler {
 			// measured iat→exp so the assertion also holds under fake clocks.
 			f.t.Errorf("App JWT exp-iat = %s, want <= 10m (GitHub's cap)", lifetime)
 		}
-		if f.wantRepositories != nil || f.wantRepositoryIDs != nil || f.wantPermissions != nil {
+		if f.wantRepositories != nil || f.wantRepositoryIDs != nil || f.wantPermissions != nil || len(f.wantAbsentFields) > 0 {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				f.t.Errorf("read mint request body: %v", err)
+			}
 			var mintReq struct {
 				Repositories  []string          `json:"repositories"`
 				RepositoryIDs []int64           `json:"repository_ids"`
 				Permissions   map[string]string `json:"permissions"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&mintReq); err != nil {
+			if err := json.Unmarshal(body, &mintReq); err != nil {
 				f.t.Errorf("decode mint request body: %v", err)
 			} else if !slices.Equal(mintReq.Repositories, f.wantRepositories) {
 				f.t.Errorf("mint body repositories = %v, want %v", mintReq.Repositories, f.wantRepositories)
@@ -151,6 +157,15 @@ func (f *fakeAppAPI) handler() http.Handler {
 				f.t.Errorf("mint body repository_ids = %v, want %v", mintReq.RepositoryIDs, f.wantRepositoryIDs)
 			} else if !maps.Equal(mintReq.Permissions, f.wantPermissions) {
 				f.t.Errorf("mint body permissions = %v, want %v", mintReq.Permissions, f.wantPermissions)
+			}
+			var rawMintReq map[string]json.RawMessage
+			if err := json.Unmarshal(body, &rawMintReq); err != nil {
+				f.t.Errorf("decode raw mint request body: %v", err)
+			}
+			for _, field := range f.wantAbsentFields {
+				if _, ok := rawMintReq[field]; ok {
+					f.t.Errorf("mint body field %q must be absent", field)
+				}
 			}
 		}
 		token := fmt.Sprintf("ghs_minted_%d", n)
@@ -243,7 +258,8 @@ func TestTokenDownScopesToConfiguredPermissions(t *testing.T) {
 func TestTokenDownScopesToConfiguredRepositoryIDs(t *testing.T) {
 	api := &fakeAppAPI{t: t, key: appTestKey(t), appID: "123456", installationID: "42",
 		expiresAt:         func() time.Time { return time.Now().Add(time.Hour) },
-		wantRepositoryIDs: []int64{987654321}}
+		wantRepositoryIDs: []int64{987654321},
+		wantAbsentFields:  []string{"repositories"}}
 	srv := httptest.NewServer(api.handler())
 	defer srv.Close()
 	source := newTokenSource(t, api, srv, func(c *Config) {
