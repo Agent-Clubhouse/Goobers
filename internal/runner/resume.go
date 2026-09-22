@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // ErrTerminalGenerationChanged means an intervention was validated against an
@@ -625,6 +626,13 @@ func (r *Runner) newResumeFrame(
 	if err != nil {
 		return nil, err
 	}
+	repoRef := in.RepoRef
+	if workspaceRevision != nil {
+		repoRef, err = workspacerevision.Resolve(*workspaceRevision, repoRef, r.cfg.AdditionalRepos)
+		if err != nil {
+			return nil, fmt.Errorf("runner: resolve persisted workspace revision repository: %w", err)
+		}
+	}
 	ws := newWalkState(jr, StartInput{
 		instanceID:        id.InstanceID,
 		configGeneration:  id.ConfigGeneration,
@@ -633,7 +641,7 @@ func (r *Runner) newResumeFrame(
 		GooberDigest:      in.GooberDigest,
 		Gaggle:            id.Gaggle,
 		Trigger:           id.Trigger,
-		RepoRef:           in.RepoRef,
+		RepoRef:           repoRef,
 		workspaceRevision: workspaceRevision,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches
 		// here after it already started (and therefore already cleared the #735

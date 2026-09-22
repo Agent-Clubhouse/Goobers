@@ -1241,6 +1241,35 @@ func TestShellExecutor_ResultFileJSONMergedIntoOutputs(t *testing.T) {
 	}
 }
 
+func TestShellExecutor_ResultFileNonObjectJSONPreservesLegacySuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+	}{
+		{name: "array", json: `[1,2,3]`},
+		{name: "scalar", json: `true`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, _ := newTestExecutor(t, nil)
+			env := baseEnvelope(t)
+			env.Inputs = map[string]interface{}{InputResultFile: "result.json"}
+
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+				Command: []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' > result.json", tc.json)},
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success", result.Status)
+			}
+			if len(result.Outputs) != 0 {
+				t.Fatalf("outputs = %#v, want no scalar outputs", result.Outputs)
+			}
+		})
+	}
+}
+
 // TestShellExecutor_NoWorkOutputReportsResultNoWork is issue #233's core
 // executor-level acceptance: a declared result file whose JSON carries
 // noWork:true (OutputNoWork) reports ResultNoWork, not ResultSuccess, even

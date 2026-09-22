@@ -2165,6 +2165,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 				workspaceBranch: ws.workspaceBranch, branchRecorded: &ws.branchRecorded,
 				reboundRecorded:   &ws.reboundRecorded,
 				workspaceRevision: &ws.workspaceRevision,
+				repoRef:           &ws.in.RepoRef,
 			},
 			branch, startAttempt, firstClass, instructionAddendum,
 			taskRerun, infraFailedAttemptCommittedWork, resumeAccounting,
@@ -4523,6 +4524,7 @@ type taskFrame struct {
 	// branch journals into its own branch journal and so carries its own.
 	reboundRecorded   *string
 	workspaceRevision **apiv1.WorkspaceRevision
+	repoRef           *apiv1.RepoRef
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
@@ -4781,7 +4783,8 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		if t.Type == apiv1.TaskDeterministic &&
 			result.Status == apiv1.ResultSuccess &&
 			result.WorkspaceRevision != nil {
-			if _, err := workspacerevision.Resolve(*result.WorkspaceRevision, in.RepoRef, r.cfg.AdditionalRepos); err != nil {
+			configuredRepo, err := workspacerevision.Resolve(*result.WorkspaceRevision, in.RepoRef, r.cfg.AdditionalRepos)
+			if err != nil {
 				errorCode := workspacerevision.CodeUnauthorized
 				var revisionErr *workspacerevision.Error
 				if errors.As(err, &revisionErr) {
@@ -4797,6 +4800,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 				}
 				span.Fail(err)
 				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: stage %q workspace revision rejected: %w", t.Name, err)
+			}
+			in.RepoRef = configuredRepo
+			if tf.repoRef != nil {
+				*tf.repoRef = configuredRepo
 			}
 			var current *apiv1.WorkspaceRevision
 			if tf.workspaceRevision != nil {

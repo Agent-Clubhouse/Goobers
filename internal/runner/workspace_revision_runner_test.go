@@ -202,3 +202,75 @@ func TestRunnerParallelConflictingWorkspaceRevisionsFailDeterministically(t *tes
 		t.Fatalf("Start error = %v, want deterministic parallel revision conflict", err)
 	}
 }
+
+type workspaceRevisionRepoRefDeterministic struct {
+	revision *apiv1.WorkspaceRevision
+	received chan apiv1.InvocationEnvelope
+}
+
+func (d *workspaceRevisionRepoRefDeterministic) Run(
+	_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun,
+) (apiv1.ResultEnvelope, error) {
+	d.received <- env
+	return apiv1.ResultEnvelope{
+		Status:            apiv1.ResultSuccess,
+		WorkspaceRevision: d.revision.DeepCopy(),
+	}, nil
+}
+
+func TestRunnerPropagatesConfiguredRepositoryForWorkspaceRevision(t *testing.T) {
+	const runID = "workspace-revision-configured-repository"
+	revision := runnerWorkspaceRevision("other", "repo", strings.Repeat("a", 40))
+	revision.BaseRepository = nil
+	det := &workspaceRevisionRepoRefDeterministic{
+		revision: revision, received: make(chan apiv1.InvocationEnvelope, 2),
+	}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return det, nil
+	}, nil)
+	r.cfg.AdditionalRepos = []apiv1.RepoRef{{
+		Provider: apiv1.ProviderGitHub, Owner: "other", Name: "repo", Branch: "main",
+	}}
+
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+	paused, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: workspaceRevisionResumeMachine(t), Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var pauseSeq uint64
+	for _, event := range readRunnerEvents(t, runsDir, runID) {
+		if event.Type == journal.EventGatePaused && event.Gate == "approval" {
+			pauseSeq = event.Seq
+		}
+	}
+	if pauseSeq == 0 {
+		t.Fatalf("paused result = %+v, want approval pause", paused)
+	}
+	if _, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: workspaceRevisionResumeMachine(t), RepoRef: repo,
+		HumanDecision: &HumanGateDecision{
+			Gate: "approval", PauseSeq: pauseSeq, Decision: "pass", Actor: "operator",
+		},
+	}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	deadline := time.After(runnerTestWaitTimeout)
+	for {
+		select {
+		case env := <-det.received:
+			if !strings.HasSuffix(env.TaskID, ":consume") {
+				continue
+			}
+			if env.RepoRef.Owner != "other" || env.RepoRef.Name != "repo" || env.RepoRef.Branch != "main" {
+				t.Fatalf("invocation repo ref = %+v, want configured additional repository", env.RepoRef)
+			}
+			return
+		case <-deadline:
+			t.Fatal("second stage invocation was not observed")
+		}
+	}
+}

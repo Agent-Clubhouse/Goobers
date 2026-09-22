@@ -1418,6 +1418,9 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 // legacy-compatible, while a declared workspaceRevision is decoded strictly
 // and validated because it is a control, not a scalar output.
 func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
+	if first := bytes.TrimSpace(data); len(first) == 0 || first[0] != '{' {
+		return nil
+	}
 	var m map[string]interface{}
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil
