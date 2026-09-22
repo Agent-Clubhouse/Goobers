@@ -136,6 +136,28 @@ type agentPayloadAdapter struct {
 	payload []byte
 }
 
+type invalidCompletionAdapter struct {
+	FakeAdapter
+	payload []byte
+}
+
+func (a *invalidCompletionAdapter) Run(_ context.Context, _ RunRequest) (Outcome, error) {
+	return Outcome{Payload: a.payload}, fmt.Errorf(
+		"%w: jsonschema: '/outputs/token' expected string, but got object",
+		ErrInvalidCompletion,
+	)
+}
+
+type repairedCompletionAdapter struct {
+	FakeAdapter
+	valid   []byte
+	invalid []byte
+}
+
+func (a *repairedCompletionAdapter) Run(_ context.Context, _ RunRequest) (Outcome, error) {
+	return Outcome{Payload: a.valid, InvalidCompletionPayload: a.invalid}, nil
+}
+
 func (a *agentPayloadAdapter) Run(_ context.Context, req RunRequest) (Outcome, error) {
 	result, _ := json.Marshal(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 	return Outcome{
@@ -1094,22 +1116,102 @@ func TestExecutorInvokeFailsClosedOnMissingCompletion(t *testing.T) {
 }
 
 func TestExecutorInvokeFailsClosedOnInvalidCompletion(t *testing.T) {
-	adapter := &FakeAdapter{
-		Act: func(ctx context.Context, req RunRequest) error {
-			// Missing the required "status" field.
-			return WriteCompletion(req.Workspace, req.CompletionPath, map[string]string{"summary": "nope"})
-		},
+	tests := []struct {
+		name    string
+		payload any
+		detail  string
+	}{
+		{"missing status", map[string]any{"summary": "nope"}, "missing properties: 'status'"},
+		{"nested object output", map[string]any{"status": "success", "outputs": map[string]any{"value": map[string]any{"nested": true}}}, "/outputs/value"},
+		{"array output", map[string]any{"status": "success", "outputs": map[string]any{"value": []any{"nested"}}}, "/outputs/value"},
 	}
-	injector := testInjector(t, "", "", noopRegistrar{})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &FakeAdapter{
+				Act: func(ctx context.Context, req RunRequest) error {
+					return WriteCompletion(req.Workspace, req.CompletionPath, tc.payload)
+				},
+			}
+			rec := &fakeRecorder{}
+			exec, err := NewExecutor(
+				adapter,
+				testInjector(t, "", "", noopRegistrar{}),
+				rec, rec, rec, journal.NewPatternScrubber(), "",
+			)
+			if err != nil {
+				t.Fatalf("NewExecutor: %v", err)
+			}
+
+			_, err = exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+			if !errors.Is(err, ErrInvalidCompletion) || !strings.Contains(err.Error(), tc.detail) {
+				t.Fatalf("Invoke error = %v, want ErrInvalidCompletion containing %q", err, tc.detail)
+			}
+		})
+	}
+}
+
+func TestExecutorRecordsScrubbedInvalidCompletionDiagnostic(t *testing.T) {
+	const secret = "invalid-completion-diagnostic-secret"
+	scrubber := journal.NewRegistryScrubber()
+	scrubber.Register([]byte(secret))
 	rec := &fakeRecorder{}
-	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	adapter := &invalidCompletionAdapter{
+		payload: []byte(`{"status":"success","outputs":{"token":{"value":"` + secret + `"}}}`),
+	}
+
+	exec, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), rec, rec, rec, scrubber, "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
 
-	_, err = exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
 	if !errors.Is(err, ErrInvalidCompletion) {
 		t.Fatalf("Invoke error = %v, want ErrInvalidCompletion", err)
+	}
+	if len(rec.artifacts) < 1 || rec.artifacts[0].name != "implement/invalid-completion.json" {
+		t.Fatalf("recorded artifacts = %+v, want invalid completion diagnostic", rec.artifacts)
+	}
+	if bytes.Contains(rec.artifacts[0].data, []byte(secret)) ||
+		!bytes.Contains(rec.artifacts[0].data, []byte(journal.Redacted)) {
+		t.Fatalf("invalid completion was not redacted: %q", rec.artifacts[0].data)
+	}
+	if len(result.Artifacts) == 0 || result.Artifacts[0].MediaType != "application/json" {
+		t.Fatalf("result artifacts = %+v, want diagnostic pointer", result.Artifacts)
+	}
+}
+
+func TestExecutorKeepsInvalidCompletionDiagnosticAfterSuccessfulRepair(t *testing.T) {
+	const secret = "repaired-completion-diagnostic-secret"
+	scrubber := journal.NewRegistryScrubber()
+	scrubber.Register([]byte(secret))
+	rec := &fakeRecorder{}
+	valid, err := json.Marshal(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec, err := NewExecutor(
+		&repairedCompletionAdapter{
+			valid:   valid,
+			invalid: []byte(`{"status":"success","outputs":{"token":{"value":"` + secret + `"}}}`),
+		},
+		testInjector(t, "", "", noopRegistrar{}),
+		rec, rec, rec, scrubber, "",
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err != nil || result.Status != apiv1.ResultSuccess {
+		t.Fatalf("Invoke = (%+v, %v), want success", result, err)
+	}
+	if len(result.Artifacts) != 1 || result.Artifacts[0].MediaType != "application/json" {
+		t.Fatalf("result artifacts = %+v, want repaired-completion diagnostic", result.Artifacts)
+	}
+	if len(rec.artifacts) != 1 ||
+		bytes.Contains(rec.artifacts[0].data, []byte(secret)) ||
+		!bytes.Contains(rec.artifacts[0].data, []byte(journal.Redacted)) {
+		t.Fatalf("recorded diagnostic = %+v, want one scrubbed artifact", rec.artifacts)
 	}
 }
 

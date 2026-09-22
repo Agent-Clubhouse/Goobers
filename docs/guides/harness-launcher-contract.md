@@ -46,6 +46,8 @@ runner:
     copilot: ["forwarding-launcher", "copilot"]
   harnessSessionArgs:
     copilot: ["--session-file", "{sessionId}.jsonl"]
+  harnessPreflightArgs:
+    copilot: ["<launcher-specific-argument>"]
 ```
 
 Removals apply to harness execution, version/authentication preflight, and
@@ -60,6 +62,13 @@ appends the resulting literal arguments to the configured launcher, and reads
 the corresponding native Copilot transcript. Use it when a launcher already
 has a stable session argument but cannot implement `--goobers-launcher-contract`.
 Only the Copilot harness currently supports this setting.
+
+`runner.harnessPreflightArgs` appends literal arguments only to the bounded
+authentication/session-contract probe. Ordinary workflow invocations never
+receive them. Use this for a forwarding launcher that can skip optional startup
+work during preflight while retaining its full integration set for agentic
+runs. The setting requires a corresponding `harnessCommand`; only the Copilot
+harness currently supports it.
 
 Model discovery is not sent through a custom launcher. Goobers connects the
 Copilot SDK directly to `copilot` for that server-mode exchange, then uses the
@@ -104,10 +113,12 @@ on its complete configured launch prefix.
 
 The handshake is an explicit compatibility declaration. The behavioral fallback
 is proof only of direct local session forwarding, not of every launcher feature.
-Configured launchers therefore use native-session usage accounting and do not
-receive optional Copilot flags inferred only from the reported CLI version.
-Validate a new launcher end to end with a harmless workflow in its target OS and
-isolation posture.
+Goobers separately probes whether a launcher accepts the version-supported
+`--usage-output-file` option together with `--version`, without starting an
+agent. Launchers that pass receive authoritative usage-file accounting;
+launchers that do not retain native-session usage accounting. Validate a new
+launcher end to end with a harmless workflow in its target OS and isolation
+posture.
 
 ## Durable partial transcripts
 

@@ -399,7 +399,6 @@
       "description": "One credential source for exactly one capability OR one named BYO MCP credential. Set exactly one of capability and mcp; each may be sourced only once per instance per harness scope — a (capability, mcp, harness) triple may be granted at most once.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["token"],
       "properties": {
         "capability": {
           "type": "string",
@@ -445,11 +444,57 @@
         "token": {
           "description": "Where this credential is read from — exactly one source, never an inline value.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "githubApp": {
+          "description": "Short-lived GitHub App installation-token source for a Copilot-scoped agent:model grant. The token is always requested for exactly one repository with only copilot_requests:write and metadata:read; stages never receive the private key.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "appId", "installationId", "repository", "repositoryId", "privateKey"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "description": "Stable identity name used in diagnostics and to distinguish the request/throttling boundary assigned to this instance or cluster."
+            },
+            "appId": { "$ref": "#/$defs/githubId", "description": "GitHub App identifier used as the App JWT issuer." },
+            "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID on the repository owner." },
+            "repository": {
+              "type": "string",
+              "pattern": "^[^/\\s]+/[^/\\s]+$",
+              "description": "Exact owner/name whose installation token is requested.",
+              "examples": ["example-org/example-repo"]
+            },
+            "repositoryId": { "$ref": "#/$defs/githubId", "description": "Positive immutable numeric ID used to restrict the installation-token request without owner/name ambiguity." },
+            "privateKey": {
+              "description": "Reference to the App's PEM private key. Inline key material is never accepted.",
+              "$ref": "#/$defs/tokenRef"
+            }
+          }
         }
       },
-      "oneOf": [
-        { "required": ["capability"], "not": { "required": ["mcp"] } },
-        { "required": ["mcp"], "not": { "required": ["capability"] } }
+      "allOf": [
+        {
+          "oneOf": [
+            { "required": ["capability"], "not": { "required": ["mcp"] } },
+            { "required": ["mcp"], "not": { "required": ["capability"] } }
+          ]
+        },
+        {
+          "oneOf": [
+            { "required": ["token"], "not": { "required": ["githubApp"] } },
+            { "required": ["githubApp"], "not": { "required": ["token"] } }
+          ]
+        },
+        {
+          "if": { "required": ["githubApp"] },
+          "then": {
+            "required": ["capability", "harness"],
+            "properties": {
+              "capability": { "const": "agent:model" },
+              "harness": { "const": "copilot" }
+            }
+          }
+        }
       ]
     },
     "daemonIdentity": {
@@ -610,6 +655,21 @@
         },
         "harnessSessionArgs": {
           "description": "Declares how a custom harness launcher receives the fresh session ID generated for each invocation, keyed by harness name. Values are literal argv entries appended to harnessCommand; at least one must contain `{sessionId}`. Configuring these arguments is an explicit launcher contract, so Goobers does not run the command-based contract probe.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "propertyNames": { "$ref": "#/$defs/harnessName" }
+        },
+        "harnessPreflightArgs": {
+          "description": "Literal arguments appended only to a custom harness launcher's authentication/session-contract preflight probe, keyed by harness name. They do not affect workflow execution. Use them to suppress optional launcher startup work during the bounded preflight without weakening the real agentic environment.",
           "type": "object",
           "additionalProperties": {
             "type": "array",

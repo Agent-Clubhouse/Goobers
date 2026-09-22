@@ -190,16 +190,17 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 	}
 
 	return &agentickit.Kit{
-		Envelope:           env,
-		Mode:               mode,
-		Goobers:            scoped,
-		Instructions:       instructions,
-		Assets:             assets,
-		EnvCapabilities:    envCapabilities,
-		Grants:             wireGrants,
-		SandboxPosture:     string(instance.EffectiveAgenticSandbox(cfg, nil)),
-		HarnessCommand:     slices.Clone(cfg.Runner.HarnessCommand[string(spec.Harness)]),
-		HarnessEnvUnset:    slices.Clone(cfg.Runner.HarnessEnvUnset),
-		HarnessSessionArgs: slices.Clone(cfg.Runner.HarnessSessionArgs[string(spec.Harness)]),
+		Envelope:             env,
+		Mode:                 mode,
+		Goobers:              scoped,
+		Instructions:         instructions,
+		Assets:               assets,
+		EnvCapabilities:      envCapabilities,
+		Grants:               wireGrants,
+		SandboxPosture:       string(instance.EffectiveAgenticSandbox(cfg, nil)),
+		HarnessCommand:       slices.Clone(cfg.Runner.HarnessCommand[string(spec.Harness)]),
+		HarnessEnvUnset:      slices.Clone(cfg.Runner.HarnessEnvUnset),
+		HarnessSessionArgs:   slices.Clone(cfg.Runner.HarnessSessionArgs[string(spec.Harness)]),
+		HarnessPreflightArgs: slices.Clone(cfg.Runner.HarnessPreflightArgs[string(spec.Harness)]),
 	}, nil
 }

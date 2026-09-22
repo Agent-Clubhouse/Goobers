@@ -121,11 +121,14 @@ Codex its own `agent:model` grant with `harness: codex` on the
 harness's secret; see "Mixed-harness instances" in
 `docs/guides/github-token-scopes.md`.
 
-The adapter runs `codex exec --json --ephemeral` with a workspace-write
-sandbox, disabled command network access and web search, disabled hooks,
-ignored exec-policy rules, and the workspace explicitly marked untrusted.
-Repository `.codex` configuration is therefore not activated. Goobers'
-platform sandbox, when configured, still wraps the process.
+The adapter runs `codex exec --json` with a workspace-write sandbox, disabled
+command network access and web search, disabled hooks, ignored exec-policy
+rules, and the workspace explicitly marked untrusted. Session state exists
+only in the private per-run `CODEX_HOME`, allowing a bounded completion-format
+repair to resume the same thread without repeating completed work; Goobers
+removes that state after the invocation. Repository `.codex` configuration is
+therefore not activated. Goobers' platform sandbox, when configured, still
+wraps the process.
 
 Declared `mcpServers` are written to the private run configuration. Local
 server credentials are forwarded by environment-variable name, and remote

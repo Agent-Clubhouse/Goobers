@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -98,7 +99,7 @@ func TestCodexAdapterRunUsesIsolatedHeadlessContract(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	for _, want := range []string{
-		"codex", "exec", "--json", "--ephemeral", "--ignore-rules", "--disable", "hooks",
+		"codex", "exec", "--json", "--ignore-rules", "--disable", "hooks",
 		"--sandbox", "workspace-write", "--skip-git-repo-check", "-C", workspace,
 		`projects.` + tomlQuote(filepath.Clean(workspace)) + `.trust_level="untrusted"`,
 		"--model", "gpt-5-codex", `model_reasoning_effort="high"`, "-",
@@ -324,7 +325,7 @@ func TestCodexAdapterRejectsDeclaredGoobersIOCollision(t *testing.T) {
 func TestCodexAdapterIncludesRecoveryUsage(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &codexSequenceRunner{results: []ProcessResult{
-		{ExitCode: 0, Transcript: []byte(`{"type":"turn.completed","usage":{"input_tokens":90,"output_tokens":5}}` + "\n")},
+		{ExitCode: 0, Transcript: []byte(`{"type":"thread.started","thread_id":"thread-recovery"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":90,"output_tokens":5}}` + "\n")},
 		{ExitCode: 0, Transcript: []byte(`{"type":"turn.completed","usage":{"input_tokens":30,"output_tokens":7}}` + "\n")},
 	}}
 	adapter := &CodexAdapter{
@@ -348,6 +349,82 @@ func TestCodexAdapterIncludesRecoveryUsage(t *testing.T) {
 	}
 	if got := out.Metrics[telemetry.AttrGenAIUsageOutputTokens]; got != 12 {
 		t.Fatalf("output tokens = %v, want 12", got)
+	}
+	if got := runner.requests[1].Command; !slices.Contains(got, "resume") ||
+		!slices.Contains(got, "thread-recovery") {
+		t.Fatalf("recovery command = %v, want resumed original thread", got)
+	}
+}
+
+func TestCodexAdapterRepairsStructuredOutputsWithoutRepeatingSideEffects(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{name: "object", value: map[string]any{"nested": true}},
+		{name: "array", value: []any{"nested"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			sideEffects := 0
+			runner := &fakeProcessRunner{
+				result: ProcessResult{ExitCode: 0, Transcript: []byte(codexCompletedStream)},
+				act: func(req ProcessRequest) error {
+					if slices.Contains(req.Command, "resume") {
+						return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{
+							Status:  apiv1.ResultSuccess,
+							Outputs: map[string]any{"findingResponses": "[]"},
+						})
+					}
+					sideEffects++
+					return WriteCompletion(req.Dir, DefaultResultPath, map[string]any{
+						"status":  "success",
+						"outputs": map[string]any{"findingResponses": tc.value},
+					})
+				},
+			}
+			adapter := &CodexAdapter{
+				Command: []string{"codex"},
+				Runner:  runner,
+				EnvCapabilities: map[string]string{
+					"agent:model": codexModelEnv,
+				},
+			}
+			out, err := adapter.Run(context.Background(), RunRequest{
+				Envelope:       testEnvelope(workspace, "agent:model"),
+				Workspace:      workspace,
+				CompletionPath: DefaultResultPath,
+				Credentials:    pushCredentials(t, "agent:model", "sk-test-codex"),
+				ValidateCompletion: func(payload []byte) error {
+					var completion struct {
+						Outputs map[string]any `json:"outputs"`
+					}
+					if err := json.Unmarshal(payload, &completion); err != nil {
+						return err
+					}
+					if _, ok := completion.Outputs["findingResponses"].(string); !ok {
+						return errors.New(`jsonschema: '/outputs/findingResponses' expected string, but got structured value`)
+					}
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if sideEffects != 1 {
+				t.Fatalf("completed side effects = %d, want 1", sideEffects)
+			}
+			if !slices.Contains(runner.lastReq.Command, "resume") ||
+				!slices.Contains(runner.lastReq.Command, "thread-1") {
+				t.Fatalf("repair command = %v, want resumed original thread", runner.lastReq.Command)
+			}
+			if !strings.Contains(string(runner.lastReq.Stdin), "/outputs/findingResponses") {
+				t.Fatalf("repair prompt = %q, want validation path", runner.lastReq.Stdin)
+			}
+			if len(out.InvalidCompletionPayload) == 0 {
+				t.Fatal("initial invalid completion was not preserved")
+			}
+		})
 	}
 }
 

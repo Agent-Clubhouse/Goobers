@@ -249,6 +249,7 @@ func harnessEnvironmentPolicy(cfg instance.RunnerConfig) harness.EnvironmentConf
 		ExtraAllowlist: cfg.EnvPassthrough,
 		Unset:          cfg.HarnessEnvUnset,
 		SessionArgs:    cfg.HarnessSessionArgs,
+		PreflightArgs:  cfg.HarnessPreflightArgs,
 	}
 }
 
@@ -260,10 +261,11 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 	copilotCommand := harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"})
 	customLauncher := requiresCopilotLauncherContract(harnessCommand)
 	sessionArgs := environment.SessionArgs[string(apiv1.HarnessCopilot)]
-	authCheckArgs := copilotAuthCheckArgs
+	authCheckArgs := slices.Clone(copilotAuthCheckArgs)
 	if customLauncher {
 		authCheckArgs = forwardingLauncherAuthCheckArgs()
 	}
+	authCheckArgs = append(authCheckArgs, environment.PreflightArgs[string(apiv1.HarnessCopilot)]...)
 	copilotAdapter := &harness.CopilotAdapter{
 		Command:                     copilotCommand,
 		RequireLauncherContract:     customLauncher,

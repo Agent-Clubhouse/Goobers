@@ -930,6 +930,36 @@ func TestAdapterForAppliesLauncherOverride(t *testing.T) {
 	}
 }
 
+func TestAdapterForAppliesPreflightArgsOnlyToAuthProbe(t *testing.T) {
+	const preflightOnly = "--minimal-preflight"
+	environment := harness.EnvironmentConfig{
+		PreflightArgs: map[string][]string{
+			string(apiv1.HarnessCopilot): {preflightOnly},
+		},
+	}
+	override := map[string][]string{
+		string(apiv1.HarnessCopilot): {"forwarding-launcher", "copilot"},
+	}
+	adapter, err := adapterFor(apiv1.HarnessCopilot, environment, override, nil)
+	if err != nil {
+		t.Fatalf("adapterFor: %v", err)
+	}
+	copilot, ok := adapter.(*harness.CopilotAdapter)
+	if !ok {
+		t.Fatalf("adapter = %T, want *harness.CopilotAdapter", adapter)
+	}
+	if !slices.Contains(copilot.AuthCheckArgs, preflightOnly) {
+		t.Fatalf("auth probe args = %q, want %q", copilot.AuthCheckArgs, preflightOnly)
+	}
+	if slices.Contains(copilot.ExtraArgs, preflightOnly) {
+		t.Fatalf("normal run args unexpectedly contain preflight-only argument %q", preflightOnly)
+	}
+	environment.PreflightArgs[string(apiv1.HarnessCopilot)][0] = "--mutated"
+	if !slices.Contains(copilot.AuthCheckArgs, preflightOnly) {
+		t.Fatal("adapter retained mutable preflight configuration")
+	}
+}
+
 func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
@@ -2048,6 +2078,55 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 	}
 	if mints < 2 {
 		t.Fatalf("mints = %d, want the source consulted per resolve", mints)
+	}
+}
+
+func TestBuildCredentialsGitHubAppMintsAgentModelTokenWithExpiry(t *testing.T) {
+	prev := newAgentModelGitHubAppTokenSource
+	expiresAt := time.Now().Add(45 * time.Minute).UTC()
+	var gotApp *instance.AgentModelGitHubAppConfig
+	newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		gotApp = app
+		return func(context.Context) (string, time.Time, error) {
+			return "minted-copilot-token", expiresAt, nil
+		}, nil
+	}
+	t.Cleanup(func() { newAgentModelGitHubAppTokenSource = prev })
+
+	app := &instance.AgentModelGitHubAppConfig{
+		Name:           "copilot-primary",
+		AppID:          "123456",
+		InstallationID: "42",
+		Repository:     "acme/web",
+		RepositoryID:   "987654321",
+		PrivateKey:     &instance.TokenRef{File: "/run/secrets/copilot-app.pem"},
+	}
+	cfg := &instance.Config{Credentials: []instance.CredentialGrant{{
+		Capability: string(capability.AgentModel),
+		Harness:    string(apiv1.HarnessCopilot),
+		GitHubApp:  app,
+	}}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	if gotApp != app {
+		t.Fatalf("minting source built for %+v, want configured agent:model App", gotApp)
+	}
+	if len(grants) != 1 || grants[0].Capability != credentials.HarnessScopedCapability(string(capability.AgentModel), string(apiv1.HarnessCopilot)) {
+		t.Fatalf("grants = %+v, want one Copilot-scoped agent:model grant", grants)
+	}
+	expiring, ok := resolver.(credentials.ExpiringResolver)
+	if !ok {
+		t.Fatal("credential resolver does not propagate source expiry")
+	}
+	ref := credentialRefName(credentials.HarnessScopedCapability(string(capability.AgentModel), string(apiv1.HarnessCopilot)))
+	token, gotExpiry, err := expiring.ResolveWithExpiry(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("ResolveWithExpiry: %v", err)
+	}
+	if token != "minted-copilot-token" || !gotExpiry.Equal(expiresAt) {
+		t.Fatalf("resolved (%q, %v), want minted token expiring %v", token, gotExpiry, expiresAt)
 	}
 }
 

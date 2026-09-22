@@ -2776,6 +2776,53 @@ func TestConfigValidate(t *testing.T) {
 			}},
 		},
 		{
+			name: "credentials valid copilot github app",
+			cfg: Config{Credentials: []CredentialGrant{{
+				Capability: "agent:model",
+				Harness:    "copilot",
+				GitHubApp: &AgentModelGitHubAppConfig{
+					Name:           "copilot-primary",
+					AppID:          "123456",
+					InstallationID: "789012",
+					Repository:     "acme/web",
+					RepositoryID:   "987654321",
+					PrivateKey:     &TokenRef{File: "/run/secrets/copilot-app.pem"},
+				},
+			}}},
+		},
+		{
+			name: "credentials github app requires copilot scope",
+			cfg: Config{Credentials: []CredentialGrant{{
+				Capability: "agent:model",
+				GitHubApp: &AgentModelGitHubAppConfig{
+					Name:           "copilot-primary",
+					AppID:          "123456",
+					InstallationID: "789012",
+					Repository:     "acme/web",
+					RepositoryID:   "987654321",
+					PrivateKey:     &TokenRef{File: "/run/secrets/copilot-app.pem"},
+				},
+			}}},
+			wantErr: `githubApp requires harness "copilot"`,
+		},
+		{
+			name: "credentials github app rejects second token source",
+			cfg: Config{Credentials: []CredentialGrant{{
+				Capability: "agent:model",
+				Harness:    "copilot",
+				Token:      TokenRef{Env: "COPILOT_PAT"},
+				GitHubApp: &AgentModelGitHubAppConfig{
+					Name:           "copilot-primary",
+					AppID:          "123456",
+					InstallationID: "789012",
+					Repository:     "acme/web",
+					RepositoryID:   "987654321",
+					PrivateKey:     &TokenRef{File: "/run/secrets/copilot-app.pem"},
+				},
+			}}},
+			wantErr: "set exactly one of token or githubApp",
+		},
+		{
 			name: "credentials valid repo:push override",
 			cfg: Config{Credentials: []CredentialGrant{
 				{Capability: "repo:push", Token: TokenRef{File: "/run/secrets/push-token"}},
@@ -2866,6 +2913,36 @@ func TestConfigValidate(t *testing.T) {
 			cfg: Config{Runner: RunnerConfig{
 				HarnessCommand:     map[string][]string{"claude-code": {"forwarding-launcher", "claude"}},
 				HarnessSessionArgs: map[string][]string{"claude-code": {"--session", "{sessionId}"}},
+			}},
+			wantErr: "only the copilot harness supports",
+		},
+		{
+			name: "runner harness preflight args valid",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessCommand:       map[string][]string{"copilot": {"forwarding-launcher", "copilot"}},
+				HarnessPreflightArgs: map[string][]string{"copilot": {"--minimal-preflight"}},
+			}},
+		},
+		{
+			name: "runner harness preflight args require command",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessPreflightArgs: map[string][]string{"copilot": {"--minimal-preflight"}},
+			}},
+			wantErr: `requires runner.harnessCommand["copilot"]`,
+		},
+		{
+			name: "runner harness preflight args reject empty argument",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessCommand:       map[string][]string{"copilot": {"forwarding-launcher", "copilot"}},
+				HarnessPreflightArgs: map[string][]string{"copilot": {""}},
+			}},
+			wantErr: "invalid preflight argument",
+		},
+		{
+			name: "runner harness preflight args reject unsupported harness",
+			cfg: Config{Runner: RunnerConfig{
+				HarnessCommand:       map[string][]string{"claude-code": {"forwarding-launcher", "claude"}},
+				HarnessPreflightArgs: map[string][]string{"claude-code": {"--minimal-preflight"}},
 			}},
 			wantErr: "only the copilot harness supports",
 		},

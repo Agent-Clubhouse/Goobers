@@ -56,6 +56,7 @@ const (
 	SourceKeychain    SourceKind = "keychain"
 	SourceStore       SourceKind = "store"
 	SourceGitHubCLI   SourceKind = "github_cli"
+	SourceGitHubApp   SourceKind = "github_app"
 	SourceUnsupported SourceKind = "unsupported"
 )
 
@@ -265,6 +266,12 @@ type ExpiringResolve func(ctx context.Context) (value string, expiresAt time.Tim
 // does.
 func Probe(ctx context.Context, name string, ref credentials.TokenRef, resolve ExpiringResolve, scrubber journal.Scrubber, now time.Time) Check {
 	kind, source := Describe(ref)
+	return ProbeSource(ctx, name, kind, source, resolve, scrubber, now)
+}
+
+// ProbeSource observes a credential whose source is dynamic and therefore
+// cannot be represented by credentials.TokenRef.
+func ProbeSource(ctx context.Context, name string, kind SourceKind, source string, resolve ExpiringResolve, scrubber journal.Scrubber, now time.Time) Check {
 	check := Check{
 		Name:     name,
 		Kind:     kind,

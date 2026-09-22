@@ -346,6 +346,11 @@ type RunnerConfig struct {
 	// fresh session ID generated for each invocation. Arguments may contain the
 	// {sessionId} placeholder and are appended to the configured launcher.
 	HarnessSessionArgs map[string][]string `json:"harnessSessionArgs,omitempty" yaml:"harnessSessionArgs,omitempty"`
+	// HarnessPreflightArgs are literal arguments appended only to a harness's
+	// authentication/session-contract preflight probe. They do not affect
+	// workflow execution. Use them to make a custom launcher enter a bounded,
+	// non-agentic startup mode without weakening the real agentic environment.
+	HarnessPreflightArgs map[string][]string `json:"harnessPreflightArgs,omitempty" yaml:"harnessPreflightArgs,omitempty"`
 	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
 	// the daemon is reported unhealthy. Empty defaults to two minutes.
 	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`
@@ -1269,7 +1274,31 @@ type CredentialGrant struct {
 	Harness string `json:"harness,omitempty" yaml:"harness,omitempty"`
 	// Token is the source of the credential — exactly one supported TokenRef
 	// source, like a repo's token; inline secret values are never permitted.
-	Token TokenRef `json:"token" yaml:"token"`
+	// Set exactly one of Token and GitHubApp.
+	Token TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
+	// GitHubApp mints a short-lived installation token for Copilot model
+	// requests. It is restricted to an agent:model grant scoped to the
+	// copilot harness. The private key remains runner-owned; stages receive
+	// only the minted token and its stated expiry.
+	GitHubApp *AgentModelGitHubAppConfig `json:"githubApp,omitempty" yaml:"githubApp,omitempty"`
+}
+
+// AgentModelGitHubAppConfig declares a least-privilege GitHub App source for
+// the Copilot harness's agent:model credential.
+type AgentModelGitHubAppConfig struct {
+	// Name is the stable operator-facing identity for diagnostics and
+	// per-instance/per-cluster throttling attribution.
+	Name           string   `json:"name" yaml:"name"`
+	AppID          GitHubID `json:"appId" yaml:"appId"`
+	InstallationID GitHubID `json:"installationId" yaml:"installationId"`
+	// Repository is the exact owner/name whose installation token is minted.
+	Repository string `json:"repository" yaml:"repository"`
+	// RepositoryID is the immutable numeric GitHub repository ID used to
+	// down-scope the installation-token request.
+	RepositoryID GitHubID `json:"repositoryId" yaml:"repositoryId"`
+	// PrivateKey references the App's PEM key; inline key material is never
+	// accepted.
+	PrivateKey *TokenRef `json:"privateKey" yaml:"privateKey"`
 }
 
 // TelemetryConfig configures the local telemetry rollup store and optional

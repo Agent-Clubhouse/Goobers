@@ -5770,7 +5770,8 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		}
 		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, gateLimits, upstream, gateWorkspaceMode(g), false, workspaceBranch)
 		if err != nil {
-			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
+			prepErr := fmt.Errorf("prepare gate %q: %w", g.Name, err)
+			err = codedStageFailure(provisionFailureCode(err), prepErr)
 			span.Fail(err)
 			return gate.Result{}, err, nil
 		}
