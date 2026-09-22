@@ -1182,10 +1182,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					}
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
 					if err := mergeResultFileOutputs(&result, data); err != nil {
-						result.Status = apiv1.ResultFailure
-						result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
-						result.Summary = "declared result file contains an invalid workspace revision"
-						return result, nil
+						return invalidResultFileResult(result, err), nil
 					}
 					code, message, retryable := consumeErrorOutputs(result.Outputs)
 					if code != "" {
@@ -1250,10 +1247,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 				}
 				result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
 				if err := mergeResultFileOutputs(&result, data); err != nil {
-					result.Status = apiv1.ResultFailure
-					result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
-					result.Summary = "declared result file contains an invalid workspace revision"
-					return result, nil
+					return invalidResultFileResult(result, err), nil
 				}
 			case os.IsNotExist(rerr):
 				result.Status = apiv1.ResultFailure
@@ -1410,6 +1404,13 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 	}
 	s, _ := v.(string)
 	return s
+}
+
+func invalidResultFileResult(result apiv1.ResultEnvelope, err error) apiv1.ResultEnvelope {
+	result.Status = apiv1.ResultFailure
+	result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
+	result.Summary = "declared result file contains an invalid workspace revision"
+	return result
 }
 
 // mergeResultFileOutputs best-effort-parses a declared result file's bytes as

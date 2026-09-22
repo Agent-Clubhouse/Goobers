@@ -1693,9 +1693,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			}
 			return Result{Phase: journal.PhaseRunning, FinalState: p.Name, Steps: ws.steps}, true, nil
 		}
-		ws.pointers, ws.completed = outcome.pointers, outcome.completed
-		ws.lastStage, ws.lastResult = outcome.lastStage, outcome.lastResult
-		ws.workspaceRevision = outcome.workspaceRevision.DeepCopy()
+		ws.applyParallelOutcome(outcome)
 		ws.parallel = nil
 		if outcome.runJoin {
 			ws.fanIn = outcome.parallel
@@ -4527,6 +4525,12 @@ type taskFrame struct {
 	repoRef           *apiv1.RepoRef
 }
 
+func (ws *walkState) applyParallelOutcome(outcome concurrentParallelResult) {
+	ws.pointers, ws.completed = outcome.pointers, outcome.completed
+	ws.lastStage, ws.lastResult = outcome.lastStage, outcome.lastResult
+	ws.workspaceRevision = outcome.workspaceRevision.DeepCopy()
+}
+
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
 	jr, in, t := tf.jr, tf.in, tf.t
@@ -4769,65 +4773,11 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
-		result = r.validateDependencyResult(jr, t.Name, result, upstream)
-		if t.Type != apiv1.TaskDeterministic && result.WorkspaceRevision != nil {
-			result.WorkspaceRevision = nil
-			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{
-				Code:    workspacerevision.CodeUnauthorized,
-				Message: "agentic results cannot establish workspace revision authority",
-			}
-			result.Summary = "workspace revision authority is restricted to deterministic stages"
-		}
-		if t.Type == apiv1.TaskDeterministic &&
-			result.Status == apiv1.ResultSuccess &&
-			result.WorkspaceRevision != nil {
-			configuredRepo, err := workspacerevision.Resolve(*result.WorkspaceRevision, in.RepoRef, r.cfg.AdditionalRepos)
-			if err != nil {
-				errorCode := workspacerevision.CodeUnauthorized
-				var revisionErr *workspacerevision.Error
-				if errors.As(err, &revisionErr) {
-					errorCode = revisionErr.Code
-				}
-				if aerr := jr.Append(journal.Event{
-					Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-					Error: &journal.ErrorDetail{Code: errorCode, Message: err.Error()},
-				}); aerr != nil {
-					err = fmt.Errorf("runner: journal workspace revision rejection for %q: %w", t.Name, aerr)
-					span.Fail(err)
-					return apiv1.ResultEnvelope{}, nil, err
-				}
-				span.Fail(err)
-				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: stage %q workspace revision rejected: %w", t.Name, err)
-			}
-			in.RepoRef = configuredRepo
-			if tf.repoRef != nil {
-				*tf.repoRef = configuredRepo
-			}
-			var current *apiv1.WorkspaceRevision
-			if tf.workspaceRevision != nil {
-				current = *tf.workspaceRevision
-			} else {
-				current = in.workspaceRevision
-			}
-			accepted, err := workspacerevision.Accept(current, result.WorkspaceRevision, true, true)
-			if err != nil {
-				if aerr := jr.Append(journal.Event{
-					Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-					Error: &journal.ErrorDetail{Code: workspacerevision.CodeConflict, Message: err.Error()},
-				}); aerr != nil {
-					err = fmt.Errorf("runner: journal workspace revision rejection for %q: %w", t.Name, aerr)
-					span.Fail(err)
-					return apiv1.ResultEnvelope{}, nil, err
-				}
-				span.Fail(err)
-				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: stage %q workspace revision rejected: %w", t.Name, err)
-			}
-			if tf.workspaceRevision != nil {
-				*tf.workspaceRevision = accepted.DeepCopy()
-			}
-			in.workspaceRevision = accepted.DeepCopy()
+		var prepareErr error
+		result, prepareErr = r.prepareTaskResult(jr, tf, &in, t, result, upstream, upstreamResult, completed, fanIn, int(attempt), class)
+		if prepareErr != nil {
+			span.Fail(prepareErr)
+			return apiv1.ResultEnvelope{}, nil, prepareErr
 		}
 		// Provenance flows with the data: what this stage produced is only as
 		// trustworthy as the weakest input it was admitted with. Downstream
@@ -4835,23 +4785,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// bare scalars that cannot carry a label of their own (TBH-4).
 		result.Integrity = producedIntegrity(t, in.Item, upstream,
 			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
-		outputs := stageFinishedOutputs(result, t.ContinueOnError)
-		var eventWorkspaceRevision *apiv1.WorkspaceRevision
-		if t.Type == apiv1.TaskDeterministic &&
-			result.Status == apiv1.ResultSuccess &&
-			result.WorkspaceRevision != nil {
-			eventWorkspaceRevision = result.WorkspaceRevision.DeepCopy()
-		}
-		if err := jr.Append(journal.Event{
-			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-			Status: string(result.Status), Error: errorDetailFrom(result),
-			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
-			WorkspaceRevision: eventWorkspaceRevision,
-			// Carried so reconstructStageOutputs can restore each stage's grade
-			// on resume; without it a resumed run would fail inputsFrom
-			// admission that a live run admits (TBH-4).
-			Integrity: result.Integrity,
-		}); err != nil {
+		if err := appendTaskFinished(jr, t, int(attempt), class, result); err != nil {
 			err = fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
@@ -4873,6 +4807,116 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 	// once, and every path inside either returns or continues.
 	err := fmt.Errorf("runner: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
 	return apiv1.ResultEnvelope{}, nil, err
+}
+
+func appendTaskFinished(
+	jr executionJournal,
+	task apiv1.Task,
+	attempt int,
+	class journal.AttemptClass,
+	result apiv1.ResultEnvelope,
+) error {
+	var eventWorkspaceRevision *apiv1.WorkspaceRevision
+	if task.Type == apiv1.TaskDeterministic &&
+		result.Status == apiv1.ResultSuccess &&
+		result.WorkspaceRevision != nil {
+		eventWorkspaceRevision = result.WorkspaceRevision.DeepCopy()
+	}
+	return jr.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: task.Name, Attempt: attempt, AttemptClass: class,
+		Status: string(result.Status), Error: errorDetailFrom(result),
+		Outputs: stageFinishedOutputs(result, task.ContinueOnError), Artifacts: refsFrom(result.Artifacts),
+		WorkspaceRevision: eventWorkspaceRevision,
+		Integrity:         result.Integrity,
+	})
+}
+
+func (r *Runner) acceptWorkspaceRevision(
+	jr executionJournal,
+	tf taskFrame,
+	in *StartInput,
+	task apiv1.Task,
+	attempt int,
+	class journal.AttemptClass,
+	revision *apiv1.WorkspaceRevision,
+) error {
+	configuredRepo, err := workspacerevision.Resolve(*revision, in.RepoRef, r.cfg.AdditionalRepos)
+	if err != nil {
+		code := workspacerevision.CodeUnauthorized
+		var revisionErr *workspacerevision.Error
+		if errors.As(err, &revisionErr) {
+			code = revisionErr.Code
+		}
+		return appendWorkspaceRevisionError(jr, task, attempt, class, code, err)
+	}
+	in.RepoRef = configuredRepo
+	if tf.repoRef != nil {
+		*tf.repoRef = configuredRepo
+	}
+	current := in.workspaceRevision
+	if tf.workspaceRevision != nil {
+		current = *tf.workspaceRevision
+	}
+	accepted, err := workspacerevision.Accept(current, revision, true, true)
+	if err != nil {
+		return appendWorkspaceRevisionError(jr, task, attempt, class, workspacerevision.CodeConflict, err)
+	}
+	if tf.workspaceRevision != nil {
+		*tf.workspaceRevision = accepted.DeepCopy()
+	}
+	in.workspaceRevision = accepted.DeepCopy()
+	return nil
+}
+
+func appendWorkspaceRevisionError(
+	jr executionJournal,
+	task apiv1.Task,
+	attempt int,
+	class journal.AttemptClass,
+	code string,
+	err error,
+) error {
+	if appendErr := jr.Append(journal.Event{
+		Type: journal.EventError, Stage: task.Name, Attempt: attempt, AttemptClass: class,
+		Error: &journal.ErrorDetail{Code: code, Message: err.Error()},
+	}); appendErr != nil {
+		return fmt.Errorf("runner: journal workspace revision rejection for %q: %w", task.Name, appendErr)
+	}
+	return fmt.Errorf("runner: stage %q workspace revision rejected: %w", task.Name, err)
+}
+
+func (r *Runner) prepareTaskResult(
+	jr executionJournal,
+	tf taskFrame,
+	in *StartInput,
+	task apiv1.Task,
+	result apiv1.ResultEnvelope,
+	upstream []apiv1.ContextPointer,
+	upstreamResult apiv1.ResultEnvelope,
+	completed stageOutputs,
+	fanIn *parallelExec,
+	attempt int,
+	class journal.AttemptClass,
+) (apiv1.ResultEnvelope, error) {
+	result.Artifacts = normalizeArtifactIntegrity(task.Type, result.Artifacts)
+	result = r.validateDependencyResult(jr, task.Name, result, upstream)
+	if task.Type != apiv1.TaskDeterministic && result.WorkspaceRevision != nil {
+		result.WorkspaceRevision = nil
+		result.Status = apiv1.ResultFailure
+		result.Error = &apiv1.ErrorInfo{
+			Code:    workspacerevision.CodeUnauthorized,
+			Message: "agentic results cannot establish workspace revision authority",
+		}
+		result.Summary = "workspace revision authority is restricted to deterministic stages"
+	}
+	if task.Type == apiv1.TaskDeterministic && result.Status == apiv1.ResultSuccess && result.WorkspaceRevision != nil {
+		if err := r.acceptWorkspaceRevision(jr, tf, in, task, attempt, class, result.WorkspaceRevision); err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+	}
+	result.Integrity = producedIntegrity(task, in.Item, upstream,
+		resolvedInputGrades(task, in.Machine, upstreamResult, completed, fanIn))
+	return result, nil
 }
 
 func dispatchRetryFailureClass(err error) journal.AttemptClass {

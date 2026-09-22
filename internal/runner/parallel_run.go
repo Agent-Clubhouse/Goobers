@@ -440,25 +440,11 @@ func (r *Runner) runConcurrentParallel(
 	}
 
 	mergedCompleted := cloneStageOutputs(baseCompleted)
-	lastStage, lastResult := baseLastStage, baseLastResult
-	workspaceRevision := in.workspaceRevision.DeepCopy()
-	for _, outcome := range outcomes {
-		if outcome == nil {
-			continue
-		}
-		if outcome.workspaceRevision != nil {
-			var err error
-			workspaceRevision, err = workspacerevision.Accept(workspaceRevision, outcome.workspaceRevision, true, true)
-			if err != nil {
-				return concurrentParallelResult{}, fmt.Errorf("runner: reconcile parallel workspace revision: %w", err)
-			}
-		}
-		for stage, outputs := range outcome.completed {
-			mergedCompleted.put(stage, outputs)
-		}
-		if outcome.lastStage != "" {
-			lastStage, lastResult = outcome.lastStage, outcome.lastResult
-		}
+	lastStage, lastResult, workspaceRevision, err := reconcileParallelOutcomes(
+		mergedCompleted, outcomes, baseLastStage, baseLastResult, in.workspaceRevision,
+	)
+	if err != nil {
+		return concurrentParallelResult{}, err
 	}
 
 	var terminalTarget string
@@ -503,6 +489,36 @@ func (r *Runner) runConcurrentParallel(
 	}, nil
 }
 
+func reconcileParallelOutcomes(
+	mergedCompleted stageOutputs,
+	outcomes []*parallelBranchResult,
+	baseLastStage string,
+	baseLastResult apiv1.ResultEnvelope,
+	baseRevision *apiv1.WorkspaceRevision,
+) (string, apiv1.ResultEnvelope, *apiv1.WorkspaceRevision, error) {
+	lastStage, lastResult := baseLastStage, baseLastResult
+	workspaceRevision := baseRevision.DeepCopy()
+	for _, outcome := range outcomes {
+		if outcome == nil {
+			continue
+		}
+		if outcome.workspaceRevision != nil {
+			var err error
+			workspaceRevision, err = workspacerevision.Accept(workspaceRevision, outcome.workspaceRevision, true, true)
+			if err != nil {
+				return "", apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: reconcile parallel workspace revision: %w", err)
+			}
+		}
+		for stage, outputs := range outcome.completed {
+			mergedCompleted.put(stage, outputs)
+		}
+		if outcome.lastStage != "" {
+			lastStage, lastResult = outcome.lastStage, outcome.lastResult
+		}
+	}
+	return lastStage, lastResult, workspaceRevision, nil
+}
+
 func (r *Runner) runParallelBranch(
 	ctx context.Context,
 	jr *journal.Run,
@@ -518,20 +534,8 @@ func (r *Runner) runParallelBranch(
 	history []journal.Event,
 	stepBudget *atomic.Int64,
 ) (result parallelBranchResult) {
-	defer func() {
-		result.workspaceRevision = in.workspaceRevision.DeepCopy()
-	}()
-	result = parallelBranchResult{
-		index:      branch.id - 1,
-		lastStage:  baseLastStage,
-		lastResult: baseLastResult,
-		completed:  branchStageOutputs(baseCompleted, history, in.Machine),
-		pointers:   append([]apiv1.ContextPointer(nil), branch.pointers...),
-		artifacts:  branch.artifacts,
-		produced:   branch.produced,
-		failed:     branch.failed,
-		noOutput:   branch.noOutput,
-	}
+	defer func() { result.workspaceRevision = in.workspaceRevision.DeepCopy() }()
+	result = newParallelBranchResult(branch, baseLastStage, baseLastResult, baseCompleted, history, in.Machine)
 	branchJournal := &branchJournal{
 		run:    jr,
 		branch: branch.id,
@@ -903,6 +907,27 @@ func (r *Runner) runParallelBranch(
 		result.status = journal.BranchFailed
 		result.err = fmt.Errorf("runner: parallel %q branch %q reached unknown state %q", par.spec.Name, branch.name, state)
 		return result
+	}
+}
+
+func newParallelBranchResult(
+	branch branchState,
+	baseLastStage string,
+	baseLastResult apiv1.ResultEnvelope,
+	baseCompleted stageOutputs,
+	history []journal.Event,
+	machine *workflow.Machine,
+) parallelBranchResult {
+	return parallelBranchResult{
+		index:      branch.id - 1,
+		lastStage:  baseLastStage,
+		lastResult: baseLastResult,
+		completed:  branchStageOutputs(baseCompleted, history, machine),
+		pointers:   append([]apiv1.ContextPointer(nil), branch.pointers...),
+		artifacts:  branch.artifacts,
+		produced:   branch.produced,
+		failed:     branch.failed,
+		noOutput:   branch.noOutput,
 	}
 }
 
