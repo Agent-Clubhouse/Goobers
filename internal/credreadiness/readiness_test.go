@@ -254,10 +254,24 @@ func TestUserScopedSourcesAreFlagged(t *testing.T) {
 			t.Fatalf("%q is not flagged as user-scoped", kind)
 		}
 	}
-	for _, kind := range []SourceKind{SourceEnv, SourceFile, SourceStore} {
+	for _, kind := range []SourceKind{SourceEnv, SourceFile, SourceStore, SourceGitHubApp} {
 		if kind.UserScoped() {
 			t.Fatalf("%q was flagged as user-scoped", kind)
 		}
+	}
+}
+
+func TestProbeSourceReportsGitHubAppExpiry(t *testing.T) {
+	expiresAt := probeNow.Add(time.Hour)
+	check := ProbeSource(context.Background(), "agent:model", SourceGitHubApp, "acme/web",
+		func(context.Context) (string, time.Time, error) {
+			return "ghs_minted", expiresAt, nil
+		}, nil, probeNow)
+	if check.Status != StatusUsable || check.Kind != SourceGitHubApp || check.Source != "acme/web" {
+		t.Fatalf("check = %+v, want usable github_app source", check)
+	}
+	if !check.ExpiryKnown || !check.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expiry = %v known=%v, want %v", check.ExpiresAt, check.ExpiryKnown, expiresAt)
 	}
 }
 
