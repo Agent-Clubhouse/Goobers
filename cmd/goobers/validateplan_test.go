@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -153,6 +154,7 @@ func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
+	t.Setenv(executor.InputEnvVar("resultFile"), "")
 	if code, _, stderr := runArgs(t, "select-source", root); code != 0 {
 		t.Fatalf("select-source: code = %d, stderr = %q", code, stderr)
 	}
