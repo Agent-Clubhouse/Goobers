@@ -366,8 +366,9 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		commands = map[string][]string{string(spec.Harness): kit.HarnessCommand}
 	}
 	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, harness.EnvironmentConfig{
-		Unset:       kit.HarnessEnvUnset,
-		SessionArgs: map[string][]string{string(spec.Harness): kit.HarnessSessionArgs},
+		Unset:         kit.HarnessEnvUnset,
+		SessionArgs:   map[string][]string{string(spec.Harness): kit.HarnessSessionArgs},
+		PreflightArgs: map[string][]string{string(spec.Harness): kit.HarnessPreflightArgs},
 	}, commands, "", "", false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)

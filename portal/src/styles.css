@@ -5754,6 +5754,15 @@ code,
   width: 100%;
 }
 
+.playback-details-panel {
+  scroll-margin-top: 81px;
+}
+
+.playback-details-panel:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .playback-summary {
   align-items: center;
   display: grid;

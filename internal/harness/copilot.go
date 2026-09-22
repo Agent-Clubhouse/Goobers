@@ -168,6 +168,7 @@ type CopilotAdapter struct {
 	launcherMu               sync.Mutex
 	launcherContract         *launcherContract
 	launcherContractVerified bool
+	launcherUsageVerified    bool
 	// AllowAdapterManagedFallback permits a launcher that does not implement
 	// the handshake to prove direct Copilot-compatible session forwarding
 	// during the normal authentication preflight.
@@ -179,8 +180,8 @@ type CopilotAdapter struct {
 	// RequiredTools are adapter-owned tools that must remain visible even when
 	// the goober declares a restrictive tool allowlist.
 	RequiredTools []string
-	// DisableUsageOutput omits the optional version-gated usage-file flag for
-	// launchers whose reported version does not prove that they forward it.
+	// DisableUsageOutput keeps the optional usage-file flag off until preflight
+	// proves that a forwarding launcher accepts it.
 	DisableUsageOutput bool
 	// PromptFlag precedes the rendered prompt text in the built argv.
 	// Defaults to "-p" if empty.
@@ -625,6 +626,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if version == "" {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
+	c.verifyLauncherUsageOutput(ctx, version, args)
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
@@ -670,7 +672,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		})
 		if err != nil || res.ExitCode != 0 {
-			return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run the Copilot CLI and sign in")
+			return PreflightInfo{}, copilotAuthProbeError(ctx, authProbe, res, err)
 		}
 		if sessionTranscript != "" {
 			if err := verifyCopilotSessionTranscript(sessionTranscript); err != nil {
@@ -683,6 +685,17 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		}
 	}
 	return PreflightInfo{Version: version}, nil
+}
+
+func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {
+	switch {
+	case errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return preflightProbeError(probe, result, fmt.Errorf("timed out: %w", context.DeadlineExceeded), "")
+	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		return preflightProbeError(probe, result, fmt.Errorf("canceled: %w", context.Canceled), "")
+	default:
+		return preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
+	}
 }
 
 func verifyCopilotSessionTranscript(path string) error {
@@ -834,6 +847,11 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
 	if err := validateStandardExecution(req); err != nil {
 		return Outcome{}, err
+	}
+	if req.ValidateCompletion == nil {
+		req.ValidateCompletion = func(payload []byte) error {
+			return validateCopilotCompletion(req.Mode, payload)
+		}
 	}
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
@@ -1006,7 +1024,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// unanswerable after the fact, because the invocation was never kept.
 	// Only permission-relevant flags are recorded; the prompt and environment
 	// are deliberately excluded (they carry task content and credentials).
-	if err := writeCopilotInvocationDiagnostics(req, argv, declaredTools, c.DisableUsageOutput); err != nil {
+	if err := writeCopilotInvocationDiagnostics(req, argv, declaredTools, c.usageOutputDisabled()); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 
@@ -1053,64 +1071,28 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	processErr = errors.Join(processErr, nativeCheckpoints.worker.observedError())
 	runErr = processErr
 	var payload []byte
+	var invalidCompletionPayload []byte
 	var completionErr error
 	if processErr == nil {
 		payload, completionErr = readCopilotCompletionWithSessionFallback(
 			req, responseCapture, completionInResponse, nativeTranscriptPath)
-		if errors.Is(completionErr, ErrNoCompletion) {
-			// A clean Copilot exit can still omit its completion contract. Give
-			// the same session one contract-only turn without extending its budget.
-			totalTimeout := req.Timeout
-			if totalTimeout <= 0 {
-				totalTimeout = DefaultTimeout
-			}
-			remaining := totalTimeout - time.Since(started)
-			if remaining <= 0 {
-				runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
-				completionErr = nil
-			} else {
-				recoveryArgv := append([]string(nil), argv...)
-				recoveryPrompt := renderCompletionRecoveryPrompt(req)
-				var recoveryCapture *syncBuffer
-				var recoveryStdout io.Writer
-				if completionInResponse {
-					recoveryPrompt = renderResponseCompletionRecoveryPrompt(req)
-					recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
-					recoveryStdout = recoveryCapture
-				}
-				recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
-				recovery, err := runner.Run(ctx, ProcessRequest{
-					Command:                      recoveryArgv,
-					Dir:                          req.Workspace,
-					Env:                          env,
-					Timeout:                      remaining,
-					MaxTranscriptBytes:           req.MaxTranscriptBytes,
-					StdoutCapture:                recoveryStdout,
-					TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
-					TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
-					// The recovery turn runs on what is LEFT of the budget,
-					// so a stall here is if anything more urgent to see than
-					// one in the main session (#4179).
-					Activity: agentTelemetry.activityObserver(),
-				})
-				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
-				if err != nil {
-					runErr = err
-					completionErr = nil
-				} else {
-					// Same stdout gap can swallow the recovery turn's answer.
-					payload, completionErr = readCopilotCompletionWithSessionFallback(
-						req, recoveryCapture, completionInResponse, nativeTranscriptPath)
-				}
-			}
+		completionErr = validateCompletion(req, payload, completionErr)
+		if errors.Is(completionErr, ErrInvalidCompletion) {
+			invalidCompletionPayload = append([]byte(nil), payload...)
 		}
+		result, payload, runErr, completionErr = runCopilotCompletionRepair(
+			ctx, runner, req, result, payload, argv, env, promptArg, flag,
+			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
+		)
 	}
 	out = Outcome{
-		Transcript:             result.Transcript,
-		RenderedPrompt:         []byte(prompt),
-		TranscriptTruncated:    result.TranscriptTruncated,
-		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
-		Stderr:                 result.Stderr,
+		Transcript:               result.Transcript,
+		RenderedPrompt:           []byte(prompt),
+		TranscriptTruncated:      result.TranscriptTruncated,
+		TranscriptDroppedBytes:   result.TranscriptDroppedBytes,
+		Stderr:                   result.Stderr,
+		Payload:                  payload,
+		InvalidCompletionPayload: invalidCompletionPayload,
 	}
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
@@ -1134,8 +1116,67 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if completionErr != nil {
 		return out, completionErr
 	}
-	out.Payload = payload
 	return out, nil
+}
+
+func runCopilotCompletionRepair(
+	ctx context.Context,
+	runner ProcessRunner,
+	req RunRequest,
+	result ProcessResult,
+	payload []byte,
+	argv, env []string,
+	promptArg int,
+	flag string,
+	completionInResponse bool,
+	nativeTranscriptPath string,
+	started time.Time,
+	completionErr error,
+	agentTelemetry *adapterAgentEmitter,
+) (ProcessResult, []byte, error, error) {
+	if !repairableCompletionError(completionErr) {
+		return result, payload, nil, completionErr
+	}
+
+	totalTimeout := req.Timeout
+	if totalTimeout <= 0 {
+		totalTimeout = DefaultTimeout
+	}
+	remaining := totalTimeout - time.Since(started)
+	if remaining <= 0 {
+		return result, payload, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0]), nil
+	}
+
+	recoveryArgv := append([]string(nil), argv...)
+	recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
+	var recoveryCapture *syncBuffer
+	var recoveryStdout io.Writer
+	if completionInResponse {
+		recoveryPrompt = renderResponseCompletionRepairPrompt(req, completionErr)
+		recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
+		recoveryStdout = recoveryCapture
+	}
+	recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
+	recovery, err := runner.Run(ctx, ProcessRequest{
+		Command:                      recoveryArgv,
+		Dir:                          req.Workspace,
+		Env:                          env,
+		Timeout:                      remaining,
+		MaxTranscriptBytes:           req.MaxTranscriptBytes,
+		StdoutCapture:                recoveryStdout,
+		TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
+		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
+		Activity:                     agentTelemetry.activityObserver(),
+	})
+	result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
+	if err != nil {
+		return result, payload, err, nil
+	}
+
+	payload, completionErr = readCopilotCompletionWithSessionFallback(
+		req, recoveryCapture, completionInResponse, nativeTranscriptPath)
+	completionErr = validateCompletion(req, payload, completionErr)
+	return result, payload, nil, completionErr
 }
 
 func applyCopilotUsageDocument(out *Outcome, path string) {
@@ -1178,16 +1219,13 @@ func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResp
 	if !completionInResponse {
 		return readCompletion(req.Workspace, req.CompletionPath)
 	}
-	payload, responseErr := readCopilotResponseCompletion(req.Mode, capture)
+	payload, responseErr := readCopilotResponseCompletion(capture)
 	if responseErr == nil {
 		return payload, nil
 	}
 	payload, fileErr := readCompletion(req.Workspace, req.CompletionPath)
 	switch {
 	case fileErr == nil:
-		if err := validateCopilotCompletion(req.Mode, payload); err != nil {
-			return nil, fmt.Errorf("%w: Copilot completion file failed validation: %w", ErrNoCompletion, err)
-		}
 		return payload, nil
 	case !errors.Is(fileErr, ErrNoCompletion):
 		return nil, fileErr
@@ -1242,7 +1280,7 @@ func readCopilotCompletionFromSession(mode Mode, path string, limit int64) ([]by
 		len(native.finalMessages)), false
 }
 
-func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, error) {
+func readCopilotResponseCompletion(capture *syncBuffer) ([]byte, error) {
 	if capture == nil {
 		return nil, fmt.Errorf("%w: Copilot final response was not captured", ErrNoCompletion)
 	}
@@ -1257,9 +1295,6 @@ func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, erro
 	payload = extractCompletionJSON(payload)
 	if !json.Valid(payload) {
 		return nil, fmt.Errorf("%w: Copilot final response is not valid JSON", ErrNoCompletion)
-	}
-	if err := validateCopilotCompletion(mode, payload); err != nil {
-		return nil, fmt.Errorf("%w: Copilot final response failed validation: %w", ErrNoCompletion, err)
 	}
 	return payload, nil
 }

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Ref } from "react";
 import type { RunEvent, WorkflowGraph } from "../api/types";
 import {
   formatReplayClock,
@@ -94,6 +95,7 @@ export function ReplayScrubber({
   graph,
   runId,
   selectedSeq,
+  selectedEventDetailsRef,
   onSeek,
   terminal,
   workflow,
@@ -102,6 +104,7 @@ export function ReplayScrubber({
   graph?: WorkflowGraph;
   runId: string;
   selectedSeq: number;
+  selectedEventDetailsRef?: Ref<HTMLElement>;
   onSeek: (seq: number) => void;
   terminal: boolean;
   workflow?: string;
@@ -571,7 +574,12 @@ export function ReplayScrubber({
         </div>
       </section>
 
-      <section aria-label="Selected replay event" className="playback-panel playback-details-panel">
+      <section
+        aria-label="Selected replay event"
+        className="playback-panel playback-details-panel"
+        ref={selectedEventDetailsRef}
+        tabIndex={-1}
+      >
         <h2 className="playback-details-title">Selected event details</h2>
         <div aria-live="polite" className="playback-summary">
           <div className="playback-now">

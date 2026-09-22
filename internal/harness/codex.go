@@ -142,7 +142,6 @@ func buildCodexArgv(baseCommand []string, model, effort, workspace string, shell
 	argv = append(argv,
 		"exec",
 		"--json",
-		"--ephemeral",
 		"--ignore-rules",
 		"--disable", "hooks",
 		"--sandbox", "workspace-write",
@@ -166,12 +165,22 @@ func buildCodexArgv(baseCommand []string, model, effort, workspace string, shell
 	return argv
 }
 
+func buildCodexResumeArgv(argv []string, execIndex int, threadID string) []string {
+	resume := make([]string, 0, len(argv)+2)
+	resume = append(resume, argv[:execIndex+1]...)
+	resume = append(resume, "resume")
+	resume = append(resume, argv[execIndex+1:len(argv)-1]...)
+	resume = append(resume, threadID, argv[len(argv)-1])
+	return resume
+}
+
 type preparedCodexInvocation struct {
-	req     RunRequest
-	argv    []string
-	env     []string
-	prompt  string
-	cleanup func()
+	req       RunRequest
+	argv      []string
+	execIndex int
+	env       []string
+	prompt    string
+	cleanup   func()
 }
 
 // Run executes one Codex-backed agentic invocation.
@@ -237,7 +246,14 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 	out.Metrics = parsed.metrics
 
 	payload, completionErr := readCompletion(req.Workspace, req.CompletionPath)
-	if errors.Is(completionErr, ErrNoCompletion) {
+	completionErr = validateCompletion(req, payload, completionErr)
+	var invalidCompletionPayload []byte
+	if errors.Is(completionErr, ErrInvalidCompletion) {
+		invalidCompletionPayload = append([]byte(nil), payload...)
+	}
+	out.Payload = payload
+	out.InvalidCompletionPayload = invalidCompletionPayload
+	if repairableCompletionError(completionErr) {
 		totalTimeout := req.Timeout
 		if totalTimeout <= 0 {
 			totalTimeout = DefaultTimeout
@@ -247,9 +263,14 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 			runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
 			return out, runErr
 		}
-		recoveryPrompt := renderCompletionRecoveryPrompt(req)
+		if parsed.threadID == "" {
+			runErr = fmt.Errorf("harness: codex: cannot repair completion: initial turn did not report a thread id")
+			return out, runErr
+		}
+		recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
+		recoveryArgv := buildCodexResumeArgv(argv, prepared.execIndex, parsed.threadID)
 		recovery, recoveryParsed, recoveryErr := runCodexInvocation(
-			ctx, c.runner(), req, argv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(),
+			ctx, c.runner(), req, recoveryArgv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(),
 		)
 		mergeCodexMetrics(parsed.metrics, recoveryParsed.metrics)
 		out.Metrics = parsed.metrics
@@ -263,12 +284,13 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 			return out, runErr
 		}
 		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
+		completionErr = validateCompletion(req, payload, completionErr)
 	}
+	out.Payload = payload
 	if completionErr != nil {
 		runErr = completionErr
 		return out, runErr
 	}
-	out.Payload = payload
 	return out, nil
 }
 
@@ -347,19 +369,25 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 	}
 	secretEnv = append(secretEnv, mcpSecretEnv...)
 	shellEnv := codexExecutionContextShellEnvironment(ctx, req, codexShellEnvironment(env, secretEnv), c.InstanceRoot)
-	argv := buildCodexArgv(resolveStdioHarnessCommand(c.Command), req.Model, options["effort"], req.Workspace, shellEnv)
+	baseCommand := resolveStdioHarnessCommand(c.Command)
+	execIndex := len(baseCommand)
+	argv := buildCodexArgv(baseCommand, req.Model, options["effort"], req.Workspace, shellEnv)
 	if req.Sandbox != nil {
 		writableRoots, err := gitWritableRoots(req.Workspace)
 		if err != nil {
 			return preparedCodexInvocation{}, fmt.Errorf("harness: codex: sandbox: %w", err)
 		}
 		writableRoots = append(writableRoots, runtimeRoot)
-		argv, _, err = confineArgv(req.Sandbox, argv, req.Workspace, writableRoots)
+		var prefix int
+		argv, prefix, err = confineArgv(req.Sandbox, argv, req.Workspace, writableRoots)
 		if err != nil {
 			return preparedCodexInvocation{}, fmt.Errorf("harness: codex: sandbox: %w", err)
 		}
+		execIndex += prefix
 	}
-	return preparedCodexInvocation{req: req, argv: argv, env: env, prompt: prompt, cleanup: cleanup}, nil
+	return preparedCodexInvocation{
+		req: req, argv: argv, execIndex: execIndex, env: env, prompt: prompt, cleanup: cleanup,
+	}, nil
 }
 
 func runCodexInvocation(
@@ -448,6 +476,7 @@ func prepareCodexRuntime(root string) (string, string, string, error) {
 type codexParseResult struct {
 	completed bool
 	failed    string
+	threadID  string
 	metrics   map[string]float64
 }
 
@@ -606,9 +635,10 @@ func parseCodexJSONL(data []byte) (codexParseResult, error) {
 
 func parseCodexEvent(raw []byte, result *codexParseResult) error {
 	var event struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-		Error   struct {
+		Type     string `json:"type"`
+		Message  string `json:"message"`
+		ThreadID string `json:"thread_id"`
+		Error    struct {
 			Message string `json:"message"`
 		} `json:"error"`
 		Usage struct {
@@ -620,6 +650,8 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 		return err
 	}
 	switch event.Type {
+	case "thread.started":
+		result.threadID = event.ThreadID
 	case "turn.completed":
 		result.completed = true
 		result.metrics[telemetry.AttrGenAIUsageInputTokens] += event.Usage.InputTokens

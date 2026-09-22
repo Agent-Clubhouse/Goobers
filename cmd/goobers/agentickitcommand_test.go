@@ -57,6 +57,9 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 						cfg.Runner.HarnessSessionArgs = map[string][]string{
 							string(selected): {"--session-file", "{sessionId}.jsonl"},
 						}
+						cfg.Runner.HarnessPreflightArgs = map[string][]string{
+							string(selected): {"--minimal-preflight"},
+						}
 					}
 				}
 				if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
@@ -112,6 +115,9 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 					}
 					if !slices.Equal(kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)]) {
 						t.Fatalf("kit harness session args = %v, want %v", kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)])
+					}
+					if !slices.Equal(kit.HarnessPreflightArgs, cfg.Runner.HarnessPreflightArgs[string(selected)]) {
+						t.Fatalf("kit harness preflight args = %v, want %v", kit.HarnessPreflightArgs, cfg.Runner.HarnessPreflightArgs[string(selected)])
 					}
 					assertPodLauncher(t, kit, selected, declared, cfg.Runner.HarnessEnvUnset)
 				}
@@ -203,6 +209,9 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 		if !slices.Equal(environment.Unset, envUnset) {
 			t.Fatalf("pod harness env unset = %v, want %v", environment.Unset, envUnset)
 		}
+		if !slices.Equal(environment.PreflightArgs[string(selected)], kit.HarnessPreflightArgs) {
+			t.Fatalf("pod harness preflight args = %v, want %v", environment.PreflightArgs[string(selected)], kit.HarnessPreflightArgs)
+		}
 		// Build the real adapters from the actual pod-constructor arguments, then
 		// replace only the external process adapter before its preflight executes.
 		actual, err := buildHarnessRegistry(caps, environment, commands, root, bin, deferDiscovery, credential, ephemeral)
@@ -224,6 +233,7 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 			if len(declared) > 0 && !slices.Equal(declared, []string{"copilot"}) {
 				expectedAuthArgs = forwardingLauncherAuthCheckArgs()
 			}
+			expectedAuthArgs = append(slices.Clone(expectedAuthArgs), kit.HarnessPreflightArgs...)
 			if !slices.Equal(a.AuthCheckArgs, expectedAuthArgs) {
 				t.Fatal("model authentication preflight was altered")
 			}

@@ -180,6 +180,31 @@ Read-only**. A PAT without that account permission fails the auth preflight (or
 the first agentic stage when preflight is disabled) even when ordinary
 repository operations work.
 
+For a headless Copilot deployment, `agent:model` may instead mint short-lived
+GitHub App installation tokens. Scope the grant explicitly to the Copilot
+harness; Goobers requests each token for exactly one repository with only
+`copilot_requests:write` and `metadata:read`, propagates GitHub's expiry through
+the credential plane, and refreshes before expiry:
+
+```yaml
+credentials:
+  - capability: agent:model
+    harness: copilot
+    githubApp:
+      name: copilot-primary
+      appId: 123456
+      installationId: 789012
+      repository: example-org/example-repo
+      repositoryId: 123456789
+      privateKey:
+        file: /run/secrets/copilot-app.pem
+```
+
+The private key is runner-owned and is never injected into a stage. Deployments
+that require stronger key isolation can keep the App key in an external broker
+and use the existing rotating `token.file` source instead; token files are
+re-read whenever the credential is resolved.
+
 Goobers still models model access as **`agent:model`**. When no token grant is
 configured, the Copilot adapter uses the stored CLI session and removes ambient
 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` values even if

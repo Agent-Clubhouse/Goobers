@@ -666,6 +666,115 @@ func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 	}
 }
 
+func TestClaudeAdapterRepairsSchemaInvalidCompletionInSameSession(t *testing.T) {
+	stubClaudeCredentialsHome(t)
+	for _, invalid := range []string{
+		`{"status":"success","outputs":{"findingResponses":{"finding":1}}}`,
+		`{"status":"success","outputs":{"findingResponses":[{"finding":1}]}}`,
+	} {
+		t.Run(invalid, func(t *testing.T) {
+			workspace := t.TempDir()
+			sideEffects := 0
+			runner := &claudeSequenceRunner{
+				results: []ProcessResult{
+					{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+					{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+				},
+				acts: []func(ProcessRequest) error{
+					func(req ProcessRequest) error {
+						sideEffects++
+						return writeRaw(req.Dir, DefaultResultPath, invalid)
+					},
+					func(req ProcessRequest) error {
+						return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{
+							Status:  apiv1.ResultSuccess,
+							Outputs: map[string]any{"findingResponses": "[]"},
+						})
+					},
+				},
+			}
+			adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+			out, err := adapter.Run(context.Background(), RunRequest{
+				Mode:           ModeInvoke,
+				Envelope:       testEnvelope(workspace),
+				Workspace:      workspace,
+				CompletionPath: DefaultResultPath,
+				Timeout:        time.Minute,
+				ValidateCompletion: func(payload []byte) error {
+					var completion struct {
+						Outputs map[string]any `json:"outputs"`
+					}
+					if err := json.Unmarshal(payload, &completion); err != nil {
+						return err
+					}
+					if _, ok := completion.Outputs["findingResponses"].(string); !ok {
+						return errors.New(`jsonschema: '/outputs/findingResponses' expected string, but got structured value`)
+					}
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if sideEffects != 1 {
+				t.Fatalf("completed side effects = %d, want 1", sideEffects)
+			}
+			if len(runner.reqs) != 2 {
+				t.Fatalf("process calls = %d, want one bounded repair turn", len(runner.reqs))
+			}
+			recoveryPrompt := commandPromptValue(runner.reqs[1].Command)
+			if !strings.Contains(recoveryPrompt, "/outputs/findingResponses") ||
+				!strings.Contains(recoveryPrompt, "expected string") {
+				t.Fatalf("repair prompt omitted validation detail: %q", recoveryPrompt)
+			}
+			if !strings.Contains(string(out.Payload), `"findingResponses":"[]"`) {
+				t.Fatalf("completion payload = %s, want corrected scalar output", out.Payload)
+			}
+		})
+	}
+}
+
+func TestClaudeAdapterFailsClearlyAfterInvalidCompletionRepairIsExhausted(t *testing.T) {
+	stubClaudeCredentialsHome(t)
+	workspace := t.TempDir()
+	runner := &claudeSequenceRunner{
+		results: []ProcessResult{
+			{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+			{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+		},
+		acts: []func(ProcessRequest) error{
+			func(req ProcessRequest) error {
+				return writeRaw(req.Dir, DefaultResultPath, `{"status":"success","outputs":{"bad":[]}}`)
+			},
+			func(req ProcessRequest) error {
+				return writeRaw(req.Dir, DefaultResultPath, `{"status":"success","outputs":{"bad":[]}}`)
+			},
+		},
+	}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Mode:           ModeInvoke,
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Timeout:        time.Minute,
+		ValidateCompletion: func([]byte) error {
+			return errors.New(`jsonschema: '/outputs/bad' expected scalar, but got array`)
+		},
+	})
+	if !errors.Is(err, ErrInvalidCompletion) ||
+		!strings.Contains(err.Error(), "/outputs/bad") ||
+		!strings.Contains(err.Error(), "expected scalar") {
+		t.Fatalf("Run error = %v, want schema path and validation message", err)
+	}
+	if len(runner.reqs) != 2 {
+		t.Fatalf("process calls = %d, want exactly two", len(runner.reqs))
+	}
+	if len(out.Payload) == 0 {
+		t.Fatal("exhausted invalid payload was not preserved for diagnostics")
+	}
+}
+
 func commandOptionValue(command []string, option string) string {
 	index := slices.Index(command, option)
 	if index < 0 || index+1 >= len(command) {
