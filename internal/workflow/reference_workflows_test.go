@@ -699,6 +699,68 @@ func TestReferenceWorkflowsImplementationBoundsModuleDownloadSeparatelyFromImple
 	}
 }
 
+func TestReferenceWorkflowsImplementationValidatesBeforeReview(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read implementation workflow: %v", err)
+	}
+	var w apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("unmarshal implementation workflow: %v", err)
+	}
+
+	tasks := make(map[string]apiv1.Task, len(w.Spec.Tasks))
+	for _, task := range w.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	for _, producer := range []string{"implement", "remediate-ci"} {
+		if got := tasks[producer].Next; got != "pre-review-validation" {
+			t.Fatalf("%s.next = %q, want pre-review-validation", producer, got)
+		}
+	}
+	validation, ok := tasks["pre-review-validation"]
+	if !ok {
+		t.Fatal("pre-review-validation task not found")
+	}
+	if validation.Run == nil || !slices.Equal(validation.Run.Command, []string{"make", "verify-fast"}) {
+		t.Fatalf("pre-review-validation command = %v, want [make verify-fast]", validation.Run)
+	}
+	if validation.TimeoutSeconds <= 0 || validation.Retry == nil || validation.Retry.MaxAttempts != 1 {
+		t.Fatalf("pre-review-validation bounds = timeout %d retry %+v, want bounded single policy attempt", validation.TimeoutSeconds, validation.Retry)
+	}
+	if validation.Next != "pre-review-validation-gate" {
+		t.Fatalf("pre-review-validation.next = %q, want pre-review-validation-gate", validation.Next)
+	}
+
+	var validationGate *apiv1.Gate
+	for i := range w.Spec.Gates {
+		if w.Spec.Gates[i].Name == "pre-review-validation-gate" {
+			validationGate = &w.Spec.Gates[i]
+			break
+		}
+	}
+	if validationGate == nil {
+		t.Fatal("pre-review-validation-gate not found")
+	}
+	if validationGate.Automated == nil || validationGate.Automated.Check != "failure-class" {
+		t.Fatalf("pre-review-validation-gate automated check = %+v, want failure-class", validationGate.Automated)
+	}
+	for outcome, want := range map[string]string{
+		"pass":     "review",
+		"fail":     "implement",
+		"infra":    "pre-review-validation",
+		"escalate": "park-escalated",
+	} {
+		if got := validationGate.Branches[outcome]; got != want {
+			t.Fatalf("pre-review-validation-gate %s branch = %q, want %q", outcome, got, want)
+		}
+	}
+	if !slices.Contains(tasks["implement"].ContextFrom, "pre-review-validation") {
+		t.Fatal("implement contextFrom does not include pre-review-validation diagnostics")
+	}
+}
+
 func TestReferenceWorkflowsImplementationCheckpointsBeforeStrictIntegration(t *testing.T) {
 	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
 	raw, err := os.ReadFile(path)
