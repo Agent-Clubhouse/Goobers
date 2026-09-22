@@ -225,7 +225,7 @@ func (s *TokenSource) mint(ctx context.Context, now time.Time) (string, time.Tim
 	defer cancel()
 	endpoint := strings.TrimRight(s.cfg.BaseURL, "/") + "/app/installations/" + url.PathEscape(s.cfg.InstallationID) + "/access_tokens"
 	var reqPayload []byte
-	if len(s.cfg.Repositories) > 0 || len(s.cfg.RepositoryIDs) > 0 || len(s.cfg.Permissions) > 0 {
+	if s.hasMintRestrictions() {
 		payload, err := json.Marshal(struct {
 			Repositories  []string          `json:"repositories"`
 			RepositoryIDs []int64           `json:"repository_ids,omitempty"`
@@ -293,6 +293,10 @@ func (s *TokenSource) mint(ctx context.Context, now time.Time) (string, time.Tim
 		return "", time.Time{}, err
 	}
 	return token, expiresAt, nil
+}
+
+func (s *TokenSource) hasMintRestrictions() bool {
+	return len(s.cfg.Repositories) > 0 || len(s.cfg.RepositoryIDs) > 0 || len(s.cfg.Permissions) > 0
 }
 
 // mintError maps GitHub's failure statuses onto actionable diagnostics. Only

@@ -124,18 +124,9 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		if err != nil {
 			return nil, nil, fmt.Errorf("build credentials: %w", err)
 		}
-		ref := credentialRefName(key)
-		if cg.GitHubApp != nil {
-			mint, err := newAgentModelGitHubAppTokenSource(cg.GitHubApp, registrar, stores)
-			if err != nil {
-				return nil, nil, fmt.Errorf("build credentials: %s: %w", key, err)
-			}
-			if sources == nil {
-				sources = make(map[string]credentials.ExpiringResolveFunc)
-			}
-			sources[ref] = mint
-		} else {
-			refs = append(refs, cg.Token.CredentialTokenRef(ref))
+		refs, sources, err = registerCredentialGrantSource(cg, key, refs, sources, registrar, stores)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: %s: %w", key, err)
 		}
 	}
 	// The expiring-source form threads each minted value's stated expiry
@@ -308,6 +299,22 @@ func credentialGrantStorageKey(grant instance.CredentialGrant) (string, error) {
 // credentialRefName is the resolver ref name for an explicit credentials entry,
 // namespaced so it can never collide with a repo ref (owner/name).
 func credentialRefName(key string) string { return "credential:" + key }
+
+func registerCredentialGrantSource(cg instance.CredentialGrant, key string, refs []credentials.TokenRef, sources map[string]credentials.ExpiringResolveFunc, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) ([]credentials.TokenRef, map[string]credentials.ExpiringResolveFunc, error) {
+	ref := credentialRefName(key)
+	if cg.GitHubApp == nil {
+		return append(refs, cg.Token.CredentialTokenRef(ref)), sources, nil
+	}
+	mint, err := newAgentModelGitHubAppTokenSource(cg.GitHubApp, registrar, stores)
+	if err != nil {
+		return refs, sources, err
+	}
+	if sources == nil {
+		sources = make(map[string]credentials.ExpiringResolveFunc)
+	}
+	sources[ref] = mint
+	return refs, sources, nil
+}
 
 // newGitHubAppTokenSource builds the installation-token minting source for a
 // github-app repo (#686). A package var so CLI tests substitute an

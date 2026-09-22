@@ -761,6 +761,10 @@ func (c CredentialGrant) validate(i int, seen map[string]bool, stores map[string
 			"two grants must not match the same capability/mcp and harness", i, label)
 	}
 	seen[key] = true
+	return c.validateSource(i, label, stores, envPassthrough)
+}
+
+func (c CredentialGrant) validateSource(i int, label string, stores map[string]bool, envPassthrough []string) error {
 	if c.GitHubApp != nil && c.Token.Configured() {
 		return fmt.Errorf("credentials[%d] (%s): set exactly one of token or githubApp", i, label)
 	}
