@@ -60,6 +60,7 @@ repos:
 `
 
 const docsUpdaterInertWarning = "WARNING Workflow/docs-updater: workflow \"docs-updater\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run docs-updater`"
+const preReviewExperimentInertWarning = "WARNING Workflow/implementation-pre-review-experiment: workflow \"implementation-pre-review-experiment\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run implementation-pre-review-experiment`"
 
 type checkedInTree struct {
 	path            string
@@ -75,6 +76,7 @@ var checkedInTrees = []checkedInTree{
 		strict:     true,
 		allowedWarnings: []string{
 			docsUpdaterInertWarning,
+			preReviewExperimentInertWarning,
 		},
 	},
 	{path: "config-examples"},
