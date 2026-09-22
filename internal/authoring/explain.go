@@ -356,6 +356,7 @@ func selectorString(parts []selectorPart, includeElements bool) string {
 	return strings.Join(names, ".")
 }
 
+//complexitygate:allow object example synthesis must preserve declared+resolved required/allOf/oneOf constraints together; splitting it would obscure the schema composition contract while generating example JSON.
 func (r *registry) schemaExample(doc *schemaDocument, declared, resolved map[string]any, depth int) (any, error) {
 	if depth > 32 {
 		return nil, errors.New("schema nesting exceeds example depth")
@@ -383,53 +384,8 @@ func (r *registry) schemaExample(doc *schemaDocument, declared, resolved map[str
 		if err := r.applyObjectConstraints(doc, resolved, resolved, example, depth); err != nil {
 			return nil, err
 		}
-		minimum, _ := schemaNumber(resolved, "minProperties")
-		if len(example) < int(minimum) {
-			properties, _ := resolved["properties"].(map[string]any)
-			names := make([]string, 0, len(properties))
-			for name := range properties {
-				if _, exists := example[name]; !exists {
-					names = append(names, name)
-				}
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				child, ok := properties[name].(map[string]any)
-				if !ok {
-					continue
-				}
-				childDoc, childResolved, err := r.resolve(doc, child)
-				if err != nil {
-					return nil, err
-				}
-				example[name], err = r.schemaExample(childDoc, child, childResolved, depth+1)
-				if err != nil {
-					return nil, err
-				}
-				if len(example) >= int(minimum) {
-					break
-				}
-			}
-		}
-		if len(example) < int(minimum) {
-			additional, ok := resolved["additionalProperties"].(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("cannot satisfy minProperties %d", int(minimum))
-			}
-			additionalDoc, additionalResolved, err := r.resolve(doc, additional)
-			if err != nil {
-				return nil, err
-			}
-			for len(example) < int(minimum) {
-				name := fmt.Sprintf("key%d", len(example)+1)
-				if _, exists := example[name]; exists {
-					continue
-				}
-				example[name], err = r.schemaExample(additionalDoc, additional, additionalResolved, depth+1)
-				if err != nil {
-					return nil, err
-				}
-			}
+		if err := r.ensureObjectMinProperties(doc, resolved, example, depth); err != nil {
+			return nil, err
 		}
 		return example, nil
 	case "array":
@@ -506,6 +462,57 @@ func (r *registry) schemaExample(doc *schemaDocument, declared, resolved map[str
 		}
 		return map[string]any{}, nil
 	}
+}
+
+func (r *registry) ensureObjectMinProperties(doc *schemaDocument, resolved map[string]any, example map[string]any, depth int) error {
+	minimum, _ := schemaNumber(resolved, "minProperties")
+	if len(example) >= int(minimum) {
+		return nil
+	}
+	properties, _ := resolved["properties"].(map[string]any)
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		if _, exists := example[name]; !exists {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		child, ok := properties[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		childDoc, childResolved, err := r.resolve(doc, child)
+		if err != nil {
+			return err
+		}
+		example[name], err = r.schemaExample(childDoc, child, childResolved, depth+1)
+		if err != nil {
+			return err
+		}
+		if len(example) >= int(minimum) {
+			return nil
+		}
+	}
+	additional, ok := resolved["additionalProperties"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("cannot satisfy minProperties %d", int(minimum))
+	}
+	additionalDoc, additionalResolved, err := r.resolve(doc, additional)
+	if err != nil {
+		return err
+	}
+	for len(example) < int(minimum) {
+		name := fmt.Sprintf("key%d", len(example)+1)
+		if _, exists := example[name]; exists {
+			continue
+		}
+		example[name], err = r.schemaExample(additionalDoc, additional, additionalResolved, depth+1)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *registry) applyObjectConstraints(doc *schemaDocument, base, constraints map[string]any, example map[string]any, depth int) error {
