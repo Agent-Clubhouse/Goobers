@@ -94,7 +94,7 @@ func testJournalLogsExplicitConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pipeline := newJournalLogPipeline(exporter, resource.Empty())
+		pipeline := newJournalLogPipeline(exporter, resource.Empty(), nil)
 		var record apilog.Record
 		record.SetBody(attribute.StringValue("{}"))
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)

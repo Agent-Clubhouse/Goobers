@@ -209,13 +209,17 @@ func (l *InstanceLog) ensureActiveFile(path string) error {
 		return err
 	}
 	if l.commits != nil {
-		identity, err := readInstanceLogID(l.dir)
-		if err != nil {
-			// Keep file writes independent of export identity availability.
-			// The sink counts and reports an empty identity as an export drop.
-			identity = ""
+		// Keep file writes independent of export identity availability. A read
+		// failure here is usually transient (a momentary EMFILE or a rotation
+		// racing the id file), but JournalID is only recomputed on the next
+		// rotation and the sink drops every record carrying an empty identity.
+		// Latching "" would therefore silence export for this handle's entire
+		// remaining lifetime over a blip, while file writes continued normally.
+		// Keeping the previous identity is strictly better: at worst it is
+		// stale for one rotation, where "" is permanently fatal to export.
+		if identity, err := readInstanceLogID(l.dir); err == nil {
+			l.commits.context.JournalID = identity
 		}
-		l.commits.context.JournalID = identity
 	}
 	return nil
 }

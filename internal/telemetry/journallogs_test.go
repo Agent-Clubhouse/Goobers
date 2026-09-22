@@ -207,7 +207,7 @@ func (e *journalTestExporter) Shutdown(context.Context) error {
 
 func journalTestClient(t *testing.T, exporter sdklog.Exporter) *Client {
 	t.Helper()
-	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty())}
+	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -385,7 +385,7 @@ func TestJournalLogsClientLifecycleRemainsBestEffort(t *testing.T) {
 		exportErr:   errors.New("collector unavailable"),
 		flushErr:    errors.New("collector flush failed"),
 		shutdownErr: errors.New("collector shutdown failed"),
-	}, resource.Empty())
+	}, resource.Empty(), nil)
 	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

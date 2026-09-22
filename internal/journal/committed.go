@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/goobers/goobers/internal/panicguard"
 )
 
 // CommittedEvent owns the scrubbed bytes of one successful event-file commit.
@@ -182,11 +184,34 @@ func (t *commitTarget) notify(ev Event, line []byte) {
 	t.offer(event)
 }
 
+// committedSinkPanics counts sink panics contained by offer. A panicking sink is
+// a bug in the sink, but it must never be a bug in the journal, so the count is
+// the only trace it leaves here; CommittedSinkPanicCount exposes it so an owner
+// can surface it rather than have it vanish.
+var committedSinkPanics atomic.Uint64
+
+// CommittedSinkPanicCount reports how many sink panics have been contained in
+// this process.
+func CommittedSinkPanicCount() uint64 { return committedSinkPanics.Load() }
+
 func (t *commitTarget) offer(event CommittedEvent) {
 	t.reg.mu.RLock()
 	defer t.reg.mu.RUnlock()
-	if t.reg.sink != nil {
-		t.reg.sink.Commit(event)
+	if t.reg.sink == nil {
+		return
+	}
+	// Commit runs inside appendEvent, after the event is already durable and
+	// with the journal's write lock (and, for an instance log, a cross-process
+	// flock) held. A panicking sink must not unwind into the journal writer:
+	// the event is committed, the caller's append succeeded, and telemetry is
+	// not permitted to take down the durability substrate. The sink stays
+	// registered — a panic may be data-dependent, and silently disabling export
+	// would trade a loud failure for a quiet one.
+	//
+	// This goes through panicguard because recover is shadowed package-wide by
+	// this package's own recover (reader.go).
+	if panicguard.Call(t.reg.sink.Commit, event) {
+		committedSinkPanics.Add(1)
 	}
 }
 

@@ -402,9 +402,15 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		shutdownOnReturn = false
 		releaseOnReturn = false
 		cleanup := func() {
+			// Same ordering as the shutdownOnReturn defer above. Cancel first:
+			// on this path triggerCtx derives from context.WithoutCancel, so
+			// cancelTrigger is the only cancellation it will ever observe, and
+			// waiting before cancelling would park on work that was never told
+			// to stop. Journal writers then finish before shutdownSetup
+			// unregisters the telemetry sink.
+			cancelTrigger()
 			sched.Wait()
 			wg.Wait()
-			cancelTrigger()
 			_ = shutdownSetup()
 			release()
 		}

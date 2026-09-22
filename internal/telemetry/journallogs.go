@@ -53,7 +53,7 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 	if err != nil {
 		return fmt.Errorf("%w: create journal logs exporter: %w", ErrOTLPUnavailable, err)
 	}
-	c.journalLogs = newJournalLogPipeline(exporter, res)
+	c.journalLogs = newJournalLogPipeline(exporter, res, c.scrubber)
 	if cfg.JournalRoot == "" {
 		return nil
 	}
@@ -137,12 +137,14 @@ type journalLogPipeline struct {
 	failures        atomic.Uint64
 	invalidMetadata atomic.Uint64
 	completed       atomic.Uint64
+	scrubber        journal.Scrubber
 }
 
-func newJournalLogPipeline(exporter sdklog.Exporter, res *resource.Resource) *journalLogPipeline {
+func newJournalLogPipeline(exporter sdklog.Exporter, res *resource.Resource, scrubber journal.Scrubber) *journalLogPipeline {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &journalLogPipeline{
-		ctx: ctx, cancel: cancel, progress: make(chan struct{}),
+		scrubber: scrubber,
+		ctx:      ctx, cancel: cancel, progress: make(chan struct{}),
 		wake: make(chan struct{}, 1), done: make(chan struct{}), ready: make(chan struct{}),
 		flushes:  make(chan journalLogFlush, 1),
 		reporter: newExportErrorHandler(),
@@ -309,9 +311,20 @@ func (p *journalLogPipeline) emit(e journal.CommittedEvent) {
 		attribute.String("goobers.journal.id", e.JournalID),
 		attribute.String("goobers.journal.seq", strconv.FormatUint(e.Seq, 10)),
 	)
+	// Gaggle is the only operator-supplied free text among the identity
+	// attributes, so it is the only one that can plausibly carry a pasted
+	// credential; the body it travels with was already scrubbed by the journal.
+	// The remaining attributes are machine-generated identifiers and are
+	// deliberately left raw: they are the correlation keys, and running a
+	// secret-shaped pattern net over an opaque hex id risks redacting the very
+	// values a consumer joins on. Keep them out of the scrubber.
+	gaggle := e.Gaggle
+	if gaggle != "" && p.scrubber != nil {
+		gaggle = redactWith(p.scrubber, gaggle)
+	}
 	for _, kv := range []attribute.KeyValue{
 		attribute.String("goobers.instance.id", e.InstanceID),
-		attribute.String("goobers.gaggle", e.Gaggle),
+		attribute.String("goobers.gaggle", gaggle),
 		attribute.String("goobers.run.id", e.RunID),
 	} {
 		if kv.Value.AsString() != "" {
@@ -374,6 +387,19 @@ func (p *journalLogPipeline) shutdown(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		p.cancel()
+		// Account the abandoned backlog before returning. The worker performs
+		// the same accounting when it observes the cancelled context, but a
+		// short-lived CLI reads JournalExportStats as soon as Shutdown returns
+		// and would otherwise report Dropped: 0 for records that were never
+		// sent. Only the queued records are settled here: pending and bytes
+		// still cover a record the worker may be mid-emit on, and the worker
+		// resets both once it exits. Both paths run under p.mu, so whichever
+		// arrives second adds zero.
+		p.mu.Lock()
+		p.dropped.Add(uint64(p.length))
+		clear(p.queue[:])
+		p.length = 0
+		p.mu.Unlock()
 		// Shutdown runs outside journal locks. Report before returning so a
 		// short-lived CLI cannot exit before the worker reports cancellation.
 		p.reporter.Handle(fmt.Errorf("journal logs shutdown: %w", ctx.Err()))
