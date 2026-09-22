@@ -588,6 +588,9 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolv
 				if err := resetCircuitBreaker(attributedCtx, poster, l, runID, runURL); err != nil {
 					errs = append(errs, fmt.Errorf("reset circuit breaker for run %q: %w", runID, err))
 				}
+				if err := settleNoWorkStreak(attributedCtx, poster, l, runID, finalState, runURL); err != nil {
+					errs = append(errs, fmt.Errorf("settle no-work streak for run %q: %w", runID, err))
+				}
 			} else if err := applyCircuitBreaker(attributedCtx, poster, l, runID, finalState, runURL); err != nil {
 				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
 			}
