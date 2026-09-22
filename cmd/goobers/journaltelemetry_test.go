@@ -238,7 +238,13 @@ func TestClaimLockDiagnosticsExportLiveOTLPLogs(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer existing.Shutdown(context.Background())
+				defer func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if err := existing.Shutdown(ctx); err != nil {
+						t.Errorf("shut down existing telemetry owner: %v", err)
+					}
+				}()
 			}
 			threshold := time.Hour
 			wantType := journal.EventType("")
@@ -251,7 +257,11 @@ func TestClaimLockDiagnosticsExportLiveOTLPLogs(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer holder.Release()
+				defer func() {
+					if err := holder.Release(); err != nil {
+						t.Errorf("release claim lock: %v", err)
+					}
+				}()
 				wantType = journal.EventClaimLockTimeout
 			}
 			called := false
