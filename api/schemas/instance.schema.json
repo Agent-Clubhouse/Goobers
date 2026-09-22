@@ -461,7 +461,8 @@
             "repository": {
               "type": "string",
               "pattern": "^[^/\\s]+/[^/\\s]+$",
-              "description": "Exact owner/name whose installation token is requested."
+              "description": "Exact owner/name whose installation token is requested.",
+              "examples": ["example-org/example-repo"]
             },
             "repositoryId": { "$ref": "#/$defs/githubId", "description": "Positive immutable numeric ID used to restrict the installation-token request without owner/name ambiguity." },
             "privateKey": {

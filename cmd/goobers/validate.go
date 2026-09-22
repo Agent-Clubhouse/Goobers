@@ -1438,7 +1438,7 @@ func (c harnessModelCredential) readiness(ctx context.Context, now time.Time) cr
 	}
 	var resolve credreadiness.ExpiringResolve
 	if c.ResolveExpiring != nil {
-		resolve = credreadiness.ExpiringResolve(c.ResolveExpiring)
+		resolve = c.ResolveExpiring
 	} else if c.Resolve != nil {
 		// Token refs state no expiry -- only minting sources do -- so the
 		// zero time here is the accurate answer, and credreadiness reports it
