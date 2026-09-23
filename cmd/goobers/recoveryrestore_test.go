@@ -129,11 +129,14 @@ func TestRecoveryRestoreConfiguredFileCredentialRemainsSupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recoveryRestoreGitEnvironment: %v", err)
 	}
-	if !strings.Contains(strings.Join(env, "\n"), "configured-file-token") {
-		t.Fatalf("configured file credential was not used: %q", env)
+	var gitToken string
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "GOOBERS_GIT_TOKEN="); ok {
+			gitToken = value
+		}
 	}
-	if strings.Contains(strings.Join(env, "\n"), "ambient-stage-token") {
-		t.Fatalf("ambient stage credential overrode configured file credential: %q", env)
+	if gitToken != "configured-file-token" {
+		t.Fatalf("GOOBERS_GIT_TOKEN = %q, want configured file credential; env: %q", gitToken, env)
 	}
 	if scrubbed := string(registry.Scrub([]byte("token=configured-file-token"))); strings.Contains(scrubbed, "configured-file-token") {
 		t.Fatalf("configured file credential was not registered with the scrubber: %q", scrubbed)
