@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -57,6 +58,8 @@ func (w *workerSeams) publishWorkerRecovery(ctx context.Context, manager *worktr
 	if err != nil {
 		return err
 	}
+	stopTelemetry := startCommandJournalTelemetry(layout, os.Stderr)
+	defer stopTelemetry()
 	root, err := prepareRecoveryInventory(w.root)
 	if err != nil {
 		return err

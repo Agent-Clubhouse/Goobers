@@ -515,6 +515,43 @@ func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
 	}
 }
 
+func TestLinuxShardsIncludeJournalOTLPPackages(t *testing.T) {
+	root, err := findModuleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	weights, err := loadShardWeights(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := exec.Command("go", "list", "./...")
+	list.Dir = root
+	list.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=1")
+	output, err := list.CombinedOutput()
+	if err != nil {
+		t.Fatalf("discover Linux unit packages: %v\n%s", err, output)
+	}
+	packages := strings.Fields(string(output))
+	seen := make(map[string][]int)
+	for index := 1; index <= 3; index++ {
+		for _, pkg := range selectShard(packages, shardSpec{index: index, total: 3}, weights) {
+			seen[pkg] = append(seen[pkg], index)
+		}
+	}
+	for _, path := range []string{
+		"internal/journal", "internal/livejournal", "internal/telemetry",
+		"internal/instance", "api/schemas", "internal/engine", "internal/version",
+		"cmd/goobers", "test/ci", "test/hermetic",
+	} {
+		pkg := "github.com/goobers/goobers/" + path
+		if len(seen[pkg]) != 1 {
+			t.Errorf("%s belongs to shards %v, want exactly one Linux race shard", pkg, seen[pkg])
+		} else {
+			t.Logf("%s: Linux race shard %d/3", pkg, seen[pkg][0])
+		}
+	}
+}
+
 func TestCheckedInShardWeightsAreFresh(t *testing.T) {
 	root, err := findModuleRoot()
 	if err != nil {

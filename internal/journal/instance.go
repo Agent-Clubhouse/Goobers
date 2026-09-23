@@ -30,6 +30,7 @@ type InstanceLog struct {
 	dir      string
 	scrubber Scrubber
 	now      func() time.Time
+	commits  *commitTarget
 
 	mu     sync.Mutex
 	file   *os.File
@@ -81,7 +82,8 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 	if err := truncateTornTail(path, tornBytes); err != nil {
 		return nil, RecoverReport{}, err
 	}
-	if _, err := ensureInstanceLogID(dir, eventsExisted); err != nil {
+	journalID, err := ensureInstanceLogID(dir, eventsExisted)
+	if err != nil {
 		return nil, RecoverReport{}, err
 	}
 
@@ -90,12 +92,15 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 		return nil, RecoverReport{}, fmt.Errorf("journal: open instance log: %w", err)
 	}
 	l := &InstanceLog{dir: dir, scrubber: cfg.scrubber, now: cfg.now, file: f, seq: report.LastSeq, dropObserver: cfg.instanceDropObserver}
+	if !cfg.disableCommittedExport {
+		l.commits = instanceCommitTarget(dir, journalID)
+	}
 
 	if tornBytes > 0 {
 		if _, err := appendEvent(l.file, &l.seq, l.scrubber, l.now, Event{
 			Type:   EventRepaired,
 			Runner: map[string]any{"discardedBytes": tornBytes},
-		}); err != nil {
+		}, l.commits); err != nil {
 			_ = f.Close()
 			return nil, RecoverReport{}, err
 		}
@@ -155,11 +160,11 @@ func (l *InstanceLog) Append(ev Event) error {
 		if _, err := appendEvent(l.file, &l.seq, l.scrubber, l.now, Event{
 			Type:   EventRepaired,
 			Runner: map[string]any{"discardedBytes": tornBytes},
-		}); err != nil {
+		}, l.commits); err != nil {
 			return err
 		}
 	}
-	_, err = appendEvent(l.file, &l.seq, l.scrubber, l.now, ev)
+	_, err = appendEvent(l.file, &l.seq, l.scrubber, l.now, ev, l.commits)
 	return err
 }
 
@@ -200,7 +205,23 @@ func (l *InstanceLog) ensureActiveFile(path string) error {
 	if os.SameFile(current, active) {
 		return nil
 	}
-	return l.reopenFile(path)
+	if err := l.reopenFile(path); err != nil {
+		return err
+	}
+	if l.commits != nil {
+		// Keep file writes independent of export identity availability. A read
+		// failure here is usually transient (a momentary EMFILE or a rotation
+		// racing the id file), but JournalID is only recomputed on the next
+		// rotation and the sink drops every record carrying an empty identity.
+		// Latching "" would therefore silence export for this handle's entire
+		// remaining lifetime over a blip, while file writes continued normally.
+		// Keeping the previous identity is strictly better: at worst it is
+		// stale for one rotation, where "" is permanently fatal to export.
+		if identity, err := readInstanceLogID(l.dir); err == nil {
+			l.commits.context.JournalID = identity
+		}
+	}
+	return nil
 }
 
 func (l *InstanceLog) reopenFile(path string) error {

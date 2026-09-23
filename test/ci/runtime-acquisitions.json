@@ -62,6 +62,7 @@
       ".github/workflows/ci.yml#windows-smoke/Windows image input verifier (PowerShell 5.1):go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows inline script runtime:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows instance runtime:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows journal OTLP export:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows offline diagnostic evidence:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows platform runtime:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows read model and stores:go-modules",

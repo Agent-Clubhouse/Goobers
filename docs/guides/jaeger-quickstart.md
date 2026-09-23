@@ -26,10 +26,16 @@ telemetry:
   otlp:
     endpoint: http://127.0.0.1:4317
     insecure: true
+    journalLogs: false # Jaeger accepts traces, not journal logs.
 ```
 
 Restart `goobers up`, run a workflow, then open
 <http://127.0.0.1:16686/> and select the `goobers` service.
+
+Native OTLP export also sends newly committed journal entries as OTLP Logs by
+default. Keep `journalLogs: false` for a trace-only collector such as Jaeger.
+For a collector supporting Logs on the same endpoint, see
+[journal OTLP export](journal-otlp.md).
 
 `insecure: true` is required for this plain-text endpoint and is accepted only
 for `localhost` or a loopback IP. Non-loopback collectors require TLS:

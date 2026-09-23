@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -53,6 +54,18 @@ type Config struct {
 	OTLPEndpoint   string
 	OTLPInsecure   bool
 	OTLPHeaders    map[string]string
+	// JournalLogs enables live export of committed journal events as OTLP Logs.
+	// It has no effect without ExporterOTLP and an explicit endpoint.
+	JournalLogs bool
+	// JournalLogsOnly omits trace and metric providers for short-lived
+	// commands. JournalLogs and the explicit OTLP endpoint still gate export.
+	JournalLogsOnly bool
+	// JournalRoot optionally attaches live export to this existing instance
+	// root. The client releases the registration before shutdown.
+	JournalRoot string
+	// JournalInstanceID is the known instance identity attached to committed
+	// events. An empty value omits the instance attribute.
+	JournalInstanceID string
 	// OTLPCAFile is an extra PEM root appended to the system trust pool
 	// (RootCAs). Empty means system trust only, the pre-#3804 behavior.
 	OTLPCAFile string
@@ -106,6 +119,8 @@ type Client struct {
 	instruments        *instruments
 	tracer             trace.Tracer
 	scrubber           journal.Scrubber
+	journalLogs        *journalLogPipeline
+	unregisterJournal  func()
 }
 
 // InstanceJournalAppendDropped implements journal.InstanceAppendDropObserver.
@@ -203,6 +218,13 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
 	}
 	res = resource.NewWithAttributes(res.SchemaURL(), scrubAttributes(scrubber, res.Attributes())...)
+	if cfg.JournalLogsOnly {
+		client := &Client{
+			scrubber: scrubber,
+			tracer:   tracenoop.NewTracerProvider().Tracer(ScopeName),
+		}
+		return client, client.configureJournalLogs(ctx, cfg, res)
+	}
 
 	// otlpDegraded, not err, carries an ErrOTLPUnavailable across the rest of
 	// this function: err gets reused (:=) by later steps below, and the
@@ -277,6 +299,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.SpanExporter != nil {
 		client.localSpanProcessor = processors[0]
 	}
+	otlpDegraded = errors.Join(otlpDegraded, client.configureJournalLogs(ctx, cfg, res))
 	return client, otlpDegraded
 }
 
@@ -393,15 +416,24 @@ func (c *Client) StartSchedulerSpan(ctx context.Context, attrs SchedulerAttribut
 // fail the caller (isCollectorUnreachable, #1124); a local-exporter error still
 // propagates.
 func (c *Client) Flush(ctx context.Context) error {
-	if err := c.tracerProvider.ForceFlush(ctx); err != nil && !isCollectorUnreachable(err) {
-		return fmt.Errorf("flush telemetry traces: %w", err)
+	if c.tracerProvider != nil {
+		if err := c.tracerProvider.ForceFlush(ctx); err != nil && !isCollectorUnreachable(err) {
+			return fmt.Errorf("flush telemetry traces: %w", err)
+		}
 	}
 	// Metric export is strictly best-effort: unlike traces it has no local
 	// exporter whose failure means a real defect, so every error here is a
 	// remote-collector condition (unreachable, or a collector configured for
 	// traces only). The SDK still reports it through the global otel error
 	// handler; it must never fail the caller's work.
-	_ = c.meterProvider.ForceFlush(ctx)
+	if c.meterProvider != nil {
+		_ = c.meterProvider.ForceFlush(ctx)
+	}
+	if c.journalLogs != nil {
+		// Like metrics, journal Logs are remote-only and best-effort. The
+		// pipeline reports failures independently of the journal writer.
+		_ = c.journalLogs.flush(ctx)
+	}
 	return nil
 }
 
@@ -423,12 +455,22 @@ func (c *Client) FlushLocal(ctx context.Context) error {
 // are still shut down; only the spurious error is dropped — while a
 // local-exporter error still propagates.
 func (c *Client) Shutdown(ctx context.Context) error {
+	if c.unregisterJournal != nil {
+		c.unregisterJournal()
+	}
 	var errs []error
-	if err := c.tracerProvider.Shutdown(ctx); err != nil && !isCollectorUnreachable(err) {
-		errs = append(errs, fmt.Errorf("shutdown telemetry traces: %w", err))
+	if c.tracerProvider != nil {
+		if err := c.tracerProvider.Shutdown(ctx); err != nil && !isCollectorUnreachable(err) {
+			errs = append(errs, fmt.Errorf("shutdown telemetry traces: %w", err))
+		}
 	}
 	// Best-effort, exactly as in Flush.
-	_ = c.meterProvider.Shutdown(ctx)
+	if c.meterProvider != nil {
+		_ = c.meterProvider.Shutdown(ctx)
+	}
+	if c.journalLogs != nil {
+		_ = c.journalLogs.shutdown(ctx)
+	}
 	return errors.Join(errs...)
 }
 

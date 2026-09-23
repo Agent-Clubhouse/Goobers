@@ -1299,6 +1299,12 @@ jobs:
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
 
+      # Exercise native Logs delivery and real journal-writing CLI lifetimes.
+      # Keep the large CLI/engine suites filtered; test/ci checks this selection
+      # against every test in the journal export regression files.
+      - name: Windows journal OTLP export
+        run: go test ./internal/journal ./internal/livejournal ./internal/telemetry ./internal/instance ./api/schemas ./internal/engine ./cmd/goobers -run '^(TestCommitted.*|TestJournalLogs.*|TestOTLPJournalLogs.*|TestInstanceSchemaJournalLogs|TestProjectionDoesNotExportHistoricalJournalEvents|TestConfigureOTLPJournalLogsGate|TestJournalRedactExportsLiveOTLPLog|TestClaimsReleaseExportsLiveOTLPLog|TestClaimLockDiagnosticsExportLiveOTLPLogs|TestCommandJournalTelemetrySharesRootLifetime|TestRunNoWaitReturnsAfterStandaloneDispatch)$' -count=1 -timeout=3m
+
       # The whole package, not one named test. #3064 added this step scoped to
       # TestCreateLegacyRuntimeAliasCreatesJunction only, which passed while the
       # four migration tests that actually exercise alias *resolution* stayed

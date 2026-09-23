@@ -837,6 +837,8 @@ func acquireClaimLock(lockPath, operation string, timeout time.Duration, started
 }
 
 func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration time.Duration) error {
+	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {
 		return fmt.Errorf("open instance log for slow claim lock: %w", err)
@@ -860,6 +862,8 @@ func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration 
 }
 
 func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext, timeoutErr *claimsLockTimeoutError) error {
+	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {
 		return fmt.Errorf("open instance log for claim lock timeout: %w", err)
