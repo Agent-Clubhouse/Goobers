@@ -198,7 +198,7 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 var recoveryFetchCurrentBase = recovery.FetchCurrentBase
 
 func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, cfg *instance.Config, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
-	if os.Getenv(executor.RunIDEnvVar) != "" || os.Getenv(executor.CredentialEnvVar(string(capability.RepoPush))) != "" {
+	if os.Getenv(executor.RunIDEnvVar) != "" || claimsPlaneSelected() {
 		if env, err := stageScopedRepoPushGitEnvironment(ctx, project, remoteURL, registry); err != nil || env != nil {
 			return env, err
 		}

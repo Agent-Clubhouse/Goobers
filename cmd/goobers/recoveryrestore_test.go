@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -110,7 +111,8 @@ func TestRecoveryRestoreGitEnvironmentFailsClosedWithoutStageScopedRepoPushCrede
 
 func TestRecoveryRestoreConfiguredFileCredentialRemainsSupported(t *testing.T) {
 	t.Setenv("GOOBERS_RUN_ID", "")
-	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "")
+	t.Setenv(claimsclient.EnvEndpoint, "")
+	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "ambient-stage-token")
 	tokenFile := filepath.Join(t.TempDir(), "github-token")
 	if err := os.WriteFile(tokenFile, []byte("configured-file-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -129,6 +131,9 @@ func TestRecoveryRestoreConfiguredFileCredentialRemainsSupported(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(env, "\n"), "configured-file-token") {
 		t.Fatalf("configured file credential was not used: %q", env)
+	}
+	if strings.Contains(strings.Join(env, "\n"), "ambient-stage-token") {
+		t.Fatalf("ambient stage credential overrode configured file credential: %q", env)
 	}
 	if scrubbed := string(registry.Scrub([]byte("token=configured-file-token"))); strings.Contains(scrubbed, "configured-file-token") {
 		t.Fatalf("configured file credential was not registered with the scrubber: %q", scrubbed)
