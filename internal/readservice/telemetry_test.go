@@ -1392,6 +1392,55 @@ func TestLocalTelemetryStatsPrefiltersRuntimeAnalyticsRuns(t *testing.T) {
 	}
 }
 
+func TestLocalTelemetryStatsPreservesAggregatesWhenGraphAnalyticsFails(t *testing.T) {
+	ctx := context.Background()
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"matching-run",
+		"implementation",
+		"core",
+		time.Date(2026, 8, 22, 6, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "5530"},
+		true,
+	)
+	finishFixtureRun(t, run, clock, journal.PhaseCompleted)
+
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), readmodel.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	runDir := filepath.Join(layout.RunsDir(), "matching-run")
+	if err := store.ProjectRunDir(ctx, runDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "events.jsonl"), []byte("{]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := NewLocal(LocalSources{
+		Layout: layout, Definitions: analyticsTestDefinitions(), ReadModel: store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.telemetry = &Telemetry{store: &fakeTelemetryStore{}}
+
+	got, err := service.TelemetryStats(ctx, TelemetryStatsRequest{
+		Gaggle: "core", Workflow: "implementation",
+	})
+	if err != nil {
+		t.Fatalf("telemetry stats: %v", err)
+	}
+	if got.GraphAnalytics != nil {
+		t.Fatalf("graph analytics = %+v, want unavailable optional enrichment", got.GraphAnalytics)
+	}
+}
+
 func TestNormalizedPromotionFailureProducesTrustedWeightsForGraphAnalytics(t *testing.T) {
 	credits := []NodeCredit{
 		{Kind: "stage", Stage: "implement", Identity: "sha256:v1"},

@@ -1027,7 +1027,7 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 		return TelemetryStatsResult{}, err
 	}
 	if err := s.attachGraphAnalytics(ctx, req, &result); err != nil {
-		return TelemetryStatsResult{}, err
+		return result, nil
 	}
 	return result, nil
 }
