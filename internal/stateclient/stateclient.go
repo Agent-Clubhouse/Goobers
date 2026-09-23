@@ -208,6 +208,14 @@ var prRemediationNoopKeyPattern = regexp.MustCompile(`^pr-remediation-noop-[0-9a
 // change, the same pr-remediation-noop precedent.
 var failureStreakKeyPattern = regexp.MustCompile(`^failure-streak-[0-9a-f]{64}\.json$`)
 
+// noWorkStreakKeyPattern matches the PER-ITEM repeated-no-work record,
+// no-work-streak-<sha256 of the item's repository-scoped key>.json (#5379).
+// It is deliberately a SEPARATE key family from failure-streak: a no-work
+// verdict is not a failure, and folding the two counters together would make
+// a productive completion's failure-streak reset silently clear the
+// repeated-no-work evidence that motivated a park (and vice versa).
+var noWorkStreakKeyPattern = regexp.MustCompile(`^no-work-streak-[0-9a-f]{64}\.json$`)
+
 // verdictStateKeyPattern matches the PER-PULL-REQUEST remediation verdict
 // record, remediation-verdict-<sha256 of the PR's repository-scoped key>.json,
 // the second of the two Goobers#3025 marker families: the merge-review verdict
@@ -345,6 +353,12 @@ func FailureStreakKey(digest string) string {
 	return "failure-streak-" + digest + ".json"
 }
 
+// NoWorkStreakKey names the repeated-no-work record for one item's record-key
+// digest (#5379).
+func NoWorkStreakKey(digest string) string {
+	return "no-work-streak-" + digest + ".json"
+}
+
 // RemediationVerdictKey names the remediation-verdict record for one PR's
 // record-key digest (Goobers#3025/#5030).
 func RemediationVerdictKey(digest string) string {
@@ -362,6 +376,7 @@ func ValidKey(key string) bool {
 		prRemediationNoopKeyPattern.MatchString(key) ||
 		backlogHealthCursorKeyPattern.MatchString(key) ||
 		failureStreakKeyPattern.MatchString(key) ||
+		noWorkStreakKeyPattern.MatchString(key) ||
 		verdictStateKeyPattern.MatchString(key)
 }
 
