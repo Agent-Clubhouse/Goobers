@@ -52,10 +52,13 @@ type canonicalFinding struct {
 // on a sibling. Routing that to needs-remediation hands pr-remediation a defect
 // that doesn't exist; it reproduces the identical diff, checkpoints
 // byte-identical, and escalates (the stuck-loop pattern this issue exists to
-// break). A mixed verdict — any substantive/conflict/rebase-needed finding
-// present alongside cross-pr-blocked ones — still routes to needs-remediation
-// unconditionally: a real defect takes priority regardless of ordering, and
-// remediation can and should fix it.
+// break). A mixed verdict — any substantive/conflict finding present alongside
+// cross-pr-blocked ones — still routes to needs-remediation unconditionally: a
+// real defect takes priority regardless of ordering, and remediation can and
+// should fix it. A bare `rebase-needed` finding is not such a defect (#5576,
+// findingIsCleanRebaseNeed): it names an ordering fact the sequencing lane
+// already owns, so it parks blocked-on-sibling with the ordering findings
+// rather than dispatching remediation that has nothing to rework.
 //
 // #2988: the split used to require that EVERY finding carry class
 // cross-pr-blocked, which is stricter than the contract elect-lander documents
@@ -87,11 +90,13 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 // findingIsRealDefect reports whether a finding is a genuine reason to withhold
 // landing authority, as opposed to an ordering note or a nit.
 //
-// Three things make a finding harmless for sequencing: it is a cross-pr-blocked
-// ordering finding, it merely echoes the acknowledgeable #1313 scope gate (see
-// findingIsScopeGateEcho), or it is severity `info`. Everything else — including
-// an unset or unrecognised severity — counts as a real defect, so this fails
-// closed: a malformed verdict can never launder itself into landing authority.
+// Four things make a finding harmless for sequencing: it is a cross-pr-blocked
+// ordering finding, it is a conflict-free rebase-needed finding (see
+// findingIsCleanRebaseNeed), it merely echoes the acknowledgeable #1313 scope
+// gate (see findingIsScopeGateEcho), or it is severity `info`. Everything else
+// — including an unset or unrecognised severity — counts as a real defect, so
+// this fails closed: a malformed verdict can never launder itself into landing
+// authority.
 //
 // Severity used to be ignored entirely here, which deadlocked whole clusters
 // (#1726). The trigger is mundane: two PRs that both run `make generate`
@@ -109,10 +114,56 @@ func findingIsRealDefect(finding apiv1.Finding) bool {
 	if finding.Class == apiv1.FindingCrossPRBlocked {
 		return false
 	}
+	if findingIsCleanRebaseNeed(finding) {
+		return false
+	}
 	if findingIsScopeGateEcho(finding) {
 		return false
 	}
 	return finding.Severity != apiv1.SeverityInfo
+}
+
+// findingIsCleanRebaseNeed reports whether a finding says only "your base has
+// advanced" — an ordering fact about where the branch sits relative to main,
+// not a defect in the diff.
+//
+// The finding-class contract already draws exactly the line this needs
+// (api/v1alpha1/envelope.go): `rebase-needed` means "the base has advanced; a
+// (possibly clean) rebase is required", while `conflict` means "a rebase does
+// not apply cleanly and needs resolution — this alone makes the finding
+// substantive". A reviewer that sees a conflicting base owes a `conflict`
+// finding, and that stays a real defect here. So the class IS the
+// conflict-free/conflicting distinction; nothing further has to be plumbed.
+//
+// Counting `rebase-needed` as a real defect made a PR structurally unlandable
+// on a busy repo (#5576). The loop: review sees the base is behind and emits
+// error/rebase-needed -> no crown -> noLanderEscalationReason defers -> the
+// author merges main -> main advances again -> repeat. #5517 rode that loop
+// while MERGEABLE/CLEAN and green throughout, and had to be landed by hand; in
+// its case the ask was unsatisfiable in principle, because a published commit
+// was pinned by a downstream consumer so the branch could not be rewritten at
+// all. "Behind main" is a condition that every landing fixes and no
+// remediation cycle can outrun, so it must not be what decides the crown.
+//
+// This also repairs a floor mismatch that was itself the livelock's engine.
+// pr-remediation's substantive floor (substantiveFindingAppliesToPR, via
+// FindingClass.RequiresCodeChange) already excludes `rebase-needed`: the class
+// routes to the update-behind/rebase lane, not to code rework. So a
+// rebase-needed-only verdict was simultaneously too defective to elect and not
+// defective enough to remediate — the no-progress shape #2988 closed for the
+// election/label floors, reappearing across the election/remediation pair.
+//
+// Severity is deliberately not consulted: a base that is behind is behind, and
+// the reviewer's urgency about it does not turn it into a defect in the diff.
+// Fail-safety does not rest on this predicate. Election is only ever routing:
+// merge-pr independently re-polls the live PR and refuses a conflicting merge
+// (mergeConflictReason), the SHA-pin recheck voids a verdict computed against
+// a state the PR has moved past, and #950 demotes a lander that repeatedly
+// cannot merge at an unchanged head so the cluster drains around it. A
+// reviewer that mislabels a genuine conflict as `rebase-needed` therefore
+// costs one refused merge attempt, not a bad landing.
+func findingIsCleanRebaseNeed(finding apiv1.Finding) bool {
+	return finding.Class == apiv1.FindingRebaseNeeded
 }
 
 // scopeGateEchoPattern matches a finding that restates the #1313 scope gate
@@ -234,8 +285,11 @@ func parseOverlappingSiblings(csv string) []int {
 //     the election makes, so counting it as a defect disqualified the winner by
 //     the very fact that made it the winner (#3237).
 //   - If any real defect remains (see findingIsRealDefect), the normalized
-//     findings are returned without adding the overlap backstop. A real bug,
-//     conflict, or rebase need takes priority and must route to remediation.
+//     findings are returned without adding the overlap backstop. A real bug or
+//     conflict takes priority and must route to remediation. A bare
+//     `rebase-needed` finding is not one (#5576): it must not suppress the
+//     backstop, or a behind-but-clean PR never acquires the ordering finding
+//     that makes it electable at all.
 //   - Otherwise, a cross-pr-blocked finding carrying any still-unnamed
 //     overlapping siblings is appended, so allCrossPRBlocked /
 //     unionBlockingPRs / electionDecision treat the PR as sequencing-blocked on
