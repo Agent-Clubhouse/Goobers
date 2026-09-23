@@ -3,6 +3,8 @@ package adoauth
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -106,5 +108,29 @@ func TestSourceAzureCLI(t *testing.T) {
 	}
 	if credential.Secret != "entra" || runner.name != "az" {
 		t.Fatalf("credential = %#v, runner = %q %#v", credential, runner.name, runner.args)
+	}
+}
+
+func TestSourceWorkloadIdentityAcceptsClientID(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "federated-token")
+	if err := os.WriteFile(tokenFile, []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AZURE_TENANT_ID", "00000000-0000-0000-0000-000000000001")
+	t.Setenv("AZURE_CLIENT_ID", "00000000-0000-0000-0000-000000000002")
+	t.Setenv("AZURE_FEDERATED_TOKEN_FILE", tokenFile)
+
+	_, err := Source(instance.RepoRef{
+		Provider: "ado",
+		Owner:    "org",
+		Project:  "project",
+		Name:     "repo",
+		Auth: &instance.RepoAuthConfig{
+			Kind:     instance.ADOAuthWorkloadIdentity,
+			ClientID: "00000000-0000-0000-0000-000000000003",
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 }

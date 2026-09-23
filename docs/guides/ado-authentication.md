@@ -44,10 +44,14 @@ Use workload identity federation in Kubernetes or CI:
 ```yaml
 auth:
   kind: workload-identity
+  # clientId: optional-user-assigned-identity-client-id
 ```
 
 The standard `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and
-`AZURE_FEDERATED_TOKEN_FILE` settings configure the identity.
+`AZURE_FEDERATED_TOKEN_FILE` settings configure the identity. Set `clientId`
+when one projected workload token is trusted by multiple user-assigned
+identities and this repository must use a different identity than the ambient
+`AZURE_CLIENT_ID`.
 
 Use managed identity on a supported Azure host:
 
