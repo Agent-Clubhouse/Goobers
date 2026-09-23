@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 type fakeExecutor struct {
@@ -829,9 +830,9 @@ func TestResolveBuildMetadataIgnoresNearerPortalTag(t *testing.T) {
 	repo := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = repo
-		cmd.Env = append(os.Environ(),
+		cmd.Env = append(cmd.Env,
 			"GIT_AUTHOR_NAME=Goobers Test",
 			"GIT_AUTHOR_EMAIL=goobers@example.invalid",
 			"GIT_COMMITTER_NAME=Goobers Test",
@@ -843,8 +844,6 @@ func TestResolveBuildMetadataIgnoresNearerPortalTag(t *testing.T) {
 	}
 
 	runGit("init", "--quiet")
-	runGit("config", "core.autocrlf", "false")
-	runGit("config", "core.safecrlf", "false")
 	if err := os.WriteFile(filepath.Join(repo, "version.txt"), []byte("product\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
