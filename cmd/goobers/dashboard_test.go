@@ -547,24 +547,37 @@ func TestStandaloneDashboardAPIWithholdsRevealOffLoopback(t *testing.T) {
 }
 
 func TestStopDashboardShutsDownServerBeforeClosingAPI(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
 	server := &http.Server{Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		close(requestStarted)
+		<-releaseRequest
 		response.WriteHeader(http.StatusNoContent)
 	})}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverClosed := make(chan struct{})
-	server.RegisterOnShutdown(func() {
-		close(serverClosed)
-	})
 	go func() {
 		_ = server.Serve(listener)
 	}()
 
+	requestDone := make(chan error, 1)
+	go func() {
+		response, err := http.Get("http://" + listener.Addr().String())
+		if err == nil {
+			err = response.Body.Close()
+		}
+		requestDone <- err
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dashboard request did not start")
+	}
+
 	apiClosed := make(chan struct{})
 	api := dashboardAPI{close: func() error {
-		<-serverClosed
 		close(apiClosed)
 		return nil
 	}}
@@ -573,12 +586,27 @@ func TestStopDashboardShutsDownServerBeforeClosingAPI(t *testing.T) {
 		stopDone <- stopDashboard(server, func() {}, api)
 	}()
 	select {
+	case <-apiClosed:
+		t.Fatal("dashboard API closed before server shutdown drained the active request")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseRequest)
+	select {
+	case err := <-requestDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dashboard request did not finish")
+	}
+	select {
 	case err := <-stopDone:
 		if err != nil {
 			t.Fatal(err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("stopDashboard blocked while the API close still waited on server shutdown")
+		t.Fatal("stopDashboard did not finish after the active request drained")
 	}
 	select {
 	case <-apiClosed:
