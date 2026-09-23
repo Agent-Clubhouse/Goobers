@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -28,8 +29,13 @@ func TestBacklogQueryHasNoShippedFailBranchConsumers(t *testing.T) {
 
 	producers := 0
 	var consumers []string
-	for _, root := range configRoots {
-		set, report, err := instance.LoadConfigDir(root)
+	snapshotRoot := t.TempDir()
+	for index, root := range configRoots {
+		snapshot := filepath.Join(snapshotRoot, strconv.Itoa(index))
+		if err := os.CopyFS(snapshot, os.DirFS(root)); err != nil {
+			t.Fatalf("snapshot shipped config %s: %v", root, err)
+		}
+		set, report, err := instance.LoadConfigDir(snapshot)
 		if err != nil {
 			t.Fatalf("load shipped config %s: %v\n%v", root, err, report)
 		}
@@ -78,6 +84,7 @@ func TestBacklogQueryHasNoShippedFailBranchConsumers(t *testing.T) {
 
 	// Each of the three scheduled re-sweep workflows adds a query and release.
 	// The dedicated implementation-recovery workflow adds one claim query.
+	// The optional parked-item report adds one read-only query.
 	const wantProducers = 24
 	if producers != wantProducers {
 		t.Fatalf("found %d shipped backlog-query stages, want audited inventory of %d", producers, wantProducers)

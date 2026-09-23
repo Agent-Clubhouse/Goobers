@@ -831,7 +831,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	defer stopReadServiceWorker(stopActiveSampler, "active-run sampler", stderr)
 	stopSchedulerProjector := reads.StartSchedulerStateProjector(0)
 	defer stopReadServiceWorker(stopSchedulerProjector, "scheduler-state projector", stderr)
-	defer startDaemonHealth(ctx, root, currentDaemon, setup, recoveryInventory.Stats, reads, ready.Load, engineClient)()
+	stopDaemonHealth := startDaemonHealth(ctx, root, currentDaemon, setup, recoveryInventory.Stats, reads, ready.Load, engineClient)
+	defer stopDaemonHealth()
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
 	// swaps in the OIDC authenticator plus the role-floor authorizer, and
@@ -1979,6 +1980,7 @@ daemonLoop:
 	if apiFailed || webhookFailed || configFailed || schedulerFailed {
 		return 1
 	}
+	stopDaemonHealth()
 	if !drainResult.forced {
 		if err := journalDaemonCleanShutdown(setup.InstanceLog, currentDaemon); err != nil {
 			pf(stderr, "error: %v\n", err)

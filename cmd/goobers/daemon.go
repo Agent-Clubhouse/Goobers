@@ -333,7 +333,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 			return
 		}
 		if tel != nil {
-			_ = tel.Shutdown(context.Background())
+			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = tel.Shutdown(flush)
+			cancel()
 		}
 		if rollupDB != nil {
 			_ = rollupDB.Close()

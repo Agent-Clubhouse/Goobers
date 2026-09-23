@@ -35,7 +35,10 @@ func buildTelemetryClient(
 		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
 		Scrubber:       scrubber,
 		Batch:          true,
+		JournalRoot:    l.Root,
 	}
+	// Only the durable identity is trustworthy; legacy roots remain unidentified.
+	cfg.JournalInstanceID, _ = l.ReadIdentity()
 	if err := configureOTLP(ctx, &cfg, otlp, registry, stores); err != nil {
 		return nil, err
 	}
@@ -96,6 +99,7 @@ func (t teeRegistrar) Register(secret []byte) {
 }
 
 func configureOTLP(ctx context.Context, cfg *telemetry.Config, otlp instance.OTLPConfig, registry *journal.RegistryScrubber, stores credentials.StoreResolver) error {
+	cfg.JournalLogs = otlp.JournalLogsEnabled()
 	if otlp.Enabled() {
 		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry, stores)
 		if err != nil {

@@ -107,6 +107,13 @@ schema drive #29's determinism assertion and the V2 conformance harness (#40).
   trace), and reopens the run for appending. `state.json` is never trusted over
   the log: the run phase is reconstructed from the events themselves.
 
+  Native OTLP Logs can receive a best-effort live copy after each event-file
+  commit. The hook uses a copy of the scrubbed serialized bytes, never the
+  unscrubbed in-memory `Event`. It does not alter these files, replay recovery
+  history, or wait for a network request under the write lock. See
+  [`journal OTLP export`](../../docs/guides/journal-otlp.md) for configuration,
+  identity, loss limits, and the wire contract.
+
 ## Redaction — secrets never land at rest (`SEC-041`, `TEL-013`)
 
 Every event, input snapshot, and artifact passes through a `Scrubber` **before

@@ -40,20 +40,29 @@ type ciWorkflow struct {
 }
 
 type ciJob struct {
-	Name            string   `yaml:"name"`
-	If              string   `yaml:"if"`
-	ContinueOnError bool     `yaml:"continue-on-error"`
-	Needs           []string `yaml:"needs"`
-	Steps           []ciStep `yaml:"steps"`
+	Name            string            `yaml:"name"`
+	RunsOn          string            `yaml:"runs-on"`
+	If              string            `yaml:"if"`
+	ContinueOnError bool              `yaml:"continue-on-error"`
+	Needs           []string          `yaml:"needs"`
+	Steps           []ciStep          `yaml:"steps"`
+	Env             map[string]string `yaml:"env"`
+	Strategy        struct {
+		Matrix struct {
+			Shard []string `yaml:"shard"`
+		} `yaml:"matrix"`
+	} `yaml:"strategy"`
 }
 
 type ciStep struct {
-	Name string         `yaml:"name"`
-	ID   string         `yaml:"id"`
-	If   string         `yaml:"if"`
-	Uses string         `yaml:"uses"`
-	Run  string         `yaml:"run"`
-	With map[string]any `yaml:"with"`
+	Name            string            `yaml:"name"`
+	ID              string            `yaml:"id"`
+	If              string            `yaml:"if"`
+	Uses            string            `yaml:"uses"`
+	Run             string            `yaml:"run"`
+	With            map[string]any    `yaml:"with"`
+	Env             map[string]string `yaml:"env"`
+	ContinueOnError bool              `yaml:"continue-on-error"`
 }
 
 func (s ciStep) with(key string) string {
