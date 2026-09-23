@@ -70,12 +70,17 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 		t.Setenv("GOOBERS_REPO_OWNER", "")
 		t.Setenv("GOOBERS_REPO_PROJECT", "")
 		t.Setenv("GOOBERS_REPO_NAME", "")
+		authCredential := "x-access-token:" + stageToken
+		if gitea {
+			authCredential = stageToken + ":"
+		}
+		expectedAuth := base64.StdEncoding.EncodeToString([]byte(authCredential))
 		var fetchEnvironments [][]string
 		previousFetch := recoveryFetchCurrentBase
 		recoveryFetchCurrentBase = func(ctx context.Context, repository, remoteURL, baseRef string, environment []string) (string, error) {
 			fetchEnvironments = append(fetchEnvironments, append([]string(nil), environment...))
 			joined := strings.Join(environment, "\n")
-			if !strings.Contains(joined, "GIT_CONFIG_VALUE_1=AUTHORIZATION: basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+stageToken))) {
+			if !strings.Contains(joined, "GIT_CONFIG_VALUE_1=AUTHORIZATION: basic "+expectedAuth) {
 				t.Fatalf("recovery fetch did not receive the stage credential: %q", joined)
 			}
 			if strings.Contains(joined, "local-only-recovery-fixture-token") {
