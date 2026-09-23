@@ -249,3 +249,18 @@ func TestParseExclusionList(t *testing.T) {
 		t.Fatalf("empty output = %q, want nil", got)
 	}
 }
+
+func TestParseDefenderOutputRejectsPermissionSentinel(t *testing.T) {
+	if _, err := parseDefenderOutput([]byte("N/A: Must be an administrator to view exclusions\r\n")); err == nil ||
+		!strings.Contains(err.Error(), "Must be an administrator") {
+		t.Fatalf("parseDefenderOutput error = %v, want permission error", err)
+	}
+
+	got, err := parseDefenderOutput([]byte("C:\\instance\r\nD:\\workcopies\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{`C:\instance`, `D:\workcopies`}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("parseDefenderOutput = %q, want %q", got, want)
+	}
+}

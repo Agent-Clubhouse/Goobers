@@ -693,10 +693,40 @@ func (m *Manager) statusTask(ctx context.Context) (Status, error) {
 		status.State = "ready"
 	}
 	status.Running = status.State == "running"
-	if failure := firstProperty(values, "Last Result", "Last Run Result"); failure != "" && failure != "0" {
+	if failure := windowsTaskLastFailure(firstProperty(values, "Last Result", "Last Run Result")); failure != "" {
 		status.LastFailure = failure
 	}
 	return status, nil
+}
+
+func windowsTaskLastFailure(result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	code, err := strconv.ParseUint(result, 0, 32)
+	if err != nil {
+		return result
+	}
+	switch uint32(code) {
+	case 0,
+		0x41300, // SCHED_S_TASK_READY
+		0x41301, // SCHED_S_TASK_RUNNING
+		0x41302, // SCHED_S_TASK_DISABLED
+		0x41303, // SCHED_S_TASK_HAS_NOT_RUN
+		0x41304, // SCHED_S_TASK_NO_MORE_RUNS
+		0x41305, // SCHED_S_TASK_NOT_SCHEDULED
+		0x41306, // SCHED_S_TASK_TERMINATED
+		0x41307, // SCHED_S_TASK_NO_VALID_TRIGGERS
+		0x41308, // SCHED_S_EVENT_TRIGGER
+		0x4131B, // SCHED_S_SOME_TRIGGERS_FAILED
+		0x4131C: // SCHED_S_BATCH_LOGON_PROBLEM
+		return ""
+	case 0x80070002:
+		return "0x80070002 (ERROR_FILE_NOT_FOUND)"
+	default:
+		return fmt.Sprintf("0x%08X", code)
+	}
 }
 
 func (m *Manager) removeTask(ctx context.Context) error {
