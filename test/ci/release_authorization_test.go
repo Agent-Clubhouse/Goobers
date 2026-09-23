@@ -128,7 +128,7 @@ func TestReleaseAuthorizationPrecedesBuildAndPublication(t *testing.T) {
 func TestReleaseBuildUsesAuthorizedCommit(t *testing.T) {
 	workflow := loadReleaseAuthorizationWorkflow(t)
 	for name, key := range map[string]string{
-		"Build Portal asset artifact": "GOOBERS_PORTAL_COMMIT", "Build release artifacts": "COMMIT_SHA",
+		"Build Portal artifacts": "GOOBERS_PORTAL_COMMIT", "Build release artifacts": "COMMIT_SHA",
 	} {
 		found := false
 		for _, step := range workflow.Jobs["build"].Steps {

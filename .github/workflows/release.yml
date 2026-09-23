@@ -81,12 +81,16 @@ jobs:
           cache: npm
           cache-dependency-path: portal/package-lock.json
 
-      - name: Build Portal asset artifact
+      - name: Build Portal artifacts
         env:
           GOOBERS_PORTAL_COMMIT: ${{ steps.release-source.outputs.commit }}
           GOOBERS_PORTAL_VERSION: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           npm --prefix portal ci --no-audit --no-fund
+          export GOOBERS_PORTAL_PACKAGE_VERSION="${GITHUB_REF_NAME#v}"
+          npm --prefix portal run package:portal
+          npm --prefix portal run test:package
           npm --prefix portal run build
 
       - name: Resolve feature baseline
@@ -148,6 +152,16 @@ jobs:
             -image-contexts original-image-inputs \
             -image-targets linux/amd64,linux/arm64,windows/amd64 \
             "${baseline[@]}"
+          portal_version="${TAG#v}"
+          portal_package="goobers-portal-${portal_version}.tgz"
+          cp "portal/.portal-package/$portal_package" dist/
+          cp "portal/.portal-package/$portal_package.sha256" dist/
+          cp portal/.portal-package/package/portal-artifact.json dist/
+          (
+            cd dist
+            sha256sum "$portal_package" "$portal_package.sha256" portal-artifact.json >> SHA256SUMS
+            sort -o SHA256SUMS SHA256SUMS
+          )
           # Export the exact embedded stamps, not a later recomputation.
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
@@ -865,6 +879,7 @@ jobs:
       - name: Verify release artifacts
         env:
           TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ steps.release-source.outputs.commit }}
         run: |
           set -euo pipefail
           (cd dist && sha256sum --check SHA256SUMS)
@@ -973,6 +988,19 @@ jobs:
             fi
           done <<< "$portal_refs"
           echo "portal archive: every local asset index.html references is present"
+          portal_version="${TAG#v}"
+          portal_package="goobers-portal-${portal_version}.tgz"
+          grep --fixed-strings "  $portal_package" dist/SHA256SUMS
+          grep --fixed-strings "  $portal_package.sha256" dist/SHA256SUMS
+          grep --fixed-strings "  portal-artifact.json" dist/SHA256SUMS
+          (cd dist && sha256sum --check "$portal_package.sha256")
+          jq -e \
+            --arg version "$portal_version" \
+            --arg commit "$SOURCE_COMMIT" \
+            '.packageVersion == $version and .commit == $commit and .dirty == false' \
+            dist/portal-artifact.json
+          tar -xOf "dist/$portal_package" package/portal-artifact.json |
+            cmp - dist/portal-artifact.json
           test -f smoke/quickstart-instance/config/gaggles/example/workflows/quickstart.yaml
           mkdir generated-docs
           goobers __generate-docs generated-docs
@@ -1151,6 +1179,7 @@ jobs:
           identifier = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
           if not re.fullmatch(rf"v{core}\.{core}\.{core}(?:-{identifier}(?:\.{identifier})*)?", tag):
               refuse("noncanonical release tag")
+          portal_version = tag.removeprefix("v")
           expected = {
               f"goobers_{tag}_{target}.{extension}"
               for target, extension in (
@@ -1161,7 +1190,10 @@ jobs:
           }
           expected.update((f"goobers_portal_{tag}.tar.gz", f"goobers-agent-toolkit_{tag}.zip",
                            f"goobers-onboarding_{tag}.zip", "install.sh",
-                           "feature-registry.json", "dsl-support-matrix.json"))
+                           "feature-registry.json", "dsl-support-matrix.json",
+                           f"goobers-portal-{portal_version}.tgz",
+                           f"goobers-portal-{portal_version}.tgz.sha256",
+                           "portal-artifact.json"))
           directory, notes = Path("dist"), Path("release-notes")
           for root in (directory, notes):
               if not stat.S_ISDIR(root.lstat().st_mode):
