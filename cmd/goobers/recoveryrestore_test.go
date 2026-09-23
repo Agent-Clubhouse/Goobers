@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -19,6 +20,14 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
+
+type recoveryTestADOCredentialSource struct {
+	credential providers.ADOCredential
+}
+
+func (s recoveryTestADOCredentialSource) Credential(context.Context) (providers.ADOCredential, error) {
+	return s.credential, nil
+}
 
 func TestRecoveryRestoreSelectsProviderCompleteIdentity(t *testing.T) {
 	config := &instance.Config{Repos: []instance.RepoRef{
@@ -106,6 +115,80 @@ func TestRecoveryRestoreGitEnvironmentFailsClosedWithoutStageScopedRepoPushCrede
 	}
 	if !strings.Contains(err.Error(), executor.CredentialEnvVar(string(capability.RepoPush))) {
 		t.Fatalf("error = %q, want credential env var %q", err, executor.CredentialEnvVar(string(capability.RepoPush)))
+	}
+}
+
+func TestRecoveryRestoreGitEnvironmentUsesStageScopedADOPAT(t *testing.T) {
+	t.Setenv(executor.RunIDEnvVar, "receiving-run")
+	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "stage-ado-pat")
+	t.Setenv("ADO_HOST_PAT", "host-pat-must-not-be-read")
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "web",
+		Token:    instance.TokenRef{Env: "ADO_HOST_PAT"},
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthPAT},
+	}}}
+	project := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "widgets", Name: "web"}
+	registry, _ := journal.DefaultScrubber()
+
+	env, err := recoveryRestoreGitEnvironment(context.Background(), instance.Layout{}, cfg, project, "https://dev.azure.com/acme/widgets/_git/web", registry)
+	if err != nil {
+		t.Fatalf("recoveryRestoreGitEnvironment: %v", err)
+	}
+	expected := base64.StdEncoding.EncodeToString([]byte("goobers:stage-ado-pat"))
+	joined := strings.Join(recoveryAuthenticationEnvironment(env), "\n")
+	if !strings.Contains(joined, "AUTHORIZATION: Basic "+expected) {
+		t.Fatalf("stage-scoped ADO PAT auth not used: %q", joined)
+	}
+	if strings.Contains(joined, "host-pat-must-not-be-read") {
+		t.Fatalf("recovery forwarded the configured host PAT: %q", joined)
+	}
+}
+
+func TestRecoveryRestoreGitEnvironmentPreservesADODynamicAuthentication(t *testing.T) {
+	for _, kind := range []string{
+		instance.ADOAuthAzureCLI,
+		instance.ADOAuthWorkloadIdentity,
+		instance.ADOAuthManagedIdentity,
+	} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv(executor.RunIDEnvVar, "receiving-run")
+			t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "")
+			cfg := &instance.Config{Repos: []instance.RepoRef{{
+				Provider: "ado",
+				Owner:    "acme",
+				Project:  "widgets",
+				Name:     "web",
+				Auth:     &instance.RepoAuthConfig{Kind: kind},
+			}}}
+			project := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "widgets", Name: "web"}
+			registry, _ := journal.DefaultScrubber()
+			previous := recoveryADOCredentialSource
+			t.Cleanup(func() { recoveryADOCredentialSource = previous })
+			recoveryADOCredentialSource = func(repo instance.RepoRef, _ providers.CommandRunner, _ credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+				if repo.Auth == nil || repo.Auth.Kind != kind {
+					t.Fatalf("configured ADO auth kind = %#v, want %q", repo.Auth, kind)
+				}
+				return recoveryTestADOCredentialSource{credential: providers.ADOCredential{
+					Kind:   "bearer",
+					Secret: "dynamic-ado-token",
+				}}, nil
+			}
+
+			env, err := recoveryRestoreGitEnvironment(context.Background(), instance.Layout{}, cfg, project, "https://dev.azure.com/acme/widgets/_git/web", registry)
+			if err != nil {
+				t.Fatalf("recoveryRestoreGitEnvironment: %v", err)
+			}
+			joined := strings.Join(recoveryAuthenticationEnvironment(env), "\n")
+			if !strings.Contains(joined, "AUTHORIZATION: Bearer dynamic-ado-token") {
+				t.Fatalf("configured ADO dynamic auth not used: %q", joined)
+			}
+			if scrubbed := string(registry.Scrub([]byte("token=dynamic-ado-token"))); strings.Contains(scrubbed, "dynamic-ado-token") {
+				t.Fatalf("ADO dynamic credential was not registered with the scrubber: %q", scrubbed)
+			}
+		})
 	}
 }
 

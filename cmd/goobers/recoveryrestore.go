@@ -11,6 +11,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
@@ -199,7 +200,7 @@ var recoveryFetchCurrentBase = recovery.FetchCurrentBase
 
 func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, cfg *instance.Config, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
 	if os.Getenv(executor.RunIDEnvVar) != "" || claimsPlaneSelected() {
-		if env, err := stageScopedRepoPushGitEnvironment(ctx, project, remoteURL, registry); err != nil || env != nil {
+		if env, err := stageRecoveryGitEnvironment(ctx, cfg, project, remoteURL, registry); err != nil || env != nil {
 			return env, err
 		}
 	}
@@ -221,17 +222,42 @@ func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, 
 	return nil, nil
 }
 
-func stageScopedRepoPushGitEnvironment(ctx context.Context, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
-	token, err := providerToken(capability.RepoPush)
-	if err != nil {
-		return nil, err
-	}
+var recoveryADOCredentialSource = adoauth.Source
+
+func stageRecoveryGitEnvironment(ctx context.Context, cfg *instance.Config, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
 	switch project.Provider {
 	case apiv1.ProviderGitHub:
+		token, err := providerToken(capability.RepoPush)
+		if err != nil {
+			return nil, err
+		}
 		return providers.GitHubGitAuthEnvironment(token, remoteURL, registry), nil
 	case apiv1.ProviderGitea:
+		token, err := providerToken(capability.RepoPush)
+		if err != nil {
+			return nil, err
+		}
 		return providers.GiteaGitAuthEnvironment(token, remoteURL, registry), nil
 	case apiv1.ProviderADO:
+		repo, ok := configuredRepoForProject(cfg, project)
+		if !ok {
+			return nil, fmt.Errorf("ADO recovery repository %s/%s is not configured", project.Owner, project.Name)
+		}
+		kind := instance.ADOAuthPAT
+		if repo.Auth != nil {
+			kind = repo.Auth.Kind
+		}
+		if kind != instance.ADOAuthPAT {
+			source, err := recoveryADOCredentialSource(repo, nil, nil)
+			if err != nil {
+				return nil, err
+			}
+			return providers.ADOGitAuthEnvironment(ctx, source, registry, remoteURL)
+		}
+		token, err := providerToken(capability.RepoPush)
+		if err != nil {
+			return nil, err
+		}
 		return providers.ADOGitAuthEnvironment(ctx, providers.NewADOPATCredentialSource("goobers", token), registry, remoteURL)
 	default:
 		return nil, nil
