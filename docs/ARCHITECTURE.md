@@ -607,7 +607,7 @@ and implemented into PRs by the instance running on your own machine.
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
 then closed and expanded the PR loop. The `reference-workflows/` reference config
 now defines the full self-hosting workflow set and
-currently loads **11 goobers and 14 workflows**; the CI-guarded inventory in
+currently loads **11 goobers and 15 workflows**; the CI-guarded inventory in
 [`reference-workflows/README.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/reference-workflows/README.md)
 is the count and roster of record. Together those workflows provide the canonical
 patterns for curating and

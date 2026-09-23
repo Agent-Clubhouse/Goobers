@@ -24,8 +24,8 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **11 goobers and 14 workflows**.
-<!-- reference-inventory: goobers=11 workflows=14 -->
+The shipped tree loads **11 goobers and 15 workflows**.
+<!-- reference-inventory: goobers=11 workflows=15 -->
 
 | Goober role | Purpose |
 |---|---|
@@ -48,6 +48,7 @@ The shipped tree loads **11 goobers and 14 workflows**.
 | `decomposition` | Converts oversized approved work into validated child batches. |
 | `docs-updater` | Turns a documentation signal into a reviewed PR. |
 | `implementation` | Implements a ready issue and opens a PR. |
+| `implementation-pre-review-experiment` | Manually runs an instrumented pre-review fast-validation cohort without changing canonical implementation scheduling. |
 | `implementation-recovery` | Restores retained state for an approved needs-remediation issue, then runs the implementation review and CI gates before opening a PR. |
 | `merge-review` | Reviews eligible PRs and, when explicitly enabled, lands them. |
 | `parked-item-report` | Reports parked remediation candidates for human review; schedule disabled by default. |
@@ -57,6 +58,40 @@ The shipped tree loads **11 goobers and 14 workflows**.
 | `test-suite-quality` | Detects recurring flaky tests and nominates fix or bounded quarantine proposals. |
 | `tutor` | Diagnoses run evidence and proposes confined config changes. |
 | `work-nomination` | Nominates repository work from telemetry and repo signals. |
+
+## Pre-review validation experiment
+
+`implementation-pre-review-experiment` is the opt-in dogfood cohort for #4491.
+It is manual-only; the scheduled `implementation` and `implementation-recovery`
+workflows retain their direct implementation-to-review path. Run a deliberately
+selected cohort with:
+
+```text
+goobers run --gaggle goobers implementation-pre-review-experiment
+```
+
+Landing this manual workflow enables the measurements requested by #4491; it
+does not complete that proposal or approve promotion into the canonical
+implementation workflows. Keep #4491 open until maintainers review the measured
+cohort and make the separate promotion decision.
+
+Do not promote the pre-review stage into either canonical workflow until the
+experiment has enough comparable runs. Use journal stage attempts and telemetry
+rollups for the experiment cohort and a representative `implementation`
+baseline to record:
+
+- validation attempt totals and pass, genuine-failure, infrastructure, and
+  escalation outcomes;
+- reviewer invocations avoided when validation fails;
+- validation p50 and p95 duration, total run duration, and time to PR;
+- validation failures repeated without a relevant committed diff; and
+- the post-review `local-ci` pass rate for each cohort.
+
+Independent `review` remains mandatory after a validation pass, and the full
+post-review `local-ci` stage remains unchanged. A validation failure routes to
+`implement`, infrastructure retries route back to validation under the runner's
+separate bounded retry budget, and exhausted/no-progress paths park through
+`park-escalated`.
 
 ## Optional parked-item report
 
@@ -222,7 +257,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 14 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 15 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to

@@ -84,8 +84,9 @@ func TestBacklogQueryHasNoShippedFailBranchConsumers(t *testing.T) {
 
 	// Each of the three scheduled re-sweep workflows adds a query and release.
 	// The dedicated implementation-recovery workflow adds one claim query.
+	// The manual pre-review validation experiment adds one claim query.
 	// The optional parked-item report adds one read-only query.
-	const wantProducers = 24
+	const wantProducers = 25
 	if producers != wantProducers {
 		t.Fatalf("found %d shipped backlog-query stages, want audited inventory of %d", producers, wantProducers)
 	}
