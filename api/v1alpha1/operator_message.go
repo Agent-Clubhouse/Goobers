@@ -15,6 +15,7 @@ const (
 	OperatorMessageOutcomeSchema         = "goobers.dev/operator-message/outcome/v1"
 
 	MaxOperatorMessageContentBytes        int64 = 1 << 20
+	MaxOperatorMessageContentRunes              = 1 << 20
 	MaxOperatorMessageRequestIDRunes            = 256
 	MaxOperatorMessageIdempotencyKeyRunes       = 256
 	MaxOperatorMessageTargetAddressRunes        = 2048
@@ -68,7 +69,7 @@ func (r OperatorMessageRequest) Validate() error {
 	if hasText == hasArtifact {
 		return errors.New("operator message: content must contain exactly one of text or artifact")
 	}
-	if int64(len(r.Content.Text)) > MaxOperatorMessageContentBytes {
+	if exceedsRunes(r.Content.Text, MaxOperatorMessageContentRunes) {
 		return errors.New("operator message: inline content exceeds size limit")
 	}
 	if hasArtifact {

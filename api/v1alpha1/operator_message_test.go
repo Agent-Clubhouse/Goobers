@@ -110,6 +110,14 @@ func TestOperatorMessageValidationMatchesSchemaBounds(t *testing.T) {
 	if err := request.Validate(); err != nil {
 		t.Fatalf("Validate rejected a request at the schema character limit: %v", err)
 	}
+	request.Content.Text = strings.Repeat("界", MaxOperatorMessageContentRunes)
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate rejected multibyte content at the schema character limit: %v", err)
+	}
+	request.Content.Text += "界"
+	if err := request.Validate(); err == nil {
+		t.Fatal("Validate accepted multibyte content above the schema character limit")
+	}
 	if err := ack.Validate(); err != nil {
 		t.Fatalf("Validate rejected valid acknowledgement: %v", err)
 	}
