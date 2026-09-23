@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/operator-message-request.schema.json",
+  "title": "OperatorMessageRequest",
+  "description": "A durable provider-neutral request to deliver content to an operator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "requestId", "idempotencyKey", "targetAddress", "principalRef", "requestedAt", "purpose", "content", "deliveryMode"],
+  "properties": {
+    "schema": { "description": "Versioned request contract identifier.", "const": "goobers.dev/operator-message/request/v1" },
+    "requestId": { "description": "Stable identity of the original request.", "type": "string", "minLength": 1, "maxLength": 256 },
+    "idempotencyKey": { "description": "Stable key resolving retries to the original request.", "type": "string", "minLength": 1, "maxLength": 256 },
+    "targetAddress": { "description": "Provider-neutral address selected for delivery.", "type": "string", "minLength": 1, "maxLength": 2048 },
+    "principalRef": { "description": "Stable reference to the requesting principal.", "type": "string", "minLength": 1, "maxLength": 512 },
+    "requestedAt": { "description": "Time at which the request was created.", "type": "string", "format": "date-time" },
+    "expiresAt": { "description": "Optional absolute deadline after which the request is rejected.", "type": "string", "format": "date-time" },
+    "purpose": { "description": "Bounded machine-readable reason for the message.", "type": "string", "minLength": 1, "maxLength": 256 },
+    "content": {
+      "description": "Exactly one scrubbed inline body or bounded journal artifact reference.",
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["text"] },
+        { "required": ["artifact"] }
+      ],
+      "properties": {
+        "text": { "description": "Inline content scrubbed by the journal boundary.", "type": "string", "minLength": 1, "maxLength": 1048576 },
+        "artifact": {
+          "description": "Bounded reference to journal-retained content.",
+          "examples": [
+            {
+              "path": "artifacts/operator-message.txt",
+              "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 1
+            }
+          ],
+          "allOf": [
+            { "$ref": "artifact-pointer.schema.json" },
+            {
+              "required": ["size"],
+              "properties": {
+                "size": { "description": "Required content bound for an operator message artifact.", "type": "integer", "minimum": 1, "maximum": 1048576 }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "deliveryMode": { "description": "Provider-neutral selected delivery mode.", "type": "string", "minLength": 1, "maxLength": 128 }
+  }
+}
