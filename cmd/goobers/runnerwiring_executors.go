@@ -513,6 +513,14 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 		return nil, fmt.Errorf("validate goober %q MCP config: %w", input.GooberName, err)
 	}
 	credentialKeys := append([]string(nil), spec.Capabilities...)
+	if harnessName == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(spec.HarnessOptions) {
+		// The capability remains on the invocation envelope and is still required
+		// by workflow admission. It deliberately has no Goobers credential grant:
+		// the Codex CLI obtains the explicitly opted-in ChatGPT session itself.
+		credentialKeys = slices.DeleteFunc(credentialKeys, func(key string) bool {
+			return key == string(capability.AgentModel)
+		})
+	}
 	credentialKeys = append(credentialKeys, mcpconfig.BYOCredentialKeys(spec.MCPServers)...)
 	gooberGrants := buildGooberCredentialGrants(input.GooberName, string(harnessName), credentialKeys, input.Grants)
 	injector, err := credentials.NewGooberInjectorWithCredentialKeys(

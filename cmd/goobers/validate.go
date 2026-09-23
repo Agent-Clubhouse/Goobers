@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -1486,14 +1487,27 @@ func checkHarnessesAtSources(
 ) bool {
 	observer := credreadiness.CurrentObserver()
 	readiness := credreadiness.Report{Observer: observer, CheckedAt: time.Now()}
-	seen := map[apiv1.Harness]bool{}
+	seen := map[string]bool{}
 	ok := true
 	for _, g := range goobers {
 		h := g.Spec.Harness
-		if h == "" || seen[h] {
+		if h == "" {
 			continue
 		}
-		seen[h] = true
+		// One harness can be configured in both API-key and ambient ChatGPT
+		// modes. Each distinct option set needs its own auth preflight.
+		options, marshalErr := json.Marshal(g.Spec.HarnessOptions)
+		if marshalErr != nil {
+			pf(stdout, "HARNESS %s: encode harness options: %v\n", h, marshalErr)
+			addDiagnostic(collectors, ".", "/spec/harnessOptions", "HARNESS001", string(validate.Error), marshalErr.Error())
+			ok = false
+			continue
+		}
+		seenKey := string(h) + "\x00" + string(options)
+		if seen[seenKey] {
+			continue
+		}
+		seen[seenKey] = true
 		file := "."
 		if sourceFile != nil {
 			file = sourceFile(g)
@@ -1503,7 +1517,8 @@ func checkHarnessesAtSources(
 		credentialLabel := "no agent:model grant configured"
 		var credential harnessModelCredential
 		haveCredential := false
-		if credentialResolverFor != nil {
+		ambientCodex := h == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(g.Spec.HarnessOptions)
+		if credentialResolverFor != nil && !ambientCodex {
 			resolved, err := credentialResolverFor(h)
 			if err != nil {
 				pf(stdout, "HARNESS %s: %v\n", h, err)
@@ -1531,7 +1546,7 @@ func checkHarnessesAtSources(
 		// just CLI presence — a fine-grained PAT lacking the "Copilot Requests"
 		// permission (#284) passes --version but fails the probe.
 		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
-		_, err = adapter.Preflight(ctx)
+		_, err = preflightAdapterConfig(ctx, adapter, g.Spec)
 		cancel()
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)

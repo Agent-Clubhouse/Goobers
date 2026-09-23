@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // agentModelCredentialResolver builds a resolver for the instance's
@@ -145,6 +148,12 @@ type harnessPreflightFailures struct {
 	Refusals map[localscheduler.WorkflowIdentity]string
 }
 
+type harnessUse struct {
+	identity localscheduler.WorkflowIdentity
+	stage    string
+	spec     apiv1.GooberSpec
+}
+
 func (e *harnessPreflightFailures) Error() string {
 	identities := make([]localscheduler.WorkflowIdentity, 0, len(e.Refusals))
 	for identity := range e.Refusals {
@@ -197,10 +206,21 @@ func harnessModelCredentialResolver(cfg *instance.Config, stores credentials.Sto
 }
 
 func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, environment harness.EnvironmentConfig, harnessCommand map[string][]string, credentialFor modelCredentialFor) (harnessPreflightInfo, error) {
-	type harnessUse struct {
-		identity localscheduler.WorkflowIdentity
-		stage    string
+	uses, order := collectHarnessUses(goobers, workflows)
+	info := make(harnessPreflightInfo)
+	failures := &harnessPreflightFailures{Refusals: make(map[localscheduler.WorkflowIdentity]string)}
+	for _, h := range order {
+		for _, group := range groupHarnessUses(uses[h]) {
+			preflightHarnessGroup(h, group, environment, harnessCommand, credentialFor, info, failures)
+		}
 	}
+	if len(failures.Refusals) > 0 {
+		return info, failures
+	}
+	return info, nil
+}
+
+func collectHarnessUses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow) (map[apiv1.Harness][]harnessUse, []apiv1.Harness) {
 	uses := make(map[apiv1.Harness][]harnessUse)
 	order := make([]apiv1.Harness, 0)
 	addUse := func(wf apiv1.Workflow, stageName, gooberName string) {
@@ -218,6 +238,7 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 		uses[h] = append(uses[h], harnessUse{
 			identity: localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name},
 			stage:    stageName,
+			spec:     spec,
 		})
 	}
 	for _, wf := range workflows {
@@ -232,54 +253,81 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 			}
 		}
 	}
+	return uses, order
+}
 
-	info := make(harnessPreflightInfo)
-	failures := &harnessPreflightFailures{Refusals: make(map[localscheduler.WorkflowIdentity]string)}
-	for _, h := range order {
-		// Resolve the credential FOR THIS HARNESS. Startup previously resolved
-		// once with an empty harness and reused it, so an instance whose
-		// agent:model grant was scoped to claude-code preflighted
-		// `claude auth status` with no token and reported loggedIn:false —
-		// then took the whole daemon down with it (#5163).
-		var modelCredential func(ctx context.Context) (string, error)
-		if credentialFor != nil {
-			resolved, err := credentialFor(h)
-			if err != nil {
-				for _, use := range uses[h] {
-					failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, but its agent:model credential could not be resolved: %v", use.stage, h, err))
-				}
-				continue
-			}
-			modelCredential = resolved
+// groupHarnessUses keeps authentication options isolated: an ambient Codex
+// goober must never resolve an API-key grant because a sibling Codex goober
+// uses that different authentication mode.
+func groupHarnessUses(uses []harnessUse) [][]harnessUse {
+	groups := map[string][]harnessUse{}
+	var order []string
+	for _, use := range uses {
+		encoded, _ := json.Marshal(use.spec.HarnessOptions)
+		key := string(encoded)
+		if _, exists := groups[key]; !exists {
+			order = append(order, key)
 		}
-		adapter, err := harnessAdapterFor(h, environment, harnessCommand, modelCredential)
-		if err != nil {
-			for _, use := range uses[h] {
-				failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, but its adapter could not be configured: %v", use.stage, h, err))
-			}
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
-		result, err := adapter.Preflight(ctx)
-		cancel()
-		if err != nil {
-			for _, use := range uses[h] {
-				failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, whose startup preflight failed: %v", use.stage, h, err))
-			}
-			continue
-		}
-		if result.Version == "" {
-			for _, use := range uses[h] {
-				failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q requires harness %q, whose startup preflight returned no version", use.stage, h))
-			}
-			continue
-		}
-		info[h] = result
+		groups[key] = append(groups[key], use)
 	}
-	if len(failures.Refusals) > 0 {
-		return info, failures
+	result := make([][]harnessUse, 0, len(order))
+	for _, key := range order {
+		result = append(result, groups[key])
 	}
-	return info, nil
+	return result
+}
+
+func preflightHarnessGroup(
+	h apiv1.Harness,
+	group []harnessUse,
+	environment harness.EnvironmentConfig,
+	harnessCommand map[string][]string,
+	credentialFor modelCredentialFor,
+	info harnessPreflightInfo,
+	failures *harnessPreflightFailures,
+) {
+	spec := group[0].spec
+	var modelCredential func(ctx context.Context) (string, error)
+	if credentialFor != nil && (h != apiv1.HarnessCodex || !harness.CodexUsesAmbientChatGPT(spec.HarnessOptions)) {
+		resolved, err := credentialFor(h)
+		if err != nil {
+			refuseHarnessGroup(failures, group, fmt.Sprintf("requires harness %q, but its agent:model credential could not be resolved: %v", h, err))
+			return
+		}
+		modelCredential = resolved
+	}
+	adapter, err := harnessAdapterFor(h, environment, harnessCommand, modelCredential)
+	if err != nil {
+		refuseHarnessGroup(failures, group, fmt.Sprintf("requires harness %q, but its adapter could not be configured: %v", h, err))
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
+	defer cancel()
+	result, err := preflightAdapterConfig(ctx, adapter, spec)
+	if err != nil {
+		refuseHarnessGroup(failures, group, fmt.Sprintf("requires harness %q, whose startup preflight failed: %v", h, err))
+		return
+	}
+	if result.Version == "" {
+		refuseHarnessGroup(failures, group, fmt.Sprintf("requires harness %q, whose startup preflight returned no version", h))
+		return
+	}
+	info[h] = result
+}
+
+func preflightAdapterConfig(ctx context.Context, adapter harness.Adapter, spec apiv1.GooberSpec) (harness.PreflightInfo, error) {
+	if configPreflighter, ok := adapter.(interface {
+		PreflightConfig(context.Context, string, map[string]apiextensionsv1.JSON) (harness.PreflightInfo, error)
+	}); ok {
+		return configPreflighter.PreflightConfig(ctx, spec.Model, spec.HarnessOptions)
+	}
+	return adapter.Preflight(ctx)
+}
+
+func refuseHarnessGroup(failures *harnessPreflightFailures, group []harnessUse, reason string) {
+	for _, use := range group {
+		failures.Refusals[use.identity] = appendHarnessRefusal(failures.Refusals[use.identity], fmt.Sprintf("stage %q %s", use.stage, reason))
+	}
 }
 
 func appendHarnessRefusal(existing, next string) string {

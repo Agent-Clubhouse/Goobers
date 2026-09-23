@@ -23,6 +23,22 @@ import (
 
 const codexModelEnv = "CODEX_API_KEY"
 
+// CodexAuthMode selects how the Codex CLI authenticates an invocation.
+type CodexAuthMode string
+
+const (
+	// CodexAuthAPIKey uses Goobers-materialized OpenAI API credentials.
+	CodexAuthAPIKey CodexAuthMode = "api-key"
+	// CodexAuthAmbientChatGPT uses the trusted operator's existing ChatGPT CLI login.
+	CodexAuthAmbientChatGPT CodexAuthMode = "ambient-chatgpt"
+)
+
+type codexConfig struct {
+	effort                     string
+	auth                       CodexAuthMode
+	allowFileBackedCredentials bool
+}
+
 // CodexAdapter drives the OpenAI Codex CLI in non-interactive exec mode.
 type CodexAdapter struct {
 	Command                        []string
@@ -54,32 +70,54 @@ func (c *CodexAdapter) ValidateConfig(model string, options map[string]apiextens
 	return err
 }
 
-func normalizeCodexConfig(model string, options map[string]apiextensionsv1.JSON) (map[string]string, error) {
+func normalizeCodexConfig(model string, options map[string]apiextensionsv1.JSON) (codexConfig, error) {
 	if model != strings.TrimSpace(model) {
-		return nil, fmt.Errorf("model must not have leading or trailing whitespace")
+		return codexConfig{}, fmt.Errorf("model must not have leading or trailing whitespace")
 	}
 	names := make([]string, 0, len(options))
 	for name := range options {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	normalized := make(map[string]string, len(options))
+	normalized := codexConfig{auth: CodexAuthAPIKey}
 	for _, name := range names {
-		if name != "effort" {
-			return nil, fmt.Errorf("unknown harness option %q", name)
-		}
-		var value string
-		if err := json.Unmarshal(options[name].Raw, &value); err != nil {
-			return nil, fmt.Errorf("harness option %q must be a string: %w", name, err)
-		}
-		switch value {
-		case "minimal", "low", "medium", "high", "xhigh":
+		switch name {
+		case "effort":
+			var value string
+			if err := json.Unmarshal(options[name].Raw, &value); err != nil {
+				return codexConfig{}, fmt.Errorf("harness option %q must be a string: %w", name, err)
+			}
+			switch value {
+			case "minimal", "low", "medium", "high", "xhigh":
+			default:
+				return codexConfig{}, fmt.Errorf("invalid effort value %q", value)
+			}
+			normalized.effort = value
+		case "auth":
+			var value CodexAuthMode
+			if err := json.Unmarshal(options[name].Raw, &value); err != nil {
+				return codexConfig{}, fmt.Errorf("harness option %q must be a string: %w", name, err)
+			}
+			if value != CodexAuthAPIKey && value != CodexAuthAmbientChatGPT {
+				return codexConfig{}, fmt.Errorf("invalid auth value %q; supported values are %q and %q", value, CodexAuthAPIKey, CodexAuthAmbientChatGPT)
+			}
+			normalized.auth = value
+		case "allowFileBackedCredentials":
+			if err := json.Unmarshal(options[name].Raw, &normalized.allowFileBackedCredentials); err != nil {
+				return codexConfig{}, fmt.Errorf("harness option %q must be a boolean: %w", name, err)
+			}
 		default:
-			return nil, fmt.Errorf("invalid effort value %q", value)
+			return codexConfig{}, fmt.Errorf("unknown harness option %q", name)
 		}
-		normalized[name] = value
 	}
 	return normalized, nil
+}
+
+// CodexUsesAmbientChatGPT reports whether validated-or-to-be-validated options
+// opt in to the operator-owned ChatGPT CLI session.
+func CodexUsesAmbientChatGPT(options map[string]apiextensionsv1.JSON) bool {
+	config, err := normalizeCodexConfig("", options)
+	return err == nil && config.auth == CodexAuthAmbientChatGPT
 }
 
 // Preflight verifies the Codex CLI and its configured API key.
@@ -132,11 +170,76 @@ func (c *CodexAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	return PreflightInfo{}, fmt.Errorf("harness: codex: configure an OpenAI API key for agent:model; stored Codex login is not used because workspace-write commands can read CODEX_HOME")
 }
 
+// PreflightConfig performs the auth check for one resolved goober configuration.
+// The default API-key path intentionally delegates to the historic preflight.
+func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (PreflightInfo, error) {
+	config, err := normalizeCodexConfig(model, options)
+	if err != nil {
+		return PreflightInfo{}, fmt.Errorf("harness: codex: invalid configuration: %w", err)
+	}
+	if config.auth != CodexAuthAmbientChatGPT {
+		return c.Preflight(ctx)
+	}
+	_, _ = fmt.Fprintln(os.Stderr, "warning: harness: codex: ambient-chatgpt uses the operator-owned ChatGPT session; use only for trusted local execution")
+	if config.allowFileBackedCredentials {
+		_, _ = fmt.Fprintln(os.Stderr, "warning: harness: codex: allowFileBackedCredentials permits auth.json-backed renewable tokens; model shell commands share this trusted local user boundary")
+	}
+	if len(c.Command) == 0 {
+		return PreflightInfo{}, fmt.Errorf("harness: codex: no command configured")
+	}
+	bin := c.Command[0]
+	if _, err := exec.LookPath(bin); err != nil {
+		return PreflightInfo{}, fmt.Errorf("harness: codex: %q not found on PATH — install Codex CLI and sign in with ChatGPT before running agentic stages", bin)
+	}
+	env := ambientCodexEnv(c.ExtraEnvAllowlist, c.EnvUnset)
+	baseCommand := resolveHarnessCommand(c.Command)
+	versionCommand := append(append([]string(nil), baseCommand...), "--version")
+	versionResult, err := c.runner().Run(ctx, ProcessRequest{Command: versionCommand, Env: env, MaxTranscriptBytes: maxPreflightDiagnosticBytes})
+	if err != nil || versionResult.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError(fmt.Sprintf("harness: codex: %q --version", bin), versionResult, err, "check that the CLI is installed")
+	}
+	version := firstOutputLine(versionResult.Transcript)
+	if version == "" {
+		return PreflightInfo{}, fmt.Errorf("harness: codex: %q --version returned no version", bin)
+	}
+	loginCommand := append(append([]string(nil), baseCommand...), "login", "status")
+	if !config.allowFileBackedCredentials {
+		// This makes the CLI retrieve the login through the OS store; no auth file
+		// is opened by Goobers, and the same constraint is used for exec below.
+		loginCommand = append(loginCommand, "-c", `cli_auth_credentials_store="keyring"`)
+	}
+	loginResult, err := c.runner().Run(ctx, ProcessRequest{Command: loginCommand, Env: env, MaxTranscriptBytes: maxPreflightDiagnosticBytes})
+	if err != nil || loginResult.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError("harness: codex: login status", loginResult, err, "sign in with ChatGPT using `codex login`; ambient ChatGPT mode requires a verified local session")
+	}
+	if !strings.Contains(strings.ToLower(string(loginResult.Transcript)), "logged in using chatgpt") {
+		return PreflightInfo{}, fmt.Errorf("harness: codex: ambient-chatgpt requires `codex login status` to report ChatGPT authentication; API-key, logged-out, or ambiguous status is refused")
+	}
+	return PreflightInfo{Version: version}, nil
+}
+
+func ambientCodexEnv(extra, unset []string) []string {
+	return withAmbientCodexHome(withoutEnvVars(baseEnv(extra, unset), codexModelEnv))
+}
+
+// withAmbientCodexHome preserves the operator-selected authentication location
+// without discarding Goobers' already scoped execution environment.
+func withAmbientCodexHome(env []string) []string {
+	env = withoutEnvVars(env, codexModelEnv)
+	// CODEX_HOME itself is a location, not credential material. Preserve an
+	// explicit operator override; otherwise Codex derives its standard home from
+	// HOME/USERPROFILE already retained by baseEnv.
+	if home, ok := os.LookupEnv("CODEX_HOME"); ok && home != "" {
+		env = overrideEnv(env, "CODEX_HOME", home)
+	}
+	return env
+}
+
 func isOpenAIAPIKey(value string) bool {
 	return strings.HasPrefix(value, "sk-")
 }
 
-func buildCodexArgv(baseCommand []string, model, effort, workspace string, shellEnv map[string]string) []string {
+func buildCodexArgv(baseCommand []string, model, effort, workspace string, shellEnv map[string]string, configOverrides []string, ignoreUserConfig bool) []string {
 	trustedPath := filepath.Clean(workspace)
 	argv := append([]string(nil), baseCommand...)
 	argv = append(argv,
@@ -160,6 +263,14 @@ func buildCodexArgv(baseCommand []string, model, effort, workspace string, shell
 	}
 	if effort != "" {
 		argv = append(argv, "-c", `model_reasoning_effort="`+effort+`"`)
+	}
+	for _, override := range configOverrides {
+		argv = append(argv, "-c", override)
+	}
+	if ignoreUserConfig {
+		// Authentication still reads CODEX_HOME; only persistent configuration is
+		// ignored, leaving the operator's config untouched by this invocation.
+		argv = append(argv, "--ignore-user-config")
 	}
 	argv = append(argv, "-")
 	return argv
@@ -201,6 +312,11 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: codex: invalid configuration: %w", err)
 	}
+	if options.auth == CodexAuthAmbientChatGPT {
+		if _, err := c.PreflightConfig(ctx, req.Model, req.HarnessOptions); err != nil {
+			return Outcome{}, err
+		}
+	}
 
 	prepared, err := c.prepareInvocation(ctx, req, options)
 	if err != nil {
@@ -214,7 +330,7 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 
 	agentTelemetry, err := beginAdapterAgentTelemetry(
 		req, "codex", req.Model, req.Model,
-		requestedHarnessOption(req, "effort"), options["effort"],
+		requestedHarnessOption(req, "effort"), options.effort,
 	)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: codex: start agent telemetry: %w", err)
@@ -294,19 +410,24 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 	return out, nil
 }
 
-func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, options map[string]string) (prepared preparedCodexInvocation, err error) {
+func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, options codexConfig) (prepared preparedCodexInvocation, err error) {
 	ephemeralTmp, err := establishEphemeralTmp(c.Name(), c.EphemeralTmp, c.EphemeralTmpRoot)
 	if err != nil {
 		return preparedCodexInvocation{}, err
 	}
 
-	runtimeRoot, configDir, tempDir, err := prepareCodexRuntime(c.EphemeralTmpRoot)
-	if err != nil {
-		_ = ephemeralTmp.Reclaim()
-		return preparedCodexInvocation{}, fmt.Errorf("harness: codex: isolate ambient config: %w", err)
+	runtimeRoot, configDir, tempDir := "", "", ""
+	if options.auth == CodexAuthAPIKey {
+		runtimeRoot, configDir, tempDir, err = prepareCodexRuntime(c.EphemeralTmpRoot)
+		if err != nil {
+			_ = ephemeralTmp.Reclaim()
+			return preparedCodexInvocation{}, fmt.Errorf("harness: codex: create isolated API-key runtime: %w", err)
+		}
 	}
 	cleanup := func() {
-		_ = os.RemoveAll(runtimeRoot)
+		if runtimeRoot != "" {
+			_ = os.RemoveAll(runtimeRoot)
+		}
 		_ = ephemeralTmp.Reclaim()
 	}
 	defer func() {
@@ -324,9 +445,10 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 		return preparedCodexInvocation{}, fmt.Errorf("harness: codex: write prompt: %w", err)
 	}
 
+	envCapabilities := c.invocationEnvCapabilities(options.auth)
 	env, err := buildCredentialEnv(ctx, credentialEnvConfig{
 		adapterName:                    c.Name(),
-		envCapabilities:                c.EnvCapabilities,
+		envCapabilities:                envCapabilities,
 		optionalCredentialCapabilities: c.OptionalCredentialCapabilities,
 		extraEnvAllowlist:              c.ExtraEnvAllowlist,
 		envUnset:                       c.EnvUnset,
@@ -337,31 +459,29 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 	if err != nil {
 		return preparedCodexInvocation{}, err
 	}
-	env = dropForeignCodexAPIKey(env)
-	if !environmentContainsOpenAIKey(env) && c.ModelCredential != nil {
-		token, credentialErr := c.ModelCredential(ctx)
-		if credentialErr != nil {
-			return preparedCodexInvocation{}, fmt.Errorf("harness: codex: resolve agent:model credential: %w", credentialErr)
-		}
-		if isOpenAIAPIKey(token) {
-			env = overrideEnv(env, codexModelEnv, token)
-		}
-	}
-	if !environmentContainsOpenAIKey(env) {
-		return preparedCodexInvocation{}, fmt.Errorf("harness: codex: an OpenAI API key is required for agent:model; stored Codex login is not used because workspace-write commands can read CODEX_HOME")
+	env, err = c.configureAuthEnvironment(ctx, env, options)
+	if err != nil {
+		return preparedCodexInvocation{}, err
 	}
 	reservedEnv := []string{codexModelEnv, "CODEX_HOME", "TMPDIR", "TEMP", "TMP"}
 	for _, name := range c.EnvCapabilities {
 		reservedEnv = append(reservedEnv, name)
 	}
-	env, mcpSecretEnv, err := prepareCodexMCP(ctx, req, configDir, c.SelfBin, env, reservedEnv)
+	var mcpOverrides []string
+	env, mcpSecretEnv, mcpOverrides, err := prepareCodexMCP(ctx, req, configDir, c.SelfBin, env, reservedEnv, options.auth == CodexAuthAPIKey)
 	if err != nil {
 		return preparedCodexInvocation{}, err
 	}
-	env = overrideEnv(env, "CODEX_HOME", configDir)
-	env = overrideEnv(env, "TMPDIR", tempDir)
-	env = overrideEnv(env, "TEMP", tempDir)
-	env = overrideEnv(env, "TMP", tempDir)
+	if options.auth == CodexAuthAPIKey {
+		// API-key mode retains its pre-existing private config.toml contract.
+		mcpOverrides = nil
+		env = overrideEnv(env, "CODEX_HOME", configDir)
+		env = overrideEnv(env, "TMPDIR", tempDir)
+		env = overrideEnv(env, "TEMP", tempDir)
+		env = overrideEnv(env, "TMP", tempDir)
+	} else if !options.allowFileBackedCredentials {
+		mcpOverrides = append(mcpOverrides, `cli_auth_credentials_store="keyring"`)
+	}
 
 	secretEnv := []string{codexModelEnv, "CODEX_HOME"}
 	for _, name := range c.EnvCapabilities {
@@ -371,13 +491,15 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 	shellEnv := codexExecutionContextShellEnvironment(ctx, req, codexShellEnvironment(env, secretEnv), c.InstanceRoot)
 	baseCommand := resolveStdioHarnessCommand(c.Command)
 	execIndex := len(baseCommand)
-	argv := buildCodexArgv(baseCommand, req.Model, options["effort"], req.Workspace, shellEnv)
+	argv := buildCodexArgv(baseCommand, req.Model, options.effort, req.Workspace, shellEnv, mcpOverrides, options.auth == CodexAuthAmbientChatGPT)
 	if req.Sandbox != nil {
 		writableRoots, err := gitWritableRoots(req.Workspace)
 		if err != nil {
 			return preparedCodexInvocation{}, fmt.Errorf("harness: codex: sandbox: %w", err)
 		}
-		writableRoots = append(writableRoots, runtimeRoot)
+		if runtimeRoot != "" {
+			writableRoots = append(writableRoots, runtimeRoot)
+		}
 		var prefix int
 		argv, prefix, err = confineArgv(req.Sandbox, argv, req.Workspace, writableRoots)
 		if err != nil {
@@ -388,6 +510,43 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 	return preparedCodexInvocation{
 		req: req, argv: argv, execIndex: execIndex, env: env, prompt: prompt, cleanup: cleanup,
 	}, nil
+}
+
+func (c *CodexAdapter) invocationEnvCapabilities(auth CodexAuthMode) map[string]string {
+	if auth != CodexAuthAmbientChatGPT {
+		return c.EnvCapabilities
+	}
+	// agent:model remains a required semantic capability in the envelope, but
+	// its API-key grant must not be resolved or materialized in ambient mode.
+	filtered := make(map[string]string, len(c.EnvCapabilities))
+	for capability, name := range c.EnvCapabilities {
+		if capability != "agent:model" {
+			filtered[capability] = name
+		}
+	}
+	return filtered
+}
+
+func (c *CodexAdapter) configureAuthEnvironment(ctx context.Context, env []string, options codexConfig) ([]string, error) {
+	env = dropForeignCodexAPIKey(env)
+	if options.auth == CodexAuthAmbientChatGPT {
+		// Keep telemetry, repository routing, and every non-model scoped
+		// capability from buildCredentialEnv; only API-key selection is removed.
+		return withAmbientCodexHome(env), nil
+	}
+	if !environmentContainsOpenAIKey(env) && c.ModelCredential != nil {
+		token, err := c.ModelCredential(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("harness: codex: resolve agent:model credential: %w", err)
+		}
+		if isOpenAIAPIKey(token) {
+			env = overrideEnv(env, codexModelEnv, token)
+		}
+	}
+	if !environmentContainsOpenAIKey(env) {
+		return nil, fmt.Errorf("harness: codex: an OpenAI API key is required for agent:model; stored Codex login is not used because workspace-write commands can read CODEX_HOME")
+	}
+	return env, nil
 }
 
 func runCodexInvocation(
