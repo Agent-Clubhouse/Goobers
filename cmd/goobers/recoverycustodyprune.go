@@ -39,8 +39,8 @@ func openRecoveryCustodyPruneGuard(layout instance.Layout, dryRun bool) (func(re
 	}
 	if len(unreadable) > 0 {
 		return nil, noop, fmt.Errorf(
-			"recovery inventory holds %d unreadable reservation(s); refusing to prune run journals that may still own recovery state",
-			len(unreadable))
+			"%w: recovery inventory holds %d unreadable reservation(s); refusing to prune run journals that may still own recovery state",
+			retention.ErrCustodyHeld, len(unreadable))
 	}
 	owners := make(map[string]bool, len(entries))
 	for _, entry := range entries {
@@ -52,8 +52,8 @@ func openRecoveryCustodyPruneGuard(layout instance.Layout, dryRun bool) (func(re
 	return func(candidate retention.Result) error {
 		if owners[candidate.RunID] {
 			return fmt.Errorf(
-				"run %s still owns a live recovery snapshot; refusing to delete its journal until the snapshot is retired or expires",
-				candidate.RunID)
+				"%w: run %s still owns a live recovery snapshot; refusing to delete its journal until the snapshot is retired or expires",
+				retention.ErrCustodyHeld, candidate.RunID)
 		}
 		return nil
 	}, noop, nil
