@@ -1018,8 +1018,9 @@ func serveDashboardIndex(response http.ResponseWriter, request *http.Request, in
 }
 
 func stopDashboard(server *http.Server, cancelRequests context.CancelFunc, api dashboardAPI) error {
+	serverErr := stopDashboardServer(server, cancelRequests)
 	apiErr := api.close()
-	return errors.Join(stopDashboardServer(server, cancelRequests), apiErr)
+	return errors.Join(serverErr, apiErr)
 }
 
 func stopDashboardServer(server *http.Server, cancelRequests context.CancelFunc) error {
