@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
@@ -182,10 +183,11 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 		// captured and restored under the historical main-only assumption.
 		baseRef = "refs/heads/main"
 	}
-	base, err := recovery.FetchCurrentBase(ctx, destination, remoteURL, baseRef, recoveryAuthenticationEnvironment(environment))
+	base, err := recoveryFetchCurrentBase(ctx, destination, remoteURL, baseRef, recoveryAuthenticationEnvironment(environment))
 	if err != nil {
 		return "", err
 	}
+
 	const maxRecoveryBytes = 512 << 20
 	if err := importRecoveryObjects(ctx, layout, cfg, destination, recordPath, record, overflow, maxRecoveryBytes); err != nil {
 		return "", err
@@ -193,18 +195,13 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 	return recovery.RestoreSnapshot(ctx, destination, record, base, branch, maxRecoveryBytes)
 }
 
+var recoveryFetchCurrentBase = recovery.FetchCurrentBase
+
 func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, cfg *instance.Config, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
-	// Pods receive a resolved repository capability, not the daemon's app
-	// private key/token cache. Scope that credential to the configured URL.
-	if claimsPlaneSelected() && (project.Provider == apiv1.ProviderGitHub || project.Provider == apiv1.ProviderGitea) {
-		token, err := providerToken(capability.RepoPush)
-		if err != nil {
-			return nil, err
+	if os.Getenv(executor.RunIDEnvVar) != "" || os.Getenv(executor.CredentialEnvVar(string(capability.RepoPush))) != "" {
+		if env, err := stageScopedRepoPushGitEnvironment(ctx, project, remoteURL, registry); err != nil || env != nil {
+			return env, err
 		}
-		if project.Provider == apiv1.ProviderGitea {
-			return providers.GiteaGitAuthEnvironment(token, remoteURL, registry), nil
-		}
-		return providers.GitHubGitAuthEnvironment(token, remoteURL, registry), nil
 	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
@@ -222,6 +219,23 @@ func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, 
 		return gitEnv(ctx, remoteURL)
 	}
 	return nil, nil
+}
+
+func stageScopedRepoPushGitEnvironment(ctx context.Context, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
+	token, err := providerToken(capability.RepoPush)
+	if err != nil {
+		return nil, err
+	}
+	switch project.Provider {
+	case apiv1.ProviderGitHub:
+		return providers.GitHubGitAuthEnvironment(token, remoteURL, registry), nil
+	case apiv1.ProviderGitea:
+		return providers.GiteaGitAuthEnvironment(token, remoteURL, registry), nil
+	case apiv1.ProviderADO:
+		return providers.ADOGitAuthEnvironment(ctx, providers.NewADOPATCredentialSource("goobers", token), registry, remoteURL)
+	default:
+		return nil, nil
+	}
 }
 
 // Credential resolvers return a complete process environment. Only transport

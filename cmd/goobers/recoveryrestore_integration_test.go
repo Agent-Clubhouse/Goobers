@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -55,7 +56,45 @@ func TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository(t *testing.T) {
 
 func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranch string) {
 	resume := strings.HasPrefix(mode, "resume-")
+	const stageToken = "stage-scoped-recovery-token"
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "local-only-recovery-fixture-token")
+	if resume {
+		// recovery-resume is a deterministic stage: its only repository
+		// credential is the capability-scoped value materialized by the
+		// executor, not the host token named by instance.yaml.
+		t.Setenv("GOOBERS_CRED_REPO_PUSH", stageToken)
+		previousHostToken := os.Getenv("GOOBERS_GITHUB_TOKEN")
+		os.Unsetenv("GOOBERS_GITHUB_TOKEN")
+		t.Cleanup(func() { os.Setenv("GOOBERS_GITHUB_TOKEN", previousHostToken) })
+		t.Setenv("GOOBERS_REPO_PROVIDER", "")
+		t.Setenv("GOOBERS_REPO_OWNER", "")
+		t.Setenv("GOOBERS_REPO_PROJECT", "")
+		t.Setenv("GOOBERS_REPO_NAME", "")
+		var fetchEnvironments [][]string
+		previousFetch := recoveryFetchCurrentBase
+		recoveryFetchCurrentBase = func(ctx context.Context, repository, remoteURL, baseRef string, environment []string) (string, error) {
+			fetchEnvironments = append(fetchEnvironments, append([]string(nil), environment...))
+			joined := strings.Join(environment, "\n")
+			if !strings.Contains(joined, "GIT_CONFIG_VALUE_1=AUTHORIZATION: basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+stageToken))) {
+				t.Fatalf("recovery fetch did not receive the stage credential: %q", joined)
+			}
+			if strings.Contains(joined, "local-only-recovery-fixture-token") {
+				t.Fatalf("recovery fetch received the host credential: %q", joined)
+			}
+			return recovery.FetchCurrentBase(ctx, repository, remoteURL, baseRef, environment)
+		}
+		t.Cleanup(func() {
+			recoveryFetchCurrentBase = previousFetch
+			if len(fetchEnvironments) == 0 {
+				t.Error("recovery resume did not fetch the current base")
+			}
+			for i := 1; i < len(fetchEnvironments); i++ {
+				if strings.Join(fetchEnvironments[i], "\n") != strings.Join(fetchEnvironments[0], "\n") {
+					t.Errorf("recovery retry changed the authorized transport environment")
+				}
+			}
+		})
+	}
 	root := initDemo(t)
 	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
 	if err != nil {
@@ -184,6 +223,9 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 	if code := invoke(); code != 0 {
 		t.Fatalf("restore command returned %d: %s", code, stderr.String())
 	}
+	if resume {
+		assertRecoverySecretAbsent(t, stageToken, stdout.String(), stderr.String(), root, retained)
+	}
 	if parent := recoveryCLIGit(t, destination, "rev-parse", target+"^"); parent != liveBase {
 		t.Fatalf("restore used stale base: %s != %s", parent, liveBase)
 	}
@@ -218,8 +260,41 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 	if code := invoke(); code != wantRetryCode {
 		t.Fatalf("existing branch was not refused: %d", code)
 	}
+	if resume {
+		assertRecoverySecretAbsent(t, stageToken, stdout.String(), stderr.String(), root, retained)
+	}
 	if after := recoveryCLIGit(t, destination, "rev-parse", target); after != before {
 		t.Fatal("retry overwrote operator branch")
+	}
+}
+
+func assertRecoverySecretAbsent(t *testing.T, secret string, output ...string) {
+	t.Helper()
+	for _, value := range output {
+		if strings.Contains(value, secret) {
+			t.Fatalf("recovery secret leaked into command output: %q", secret)
+		}
+	}
+	for _, root := range output[2:] {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(data), secret) {
+				t.Fatalf("recovery secret leaked into retained state %q", path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan retained recovery state %q: %v", root, err)
+		}
 	}
 }
 
