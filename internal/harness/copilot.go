@@ -696,9 +696,9 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {
 	switch {
 	case errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return preflightProbeError(probe, result, fmt.Errorf("timed out: %w", context.DeadlineExceeded), "")
+		return preflightProbeError(probe, result, errors.Join(ErrTimeout, context.DeadlineExceeded), "")
 	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
-		return preflightProbeError(probe, result, fmt.Errorf("canceled: %w", context.Canceled), "")
+		return preflightProbeError(probe, result, errors.Join(ErrCanceled, context.Canceled), "")
 	default:
 		return preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
 	}

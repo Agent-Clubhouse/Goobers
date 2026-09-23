@@ -1,11 +1,14 @@
 package harness
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPrepareCopilotPreflightEnvironmentCopiesOnlyStoredAuthentication(t *testing.T) {
@@ -110,5 +113,79 @@ func TestPreflightProbeErrorReportsTimeoutBeforeExitCode(t *testing.T) {
 	}
 	if strings.Contains(message, "exited 1") {
 		t.Fatalf("timeout was misclassified as an exit failure: %v", err)
+	}
+}
+
+func TestCopilotPreflightPreservesInterruptedAuthProbeBeforeExitCode(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name         string
+		runnerError  error
+		contextError error
+		wantMessage  string
+	}{
+		{
+			name:         "deadline",
+			runnerError:  ErrTimeout,
+			contextError: context.DeadlineExceeded,
+			wantMessage:  "timed out",
+		},
+		{
+			name:         "cancellation",
+			runnerError:  ErrCanceled,
+			contextError: context.Canceled,
+			wantMessage:  "was canceled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if errors.Is(tt.contextError, context.DeadlineExceeded) {
+				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			} else {
+				ctx, cancel = context.WithCancel(context.Background())
+				cancel()
+			}
+			defer cancel()
+
+			runner := &fakeProcessRunner{
+				result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+			}
+			runner.act = func(req ProcessRequest) error {
+				if slices.Contains(req.Command, "auth") {
+					runner.result = ProcessResult{
+						ExitCode:   1,
+						Transcript: []byte("probe interrupted"),
+					}
+					return tt.runnerError
+				}
+				return nil
+			}
+
+			adapter := &CopilotAdapter{
+				Command:       []string{program},
+				AuthCheckArgs: []string{"auth", "status"},
+				Runner:        runner,
+			}
+			_, err := adapter.Preflight(ctx)
+			if err == nil {
+				t.Fatal("expected interrupted preflight")
+			}
+			if !errors.Is(err, tt.runnerError) || !errors.Is(err, tt.contextError) {
+				t.Fatalf("error = %v, want causes %v and %v", err, tt.runnerError, tt.contextError)
+			}
+			if !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("error = %v, want %q", err, tt.wantMessage)
+			}
+			if strings.Contains(err.Error(), "exited 1") || strings.Contains(err.Error(), "authentication failure") {
+				t.Fatalf("interruption was misclassified: %v", err)
+			}
+		})
 	}
 }
