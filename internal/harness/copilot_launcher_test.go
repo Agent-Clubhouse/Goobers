@@ -145,7 +145,14 @@ func TestLauncherWithoutHandshakeUsesVerifiedAdapterManagedFallback(t *testing.T
 				if id == "" {
 					t.Fatalf("behavioral fallback did not receive a generated session id: %v", req.Command)
 				}
-				path := copilotSessionLogPath(home, id)
+				preflightHome, ok := copilotConfigHome(req.Env)
+				if !ok {
+					t.Fatal("behavioral fallback did not receive COPILOT_HOME")
+				}
+				if preflightHome == home {
+					t.Fatal("behavioral fallback reused the ambient Copilot home")
+				}
+				path := copilotSessionLogPath(preflightHome, id)
 				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 					return ProcessResult{}, err
 				}

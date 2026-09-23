@@ -648,6 +648,11 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		if tok != "" {
 			authEnv = overrideEnv(authEnv, "COPILOT_GITHUB_TOKEN", tok)
 		}
+		authEnv, authDir, authCleanup, err := prepareCopilotPreflightEnvironment(authEnv, tok == "")
+		if err != nil {
+			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: isolate authentication probe: %w", err)
+		}
+		defer authCleanup()
 		authCommand := append(command, c.AuthCheckArgs...)
 		sessionTranscript := ""
 		sessionCleanup := func() {}
@@ -668,6 +673,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (sign-in check)", bin, c.AuthCheckArgs)
 		res, err := c.runner().Run(ctx, ProcessRequest{
 			Command:            authCommand,
+			Dir:                authDir,
 			Env:                authEnv,
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		})
@@ -690,9 +696,9 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {
 	switch {
 	case errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return preflightProbeError(probe, result, fmt.Errorf("timed out: %w", context.DeadlineExceeded), "")
+		return preflightProbeError(probe, result, errors.Join(ErrTimeout, context.DeadlineExceeded), "")
 	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
-		return preflightProbeError(probe, result, fmt.Errorf("canceled: %w", context.Canceled), "")
+		return preflightProbeError(probe, result, errors.Join(ErrCanceled, context.Canceled), "")
 	default:
 		return preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
 	}

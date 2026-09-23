@@ -2492,6 +2492,7 @@ func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	copilotHome := t.TempDir()
 	t.Setenv("COPILOT_HOME", copilotHome)
 	var probedSessionID string
+	var isolatedHome string
 	runner := &fakeProcessRunner{
 		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
 		act: func(req ProcessRequest) error {
@@ -2503,7 +2504,15 @@ func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 				return errors.New("session id value missing")
 			}
 			probedSessionID = req.Command[sessionIndex+1]
-			path := copilotSessionLogPath(copilotHome, probedSessionID)
+			var ok bool
+			isolatedHome, ok = copilotConfigHome(req.Env)
+			if !ok {
+				return errors.New("isolated Copilot home missing")
+			}
+			if isolatedHome == copilotHome {
+				return errors.New("auth probe reused ambient Copilot home")
+			}
+			path := copilotSessionLogPath(isolatedHome, probedSessionID)
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return err
 			}
@@ -2523,8 +2532,8 @@ func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	if probedSessionID == "" {
 		t.Fatal("preflight did not probe a generated session id")
 	}
-	if _, err := os.Stat(filepath.Dir(copilotSessionLogPath(copilotHome, probedSessionID))); !os.IsNotExist(err) {
-		t.Fatalf("preflight session was not cleaned up: %v", err)
+	if _, err := os.Stat(isolatedHome); !os.IsNotExist(err) {
+		t.Fatalf("isolated preflight home was not cleaned up: %v", err)
 	}
 }
 
