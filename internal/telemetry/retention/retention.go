@@ -31,9 +31,22 @@ type Options struct {
 	DryRun bool
 	// BeforeDelete durably transfers any dependent custody before the journal
 	// is staged or deleted. Errors preserve the journal. Also runs when
-	// completing an interrupted prune; never runs for a dry-run.
+	// completing an interrupted prune; never runs for a dry-run. A guard that
+	// is refusing rather than failing should wrap ErrCustodyHeld.
 	BeforeDelete func(Result) error
 }
+
+// ErrCustodyHeld reports that a BeforeDelete guard deliberately preserved a
+// journal because something else still depends on it. It is an expected
+// outcome, not a failure: the journal survives, the rest of the pass is
+// abandoned, and a later pass re-derives its candidates from disk once the
+// dependency is released. Callers that complete an interrupted pass during
+// startup must treat it as "not yet" and continue — aborting there strands
+// the pending pass in its prepared phase, so every subsequent startup
+// replays the same refusal and exits non-zero (#5505). Guards that detect a
+// genuine inconsistency (a torn reservation, a mismatched identity) must NOT
+// wrap it: those stay fatal.
+var ErrCustodyHeld = errors.New("custody held")
 
 // Result describes one selected or deleted run.
 type Result struct {
