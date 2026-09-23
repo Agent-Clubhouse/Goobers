@@ -318,13 +318,26 @@ func TestWindowsScheduledTaskStatusReportsLastFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Installed || status.Running || status.LastFailure != "2147942402" {
+	if !status.Installed || status.Running || status.LastFailure != "0x80070002 (ERROR_FILE_NOT_FOUND)" {
 		t.Fatalf("status = %+v", status)
 	}
 }
 
-func TestWindowsScheduledTaskStatusDoesNotReportRunningResultAsFailure(t *testing.T) {
-	for _, result := range []string{"267009", "0x41301"} {
+func TestWindowsScheduledTaskStatusDoesNotReportInformationalResultAsFailure(t *testing.T) {
+	for _, result := range []string{
+		"0",
+		"267008", "0x41300",
+		"267009", "0x41301",
+		"267010", "0x41302",
+		"267011", "0x41303",
+		"267012", "0x41304",
+		"267013", "0x41305",
+		"267014", "0x41306",
+		"267015", "0x41307",
+		"267016", "0x41308",
+		"267035", "0x4131B",
+		"267036", "0x4131C",
+	} {
 		t.Run(result, func(t *testing.T) {
 			runner := &fakeRunner{responses: []commandResponse{{
 				output: "Run As User: CONTOSO\\alice\nStatus: Running\nLast Result: " + result + "\n",
