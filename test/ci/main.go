@@ -280,7 +280,7 @@ func configuredToolchain(getenv func(string) string) toolchain {
 
 func resolveBuildMetadata(exec executor, tools toolchain, now func() time.Time, getenv func(string) string) buildMetadata {
 	return buildMetadata{
-		version: envOrCommand(getenv, "VERSION", exec, tools.gitCommand, []string{"describe", "--tags", "--always", "--dirty"}, "dev"),
+		version: envOrCommand(getenv, "VERSION", exec, tools.gitCommand, []string{"describe", "--tags", "--match", "v[0-9]*", "--always", "--dirty"}, "dev"),
 		commit:  envOrCommand(getenv, "COMMIT", exec, tools.gitCommand, []string{"rev-parse", "--short", "HEAD"}, "none"),
 		date:    envOrDefault(getenv, "DATE", now().UTC().Format("2006-01-02T15:04:05Z")),
 	}

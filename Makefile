@@ -22,7 +22,7 @@
 .DEFAULT_GOAL := help
 
 # ---- Build metadata (injected into internal/version via -ldflags) -----------
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(shell git describe --tags --match=v[0-9]* --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
 PKG     := github.com/goobers/goobers/internal/version

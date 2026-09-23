@@ -92,6 +92,10 @@ type PrepareResult struct {
 	UpdateRequested bool   `json:"updateRequested"`
 	Policy          string `json:"policy"`
 	Target          string `json:"target,omitempty"`
+	// CurrentVersionUnparseable is true when release policy recovered a
+	// supervised development or otherwise non-SemVer build by replacing it
+	// with the selected valid release.
+	CurrentVersionUnparseable bool `json:"currentVersionUnparseable,omitempty"`
 	// SkippedInvalidTags counts release tags that failed to parse as SemVer
 	// and were skipped during selection (see resolveNewestRelease) — 0
 	// outside the include-prerelease path.
@@ -151,6 +155,7 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 
 	var target, version, commit, staged string
 	var skippedInvalidTags int
+	currentVersionUnparseable := false
 	notNewer := false
 	if opts.Policy == PolicyOnMain {
 		commit, err = resolveMainCommit(ctx, opts)
@@ -163,12 +168,13 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 		release, skippedInvalidTags, err = resolveRelease(ctx, opts)
 		target, version = release.TagName, release.TagName
 		if err == nil {
-			newer, compareErr := isNewerVersion(current.Version, version)
+			newer, unparseable, compareErr := compareReleaseVersion(current.Version, version)
 			if compareErr != nil {
 				err = fmt.Errorf("compare current version %q with release %q: %w", current.Version, version, compareErr)
 			} else if !newer {
 				notNewer = true
 			} else {
+				currentVersionUnparseable = unparseable
 				staged, err = stageRelease(ctx, opts, release)
 			}
 		}
@@ -213,7 +219,13 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 	if err != nil {
 		return PrepareResult{}, err
 	}
-	return PrepareResult{UpdateRequested: true, Policy: opts.Policy, Target: target, SkippedInvalidTags: skippedInvalidTags}, nil
+	return PrepareResult{
+		UpdateRequested:           true,
+		Policy:                    opts.Policy,
+		Target:                    target,
+		CurrentVersionUnparseable: currentVersionUnparseable,
+		SkippedInvalidTags:        skippedInvalidTags,
+	}, nil
 }
 
 func defaultPrepareOptions(opts PrepareOptions) PrepareOptions {
@@ -348,16 +360,16 @@ func resolveNewestRelease(ctx context.Context, opts PrepareOptions) (githubRelea
 	return selected, skipped, nil
 }
 
-func isNewerVersion(currentVersion, candidateVersion string) (bool, error) {
-	current, err := hashiversion.NewVersion(currentVersion)
-	if err != nil {
-		return false, fmt.Errorf("parse current version %q: %w", currentVersion, err)
-	}
+func compareReleaseVersion(currentVersion, candidateVersion string) (newer, currentUnparseable bool, err error) {
 	candidate, err := hashiversion.NewVersion(candidateVersion)
 	if err != nil {
-		return false, fmt.Errorf("parse candidate version %q: %w", candidateVersion, err)
+		return false, false, fmt.Errorf("parse candidate version %q: %w", candidateVersion, err)
 	}
-	return candidate.GreaterThan(current), nil
+	current, err := hashiversion.NewVersion(currentVersion)
+	if err != nil {
+		return true, true, nil
+	}
+	return candidate.GreaterThan(current), false, nil
 }
 
 func resolveMainCommit(ctx context.Context, opts PrepareOptions) (string, error) {

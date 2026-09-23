@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 type fakeExecutor struct {
@@ -813,13 +816,60 @@ func TestResolveBuildMetadataUsesOverridesAndFallbacks(t *testing.T) {
 
 	exec = &fakeExecutor{
 		failCommands: map[string]bool{
-			"git describe --tags --always --dirty": true,
-			"git rev-parse --short HEAD":           true,
+			"git describe --tags --match v[0-9]* --always --dirty": true,
+			"git rev-parse --short HEAD":                           true,
 		},
 	}
 	got = resolveBuildMetadata(exec, toolchain{gitCommand: "git"}, now, func(string) string { return "" })
 	if got.version != "dev" || got.commit != "none" {
 		t.Fatalf("fallback metadata = %#v", got)
+	}
+}
+
+func TestResolveBuildMetadataIgnoresNearerPortalTag(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := testgit.Command(args...)
+		cmd.Dir = repo
+		cmd.Env = append(cmd.Env,
+			"GIT_AUTHOR_NAME=Goobers Test",
+			"GIT_AUTHOR_EMAIL=goobers@example.invalid",
+			"GIT_COMMITTER_NAME=Goobers Test",
+			"GIT_COMMITTER_EMAIL=goobers@example.invalid",
+		)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+
+	runGit("init", "--quiet")
+	if err := os.WriteFile(filepath.Join(repo, "version.txt"), []byte("product\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "version.txt")
+	runGit("commit", "--quiet", "-m", "product release")
+	runGit("tag", "v0.4.1")
+
+	if err := os.WriteFile(filepath.Join(repo, "portal.txt"), []byte("portal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "portal.txt")
+	runGit("commit", "--quiet", "-m", "portal release")
+	runGit("tag", "portal-v9.9.9")
+
+	t.Chdir(repo)
+	got := resolveBuildMetadata(
+		processExecutor{stdout: io.Discard, stderr: io.Discard},
+		toolchain{gitCommand: "git"},
+		time.Now,
+		func(string) string { return "" },
+	)
+	if !strings.HasPrefix(got.version, "v0.4.1-1-g") {
+		t.Fatalf("version = %q, want metadata derived from v0.4.1", got.version)
+	}
+	if strings.Contains(got.version, "portal") {
+		t.Fatalf("version was contaminated by the nearer portal tag: %q", got.version)
 	}
 }
 

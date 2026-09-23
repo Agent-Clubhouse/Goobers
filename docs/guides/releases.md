@@ -190,9 +190,12 @@ go run ./release -previous-features previous/feature-registry.json \
 Build metadata (`version`/`commit`/`date`) is injected via the same
 `internal/version` `-ldflags` path the [Makefile](../../Makefile) uses, so a
 released binary's `goobers --version` is byte-for-byte consistent with a local
-`make build`. Version defaults to `git describe --tags --always --dirty`; the
-build date defaults to the commit's committer date, so re-running the engine on
-the same commit is reproducible (`-trimpath` is always on).
+`make build`. Version defaults to
+`git describe --tags --match=v[0-9]* --always --dirty`, restricting metadata
+to Goobers product release tags so unrelated package tags cannot contaminate
+the executable version. The build date defaults to the commit's committer date,
+so re-running the engine on the same commit is reproducible (`-trimpath` is
+always on).
 
 ### Release-pinned onboarding documentation
 
