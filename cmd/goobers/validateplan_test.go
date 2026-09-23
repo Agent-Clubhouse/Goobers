@@ -90,6 +90,9 @@ func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
+	// Provider stage inputs may be inherited from the local-ci stage; this
+	// integration test intentionally exercises the command defaults.
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "")
 
 	if code, stdout, stderr := runArgs(t, "select-source", root); code != 0 {
 		t.Fatalf("select-source: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
@@ -153,6 +156,9 @@ func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
+	// Keep the artifact in this test's working directory even when the test
+	// process inherits a stage-level resultFile input.
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "")
 	if code, _, stderr := runArgs(t, "select-source", root); code != 0 {
 		t.Fatalf("select-source: code = %d, stderr = %q", code, stderr)
 	}
