@@ -70,6 +70,11 @@ selected cohort with:
 goobers run --gaggle goobers implementation-pre-review-experiment
 ```
 
+Landing this manual workflow enables the measurements requested by #4491; it
+does not complete that proposal or approve promotion into the canonical
+implementation workflows. Keep #4491 open until maintainers review the measured
+cohort and make the separate promotion decision.
+
 Do not promote the pre-review stage into either canonical workflow until the
 experiment has enough comparable runs. Use journal stage attempts and telemetry
 rollups for the experiment cohort and a representative `implementation`
