@@ -183,7 +183,8 @@ const (
 	// workflow that has gone a multiple of its own schedule interval without
 	// producing a run (SkipCount unset) — either because its trigger went
 	// silent (#1868) or because it kept firing into a capacity refusal that
-	// never cleared (#5277).
+	// never cleared (#5277) — or a workflow whose demand poll failed several
+	// consecutive times (#5605).
 	EventWorkflowStarved EventType = "workflow.starved"
 	// EventWorkflowRefused records a workflow the startup constraint solve
 	// marked unplaceable on the instance's declared runners: inventory
