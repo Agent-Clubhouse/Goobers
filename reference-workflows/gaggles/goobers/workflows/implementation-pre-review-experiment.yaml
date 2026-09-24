@@ -337,6 +337,25 @@ spec:
         prNumber: prNumber
       capabilities:
         - provider:pr:write
+      # #5462 (workaround, not a full fix — see the PR): the credential is
+      # resolved once at ci-poll STAGE ENTRY (cmd/goobers's runner wiring,
+      # from a process-level token cache) and then held static for the
+      # whole poll, which can run up to pollTimeoutSeconds (default 30m). A
+      # run alive long enough for that poll to still be running as the
+      # cached token nears its own expiry can 401 mid-poll. Retrying
+      # re-dispatches the stage, which calls the token source again; the
+      # cache re-mints only because the held token is now past its expiry
+      # skew — proven live to recover the failure a bare retry of the same
+      # already-expired token cannot. This is an intra-dispatch task retry
+      # (internal/runner's per-stage attempt loop), charged before any gate
+      # ever evaluates this task's result, so it does not touch the
+      # gate-level repass budget (#5558) that ci-gate's own onTimeout
+      # re-entry is bounded by. It does not cover a poll long enough to
+      # outlive even a freshly re-minted token (e.g. pollTimeoutSeconds
+      # raised well past the token's lifetime).
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 30
       expectedOutputs:
         - ciStatus
         # Passed through by the built-in so timeout can re-enter this task.
