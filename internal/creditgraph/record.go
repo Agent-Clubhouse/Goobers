@@ -26,6 +26,8 @@ const (
 type RecordStatus string
 
 const (
+	// RecordComplete, RecordInsufficientEvidence, and RecordFailed are the
+	// terminal outcomes of an isolated Backprop attribution analysis.
 	RecordComplete             RecordStatus = "complete"
 	RecordInsufficientEvidence RecordStatus = "insufficient-evidence"
 	RecordFailed               RecordStatus = "failed"
