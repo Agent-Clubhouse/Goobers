@@ -572,6 +572,8 @@ export interface OverviewInventory {
 export interface OverviewSectionErrors {
   inventory?: Error;
   runs?: Error;
+  health?: Error;
+  instance?: Error;
 }
 
 export interface OperationalOverview {
@@ -1113,6 +1115,19 @@ export async function loadOperationalOverview(
       new Error("Unable to read daemon data.")
     );
   }
+  // A failed refresh that falls back to the previous health/instance is the
+  // same trap as a stale inventory or run group: the page would otherwise
+  // keep rendering that stale data as current with nothing to say a refresh
+  // failed (#3659).
+  const healthError = settledError(health);
+  const instanceError = settledError(instance);
+  const initialSectionErrors: OverviewSectionErrors = {};
+  if (healthError) {
+    initialSectionErrors.health = healthError;
+  }
+  if (instanceError) {
+    initialSectionErrors.instance = instanceError;
+  }
 
   options?.onPartial?.({
     health: resolvedHealth,
@@ -1120,6 +1135,7 @@ export async function loadOperationalOverview(
     gaggleCount: previous?.gaggleCount ?? 0,
     workflowNames: previous?.workflowNames ?? new Map<string, string>(),
     groups: previous?.groups ?? { active: [], attention: [], recent: [] },
+    ...(healthError || instanceError ? { sectionErrors: initialSectionErrors } : {}),
     ...(previous
       ? {}
       : {
@@ -1161,7 +1177,7 @@ export async function loadOperationalOverview(
   const resolvedGroups = settledValue(groups) ??
     previous?.groups ?? { active: [], attention: [], recent: [] };
 
-  const sectionErrors: OverviewSectionErrors = {};
+  const sectionErrors: OverviewSectionErrors = { ...initialSectionErrors };
   const inventoryError = settledError(inventory);
   const runsError = settledError(groups);
   if (inventoryError) {
@@ -1177,7 +1193,7 @@ export async function loadOperationalOverview(
     gaggleCount: resolvedInventory.gaggleCount,
     workflowNames: resolvedInventory.workflowNames,
     groups: resolvedGroups,
-    ...(inventoryError || runsError ? { sectionErrors } : {}),
+    ...(healthError || instanceError || inventoryError || runsError ? { sectionErrors } : {}),
   };
 }
 

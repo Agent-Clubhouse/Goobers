@@ -372,6 +372,43 @@ describe("loadOperationalOverview", () => {
     await expect(loadOperationalOverview(client)).rejects.toThrow("daemon unavailable");
   });
 
+  // #3659: a failed health/instance refresh fell back to the previous data
+  // with no error or stale-state indicator, so a degraded daemon kept
+  // reading as healthy on the Overview page.
+  it("reports a section error when a health refresh falls back to previous data (#3659)", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const previous = await loadOperationalOverview(client);
+    const boom = new Error("The daemon request timed out after 10000ms.");
+    vi.spyOn(client, "getHealth").mockRejectedValue(boom);
+
+    const refreshed = await loadOperationalOverview(client, undefined, { previous });
+
+    expect(refreshed.health).toEqual(previous.health);
+    expect(refreshed.sectionErrors?.health).toBe(boom);
+    expect(refreshed.sectionErrors?.instance).toBeUndefined();
+  });
+
+  it("reports a section error when an instance refresh falls back to previous data (#3659)", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const previous = await loadOperationalOverview(client);
+    const boom = new Error("The daemon request timed out after 10000ms.");
+    vi.spyOn(client, "getInstance").mockRejectedValue(boom);
+
+    const refreshed = await loadOperationalOverview(client, undefined, { previous });
+
+    expect(refreshed.instance).toEqual(previous.instance);
+    expect(refreshed.sectionErrors?.instance).toBe(boom);
+    expect(refreshed.sectionErrors?.health).toBeUndefined();
+  });
+
+  it("does not report a health/instance section error on a clean refresh", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const overview = await loadOperationalOverview(client);
+
+    expect(overview.sectionErrors?.health).toBeUndefined();
+    expect(overview.sectionErrors?.instance).toBeUndefined();
+  });
+
   it("refetches inventory when the workflow model changes (DASH-13)", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const previous = await loadOperationalOverview(client);

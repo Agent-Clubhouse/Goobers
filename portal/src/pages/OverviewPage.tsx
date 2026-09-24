@@ -216,6 +216,25 @@ function Overview({
         </div>
       </header>
 
+      {/* A failed health or instance refresh falls back to the previous data so
+          the page keeps rendering something, but that fallback must say it's
+          stale — otherwise degraded daemon health or instance state reads as
+          current with no diagnostic at all (#3659). */}
+      {(overview.sectionErrors?.health || overview.sectionErrors?.instance) && (
+        <div className="inline-empty section-error" role="alert">
+          <span>
+            {overview.sectionErrors?.health && overview.sectionErrors?.instance
+              ? "Daemon health and instance data could not be refreshed just now, so the status above may be stale."
+              : overview.sectionErrors?.health
+                ? "Daemon health could not be refreshed just now, so the status above may be stale."
+                : "Instance data could not be refreshed just now, so the status above may be stale."}
+          </span>
+          <button className="text-button" onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* A section that failed to load must say so. Without this the page would
           render an empty run list identically to a genuinely idle instance,
           which is a worse failure than the blank page it replaced (#1709). */}
