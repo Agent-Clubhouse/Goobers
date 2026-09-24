@@ -1,0 +1,17 @@
+# Example overlay (#3287): points the goobers-system base at a real
+# registry. This is the pattern for a fork-and-edit consumer, not something a
+# remote-base consumer applies as-is — copy this directory, replace the
+# CHANGE-ME registry and tag below, and either keep it as your own overlay or
+# fold the same `images:` block into your own kustomization that references
+# the base as a remote URL.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../goobers-system
+
+images:
+  - name: goobers
+    newName: registry.example.com/CHANGE-ME/goobers # CHANGE-ME
+    newTag: CHANGE-ME

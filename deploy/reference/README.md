@@ -18,7 +18,8 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 
 | Path | Contents | Shape doc |
 |---|---|---|
-| `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`) | §2, §3, §4, §5 |
+| `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`). Containers reference the bare image name `goobers`, left untransformed so the base stays consumable as a remote kustomize base (#3287) — point it at a registry via your own `images:` overlay, or see `examples/goobers-system-registry/` if you fork and edit instead | §2, §3, §4, §5 |
+| `examples/goobers-system-registry/` | example overlay stamping `goobers-system/` with a `registry.example.com/CHANGE-ME` placeholder image — copy and edit rather than apply as-is | §1 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
