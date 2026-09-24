@@ -24,6 +24,20 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
 
+## Migrating an existing `goobers-system` overlay (#3287)
+
+Before #3287, the `goobers-system` base carried its own placeholder `images:`
+transformer, rewriting every container to
+`registry.example.com/CHANGE-ME/goobers:CHANGE-ME`. If your own remote-base
+overlay's `images:` transformer matched that name — `name:
+registry.example.com/CHANGE-ME/goobers` — it never actually retargeted
+anything (the base's own transformer ran first and left nothing matching
+that name by the time yours ran; see the issue for why). Now that the base
+leaves the image bare, update your overlay's `images:` entry to match `name:
+goobers` instead. You can keep both `name:` entries during the transition;
+kustomize's `images:` transformer only rewrites containers matching a
+declared name, so a non-matching entry is a no-op rather than an error.
+
 ## Hand-managed node-pool contract
 
 The reference deployment assumes that the cluster operator creates and manages its node

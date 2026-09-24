@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -20,8 +21,9 @@ import (
 // The fix moves the placeholder transformer out of the base entirely, into
 // an example overlay a fork-and-edit consumer copies. This pins both halves
 // of that contract: the base stays bare and transformable, and the example
-// overlay still demonstrates (and exercises, via `make deploy-validate`) the
-// placeholder pattern.
+// overlay still demonstrates the placeholder pattern and is wired into
+// `make deploy-validate`'s render/kubeconform lines (checked separately
+// below; this test does not itself invoke kubectl or kubeconform).
 func TestDeployReferenceGoobersSystemBaseLeavesImageBare(t *testing.T) {
 	raw, err := os.ReadFile("../../deploy/reference/goobers-system/kustomization.yaml")
 	if err != nil {
@@ -42,11 +44,22 @@ func TestDeployReferenceGoobersSystemBaseLeavesImageBare(t *testing.T) {
 		t.Fatalf("goobers-system/kustomization.yaml declares an images: transformer %+v — a remote-base consumer cannot edit the base, and this shadows the consumer's own images: overlay", kustomization.Images)
 	}
 
-	for _, name := range []string{"operator-deployment.yaml", "worker-deployment.yaml", "api-deployment.yaml"} {
+	// Every *-deployment.yaml the base ships, not a fixed subset — matches
+	// the glob cmd/goobers/deploy_reference_test.go already uses so a new
+	// deployment manifest can't silently go unchecked here.
+	paths, err := filepath.Glob("../../deploy/reference/goobers-system/*-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no *-deployment.yaml manifests found under goobers-system")
+	}
+	for _, path := range paths {
+		name := filepath.Base(path)
 		if !slices.Contains(kustomization.Resources, name) {
 			t.Fatalf("goobers-system/kustomization.yaml does not list %q", name)
 		}
-		depRaw, err := os.ReadFile("../../deploy/reference/goobers-system/" + name)
+		depRaw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -85,6 +98,9 @@ func TestDeployReferenceGoobersSystemRegistryExampleRetargetsBareImage(t *testin
 		t.Fatalf("goobers-system-registry example does not retarget the bare %q image: images = %+v", "goobers", kustomization.Images)
 	}
 
+	// This only pins that the Makefile lines exist, not that kubectl/
+	// kubeconform actually succeed against them — `make deploy-validate`
+	// itself is what renders and kubeconform-checks the overlay.
 	makefile, err := os.ReadFile("../../Makefile")
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +111,7 @@ func TestDeployReferenceGoobersSystemRegistryExampleRetargetsBareImage(t *testin
 		"\tkubectl kustomize deploy/reference/examples/goobers-system-registry | $(KUBECONFORM) -strict -summary",
 	} {
 		if !slices.Contains(lines, want) {
-			t.Errorf("Makefile's deploy-validate target is missing %q — the example overlay is not rendered or schema-checked", want)
+			t.Errorf("Makefile's deploy-validate target is missing %q — make deploy-validate would not render or schema-check the example overlay", want)
 		}
 	}
 }

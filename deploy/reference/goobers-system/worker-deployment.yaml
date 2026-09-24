@@ -44,7 +44,7 @@ spec:
       # Seed the per-worker instance root without requiring elevated privileges.
       initContainers:
         - name: seed-instance-root
-          image: goobers # rewritten by the kustomization images: transformer
+          image: goobers # rewritten by your overlay's images: transformer (#3287)
           command: ["sh", "-c"]
           args:
             - mkdir -p /var/lib/goobers/config /var/lib/goobers/runs
@@ -61,7 +61,7 @@ spec:
           # The shipped image includes the Copilot CLI default agent harness.
           # Set runner.harnessCommand in instance.yaml when selecting another
           # installed harness.
-          image: goobers # rewritten by the kustomization images: transformer
+          image: goobers # rewritten by your overlay's images: transformer (#3287)
           # `goobers worker` is the v2-cloud-scale A1.6 worker entrypoint
           # (#632): it serves the named task queue(s) until SIGTERM, then
           # drains. One task queue per Deployment — set the queue to the one
