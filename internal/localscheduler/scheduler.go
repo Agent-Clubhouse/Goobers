@@ -293,6 +293,10 @@ type Scheduler struct {
 	// silently stalled schedule trigger (#1868), so each stall episode
 	// journals one workflow.starved event instead of one per tick.
 	triggerStallNotified map[WorkflowIdentity]bool
+	// demandPollFailures counts consecutive failed demand polls per workflow
+	// and poll kind, so a lane whose counter keeps failing journals one
+	// workflow.starved event (#5605). See recordDemandPollFailure.
+	demandPollFailures map[demandPollFailureKey]int
 	// quotaResumePacing drains provider-backed workflow polls one workflow per
 	// tick after an exhausted quota window resets.
 	quotaResumePacing map[apiv1.Provider]bool
@@ -500,6 +504,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		capacityRefusals:        make(map[WorkflowIdentity]capacityRefusal),
 		capacityStarvedNotified: make(map[WorkflowIdentity]bool),
 		triggerStallNotified:    make(map[WorkflowIdentity]bool),
+		demandPollFailures:      make(map[demandPollFailureKey]int),
 		quotaResumePacing:       make(map[apiv1.Provider]bool),
 		authCircuits:            make(map[WorkflowIdentity]struct{}),
 		refillBlockedUntil:      make(map[WorkflowIdentity]time.Time),
@@ -1854,35 +1859,9 @@ func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll de
 	defer cancel()
 	ready, err := poll.counter.EligibleCount(pollCtx)
 	if err != nil {
-		var budgetErr *ProviderPollBudgetError
-		if errors.As(err, &budgetErr) {
-			s.journalPollShed(entry, budgetErr.Provider, budgetErr.Remaining, budgetErr.Requested, budgetErr.ResetAt)
-			return 0
-		}
-		if providers.IsAuthenticationError(err) {
-			s.openAuthCircuit(entryIdentity(entry))
-			s.journalEvent(journal.Event{
-				Type:     journal.EventError,
-				Workflow: entry.Workflow,
-				Gaggle:   entry.Gaggle,
-				Error:    &journal.ErrorDetail{Code: providers.ErrorCodeAuthFailed, Message: err.Error()},
-			})
-			return 0
-		}
-		code := "backlog_count_failed"
-		if poll.schedule {
-			code = "schedule_demand_count_failed"
-		} else if poll.refill {
-			code = "refill_demand_count_failed"
-		}
-		s.journalEvent(journal.Event{
-			Type:     journal.EventError,
-			Workflow: entry.Workflow,
-			Gaggle:   entry.Gaggle,
-			Error:    &journal.ErrorDetail{Code: code, Message: err.Error()},
-		})
-		return 0
+		return s.demandPollFailed(ctx, entry, poll, err)
 	}
+	s.recordDemandPollSuccess(entry, poll)
 	if ready < 0 {
 		return 0
 	}
