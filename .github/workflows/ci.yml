@@ -1241,7 +1241,19 @@ jobs:
       # portal build smoke test — that's covered elsewhere.
       - name: Install make (windows)
         timeout-minutes: 8
-        run: choco install make --no-progress -y
+        # Explicit bash, and retried like the other network fetches in this
+        # workflow (#3139): the Windows runner defaults to PowerShell, which
+        # cannot parse this loop, and choco hits the Chocolatey feed with no
+        # retry of its own.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if choco install make --no-progress -y; then exit 0; fi
+            echo "::warning::choco install make attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::choco install make failed after 3 attempts"
+          exit 1
 
       - name: make build (windows)
         run: make build-operator

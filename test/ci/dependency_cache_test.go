@@ -60,6 +60,7 @@ type ciStep struct {
 	If              string            `yaml:"if"`
 	Uses            string            `yaml:"uses"`
 	Run             string            `yaml:"run"`
+	Shell           string            `yaml:"shell"`
 	With            map[string]any    `yaml:"with"`
 	Env             map[string]string `yaml:"env"`
 	ContinueOnError bool              `yaml:"continue-on-error"`
