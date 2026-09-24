@@ -574,22 +574,12 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// the demotion signal must never itself become a merge outage, and an empty
 	// set is exactly the pre-#950 behavior. Reuses the prs list already fetched
 	// above; only currently-labeled PRs cost an extra ListComments.
+	// #5602 adds the PRs this instance cannot land, identically to elect-lander.
 	var demoted map[int]bool
 	if providerRouted {
-		var derr error
-		demoted, derr = demotedSet(ctx, prProvider, repo, prs)
-		if derr != nil {
-			pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
-			demoted = nil
-		}
-		// The FIFO lander election (#950) is a GitHub merge-queue concept with
-		// no Gitea equivalent; skip it on other forges rather than fail closed.
-		if githubProvider, githubSelected := provider.(*providers.GitHubProvider); githubSelected {
-			ineligible, ierr := electionIneligibleSet(ctx, githubProvider, repo, prs)
-			if ierr != nil {
-				return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
-			}
-			demoted = unionPRSets(demoted, ineligible)
+		var ierr error
+		if demoted, ierr = electionExcludedSet(ctx, prProvider, repo, prs, providerInput("unlandableSiblings", ""), stderr); ierr != nil {
+			return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
 		}
 	}
 

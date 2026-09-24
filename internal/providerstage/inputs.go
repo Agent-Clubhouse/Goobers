@@ -64,7 +64,7 @@ var inputSchemas = map[string][]Input{
 		stringsIn("base", "electionPolicy", "headPrefix", "reviewDigest", "selectedBaseSha", "selectedHeadSha", "siblingSerialization"),
 		integersIn("selectedNumber"),
 		booleansIn("advisoryMode", "publishAdvisory", "scopeGateParked"),
-		stringListsIn("overlappingSiblings"), pathsIn("resultFile"), durationsIn("timeout"),
+		stringListsIn("overlappingSiblings", "unlandableSiblings"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"backlog-assignment": schema(
 		stringsIn("fieldPredicate", "labelPredicate", "strategy", "trustLabel"),
@@ -124,7 +124,7 @@ var inputSchemas = map[string][]Input{
 	"elect-lander": schema(
 		stringsIn("base", "electionPolicy", "headPrefix", "reviewDigest", "selectedBaseSha", "selectedHeadSha", "siblingSerialization"),
 		integersIn("selectedNumber"), booleansIn("advisoryMode", "scopeGateParked"),
-		stringListsIn("overlappingSiblings"), pathsIn("resultFile"), durationsIn("timeout"),
+		stringListsIn("overlappingSiblings", "unlandableSiblings"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"file-issues": schema(
 		stringsIn("autoApprove", "backlogLabel", "checkDigest", "checkFile", "checkStage", "nominatedLabel", "nominationsFile", "partitionLabel", "producerStage", "signalsStage"),

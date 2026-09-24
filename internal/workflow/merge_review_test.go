@@ -207,6 +207,14 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !containsString(electLander.ExpectedOutputs, "scopeGateParked") {
 				t.Errorf("elect-lander expectedOutputs = %v, want scopeGateParked pass-through", electLander.ExpectedOutputs)
 			}
+			// #5602: the unlandable set reaches the election and is passed
+			// through so apply-verdict drops the same PRs on the parked branch.
+			if electLander.InputsFrom["unlandableSiblings"] != "unlandableSiblingsCsv" {
+				t.Errorf("elect-lander unlandableSiblings input = %q, want unlandableSiblingsCsv", electLander.InputsFrom["unlandableSiblings"])
+			}
+			if !containsString(electLander.ExpectedOutputs, "unlandableSiblingsCsv") {
+				t.Errorf("elect-lander expectedOutputs = %v, want unlandableSiblingsCsv pass-through", electLander.ExpectedOutputs)
+			}
 			electGate, ok := m.Gate("elect-gate")
 			if !ok {
 				t.Fatal("elect-gate gate not found")
@@ -250,6 +258,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				"advisoryMode":        "advisoryMode",
 				"reviewDigest":        "reviewDigest",
 				"overlappingSiblings": "overlappingSiblingsCsv",
+				"unlandableSiblings":  "unlandableSiblingsCsv",
 				"scopeGateParked":     "scopeGateParked",
 			}
 			if !reflect.DeepEqual(applyVerdict.InputsFrom, wantApplyInputs) {
