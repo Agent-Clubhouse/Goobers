@@ -375,7 +375,14 @@ export function WorkflowTopologyGraph({
     if (event.target instanceof Element && event.target.closest("button")) {
       return;
     }
-    if (event.pointerType !== "touch") {
+    // A single touch is left unclaimed so `touch-action: pan-y` can still
+    // hand the browser native vertical scrolling. But a second touch joining
+    // an already-active one is a pinch gesture, and leaving that unclaimed
+    // too lets the browser's own gesture recognizer commit to native
+    // page-zoom before this handler's own pinch-to-zoom (handlePointerMove)
+    // gets a chance to run — the recognizer decides from the first contact
+    // of the second finger, not from a later move event (#1681).
+    if (event.pointerType !== "touch" || pointersRef.current.size >= 1) {
       event.preventDefault();
     }
     event.currentTarget.focus({ preventScroll: true });

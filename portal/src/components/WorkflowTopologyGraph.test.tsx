@@ -304,6 +304,55 @@ describe("workflow topology graph", () => {
     );
   });
 
+  // #1681: pinch-to-zoom-in fell through to native page zoom on touch because
+  // the second touch of a pinch was never claimed away from the browser's own
+  // gesture recognizer. Claiming happens at pointerdown time, before any move
+  // event, so this asserts on the pointerdown handler directly rather than on
+  // the resulting zoom (which the earlier pinch-zoom test already covers).
+  // On-device confirmation on real touch hardware is still needed (no device
+  // available in this environment); this only proves the handler now calls
+  // preventDefault() at the point the OS gesture recognizer would otherwise
+  // commit to native zoom.
+  it("claims the gesture once a second touch joins, but leaves a lone touch unclaimed for native scroll", () => {
+    render(<Harness graph={longGraph()} />);
+    const viewport = screen.getByRole("group", { name: "long execution graph" });
+
+    // A single touch is left unclaimed so native vertical panning (touch-action:
+    // pan-y) still works.
+    expect(
+      fireEvent.pointerDown(viewport, {
+        clientX: 200,
+        clientY: 100,
+        pointerId: 10,
+        pointerType: "touch",
+      }),
+    ).toBe(true);
+
+    // A second touch joining is a pinch: claim it before the browser's
+    // gesture recognizer can commit to native page-zoom.
+    expect(
+      fireEvent.pointerDown(viewport, {
+        clientX: 300,
+        clientY: 100,
+        pointerId: 11,
+        pointerType: "touch",
+      }),
+    ).toBe(false);
+
+    fireEvent.pointerUp(viewport, { pointerId: 10, pointerType: "touch" });
+    fireEvent.pointerUp(viewport, { pointerId: 11, pointerType: "touch" });
+
+    // Once both touches lift, a fresh single touch is unclaimed again.
+    expect(
+      fireEvent.pointerDown(viewport, {
+        clientX: 200,
+        clientY: 100,
+        pointerId: 12,
+        pointerType: "touch",
+      }),
+    ).toBe(true);
+  });
+
   it("uses an in-page fullscreen fallback and refits after viewport changes", () => {
     render(<Harness graph={longGraph()} />);
     const viewport = screen.getByRole("group", { name: "long execution graph" });
