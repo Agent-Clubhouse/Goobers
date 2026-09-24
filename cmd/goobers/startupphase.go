@@ -71,6 +71,17 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
+// syncStartupStdout wraps runUpContextWithForce's stdout in a syncWriter
+// (#4570). watchStartupReadiness runs in its own goroutine, started before
+// the synchronous startup phases, while the main goroutine keeps writing
+// startup-phase diagnostics to the same stdout — with no synchronization
+// between them otherwise. Called once, before that goroutine starts, this
+// serializes every writer that goes through the returned value for the rest
+// of the caller's function.
+func syncStartupStdout(stdout io.Writer) io.Writer {
+	return &syncWriter{w: stdout}
+}
+
 // startupTimestamp formats now for a startup log line. A fixed, sortable,
 // greppable format (unlike the daemon's ordinary un-timestamped stdout
 // lines) so a blocked startup operation can be correlated to wall-clock time
