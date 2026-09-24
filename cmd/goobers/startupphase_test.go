@@ -147,6 +147,49 @@ func TestWatchStartupReadinessEmitsDiagnosticNamingCurrentPhase(t *testing.T) {
 	}
 }
 
+func TestWatchStartupReadinessWaitsForRecoveryAccumulationBudget(t *testing.T) {
+	var buf syncBuffer
+	tracker := &startupPhaseTracker{}
+	tracker.set("recovery-run-inventory", "source=read-model")
+	tracker.beginRecoveryAccumulation()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watchStartupReadiness(ctx, &buf, tracker, func() bool { return false }, 20*time.Millisecond)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("watchdog fired while recovery accumulation was still being measured")
+	default:
+	}
+
+	tracker.observeRecoveryAccumulation(1)
+	tracker.setRecoveryAccumulation(1)
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("watchdog ignored the recovery-run-derived budget")
+	default:
+	}
+	if got := tracker.budgetSnapshot(time.Now()).Budget; got != 20*time.Millisecond+startupBudgetPerCandidate {
+		t.Fatalf("derived budget = %s, want %s", got, 20*time.Millisecond+startupBudgetPerCandidate)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchStartupReadiness did not stop after cancellation")
+	}
+	if out := buf.String(); out != "" {
+		t.Fatalf("output = %q, want no premature diagnostic", out)
+	}
+}
+
 // TestSyncWriterSerializesWatchdogAndPhaseDiagnostics is #4570's regression
 // test. watchStartupReadiness runs in its own goroutine (started before the
 // synchronous startup phases) while runStartupPhase keeps writing on the

@@ -33,6 +33,7 @@ func (s *daemonInstanceReadinessService) InstanceReadiness(context.Context) (htt
 	if !since.IsZero() {
 		elapsed = time.Since(since)
 	}
+	budget := s.tracker.budgetSnapshot(time.Now())
 	return httpapi.InstanceReadiness{
 		APIVersion:    readservice.APIVersion,
 		SchemaVersion: readservice.SchemaVersion,
@@ -41,9 +42,15 @@ func (s *daemonInstanceReadinessService) InstanceReadiness(context.Context) (htt
 		RootIdentity:  readservice.InspectRootIdentity(s.instanceRoot),
 		Ready:         s.ready(),
 		Recovery: httpapi.InstanceRecoveryPhase{
-			Phase:          phase,
-			Target:         target,
-			ElapsedSeconds: elapsed.Seconds(),
+			Phase:             phase,
+			Target:            target,
+			ElapsedSeconds:    elapsed.Seconds(),
+			WorktreeCount:     budget.Accumulation.Worktrees,
+			RecoveryRunCount:  budget.Accumulation.RecoveryRuns,
+			AccumulationCount: budget.Accumulation.total(),
+			BudgetSeconds:     budget.Budget.Seconds(),
+			BudgetUsedPercent: budget.UsedPercent,
+			BudgetState:       budget.State,
 		},
 	}, nil
 }

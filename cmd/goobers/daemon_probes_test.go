@@ -147,6 +147,9 @@ func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
 	var ready, planeReady, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
 	started := time.Date(2026, time.September, 12, 19, 30, 0, 0, time.UTC)
 	tracker := &startupPhaseTracker{}
+	tracker.configureBudget(2 * time.Minute)
+	tracker.setWorktreeAccumulation(4)
+	tracker.setRecoveryAccumulation(6)
 	tracker.set("worktree-reap-crash-orphan", "efunhouse")
 	state := &daemonProbeState{
 		ready:          &ready,
@@ -173,6 +176,12 @@ func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
 	if got.Startup == nil || got.Startup.Phase != "worktree-reap-crash-orphan" ||
 		!got.Startup.Since.Equal(started) {
 		t.Fatalf("startup = %+v, want current worktree reap phase", got.Startup)
+	}
+	if got.Startup.WorktreeCount != 4 || got.Startup.RecoveryRunCount != 6 ||
+		got.Startup.AccumulationCount != 10 ||
+		got.Startup.BudgetSeconds != (2*time.Minute+10*startupBudgetPerCandidate).Seconds() ||
+		got.Startup.BudgetState != "within-budget" {
+		t.Fatalf("startup budget = %+v, want measured accumulation and derived budget", got.Startup)
 	}
 	handler := httpapi.WrapWithProbes(http.NotFoundHandler(), nil, state.readiness)
 	response := httptest.NewRecorder()

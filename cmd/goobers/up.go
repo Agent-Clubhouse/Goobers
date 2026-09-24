@@ -506,7 +506,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// current phase once livenessTimeout has passed without readiness,
 	// giving an operator something to correlate a stuck dashboard/`status
 	// --daemon` against instead of only a stale heartbeat.
-	tracker := &startupPhaseTracker{}
+	tracker := newStartupPhaseTracker(livenessTimeout)
 	go watchStartupReadiness(ctx, stdout, tracker, ready.Load, livenessTimeout)
 	retentionGate := &retentionSweepGate{}
 	telemetryRetentionGate := &retentionSweepGate{}
@@ -1158,6 +1158,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}
 
+	worktreeAccumulation, err := measureWorktreeAccumulation(setup.WorktreesByGaggle, setup.LegacyWorktrees)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	tracker.setWorktreeAccumulation(worktreeAccumulation)
+	budget := tracker.budgetSnapshot(time.Now())
+	pf(stdout, "%s startup budget: worktrees=%d recovery-runs=%d total=%d budget=%s state=%s\n",
+		startupTimestamp(), budget.Accumulation.Worktrees, budget.Accumulation.RecoveryRuns,
+		budget.Accumulation.total(), budget.Budget, budget.State)
+
 	// Reap crash-orphaned worktrees before anything tries to resume into one
 	// of their keys (issue #136): a mid-stage crash otherwise leaves a
 	// worktree directory that makes worktree.Create refuse forever (fixed
@@ -1781,6 +1792,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	readyNow := webhookGate.Start()
 	if readyNow {
+		tracker.completeBudget(time.Now())
 		ready.Store(true)
 		pf(stdout, "%s startup phase=ready status=done target=%q address=%s\n", startupTimestamp(), "api", apiServer.Address())
 	}

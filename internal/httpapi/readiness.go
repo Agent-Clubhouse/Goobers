@@ -40,12 +40,20 @@ type InstanceReadiness struct {
 
 // InstanceRecoveryPhase names the startup phase runUpContext is currently
 // executing (or the last one it completed, once Ready is true) and how long
-// it has been in that phase — the same diagnostic the startup watchdog
-// already logs, surfaced here over HTTP instead of only to daemon stdout.
+// it has been in that phase, plus the measured worktree/recovery accumulation
+// and the duration budget derived from it. BudgetState becomes "approaching"
+// at 80% and "exceeded" at 100%, giving operators the same signal the startup
+// watchdog uses instead of a separate hand-tuned threshold.
 type InstanceRecoveryPhase struct {
-	Phase          string  `json:"phase"`
-	Target         string  `json:"target,omitempty"`
-	ElapsedSeconds float64 `json:"elapsedSeconds"`
+	Phase             string  `json:"phase"`
+	Target            string  `json:"target,omitempty"`
+	ElapsedSeconds    float64 `json:"elapsedSeconds"`
+	WorktreeCount     int     `json:"worktreeCount"`
+	RecoveryRunCount  int     `json:"recoveryRunCount"`
+	AccumulationCount int     `json:"accumulationCount"`
+	BudgetSeconds     float64 `json:"budgetSeconds"`
+	BudgetUsedPercent float64 `json:"budgetUsedPercent"`
+	BudgetState       string  `json:"budgetState"`
 }
 
 func registerInstanceReadinessRoute(router *Router, svc InstanceReadinessService, errorLog *log.Logger, discovery *discoveryState) {
