@@ -1180,7 +1180,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 					}
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-					if err := mergeResultFileOutputs(&result, data); err != nil {
+					if err := MergeResultFileOutputs(&result, data); err != nil {
 						result.Status = apiv1.ResultFailure
 						result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
 						result.Summary = "declared result file contains an invalid workspace revision"
@@ -1248,7 +1248,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 				}
 				result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-				if err := mergeResultFileOutputs(&result, data); err != nil {
+				if err := MergeResultFileOutputs(&result, data); err != nil {
 					result.Status = apiv1.ResultFailure
 					result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
 					result.Summary = "declared result file contains an invalid workspace revision"
@@ -1411,12 +1411,12 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 	return s
 }
 
-// mergeResultFileOutputs best-effort-parses a declared result file's bytes as
+// MergeResultFileOutputs best-effort-parses a declared result file's bytes as
 // a flat JSON object and merges its string/number/bool fields into
 // result.Outputs — see InputResultFile's doc comment. Invalid JSON remains
 // legacy-compatible, while a declared workspaceRevision is decoded strictly
 // and validated because it is a control, not a scalar output.
-func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
+func MergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
 	if first := bytes.TrimSpace(data); len(first) == 0 || first[0] != '{' {
 		return nil
 	}
@@ -1431,9 +1431,7 @@ func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
 				return fmt.Errorf("workspaceRevision: %w", err)
 			}
 			var revision apiv1.WorkspaceRevision
-			decoder := json.NewDecoder(bytes.NewReader(raw))
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&revision); err != nil {
+			if err := json.Unmarshal(raw, &revision); err != nil {
 				return fmt.Errorf("workspaceRevision: %w", err)
 			}
 			if err := revision.Validate(); err != nil {
@@ -1444,6 +1442,9 @@ func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
 		}
 		switch v.(type) {
 		case string, float64, bool:
+			if result.Outputs == nil {
+				result.Outputs = make(map[string]interface{})
+			}
 			result.Outputs[k] = v
 		}
 	}

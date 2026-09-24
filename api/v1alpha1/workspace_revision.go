@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -30,6 +32,20 @@ type WorkspaceRevision struct {
 	SourceID       string              `json:"sourceId,omitempty"`
 	BaseRepository *RepositoryIdentity `json:"baseRepository,omitempty"`
 	BaseSHA        string              `json:"baseSha,omitempty"`
+}
+
+// UnmarshalJSON preserves the closed revision contract at envelope boundaries
+// without rejecting unrelated envelope extensions.
+func (r *WorkspaceRevision) UnmarshalJSON(data []byte) error {
+	type revision WorkspaceRevision
+	var decoded revision
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("workspaceRevision: %w", err)
+	}
+	*r = WorkspaceRevision(decoded)
+	return nil
 }
 
 // ValidateCommitSHA ensures the SHA is a full lowercase 40- or 64-character

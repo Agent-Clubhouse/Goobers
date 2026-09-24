@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -9,6 +10,8 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workspacerevision"
@@ -33,15 +36,29 @@ func TestSelectedRevisionDispatchRefusesBeforeWorkspaceOrPodEffects(t *testing.T
 func TestWorkspaceRevisionEngineRejectsUnsupportedAuthorityBeforeDownstreamDispatch(t *testing.T) {
 	produce := detTask("produce", "consume")
 	produce.ContinueOnError = true
+	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
+	data := []byte(`{"workspaceRevision":{"repository":{"provider":"github","owner":"acme","name":"web"},"commitSha":"` + strings.Repeat("a", 40) + `"}}`)
+	if err := executor.MergeResultFileOutputs(&result, data); err != nil {
+		t.Fatal(err)
+	}
+	plane, err := dispatcher.NewSurrenderDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	surrendered, err := json.Marshal(dispatcher.SurrenderedResult{Result: result})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plane.Put(context.Background(), "unsupported-revision", "produce", 1, surrendered); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := dispatcher.ReadSurrenderedResult(context.Background(), plane, "unsupported-revision", "produce", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	events := runEngineFixture(t, conformanceFixture{
-		spec: fixtureSpec("produce", []apiv1.Task{produce, detTask("consume", wf.TerminalComplete)}, nil),
-		script: map[string][]scriptedCall{"produce": {{result: apiv1.ResultEnvelope{
-			Status: apiv1.ResultSuccess,
-			WorkspaceRevision: &apiv1.WorkspaceRevision{
-				Repository: apiv1.RepositoryIdentity{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
-				CommitSHA:  strings.Repeat("a", 40),
-			},
-		}}}},
+		spec:          fixtureSpec("produce", []apiv1.Task{produce, detTask("consume", wf.TerminalComplete)}, nil),
+		script:        map[string][]scriptedCall{"produce": {{result: admitted.Result}}},
 		wantEngineErr: true,
 	}, "unsupported-revision")
 	rejected := false

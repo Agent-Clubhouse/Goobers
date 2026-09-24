@@ -1146,6 +1146,11 @@ authority.
 Only a successful deterministic result can establish the value. A declared
 top-level `workspaceRevision` in its result file is promoted to the typed
 field, never to scalar `outputs`. Absent controls preserve legacy behavior.
+Local and pod stages use the same result-file parser. It rejects malformed
+revision controls, including scalar values, `null`, and unknown members.
+Every nonnil revision in a result envelope must have a valid shape, regardless
+of the result status. Surrendered results also reject unknown revision members
+before the engine receives them.
 The runner copies the first accepted value and keeps it unchanged.
 Identical re-emission succeeds, and a changed value conflicts. Agentic, failed, and no-work
 results establish nothing. Authorization must resolve the candidate to a

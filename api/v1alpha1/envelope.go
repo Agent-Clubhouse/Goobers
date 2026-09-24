@@ -679,6 +679,11 @@ func (r ResultEnvelope) Validate() error {
 	if r.Integrity != "" && !r.Integrity.Valid() {
 		return fmt.Errorf("result integrity %q is unknown", r.Integrity)
 	}
+	if r.WorkspaceRevision != nil {
+		if err := r.WorkspaceRevision.Validate(); err != nil {
+			return fmt.Errorf("result workspaceRevision: %w", err)
+		}
+	}
 	for i, a := range r.Artifacts {
 		if err := a.Validate(); err != nil {
 			return fmt.Errorf("result artifact %d: %w", i, err)

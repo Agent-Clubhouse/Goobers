@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -180,6 +181,58 @@ func TestReadSurrenderedResultRefusesMalformedDocuments(t *testing.T) {
 				t.Fatalf("ReadSurrenderedResult accepted %s; want the read to fail closed", tt.name)
 			}
 		})
+	}
+}
+
+func TestReadSurrenderedResultRejectsInvalidWorkspaceRevision(t *testing.T) {
+	valid := `{"repository":{"provider":"github","owner":"org","name":"repo"},"commitSha":"` + strings.Repeat("a", 40) + `"}`
+	for _, status := range []apiv1.ResultStatus{apiv1.ResultSuccess, apiv1.ResultFailure, apiv1.ResultBlocked, apiv1.ResultNoWork} {
+		for name, control := range map[string]string{
+			"scalar":             `"untrusted"`,
+			"bad-identity":       strings.Replace(valid, `"github"`, `"ado"`, 1),
+			"bad-sha":            strings.Replace(valid, strings.Repeat("a", 40), "short", 1),
+			"unknown-control":    strings.TrimSuffix(valid, "}") + `,"unknown":true}`,
+			"unknown-repository": strings.Replace(valid, `"name":"repo"`, `"name":"repo","credential":"unexpected"`, 1),
+			"unknown-base":       strings.TrimSuffix(valid, "}") + `,"baseRepository":{"provider":"github","owner":"org","name":"repo","unexpected":true}}`,
+		} {
+			t.Run(string(status)+"/"+name, func(t *testing.T) {
+				plane := testPlane(t)
+				data := []byte(`{"result":{"status":"` + string(status) + `","error":{"code":"test","message":"test"},"workspaceRevision":` + control + `}}`)
+				if err := plane.Put(context.Background(), "revision", "stage", 1, data); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ReadSurrenderedResult(context.Background(), plane, "revision", "stage", 1); err == nil {
+					t.Fatal("invalid revision passed surrendered-result admission")
+				}
+			})
+		}
+	}
+}
+
+func TestReadSurrenderedResultPreservesRevisionAndEnvelopeExtensions(t *testing.T) {
+	valid := `{"repository":{"provider":"github","owner":"org","name":"repo"},"commitSha":"` + strings.Repeat("a", 40) + `"}`
+	for _, status := range []apiv1.ResultStatus{apiv1.ResultSuccess, apiv1.ResultFailure, apiv1.ResultBlocked, apiv1.ResultNoWork} {
+		for _, selected := range []bool{false, true} {
+			control := ""
+			if selected {
+				control = `,"workspaceRevision":` + valid
+			}
+			plane := testPlane(t)
+			data := []byte(`{"extension":true,"result":{"status":"` + string(status) + `","extension":true,"outputs":{"legacy":"kept"},"error":{"code":"test","message":"test"}` + control + `}}`)
+			if err := plane.Put(context.Background(), "revision", "stage", 1, data); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadSurrenderedResult(context.Background(), plane, "revision", "stage", 1)
+			if err != nil {
+				t.Fatalf("status %s selected %v: %v", status, selected, err)
+			}
+			if got.Result.Status != status || got.Result.Outputs["legacy"] != "kept" || (got.Result.WorkspaceRevision != nil) != selected {
+				t.Fatalf("result changed during admission: %+v", got.Result)
+			}
+			if selected && got.Result.WorkspaceRevision.CommitSHA != strings.Repeat("a", 40) {
+				t.Fatalf("revision changed during admission: %+v", got.Result.WorkspaceRevision)
+			}
+		}
 	}
 }
 
