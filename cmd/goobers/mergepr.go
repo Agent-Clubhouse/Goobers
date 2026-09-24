@@ -59,8 +59,12 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's\n" +
 	"live head/base, and — for a sibling-overlap PR — completed single-lander\n" +
 	"election evidence (elected:true, #1071) — never a bare self-approval.\n" +
-	"Declared inputs: pullNumber, verdict, headSha, baseSha (all required),\n" +
-	"verdictAuthor (required for the default commit message; supplied by\n" +
+	"Declared inputs: pullNumber, verdict, headSha, baseSha (the SHA-pin,\n" +
+	"all required; in the shipped merge-review workflow, headSha/baseSha\n" +
+	"come from gather-sibling-context's selectedHeadSha/selectedBaseSha,\n" +
+	"passed through elect-lander — a fresh re-fetch, not whatever\n" +
+	"pr-select saw several stages earlier), verdictAuthor (required for\n" +
+	"the default commit message; supplied by\n" +
 	"apply-verdict), advisoryMode (default false — report only, no merge\n" +
 	"attempted), mergeMethod (merge/squash/rebase; default squash),\n" +
 	"commitMessage (default: PR title + review rationale + referenced\n" +

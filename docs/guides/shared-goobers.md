@@ -62,3 +62,34 @@ Validate a running instance's source using `goobers validate <instance-root>`,
 or a checked-in source tree using `goobers validate --source-tree <repo-root>`.
 Validating an isolated shared-persona directory does not
 provide the manifest and workflow context needed for reference checks.
+
+## Skill package format
+
+A `spec.skills` entry is a bare name, resolved to a directory: a gaggle-local
+persona looks under `config/gaggles/<gaggle>/skills/<name>/` first, falling
+back to the instance-shared `skills/<name>/` beside `config/`; a shared
+persona (no `spec.gaggle`) only ever resolves the shared path. The name
+itself may not contain a path separator or resolve outside `skills/`.
+
+Whichever directory is found, every regular file under it (recursed, in
+sorted path order) is loaded — there is no required filename or manifest.
+Today, that loaded content feeds only the goober's identity: it is digested
+into `ComputeGooberDigest`, which drives the worker's snapshot pinning and
+reload/change detection, so editing a skill package's files changes the
+goober's identity and can trigger a reload the same way editing
+`instructions.md` does. **It is not currently delivered to the harness or
+the model** — declaring `spec.skills` has no effect on what an invocation
+can read or do, regardless of whether the package exists, is empty, or is
+missing (tracked as [#2221](https://github.com/Agent-Clubhouse/Goobers/issues/2221);
+materializing packages into a harness-native workspace directory is
+[#2230](https://github.com/Agent-Clubhouse/Goobers/issues/2230)). This repo's
+own shipped skills (for example `skills/goobers-dsl-author/` in the repo
+root — unrelated to a goober's own declared `spec.skills`, but the same
+`SKILL.md` + optional `references/` directory shape) reach the harness
+through a different mechanism (the agent toolkit bundle), not through this
+`spec.skills` resolution path.
+
+`goobers validate`'s `SKILL002` check is existence-only: it passes as soon as
+either the scoped or the shared candidate path is a directory, with no check
+of its contents. An empty directory created with `mkdir` satisfies the check
+exactly as well as a real skill package.
