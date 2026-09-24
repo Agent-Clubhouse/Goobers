@@ -260,8 +260,8 @@ func TestRunRecordSurfacesCorruptSpanAsAnalysisFailure(t *testing.T) {
 	if record.Status != RecordFailed || !strings.Contains(record.Failure, "digest mismatch") {
 		t.Fatalf("record failure = (%q, %q), want persisted digest mismatch", record.Status, record.Failure)
 	}
-	if record.EffectiveVersion != "" {
-		t.Fatalf("failed record effective version = %q, want uncohortable", record.EffectiveVersion)
+	if record.EffectiveVersion == "" {
+		t.Fatal("failed record effective version is empty, want retained version identity")
 	}
 	if got := AggregateAttributionEvidence([]AttributionObservation{{
 		RunID:            record.RunID,
