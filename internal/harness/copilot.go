@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -595,15 +594,9 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if err != nil {
 		return PreflightInfo{}, err
 	}
-	authCheckArgs := c.AuthCheckArgs
-	if sessionContract.AuthProbe != nil {
-		authCheckArgs = append(slices.Clone(sessionContract.AuthProbe.Args), c.AuthProbeExtraArgs...)
-	}
-	verifyAdapterManagedSession := c.VerifyAdapterManagedSession &&
-		sessionContract.SessionMode == "adapter-managed" &&
-		sessionContract.AuthProbe == nil
-	if verifyAdapterManagedSession && len(authCheckArgs) == 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: launcher session verification requires an authentication probe")
+	authCheckArgs, verifyAdapterManagedSession, err := c.authPreflightPlan(sessionContract)
+	if err != nil {
+		return PreflightInfo{}, err
 	}
 	bin := c.Command[0]
 	if _, err := exec.LookPath(bin); err != nil {
