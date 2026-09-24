@@ -506,8 +506,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// current phase once livenessTimeout has passed without readiness,
 	// giving an operator something to correlate a stuck dashboard/`status
 	// --daemon` against instead of only a stale heartbeat.
-	tracker := &startupPhaseTracker{}
-	tracker.configureBudget(livenessTimeout)
+	tracker := newStartupPhaseTracker(livenessTimeout)
 	go watchStartupReadiness(ctx, stdout, tracker, ready.Load, livenessTimeout)
 	retentionGate := &retentionSweepGate{}
 	telemetryRetentionGate := &retentionSweepGate{}

@@ -25,6 +25,12 @@ type startupPhaseTracker struct {
 	accumulation  startupAccumulation
 }
 
+func newStartupPhaseTracker(budgetFloor time.Duration) *startupPhaseTracker {
+	tracker := &startupPhaseTracker{}
+	tracker.configureBudget(budgetFloor)
+	return tracker
+}
+
 func (t *startupPhaseTracker) set(phase, target string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
