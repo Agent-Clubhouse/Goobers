@@ -951,11 +951,15 @@ func TestAdapterForAppliesPreflightArgsOnlyToAuthProbe(t *testing.T) {
 	if !slices.Contains(copilot.AuthCheckArgs, preflightOnly) {
 		t.Fatalf("auth probe args = %q, want %q", copilot.AuthCheckArgs, preflightOnly)
 	}
+	if !slices.Contains(copilot.AuthProbeExtraArgs, preflightOnly) {
+		t.Fatalf("lightweight auth probe args = %q, want %q", copilot.AuthProbeExtraArgs, preflightOnly)
+	}
 	if slices.Contains(copilot.ExtraArgs, preflightOnly) {
 		t.Fatalf("normal run args unexpectedly contain preflight-only argument %q", preflightOnly)
 	}
 	environment.PreflightArgs[string(apiv1.HarnessCopilot)][0] = "--mutated"
-	if !slices.Contains(copilot.AuthCheckArgs, preflightOnly) {
+	if !slices.Contains(copilot.AuthCheckArgs, preflightOnly) ||
+		!slices.Contains(copilot.AuthProbeExtraArgs, preflightOnly) {
 		t.Fatal("adapter retained mutable preflight configuration")
 	}
 }

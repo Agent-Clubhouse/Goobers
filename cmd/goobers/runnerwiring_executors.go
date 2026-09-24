@@ -261,11 +261,12 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 	copilotCommand := harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"})
 	customLauncher := requiresCopilotLauncherContract(harnessCommand)
 	sessionArgs := environment.SessionArgs[string(apiv1.HarnessCopilot)]
+	preflightArgs := slices.Clone(environment.PreflightArgs[string(apiv1.HarnessCopilot)])
 	authCheckArgs := slices.Clone(copilotAuthCheckArgs)
 	if customLauncher {
 		authCheckArgs = forwardingLauncherAuthCheckArgs()
 	}
-	authCheckArgs = append(authCheckArgs, environment.PreflightArgs[string(apiv1.HarnessCopilot)]...)
+	authCheckArgs = append(authCheckArgs, preflightArgs...)
 	copilotAdapter := &harness.CopilotAdapter{
 		Command:                     copilotCommand,
 		RequireLauncherContract:     customLauncher,
@@ -273,6 +274,7 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 		VerifyAdapterManagedSession: customLauncher,
 		DisableUsageOutput:          customLauncher,
 		AuthCheckArgs:               authCheckArgs,
+		AuthProbeExtraArgs:          preflightArgs,
 		ModelLister:                 copilotModelLister,
 		EnvCapabilities:             envCaps,
 		OptionalCredentialCapabilities: map[string]bool{

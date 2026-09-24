@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -221,6 +222,10 @@ type CopilotAdapter struct {
 	// wired at the composition root once confirmed, so a wrong guess can't
 	// falsely refuse to start every agentic run.
 	AuthCheckArgs []string
+	// AuthProbeExtraArgs are operator-configured preflight-only arguments
+	// appended to a version-2 launcher's declared lightweight auth probe.
+	// Version-1 launchers receive the same arguments through AuthCheckArgs.
+	AuthProbeExtraArgs []string
 	// ExtraEnvAllowlist names additional ambient env vars carried into the
 	// harness subprocess (and its preflight probes) on top of the built-in
 	// procenv default-deny allowlist — the instance's RunnerConfig.EnvPassthrough
@@ -590,8 +595,14 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if err != nil {
 		return PreflightInfo{}, err
 	}
-	verifyAdapterManagedSession := c.VerifyAdapterManagedSession && sessionContract.SessionMode == "adapter-managed"
-	if verifyAdapterManagedSession && len(c.AuthCheckArgs) == 0 {
+	authCheckArgs := c.AuthCheckArgs
+	if sessionContract.AuthProbe != nil {
+		authCheckArgs = append(slices.Clone(sessionContract.AuthProbe.Args), c.AuthProbeExtraArgs...)
+	}
+	verifyAdapterManagedSession := c.VerifyAdapterManagedSession &&
+		sessionContract.SessionMode == "adapter-managed" &&
+		sessionContract.AuthProbe == nil
+	if verifyAdapterManagedSession && len(authCheckArgs) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: launcher session verification requires an authentication probe")
 	}
 	bin := c.Command[0]
@@ -630,7 +641,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
-	if len(c.AuthCheckArgs) > 0 {
+	if len(authCheckArgs) > 0 {
 		command := resolveHarnessCommand(c.Command)
 		// Preflight has no RunRequest, so it cannot resolve the agent:model
 		// credential the way credentialEnv does at run time — left to itself the
@@ -653,7 +664,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: isolate authentication probe: %w", err)
 		}
 		defer authCleanup()
-		authCommand := append(command, c.AuthCheckArgs...)
+		authCommand := append(command, authCheckArgs...)
 		sessionTranscript := ""
 		sessionCleanup := func() {}
 		if verifyAdapterManagedSession {
@@ -670,7 +681,11 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			authCommand = append(authCommand, "--session-id", sessionID)
 		}
 		defer sessionCleanup()
-		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (sign-in check)", bin, c.AuthCheckArgs)
+		probeKind := "sign-in check"
+		if sessionContract.AuthProbe != nil {
+			probeKind = "launcher authentication probe"
+		}
+		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (%s)", bin, authCheckArgs, probeKind)
 		res, err := c.runner().Run(ctx, ProcessRequest{
 			Command:            authCommand,
 			Dir:                authDir,

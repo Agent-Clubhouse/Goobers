@@ -1093,11 +1093,17 @@ func preflightSchedulerHarnessesWithProgress(
 	startupProgress func(string),
 ) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
 	reportStartupProgress(startupProgress, "preflighting agentic harnesses")
+	started := time.Now()
 	harnessInfo, harnessRefusals, err := preflightSchedulerHarnesses(cfg, set, goobers, stores)
-	if err == nil {
-		reportStartupProgress(startupProgress, "agentic harnesses ready")
-	}
+	reportStartupProgress(startupProgress, harnessPreflightCompletionMessage(err, time.Since(started)))
 	return harnessInfo, harnessRefusals, err
+}
+
+func harnessPreflightCompletionMessage(err error, elapsed time.Duration) string {
+	if err != nil {
+		return fmt.Sprintf("agentic harness preflight failed (duration %s)", elapsed)
+	}
+	return fmt.Sprintf("agentic harnesses ready (preflight duration %s)", elapsed)
 }
 
 func compileSchedulerMachinesWithProgress(
