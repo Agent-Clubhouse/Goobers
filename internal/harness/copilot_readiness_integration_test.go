@@ -25,8 +25,15 @@ func TestIntegrationCopilotRequiredMCPAbsentBeforeModel(t *testing.T) {
 	workspace := t.TempDir()
 	var report MCPReadiness
 	adapter := &CopilotAdapter{Command: []string{"copilot"}, SelfBin: "/nonexistent/goobers-required-mcp-readiness"}
-	_, err := adapter.Run(context.Background(), RunRequest{
-		Envelope: testEnvelope(workspace), Workspace: workspace, CompletionPath: DefaultResultPath, HarnessConfigResolved: true,
+	// Carry the preflight version as the runtime does, so a CLI new enough for
+	// usage-file capture puts --usage-output-file in the stage argv and the
+	// real control process proves it accepts what remains (#5636).
+	info, err := adapter.Preflight(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Run(context.Background(), RunRequest{
+		Envelope: testEnvelope(workspace), Workspace: workspace, CompletionPath: DefaultResultPath, HarnessConfigResolved: true, HarnessVersion: info.Version,
 		Timeout: 30 * time.Second, MCPReadinessSink: func(r MCPReadiness) error { report = r; return nil },
 	})
 	if !errors.Is(err, errRequiredMCPUnavailable) {

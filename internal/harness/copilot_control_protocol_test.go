@@ -53,7 +53,7 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 		return err
 	}}
 	// A process runner must stay alive while the SDK owns its connection.
-	base := &readinessProtocolProcess{process: process}
+	base := copilotHeadlessArgvGuard{next: &readinessProtocolProcess{process: process}}
 	req := RunRequest{Workspace: t.TempDir(), Tools: goobersIOAvailableToolNames(), GoobersIORegistered: true}
 	req.Envelope = testEnvelope(req.Workspace)
 	config, err := goobersIOAdditionalMCPConfigArg(req, "/test/goobers")
@@ -64,7 +64,8 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 	capture := newTranscriptBuffer(8192)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	result, err := runner.Run(ctx, ProcessRequest{Command: []string{"copilot", "-p=private model prompt", "--session-id", "owned-test-session", "--allow-all-tools"}, Dir: req.Workspace, Env: baseEnv(nil, nil), StdoutCapture: capture, Timeout: 2 * time.Second})
+	// The stage argv carries the usage-file capture a >=1.0.81 CLI gets (#5636).
+	result, err := runner.Run(ctx, ProcessRequest{Command: []string{"copilot", "-p=private model prompt", "--session-id", "owned-test-session", "--allow-all-tools", "--usage-output-file", ".goobers/copilot-usage-1/usage.json"}, Dir: req.Workspace, Env: baseEnv(nil, nil), StdoutCapture: capture, Timeout: 2 * time.Second})
 	finishErr := finalizeControlledCopilot(ctx, runner)
 	var out Outcome
 	applyControlledCopilotUsage(&out, runner)
@@ -90,6 +91,27 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// copilotHeadlessArgvGuard rejects the option pairs the real Copilot CLI
+// refuses in headless mode, the way it does: a usage error on stderr and exit
+// 1 before the port line (#5636). Fakes that accept any argv let a
+// control-command regression pass every protocol test.
+type copilotHeadlessArgvGuard struct{ next ProcessRunner }
+
+func (g copilotHeadlessArgvGuard) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
+	headless, usageFile := false, false
+	for _, arg := range req.Command {
+		headless = headless || arg == "--headless"
+		usageFile = usageFile || arg == "--usage-output-file" || strings.HasPrefix(arg, "--usage-output-file=")
+	}
+	if headless && usageFile {
+		return ProcessResult{
+			ExitCode: 1,
+			Stderr:   []byte("error: option '--usage-output-file <file>' cannot be used with option '--headless'\n"),
+		}, errors.New("exit status 1")
+	}
+	return g.next.Run(ctx, req)
 }
 
 type readinessProtocolProcess struct{ process *fakeProcessRunner }

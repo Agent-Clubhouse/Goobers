@@ -201,6 +201,51 @@ func TestCopilotControlledSessionPreservesSettingsAndSandbox(t *testing.T) {
 	}
 }
 
+// #5636: Copilot CLI refuses --usage-output-file with --headless, so the
+// control command must drop the flag and its value in either spelling.
+func TestCopilotControlCommandDropsUsageOutputFile(t *testing.T) {
+	for name, usage := range map[string][]string{
+		"spaced": {"--usage-output-file", ".goobers/copilot-usage-1/usage.json"},
+		"equals": {"--usage-output-file=.goobers/copilot-usage-1/usage.json"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			argv := append([]string{"copilot", "-p=private prompt", "--session-id", "owned-session", "--allow-all-tools"}, usage...)
+			argv = append(argv, "--log-dir", "logs")
+			command, id, err := copilotControlCommand(argv, 1)
+			want := []string{"copilot", "--allow-all-tools", "--log-dir", "logs", "--headless", "--no-auto-update", "--port", "0"}
+			if err != nil || id != "owned-session" || !reflect.DeepEqual(command, want) {
+				t.Fatalf("command=%q id=%s error=%v", command, id, err)
+			}
+		})
+	}
+}
+
+// #5636: the CLI names a rejected argv on stderr and exits in about a second;
+// the readiness error must carry that reason, redacted and bounded.
+func TestCopilotControlExitBeforeReadinessReportsStatusAndStderr(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("x", 36)
+	stderr := strings.Repeat("noise line\n", 1000) + "token " + secret + "\n" +
+		"error: option '--usage-output-file <file>' cannot be used with option '--headless'\n"
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 1, Stderr: []byte(stderr)}, err: errors.New("exit status 1")}
+	_, _, err := startCopilotControlProcess(context.Background(), runner, ProcessRequest{
+		Command: []string{"copilot", "-p=private prompt", "--session-id", "owned-session"},
+	}, 1)
+	if !errors.Is(err, errRequiredMCPUnavailable) {
+		t.Fatalf("error=%v", err)
+	}
+	message := err.Error()
+	if !strings.Contains(message, "exited before readiness (exit 1)") ||
+		!strings.Contains(message, "cannot be used with option '--headless'") {
+		t.Fatalf("error omitted exit status or stderr: %v", err)
+	}
+	if strings.Contains(message, secret) || !strings.Contains(message, journal.Redacted) {
+		t.Fatalf("error did not scrub stderr: %v", err)
+	}
+	if !strings.Contains(message, "truncated") || len(message) > copilotControlExitDetailBytes+512 {
+		t.Fatalf("error was not bounded: len=%d", len(message))
+	}
+}
+
 func TestCopilotControlPortWaitsForCompleteLine(t *testing.T) {
 	capture := &copilotPortCapture{ready: make(chan int, 1)}
 	_, _ = capture.Write([]byte("listening on port 12"))

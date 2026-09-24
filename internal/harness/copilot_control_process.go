@@ -8,9 +8,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	copilot "github.com/github/copilot-sdk/go"
+
+	"github.com/goobers/goobers/internal/journal"
 )
+
+// copilotControlExitDetailBytes bounds the stderr tail quoted when the control
+// process exits before readiness (#5636).
+const copilotControlExitDetailBytes = 4 << 10
 
 // copilotControlProcess keeps the ordinary owned-process cleanup boundary while
 // the SDK talks to its authenticated loopback endpoint. The SDK never launches
@@ -76,7 +83,7 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	case port = <-capture.ready:
 	case <-done:
 		cancel()
-		return nil, "", fmt.Errorf("%w: Copilot control process exited before readiness", errRequiredMCPUnavailable)
+		return nil, "", copilotControlExitError(process.result, process.err)
 	case <-startup.Done():
 		process.close()
 		return nil, "", fmt.Errorf("%w: Copilot control startup timed out", errRequiredMCPUnavailable)
@@ -97,6 +104,37 @@ func (p *copilotControlProcess) close() {
 	<-p.done // ProcessRunner joins owned descendants before returning.
 }
 
+// copilotControlExitError names why the control process never announced its
+// port. The CLI rejects a bad argv on stderr and exits within a second (#5636:
+// --usage-output-file with --headless), so a bare "exited" reads the same as a
+// crash; the exit status and a redacted stderr tail name the rejected option.
+func copilotControlExitError(result ProcessResult, runErr error) error {
+	status := fmt.Sprintf("exit %d", result.ExitCode)
+	if result.ExitCode <= 0 && runErr != nil {
+		status = runErr.Error()
+	}
+	detail := copilotControlStderrTail(result.Stderr)
+	if detail != "" {
+		detail = ": " + detail
+	}
+	return fmt.Errorf("%w: Copilot control process exited before readiness (%s)%s", errRequiredMCPUnavailable, status, detail)
+}
+
+// copilotControlStderrTail scrubs before clipping so a credential straddling
+// the cut is never half-quoted, and keeps the tail: the CLI's last line is why
+// it exited.
+func copilotControlStderrTail(stderr []byte) string {
+	detail := strings.TrimSpace(string(journal.NewPatternScrubber().Scrub(stderr)))
+	if len(detail) <= copilotControlExitDetailBytes {
+		return detail
+	}
+	cut := len(detail) - copilotControlExitDetailBytes
+	for cut < len(detail) && !utf8.RuneStart(detail[cut]) {
+		cut++
+	}
+	return "(truncated) …" + detail[cut:]
+}
+
 func copilotControlCommand(argv []string, promptIndex int) ([]string, string, error) {
 	if promptIndex < 1 || promptIndex >= len(argv) {
 		return nil, "", fmt.Errorf("invalid Copilot prompt position")
@@ -111,7 +149,16 @@ func copilotControlCommand(argv []string, promptIndex int) ([]string, string, er
 			session = arg
 			continue
 		}
-		if arg == "--session-id" || arg == "--silent" || strings.HasPrefix(arg, "--output-format=") {
+		// Copilot CLI rejects --usage-output-file alongside --headless as a
+		// usage error and exits before announcing its port (#5636). The
+		// controlled path takes usage from the session's RPC events
+		// (applyControlledCopilotUsage), and applyCopilotUsageDocument treats
+		// the absent document as no data, so dropping the flag loses nothing.
+		if i > 0 && argv[i-1] == "--usage-output-file" {
+			continue
+		}
+		if arg == "--session-id" || arg == "--silent" || strings.HasPrefix(arg, "--output-format=") ||
+			arg == "--usage-output-file" || strings.HasPrefix(arg, "--usage-output-file=") {
 			continue
 		}
 		command = append(command, arg)
