@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // ErrTerminalGenerationChanged means an intervention was validated against an
@@ -363,7 +364,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		seedEvents = events
 	}
 
-	f := r.newResumeFrame(jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
+	f, err := r.newResumeFrame(jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
+	}
 	ws := f.ws
 
 	startState, err := f.resolveStartState(rd, in.Machine)
@@ -615,21 +619,33 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 func (r *Runner) newResumeFrame(
 	jr *journal.Run, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
 	events, seedEvents []journal.Event, rerun *rerunContext, humanProgress humanGateProgress,
-) *resumeFrame {
+) (*resumeFrame, error) {
 	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
 	pointerEvents := seedEvents
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
+	workspaceRevision, err := reconstructWorkspaceRevision(seedEvents)
+	if err != nil {
+		return nil, err
+	}
+	repoRef := in.RepoRef
+	if workspaceRevision != nil {
+		repoRef, err = workspacerevision.Resolve(*workspaceRevision, repoRef, r.cfg.AdditionalRepos)
+		if err != nil {
+			return nil, fmt.Errorf("runner: resolve persisted workspace revision repository: %w", err)
+		}
+	}
 	ws := newWalkState(jr, StartInput{
-		instanceID:       id.InstanceID,
-		configGeneration: id.ConfigGeneration,
-		RunID:            in.RunID,
-		Machine:          in.Machine,
-		GooberDigest:     in.GooberDigest,
-		Gaggle:           id.Gaggle,
-		Trigger:          id.Trigger,
-		RepoRef:          in.RepoRef,
+		instanceID:        id.InstanceID,
+		configGeneration:  id.ConfigGeneration,
+		RunID:             in.RunID,
+		Machine:           in.Machine,
+		GooberDigest:      in.GooberDigest,
+		Gaggle:            id.Gaggle,
+		Trigger:           id.Trigger,
+		RepoRef:           repoRef,
+		workspaceRevision: workspaceRevision,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches
 		// here after it already started (and therefore already cleared the #735
 		// toolchain preflight in Start); re-verifying would probe the host again
@@ -680,7 +696,7 @@ func (r *Runner) newResumeFrame(
 		hasLast:            hasLast,
 		segmentLastStage:   segmentLastStage,
 		hasSegmentLast:     hasSegmentLast,
-	}
+	}, nil
 }
 
 // resolveStartState picks the workflow state this resume re-enters at.

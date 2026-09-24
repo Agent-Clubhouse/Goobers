@@ -1133,6 +1133,30 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
+### Optional workspace revision authority
+
+`workspaceRevision` is an optional, closed object on invocation and result
+envelopes. It contains the canonical provider, service URL, owner, optional
+Azure DevOps project, repository name, native ID, and a full lowercase
+40- or 64-character object ID in `commitSha`. Optional `sourceRef`,
+`sourceId`, `baseRepository`, and `baseSha` retain provenance. Branches,
+credentials, checkout policy, and writable deltas are not part of this
+authority.
+
+Only a successful deterministic result may establish the value. A declared
+top-level `workspaceRevision` in its result file is promoted to the typed
+field, never to scalar `outputs`; absent controls preserve legacy behavior.
+The first accepted value is copied and immutable, identical re-emission is
+idempotent, and a changed value conflicts. Agentic, failed, and no-work
+results establish nothing. Authorization must resolve the candidate to a
+configured base or additional repository before it is persisted or consumed.
+The stable failure codes are `workspace_revision_invalid`,
+`workspace_revision_unauthorized`, `workspace_revision_conflict`,
+`workspace_revision_acquisition`, `workspace_revision_object_type`, and
+`workspace_revision_sha_mismatch`; only acquisition is retryable. Checkout,
+provider selection, branch ownership, publication, and distributed execution
+remain follow-up slices.
+
 - The contract version is `v1alpha9` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`

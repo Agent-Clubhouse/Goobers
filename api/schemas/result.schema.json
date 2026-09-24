@@ -62,6 +62,20 @@
         "derived"
       ],
       "description": "Provenance of the content this stage produced: the weakest grade among the inputs it was admitted with. Downstream stages resolving inputsFrom grade against this, because outputs are bare scalars that carry no label of their own."
+    },
+    "workspaceRevision": {
+      "description": "Optional immutable repository and exact-object authority. It is established only by a successful deterministic result and is absent for legacy workflows.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commitSha"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/repositoryIdentity", "description": "Canonical repository identity." },
+        "commitSha": { "$ref": "#/$defs/sha", "description": "Full lowercase Git object ID." },
+        "sourceRef": { "type": "string", "description": "Optional source reference provenance." },
+        "sourceId": { "type": "string", "description": "Optional source identifier provenance." },
+        "baseRepository": { "$ref": "#/$defs/repositoryIdentity", "description": "Optional base repository provenance." },
+        "baseSha": { "$ref": "#/$defs/sha", "description": "Optional full lowercase base object ID." }
+      }
     }
   },
   "allOf": [
@@ -105,6 +119,25 @@
           "type": "boolean"
         }
       }
+    },
+      "sha": {
+        "description": "A full lowercase Git SHA-1 or SHA-256 object ID.",
+        "type": "string",
+        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+      },
+      "repositoryIdentity": {
+        "description": "Closed canonical repository identity; routing policy is not included.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "owner", "name"],
+        "properties": {
+          "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Provider kind." },
+          "url": { "type": "string", "format": "uri", "description": "Service URL, when required to distinguish hosts." },
+          "owner": { "type": "string", "minLength": 1, "description": "Repository owner or organization." },
+          "project": { "type": "string", "description": "Azure DevOps project." },
+          "name": { "type": "string", "minLength": 1, "description": "Repository name." },
+          "id": { "type": "string", "description": "Provider-native repository identifier." }
+        }
     }
   }
 }

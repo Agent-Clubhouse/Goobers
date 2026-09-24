@@ -899,6 +899,7 @@ type StartInput struct {
 	RequiredCapabilities []string
 	pinnedWorkspace      *worktree.Worktree
 	pinnedStage          *sync.Mutex
+	workspaceRevision    *apiv1.WorkspaceRevision
 }
 
 // ToolchainVerifier verifies, on the executing host, that a run's declared
@@ -1325,6 +1326,7 @@ type walkState struct {
 	fanIn                *parallelExec
 	workspaceBranch      string
 	branchRecorded       bool
+	workspaceRevision    *apiv1.WorkspaceRevision
 	reboundRecorded      string
 	humanDecision        *HumanGateDecision
 	gateAttempts         map[string]int
@@ -1371,12 +1373,13 @@ func (ws *walkState) chargeEvidenceRejection(gateName, digest string) (int, bool
 
 func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state string) *walkState {
 	return &walkState{
-		jr:            jr,
-		in:            in,
-		reg:           reg,
-		state:         state,
-		completed:     stageOutputs{},
-		visitedStages: map[string]bool{},
+		jr:                jr,
+		in:                in,
+		reg:               reg,
+		state:             state,
+		completed:         stageOutputs{},
+		visitedStages:     map[string]bool{},
+		workspaceRevision: in.workspaceRevision.DeepCopy(),
 	}
 }
 
@@ -1694,6 +1697,10 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		}
 		ws.pointers, ws.completed = outcome.pointers, outcome.completed
 		ws.lastStage, ws.lastResult = outcome.lastStage, outcome.lastResult
+		ws.workspaceRevision = outcome.workspaceRevision.DeepCopy()
+		if outcome.repoRef != nil {
+			ws.in.RepoRef = *outcome.repoRef
+		}
 		ws.parallel = nil
 		if outcome.runJoin {
 			ws.fanIn = outcome.parallel
@@ -1761,12 +1768,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		// then handled as an ordinary branch failure under the declared
 		// policy — so route it through the same @join settle-and-advance
 		// path below rather than starting the stage it was about to run.
-		if ws.parallel != nil && ws.state != workflow.TargetJoin {
-			if deadline := ws.parallel.currentDeadline(); !deadline.IsZero() && !time.Now().Before(deadline) {
-				ws.parallel.markCurrentTimedOut()
-				ws.state = workflow.TargetJoin
-			}
-		}
+		parallelBranchTimedOut(ws)
 		// A branch reached @join: settle it and move to the next declared
 		// branch, or close the parallel and continue at its join state.
 		if ws.state == workflow.TargetJoin {
@@ -2161,7 +2163,9 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 				upstream: upstreamPointers, upstreamResult: ws.lastResult,
 				completed: ws.completed, fanIn: ws.fanIn,
 				workspaceBranch: ws.workspaceBranch, branchRecorded: &ws.branchRecorded,
-				reboundRecorded: &ws.reboundRecorded,
+				reboundRecorded:   &ws.reboundRecorded,
+				workspaceRevision: &ws.workspaceRevision,
+				repoRef:           &ws.in.RepoRef,
 			},
 			branch, startAttempt, firstClass, instructionAddendum,
 			taskRerun, infraFailedAttemptCommittedWork, resumeAccounting,
@@ -4559,12 +4563,17 @@ type taskFrame struct {
 	// once rather than once per stage. A run that rebinds twice records both,
 	// which is exactly what terminal capture has to evaluate. A parallel
 	// branch journals into its own branch journal and so carries its own.
-	reboundRecorded *string
+	reboundRecorded   *string
+	workspaceRevision **apiv1.WorkspaceRevision
+	repoRef           *apiv1.RepoRef
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
 	jr, in, t := tf.jr, tf.in, tf.t
+	if tf.workspaceRevision != nil {
+		in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
+	}
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
 	// Both admission checks run here, before any workspace or credential
@@ -4712,18 +4721,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		}
 		result, mutations, cleanup, dispatchErr := r.dispatchTask(attemptCtx, tf, int(attempt), class, attemptAddendum, span, &infraFailedAttemptCommittedWork)
 		if t.Type == apiv1.TaskAgentic {
-			attemptUsage, usageReported := usage.snapshot()
-			accumulateStageUsage(cumulativeUsage, attemptUsage)
-			// A pre-harness dispatch failure consumed no model budget. Once the
-			// adapter ran (even if it reported no measures), missing configured
-			// usage fails closed.
-			if dispatchErr == nil || usageReported {
-				var budgetExceeded bool
-				result, budgetExceeded = enforceStageBudget(usageLimits, attemptUsage, cumulativeUsage, result)
-				if budgetExceeded {
-					dispatchErr = nil
-				}
-			}
+			applyTaskUsageBudget(usageLimits, &usage, cumulativeUsage, &result, &dispatchErr)
 		}
 		if err := completeTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, cleanup); err != nil {
 			span.Fail(err)
@@ -4801,8 +4799,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
-		result = r.validateDependencyResult(jr, t.Name, result, upstream)
+		if prepareErr := r.prepareTaskResult(jr, t, &result, upstream, &in, tf, int(attempt), class); prepareErr != nil {
+			span.Fail(prepareErr)
+			return apiv1.ResultEnvelope{}, nil, prepareErr
+		}
 		// Provenance flows with the data: what this stage produced is only as
 		// trustworthy as the weakest input it was admitted with. Downstream
 		// stages resolving inputsFrom grade against this, because Outputs are
@@ -4810,10 +4810,17 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		result.Integrity = producedIntegrity(t, in.Item, upstream,
 			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
 		outputs := stageFinishedOutputs(result, t.ContinueOnError)
+		var eventWorkspaceRevision *apiv1.WorkspaceRevision
+		if t.Type == apiv1.TaskDeterministic &&
+			result.Status == apiv1.ResultSuccess &&
+			result.WorkspaceRevision != nil {
+			eventWorkspaceRevision = result.WorkspaceRevision.DeepCopy()
+		}
 		if err := jr.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result),
 			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
+			WorkspaceRevision: eventWorkspaceRevision,
 			// Carried so reconstructStageOutputs can restore each stage's grade
 			// on resume; without it a resumed run would fail inputsFrom
 			// admission that a live run admits (TBH-4).
@@ -6380,6 +6387,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		ConfigGeneration:     in.configGeneration,
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
+		WorkspaceRevision:    in.workspaceRevision.DeepCopy(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
 		CheckoutCones:        checkoutCones(workspace),
 		Item:                 in.Item,

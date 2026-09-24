@@ -76,6 +76,7 @@ type stubTaskResult struct {
 	status            apiv1.ResultStatus
 	summary           string
 	errorInfo         *apiv1.ErrorInfo
+	workspaceRevision *apiv1.WorkspaceRevision
 	artifactName      string
 	artifactData      []byte
 	artifactMediaType string
@@ -98,7 +99,13 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 	if !ok {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("stub executor: no canned output for %q", env.TaskID)
 	}
-	result := apiv1.ResultEnvelope{Status: cfg.status, Summary: cfg.summary, Error: cfg.errorInfo, Outputs: cfg.outputs}
+	result := apiv1.ResultEnvelope{
+		Status:            cfg.status,
+		Summary:           cfg.summary,
+		Error:             cfg.errorInfo,
+		Outputs:           cfg.outputs,
+		WorkspaceRevision: cfg.workspaceRevision.DeepCopy(),
+	}
 	if cfg.artifactName != "" {
 		var ref journal.Ref
 		var err error

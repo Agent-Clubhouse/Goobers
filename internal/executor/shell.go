@@ -1180,7 +1180,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 					}
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-					mergeResultFileOutputs(&result, data)
+					if err := mergeResultFileOutputs(&result, data); err != nil {
+						result.Status = apiv1.ResultFailure
+						result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
+						result.Summary = "declared result file contains an invalid workspace revision"
+						return result, nil
+					}
 					code, message, retryable := consumeErrorOutputs(result.Outputs)
 					if code != "" {
 						if message == "" {
@@ -1243,7 +1248,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 				}
 				result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-				mergeResultFileOutputs(&result, data)
+				if err := mergeResultFileOutputs(&result, data); err != nil {
+					result.Status = apiv1.ResultFailure
+					result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
+					result.Summary = "declared result file contains an invalid workspace revision"
+					return result, nil
+				}
 			case os.IsNotExist(rerr):
 				result.Status = apiv1.ResultFailure
 				result.Error = missingResultFileError(resultFile, exitCode, waitErr, errBytes)
@@ -1403,21 +1413,41 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 
 // mergeResultFileOutputs best-effort-parses a declared result file's bytes as
 // a flat JSON object and merges its string/number/bool fields into
-// result.Outputs — see InputResultFile's doc comment. data that isn't JSON,
-// or isn't a flat object, is silently left alone: the artifact/presence-check
-// contract InputResultFile already provides holds either way, and not every
-// declared result file is meant to carry structured outputs.
-func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) {
+// result.Outputs — see InputResultFile's doc comment. Invalid JSON remains
+// legacy-compatible, while a declared workspaceRevision is decoded strictly
+// and validated because it is a control, not a scalar output.
+func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
+	if first := bytes.TrimSpace(data); len(first) == 0 || first[0] != '{' {
+		return nil
+	}
 	var m map[string]interface{}
 	if err := json.Unmarshal(data, &m); err != nil {
-		return
+		return nil
 	}
 	for k, v := range m {
+		if k == "workspaceRevision" {
+			raw, err := json.Marshal(v)
+			if err != nil {
+				return fmt.Errorf("workspaceRevision: %w", err)
+			}
+			var revision apiv1.WorkspaceRevision
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&revision); err != nil {
+				return fmt.Errorf("workspaceRevision: %w", err)
+			}
+			if err := revision.Validate(); err != nil {
+				return err
+			}
+			result.WorkspaceRevision = revision.DeepCopy()
+			continue
+		}
 		switch v.(type) {
 		case string, float64, bool:
 			result.Outputs[k] = v
 		}
 	}
+	return nil
 }
 
 func exitCodeOf(err error) int {
