@@ -255,8 +255,8 @@ func TestResultShapeHintStatesScalarOnlyOutputsGenerally(t *testing.T) {
 	}
 }
 
-// TestResultShapeHintNeverDirectsStructuredDataToArtifacts is #2522 review
-// DA's regression test. An earlier draft of the generalized scalar-only rule
+// TestResultShapeHintNeverDirectsStructuredDataToArtifacts is #2522's
+// regression test. An earlier draft of the generalized scalar-only rule
 // added "Larger or structured data belongs in \"artifacts\" instead" —
 // directly contradicting this same hint's "Do not populate \"artifacts\"" a
 // few sentences earlier, and #301's contract (resultShapeHint's own doc
