@@ -1085,13 +1085,13 @@ function EventLedger({
         </div>
       ) : (
         <div className="data-table-shell event-ledger-table">
-          <div aria-hidden="true" className="data-table-header event-ledger-table-header">
-            <span>Sequence</span>
-            <span>Stage</span>
-            <span>Type</span>
-            <span>Elapsed</span>
-            <span>Attempt #</span>
-            <span>Event</span>
+          <div className="data-table-header event-ledger-table-header" role="row">
+            <span role="columnheader">Sequence</span>
+            <span role="columnheader">Stage / source</span>
+            <span role="columnheader">Event kind</span>
+            <span role="columnheader">Elapsed / records</span>
+            <span role="columnheader">Attempt / scope</span>
+            <span role="columnheader">Details</span>
           </div>
           <ol>
           {rows.map((entry, index) => {
