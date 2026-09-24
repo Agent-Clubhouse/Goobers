@@ -79,8 +79,8 @@ func alias() {
 	if len(positions) != 2 {
 		t.Fatalf("detected %d git invocations, want 2: %#v", len(positions), positions)
 	}
-	if got := positions[0].Line; got != 8 && got != 13 {
-		t.Fatalf("first invocation line = %d, want %d or %d", got, 8, 13)
+	if positions[0].Line != 8 || positions[1].Line != 13 {
+		t.Fatalf("invocation lines = %d, %d; want 8, 13", positions[0].Line, positions[1].Line)
 	}
 }
 
