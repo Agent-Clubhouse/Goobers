@@ -72,16 +72,24 @@ persona (no `spec.gaggle`) only ever resolves the shared path. The name
 itself may not contain a path separator or resolve outside `skills/`.
 
 Whichever directory is found, every regular file under it (recursed, in
-sorted path order) is loaded as the skill's content — there is no required
-filename or manifest. The convention this repo's own shipped skills follow
-(for example `skills/goobers-dsl-author/` in the repo root, unrelated to a
-goober's own declared skills but the same shape) is a `SKILL.md` entrypoint
-plus an optional `references/` subdirectory of supporting files, matching
-what the harnesses' own skill-invocation format expects — but the loader
-does not parse or require `SKILL.md` specifically; any files under the
-directory are included as-is.
+sorted path order) is loaded — there is no required filename or manifest.
+Today, that loaded content feeds only the goober's identity: it is digested
+into `ComputeGooberDigest`, which drives the worker's snapshot pinning and
+reload/change detection, so editing a skill package's files changes the
+goober's identity and can trigger a reload the same way editing
+`instructions.md` does. **It is not currently delivered to the harness or
+the model** — declaring `spec.skills` has no effect on what an invocation
+can read or do, regardless of whether the package exists, is empty, or is
+missing (tracked as [#2221](https://github.com/Agent-Clubhouse/Goobers/issues/2221);
+materializing packages into a harness-native workspace directory is
+[#2230](https://github.com/Agent-Clubhouse/Goobers/issues/2230)). This repo's
+own shipped skills (for example `skills/goobers-dsl-author/` in the repo
+root — unrelated to a goober's own declared `spec.skills`, but the same
+`SKILL.md` + optional `references/` directory shape) reach the harness
+through a different mechanism (the agent toolkit bundle), not through this
+`spec.skills` resolution path.
 
-`goobers validate`'s `SKILL002` check is existence-only: it confirms the
-resolved directory exists and is a directory, not that it contains
-`SKILL.md` or any other content. An empty directory created with `mkdir`
-satisfies the check exactly as well as a real skill package.
+`goobers validate`'s `SKILL002` check is existence-only: it passes as soon as
+either the scoped or the shared candidate path is a directory, with no check
+of its contents. An empty directory created with `mkdir` satisfies the check
+exactly as well as a real skill package.
