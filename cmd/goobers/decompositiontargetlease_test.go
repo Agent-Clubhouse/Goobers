@@ -184,7 +184,15 @@ func TestClaimsPlaneTargetLeaserWaitsForContendedLease(t *testing.T) {
 	}
 
 	second := newDecompositionTargetLeaser(layout, decompositionTargetLeaseTestGaggle, "run-2")
-	second.pollInterval = 5 * time.Millisecond
+	// The waiter polls at the production interval, not a test-shortened one
+	// (#4804). Each poll takes the instance claims flock, and release needs
+	// the same flock, which it retries every claimLockRetryInterval with no
+	// fairness. A waiter polling every 5ms under -race holds that flock for
+	// most of each cycle, so release lost the race for seconds on a loaded
+	// runner and the second Acquire ran out of context before it could
+	// claim. At the production interval the waiter holds the lock for a
+	// sliver of each cycle, as it does in a real run.
+	second.pollInterval = decompositionTargetLeasePollInterval
 	type acquireResult struct {
 		release func() error
 		err     error
