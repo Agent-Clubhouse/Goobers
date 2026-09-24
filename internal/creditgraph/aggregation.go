@@ -67,7 +67,7 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 	byCohort := map[CohortKey][]AttributionObservation{}
 	keys := make([]CohortKey, 0, len(observations))
 	for _, observation := range observations {
-		if strings.TrimSpace(observation.EffectiveVersion) == "" {
+		if observation.Status == RecordFailed || strings.TrimSpace(observation.EffectiveVersion) == "" {
 			continue
 		}
 		key := CohortKey{EffectiveVersion: observation.EffectiveVersion, Workload: observation.Workload}

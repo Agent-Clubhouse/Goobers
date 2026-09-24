@@ -71,6 +71,7 @@ func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
 	if err != nil {
 		record.Status = RecordFailed
 		record.Failure = err.Error()
+		record.EffectiveVersion = ""
 	}
 	data, marshalErr := json.MarshalIndent(record, "", "  ")
 	if marshalErr != nil {

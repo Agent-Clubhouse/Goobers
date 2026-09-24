@@ -277,6 +277,9 @@ func TestLocalTelemetryAttributionReturnsEnrolledRunRecords(t *testing.T) {
 		result.Records[0].Failure != "analysis unavailable" {
 		t.Fatalf("attribution records = %+v, want persisted failed record unchanged", result.Records)
 	}
+	if len(result.Cohorts) != 0 {
+		t.Fatalf("attribution cohorts = %+v, want failed record excluded", result.Cohorts)
+	}
 }
 
 func TestLocalTelemetryAttributionReturnsInsufficientEvidenceWhenSpanIsMissing(t *testing.T) {

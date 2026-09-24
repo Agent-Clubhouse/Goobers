@@ -71,6 +71,27 @@ func TestAggregateAttributionEvidenceExcludesUndefinedEffectiveVersions(t *testi
 	}
 }
 
+func TestAggregateAttributionEvidenceExcludesFailedRecords(t *testing.T) {
+	got := AggregateAttributionEvidence([]AttributionObservation{
+		{
+			RunID:            "failed",
+			EffectiveVersion: "provisional",
+			Workload:         "implementation",
+			Status:           RecordFailed,
+			Failure:          "span provenance unavailable",
+		},
+		{
+			RunID:            "complete",
+			EffectiveVersion: "v1",
+			Workload:         "implementation",
+			Status:           RecordComplete,
+		},
+	})
+	if len(got) != 1 || got[0].EffectiveVersion != "v1" || got[0].RunCount != 1 {
+		t.Fatalf("cohorts = %+v, want only the complete record", got)
+	}
+}
+
 func TestAggregateAttributionEvidencePreservesMixedConfidence(t *testing.T) {
 	obs := []AttributionObservation{
 		{RunID: "a", EffectiveVersion: "v1", Workload: "main", Attribution: Attribution{

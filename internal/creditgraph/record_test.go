@@ -260,6 +260,21 @@ func TestRunRecordSurfacesCorruptSpanAsAnalysisFailure(t *testing.T) {
 	if record.Status != RecordFailed || !strings.Contains(record.Failure, "digest mismatch") {
 		t.Fatalf("record failure = (%q, %q), want persisted digest mismatch", record.Status, record.Failure)
 	}
+	if record.EffectiveVersion != "" {
+		t.Fatalf("failed record effective version = %q, want uncohortable", record.EffectiveVersion)
+	}
+	if got := AggregateAttributionEvidence([]AttributionObservation{{
+		RunID:            record.RunID,
+		Workflow:         record.Workflow,
+		EffectiveVersion: record.EffectiveVersion,
+		Workload:         record.Workload,
+		Status:           record.Status,
+		Failure:          record.Failure,
+		Attribution:      record.Attribution,
+		Evidence:         record.Evidence,
+	}}); len(got) != 0 {
+		t.Fatalf("failed record cohorts = %+v, want none", got)
+	}
 }
 
 func recordTestRun(t *testing.T, backprop any) (*journal.Run, string) {
