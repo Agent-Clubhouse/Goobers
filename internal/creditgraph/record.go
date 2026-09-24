@@ -26,11 +26,12 @@ const (
 type RecordStatus string
 
 const (
-	// RecordComplete, RecordInsufficientEvidence, and RecordFailed are the
-	// terminal outcomes of an isolated Backprop attribution analysis.
-	RecordComplete             RecordStatus = "complete"
+	// RecordComplete means attribution completed with defensible evidence.
+	RecordComplete RecordStatus = "complete"
+	// RecordInsufficientEvidence means attribution refused to infer a result.
 	RecordInsufficientEvidence RecordStatus = "insufficient-evidence"
-	RecordFailed               RecordStatus = "failed"
+	// RecordFailed means the isolated attribution analysis encountered an error.
+	RecordFailed RecordStatus = "failed"
 )
 
 // RunRecord is the persisted result for one enrolled terminal run.
