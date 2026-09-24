@@ -257,8 +257,10 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	if len(req.Command) == 0 {
 		return ProcessResult{}, fmt.Errorf("harness: empty command")
 	}
-	timeout := effectiveProcessTimeout(ctx, req.Timeout, time.Now())
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	now := time.Now()
+	deadline := effectiveProcessDeadline(ctx, req.Timeout, now)
+	timeout := deadline.Sub(now)
+	runCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
 	cmd := exec.Command(req.Command[0], req.Command[1:]...)
@@ -381,12 +383,13 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	return result, checkpointErr
 }
 
-func effectiveProcessTimeout(ctx context.Context, requested time.Duration, now time.Time) time.Duration {
+func effectiveProcessDeadline(ctx context.Context, requested time.Duration, now time.Time) time.Time {
 	if requested <= 0 {
 		requested = DefaultTimeout
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		return min(requested, max(deadline.Sub(now), 0))
+	deadline := now.Add(requested)
+	if bound, ok := ctx.Deadline(); ok && bound.Before(deadline) {
+		return bound
 	}
-	return requested
+	return deadline
 }
