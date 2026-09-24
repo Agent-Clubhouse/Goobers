@@ -22,6 +22,15 @@ func appendEvent(f eventFile, seq *uint64, scrubber Scrubber, now func() time.Ti
 	ev.Seq = *seq
 	ev.Schema = EventSchema
 	ev.Time = now()
+	if ev.Type == EventAgentProgress && ev.Progress != nil {
+		ev.Progress.Sequence = ev.Seq
+		if ev.Progress.OccurredAt.IsZero() {
+			ev.Progress.OccurredAt = ev.Time
+		}
+		if ev.Progress.UpdatedAt.IsZero() {
+			ev.Progress.UpdatedAt = ev.Progress.OccurredAt
+		}
+	}
 
 	line, err := marshalEvent(ev)
 	if err != nil {
@@ -29,6 +38,10 @@ func appendEvent(f eventFile, seq *uint64, scrubber Scrubber, now func() time.Ti
 		return Event{}, fmt.Errorf("journal: marshal event: %w", err)
 	}
 	line = scrubber.Scrub(line)
+	if len(line)+1 > maxEventBytes {
+		*seq--
+		return Event{}, fmt.Errorf("journal: event exceeds %d-byte limit", maxEventBytes)
+	}
 	line = append(line, '\n')
 	if _, err := f.Write(line); err != nil {
 		return Event{}, fmt.Errorf("journal: append event: %w", err)
@@ -62,7 +75,7 @@ func marshalEvent(ev Event) ([]byte, error) {
 	if ev.Type == EventOperatorMessageOutcome && ev.OperatorMessageOutcome == nil {
 		return nil, fmt.Errorf("%s requires an operator message outcome", EventOperatorMessageOutcome)
 	}
-	if ev.Type == EventAgentLifecycle || ev.Type == EventAgentMessage {
+	if ev.Type == EventAgentLifecycle || ev.Type == EventAgentMessage || ev.Type == EventAgentProgress {
 		if err := ValidateAgentEvent(ev); err != nil {
 			return nil, err
 		}

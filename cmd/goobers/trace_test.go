@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -321,6 +322,200 @@ func TestTraceJSONPreservesIdentityRefsAndMissingState(t *testing.T) {
 	}
 }
 
+func TestTraceRendersAgentProgressAndHistory(t *testing.T) {
+	root := t.TempDir()
+	const runID = "trace-progress-test"
+	run := newTraceTestRun(t, root, runID)
+
+	p1 := journal.AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      runID,
+		Stage:      "implement",
+		Attempt:    1,
+		Sequence:   1,
+		Kind:       journal.AgentProgressPlan,
+		Source:     journal.AgentProgressSourceNative,
+		Fidelity:   journal.AgentFidelityFull,
+		OccurredAt: time.Now(),
+		Plan:       []string{"Step 1", "Step 2"},
+	}
+	p2 := journal.AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      runID,
+		Stage:      "implement",
+		Attempt:    1,
+		Sequence:   2,
+		Kind:       journal.AgentProgressDecision,
+		Source:     journal.AgentProgressSourceModel,
+		Fidelity:   journal.AgentFidelityFull,
+		OccurredAt: time.Now(),
+		Summary:    "Chose approach A",
+		Decision:   "Approach A selected",
+		Evidence:   []journal.AgentProgressEvidence{{Type: "tool", ID: "grep-1", Label: "match"}},
+	}
+
+	if err := run.Append(journal.Event{Type: journal.EventAgentProgress, Progress: &p1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventAgentProgress, Progress: &p2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{
+		"agent progress & status:",
+		"agent: worker-1 stage=implement attempt=1",
+		"latest [decision seq=3 source=model]:",
+		"summary:     Chose approach A",
+		"decision:    Approach A selected",
+		"evidence:    grep-1 (match)",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestTraceSurfacesAgentProgressProjectionFailure(t *testing.T) {
+	root := t.TempDir()
+	const runID = "trace-progress-error"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	var stdout, stderr bytes.Buffer
+	code := runTraceWithFollowContextAndFactory(
+		context.Background(),
+		[]string{runID, root},
+		&stdout,
+		&stderr,
+		traceAgentProgressErrorFactory(),
+	)
+	if code != 2 {
+		t.Fatalf("trace code = %d, want 2; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "error: agent progress: synthetic progress projection failure") {
+		t.Fatalf("trace stderr = %q", stderr.String())
+	}
+}
+
+func TestTraceFollowSurfacesAgentProgressProjectionFailure(t *testing.T) {
+	root := t.TempDir()
+	const runID = "trace-follow-progress-error"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	var stdout, stderr bytes.Buffer
+	code := runTraceWithFollowContextAndFactory(
+		context.Background(),
+		[]string{"--follow", runID, root},
+		&stdout,
+		&stderr,
+		traceAgentProgressErrorFactory(),
+	)
+	if code != 2 {
+		t.Fatalf("trace --follow code = %d, want 2; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "error: follow trace: agent progress: synthetic progress projection failure") {
+		t.Fatalf("trace --follow stderr = %q", stderr.String())
+	}
+}
+
+func traceAgentProgressErrorFactory() func(instance.Layout) (readservice.OfflineRuns, error) {
+	return func(layout instance.Layout) (readservice.OfflineRuns, error) {
+		reads, err := readservice.NewOfflineRuns(layout)
+		if err != nil {
+			return nil, err
+		}
+		return &traceAgentProgressErrorReader{OfflineRuns: reads}, nil
+	}
+}
+
+type traceAgentProgressErrorReader struct {
+	readservice.OfflineRuns
+}
+
+func (*traceAgentProgressErrorReader) RunAgentProgress(context.Context, string) ([]readservice.AgentProgressSummary, error) {
+	return nil, errors.New("synthetic progress projection failure")
+}
+
+func TestTraceRendersBlockerAndQuestionHistoryText(t *testing.T) {
+	root := t.TempDir()
+	const runID = "trace-progress-history-text"
+	run := newTraceTestRun(t, root, runID)
+
+	for _, progress := range []journal.AgentProgress{
+		{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      runID,
+			Stage:      "implement",
+			Attempt:    1,
+			Sequence:   1,
+			Kind:       journal.AgentProgressBlocker,
+			Source:     journal.AgentProgressSourceModel,
+			Fidelity:   journal.AgentFidelityPartial,
+			OccurredAt: time.Now(),
+			Blocker:    "Waiting for provider access",
+		},
+		{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      runID,
+			Stage:      "implement",
+			Attempt:    1,
+			Sequence:   2,
+			Kind:       journal.AgentProgressQuestion,
+			Source:     journal.AgentProgressSourceModel,
+			Fidelity:   journal.AgentFidelityPartial,
+			OccurredAt: time.Now(),
+			Question:   "Should I retry once credentials are refreshed?",
+		},
+		{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      runID,
+			Stage:      "implement",
+			Attempt:    1,
+			Sequence:   3,
+			Kind:       journal.AgentProgressNextAction,
+			Source:     journal.AgentProgressSourceModel,
+			Fidelity:   journal.AgentFidelityPartial,
+			OccurredAt: time.Now(),
+			NextAction: "Poll for refreshed credentials",
+		},
+	} {
+		progress := progress
+		if err := run.Append(journal.Event{Type: journal.EventAgentProgress, Progress: &progress}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{
+		"history (3 records):",
+		"[#2 blocker model] Waiting for provider access",
+		"[#3 question model] Should I retry once credentials are refreshed?",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestTraceListsRecordedTranscripts(t *testing.T) {
 	root := t.TempDir()
 	const runID = "transcript-list"
@@ -625,6 +820,58 @@ func TestTraceFollowContinuesThroughResumedLifecycle(t *testing.T) {
 	}, "\n")
 	if got := stdout.String(); got != want {
 		t.Fatalf("trace --follow stdout = %q, want %q", got, want)
+	}
+}
+
+func TestTraceFollowRendersLifecycleOnlyAgentProgressFallback(t *testing.T) {
+	root := t.TempDir()
+	const runID = "follow-agent-progress-fallback"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	stdout := newTraceFollowBuffer()
+	var stderr bytes.Buffer
+	result := make(chan int, 1)
+	go func() {
+		result <- runTraceWithFollowContext(
+			context.Background(),
+			[]string{"--follow", runID, root},
+			stdout,
+			&stderr,
+		)
+	}()
+	stdout.waitForWrite(t)
+
+	now := time.Now().UTC()
+	for _, event := range []journal.Event{
+		{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Worker: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+			Fidelity: journal.AgentFidelityNone,
+		}},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := waitForTraceFollow(t, result); code != 0 {
+		t.Fatalf("trace --follow: code = %d, stderr = %q", code, stderr.String())
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"agent progress & status:",
+		"agent: worker-1 stage=implement attempt=1 (worker) fidelity=none",
+		"current [lifecycle started seq=2]: Running without structured progress; showing lifecycle-only status.",
+		"status: structured progress unavailable (degraded to tool/transcript activity)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("trace --follow output missing %q:\n%s", want, got)
+		}
 	}
 }
 
