@@ -96,6 +96,25 @@ const sweepErrorReportEvery = 12
 
 var httpShutdownGrace = 5 * time.Second
 
+// shutdownHTTPServers shuts the API listener down and, if one is running,
+// the webhook listener, each against its own fresh grace-period context
+// (#4571). Before this both calls shared a single context: the first
+// Shutdown could consume the entire deadline, leaving the second with none
+// and making it return context deadline exceeded immediately — turning an
+// otherwise-successful drain into exit status 1. webhookServer may be nil,
+// in which case webhookErr is always nil.
+func shutdownHTTPServers(apiServer, webhookServer *httpapi.Server, grace time.Duration) (apiErr, webhookErr error) {
+	apiCtx, apiCancel := context.WithTimeout(context.Background(), grace)
+	apiErr = apiServer.Shutdown(apiCtx)
+	apiCancel()
+	if webhookServer != nil {
+		webhookCtx, webhookCancel := context.WithTimeout(context.Background(), grace)
+		webhookErr = webhookServer.Shutdown(webhookCtx)
+		webhookCancel()
+	}
+	return apiErr, webhookErr
+}
+
 const daemonAPIAddressFileName = "api.address"
 
 func daemonDiscoveryIdentity(root string) httpapi.DiscoveryIdentity {
@@ -550,15 +569,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			return
 		}
 		stopDaemon()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-		defer shutdownCancel()
-		if err := apiServer.Shutdown(shutdownCtx); err != nil {
-			pf(stderr, "error: %v\n", err)
+		apiErr, webhookErr := shutdownHTTPServers(apiServer, webhookServer, httpShutdownGrace)
+		if apiErr != nil {
+			pf(stderr, "error: %v\n", apiErr)
 		}
-		if webhookServer != nil {
-			if err := webhookServer.Shutdown(shutdownCtx); err != nil {
-				pf(stderr, "error: shut down webhook listener: %v\n", err)
-			}
+		if webhookErr != nil {
+			pf(stderr, "error: shut down webhook listener: %v\n", webhookErr)
 		}
 	}()
 	apiAddressPublished := true
@@ -1954,13 +1970,7 @@ daemonLoop:
 	// first, makes those already-admitted runs fail even though this process is
 	// deliberately waiting for them.
 	ready.Store(false)
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-	shutdownErr := apiServer.Shutdown(shutdownCtx)
-	var webhookShutdownErr error
-	if webhookServer != nil {
-		webhookShutdownErr = webhookServer.Shutdown(shutdownCtx)
-	}
-	shutdownCancel()
+	shutdownErr, webhookShutdownErr := shutdownHTTPServers(apiServer, webhookServer, httpShutdownGrace)
 	apiStopped = true
 	if shutdownErr != nil {
 		apiFailed = true
