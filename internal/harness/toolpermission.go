@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // ErrorCodeToolPermissionDenied is the distinct failure code a stage carries
@@ -65,14 +66,45 @@ var contentExclusionClaimMarkers = []string{
 	"excluded by the repository owner",
 	"organization policy blocks",
 	"org content policy",
-	// #5444: real model-authored codes/messages that assert the same
-	// conclusion without using the words "content exclusion" — e.g.
-	// CANONICAL_SPEC_ACCESS_DENIED: "... was denied by the environment
-	// access policy" and PINNED_SPEC_ACCESS_DENIED. Narrower than a bare
-	// "denied", which would collide with toolPermissionMarkers' own
-	// vocabulary for a plain tool refusal.
+}
+
+// evidenceGatedClaimMarkers are phrasings real #5444 transcripts used to
+// assert the same conclusion as contentExclusionClaimMarkers without using
+// the words "content exclusion" (e.g. CANONICAL_SPEC_ACCESS_DENIED: "...
+// was denied by the environment access policy", PINNED_SPEC_ACCESS_DENIED).
+//
+// Unlike contentExclusionClaimMarkers, these may NEVER complete a claim on
+// their own — they are also the exact vocabulary a genuine cloud-provider
+// permission denial uses (a real Key Vault, S3, or IAM 403). An independent
+// review (review DA, 2026-09-24) reproduced KEYVAULT_FORBIDDEN and
+// S3_ACCESS_DENIED failures being misclassified as unsubstantiated
+// content-exclusion claims when these were folded into the unconditional
+// marker list. matchesClaimMarkers is only called against this list
+// alongside positive runtime tool-refusal evidence (ev.denied) — see
+// reclassifyToolPermissionBlock.
+var evidenceGatedClaimMarkers = []string{
 	"access_denied",
 	"access policy",
+}
+
+// nonRetryableEscalationCodes mirrors internal/runner's escalateErrorCodes
+// (#415): the recognized non-retryable business dispositions a stage can
+// author to bypass the Next gate's repass loop entirely. This guard must
+// never relabel one of these, even when its prose also happens to mention
+// content exclusion or an access-denied phrase, and even when a genuine tool
+// refusal also appears elsewhere in the same session's transcript —
+// overwriting the code would silently turn a deliberate #415 escalation
+// (ISSUE_OVER_SCOPE, NEEDS_DECOMPOSITION, ISSUE_NOT_APPLICABLE,
+// SHARED_BASELINE_FAILURE) into an ordinary failure route.
+//
+// Duplicated here rather than imported from internal/runner, which this
+// package must not depend on: harness produces result envelopes, runner
+// interprets them, and runner already imports harness.
+var nonRetryableEscalationCodes = map[string]bool{
+	"ISSUE_OVER_SCOPE":                  true,
+	"NEEDS_DECOMPOSITION":               true,
+	telemetry.ErrCodeIssueNotApplicable: true,
+	"SHARED_BASELINE_FAILURE":           true,
 }
 
 // toolPermissionEvidence is what the harness itself observed about tool
@@ -133,12 +165,12 @@ func observeToolPermissions(captures ...[]byte) toolPermissionEvidence {
 	return ev
 }
 
-// claimsContentExclusion reports whether the result envelope's own prose
-// asserts an organization content-exclusion block. Scans summary, error code
-// and message, and scalar string outputs — the places a model actually states
-// this, including outputs.blockedBy, where a live run wrote the free text
+// matchesClaimMarkers reports whether the result envelope's own prose
+// contains any of markers. Scans summary, error code and message, and scalar
+// string outputs — the places a model actually states a conclusion,
+// including outputs.blockedBy, where a live run wrote the free text
 // "content-exclusion-policy" instead of the documented issue numbers.
-func claimsContentExclusion(result apiv1.ResultEnvelope) bool {
+func matchesClaimMarkers(result apiv1.ResultEnvelope, markers []string) bool {
 	fields := []string{result.Summary}
 	if result.Error != nil {
 		fields = append(fields, result.Error.Code, result.Error.Message)
@@ -149,11 +181,18 @@ func claimsContentExclusion(result apiv1.ResultEnvelope) bool {
 		}
 	}
 	for _, field := range fields {
-		if containsAny(strings.ToLower(field), contentExclusionClaimMarkers) {
+		if containsAny(strings.ToLower(field), markers) {
 			return true
 		}
 	}
 	return false
+}
+
+// claimsContentExclusion reports whether the result envelope's own prose
+// asserts an organization content-exclusion block, using only the
+// unconditional marker set. See matchesClaimMarkers.
+func claimsContentExclusion(result apiv1.ResultEnvelope) bool {
+	return matchesClaimMarkers(result, contentExclusionClaimMarkers)
 }
 
 // reclassifyToolPermissionBlock enforces #2962's separation: a generic tool
@@ -167,50 +206,65 @@ func claimsContentExclusion(result apiv1.ResultEnvelope) bool {
 // content-exclusion signal (when the runtime does signal exclusion, the
 // classification is substantiated and is left exactly as authored):
 //
-//  1. Positive runtime evidence of a tool-permission refusal turns the block
-//     into a failure carrying ErrorCodeToolPermissionDenied and the observed
-//     refusal lines, so the journal names the real fault.
-//  2. An unsubstantiated content-exclusion claim with no such evidence turns
-//     into a failure carrying ErrorCodeUnsubstantiatedContentExclusion,
-//     because a model may not assert an organization policy the runtime never
-//     reported. This never invents a cause: the model's own summary and error
-//     detail are preserved in the message.
+//  1. Positive runtime evidence of a tool-permission refusal (ev.denied) turns
+//     the result into a failure carrying ErrorCodeToolPermissionDenied and the
+//     observed refusal lines, so the journal names the real fault. This is
+//     the only conversion a "failure" status can take (#5444 review DA):
+//     applies to BOTH "blocked" and "failure" statuses.
+//  2. An unsubstantiated content-exclusion claim with NO runtime evidence at
+//     all turns a "blocked" result — never a "failure" one — into a failure
+//     carrying ErrorCodeUnsubstantiatedContentExclusion, because a model may
+//     not assert an organization policy the runtime never reported. This
+//     never invents a cause: the model's own summary and error detail are
+//     preserved in the message.
 //
 // Both are non-retryable — repeating the identical invocation reproduces the
-// identical refusal — and both are strictly narrower than the previous
+// identical refusal — and both are strictly narrower than the original
 // behavior, which admitted the claim unconditionally. Blocks that never
-// mention content exclusion are untouched, so the ordinary dependency-block
-// path (docs/stage-contract.md) is unaffected.
+// mention content exclusion (nor, alongside runtime evidence, an
+// evidenceGatedClaimMarkers phrase) are untouched, so the ordinary
+// dependency-block path (docs/stage-contract.md) is unaffected.
+//
+// #5444 review DA (2026-09-24) found the original "failure" widening
+// misclassified genuine cloud-provider access-denied failures (Key Vault, S3,
+// IAM) that happened to share the new markers' vocabulary, and could flip an
+// ordinary blocked dependency mentioning "access policy" to failure. The fix:
+// a "failure" status, and evidenceGatedClaimMarkers on any status, now both
+// require ev.denied — actual observed runtime evidence, not vocabulary alone.
+// A deliberate #415 non-retryable escalation code is never touched at all,
+// regardless of evidence, since overwriting it would silently turn escalation
+// into an ordinary retry route.
 func reclassifyToolPermissionBlock(result *apiv1.ResultEnvelope, transcript, stderr []byte) {
 	if result == nil {
 		return
 	}
-	// #5444: the guard originally ran only on status "blocked". An agent that
-	// authors the identical fabricated content-exclusion narrative under
-	// status "failure" sailed straight through unchecked — the exact outcome
-	// this guard exists to prevent. "success" is deliberately left out: a
-	// successful result mentioning content exclusion in passing (e.g. "I
-	// documented the content exclusion policy") is not a claim that this run
-	// was blocked by it.
 	if result.Status != apiv1.ResultBlocked && result.Status != apiv1.ResultFailure {
 		return
 	}
-	if !claimsContentExclusion(*result) {
+	if result.Error != nil && !result.Error.Retryable && nonRetryableEscalationCodes[result.Error.Code] {
 		return
 	}
+
 	ev := observeToolPermissions(transcript, stderr)
+	// evidenceGatedClaimMarkers only complete a claim alongside ev.denied —
+	// see its doc comment. claimsContentExclusion (the unconditional marker
+	// set) is unaffected.
+	claimed := claimsContentExclusion(*result) || (ev.denied && matchesClaimMarkers(*result, evidenceGatedClaimMarkers))
+	if !claimed {
+		return
+	}
 	if ev.contentExclusionSignalled {
 		return
 	}
 
 	authored := authoredCause(*result)
-	result.Status = apiv1.ResultFailure
-	if result.Outputs == nil {
-		result.Outputs = map[string]interface{}{}
-	}
-	result.Outputs["contentExclusionClaimRejected"] = true
 
 	if ev.denied {
+		result.Status = apiv1.ResultFailure
+		if result.Outputs == nil {
+			result.Outputs = map[string]interface{}{}
+		}
+		result.Outputs["contentExclusionClaimRejected"] = true
 		result.Outputs["toolPermissionDenied"] = true
 		result.Error = &apiv1.ErrorInfo{
 			Code:      ErrorCodeToolPermissionDenied,
@@ -225,6 +279,19 @@ func reclassifyToolPermissionBlock(result *apiv1.ResultEnvelope, transcript, std
 		return
 	}
 
+	// No runtime evidence of any tool-permission refusal. Only a "blocked"
+	// result may still be reclassified through the unsubstantiated-claim
+	// path (#2962's original design); a "failure" already told the operator
+	// something went wrong, and without runtime denial evidence there is
+	// nothing this guard can prove it should correct (#5444 review DA).
+	if result.Status != apiv1.ResultBlocked {
+		return
+	}
+	result.Status = apiv1.ResultFailure
+	if result.Outputs == nil {
+		result.Outputs = map[string]interface{}{}
+	}
+	result.Outputs["contentExclusionClaimRejected"] = true
 	result.Outputs["toolPermissionDenied"] = false
 	result.Error = &apiv1.ErrorInfo{
 		Code:      ErrorCodeUnsubstantiatedContentExclusion,

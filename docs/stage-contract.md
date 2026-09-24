@@ -923,28 +923,46 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > including the circular-dependency exception (still `goobers:needs-human` —
 > it can't self-heal).
 
-> **A tool you could not call is not an organization policy (#2962).** Do not
-> report `blocked` on organization content exclusion because a tool call was
-> refused. Content exclusion is a policy fact the runtime states explicitly;
-> a bare permission refusal (e.g. `Permission denied and could not request
-> permission from user`) is an infrastructure fault an operator can fix, and
-> reporting it as a policy block parks the driving issue for a human who has
-> nothing to decide. The executor enforces this rather than trusting the
-> classification: a `blocked` result whose prose claims content exclusion is
-> rejected unless the captured transcript or stderr carries an explicit
-> runtime content-exclusion signal, and becomes a `failure` carrying
+> **A tool you could not call is not an organization policy (#2962, #5444).**
+> Do not report `blocked` OR `failure` on organization content exclusion
+> because a tool call was refused. Content exclusion is a policy fact the
+> runtime states explicitly; a bare permission refusal (e.g. `Permission
+> denied and could not request permission from user`) is an infrastructure
+> fault an operator can fix, and reporting it as a policy block or failure
+> parks the driving issue (or misdirects the operator) for nothing an agent
+> can actually fix. The executor enforces this rather than trusting the
+> classification: a `blocked` or `failure` result whose prose claims content
+> exclusion — or, on `failure` only, the observed vocabulary of a
+> `*_ACCESS_DENIED`-style code or an "access policy" phrase — is rejected
+> unless the captured transcript or stderr carries an explicit runtime
+> content-exclusion signal, and becomes a `failure` carrying
 >
 > | Observed | `error.code` | Meaning |
 > |---|---|---|
 > | a runtime tool-permission refusal | `HARNESS_TOOL_PERMISSION_DENIED` | grant the tool to the goober, or fix the harness invocation; `outputs.toolPermissionDenied` is `true` and the refusal lines are quoted in `error.message` |
-> | no runtime signal at all | `UNSUBSTANTIATED_CONTENT_EXCLUSION` | the classification was inferred, not observed |
+> | no runtime signal at all (only on a `blocked` result) | `UNSUBSTANTIATED_CONTENT_EXCLUSION` | the classification was inferred, not observed |
 >
-> Both are non-retryable (the identical invocation reproduces the identical
-> refusal), both set `outputs.contentExclusionClaimRejected: true`, and both
-> preserve your original summary and error detail inside `error.message` — no
-> cause is ever invented or discarded. Blocks that do not mention content
-> exclusion are untouched. The effective CLI version and tool/permission
-> arguments for every Copilot session are recorded at
+> A `failure` is reclassified ONLY when a runtime tool-permission refusal was
+> actually observed (`HARNESS_TOOL_PERMISSION_DENIED`) — never on vocabulary
+> alone, and never to `UNSUBSTANTIATED_CONTENT_EXCLUSION`. This matters
+> because `*_ACCESS_DENIED` and "access policy" are also the exact vocabulary
+> a genuine cloud-provider permission denial uses (a real Key Vault, S3, or
+> IAM 403); an agent's own explicit failure already told the operator
+> something went wrong, and without observed runtime denial evidence there is
+> nothing this check can prove it should correct. A non-retryable business
+> disposition your stage authors on purpose (e.g. `ISSUE_OVER_SCOPE`,
+> `NEEDS_DECOMPOSITION`, `ISSUE_NOT_APPLICABLE`, `SHARED_BASELINE_FAILURE` —
+> the escalate codes above) is never touched by this check either, regardless
+> of evidence.
+>
+> Both reclassifications are non-retryable (the identical invocation
+> reproduces the identical refusal), both set
+> `outputs.contentExclusionClaimRejected: true`, and both preserve your
+> original summary and error detail inside `error.message` — no cause is ever
+> invented or discarded. Blocks and failures that do not mention content
+> exclusion (nor, alongside an actually-observed refusal, the access-denied
+> vocabulary above) are untouched. The effective CLI version and
+> tool/permission arguments for every Copilot session are recorded at
 > `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
 > attributed to the invocation after the fact.
 

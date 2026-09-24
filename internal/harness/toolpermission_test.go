@@ -149,7 +149,8 @@ func TestReclassifyToolPermissionBlockLeavesOrdinaryBlocksAlone(t *testing.T) {
 // the four live envelopes cited in #5444 (run
 // b479bd6363feb410b68ac177413ca553): status "failure" with an
 // "*_ACCESS_DENIED" code phrased as an environment access policy, not the
-// words "content exclusion".
+// words "content exclusion" — WITH genuine runtime refusal evidence in the
+// transcript, which #5444 review DA's narrowing requires for a "failure".
 func TestReclassifyToolPermissionBlockConvertsFailureStatusToo(t *testing.T) {
 	result := apiv1.ResultEnvelope{
 		Status:  apiv1.ResultFailure,
@@ -172,6 +173,76 @@ func TestReclassifyToolPermissionBlockConvertsFailureStatusToo(t *testing.T) {
 	}
 	if result.Outputs["toolPermissionDenied"] != true {
 		t.Errorf("outputs.toolPermissionDenied = %v, want true", result.Outputs["toolPermissionDenied"])
+	}
+}
+
+// TestReclassifyToolPermissionBlockLeavesGenuineFailuresAndEscalationsAlone
+// is #5444 review DA's regression suite: the four cases the reviewer's probe
+// (scratchpad/da/src5619/internal/harness/zz_probe_test.go) reproduced being
+// misclassified by the pre-narrowing PR. None of these envelopes carry any
+// runtime tool-refusal evidence — an "ordinary transcript, no refusal" — so
+// none may be touched.
+func TestReclassifyToolPermissionBlockLeavesGenuineFailuresAndEscalationsAlone(t *testing.T) {
+	const noRefusalTranscript = "ordinary transcript, no refusal"
+	for _, tc := range []struct {
+		name   string
+		result apiv1.ResultEnvelope
+	}{
+		{
+			name: "genuine Key Vault 403 mentioning access policy, retryable",
+			result: apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "az keyvault secret show returned 403",
+				Error: &apiv1.ErrorInfo{
+					Code:      "KEYVAULT_FORBIDDEN",
+					Message:   "The user does not have secrets get permission on key vault; update the vault access policy",
+					Retryable: true,
+				},
+			},
+		},
+		{
+			name: "genuine S3 AccessDenied",
+			result: apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "S3 upload failed",
+				Error:   &apiv1.ErrorInfo{Code: "S3_ACCESS_DENIED", Message: "AccessDenied from bucket"},
+			},
+		},
+		{
+			name: "non-retryable escalation, ISSUE_OVER_SCOPE, mentions access policy",
+			result: apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "issue asks to rewrite the org access policy module; out of scope",
+				Error:   &apiv1.ErrorInfo{Code: "ISSUE_OVER_SCOPE", Message: "too large"},
+			},
+		},
+		{
+			name: "ordinary dependency block mentioning access policy",
+			result: apiv1.ResultEnvelope{
+				Status:  apiv1.ResultBlocked,
+				Summary: "waiting on #441 which changes the access policy schema",
+				Error:   &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "blocked by #441"},
+				Outputs: map[string]interface{}{"blockedBy": "441"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := tc.result
+			got := tc.result
+			reclassifyToolPermissionBlock(&got, []byte(noRefusalTranscript), nil)
+			if got.Status != before.Status {
+				t.Errorf("status = %q, want unchanged %q", got.Status, before.Status)
+			}
+			if got.Error == nil || got.Error.Code != before.Error.Code {
+				t.Errorf("error code = %+v, want unchanged %q", got.Error, before.Error.Code)
+			}
+			if got.Error != nil && got.Error.Retryable != before.Error.Retryable {
+				t.Errorf("retryable = %v, want unchanged %v", got.Error.Retryable, before.Error.Retryable)
+			}
+			if got.Summary != before.Summary {
+				t.Errorf("summary = %q, want unchanged %q", got.Summary, before.Summary)
+			}
+		})
 	}
 }
 
