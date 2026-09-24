@@ -1582,3 +1582,17 @@ func TestMergePRKeepsUnrecognized405AsProviderFailure(t *testing.T) {
 		t.Fatalf("result = %+v, must not classify an unrelated 405 as a merge refusal", result)
 	}
 }
+
+// #2732: merge-pr's own help documented headSha/baseSha as required inputs
+// but never said where they come from, even though it names apply-verdict as
+// verdictAuthor's producer two lines later. pr-select is the sole producer
+// (its own help text says so: "Writes the selected PR's
+// number/head/base/headSha/baseSha/... to the declared result file").
+func TestMergePRHelpNamesSHAPinProducer(t *testing.T) {
+	if !strings.Contains(mergePRHelp, "headSha") || !strings.Contains(mergePRHelp, "baseSha") {
+		t.Fatalf("mergePRHelp = %q, want it to still declare headSha/baseSha as inputs", mergePRHelp)
+	}
+	if !strings.Contains(mergePRHelp, "pr-select") {
+		t.Fatalf("mergePRHelp = %q, want it to name pr-select as the headSha/baseSha producer", mergePRHelp)
+	}
+}

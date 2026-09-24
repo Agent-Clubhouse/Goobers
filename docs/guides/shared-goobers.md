@@ -62,3 +62,26 @@ Validate a running instance's source using `goobers validate <instance-root>`,
 or a checked-in source tree using `goobers validate --source-tree <repo-root>`.
 Validating an isolated shared-persona directory does not
 provide the manifest and workflow context needed for reference checks.
+
+## Skill package format
+
+A `spec.skills` entry is a bare name, resolved to a directory: a gaggle-local
+persona looks under `config/gaggles/<gaggle>/skills/<name>/` first, falling
+back to the instance-shared `skills/<name>/` beside `config/`; a shared
+persona (no `spec.gaggle`) only ever resolves the shared path. The name
+itself may not contain a path separator or resolve outside `skills/`.
+
+Whichever directory is found, every regular file under it (recursed, in
+sorted path order) is loaded as the skill's content — there is no required
+filename or manifest. The convention this repo's own shipped skills follow
+(for example `skills/goobers-dsl-author/` in the repo root, unrelated to a
+goober's own declared skills but the same shape) is a `SKILL.md` entrypoint
+plus an optional `references/` subdirectory of supporting files, matching
+what the harnesses' own skill-invocation format expects — but the loader
+does not parse or require `SKILL.md` specifically; any files under the
+directory are included as-is.
+
+`goobers validate`'s `SKILL002` check is existence-only: it confirms the
+resolved directory exists and is a directory, not that it contains
+`SKILL.md` or any other content. An empty directory created with `mkdir`
+satisfies the check exactly as well as a real skill package.

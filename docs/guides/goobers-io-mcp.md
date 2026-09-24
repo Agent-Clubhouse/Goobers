@@ -194,6 +194,9 @@ A related and much quieter config shape is a `spec.skills` entry whose
 package directory does not exist. `goobers validate` reports it as
 `SKILL002`; a dangling declaration contributes nothing at runtime, so
 either delete it or add the package rather than letting the warning ride.
+`SKILL002` only checks that the directory exists — see
+[Skill package format](shared-goobers.md#skill-package-format) for what the
+loader actually resolves and reads from it.
 
 ## Security notes
 
