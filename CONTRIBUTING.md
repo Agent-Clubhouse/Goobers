@@ -239,35 +239,38 @@ cover different responsibilities.
 
 The following sample was collected from ten successful pull-request `ci.yml`
 runs before and after the consolidation on 2026-09-21. Queue is
-`run_started_at - created_at`; wall-clock is `updated_at - created_at`; and
-runner-minutes is the sum of the behavioral, shipped-contract, and sandbox job
-durations only (the unrelated macOS build and lint jobs are excluded). Run IDs
-are included so the measurements are reproducible from GitHub Actions.
+the median `job.started_at - run.created_at` for the behavioral,
+shipped-contract, and sandbox macOS jobs in each run (the consolidated cohort
+has one such job); wall-clock is `run.updated_at - run.created_at`; and
+runner-minutes is the sum of those jobs' durations. The unrelated macOS build
+and lint jobs are excluded. Run IDs are included so the measurements are
+reproducible from GitHub Actions.
 
 | sample | queue (min) | wall-clock (min) | macOS gate runner-minutes | CI run |
 |---|---:|---:|---:|---:|
-| before 1 | 0.0 | 23.4 | 23.8 | 34653973504 |
-| before 2 | 0.0 | 24.0 | 18.1 | 34650766361 |
-| before 3 | 0.0 | 24.2 | 22.3 | 34649459317 |
-| before 4 | 0.0 | 26.4 | 14.2 | 34642148416 |
-| before 5 | 0.0 | 24.4 | 22.2 | 34642019967 |
-| before 6 | 0.0 | 31.6 | 16.4 | 34635300361 |
-| before 7 | 0.0 | 32.3 | 19.7 | 34634662857 |
-| before 8 | 0.0 | 29.5 | 14.6 | 34633981292 |
-| before 9 | 0.0 | 34.9 | 22.2 | 34633367445 |
-| before 10 | 0.0 | 28.8 | 17.2 | 34630207201 |
-| after 1 | 0.0 | 29.8 | 23.4 | 35567216154 |
-| after 2 | 0.0 | 28.9 | 23.8 | 35565604474 |
-| after 3 | 0.0 | 24.2 | 20.4 | 35561335021 |
-| after 4 | 0.0 | 37.2 | 32.6 | 35559023921 |
-| after 5 | 0.0 | 26.4 | 18.3 | 35558215404 |
-| after 6 | 0.0 | 29.0 | 23.6 | 35554670675 |
-| after 7 | 0.0 | 31.8 | 21.9 | 35553881756 |
-| after 8 | 0.0 | 26.1 | 22.0 | 35553555564 |
-| after 9 | 0.0 | 37.0 | 21.7 | 35551314833 |
-| after 10 | 0.0 | 36.5 | 22.6 | 35550807780 |
+| before 1 | 3.8 | 23.4 | 23.8 | 34653973504 |
+| before 2 | 3.4 | 24.0 | 18.1 | 34650766361 |
+| before 3 | 3.5 | 24.2 | 22.3 | 34649459317 |
+| before 4 | 6.7 | 26.4 | 14.2 | 34642148416 |
+| before 5 | 3.8 | 24.4 | 22.2 | 34642019967 |
+| before 6 | 9.7 | 31.6 | 16.4 | 34635300361 |
+| before 7 | 7.9 | 32.3 | 19.7 | 34634662857 |
+| before 8 | 11.4 | 29.5 | 14.6 | 34633981292 |
+| before 9 | 12.3 | 34.9 | 22.2 | 34633367445 |
+| before 10 | 3.6 | 28.8 | 17.2 | 34630207201 |
+| after 1 | 5.2 | 29.8 | 23.4 | 35567216154 |
+| after 2 | 4.2 | 28.9 | 23.8 | 35565604474 |
+| after 3 | 3.6 | 24.2 | 20.4 | 35561335021 |
+| after 4 | 4.3 | 37.2 | 32.6 | 35559023921 |
+| after 5 | 2.5 | 26.4 | 18.3 | 35558215404 |
+| after 6 | 5.2 | 29.0 | 23.6 | 35554670675 |
+| after 7 | 9.7 | 31.8 | 21.9 | 35553881756 |
+| after 8 | 4.0 | 26.1 | 22.0 | 35553555564 |
+| after 9 | 13.8 | 37.0 | 21.7 | 35551314833 |
+| after 10 | 4.6 | 36.5 | 22.6 | 35550807780 |
 
-The medians are 0.0/27.6/19.0 before and 0.0/29.4/22.9 after
+The medians from the unrounded measurements are 5.2/27.6/19.0 before and
+4.4/29.4/22.3 after
 (queue/wall-clock/runner-minutes). Wall-clock increased 6.5%, below the
 10% material-regression threshold used for this decision, while the required
 macOS allocation count fell from three to one. The consolidation is therefore
