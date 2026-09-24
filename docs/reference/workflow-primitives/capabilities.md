@@ -35,12 +35,9 @@ capabilities must also appear on its referenced Goober.
 | `github:branch:delete` | Delete a remote GitHub branch ref. |
 | `github:pr:merge` | Merge a GitHub pull request. |
 | `contents:read` | Fetch a separately declared read-only reference repository. |
-| `ado:code:read` | Read Azure Repos code and pull requests. |
-| `ado:pr:comment` | Post Azure Repos PR threads without vote or completion authority. |
 | `ado:pr:write` | Open or update Azure Repos pull requests. |
 | `ado:pr:status` | Publish Azure Repos pull-request statuses. |
 | `ado:pr:complete` | Complete an Azure Repos pull request. |
-| `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
 | `telemetry:read` | Read local telemetry and configured external telemetry connectors. |
 | `journal:read` | Resolve evidence from another run's journal. |
 | `agent:model` | Supply an agentic harness with its model credential. |

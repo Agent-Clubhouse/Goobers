@@ -235,12 +235,9 @@ Use only the target release's registry. The current set is:
 | `contents:read` | Fetch a separately declared reference repository with its repo-scoped read credential. |
 | `github:code-scanning:read` | Read GitHub code-scanning alerts. Read-only; grants no issue, pull-request, or contents write. |
 | `github:dependabot-alerts:read` | Read GitHub Dependabot alerts. A separate GitHub permission from code scanning, so a workflow can take one feed without the other. |
-| `ado:code:read` | Inspect Azure Repos code and pull requests read-only. |
-| `ado:pr:comment` | Post Azure Repos pull-request threads without voting or completing. |
 | `ado:pr:write` | Open and update Azure Repos pull requests (no completion or merge authority). |
 | `ado:pr:status` | Publish Azure Repos pull-request statuses that branch policies gate on. |
 | `ado:pr:complete` | Complete (merge) an Azure Repos pull request; the ADO counterpart to `github:pr:merge`. |
-| `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
 | `telemetry:read` | Read the Goobers telemetry rollup. |
 | `journal:read` | Resolve evidence from another run's journal. |
 | `agent:model` | Supply an agentic harness with its model credential. |

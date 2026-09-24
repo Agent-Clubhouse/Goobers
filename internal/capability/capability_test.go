@@ -17,6 +17,12 @@ func TestKnownRejectsUnknownOrMisspelledCapability(t *testing.T) {
 		"github:pulls:write", // the api/v1alpha1 test-fixture drift #74 also found
 		"repo:pull",
 		"telemetry:write",
+		// #2726: these three ado:* values were dead code — zero references
+		// anywhere including tests — and were removed rather than kept as
+		// unusable, unguided grants a workflow author could declare.
+		"ado:code:read",
+		"ado:pr:comment",
+		"ado:work-items:write",
 	} {
 		if Known(s) {
 			t.Errorf("Known(%q) = true, want false", s)

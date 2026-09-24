@@ -104,11 +104,6 @@ const (
 	// capabilities here: a workflow that only nominates dependency work never
 	// receives code-scanning access, and vice versa.
 	GitHubDependabotAlertsRead Capability = "github:dependabot-alerts:read"
-	// ADOCodeRead grants read-only Azure Repos and pull-request inspection.
-	ADOCodeRead Capability = "ado:code:read"
-	// ADOPRComment grants posting Azure Repos pull-request threads without vote,
-	// branch-write, or completion authority.
-	ADOPRComment Capability = "ado:pr:comment"
 	// ADOPRWrite grants opening and updating Azure Repos pull requests
 	// (the ADO counterpart to GitHubPRWrite). It does not grant completion/
 	// merge authority — the validation loop stops before a human completes.
@@ -126,9 +121,6 @@ const (
 	// would ride on ordinary ado:pr:write, defeating the decider/executor
 	// capability isolation GitHubPRMerge was designed to preserve.
 	ADOPRComplete Capability = "ado:pr:complete"
-	// ADOWorkItemsWrite grants updates to explicitly selected Azure Boards work
-	// items. It does not grant repository or pull-request writes.
-	ADOWorkItemsWrite Capability = "ado:work-items:write"
 	// TelemetryRead grants read access to the local telemetry rollup and named,
 	// host-governed external operational telemetry connectors.
 	TelemetryRead Capability = "telemetry:read"
@@ -160,7 +152,7 @@ func All() []Capability {
 		RepoRead, RepoPush, ConfigRepoRead,
 		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRRead, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		GitHubCodeScanningRead, GitHubDependabotAlertsRead,
-		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,
+		ADOPRWrite, ADOPRStatus, ADOPRComplete,
 		TelemetryRead, JournalRead, AgentModel,
 	}
 }
