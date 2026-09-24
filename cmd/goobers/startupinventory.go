@@ -72,6 +72,11 @@ func loadStartupRecoveryInventory(
 	// set came from, and how much of it is durable markers rather than
 	// projected non-terminal runs.
 	pf(stdout, "%s startup phase=recovery-run-inventory status=tally source=%s %s\n", startupTimestamp(), source, counts)
+	tracker.setRecoveryAccumulation(len(runDirs))
+	budget := tracker.budgetSnapshot(time.Now())
+	pf(stdout, "%s startup budget: worktrees=%d recovery-runs=%d total=%d budget=%s state=%s used=%.1f%%\n",
+		startupTimestamp(), budget.Accumulation.Worktrees, budget.Accumulation.RecoveryRuns,
+		budget.Accumulation.total(), budget.Budget, budget.State, budget.UsedPercent)
 	return runDirs, err
 }
 

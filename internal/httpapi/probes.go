@@ -74,8 +74,14 @@ type ReadinessStatus struct {
 
 // StartupStatus identifies the operation currently blocking daemon readiness.
 type StartupStatus struct {
-	Phase string    `json:"phase"`
-	Since time.Time `json:"since"`
+	Phase             string    `json:"phase"`
+	Since             time.Time `json:"since"`
+	WorktreeCount     int       `json:"worktreeCount"`
+	RecoveryRunCount  int       `json:"recoveryRunCount"`
+	AccumulationCount int       `json:"accumulationCount"`
+	BudgetSeconds     float64   `json:"budgetSeconds"`
+	BudgetUsedPercent float64   `json:"budgetUsedPercent"`
+	BudgetState       string    `json:"budgetState"`
 }
 
 // probeHandler serves the two bare probe paths itself and forwards

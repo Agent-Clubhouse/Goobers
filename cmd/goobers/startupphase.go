@@ -15,10 +15,14 @@ import (
 // heartbeat only exists once the scheduler is already running, which is too
 // late to explain a daemon that never got that far.
 type startupPhaseTracker struct {
-	mu      sync.Mutex
-	phase   string
-	target  string
-	started time.Time
+	mu            sync.Mutex
+	phase         string
+	target        string
+	started       time.Time
+	budgetStarted time.Time
+	budgetElapsed time.Duration
+	budgetFloor   time.Duration
+	accumulation  startupAccumulation
 }
 
 func (t *startupPhaseTracker) set(phase, target string) {
@@ -80,6 +84,66 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 // of the caller's function.
 func syncStartupStdout(stdout io.Writer) io.Writer {
 	return &syncWriter{w: stdout}
+}
+
+type startupBudgetSnapshot struct {
+	Accumulation startupAccumulation
+	Budget       time.Duration
+	Elapsed      time.Duration
+	State        string
+	UsedPercent  float64
+}
+
+func (t *startupPhaseTracker) configureBudget(floor time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.budgetFloor = floor
+	if t.budgetStarted.IsZero() {
+		t.budgetStarted = time.Now()
+	}
+}
+
+func (t *startupPhaseTracker) setWorktreeAccumulation(count int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.accumulation.Worktrees = count
+}
+
+func (t *startupPhaseTracker) setRecoveryAccumulation(count int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.accumulation.RecoveryRuns = count
+}
+
+func (t *startupPhaseTracker) completeBudget(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.budgetStarted.IsZero() && t.budgetElapsed == 0 {
+		t.budgetElapsed = now.Sub(t.budgetStarted)
+	}
+}
+
+func (t *startupPhaseTracker) budgetSnapshot(now time.Time) startupBudgetSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	budget := deriveStartupBudget(t.budgetFloor, t.accumulation)
+	var elapsed time.Duration
+	if t.budgetElapsed > 0 {
+		elapsed = t.budgetElapsed
+	} else if !t.budgetStarted.IsZero() {
+		elapsed = now.Sub(t.budgetStarted)
+	}
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	state, used := startupBudgetState(elapsed, budget)
+	return startupBudgetSnapshot{
+		Accumulation: t.accumulation,
+		Budget:       budget,
+		Elapsed:      elapsed,
+		State:        state,
+		UsedPercent:  used,
+	}
 }
 
 // startupTimestamp formats now for a startup log line. A fixed, sortable,
@@ -146,28 +210,42 @@ func logGateFlip(w io.Writer, processStart time.Time, gate string) {
 
 // watchStartupReadiness emits one diagnostic log line naming the startup
 // phase runUpContext is currently in if the daemon is still alive but has
-// not reached readiness within threshold (#4368's acceptance criteria: "if
+// not reached readiness within its accumulation-derived budget (#4368's
+// original acceptance criteria: "if
 // startup is alive but has not reached readiness within the health
 // threshold, emit a diagnostic identifying the current startup phase rather
-// than relying only on a stale heartbeat"). threshold <= 0 disables the
-// watchdog. Returns once ctx is done or the single check has run.
+// than relying only on a stale heartbeat"). threshold is now only the
+// zero-accumulation floor; measured worktrees and recovery runs extend it.
+// A non-positive threshold disables the watchdog. Returns once ctx is done
+// or the single check has run.
 func watchStartupReadiness(ctx context.Context, w io.Writer, tracker *startupPhaseTracker, ready func() bool, threshold time.Duration) {
 	if threshold <= 0 {
 		return
 	}
+	tracker.configureBudget(threshold)
 	timer := time.NewTimer(threshold)
 	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-		if ready() {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if ready() {
+				return
+			}
+			budget := tracker.budgetSnapshot(time.Now())
+			if budget.Elapsed < budget.Budget {
+				timer.Reset(budget.Budget - budget.Elapsed)
+				continue
+			}
+			phase, target, since := tracker.snapshot()
+			if phase == "" {
+				phase = "unknown"
+			}
+			pf(w, "%s startup diagnostic: daemon alive but not ready after derived budget %s; accumulation worktrees=%d recovery-runs=%d total=%d; currently in phase=%s target=%q (running for %s)\n",
+				startupTimestamp(), budget.Budget, budget.Accumulation.Worktrees, budget.Accumulation.RecoveryRuns,
+				budget.Accumulation.total(), phase, target, time.Since(since))
 			return
 		}
-		phase, target, since := tracker.snapshot()
-		if phase == "" {
-			phase = "unknown"
-		}
-		pf(w, "%s startup diagnostic: daemon alive but not ready after %s; currently in phase=%s target=%q (running for %s)\n",
-			startupTimestamp(), threshold, phase, target, time.Since(since))
 	}
 }
