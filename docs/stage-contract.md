@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha9` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha10` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -1143,21 +1143,44 @@ Azure DevOps project, repository name, native ID, and a full lowercase
 credentials, checkout policy, and writable deltas are not part of this
 authority.
 
-Only a successful deterministic result may establish the value. A declared
+Only a successful deterministic result can establish the value. A declared
 top-level `workspaceRevision` in its result file is promoted to the typed
-field, never to scalar `outputs`; absent controls preserve legacy behavior.
-The first accepted value is copied and immutable, identical re-emission is
-idempotent, and a changed value conflicts. Agentic, failed, and no-work
+field, never to scalar `outputs`. Absent controls preserve legacy behavior.
+The runner copies the first accepted value and keeps it unchanged.
+Identical re-emission succeeds, and a changed value conflicts. Agentic, failed, and no-work
 results establish nothing. Authorization must resolve the candidate to a
 configured base or additional repository before it is persisted or consumed.
+
+The configured base stays separate from the selected repository.
+Repeated authorization uses that original base, and invocation `baseBranch`
+continues to describe its branch. Selected repository routing, credentials,
+and checkout policy come only from configuration. An ADO native ID is
+accepted only when it matches the configured repository name, which can
+itself contain the native ID. Other supplied IDs cannot be verified and are
+refused.
+
+Local scratch stages receive the accepted value on subsequent invocations.
+Resume and operator rerun reconstruct it from successful deterministic
+`stage.finished` events in the pinned workflow. Invalid producers, malformed
+values, and repositories that configuration no longer authorizes stop recovery
+before dispatch. Parallel branches inherit the pre-parallel value and their
+own accepted history. They do not inherit a sibling's selection before the
+join. The join refuses conflicting selections.
+
+Selected revisions do not enable repository checkout in this foundation.
+Local repository and pinned workspace requests fail before provisioning.
+Distributed execution refuses selected invocation fields before workerhost
+provisioning or pod dispatch. It also refuses successful emitted selections
+before recording `stage.finished` or dispatching a downstream stage.
+Provider selection, exact checkout, branch ownership, publication, and
+distributed execution remain follow-up work.
+
 The stable failure codes are `workspace_revision_invalid`,
 `workspace_revision_unauthorized`, `workspace_revision_conflict`,
 `workspace_revision_acquisition`, `workspace_revision_object_type`, and
-`workspace_revision_sha_mismatch`; only acquisition is retryable. Checkout,
-provider selection, branch ownership, publication, and distributed execution
-remain follow-up slices.
+`workspace_revision_sha_mismatch`. Only acquisition is retryable.
 
-- The contract version is `v1alpha9` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha10` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -1172,7 +1195,9 @@ remain follow-up slices.
   `checkoutCones` invocation field declaring a stage's sparse-checkout cones
   (project.checkout.sparse, #649); `v1alpha9` adds attempt, ownership,
   policy-action, nested-policy, and runner-authored parent-authority fields for
-  mechanically enforced nested agents.
+  mechanically enforced nested agents. Version `v1alpha10` adds optional
+  `workspaceRevision` authority with shared identity constraints across
+  invocation, result, and journal schemas.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

@@ -43,17 +43,18 @@ func Resolve(revision apiv1.WorkspaceRevision, base apiv1.RepoRef, additional []
 }
 
 func matches(identity apiv1.RepositoryIdentity, configured apiv1.RepoRef) bool {
-	// RepoRef has no provider-native ID, so a stage-supplied ID cannot be
-	// authorized against configuration and must not broaden an identity match.
-	if identity.ID != "" {
-		return false
-	}
 	if identity.Provider != configured.Provider ||
 		!strings.EqualFold(identity.Owner, configured.Owner) ||
 		!strings.EqualFold(identity.Project, configured.Project) {
 		return false
 	}
-	if !strings.EqualFold(identity.Name, configured.Name) {
+	// ADO configuration may route by native ID. Never replace that configured
+	// route with a stage-supplied name or accept an unverifiable ID.
+	if identity.ID != "" {
+		if identity.Provider != apiv1.ProviderADO || !strings.EqualFold(identity.ID, configured.Name) {
+			return false
+		}
+	} else if !strings.EqualFold(identity.Name, configured.Name) {
 		return false
 	}
 	raw := configured.BaseURL

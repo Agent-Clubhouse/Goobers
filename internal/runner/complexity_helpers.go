@@ -6,6 +6,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workspacerevision"
@@ -22,6 +23,34 @@ func parallelBranchTimedOut(ws *walkState) bool {
 	ws.parallel.markCurrentTimedOut()
 	ws.state = workflow.TargetJoin
 	return true
+}
+
+func (r *Runner) recordParallelRunBranch(ws *walkState) error {
+	if ws.branchRecorded || !machineUsesRepo(ws.in.Machine) {
+		return nil
+	}
+	if err := r.recordRunBranch(ws.jr, ws.in); err != nil {
+		return fmt.Errorf("runner: journal run branch for %q: %w", ws.in.RunID, err)
+	}
+	ws.branchRecorded = true
+	return nil
+}
+
+func (r *Runner) parallelBranchGateEvaluator(jr executionJournal, in StartInput, history []journal.Event, visitedStages map[string]bool) *gate.Evaluator {
+	return &gate.Evaluator{
+		Automated: r.cfg.Automated, Journal: jr,
+		MaxRepasses: int(in.RunControls.MaxRepasses),
+		Attempts:    gateRepassSeed(history),
+		IsNeedsHumanTarget: func(target string) bool {
+			task, ok := in.Machine.Task(target)
+			return ok && task.Inputs["status"] == "needs-human"
+		},
+		RepassAttempts:               targetRepassSeed(history),
+		InfrastructureAttempts:       gateInfrastructureSeed(history),
+		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(history),
+		IsReentry:                    func(target string) bool { return visitedStages[target] },
+		LastDiffDigest:               gateDiffSeed(history),
+	}
 }
 
 func parallelTerminalOutcome(outcomes []*parallelBranchResult) (string, *parallelTaskTerminal, *parallelGateTerminal) {
@@ -100,7 +129,7 @@ func (r *Runner) acceptTaskWorkspaceRevision(
 	repoRef *apiv1.RepoRef,
 	revision *apiv1.WorkspaceRevision,
 ) error {
-	configuredRepo, err := workspacerevision.Resolve(*revision, in.RepoRef, r.cfg.AdditionalRepos)
+	configuredRepo, err := workspacerevision.Resolve(*revision, in.configuredRepository(), r.cfg.AdditionalRepos)
 	if err != nil {
 		errorCode := workspacerevision.CodeUnauthorized
 		var revisionErr *workspacerevision.Error
@@ -198,19 +227,13 @@ func (r *Runner) settledParallelBranchResult(
 ) (*parallelBranchResult, string, *parallelTaskTerminal, *parallelGateTerminal, error) {
 	lastStage, lastResult, _ := lastFinishedSubject(history)
 	terminalTarget, terminalTask, terminalGate := parallelBranchTerminal(history, in.Machine)
-	workspaceRevision, err := reconstructWorkspaceRevision(history)
+	branchInput, err := r.restoreWorkspaceRevision(in, history)
 	if err != nil {
 		return nil, "", nil, nil, fmt.Errorf("runner: reconstruct settled parallel branch %d workspace revision: %w", branch.id, err)
 	}
 	var repoRef *apiv1.RepoRef
-	if workspaceRevision != nil {
-		resolvedRepo, err := workspacerevision.Resolve(*workspaceRevision, in.RepoRef, r.cfg.AdditionalRepos)
-		if err != nil {
-			return nil, "", nil, nil, fmt.Errorf("runner: resolve settled parallel branch %d workspace revision repository: %w", branch.id, err)
-		}
-		if !reposEqual(&resolvedRepo, &in.RepoRef) {
-			repoRef = &resolvedRepo
-		}
+	if !reposEqual(&branchInput.RepoRef, &in.RepoRef) {
+		repoRef = &branchInput.RepoRef
 	}
 	return &parallelBranchResult{
 		index:             index,
@@ -223,7 +246,7 @@ func (r *Runner) settledParallelBranchResult(
 		produced:          branch.produced,
 		failed:            branch.failed,
 		noOutput:          branch.noOutput,
-		workspaceRevision: workspaceRevision,
+		workspaceRevision: branchInput.workspaceRevision,
 		repoRef:           repoRef,
 		terminalTarget:    terminalTarget,
 		terminalTask:      terminalTask,

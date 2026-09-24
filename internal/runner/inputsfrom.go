@@ -2,7 +2,6 @@ package runner
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -305,21 +304,26 @@ func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) 
 	return out
 }
 
-func reconstructWorkspaceRevision(events []journal.Event) (*apiv1.WorkspaceRevision, error) {
+func reconstructWorkspaceRevision(events []journal.Event, machine *workflow.Machine) (*apiv1.WorkspaceRevision, error) {
 	var revision *apiv1.WorkspaceRevision
 	for _, event := range events {
-		if event.Type != journal.EventStageFinished || event.WorkspaceRevision == nil {
+		if event.WorkspaceRevision == nil {
 			continue
 		}
-		if revision == nil {
-			revision = event.WorkspaceRevision.DeepCopy()
-			continue
+		if event.Type != journal.EventStageFinished || event.Status != string(apiv1.ResultSuccess) {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "journal workspace revision requires a successful stage.finished event"}
 		}
-		if !reflect.DeepEqual(revision, event.WorkspaceRevision) {
-			return nil, &workspacerevision.Error{
-				Code:    workspacerevision.CodeConflict,
-				Message: "journal contains conflicting workspace revision authority",
-			}
+		if machine == nil {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "journal workspace revision requires a pinned workflow"}
+		}
+		task, ok := machine.Task(event.Stage)
+		if !ok {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeUnauthorized, Message: "journal workspace revision producer is not a pinned task"}
+		}
+		var err error
+		revision, err = workspacerevision.Accept(revision, event.WorkspaceRevision, task.Type == apiv1.TaskDeterministic, true)
+		if err != nil {
+			return nil, err
 		}
 	}
 	return revision, nil

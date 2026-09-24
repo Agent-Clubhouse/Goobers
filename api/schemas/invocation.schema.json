@@ -63,7 +63,7 @@
     "repoRef": { "$ref": "#/$defs/repoRef", "description": "Primary repository targeted by this run." },
     "workspaceRevision": {
       "description": "Optional immutable selected-revision authority; absent preserves legacy behavior.",
-      "$ref": "#/$defs/workspaceRevision"
+      "$ref": "workspace-revision.schema.json"
     },
     "additionalWorkspaces": {
       "type": "array",
@@ -160,33 +160,6 @@
           "enum": ["trusted", "maintainer", "unapproved", "derived"],
           "description": "Provenance grade of the provider-authored title/body."
         }
-      }
-    },
-    "workspaceRevision": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["repository", "commitSha"],
-      "properties": {
-        "repository": { "$ref": "#/$defs/repositoryIdentity", "description": "Canonical repository identity." },
-        "commitSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$", "description": "Full lowercase Git object ID." },
-        "sourceRef": { "type": "string", "description": "Optional source reference provenance." },
-        "sourceId": { "type": "string", "description": "Optional source identifier provenance." },
-        "baseRepository": { "$ref": "#/$defs/repositoryIdentity", "description": "Optional base repository provenance." },
-        "baseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$", "description": "Optional full lowercase base object ID." }
-      }
-    },
-    "repositoryIdentity": {
-      "description": "Closed canonical repository identity; routing policy is not included.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["provider", "owner", "name"],
-      "properties": {
-        "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Provider kind." },
-        "url": { "type": "string", "format": "uri", "description": "Service URL, when required to distinguish hosts." },
-        "owner": { "type": "string", "minLength": 1, "description": "Repository owner or organization." },
-        "project": { "type": "string", "description": "Azure DevOps project." },
-        "name": { "type": "string", "minLength": 1, "description": "Repository name." },
-        "id": { "type": "string", "description": "Provider-native repository identifier." }
       }
     },
     "additionalWorkspace": {

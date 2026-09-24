@@ -450,6 +450,25 @@ func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
 	return run != nil && (executor.StageInvokesGoobersCLI(run.Command) || run.InjectRunContext)
 }
 
+func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
+	if err := refuseSelectedRevisionDispatch(input.Envelope); err != nil {
+		return err
+	}
+	if err := validatePodAttempt(input.PodAttempt); err != nil {
+		return err
+	}
+	if a.Dispatcher == nil || a.Surrenders == nil {
+		return classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
+	}
+	if err := a.refuseLeakedEnvelope(input.Envelope); err != nil {
+		return err
+	}
+	if input.Placement.Self {
+		return classifySeamError(fmt.Errorf("engine: stage %q placement resolved to self; self placements execute on the local path, never via DispatchStage (fail closed)", input.Envelope.TaskID))
+	}
+	return nil
+}
+
 // DispatchStage executes one mode-3 stage attempt: it hands the attempt to
 // the dispatcher (which creates, supervises, and disposes the pod) and then
 // marshals the pod's surrendered blob back into the stageActivityResult the
@@ -461,22 +480,11 @@ func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
 // (architecture §5 item 5); a local working copy would be dead weight the
 // remote stage never sees.
 func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (stageActivityResult, error) {
+	if err := a.validateStageDispatch(input); err != nil {
+		return stageActivityResult{}, err
+	}
 	stopHeartbeat := heartbeatDispatch(ctx)
 	defer stopHeartbeat()
-	if err := validatePodAttempt(input.PodAttempt); err != nil {
-		return stageActivityResult{}, err
-	}
-	if a.Dispatcher == nil || a.Surrenders == nil {
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
-	}
-	if err := a.refuseLeakedEnvelope(input.Envelope); err != nil {
-		return stageActivityResult{}, err
-	}
-	if input.Placement.Self {
-		// The workflow routes self placements to the local arms; reaching this
-		// activity with one means the routing was tampered with or mis-built.
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q placement resolved to self; self placements execute on the local path, never via DispatchStage (fail closed)", input.Envelope.TaskID))
-	}
 	// input.Run is set exactly for a deterministic dispatch (agentic stages
 	// carry a nil Run and are unaffected below). Re-assert
 	// dispatchRemoteTask's v1-scope guards here too — the same "trust the

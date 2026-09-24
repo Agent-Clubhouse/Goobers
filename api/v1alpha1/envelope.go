@@ -24,7 +24,8 @@ import "fmt"
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
 // v1alpha9 adds runner-authored nested-agent authority and ownership fields.
-const StageContractVersion = "v1alpha9"
+// v1alpha10 adds immutable workspace-revision authority.
+const StageContractVersion = "v1alpha10"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.

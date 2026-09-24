@@ -114,6 +114,11 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			rec.placement(ctx, t.Name, int(attempt), class, activityResult)
 			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
 			if err == nil {
+				if rejection := unsupportedRevisionResult(res, t.Type); rejection != nil {
+					rec.workspaceRevisionRefused(ctx, t.Name, int(attempt), class, rejection, identity)
+					return apiv1.ResultEnvelope{}, rejection
+				}
+				res.WorkspaceRevision = nil
 				res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
 				// Attempt-scoped implementation-lane artifacts (#3882),
 				// committed BEFORE stage.finished exactly where the local

@@ -14,20 +14,45 @@
       "required": ["provider", "owner", "name"],
       "properties": {
         "provider": {"description": "Provider kind for the repository identity.", "type": "string", "enum": ["github", "ado", "gitea"]},
-        "url": {"description": "Service URL used to distinguish hosts when required.", "type": "string"},
-        "owner": {"description": "Repository owner or organization name.", "type": "string", "minLength": 1},
-        "project": {"description": "Azure DevOps project containing the repository.", "type": "string"},
-        "name": {"description": "Repository name, excluding any branch or checkout policy.", "type": "string", "minLength": 1},
-        "id": {"description": "Provider-native repository identifier, if the provider exposes one.", "type": "string"}
-      }
+        "url": {"description": "HTTP(S) service URL without credentials, query, or fragment.", "$ref": "#/$defs/serviceURL"},
+        "owner": {"description": "Repository owner or organization name.", "$ref": "#/$defs/component", "minLength": 1},
+        "project": {"description": "Azure DevOps project containing the repository.", "$ref": "#/$defs/component"},
+        "name": {"description": "Repository name, excluding any branch or checkout policy.", "$ref": "#/$defs/component", "minLength": 1},
+        "id": {"description": "Provider-native repository identifier, if the provider exposes one.", "$ref": "#/$defs/component"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"provider": {"const": "ado"}}},
+          "then": {"required": ["project"], "properties": {"project": {"minLength": 1}}},
+          "else": {"properties": {"project": {"const": ""}}}
+        },
+        {
+          "if": {"properties": {"provider": {"const": "gitea"}}},
+          "then": {"required": ["url"], "properties": {"url": {"minLength": 1}}}
+        }
+      ]
     },
     "commitSha": {"description": "Full lowercase Git object ID for the selected revision.", "$ref": "#/$defs/sha"},
     "sourceRef": {"description": "Optional source ref provenance for the selected revision.", "type": "string"},
     "sourceId": {"description": "Optional source identifier provenance for the selected revision.", "type": "string"},
     "baseRepository": {"description": "Optional canonical base repository identity that the selected revision is bound to.", "$ref": "#/properties/repository"},
-    "baseSha": {"description": "Optional full lowercase Git object ID for the base revision.", "$ref": "#/$defs/sha"}
+    "baseSha": {"description": "Optional full lowercase Git object ID for the base revision.", "anyOf": [{"const": ""}, {"$ref": "#/$defs/sha"}]}
   },
   "$defs": {
+    "component": {
+      "description": "Canonical identity component without path separators, controls, or surrounding Unicode whitespace.",
+      "type": "string",
+      "pattern": "^[^/\\\\|\u0000-\u001f\u007f-\u009f]*$",
+      "allOf": [
+        {"not": {"enum": [".", ".."]}},
+        {"not": {"pattern": "^[\\s\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]|[\\s\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$"}}
+      ]
+    },
+    "serviceURL": {
+      "description": "Optional absolute HTTP(S) service URL, without user information, query, fragment, or unescaped whitespace.",
+      "type": "string",
+      "pattern": "^(?:|https?://(?:\\[[0-9a-fA-F:.]+\\]|[^\\s\u0000-\u001f\u007f-\u009f\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000/:@?#%\\\\\\[\\]<>\"`{}^]+)(?::[0-9]*)?(?:/(?:[^\\s\u0000-\u001f\u007f-\u009f\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000?#%\\\\]|%[0-9a-fA-F]{2})*)?)$"
+    },
     "sha": {
       "description": "A full lowercase Git SHA-1 or SHA-256 object ID.",
       "type": "string",

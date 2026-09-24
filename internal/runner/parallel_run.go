@@ -486,6 +486,11 @@ func (r *Runner) runParallelBranch(
 		captureParallelBranchBinding(&result, &initialRepoRef, &in.RepoRef, &in.workspaceRevision)
 	}()
 	result = initialParallelBranchResult(branch, baseLastStage, baseLastResult, baseCompleted, in, history)
+	in, result.err = r.restoreWorkspaceRevision(in, history)
+	if result.err != nil {
+		result.status = journal.BranchFailed
+		return result
+	}
 	branchJournal := &branchJournal{
 		run:    jr,
 		branch: branch.id,
@@ -495,23 +500,7 @@ func (r *Runner) runParallelBranch(
 	}
 	ex := newExecutors(r.cfg, branchJournal, reg)
 	visitedStages := stageVisitSeed(history)
-	gateEval := &gate.Evaluator{
-		Automated:   r.cfg.Automated,
-		Journal:     branchJournal,
-		MaxRepasses: int(in.RunControls.MaxRepasses),
-		Attempts:    gateRepassSeed(history),
-		IsNeedsHumanTarget: func(target string) bool {
-			task, ok := in.Machine.Task(target)
-			return ok && task.Inputs["status"] == "needs-human"
-		},
-		RepassAttempts:               targetRepassSeed(history),
-		InfrastructureAttempts:       gateInfrastructureSeed(history),
-		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(history),
-		IsReentry: func(target string) bool {
-			return visitedStages[target]
-		},
-		LastDiffDigest: gateDiffSeed(history),
-	}
+	gateEval := r.parallelBranchGateEvaluator(branchJournal, in, history, visitedStages)
 	state := branch.machine
 	if state == "" {
 		state = branch.start

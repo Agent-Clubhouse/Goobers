@@ -396,6 +396,9 @@ func classifySeamError(err error) error {
 // read-only stage reads the pinned base by definition (the same gate the pod
 // arm applies in dispatchstage.go).
 func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch, workspaceDelta string) (Workspace, error) {
+	if err := refuseSelectedRevisionDispatch(*env); err != nil {
+		return nil, err
+	}
 	if a.Workspaces == nil {
 		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
 	}

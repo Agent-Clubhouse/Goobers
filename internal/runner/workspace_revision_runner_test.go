@@ -101,9 +101,9 @@ func workspaceRevisionResumeMachine(t *testing.T) *workflow.Machine {
 			Start: "produce",
 			Tasks: []apiv1.Task{
 				{Name: "produce", Type: apiv1.TaskDeterministic, Goal: "produce",
-					Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "approval"},
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: "approval"},
 				{Name: "consume", Type: apiv1.TaskDeterministic, Goal: "consume",
-					Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: workflow.TerminalComplete},
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: workflow.TerminalComplete},
 			},
 			Gates: []apiv1.Gate{{
 				Name: "approval", Evaluator: apiv1.EvaluatorHuman,
@@ -126,6 +126,7 @@ func TestRunnerResumeRestoresFullWorkspaceRevision(t *testing.T) {
 	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
 		return det, nil
 	}, nil)
+	r.cfg.ScratchDir = t.TempDir()
 	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}
 	paused, err := r.Start(context.Background(), StartInput{
 		RunID: runID, Machine: workspaceRevisionResumeMachine(t), Gaggle: "acme-web",
@@ -452,13 +453,14 @@ func (d *workspaceRevisionRepoRefDeterministic) Run(
 func TestRunnerPropagatesConfiguredRepositoryForWorkspaceRevision(t *testing.T) {
 	const runID = "workspace-revision-configured-repository"
 	revision := runnerWorkspaceRevision("other", "repo", strings.Repeat("a", 40))
-	revision.BaseRepository = nil
+	revision.BaseRepository = &apiv1.RepositoryIdentity{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}
 	det := &workspaceRevisionRepoRefDeterministic{
 		revision: revision, received: make(chan apiv1.InvocationEnvelope, 2),
 	}
 	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
 		return det, nil
 	}, nil)
+	r.cfg.ScratchDir = t.TempDir()
 	r.cfg.AdditionalRepos = []apiv1.RepoRef{{
 		Provider: apiv1.ProviderGitHub, Owner: "other", Name: "repo", Branch: "main",
 	}}

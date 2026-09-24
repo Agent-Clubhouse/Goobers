@@ -24,6 +24,7 @@ type schemaFixture struct {
 
 func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 	fixtures := map[string]schemaFixture{
+		"workspace-revision":      {schema: "workspace-revision.schema.json", value: completeWorkspaceRevision()},
 		"pr-queue-eligibility":    {schema: schemas.PRQueueEligibility, value: completePRQueueEligibility()},
 		"stage-artifact-manifest": {schema: schemas.StageArtifactManifest, value: artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.ManifestEntry{{Name: "reproduction.bundle", Path: "output/bundle.tar", MediaType: "application/x-tar"}}}},
 		"stage-artifact-set":      {schema: schemas.StageArtifactSet, value: artifactset.Index{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.Entry{{Name: "reproduction.bundle", Slot: 1, Artifact: completeArtifactPointer("artifacts/bundle")}}}},

@@ -900,6 +900,7 @@ type StartInput struct {
 	pinnedWorkspace      *worktree.Worktree
 	pinnedStage          *sync.Mutex
 	workspaceRevision    *apiv1.WorkspaceRevision
+	configuredRepoRef    *apiv1.RepoRef
 }
 
 // ToolchainVerifier verifies, on the executing host, that a run's declared
@@ -1326,7 +1327,6 @@ type walkState struct {
 	fanIn                *parallelExec
 	workspaceBranch      string
 	branchRecorded       bool
-	workspaceRevision    *apiv1.WorkspaceRevision
 	reboundRecorded      string
 	humanDecision        *HumanGateDecision
 	gateAttempts         map[string]int
@@ -1372,14 +1372,15 @@ func (ws *walkState) chargeEvidenceRejection(gateName, digest string) (int, bool
 }
 
 func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state string) *walkState {
+	in.pinConfiguredRepository()
+	in.workspaceRevision = in.workspaceRevision.DeepCopy()
 	return &walkState{
-		jr:                jr,
-		in:                in,
-		reg:               reg,
-		state:             state,
-		completed:         stageOutputs{},
-		visitedStages:     map[string]bool{},
-		workspaceRevision: in.workspaceRevision.DeepCopy(),
+		jr:            jr,
+		in:            in,
+		reg:           reg,
+		state:         state,
+		completed:     stageOutputs{},
+		visitedStages: map[string]bool{},
 	}
 }
 
@@ -1669,13 +1670,9 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, fmt.Errorf("runner: %w", err))
 			return res, true, failErr
 		}
-		if !ws.branchRecorded && machineUsesRepo(ws.in.Machine) {
-			if err := r.recordRunBranch(ws.jr, ws.in); err != nil {
-				res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps,
-					fmt.Errorf("runner: journal run branch for %q: %w", ws.in.RunID, err))
-				return res, true, failErr
-			}
-			ws.branchRecorded = true
+		if err := r.recordParallelRunBranch(ws); err != nil {
+			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, err)
+			return res, true, failErr
 		}
 		outcome, err := r.runConcurrentParallel(
 			ctx, ws.jr, ws.in, p, existing, ws.pointers, ws.lastStage, ws.lastResult,
@@ -1697,7 +1694,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		}
 		ws.pointers, ws.completed = outcome.pointers, outcome.completed
 		ws.lastStage, ws.lastResult = outcome.lastStage, outcome.lastResult
-		ws.workspaceRevision = outcome.workspaceRevision.DeepCopy()
+		ws.in.workspaceRevision = outcome.workspaceRevision.DeepCopy()
 		if outcome.repoRef != nil {
 			ws.in.RepoRef = *outcome.repoRef
 		}
@@ -1805,6 +1802,9 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 				next, more = nil, false
 			}
 			ws.jr.SetBranchCursors(ws.parallel.cursors())
+			if err := r.restoreSerialParallelRevision(ws, more); err != nil {
+				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
+			}
 			if more {
 				if err := ws.jr.Append(journal.Event{
 					Type: journal.EventBranchStarted, Branch: next.id,
@@ -2164,7 +2164,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 				completed: ws.completed, fanIn: ws.fanIn,
 				workspaceBranch: ws.workspaceBranch, branchRecorded: &ws.branchRecorded,
 				reboundRecorded:   &ws.reboundRecorded,
-				workspaceRevision: &ws.workspaceRevision,
+				workspaceRevision: &ws.in.workspaceRevision,
 				repoRef:           &ws.in.RepoRef,
 			},
 			branch, startAttempt, firstClass, instructionAddendum,
@@ -4570,10 +4570,10 @@ type taskFrame struct {
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
-	jr, in, t := tf.jr, tf.in, tf.t
 	if tf.workspaceRevision != nil {
-		in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
+		tf.in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
 	}
+	jr, in, t := tf.jr, tf.in, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
 	// Both admission checks run here, before any workspace or credential
@@ -6369,7 +6369,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 	for k, v := range taskInputs {
 		inputs[k] = v
 	}
-	baseBranch := in.RepoRef.Branch
+	baseBranch := in.configuredRepository().Branch
 	if baseBranch == "" {
 		baseBranch = "main"
 	}
@@ -6403,6 +6403,9 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
+	if err := selectedWorkspaceUnsupported(in, mode); err != nil {
+		return nil, err
+	}
 	if mode == apiv1.WorkspaceScratch && in.pinnedWorkspace != nil {
 		in.pinnedStage.Lock()
 		if err := r.preparePinnedStage(ctx, in, syncBase, workspaceBranch); err != nil {
@@ -6598,6 +6601,9 @@ func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase
 func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal, in *StartInput) (*worktree.PinnedLease, error) {
 	if !r.cfg.PinnedWorkspace {
 		return nil, nil
+	}
+	if err := selectedWorkspaceUnsupported(*in, apiv1.WorkspaceRepo); err != nil {
+		return nil, err
 	}
 	if len(r.cfg.AdditionalRepos) > 0 {
 		return nil, fmt.Errorf("runner: pinned project workspaces cannot provision additional repository worktrees")

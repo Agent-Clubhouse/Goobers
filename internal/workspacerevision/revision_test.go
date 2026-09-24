@@ -2,6 +2,7 @@ package workspacerevision
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -170,6 +171,28 @@ func TestResolveRejectsAmbiguousConfiguredPolicy(t *testing.T) {
 	additional := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "org", Name: "repo", Branch: "release"}
 	if _, err := Resolve(*revision, base, []apiv1.RepoRef{additional}); errorCode(err) != CodeUnauthorized {
 		t.Fatalf("ambiguous match error = %v, want %s", err, CodeUnauthorized)
+	}
+}
+
+func TestResolveAuthorizesOnlyConfiguredADONativeID(t *testing.T) {
+	const id = "12345678-1234-1234-1234-123456789abc"
+	configured := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "org", Project: "project", Name: id, Branch: "main"}
+	revision := apiv1.WorkspaceRevision{
+		Repository: apiv1.RepositoryIdentity{
+			Provider: apiv1.ProviderADO, URL: "https://dev.azure.com",
+			Owner: "org", Project: "project", Name: "readable-name", ID: id,
+		},
+		CommitSHA: strings.Repeat("a", 40),
+	}
+	baseIdentity := revision.Repository
+	revision.BaseRepository = &baseIdentity
+	got, err := Resolve(revision, configured, nil)
+	if err != nil || !reflect.DeepEqual(got, configured) {
+		t.Fatalf("configured native ID: got=%+v err=%v", got, err)
+	}
+	revision.Repository.ID = "unverified-id"
+	if _, err := Resolve(revision, configured, nil); errorCode(err) != CodeUnauthorized {
+		t.Fatalf("incorrect ID authorized: %v", err)
 	}
 }
 

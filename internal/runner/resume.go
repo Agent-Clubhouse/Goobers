@@ -14,7 +14,6 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
-	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // ErrTerminalGenerationChanged means an intervention was validated against an
@@ -625,32 +624,28 @@ func (r *Runner) newResumeFrame(
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
-	workspaceRevision, err := reconstructWorkspaceRevision(seedEvents)
-	if err != nil {
-		return nil, err
+	branch := 0
+	if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 && activeParallel.current() != nil {
+		branch = activeParallel.current().id
 	}
-	repoRef := in.RepoRef
-	if workspaceRevision != nil {
-		repoRef, err = workspacerevision.Resolve(*workspaceRevision, repoRef, r.cfg.AdditionalRepos)
-		if err != nil {
-			return nil, fmt.Errorf("runner: resolve persisted workspace revision repository: %w", err)
-		}
-	}
-	ws := newWalkState(jr, StartInput{
-		instanceID:        id.InstanceID,
-		configGeneration:  id.ConfigGeneration,
-		RunID:             in.RunID,
-		Machine:           in.Machine,
-		GooberDigest:      in.GooberDigest,
-		Gaggle:            id.Gaggle,
-		Trigger:           id.Trigger,
-		RepoRef:           repoRef,
-		workspaceRevision: workspaceRevision,
+	startIn, err := r.restoreResumeWorkspaceRevision(StartInput{
+		instanceID:       id.InstanceID,
+		configGeneration: id.ConfigGeneration,
+		RunID:            in.RunID,
+		Machine:          in.Machine,
+		GooberDigest:     in.GooberDigest,
+		Gaggle:           id.Gaggle,
+		Trigger:          id.Trigger,
+		RepoRef:          in.RepoRef,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches
 		// here after it already started (and therefore already cleared the #735
 		// toolchain preflight in Start); re-verifying would probe the host again
 		// for a decision the original dispatch already made.
-	}, registrar, "")
+	}, events, activeParallel, parallelStart, branch)
+	if err != nil {
+		return nil, err
+	}
+	ws := newWalkState(jr, startIn, registrar, "")
 	if id.ContinuedFromRunID != "" {
 		ws.pointers = append(ws.pointers, id.ContextPointers...)
 	} else {

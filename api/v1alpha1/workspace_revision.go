@@ -10,6 +10,7 @@ import (
 // RepositoryIdentity is the routing-independent, canonical identity of a
 // repository. Branches, credentials, and checkout policy are intentionally
 // excluded.
+// +kubebuilder:object:generate=false
 type RepositoryIdentity struct {
 	Provider Provider `json:"provider"`
 	URL      string   `json:"url,omitempty"`
@@ -21,6 +22,7 @@ type RepositoryIdentity struct {
 
 // WorkspaceRevision binds a successful deterministic result to an exact
 // repository object. Source fields are provenance only.
+// +kubebuilder:object:generate=false
 type WorkspaceRevision struct {
 	Repository     RepositoryIdentity  `json:"repository"`
 	CommitSHA      string              `json:"commitSha"`
@@ -93,9 +95,12 @@ func validRepositoryIdentityURL(value string) bool {
 		u.Hostname() != "" &&
 		(u.Scheme == "http" || u.Scheme == "https") &&
 		u.User == nil &&
+		!u.ForceQuery &&
 		u.RawQuery == "" &&
 		u.Fragment == "" &&
-		value == strings.TrimSpace(value)
+		!strings.ContainsAny(value, "#\\") &&
+		!strings.ContainsAny(u.Hostname(), "[]<>\"`{}^") &&
+		strings.IndexFunc(value, func(ch rune) bool { return unicode.IsSpace(ch) || unicode.IsControl(ch) }) < 0
 }
 
 // Validate ensures the selected revision carries a canonical repository identity

@@ -17,15 +17,20 @@ func TestReconstructWorkspaceRevisionDeepCopiesAndRejectsConflicts(t *testing.T)
 		CommitSHA: strings.Repeat("a", 40),
 	}
 	events := []journal.Event{
-		{Type: journal.EventStageFinished, WorkspaceRevision: revision.DeepCopy()},
-		{Type: journal.EventStageFinished, WorkspaceRevision: revision.DeepCopy()},
+		{Type: journal.EventStageFinished, Stage: "produce", Status: "success", WorkspaceRevision: revision.DeepCopy()},
+		{Type: journal.EventStageFinished, Stage: "consume", Status: "success", WorkspaceRevision: revision.DeepCopy()},
 	}
-	got, err := reconstructWorkspaceRevision(events)
+	machine := workspaceRevisionResumeMachine(t)
+	got, err := reconstructWorkspaceRevision(events, machine)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got == nil {
 		t.Fatal("reconstructWorkspaceRevision returned nil")
+	}
+	events[0].WorkspaceRevision.Repository.Name = "changed"
+	if got.Repository.Name != "repo" {
+		t.Fatal("reconstructed revision aliases journal data")
 	}
 	revision.CommitSHA = strings.Repeat("b", 40)
 	if got.CommitSHA != strings.Repeat("a", 40) {
@@ -33,7 +38,7 @@ func TestReconstructWorkspaceRevisionDeepCopiesAndRejectsConflicts(t *testing.T)
 	}
 	conflict := revision.DeepCopy()
 	events[1].WorkspaceRevision = conflict
-	if got, err := reconstructWorkspaceRevision(events); err == nil || got != nil {
+	if got, err := reconstructWorkspaceRevision(events, machine); err == nil || got != nil {
 		t.Fatalf("conflicting revisions reconstructed as %+v", got)
 	}
 }
