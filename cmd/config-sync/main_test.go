@@ -120,19 +120,7 @@ func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, tc.wantCode, readOutput(t, stderr))
 			}
 			output := readOutput(t, stderr)
-			var compatibilityOutput strings.Builder
-			for _, line := range strings.Split(output, "\n") {
-				if strings.HasPrefix(strings.TrimSpace(line), "WARNING VER002 ") {
-					continue
-				}
-				fields := strings.Fields(line)
-				if len(fields) > 1 && fields[0] == "WARNING" && slices.Contains(workflowsafety.Codes(), fields[1]) {
-					continue
-				}
-				compatibilityOutput.WriteString(line)
-				compatibilityOutput.WriteByte('\n')
-			}
-			filtered := compatibilityOutput.String()
+			filtered := filterCompatibilityNoise(output)
 			if !strings.Contains(filtered, want) {
 				t.Fatalf("output missing legacy warning:\n%s", output)
 			}
@@ -141,6 +129,49 @@ func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 				t.Fatalf("output exposed API warning provenance:\n%s", output)
 			}
 		})
+	}
+}
+
+// filterCompatibilityNoise strips CLI warning lines a config-sync test
+// should not have to assert on: gate-derived workflowsafety lines and the
+// api/validate compatibility-noise codes (preview-feature, deprecated DSL
+// version) whose presence varies with which DSL version a fixture's
+// workflow declares (#2750). Matching on the parsed code, rather than a
+// literal string like "WARNING VER002 ", keeps this correct regardless of
+// which of these codes a given fixture happens to trip — a fixture that
+// starts (or stops) declaring a deprecated 1.4 workflow does not silently
+// leak or hide provenance text a test asserts on.
+func filterCompatibilityNoise(output string) string {
+	compatibilityValidateCodes := []validate.WarningCode{validate.WarningPreviewFeature, validate.WarningDeprecatedDSLVersion}
+	var filtered strings.Builder
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 1 && fields[0] == "WARNING" &&
+			(slices.Contains(workflowsafety.Codes(), fields[1]) || slices.Contains(compatibilityValidateCodes, validate.WarningCode(fields[1]))) {
+			continue
+		}
+		filtered.WriteString(line)
+		filtered.WriteByte('\n')
+	}
+	return filtered.String()
+}
+
+// TestFilterCompatibilityNoiseHandlesDeprecatedDSLVersion is the regression
+// test for #2750: the filter above used to strip only a hardcoded
+// "WARNING VER002 " line prefix, so a DVL020 (deprecated DSL version)
+// warning — indistinguishable from any other compatibility noise except by
+// the fixture no longer tripping it — was never actually exercised by the
+// filter and would have leaked its provenance text straight through.
+func TestFilterCompatibilityNoiseHandlesDeprecatedDSLVersion(t *testing.T) {
+	output := `WARNING DVL020 Workflow/implementation: dslVersion "1.4" is deprecated
+WARNING Workflow/implementation: task "query-backlog" runs backlog-query --claim without inputs.resultFile; empty ticks will report success instead of no-work
+`
+	filtered := filterCompatibilityNoise(output)
+	if strings.Contains(filtered, "DVL020") || strings.Contains(filtered, `dslVersion "1.4" is deprecated`) {
+		t.Fatalf("filterCompatibilityNoise leaked DVL020 provenance:\n%s", filtered)
+	}
+	if !strings.Contains(filtered, `task "query-backlog"`) {
+		t.Fatalf("filterCompatibilityNoise dropped a non-compatibility warning:\n%s", filtered)
 	}
 }
 
