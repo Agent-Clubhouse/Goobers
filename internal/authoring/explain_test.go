@@ -116,6 +116,17 @@ func TestExplainResolvesNewerVersionSelectors(t *testing.T) {
 	}
 }
 
+func TestMinimalPatternExampleAllowsEmptyString(t *testing.T) {
+	pattern := `^(?:|https?://example\.invalid)$`
+	got, err := minimalPatternExample(pattern)
+	if err != nil {
+		t.Fatalf("minimalPatternExample(%q): %v", pattern, err)
+	}
+	if got != "" {
+		t.Fatalf("minimalPatternExample(%q) = %q, want empty string", pattern, got)
+	}
+}
+
 func TestEveryEmbeddedSelectorReturnsCompleteGuidance(t *testing.T) {
 	r := registry{documents: make(map[string]*schemaDocument)}
 	selectors := make(map[string]bool)
