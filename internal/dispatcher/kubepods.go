@@ -13,7 +13,8 @@ import (
 )
 
 // kubePodAPI is the client-go-backed PodAPI — exactly the §4 verb set (pods
-// create/delete/get/list; apps/deployments GET only, the DI-9 template read),
+// create/delete/get/list; apps/deployments GET only, the DI-9 template read;
+// persistentvolumeclaims GET only, the #5595 module cache claim check),
 // nothing wider, so the dispatcher RBAC stays the narrow Role the design
 // renders.
 type kubePodAPI struct {
@@ -62,4 +63,11 @@ func (k *kubePodAPI) ListPods(ctx context.Context, namespace string, selector ma
 // by reference (DI-9).
 func (k *kubePodAPI) GetDeployment(ctx context.Context, namespace, name string) (*appsv1.Deployment, error) {
 	return k.client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+}
+
+// GetPersistentVolumeClaim reads one claim — the #5595 check for the durable
+// Go module cache claim. A Forbidden here is not fatal: the dispatcher falls
+// back to an emptyDir cache, so a Role without this verb still dispatches.
+func (k *kubePodAPI) GetPersistentVolumeClaim(ctx context.Context, namespace, name string) (*corev1.PersistentVolumeClaim, error) {
+	return k.client.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
 }

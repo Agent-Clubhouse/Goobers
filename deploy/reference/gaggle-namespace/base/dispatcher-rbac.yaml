@@ -28,6 +28,12 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get"]
+  # Read-only check for the Go module cache claim (go-build-cache-pvc.yaml,
+  # #5595). Without it the dispatcher cannot see the claim and mounts an
+  # emptyDir cache instead, so a Role that predates this rule still dispatches.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
