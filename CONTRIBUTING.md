@@ -269,9 +269,9 @@ reproducible from GitHub Actions.
 | after 9 | 13.8 | 37.0 | 21.7 | 35551314833 |
 | after 10 | 4.6 | 36.5 | 22.6 | 35550807780 |
 
-The medians from the unrounded measurements are 5.2/27.6/19.0 before and
+The medians from the unrounded measurements are 5.3/27.6/18.9 before and
 4.4/29.4/22.3 after
-(queue/wall-clock/runner-minutes). Wall-clock increased 6.5%, below the
+(queue/wall-clock/runner-minutes). Wall-clock increased 6.6%, below the
 10% material-regression threshold used for this decision, while the required
 macOS allocation count fell from three to one. The consolidation is therefore
 retained: it removes two scarce runner allocations without dropping any
