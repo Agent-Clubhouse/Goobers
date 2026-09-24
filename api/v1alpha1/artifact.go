@@ -271,8 +271,9 @@ func ResolveContainedPath(root, rel string) (string, error) {
 
 // ValidRunID reports whether id is safe to join onto a runs directory as a
 // single path segment: non-empty, not "." or "..", and not itself a
-// multi-segment or absolute path (filepath.Base(id) == id is false for any
-// of those). Run IDs are minted internally as safe random hex today
+// multi-segment or absolute path. Both slash forms are rejected regardless
+// of the host OS so the accepted identifier set is portable. Run IDs are
+// minted internally as safe random hex today
 // (telemetry/client.go), but several boundaries accept one as raw,
 // untrusted input — `goobers trace`, `goobers run abort`, journal.Create,
 // worktree.Manager.Create, and a cross-run ContextPointer.RunID that can
@@ -284,7 +285,11 @@ func ResolveContainedPath(root, rel string) (string, error) {
 // lets V1's broader input surfaces (portal/API run-id params) inherit the
 // same guard for free.
 func ValidRunID(id string) bool {
-	return id != "" && id != "." && id != ".." && filepath.Base(id) == id
+	return id != "" &&
+		id != "." &&
+		id != ".." &&
+		!strings.ContainsAny(id, `/\`) &&
+		filepath.Base(id) == id
 }
 
 // containedPath joins a journal-relative rel onto root and guarantees the result
