@@ -89,20 +89,28 @@ type WorkItem struct {
 	// such concept or for an item that is not closed — callers that need to
 	// distinguish "done" from "dropped as out of scope" must treat empty as
 	// unknown, never as either answer.
-	StateReason    string                 `json:"stateReason,omitempty"`
-	Status         WorkItemStatus         `json:"status,omitempty"`
-	Assignee       string                 `json:"assignee,omitempty"`
-	Links          []Link                 `json:"links,omitempty"`
-	Parent         *WorkItemRef           `json:"parent,omitempty"`
-	Hierarchy      map[string]interface{} `json:"hierarchy,omitempty"`
-	URL            string                 `json:"url,omitempty"`
-	CreatedAt      *time.Time             `json:"createdAt,omitempty"`
-	UpdatedAt      *time.Time             `json:"updatedAt,omitempty"`
-	ReadyAt        *time.Time             `json:"readyAt,omitempty"`
-	Fields         fieldpredicate.Fields  `json:"fields,omitempty"`
-	BlockedByCount int                    `json:"-"`
-	Raw            interface{}            `json:"raw,omitempty"`
-	Integrity      apiintegrity.Grade     `json:"integrity,omitempty"`
+	StateReason string         `json:"stateReason,omitempty"`
+	Status      WorkItemStatus `json:"status,omitempty"`
+	Assignee    string         `json:"assignee,omitempty"`
+	// AssigneeAliases lists additional identity forms for the same assignee
+	// beyond Assignee itself (#5556). GitHub and Gitea logins are already a
+	// single stable identity and leave this empty; Azure DevOps surfaces
+	// both a human-readable displayName (in Assignee) and a distinct stable
+	// uniqueName account identifier, which lands here when present. Compare
+	// a configured identity value against an item's assignee with
+	// AssigneeMatches, not Assignee alone.
+	AssigneeAliases []string               `json:"assigneeAliases,omitempty"`
+	Links           []Link                 `json:"links,omitempty"`
+	Parent          *WorkItemRef           `json:"parent,omitempty"`
+	Hierarchy       map[string]interface{} `json:"hierarchy,omitempty"`
+	URL             string                 `json:"url,omitempty"`
+	CreatedAt       *time.Time             `json:"createdAt,omitempty"`
+	UpdatedAt       *time.Time             `json:"updatedAt,omitempty"`
+	ReadyAt         *time.Time             `json:"readyAt,omitempty"`
+	Fields          fieldpredicate.Fields  `json:"fields,omitempty"`
+	BlockedByCount  int                    `json:"-"`
+	Raw             interface{}            `json:"raw,omitempty"`
+	Integrity       apiintegrity.Grade     `json:"integrity,omitempty"`
 }
 
 // WorkItemLabel describes a provider-native issue label.
@@ -122,6 +130,31 @@ type EnsureWorkItemLabelsResult struct {
 func (w WorkItem) HasLabel(label string) bool {
 	for _, itemLabel := range w.Labels {
 		if itemLabel == label {
+			return true
+		}
+	}
+	return false
+}
+
+// AssigneeMatches reports whether this work item's current assignee
+// identity matches a configured identity value — what a respectAssignee
+// eligibility filter (cmd/goobers/backlogquery.go, runnerwiring_counters.go,
+// run_continue.go) or a backlog-assignment roster entry
+// (cmd/goobers/backlogassignment.go) needs to decide (#5556). The match is
+// case-insensitive and accepts either w.Assignee or any of w.AssigneeAliases,
+// so a workflow author's assignedTo/roster entry configured with either an
+// Azure DevOps account's display name or its stable uniqueName still
+// matches. An empty configured value matches only an unassigned item,
+// preserving the existing unassigned-only mode.
+func (w WorkItem) AssigneeMatches(configured string) bool {
+	if configured == "" {
+		return w.Assignee == ""
+	}
+	if strings.EqualFold(w.Assignee, configured) {
+		return true
+	}
+	for _, alias := range w.AssigneeAliases {
+		if strings.EqualFold(alias, configured) {
 			return true
 		}
 	}

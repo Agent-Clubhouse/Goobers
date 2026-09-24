@@ -138,7 +138,9 @@ filters. Common `open`/`closed` filtering uses each returned item's process stat
 category so custom state names remain correct. Workflow definitions continue to
 use the provider-neutral work-item model. Azure Boards tags are exposed as
 labels, `System.AssignedTo` is mapped by display name, and comments use the
-work-item comments API.
+work-item comments API. An `assignedTo`/roster identity match (e.g.
+`respectAssignee`, backlog-assignment) accepts either the account's display
+name or its stable `uniqueName` account identifier, case-insensitively.
 
 Close and reopen mutations select the target work-item state by the process
 state category instead of assuming one process template's state names. Numeric

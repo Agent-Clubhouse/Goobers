@@ -237,7 +237,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	b.mu.Unlock()
 	count := 0
 	for _, item := range items {
-		if b.respectAssignee && item.Assignee != b.assignedTo {
+		if b.respectAssignee && !item.AssigneeMatches(b.assignedTo) {
 			continue
 		}
 		matched, err := b.labelPredicate.Matches(item.Labels)
