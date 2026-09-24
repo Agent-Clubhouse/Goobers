@@ -42,6 +42,64 @@ func freeLoopbackAddress(t *testing.T) string {
 	return address
 }
 
+// loopbackDaemon is a `goobers up` daemon started by startUpOnFreeLoopback.
+// stderr may be read only after a value arrives on done.
+type loopbackDaemon struct {
+	root    string
+	address string
+	cancel  context.CancelFunc
+	done    <-chan int
+	stderr  *bytes.Buffer
+}
+
+// loopbackBindAttempts bounds startUpOnFreeLoopback's retries. Each collision
+// needs an unrelated socket to land on the one port just released, so a second
+// consecutive collision is already rare and a third means something else is
+// wrong.
+const loopbackBindAttempts = 3
+
+// startUpOnFreeLoopback starts `goobers up --quiet <root>` with a daemon
+// listener on an address from pickAddress and waits for startup. prepare
+// builds a fresh instance root configured to listen on the given address.
+//
+// freeLoopbackAddress cannot reserve the port it returns: between closing its
+// probe listener and the daemon binding, any socket on the machine may take
+// the port, including an outbound connection, since connect() allocates local
+// ports from the same ephemeral range as a ":0" listen. The daemon then exits
+// before startup with "address already in use", a failure of the fixture, not
+// of the code under test (#5475). The daemon binds the address itself, so the
+// test cannot hand it a pre-bound listener; instead a startup that fails with
+// that error is retried on a fresh root and a fresh address. Any other startup
+// failure is fatal on the first attempt.
+func startUpOnFreeLoopback(t *testing.T, pickAddress func(*testing.T) string, prepare func(address string) string) loopbackDaemon {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		address := pickAddress(t)
+		root := prepare(address)
+		ctx, cancel := context.WithCancel(context.Background())
+		started := &daemonStartedWriter{started: make(chan struct{})}
+		stderr := &bytes.Buffer{}
+		done := make(chan int, 1)
+		go func() {
+			done <- runUpContext(ctx, []string{"--quiet", root}, started, stderr)
+		}()
+		select {
+		case <-started.started:
+			return loopbackDaemon{root: root, address: address, cancel: cancel, done: done, stderr: stderr}
+		case code := <-done:
+			cancel()
+			if attempt < loopbackBindAttempts && strings.Contains(stderr.String(), "address already in use") {
+				t.Logf("daemon startup attempt %d lost %s to another socket; retrying on a fresh address", attempt, address)
+				continue
+			}
+			t.Fatalf("daemon exited before startup: code = %d, stderr = %q", code, stderr.String())
+		case <-time.After(10 * time.Second):
+			cancel()
+			t.Fatal("timed out waiting for daemon startup")
+		}
+	}
+}
+
 // holdLoopbackAddress reserves a loopback address for the lifetime of the test
 // and keeps it bound. Use it instead of freeLoopbackAddress when the assertion
 // is that nothing else binds the address: releasing the port first leaves a
