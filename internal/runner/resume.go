@@ -484,10 +484,10 @@ func (r *Runner) resumeTerminalPhase(rd *journal.Reader, jr *journal.Run, in Res
 	switch phase {
 	case journal.PhaseCompleted, journal.PhaseAborted, journal.PhaseEscalated, journal.PhaseFailed:
 		res := Result{Phase: phase}
-		r.attributeAfterTerminalIfMissing(jr)
 		if err := r.FinalizeTerminal(in.RunID, phase); err != nil {
 			return res, true, err
 		}
+		r.attributeAfterTerminalIfMissing(jr)
 		if in.HumanDecision != nil {
 			return res, true, fmt.Errorf("runner: run %q is %s and no longer awaiting a human gate decision", in.RunID, phase)
 		}
@@ -1273,7 +1273,6 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	if err := jr.Append(terminal); err != nil {
 		return Result{}, fmt.Errorf("runner: %s (additionally failed to journal terminal refusal: %w)", msg, err)
 	}
-	r.attributeAfterTerminal(jr)
 	// FailureCode/Message (issue #710) let the scheduler/daemon echo surface
 	// the WF-016 refusal reason too, not just a bare "failed" — the same fix
 	// as taskOutcome's business-failure arm and failTerminal, applied to this
@@ -1284,6 +1283,7 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	if err := r.FinalizeTerminal(runID, journal.PhaseFailed); err != nil {
 		return res, fmt.Errorf("runner: %s (additionally failed to finalize terminal refusal: %w)", msg, err)
 	}
+	r.attributeAfterTerminal(jr)
 	return res, notifyErr
 }
 

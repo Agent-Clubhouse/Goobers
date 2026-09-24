@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"go.temporal.io/sdk/temporal"
@@ -66,6 +67,10 @@ func (r *hookRecorder) hooks(log *journal.InstanceLog) *engineTerminalHooks {
 			r.order = append(r.order, "finalize")
 			r.finalized = append(r.finalized, phase)
 			return r.failEvery
+		},
+		attribute: func(runDir string, terminal *journal.Event) (bool, error) {
+			r.order = append(r.order, "attribute")
+			return creditgraph.WriteRunRecord(runDir, terminal)
 		},
 	}
 }
@@ -162,6 +167,10 @@ func TestEngineTerminalHooksWriteBackpropForEnrolledRun(t *testing.T) {
 	})
 	if _, err := creditgraph.ReadRunRecord(run.Dir()); err != nil {
 		t.Fatalf("read engine attribution: %v", err)
+	}
+	wantOrder := []string{"prepare", "notify", "finalize", "attribute"}
+	if !slices.Equal(rec.order, wantOrder) {
+		t.Fatalf("hook order = %v, want %v", rec.order, wantOrder)
 	}
 }
 

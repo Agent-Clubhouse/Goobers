@@ -61,6 +61,7 @@ type engineTerminalHooks struct {
 	prepare      terminalBranchPreparer
 	notify       runner.TerminalNotifier
 	finalize     runner.TerminalFinalizer
+	attribute    func(string, *journal.Event) (bool, error)
 }
 
 // engineTerminalOutcome is one finished engine run, as the frame sees it.
@@ -100,7 +101,10 @@ type engineTerminalOutcome struct {
 //  4. PrepareTerminal — branch cleanup and the aborted-run PR label.
 //  5. NotifyTerminal — the circuit breaker, then the terminal notification.
 //  6. FinalizeTerminal — releases the claim ledger lease and the provider
-//     claim marker. LAST, because everything above needs the claims.
+//     claim marker. Last among required publication hooks, because everything
+//     above needs the claims.
+//  7. Backprop attribution — isolated after publication and claim release so
+//     analysis latency cannot delay terminal cleanup.
 //
 // Nothing here appends to the RUN's journal: for an engine run that journal
 // is the workflow's, it already carries run.finished, and appending after it
@@ -116,14 +120,6 @@ func (h *engineTerminalHooks) run(ctx context.Context, out engineTerminalOutcome
 	h.fireExistingFix(ctx, out)
 	h.fireBlocked(ctx, out)
 	h.fireFailed(ctx, out)
-	if out.Backprop && h.layout.Root != "" {
-		if runDir, err := h.layout.FindRunDir(out.RunID); err != nil {
-			h.recordHookFailure(out, "", "backprop_attribution_failed", err)
-		} else if _, err := creditgraph.WriteRunRecord(runDir, nil); err != nil {
-			h.recordHookFailure(out, "", "backprop_attribution_failed", err)
-		}
-	}
-
 	if h.prepare != nil {
 		if err := h.prepare(out.RunID, out.Phase, h.annotator(out)); err != nil {
 			h.recordHookFailure(out, "", "engine_terminal_prepare_failed", err)
@@ -141,6 +137,17 @@ func (h *engineTerminalHooks) run(ctx context.Context, out engineTerminalOutcome
 	if h.finalize != nil {
 		if err := h.finalize(out.RunID, out.Phase); err != nil {
 			h.recordHookFailure(out, "", "engine_terminal_finalize_failed", err)
+		}
+	}
+	if out.Backprop && h.layout.Root != "" {
+		attribute := h.attribute
+		if attribute == nil {
+			attribute = creditgraph.WriteRunRecord
+		}
+		if runDir, err := h.layout.FindRunDir(out.RunID); err != nil {
+			h.recordHookFailure(out, "", "backprop_attribution_failed", err)
+		} else if _, err := attribute(runDir, nil); err != nil {
+			h.recordHookFailure(out, "", "backprop_attribution_failed", err)
 		}
 	}
 }

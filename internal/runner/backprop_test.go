@@ -54,15 +54,25 @@ func TestBackpropFailureDoesNotChangeSuccessfulTerminal(t *testing.T) {
 	run := createBackpropRun(t, runsDir, runID, backpropMachine(t, true))
 	defer func() { _ = run.Close() }()
 	finalized := false
+	notified := false
 	attributedAfterTerminal := false
 	r := &Runner{
-		cfg: Config{FinalizeTerminal: func(string, journal.RunPhase) error {
-			finalized = true
-			return nil
-		}},
+		cfg: Config{
+			NotifyTerminal: func(string, journal.RunPhase, string) error {
+				notified = true
+				return nil
+			},
+			FinalizeTerminal: func(string, journal.RunPhase) error {
+				finalized = true
+				return nil
+			},
+		},
 		attributeRun: func(runDir string, terminal *journal.Event) (bool, error) {
 			if terminal != nil {
 				t.Fatal("attribution received a synthetic terminal event")
+			}
+			if !notified || !finalized {
+				t.Fatalf("attribution ran before terminal publication: notified=%v finalized=%v", notified, finalized)
 			}
 			reader, openErr := journal.OpenRead(runDir)
 			if openErr != nil {
@@ -80,8 +90,8 @@ func TestBackpropFailureDoesNotChangeSuccessfulTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finish returned attribution error: %v", err)
 	}
-	if result.Phase != journal.PhaseCompleted || !finalized || !attributedAfterTerminal {
-		t.Fatalf("result = %+v, finalized = %v, attributed after terminal = %v", result, finalized, attributedAfterTerminal)
+	if result.Phase != journal.PhaseCompleted || !notified || !finalized || !attributedAfterTerminal {
+		t.Fatalf("result = %+v, notified = %v, finalized = %v, attributed after terminal = %v", result, notified, finalized, attributedAfterTerminal)
 	}
 	reader, err := journal.OpenRead(run.Dir())
 	if err != nil {

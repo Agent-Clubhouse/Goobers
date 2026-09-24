@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -1421,6 +1422,7 @@ func buildRuntimeRunner(
 		prepare:      prepareTerminal,
 		notify:       runnerCfg.NotifyTerminal,
 		finalize:     runnerCfg.FinalizeTerminal,
+		attribute:    creditgraph.WriteRunRecord,
 	}
 	return rn, manager, hooks, nil
 }

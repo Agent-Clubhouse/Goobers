@@ -4229,12 +4229,12 @@ func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, ph
 	if err := jr.Append(terminal); err != nil {
 		return Result{}, errors.Join(pinnedOutcomeErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
-	r.attributeAfterTerminal(jr)
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
 	notifyErr := r.notifyTerminal(jr, runID, phase, finalState)
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
 		return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, err)
 	}
+	r.attributeAfterTerminal(jr)
 	return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr)
 }
 
