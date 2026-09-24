@@ -543,16 +543,17 @@
         "occurredAt": { "description": "Time the agent status update was emitted.", "type": "string", "format": "date-time" },
         "updatedAt": { "description": "Time the status entry was last updated.", "type": "string", "format": "date-time" },
         "fidelity": { "description": "Completeness of progress telemetry emitted by the adapter.", "type": "string", "enum": ["full", "partial", "none"] },
-        "summary": { "description": "Bounded checkpoint summary suitable for reconnect or resume.", "type": "string" },
-        "plan": { "description": "Ordered milestone list for a plan update.", "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "progress": { "description": "Completed milestone or current activity for a progress update.", "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "decision": { "description": "Conclusion or decision selected by the agent.", "type": "string" },
-        "blocker": { "description": "Dependency, missing input, or policy/resource constraint.", "type": "string" },
-        "question": { "description": "Input requested from a human or another agent.", "type": "string" },
-        "nextAction": { "description": "Immediate intended action for the next step.", "type": "string" },
+        "summary": { "description": "Bounded checkpoint summary suitable for reconnect or resume.", "type": "string", "maxLength": 4096 },
+        "plan": { "description": "Ordered milestone list for a plan update.", "type": "array", "maxItems": 100, "items": { "type": "string", "minLength": 1, "maxLength": 2048 } },
+        "progress": { "description": "Completed milestone or current activity for a progress update.", "type": "array", "maxItems": 100, "items": { "type": "string", "minLength": 1, "maxLength": 2048 } },
+        "decision": { "description": "Conclusion or decision selected by the agent.", "type": "string", "maxLength": 2048 },
+        "blocker": { "description": "Dependency, missing input, or policy/resource constraint.", "type": "string", "maxLength": 2048 },
+        "question": { "description": "Input requested from a human or another agent.", "type": "string", "maxLength": 2048 },
+        "nextAction": { "description": "Immediate intended action for the next step.", "type": "string", "maxLength": 2048 },
         "evidence": {
           "description": "Observable fact or artifact references cited by the update.",
           "type": "array",
+          "maxItems": 100,
           "items": { "$ref": "#/$defs/agentProgressEvidence" }
         }
       }
@@ -561,9 +562,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "type": { "description": "Kind of evidence cited by the agent.", "type": "string" },
-        "id": { "description": "Stable pointer or event identifier for the evidence.", "type": "string" },
-        "label": { "description": "Human-readable label for the evidence.", "type": "string" },
+        "type": { "description": "Kind of evidence cited by the agent.", "type": "string", "maxLength": 128 },
+        "id": { "description": "Stable pointer or event identifier for the evidence.", "type": "string", "maxLength": 512 },
+        "label": { "description": "Human-readable label for the evidence.", "type": "string", "maxLength": 2048 },
         "ref": { "description": "Artifact or input reference that grounds the cited evidence.", "$ref": "#/$defs/ref" }
       }
     },

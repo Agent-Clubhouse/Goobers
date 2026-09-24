@@ -3,6 +3,7 @@ package journal
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,6 +233,56 @@ func TestSchemaRejectsMalformedEvent(t *testing.T) {
 		if err := v.ValidateJSON("journal-event.schema.json", b); err == nil {
 			t.Errorf("case %d: schema accepted malformed event: %s", i, b)
 		}
+	}
+}
+
+func TestSchemaRejectsOversizedAgentProgressFields(t *testing.T) {
+	v, err := validate.New()
+	if err != nil {
+		t.Fatalf("build validator: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		field string
+		value any
+	}{
+		{name: "summary", field: "summary", value: strings.Repeat("x", AgentProgressMaxSummaryRunes+1)},
+		{name: "plan item", field: "plan", value: []string{strings.Repeat("x", AgentProgressMaxListItemRunes+1)}},
+		{name: "progress item", field: "progress", value: []string{strings.Repeat("x", AgentProgressMaxListItemRunes+1)}},
+		{name: "evidence type", field: "evidence", value: []map[string]any{{"type": strings.Repeat("x", AgentProgressMaxEvidenceTypeRunes+1)}}},
+		{name: "evidence id", field: "evidence", value: []map[string]any{{"id": strings.Repeat("x", AgentProgressMaxEvidenceIDRunes+1)}}},
+		{name: "evidence label", field: "evidence", value: []map[string]any{{"label": strings.Repeat("x", AgentProgressMaxEvidenceLabelRunes+1)}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			progress := map[string]any{
+				"schema":     "goobers.dev/journal/agent-progress/v1",
+				"agentId":    "worker-1",
+				"runId":      "run-1",
+				"stage":      "work",
+				"attempt":    1,
+				"sequence":   1,
+				"kind":       "summary",
+				"source":     "model",
+				"occurredAt": "2026-07-13T05:00:00Z",
+			}
+			progress[test.field] = test.value
+			event, err := json.Marshal(map[string]any{
+				"schema":   EventSchema,
+				"seq":      1,
+				"branch":   0,
+				"time":     "2026-07-13T05:00:00Z",
+				"type":     EventAgentProgress,
+				"progress": progress,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := v.ValidateJSON("journal-event.schema.json", event); err == nil {
+				t.Fatalf("schema accepted oversized %s", test.name)
+			}
+		})
 	}
 }
 

@@ -355,6 +355,118 @@ func TestValidateAgentProgressRejectsMissingSource(t *testing.T) {
 	}
 }
 
+func TestValidateAgentProgressRejectsOversizedNestedFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*AgentProgress)
+	}{
+		{
+			name: "plan item",
+			mutate: func(progress *AgentProgress) {
+				progress.Plan = []string{strings.Repeat("x", AgentProgressMaxListItemRunes+1)}
+			},
+		},
+		{
+			name: "progress item",
+			mutate: func(progress *AgentProgress) {
+				progress.Progress = []string{strings.Repeat("x", AgentProgressMaxListItemRunes+1)}
+			},
+		},
+		{
+			name: "evidence type",
+			mutate: func(progress *AgentProgress) {
+				progress.Evidence = []AgentProgressEvidence{{Type: strings.Repeat("x", AgentProgressMaxEvidenceTypeRunes+1)}}
+			},
+		},
+		{
+			name: "evidence id",
+			mutate: func(progress *AgentProgress) {
+				progress.Evidence = []AgentProgressEvidence{{ID: strings.Repeat("x", AgentProgressMaxEvidenceIDRunes+1)}}
+			},
+		},
+		{
+			name: "evidence label",
+			mutate: func(progress *AgentProgress) {
+				progress.Evidence = []AgentProgressEvidence{{Label: strings.Repeat("x", AgentProgressMaxEvidenceLabelRunes+1)}}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			progress := testAgentProgress()
+			test.mutate(&progress)
+			if err := validateAgentProgress(progress); err == nil {
+				t.Fatalf("validateAgentProgress accepted oversized %s", test.name)
+			}
+		})
+	}
+}
+
+func TestValidateAgentProgressAcceptsMultibyteRuneBoundaries(t *testing.T) {
+	progress := testAgentProgress()
+	progress.Summary = strings.Repeat("界", AgentProgressMaxSummaryRunes)
+	progress.Plan = []string{strings.Repeat("界", AgentProgressMaxListItemRunes)}
+	progress.Evidence = []AgentProgressEvidence{{
+		Type:  strings.Repeat("界", AgentProgressMaxEvidenceTypeRunes),
+		ID:    strings.Repeat("界", AgentProgressMaxEvidenceIDRunes),
+		Label: strings.Repeat("界", AgentProgressMaxEvidenceLabelRunes),
+	}}
+	if err := validateAgentProgress(progress); err != nil {
+		t.Fatalf("validateAgentProgress rejected multibyte rune boundaries: %v", err)
+	}
+}
+
+func TestRunAppendRejectsOversizedAgentProgressPayload(t *testing.T) {
+	item := strings.Repeat("\\", AgentProgressMaxListItemRunes)
+	evidence := AgentProgressEvidence{
+		Type:  strings.Repeat("\\", AgentProgressMaxEvidenceTypeRunes),
+		ID:    strings.Repeat("\\", AgentProgressMaxEvidenceIDRunes),
+		Label: strings.Repeat("\\", AgentProgressMaxEvidenceLabelRunes),
+	}
+	progress := testAgentProgress()
+	progress.Summary = strings.Repeat("\\", AgentProgressMaxSummaryRunes)
+	progress.Plan = make([]string, AgentProgressMaxItems)
+	progress.Progress = make([]string, AgentProgressMaxItems)
+	progress.Evidence = make([]AgentProgressEvidence, AgentProgressMaxItems)
+	for i := 0; i < AgentProgressMaxItems; i++ {
+		progress.Plan[i] = item
+		progress.Progress[i] = item
+		progress.Evidence[i] = evidence
+	}
+
+	err := runAppendProgress(t, Event{Type: EventAgentProgress, Progress: &progress})
+	if err == nil || !strings.Contains(err.Error(), "payload exceeds byte limit") {
+		t.Fatalf("Append oversized progress err = %v, want payload byte limit", err)
+	}
+}
+
+func TestAppendEventRejectsUnreadableEventSize(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "events-*.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	var seq uint64
+	_, err = appendEvent(f, &seq, Chain(), time.Now, Event{
+		Type:      EventRunnerAnnotation,
+		Rationale: strings.Repeat("x", maxEventBytes),
+	})
+	if err == nil || !strings.Contains(err.Error(), "event exceeds") {
+		t.Fatalf("appendEvent oversized event err = %v, want event size limit", err)
+	}
+	if seq != 0 {
+		t.Fatalf("sequence after rejected event = %d, want 0", seq)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("oversized event wrote %d bytes", info.Size())
+	}
+}
+
 func TestRunAppendAssignsAgentProgressSequenceFromDurableJournalOrder(t *testing.T) {
 	run, root := newRun(t)
 	t.Cleanup(func() { _ = run.Close() })
@@ -391,9 +503,9 @@ func TestRunAppendAssignsAgentProgressSequenceFromDurableJournalOrder(t *testing
 }
 
 func TestRunAppendRateLimitsAgentProgressPerAttempt(t *testing.T) {
-	run, _ := newRun(t)
+	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	run, _ := newRunWithClock(t, func() time.Time { return now })
 	t.Cleanup(func() { _ = run.Close() })
-	start := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < AgentProgressRateLimitMax; i++ {
 		progress := AgentProgress{
 			Schema:     "goobers.dev/journal/agent-progress/v1",
@@ -403,7 +515,7 @@ func TestRunAppendRateLimitsAgentProgressPerAttempt(t *testing.T) {
 			Attempt:    1,
 			Kind:       AgentProgressProgress,
 			Source:     AgentProgressSourceModel,
-			OccurredAt: start.Add(time.Duration(i) * time.Second),
+			OccurredAt: now.Add(time.Duration(i) * time.Hour),
 			Progress:   []string{fmt.Sprintf("step-%d", i)},
 		}
 		if err := run.Append(Event{Type: EventAgentProgress, Progress: &progress}); err != nil {
@@ -419,13 +531,14 @@ func TestRunAppendRateLimitsAgentProgressPerAttempt(t *testing.T) {
 		Attempt:    1,
 		Kind:       AgentProgressProgress,
 		Source:     AgentProgressSourceModel,
-		OccurredAt: start.Add(45 * time.Second),
+		OccurredAt: now.Add(24 * time.Hour),
 		Progress:   []string{"over limit"},
 	}
 	if err := run.Append(Event{Type: EventAgentProgress, Progress: &limited}); !errors.Is(err, ErrAgentProgressRateLimited) {
 		t.Fatalf("Append over-limit progress err = %v, want %v", err, ErrAgentProgressRateLimited)
 	}
 
+	now = now.Add(AgentProgressRateLimitWindow + time.Second)
 	afterWindow := AgentProgress{
 		Schema:     "goobers.dev/journal/agent-progress/v1",
 		AgentID:    "worker-1",
@@ -434,11 +547,26 @@ func TestRunAppendRateLimitsAgentProgressPerAttempt(t *testing.T) {
 		Attempt:    1,
 		Kind:       AgentProgressProgress,
 		Source:     AgentProgressSourceModel,
-		OccurredAt: start.Add(AgentProgressRateLimitWindow + time.Second),
+		OccurredAt: time.Date(2050, 1, 1, 0, 0, 0, 0, time.UTC),
 		Progress:   []string{"allowed again"},
 	}
 	if err := run.Append(Event{Type: EventAgentProgress, Progress: &afterWindow}); err != nil {
 		t.Fatalf("Append after rate window: %v", err)
+	}
+}
+
+func testAgentProgress() AgentProgress {
+	return AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      testIdentity().RunID,
+		Stage:      "work",
+		Attempt:    1,
+		Sequence:   1,
+		Kind:       AgentProgressSummary,
+		Source:     AgentProgressSourceModel,
+		OccurredAt: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC),
+		Summary:    "Checkpoint summary",
 	}
 }
 

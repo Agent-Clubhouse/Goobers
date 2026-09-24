@@ -38,6 +38,10 @@ func appendEvent(f eventFile, seq *uint64, scrubber Scrubber, now func() time.Ti
 		return Event{}, fmt.Errorf("journal: marshal event: %w", err)
 	}
 	line = scrubber.Scrub(line)
+	if len(line)+1 > maxEventBytes {
+		*seq--
+		return Event{}, fmt.Errorf("journal: event exceeds %d-byte limit", maxEventBytes)
+	}
 	line = append(line, '\n')
 	if _, err := f.Write(line); err != nil {
 		return Event{}, fmt.Errorf("journal: append event: %w", err)

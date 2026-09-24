@@ -492,6 +492,7 @@ func TestRunAgentProgressRetainsOnlyRecentHistory(t *testing.T) {
 	root := t.TempDir()
 	layout := instance.NewLayout(root)
 	const runID = "test-agent-progress-history-retention"
+	now := time.Now().UTC()
 
 	j, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
 		RunID:           runID,
@@ -499,13 +500,16 @@ func TestRunAgentProgressRetainsOnlyRecentHistory(t *testing.T) {
 		WorkflowVersion: 1,
 		Gaggle:          "goobers",
 		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "3771"},
-		StartedAt:       time.Now(),
-	}, nil)
+		StartedAt:       now,
+	}, nil, journal.WithClock(func() time.Time {
+		current := now
+		now = now.Add(journal.AgentProgressRateLimitWindow + time.Second)
+		return current
+	}))
 	if err != nil {
 		t.Fatalf("journal.Create: %v", err)
 	}
 
-	start := time.Now().UTC()
 	total := journal.AgentProgressRetainedHistory + 6
 	for i := 0; i < total; i++ {
 		progress := journal.AgentProgress{
@@ -516,7 +520,7 @@ func TestRunAgentProgressRetainsOnlyRecentHistory(t *testing.T) {
 			Attempt:    1,
 			Kind:       journal.AgentProgressProgress,
 			Source:     journal.AgentProgressSourceNative,
-			OccurredAt: start.Add(time.Duration(i) * time.Minute),
+			OccurredAt: time.Date(2050, 1, 1, 0, i, 0, 0, time.UTC),
 			Progress:   []string{fmt.Sprintf("step-%d", i)},
 		}
 		if err := j.Append(journal.Event{Type: journal.EventAgentProgress, Progress: &progress}); err != nil {

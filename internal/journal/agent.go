@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // AgentLifecycle is the deliberately small, engine-neutral lifecycle taxonomy.
@@ -104,9 +105,17 @@ const (
 // Agent progress emission and history bounds are independent from transcript
 // limits because progress is a separate operator-facing surface.
 const (
-	AgentProgressRateLimitWindow = time.Minute
-	AgentProgressRateLimitMax    = 32
-	AgentProgressRetainedHistory = 64
+	AgentProgressMaxSummaryRunes       = 4096
+	AgentProgressMaxDetailRunes        = 2048
+	AgentProgressMaxListItemRunes      = 2048
+	AgentProgressMaxEvidenceTypeRunes  = 128
+	AgentProgressMaxEvidenceIDRunes    = 512
+	AgentProgressMaxEvidenceLabelRunes = 2048
+	AgentProgressMaxItems              = 100
+	AgentProgressMaxPayloadBytes       = 1024 * 1024
+	AgentProgressRateLimitWindow       = time.Minute
+	AgentProgressRateLimitMax          = 32
+	AgentProgressRetainedHistory       = 64
 )
 
 // ErrAgentProgressRateLimited reports progress emission beyond the per-agent
@@ -204,10 +213,39 @@ func validateAgentProgress(progress AgentProgress) error {
 }
 
 func validateAgentProgressSize(progress AgentProgress) error {
-	if len(progress.Summary) > 4096 || len(progress.Decision) > 2048 || len(progress.Blocker) > 2048 ||
-		len(progress.Question) > 2048 || len(progress.NextAction) > 2048 || len(progress.Plan) > 100 ||
-		len(progress.Progress) > 100 || len(progress.Evidence) > 100 {
+	if utf8.RuneCountInString(progress.Summary) > AgentProgressMaxSummaryRunes ||
+		utf8.RuneCountInString(progress.Decision) > AgentProgressMaxDetailRunes ||
+		utf8.RuneCountInString(progress.Blocker) > AgentProgressMaxDetailRunes ||
+		utf8.RuneCountInString(progress.Question) > AgentProgressMaxDetailRunes ||
+		utf8.RuneCountInString(progress.NextAction) > AgentProgressMaxDetailRunes ||
+		len(progress.Plan) > AgentProgressMaxItems ||
+		len(progress.Progress) > AgentProgressMaxItems ||
+		len(progress.Evidence) > AgentProgressMaxItems {
 		return fmt.Errorf("journal: nested-agent progress payload exceeds size limits for %q", progress.AgentID)
+	}
+	for _, item := range progress.Plan {
+		if utf8.RuneCountInString(item) > AgentProgressMaxListItemRunes {
+			return fmt.Errorf("journal: nested-agent progress plan item exceeds size limit for %q", progress.AgentID)
+		}
+	}
+	for _, item := range progress.Progress {
+		if utf8.RuneCountInString(item) > AgentProgressMaxListItemRunes {
+			return fmt.Errorf("journal: nested-agent progress item exceeds size limit for %q", progress.AgentID)
+		}
+	}
+	for _, evidence := range progress.Evidence {
+		if utf8.RuneCountInString(evidence.Type) > AgentProgressMaxEvidenceTypeRunes ||
+			utf8.RuneCountInString(evidence.ID) > AgentProgressMaxEvidenceIDRunes ||
+			utf8.RuneCountInString(evidence.Label) > AgentProgressMaxEvidenceLabelRunes {
+			return fmt.Errorf("journal: nested-agent progress evidence exceeds size limits for %q", progress.AgentID)
+		}
+	}
+	payload, err := json.Marshal(progress)
+	if err != nil {
+		return fmt.Errorf("journal: marshal nested-agent progress for size validation: %w", err)
+	}
+	if len(payload) > AgentProgressMaxPayloadBytes {
+		return fmt.Errorf("journal: nested-agent progress payload exceeds byte limit for %q", progress.AgentID)
 	}
 	return nil
 }
@@ -277,8 +315,8 @@ func containsPrivateReasoning(v string) bool {
 		strings.Contains(l, "scratchpad") || strings.Contains(l, "inner monologue")
 }
 
-func validateAgentProgressRate(events []Event, progress AgentProgress, fallback time.Time) error {
-	candidate := agentProgressObservedAt(progress, fallback)
+func validateAgentProgressRate(events []Event, progress AgentProgress, observedAt time.Time) error {
+	candidate := observedAt
 	windowStart := candidate.Add(-AgentProgressRateLimitWindow)
 	count := 0
 	for _, event := range latestPodAgentEvents(events) {
@@ -288,7 +326,7 @@ func validateAgentProgressRate(events []Event, progress AgentProgress, fallback 
 		if !sameAgentProgressAttempt(*event.Progress, progress) {
 			continue
 		}
-		if agentProgressObservedAt(*event.Progress, event.Time).Before(windowStart) {
+		if event.Time.Before(windowStart) {
 			continue
 		}
 		count++
@@ -305,17 +343,6 @@ func validateAgentProgressRate(events []Event, progress AgentProgress, fallback 
 		}
 	}
 	return nil
-}
-
-func agentProgressObservedAt(progress AgentProgress, fallback time.Time) time.Time {
-	switch {
-	case !progress.UpdatedAt.IsZero():
-		return progress.UpdatedAt
-	case !progress.OccurredAt.IsZero():
-		return progress.OccurredAt
-	default:
-		return fallback
-	}
 }
 
 func sameAgentProgressAttempt(left, right AgentProgress) bool {
