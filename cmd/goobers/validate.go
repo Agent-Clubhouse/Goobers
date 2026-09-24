@@ -47,12 +47,11 @@ import (
 //
 // This runs in BOTH the operator-invoked `goobers validate --check-harness` and
 // the automatic daemon-startup preflight (adapterFor wires it into every
-// CopilotAdapter, so preflightAgenticHarnesses picks it up too — #238). It costs
-// a real Copilot request (~a few AI credits, a couple of seconds), but
-// preflightAgenticHarnesses runs once per process lifetime (once per `up` daemon
-// boot, once per `run`), only for harnesses an agentic stage actually
-// references — trivial next to the ~30-minute burned live-run a signed-out
-// harness causes when the failure surfaces mid-run instead (the #284 incident).
+// CopilotAdapter, so preflightAgenticHarnesses picks it up too — #238). Direct
+// Copilot and version-1 forwarding launchers use this model-request fallback;
+// version-2 launchers can replace it with their declared non-agentic auth probe.
+// The fallback runs once per process lifetime (once per `up` daemon boot, once
+// per `run`), only for harnesses an agentic stage actually references.
 var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}
 
 // harnessPreflightTimeout bounds a single harness preflight (its version check

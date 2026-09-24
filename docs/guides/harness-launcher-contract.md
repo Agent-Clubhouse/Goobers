@@ -9,6 +9,13 @@ two generic integration paths:
   after the normal headless authentication preflight proves that a generated
   `--session-id` produces the corresponding non-empty native Copilot transcript.
 
+Contract version 2 adds an optional integration path for launchers that can
+validate authentication without starting an agent or contacting a model. A v2
+launcher declares bounded `authProbe.args`; Goobers appends them to the same
+configured launcher prefix used by normal stages and supplies the same resolved
+`agent:model` credential environment. A nonzero exit, timeout, or runner error
+fails closed with the existing actionable sign-in diagnostic.
+
 For mode 3 stage pods, the worker carries only the selected goober's configured
 argv in the content-addressed execution kit, for both task invocations and
 reviewer gates. Each target image must provide that executable and any launcher
@@ -26,8 +33,12 @@ Stderr diagnostics are captured separately and are never parsed as the contract.
 A nonzero exit is treated as an absent handshake and proceeds to the behavioral
 `adapter-managed` proof. Truncated output, malformed successful output, unknown
 fields, and unsupported versions or modes fail closed before workflow dispatch.
-Successful contracts and behavioral
-proofs are cached for that Goobers process. Changing a wrapper requires
+Version 1 retains the current prompt probe and, for `adapter-managed`, its
+behavioral native-transcript proof. Version 2 requires `authProbe`; its explicit
+`sessionMode` declaration is the launcher's compatibility assertion for the
+normal runtime path, while authentication is checked separately without a model
+request. Successful contracts and behavioral proofs are cached for that Goobers
+process. Changing a wrapper requires
 restarting that process. A separate worker or stage process performs
 its own proof; verification is never written to configuration or shared storage.
 
@@ -64,11 +75,12 @@ has a stable session argument but cannot implement `--goobers-launcher-contract`
 Only the Copilot harness currently supports this setting.
 
 `runner.harnessPreflightArgs` appends literal arguments only to the bounded
-authentication/session-contract probe. Ordinary workflow invocations never
-receive them. Use this for a forwarding launcher that can skip optional startup
-work during preflight while retaining its full integration set for agentic
-runs. The setting requires a corresponding `harnessCommand`; only the Copilot
-harness currently supports it.
+authentication probe. For v1 launchers they follow the fallback prompt
+arguments; for v2 launchers they follow the declared `authProbe.args`. Ordinary
+workflow invocations never receive them. Use this for a forwarding launcher
+that can skip optional startup work during preflight while retaining its full
+integration set for agentic runs. The setting requires a corresponding
+`harnessCommand`; only the Copilot harness currently supports it.
 
 Model discovery is not sent through a custom launcher. Goobers connects the
 Copilot SDK directly to `copilot` for that server-mode exchange, then uses the
@@ -84,6 +96,26 @@ not silently add a requirement that `copilot` also be on `PATH`.
 ```json
 {"version":1,"sessionMode":"adapter-managed"}
 ```
+
+The lightweight authentication form is:
+
+```json
+{
+  "version": 2,
+  "sessionMode": "adapter-managed",
+  "authProbe": {
+    "args": ["auth", "status"]
+  }
+}
+```
+
+`authProbe.args` must contain 1 to 16 nonempty literal arguments, each at most
+1 KiB and without NUL bytes. The launcher must implement this invocation as an
+authentication-only check of the same credential and transport path used by a
+normal invocation. It must not start an agent, send a prompt, consume an AI
+request, select or create a session, or modify the workspace. Launchers that
+cannot make that guarantee must continue returning version 1 and use the
+existing prompt fallback.
 
 Supported session ownership modes:
 

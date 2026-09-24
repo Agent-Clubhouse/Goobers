@@ -4,12 +4,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 const (
 	copilotPreflightHomePrefix = "goobers-copilot-preflight-"
 	copilotConfigFileName      = "config.json"
 )
+
+func (c *CopilotAdapter) authPreflightPlan(contract launcherContract) ([]string, bool, error) {
+	args := c.AuthCheckArgs
+	if contract.AuthProbe != nil {
+		args = append(slices.Clone(contract.AuthProbe.Args), c.AuthProbeExtraArgs...)
+	}
+	verifyAdapterManagedSession := c.VerifyAdapterManagedSession &&
+		contract.SessionMode == "adapter-managed" &&
+		contract.AuthProbe == nil
+	if verifyAdapterManagedSession && len(args) == 0 {
+		return nil, false, fmt.Errorf("harness: copilot-cli: launcher session verification requires an authentication probe")
+	}
+	return args, verifyAdapterManagedSession, nil
+}
 
 // prepareCopilotPreflightEnvironment isolates the authentication probe from
 // ambient extensions, plugins, MCP servers, hooks, and instructions. When no

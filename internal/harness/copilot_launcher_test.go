@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -79,6 +80,9 @@ func (f launcherProcessRunner) Run(ctx context.Context, req ProcessRequest) (Pro
 func TestLauncherContractRejectsAmbiguousSessionSemantics(t *testing.T) {
 	for _, input := range []string{
 		`{}`, `{"version":2,"sessionMode":"adapter-managed"}`,
+		`{"version":1,"sessionMode":"adapter-managed","authProbe":{"args":["auth"]}}`,
+		`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":[]}}`,
+		`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":[""]}}`,
 		`{"version":1,"sessionMode":"auto"}`,
 		`{"version":1,"sessionMode":"adapter-managed","sessionArgs":["--id"]}`,
 		`{"version":1,"sessionMode":"templated"}`,
@@ -90,6 +94,141 @@ func TestLauncherContractRejectsAmbiguousSessionSemantics(t *testing.T) {
 		if _, err := parseLauncherContract([]byte(input)); err == nil {
 			t.Errorf("accepted incompatible contract: %s", input)
 		}
+	}
+}
+
+func TestLauncherV2UsesLightweightAuthProbeAndDeclaredAdapterSession(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var authCommand, authEnv []string
+	adapter := &CopilotAdapter{
+		Command:                     []string{program, "forwarding-launcher"},
+		RequireLauncherContract:     true,
+		VerifyAdapterManagedSession: true,
+		VersionArgs:                 []string{"version"},
+		AuthCheckArgs:               []string{"-p", "fallback prompt"},
+		AuthProbeExtraArgs:          []string{"--profile", "preflight"},
+		ModelCredential: func(context.Context) (string, error) {
+			return "configured-agent-model-token", nil
+		},
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			switch {
+			case req.Command[len(req.Command)-1] == launcherContractFlag:
+				_, err := io.WriteString(req.StdoutCapture, `{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]}}`)
+				return ProcessResult{}, err
+			case req.Command[len(req.Command)-1] == "version":
+				_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+				return ProcessResult{}, err
+			default:
+				authCommand = slices.Clone(req.Command)
+				authEnv = slices.Clone(req.Env)
+				return ProcessResult{}, nil
+			}
+		}),
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	wantAuth := append(resolveHarnessCommand(adapter.Command), "auth", "status", "--profile", "preflight")
+	if !reflect.DeepEqual(authCommand, wantAuth) {
+		t.Fatalf("auth command = %q, want lightweight contract probe %q", authCommand, wantAuth)
+	}
+	if slices.Contains(authCommand, "-p") || copilotCommandSelectsSession(authCommand) {
+		t.Fatalf("lightweight auth probe consumed prompt/session semantics: %v", authCommand)
+	}
+	if token, ok := environmentValue(authEnv, "COPILOT_GITHUB_TOKEN"); !ok || token != "configured-agent-model-token" {
+		t.Fatalf("auth probe credential = %q, %v; want configured agent:model token", token, ok)
+	}
+
+	argv, _, _, cleanup, err := adapter.prepareLauncherSession(
+		context.Background(),
+		t.TempDir(),
+		resolveHarnessCommand(adapter.Command),
+		[]string{"COPILOT_HOME=" + t.TempDir()},
+	)
+	defer cleanup()
+	if err != nil {
+		t.Fatalf("prepareLauncherSession: %v", err)
+	}
+	if !copilotCommandSelectsSession(argv) {
+		t.Fatalf("v2 adapter-managed declaration did not retain runtime session injection: %v", argv)
+	}
+}
+
+func TestLauncherV2AuthProbeFailsClosed(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command:                 []string{program, "forwarding-launcher"},
+		RequireLauncherContract: true,
+		VersionArgs:             []string{"version"},
+		AuthCheckArgs:           []string{"-p", "fallback prompt"},
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			switch {
+			case req.Command[len(req.Command)-1] == launcherContractFlag:
+				_, err := io.WriteString(req.StdoutCapture, `{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]}}`)
+				return ProcessResult{}, err
+			case req.Command[len(req.Command)-1] == "version":
+				_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+				return ProcessResult{}, err
+			default:
+				return ProcessResult{ExitCode: 1, Transcript: []byte("credential is invalid or revoked")}, nil
+			}
+		}),
+	}
+	_, err = adapter.Preflight(context.Background())
+	if err == nil ||
+		!strings.Contains(err.Error(), "launcher authentication probe") ||
+		!strings.Contains(err.Error(), "credential is invalid or revoked") ||
+		!strings.Contains(err.Error(), "sign in") {
+		t.Fatalf("invalid credential error = %v", err)
+	}
+}
+
+func TestLauncherV1RetainsPromptSessionVerification(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var authCommand []string
+	adapter := &CopilotAdapter{
+		Command:                     []string{program, "forwarding-launcher"},
+		RequireLauncherContract:     true,
+		VerifyAdapterManagedSession: true,
+		VersionArgs:                 []string{"version"},
+		AuthCheckArgs:               []string{"-p", "fallback prompt"},
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			switch {
+			case req.Command[len(req.Command)-1] == launcherContractFlag:
+				_, err := io.WriteString(req.StdoutCapture, `{"version":1,"sessionMode":"adapter-managed"}`)
+				return ProcessResult{}, err
+			case req.Command[len(req.Command)-1] == "version":
+				_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+				return ProcessResult{}, err
+			default:
+				authCommand = slices.Clone(req.Command)
+				id := commandOptionValue(req.Command, "--session-id")
+				home, ok := copilotConfigHome(req.Env)
+				if id == "" || !ok {
+					t.Fatalf("v1 prompt fallback did not receive adapter-managed session semantics: command=%v env=%v", req.Command, req.Env)
+				}
+				path := copilotSessionLogPath(home, id)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					return ProcessResult{}, err
+				}
+				return ProcessResult{}, os.WriteFile(path, []byte(`{"type":"session.start"}`+"\n"), 0o600)
+			}
+		}),
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if !slices.Contains(authCommand, "-p") || !copilotCommandSelectsSession(authCommand) {
+		t.Fatalf("v1 launcher did not retain prompt/session fallback: %v", authCommand)
 	}
 }
 
