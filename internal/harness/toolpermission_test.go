@@ -142,6 +142,128 @@ func TestReclassifyToolPermissionBlockLeavesOrdinaryBlocksAlone(t *testing.T) {
 	}
 }
 
+// TestReclassifyToolPermissionBlockConvertsFailureStatusToo is #5444's
+// regression test: the guard originally only ran on status "blocked", so a
+// model authoring the identical fabricated content-exclusion narrative under
+// status "failure" sailed straight through unchecked. This reproduces one of
+// the four live envelopes cited in #5444 (run
+// b479bd6363feb410b68ac177413ca553): status "failure" with an
+// "*_ACCESS_DENIED" code phrased as an environment access policy, not the
+// words "content exclusion" — WITH genuine runtime refusal evidence in the
+// transcript, which a "failure" status requires.
+func TestReclassifyToolPermissionBlockConvertsFailureStatusToo(t *testing.T) {
+	result := apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Summary: "could not complete the task",
+		Error: &apiv1.ErrorInfo{
+			Code:    "CANONICAL_SPEC_ACCESS_DENIED",
+			Message: "reading the canonical spec was denied by the environment access policy",
+		},
+	}
+
+	reclassifyToolPermissionBlock(&result, []byte(liveDenialTranscript), nil)
+
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %q, want %q", result.Status, apiv1.ResultFailure)
+	}
+	if result.Error == nil || result.Error.Code != ErrorCodeToolPermissionDenied {
+		t.Fatalf("error = %+v, want code %s — the runtime observed a tool-permission refusal, "+
+			"not a content-exclusion policy, and status:failure must not exempt that from the guard",
+			result.Error, ErrorCodeToolPermissionDenied)
+	}
+	if result.Outputs["toolPermissionDenied"] != true {
+		t.Errorf("outputs.toolPermissionDenied = %v, want true", result.Outputs["toolPermissionDenied"])
+	}
+}
+
+// TestReclassifyToolPermissionBlockLeavesGenuineFailuresAndEscalationsAlone
+// is #5444's regression suite: five cases that must never be rewritten.
+func TestReclassifyToolPermissionBlockLeavesGenuineFailuresAndEscalationsAlone(t *testing.T) {
+	const noRefusalTranscript = "ordinary transcript, no refusal"
+	for _, tc := range []struct {
+		name       string
+		result     apiv1.ResultEnvelope
+		transcript string
+	}{
+		{
+			name: "genuine Key Vault 403 mentioning access policy, retryable",
+			result: apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "az keyvault secret show returned 403",
+				Error: &apiv1.ErrorInfo{
+					Code:      "KEYVAULT_FORBIDDEN",
+					Message:   "The user does not have secrets get permission on key vault; update the vault access policy",
+					Retryable: true,
+				},
+			},
+			transcript: noRefusalTranscript,
+		},
+		{
+			name: "genuine S3 AccessDenied",
+			result: apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "S3 upload failed",
+				Error:   &apiv1.ErrorInfo{Code: "S3_ACCESS_DENIED", Message: "AccessDenied from bucket"},
+			},
+			transcript: noRefusalTranscript,
+		},
+		{
+			name: "non-retryable escalation, ISSUE_OVER_SCOPE, mentions access policy",
+			result: apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "issue asks to rewrite the org access policy module; out of scope",
+				Error:   &apiv1.ErrorInfo{Code: "ISSUE_OVER_SCOPE", Message: "too large"},
+			},
+			transcript: noRefusalTranscript,
+		},
+		{
+			name: "ordinary dependency block mentioning access policy, no evidence",
+			result: apiv1.ResultEnvelope{
+				Status:  apiv1.ResultBlocked,
+				Summary: "waiting on #441 which changes the access policy schema",
+				Error:   &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "blocked by #441"},
+				Outputs: map[string]interface{}{"blockedBy": "441"},
+			},
+			transcript: noRefusalTranscript,
+		},
+		// The evidence-gated markers ("access_denied"/"access policy") are
+		// scoped to a "failure" status only. Before that restriction, a
+		// "blocked" result mentioning "access policy" in a session that ALSO
+		// had one unrelated denied tool call (liveDenialTranscript) was
+		// rewritten to "failure"/HARNESS_TOOL_PERMISSION_DENIED, losing its
+		// blockedBy edge — even though the block itself was never a
+		// content-exclusion or tool-permission claim.
+		{
+			name: "ordinary dependency block mentioning access policy, with an unrelated refusal in the session",
+			result: apiv1.ResultEnvelope{
+				Status:  apiv1.ResultBlocked,
+				Summary: "waiting on #441 which changes the access policy schema",
+				Error:   &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "blocked by #441"},
+				Outputs: map[string]interface{}{"blockedBy": "441"},
+			},
+			transcript: liveDenialTranscript,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeCode, beforeRetryable := tc.result.Error.Code, tc.result.Error.Retryable
+			got := tc.result
+			reclassifyToolPermissionBlock(&got, []byte(tc.transcript), nil)
+			if got.Status != tc.result.Status {
+				t.Errorf("status = %q, want unchanged %q", got.Status, tc.result.Status)
+			}
+			if got.Error == nil || got.Error.Code != beforeCode {
+				t.Errorf("error code = %+v, want unchanged %q", got.Error, beforeCode)
+			}
+			if got.Error != nil && got.Error.Retryable != beforeRetryable {
+				t.Errorf("retryable = %v, want unchanged %v", got.Error.Retryable, beforeRetryable)
+			}
+			if got.Summary != tc.result.Summary {
+				t.Errorf("summary = %q, want unchanged %q", got.Summary, tc.result.Summary)
+			}
+		})
+	}
+}
+
 // TestReclassifyToolPermissionBlockReadsStderr proves the evidence scan covers
 // stderr too: the CLI does not always route a refusal through the transcript.
 func TestReclassifyToolPermissionBlockReadsStderr(t *testing.T) {
