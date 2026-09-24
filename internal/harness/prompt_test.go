@@ -229,6 +229,32 @@ func TestResultShapeHintPresentsErrorConditionally(t *testing.T) {
 	}
 }
 
+// TestResultShapeHintStatesScalarOnlyOutputsGenerally is #2522's regression
+// test. Before this, the hint stated the schema's scalar-only "outputs" rule
+// only as a subordinate clause about "blockedBy" specifically, so a model
+// populating any OTHER key (e.g. "trust", "outputs" itself — both seen in
+// live recurrences: #run 5755fee493b8531f4244b4241b8ec7a7 and #2718) had no
+// textual reason to know the same constraint applied to it. The rule must be
+// stated as a property of "outputs" itself, with "blockedBy" kept only as one
+// example of it.
+func TestResultShapeHintStatesScalarOnlyOutputsGenerally(t *testing.T) {
+	req := RunRequest{
+		Envelope:       apiv1.InvocationEnvelope{Goal: "do the thing"},
+		CompletionPath: DefaultResultPath,
+		Mode:           ModeInvoke,
+	}
+	prompt := renderPrompt(req)
+	if !strings.Contains(prompt, `Every key in "outputs"`) {
+		t.Fatalf("result hint does not state the scalar-only rule as a general property of outputs: %q", prompt)
+	}
+	if !strings.Contains(prompt, "for any key") {
+		t.Fatalf("result hint scopes the scalar-only rule to a specific field rather than every key: %q", prompt)
+	}
+	if !strings.Contains(prompt, "outputs.blockedBy") {
+		t.Fatalf("result hint dropped the blockedBy example while generalizing the rule: %q", prompt)
+	}
+}
+
 // TestResultShapeHintRequiresNumericMetrics guards the producer-side contract:
 // metrics is optional and must not invite freeform labels or references that
 // the numeric-only result schema rejects.
