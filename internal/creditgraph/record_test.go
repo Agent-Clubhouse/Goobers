@@ -3,6 +3,7 @@ package creditgraph
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,10 +92,13 @@ func TestRunRecordPinsIdentityAndExactEvidence(t *testing.T) {
 func TestRunRecordPinsCompleteEffectiveVersion(t *testing.T) {
 	run, runDir := recordTestRun(t, map[string]any{"enabled": true, "version": "v1"})
 	defer func() { _ = run.Close() }()
+	transcript := []byte(`{"role":"assistant","model":"gpt-5.6-sol"}`)
+	if _, err := run.RecordSpanWithSchema("act", "transcript", telemetry.GenAIEventSchema, transcript); err != nil {
+		t.Fatal(err)
+	}
 	span, err := json.Marshal(telemetry.SpanRecord{
 		Schema: telemetry.SpanSchema,
 		Attributes: map[string]string{
-			telemetry.AttrModel:          "gpt-5.6-sol",
 			telemetry.AttrHarnessVersion: "copilot-cli/1.0.86",
 		},
 	})
@@ -195,24 +199,9 @@ func TestRunRecordPersistsExactGateToolAndRuntimeEvidence(t *testing.T) {
 func TestRunRecordDoesNotCohortMixedEffectiveVersions(t *testing.T) {
 	run, runDir := recordTestRun(t, map[string]any{"enabled": true, "version": "v1"})
 	defer func() { _ = run.Close() }()
-	for i, version := range []struct {
-		model   string
-		harness string
-	}{
-		{model: "gpt-5.6-sol", harness: "copilot-cli/1.0.86"},
-		{model: "claude-opus-5", harness: "agency/2026.9.16"},
-	} {
-		span, err := json.Marshal(telemetry.SpanRecord{
-			Schema: telemetry.SpanSchema,
-			Attributes: map[string]string{
-				telemetry.AttrModel:          version.model,
-				telemetry.AttrHarnessVersion: version.harness,
-			},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := run.RecordSpanWithSchema("act", "task/act", telemetry.SpanSchema, span); err != nil {
+	for i, model := range []string{"gpt-5.6-sol", "claude-opus-5"} {
+		transcript := []byte(fmt.Sprintf(`{"role":"assistant","model":%q}`, model))
+		if _, err := run.RecordSpanWithSchema("act", "transcript", telemetry.GenAIEventSchema, transcript); err != nil {
 			t.Fatalf("record span %d: %v", i, err)
 		}
 	}

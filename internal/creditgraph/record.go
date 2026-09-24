@@ -1,6 +1,8 @@
 package creditgraph
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -130,7 +132,7 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 		}
 		spanData[event.Ref.Digest] = data
 	}
-	record.EffectiveVersion = runEffectiveVersion(identity, spanData)
+	record.EffectiveVersion = runEffectiveVersion(identity, events, spanData)
 	graph, err := Build(Input{
 		RunID: identity.RunID, Gaggle: identity.Gaggle, Workflow: identity.Workflow,
 		Events: events, SpanData: spanData,
@@ -146,31 +148,42 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 	return record, true, nil
 }
 
-func runEffectiveVersion(identity journal.RunIdentity, spanData map[string][]byte) string {
-	type modelHarness struct {
-		model   string
-		harness string
-	}
-	versions := map[modelHarness]struct{}{}
-	for _, data := range spanData {
-		var span telemetry.SpanRecord
-		if json.Unmarshal(data, &span) != nil {
+func runEffectiveVersion(identity journal.RunIdentity, events []journal.Event, spanData map[string][]byte) string {
+	models := map[string]struct{}{}
+	harnesses := map[string]struct{}{}
+	for _, event := range events {
+		if event.Type != journal.EventSpanRecorded || event.Ref == nil {
 			continue
 		}
-		model, hasModel := span.Attributes[telemetry.AttrModel]
-		harness, hasHarness := span.Attributes[telemetry.AttrHarnessVersion]
-		if hasModel || hasHarness {
-			versions[modelHarness{model: model, harness: harness}] = struct{}{}
+		data, ok := spanData[event.Ref.Digest]
+		if !ok {
+			continue
 		}
+		switch event.DataSchema {
+		case telemetry.SpanSchema:
+			var span telemetry.SpanRecord
+			if json.Unmarshal(data, &span) != nil {
+				continue
+			}
+			if model := span.Attributes[telemetry.AttrModel]; model != "" {
+				models[model] = struct{}{}
+			}
+			if harness := span.Attributes[telemetry.AttrHarnessVersion]; harness != "" {
+				harnesses[harness] = struct{}{}
+			}
+		case telemetry.GenAIEventSchema:
+			recordTranscriptModels(data, models)
+		}
+	}
+	if len(models) > 1 || len(harnesses) > 1 {
+		return ""
 	}
 	var model, harness string
-	if len(versions) == 1 {
-		for version := range versions {
-			model, harness = version.model, version.harness
-		}
+	for value := range models {
+		model = value
 	}
-	if len(versions) > 1 {
-		return ""
+	for value := range harnesses {
+		harness = value
 	}
 	return (rollup.EffectiveVersion{
 		WorkflowDigest: identity.WorkflowDigest,
@@ -178,6 +191,17 @@ func runEffectiveVersion(identity journal.RunIdentity, spanData map[string][]byt
 		Model:          model,
 		HarnessVersion: harness,
 	}).Hash()
+}
+
+func recordTranscriptModels(data []byte, models map[string]struct{}) {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), len(data)+1)
+	for scanner.Scan() {
+		var record genaiRecord
+		if json.Unmarshal(bytes.TrimSpace(scanner.Bytes()), &record) == nil && record.Model != "" {
+			models[record.Model] = struct{}{}
+		}
+	}
 }
 
 func recordEvidence(events []journal.Event, graph *Graph, attribution Attribution) []AttributionEvidenceLink {
