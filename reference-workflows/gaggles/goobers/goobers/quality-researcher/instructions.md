@@ -66,3 +66,4 @@ and roughly how many findings you wrote, and `findingsRef` under
 `outputs`. Do not populate `artifacts` yourself — publishing `findings.md`
 through `publish_output` is what makes it a recorded artifact; nothing
 reads a self-reported `artifacts` entry.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

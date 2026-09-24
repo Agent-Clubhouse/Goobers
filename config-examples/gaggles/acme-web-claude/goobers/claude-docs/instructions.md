@@ -43,3 +43,4 @@ accurate, return `status: no-work` without creating an empty commit.
 
 Return a result envelope with `status` and a concise summary of the documentation
 drift addressed. The committed docs-only diff is the deliverable.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

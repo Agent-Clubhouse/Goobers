@@ -43,3 +43,4 @@ claimed one maintainer-approved parent issue.
 
 Signal completion with a successful result envelope and publish the complete
 `plan.json` through the designated output tool. Do not report issue mutations.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

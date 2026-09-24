@@ -136,3 +136,4 @@ Signal completion via the designated completion tool with a `result`
 envelope: `status`, a one-paragraph `summary` (how many signals reviewed,
 how many issues filed vs. suppressed as duplicates/noise), and a listing of
 filed issue references under `artifacts`.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.
