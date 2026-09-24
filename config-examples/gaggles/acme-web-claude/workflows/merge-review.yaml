@@ -127,6 +127,9 @@ spec:
         # #990: deterministic file-overlap set, threaded to elect-lander +
         # apply-verdict. Empty string when nothing overlaps.
         - overlappingSiblingsCsv
+        # #5602: namespace PRs this instance cannot land, dropped from every
+        # blocker set by elect-lander + apply-verdict. Empty string when none.
+        - unlandableSiblingsCsv
         # #1313/#1814: whether this PR is currently barred from merging for
         # exceeding the size threshold. Review still runs to produce findings.
         - scopeGateParked
@@ -147,6 +150,8 @@ spec:
         reviewDigest: reviewDigest
         # #990: same deterministic overlap set the election used.
         overlappingSiblings: overlappingSiblingsCsv
+        # #5602: the same unlandable set the election dropped.
+        unlandableSiblings: unlandableSiblingsCsv
         # #1814: preserve the deterministic scope decision through verdict
         # publication so scope-gate guards only the merge path.
         scopeGateParked: scopeGateParked
@@ -192,6 +197,8 @@ spec:
         reviewDigest: reviewDigest
         # #990: deterministic overlap set; passed through below for apply-verdict.
         overlappingSiblings: overlappingSiblingsCsv
+        # #5602: unlandable PRs never precede the lander; passed through below.
+        unlandableSiblings: unlandableSiblingsCsv
         # #1814: retain the scope decision on the election path too.
         scopeGateParked: scopeGateParked
       inputs:
@@ -213,6 +220,7 @@ spec:
         - reviewDigest
         # Passed through for apply-verdict on the parked branch (#990).
         - overlappingSiblingsCsv
+        - unlandableSiblingsCsv
         - scopeGateParked
       next: elect-gate
 

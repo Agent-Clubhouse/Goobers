@@ -651,11 +651,14 @@ func loadPRSelectSafetyGateState(
 	blockerScanCtx, cancelBlockerScan := blockedOnSiblingScanContext(ctx)
 	defer cancelBlockerScan()
 	liveSiblingBlockers := make(map[int][]int)
+	// #5602: a recorded blocker this instance cannot land never holds a PR.
+	unlandable := unlandableSiblingSet(openPRs, headPrefixes, expectedAuthorLogin)
 	for _, pr := range openPRs {
 		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
 		if err != nil {
 			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
+		blockers = withoutDemoted(blockers, unlandable)
 		liveSiblingBlockers[pr.Number] = blockers
 		for _, blocker := range blockers {
 			state.blockedDependents[blocker]++
@@ -663,7 +666,7 @@ func loadPRSelectSafetyGateState(
 		// #3095: selection asks the fail-closed question, which also covers the
 		// PR that holds the label with no readable blocker record — the shape
 		// liveBlockedOnSiblingBlockers reports as unblocked by design.
-		held, reason, err := blockedOnSiblingSelectionHold(blockerScanCtx, provider, repo, pr)
+		held, reason, err := blockedOnSiblingSelectionHold(blockerScanCtx, provider, repo, pr, unlandable)
 		if err != nil {
 			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
@@ -674,8 +677,7 @@ func loadPRSelectSafetyGateState(
 	}
 	var couplingDependents []providers.PullRequestSummary
 	for _, pr := range openPRs {
-		if pr.State == "open" && pr.Base == base && isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) &&
-			!hasAnyLabel(pr.Labels, []string{noMergeReviewLabel}) {
+		if pr.State == "open" && pr.Base == base && mergeReviewCanLand(pr, headPrefixes, expectedAuthorLogin) {
 			couplingDependents = append(couplingDependents, pr)
 		}
 	}

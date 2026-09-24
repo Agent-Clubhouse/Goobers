@@ -274,6 +274,9 @@ type siblingOwnershipScope struct {
 	managedHeadPrefix   string
 	listHeadPrefix      string
 	expectedAuthorLogin string
+	// unlandable collects the namespace PRs a managed selection declined as
+	// siblings because this instance cannot land them (#5602).
+	unlandable []string
 }
 
 // gatherSiblingContextOwnershipScope resolves that scope, reporting to stderr
@@ -324,11 +327,8 @@ func runGatherSiblingContextCore(root string, repo providers.RepositoryRef, prov
 	if !ok {
 		return 1
 	}
-	headPrefixes := scope.headPrefixes
-	authorScope := scope.authorScope
 	managedHeadPrefix := scope.managedHeadPrefix
 	listHeadPrefix := scope.listHeadPrefix
-	expectedAuthorLogin := scope.expectedAuthorLogin
 	// SkipCheckState: the list is the always-fresh probe (one request), but
 	// per-candidate check-state resolution is two more requests per PR. It is
 	// resolved below after file-list memoization so same-head CI reruns are
@@ -402,7 +402,7 @@ siblingLoop:
 			}
 			continue
 		}
-		if !advisoryMode && !strings.HasPrefix(pr.Head, managedHeadPrefix) {
+		if !advisoryMode && !scope.admitsManagedSibling(pr) {
 			continue
 		}
 		key := strconv.Itoa(pr.Number)
@@ -490,10 +490,10 @@ siblingLoop:
 	if hasAnyLabel(selectedLabels, []string{noMergeReviewLabel}) {
 		return writeNoWorkResult(stdout, stderr, "selected PR opted out of merge-review")
 	}
-	expectedAdvisoryMode := authorScope == authorScopeAny && !isOwnPullRequest(selectedAuthor, selectedHead, headPrefixes, expectedAuthorLogin)
+	expectedAdvisoryMode := scope.authorScope == authorScopeAny && !isOwnPullRequest(selectedAuthor, selectedHead, scope.headPrefixes, scope.expectedAuthorLogin)
 	if advisoryMode != expectedAdvisoryMode {
 		pf(stderr, "error: advisoryMode %t does not match selected PR head %q under authorScope %q and headPrefixes %q\n",
-			advisoryMode, selectedHead, authorScope, strings.Join(headPrefixes, ","))
+			advisoryMode, selectedHead, scope.authorScope, strings.Join(scope.headPrefixes, ","))
 		return 1
 	}
 
@@ -682,6 +682,8 @@ siblingLoop:
 		// for inputsFrom threading to elect-lander/apply-verdict (a []int array
 		// is not lifted). Empty string when nothing overlaps.
 		"overlappingSiblingsCsv": strings.Join(overlappingCsv, ","),
+		// Namespace PRs this instance cannot land, excluded from sequencing (#5602).
+		"unlandableSiblingsCsv": strings.Join(scope.unlandable, ","),
 		// selectedChangedFiles: the selected PR's changed-file count (#1111),
 		// emitted as a string for the runner's flat-scalar Outputs harvest — the
 		// magnitude the scope-drift flag above acts on, surfaced for observability
@@ -784,7 +786,7 @@ func runGatherSiblingContextWithoutSiblingEvidence(root string, repo providers.R
 		// rather than asserted current.
 		"selectedBaseDrift": baseDriftUnknown, "selectedMergeBaseSha": "", "selectedBaseTipSha": "",
 		"reviewDigest": computeReviewDigest(poll.HeadSHA, poll.BaseSHA, poll.Labels),
-		"siblings":     []siblingPR{}, "overlappingSiblings": []int{}, "overlappingSiblingsCsv": "",
+		"siblings":     []siblingPR{}, "overlappingSiblings": []int{}, "overlappingSiblingsCsv": "", "unlandableSiblingsCsv": "",
 		"selectedChangedFiles": "0", "selectedChangedLines": "0", "scopeGateParked": "false",
 	}
 	return writeSiblingContextResult(providerInput("resultFile", "sibling-context.json"), out,

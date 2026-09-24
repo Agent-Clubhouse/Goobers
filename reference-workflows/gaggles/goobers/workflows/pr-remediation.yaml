@@ -187,6 +187,10 @@ spec:
       inputs:
         resultFile: "sibling-context.json"
         minSeverity: "info"
+        # #5602: siblings are the PRs merge-review can land, so this MUST match
+        # merge-review's headPrefixes; overlap is then attributed against the
+        # same sibling set merge-review sequences over.
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/,goobers/tutor/"
       capabilities:
         - github:pr:write
       policyActions:
