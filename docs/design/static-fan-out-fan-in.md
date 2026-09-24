@@ -145,6 +145,9 @@ conformance surface, deferred "until the local runner implements them." `CFG-022
 What stays deferred to tier 3 / later: **child workflows** and **dynamic branch
 width** (§11). #155's scope splits accordingly — its parallel-branches half is
 answered here and moves to this milestone; its child-workflows half stays V2.
+The dynamic-width contract is now explored separately in the draft
+[`plan-driven-dynamic-fan-out.md`](plan-driven-dynamic-fan-out.md); that draft
+does not change this implemented static contract.
 
 The amendments this implies (landing as slice **FO-1**, not in this document's PR):
 
