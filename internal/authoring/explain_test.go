@@ -127,6 +127,31 @@ func TestMinimalPatternExampleAllowsEmptyString(t *testing.T) {
 	}
 }
 
+func TestExplainWorkspaceRevisionExamples(t *testing.T) {
+	for _, root := range []string{
+		"workspace-revision",
+		"invocation.workspaceRevision",
+		"result.workspaceRevision",
+		"journal-event.workspaceRevision",
+	} {
+		for field, want := range map[string]string{
+			"repository.url":     "https://example.invalid",
+			"baseRepository.url": "https://example.invalid",
+			"baseSha":            strings.Repeat("0", 40),
+		} {
+			t.Run(root+"."+field, func(t *testing.T) {
+				got, err := Explain(root + "." + field)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Type != "string" || got.Example != want {
+					t.Fatalf("type = %v, example = %v; want string example %q", got.Type, got.Example, want)
+				}
+			})
+		}
+	}
+}
+
 func TestEveryEmbeddedSelectorReturnsCompleteGuidance(t *testing.T) {
 	r := registry{documents: make(map[string]*schemaDocument)}
 	selectors := make(map[string]bool)

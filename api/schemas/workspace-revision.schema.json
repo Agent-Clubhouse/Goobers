@@ -36,7 +36,7 @@
     "sourceRef": {"description": "Optional source ref provenance for the selected revision.", "type": "string"},
     "sourceId": {"description": "Optional source identifier provenance for the selected revision.", "type": "string"},
     "baseRepository": {"description": "Optional canonical base repository identity that the selected revision is bound to.", "$ref": "#/properties/repository"},
-    "baseSha": {"description": "Optional full lowercase Git object ID for the base revision.", "anyOf": [{"const": ""}, {"$ref": "#/$defs/sha"}]}
+    "baseSha": {"description": "Optional full lowercase Git object ID for the base revision.", "examples": ["0000000000000000000000000000000000000000"], "anyOf": [{"const": ""}, {"$ref": "#/$defs/sha"}]}
   },
   "$defs": {
     "component": {
@@ -51,6 +51,7 @@
     "serviceURL": {
       "description": "Optional absolute HTTP(S) service URL, without user information, query, fragment, or unescaped whitespace.",
       "type": "string",
+      "examples": ["https://example.invalid"],
       "pattern": "^(?:|https?://(?:\\[[0-9a-fA-F:.]+\\]|[^\\s\u0000-\u001f\u007f-\u009f\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000/:@?#%\\\\\\[\\]<>\"`{}^]+)(?::[0-9]*)?(?:/(?:[^\\s\u0000-\u001f\u007f-\u009f\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000?#%\\\\]|%[0-9a-fA-F]{2})*)?)$"
     },
     "sha": {
