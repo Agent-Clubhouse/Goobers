@@ -374,7 +374,8 @@ func (r *captureReplayRunner) Run(_ context.Context, request harness.ProcessRequ
 	if prompt == "" {
 		return harness.ProcessResult{}, fmt.Errorf("captured Copilot invocation has no prompt")
 	}
-	if prompt != capturedPrompt(r.capture.Events) {
+	captured := capturedPrompts(r.capture.Events)
+	if !slices.Contains(captured, prompt) {
 		return harness.ProcessResult{}, fmt.Errorf("runtime prompt differs from the captured invocation")
 	}
 	loadedPaths, digest := loadPackagedAuthoringPath(r.t, request.Dir)
@@ -638,6 +639,25 @@ func TestPreWriteConceptsRequireEvidenceGraphAndCapabilities(t *testing.T) {
 		if got := missingPreWriteConcept(tc.explanation); got != tc.missing {
 			t.Errorf("missingPreWriteConcept(%q) = %q, want %q", tc.explanation, got, tc.missing)
 		}
+	}
+}
+
+func TestCapturedPromptsAcceptsAnyRecordedUserMessage(t *testing.T) {
+	events := []json.RawMessage{
+		json.RawMessage(`{"type":"session.start","data":{"sessionId":"s1"}}`),
+		json.RawMessage(`{"type":"user.message","data":{"content":"first prompt"}}`),
+		json.RawMessage(`{"type":"assistant.message","data":{"content":"thinking"}}`),
+		json.RawMessage(`{"type":"user.message","data":{"content":"repair prompt"}}`),
+	}
+	if got := capturedPrompt(events); got != "repair prompt" {
+		t.Fatalf("capturedPrompt() = %q, want %q", got, "repair prompt")
+	}
+	prompts := capturedPrompts(events)
+	if len(prompts) != 2 || prompts[0] != "first prompt" || prompts[1] != "repair prompt" {
+		t.Fatalf("capturedPrompts() = %#v, want [first prompt repair prompt]", prompts)
+	}
+	if !slices.Contains(prompts, "first prompt") {
+		t.Fatal("capturedPrompts() unexpectedly dropped the original prompt")
 	}
 }
 
@@ -1112,7 +1132,8 @@ func jsonStringBody(t *testing.T, s string) string {
 	return string(encoded[1 : len(encoded)-1])
 }
 
-func capturedPrompt(events []json.RawMessage) string {
+func capturedPrompts(events []json.RawMessage) []string {
+	var out []string
 	for _, raw := range events {
 		var event struct {
 			Type string `json:"type"`
@@ -1121,10 +1142,20 @@ func capturedPrompt(events []json.RawMessage) string {
 			} `json:"data"`
 		}
 		if json.Unmarshal(raw, &event) == nil && event.Type == "user.message" {
-			return event.Data.Content
+			if content := strings.TrimSpace(event.Data.Content); content != "" {
+				out = append(out, event.Data.Content)
+			}
 		}
 	}
-	return ""
+	return out
+}
+
+func capturedPrompt(events []json.RawMessage) string {
+	prompts := capturedPrompts(events)
+	if len(prompts) == 0 {
+		return ""
+	}
+	return prompts[len(prompts)-1]
 }
 
 func replaySessionLogPath(request harness.ProcessRequest) (string, error) {
