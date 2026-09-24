@@ -775,7 +775,7 @@ func minimalPatternExample(pattern string) (string, error) {
 	}
 	hex64 := strings.Repeat("0", 64)
 	for _, candidate := range []string{
-		"x", "1", "/", "0.0", "0000", strings.Repeat("0", 32), hex64, "sha256:" + hex64,
+		"", "x", "1", "/", "0.0", "0000", strings.Repeat("0", 32), hex64, "sha256:" + hex64,
 	} {
 		if compiled.MatchString(candidate) {
 			return candidate, nil
