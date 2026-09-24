@@ -193,18 +193,16 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
 			// A corrupt marker may be either legacy (full ID directory) or
 			// current (hashed directory). Preserve both possible paths.
-			seen[runID] = true
-			seen[worktreeDirectoryName(runID)] = true
+			markSeenMarkerDirectory(seen, runID, nil)
 			continue
 		}
 		directory, err := mk.directoryName()
 		if err != nil {
 			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
-			seen[runID] = true
-			seen[worktreeDirectoryName(runID)] = true
+			markSeenMarkerDirectory(seen, runID, nil)
 			continue
 		}
-		seen[directory] = true
+		markSeenMarkerDirectory(seen, runID, &mk)
 
 		reason, err := markerReapReason(mk, opts)
 		if err != nil {
@@ -245,6 +243,81 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 	results = append(results, markerless...)
 	warnings = append(warnings, markerlessWarnings...)
 	return results, warnings, nil
+}
+
+func markSeenMarkerDirectory(seen map[string]bool, runID string, mk *marker) {
+	if mk != nil {
+		if directory, err := mk.directoryName(); err == nil {
+			seen[directory] = true
+			return
+		}
+	}
+	seen[runID] = true
+	seen[worktreeDirectoryName(runID)] = true
+}
+
+// CountReapCandidates reports the union of marker-backed and markerless
+// worktrees that Reap scans under root.
+func CountReapCandidates(root string) (int, error) {
+	repositories, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("worktree: list root %s: %w", root, err)
+	}
+
+	total := 0
+	for _, repository := range repositories {
+		if !repository.IsDir() {
+			continue
+		}
+		count, err := countReapCandidatesForRepo(root, repository.Name())
+		if err != nil {
+			return 0, err
+		}
+		total += count
+	}
+	return total, nil
+}
+
+func countReapCandidatesForRepo(root, key string) (int, error) {
+	markersDir := filepath.Join(root, key, "markers")
+	markers, err := os.ReadDir(markersDir)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("worktree: list markers for %s: %w", key, err)
+	}
+
+	count := 0
+	seen := make(map[string]bool, len(markers))
+	for _, entry := range markers {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		count++
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		mk, err := readMarker(filepath.Join(markersDir, entry.Name()))
+		if err != nil {
+			markSeenMarkerDirectory(seen, runID, nil)
+			continue
+		}
+		markSeenMarkerDirectory(seen, runID, &mk)
+	}
+
+	runsDir := filepath.Join(root, key, "runs")
+	runs, err := os.ReadDir(runsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return count, nil
+		}
+		return 0, fmt.Errorf("worktree: list runs for %s: %w", key, err)
+	}
+	for _, entry := range runs {
+		if entry.IsDir() && !seen[entry.Name()] {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func markerReapReason(mk marker, opts ReapOptions) (ReapReason, error) {

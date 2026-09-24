@@ -2,9 +2,7 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/worktree"
@@ -73,53 +71,9 @@ func measureWorktreeAccumulation(managers map[string]*worktree.Manager, legacy *
 }
 
 func worktreeAccumulationAt(root string) (int, error) {
-	repositories, err := os.ReadDir(root)
-	if os.IsNotExist(err) {
-		return 0, nil
-	}
+	count, err := worktree.CountReapCandidates(root)
 	if err != nil {
 		return 0, fmt.Errorf("measure startup worktree accumulation at %s: %w", root, err)
-	}
-
-	total := 0
-	for _, repository := range repositories {
-		if !repository.IsDir() || repository.Name() == "scratch" {
-			continue
-		}
-		repositoryRoot := filepath.Join(root, repository.Name())
-		markers, err := countAccumulationEntries(filepath.Join(repositoryRoot, "markers"), false)
-		if err != nil {
-			return 0, err
-		}
-		runs, err := countAccumulationEntries(filepath.Join(repositoryRoot, "runs"), true)
-		if err != nil {
-			return 0, err
-		}
-		// Markers and run directories normally describe the same worktree.
-		// The larger side includes whichever crash-only shape accumulated
-		// (marker without directory, or markerless directory) without counting
-		// every healthy pair twice.
-		if runs > markers {
-			markers = runs
-		}
-		total += markers
-	}
-	return total, nil
-}
-
-func countAccumulationEntries(path string, directories bool) (int, error) {
-	entries, err := os.ReadDir(path)
-	if os.IsNotExist(err) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("measure startup accumulation at %s: %w", path, err)
-	}
-	count := 0
-	for _, entry := range entries {
-		if entry.IsDir() == directories && (directories || strings.HasSuffix(entry.Name(), ".json")) {
-			count++
-		}
 	}
 	return count, nil
 }

@@ -25,21 +25,22 @@ func TestDeriveStartupBudgetFromMeasuredAccumulation(t *testing.T) {
 	}
 }
 
-func TestWorktreeAccumulationMeasuresLargestPerRepositoryInventory(t *testing.T) {
+func TestWorktreeAccumulationMeasuresMarkerAndMarkerlessUnion(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	for _, path := range []string{
 		filepath.Join(repository, "markers"),
 		filepath.Join(repository, "runs", "run-a"),
-		filepath.Join(repository, "runs", "run-b"),
+		filepath.Join(repository, "runs", "run-c"),
 		filepath.Join(root, "scratch", "stage-a"),
 	} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"run-a.json", "run-b.json", "orphan.json"} {
-		if err := os.WriteFile(filepath.Join(repository, "markers", name), []byte("{}"), 0o600); err != nil {
+	for _, runID := range []string{"run-a", "run-b"} {
+		data := []byte(`{"run_id":"` + runID + `"}`)
+		if err := os.WriteFile(filepath.Join(repository, "markers", runID+".json"), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
