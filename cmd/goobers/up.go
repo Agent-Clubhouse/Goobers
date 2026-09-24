@@ -380,6 +380,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 }
 
 func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, args []string, stdout, stderr io.Writer) int {
+	stdout = syncStartupStdout(stdout) // #4570
 	// #4252: process-start reference point for logGateFlip's elapsed-time
 	// readout on every named startup gate below.
 	processStart := time.Now()
