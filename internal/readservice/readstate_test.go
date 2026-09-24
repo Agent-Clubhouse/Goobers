@@ -3,6 +3,7 @@ package readservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -240,6 +241,36 @@ func TestEnvelopeToleratesADepthSourceWithoutAnAgeSurface(t *testing.T) {
 	if !reader.input.OldestPendingAt.IsZero() {
 		t.Errorf("oldestPendingAt = %s, want the zero time when unknown",
 			reader.input.OldestPendingAt)
+	}
+}
+
+// failingIntake always fails Count, simulating an unavailable or locked
+// intake store.
+type failingIntake struct{ err error }
+
+func (f failingIntake) Count(context.Context) (int, error) { return 0, f.err }
+
+// TestEnvelopeFlagsAFailedIntakeCountAsUnavailable is #2462's regression
+// test. Before this, a failed Count was swallowed and PendingIntake was left
+// at its zero value with no signal at all — indistinguishable from a
+// genuinely empty intake table, even though unapplied watermarks could be
+// accumulating behind the unavailable store.
+func TestEnvelopeFlagsAFailedIntakeCountAsUnavailable(t *testing.T) {
+	reader := &recordingFreshnessReader{}
+	service := &Local{
+		sources: LocalSources{ReadModel: reader},
+		now:     time.Now,
+	}
+	service.AttachIntakeDepth(failingIntake{err: errors.New("intake store locked")})
+
+	if got := service.readStateEnvelope(context.Background()); got.ReadState == nil {
+		t.Fatal("no envelope was produced")
+	}
+	if reader.input.PendingIntake != 0 {
+		t.Errorf("pendingIntake = %d, want 0 (the zero value) on a Count error", reader.input.PendingIntake)
+	}
+	if !reader.input.IntakeCountUnavailable {
+		t.Error("intakeCountUnavailable = false, want true — a failed Count must not read the same as a successful zero")
 	}
 }
 

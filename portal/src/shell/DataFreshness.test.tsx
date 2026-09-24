@@ -52,6 +52,33 @@ describe("data freshness derivation", () => {
     }
   });
 
+  // #2462: a failed intake Count must read as degraded, not as a healthy
+  // pendingIntake: 0 — the same reasoning as "no sweep completed" above.
+  // AC4 requires a Portal-side test covering the error state, in addition to
+  // success and zero.
+  it("reports lagging when the intake count is unavailable", () => {
+    const state = deriveDataFreshness(
+      readState({
+        lagSeconds: 1,
+        pendingIntake: 0,
+        degraded: ["intake_count_unavailable"],
+      }),
+    );
+    expect(state.kind).toBe("lagging");
+    if (state.kind === "lagging") {
+      expect(state.degraded).toContain("intake_count_unavailable");
+    }
+  });
+
+  // The AC1 counterpart: a genuine zero count, with no degraded condition,
+  // must NOT read the same as an unavailable one.
+  it("does not report an unavailable intake count for a genuine zero", () => {
+    const state = deriveDataFreshness(readState({ lagSeconds: 1, pendingIntake: 0, degraded: [] }));
+    if (state.kind === "lagging") {
+      expect(state.degraded).not.toContain("intake_count_unavailable");
+    }
+  });
+
   it("treats no sweep as expected on a fresh standalone instance", async () => {
     const state = deriveDataFreshness(
       readState({ lagSeconds: 0, degraded: ["no_sweep_completed"] }),

@@ -110,6 +110,14 @@ const (
 	// more runs. Unlike lag, this is not a matter of waiting: those runs are
 	// absent from the projection until repair rediscovers them.
 	DegradedProjectFailure = "project_failure"
+	// DegradedIntakeCountUnavailable reports that the pending-intake count
+	// itself could not be read (#2462) — an unavailable or locked intake
+	// store, not an empty one. PendingIntake stays 0 in this case, the same
+	// as when there really are zero pending watermarks (an unattached depth
+	// source also leaves it at 0, for the same reason); this condition is
+	// what tells the two apart, the same way DegradedNoSweepCompleted keeps a
+	// never-completed sweep from reading as an up-to-date LagSeconds of 0.
+	DegradedIntakeCountUnavailable = "intake_count_unavailable"
 )
 
 // MissingProjectedRuns names the partition a projection gap omits.
@@ -141,6 +149,12 @@ type ReadStateInput struct {
 	// closed is no longer a gap, and a signal that never clears stops carrying
 	// information.
 	ProjectFailures int
+	// IntakeCountUnavailable reports that the caller tried to read the
+	// pending-intake count and could not (#2462) — a failed Count call, as
+	// opposed to no depth source being attached at all. PendingIntake is left
+	// at its zero value either way; this is what a client uses to tell "zero
+	// pending" from "unknown".
+	IntakeCountUnavailable bool
 }
 
 // ReadState builds the envelope.
@@ -202,6 +216,12 @@ func (s *Store) ReadState(ctx context.Context, input ReadStateInput) (ReadState,
 	}
 	if input.ProjectFailures > 0 {
 		out.Degraded = append(out.Degraded, DegradedProjectFailure)
+	}
+	if input.IntakeCountUnavailable {
+		// #2462: PendingIntake stays 0 above — the zero value — exactly as it
+		// would for a genuinely empty intake or no depth source attached at
+		// all. This is the signal that tells a caller the 0 is not known-good.
+		out.Degraded = append(out.Degraded, DegradedIntakeCountUnavailable)
 	}
 	// A known gap makes the answer partial, not merely stale: runs the projector
 	// failed to apply, and runs whose watermark was never recorded, are absent
