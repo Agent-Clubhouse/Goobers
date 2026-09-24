@@ -227,6 +227,32 @@ func TestADOProviderAddPullRequestLabels(t *testing.T) {
 	}
 }
 
+// TestADOProviderPullRequestLabelNamesPreservesCase verifies that
+// PullRequestLabelNames returns each label in its original case rather than
+// the lowercase form the provider's internal id lookup uses (#2750). It
+// works today only because the single production caller matches a lowercase
+// constant; an exact-match or display caller would otherwise be wrong.
+func TestADOProviderPullRequestLabelNamesPreservesCase(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/labels", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"value": []map[string]interface{}{{"id": "id-1", "name": "Goobers:Needs-Remediation-Escalated"}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	names, err := provider.PullRequestLabelNames(context.Background(), RepositoryRef{Name: "repo", Project: "project"}, "42")
+	if err != nil {
+		t.Fatalf("PullRequestLabelNames returned error: %v", err)
+	}
+	if len(names) != 1 || names[0] != "Goobers:Needs-Remediation-Escalated" {
+		t.Fatalf("names = %#v, want original-case [\"Goobers:Needs-Remediation-Escalated\"]", names)
+	}
+}
+
 func TestADOProviderRemovePullRequestLabel(t *testing.T) {
 	// ADO 400s on delete-by-name when the name contains a colon (verified
 	// live), so the provider resolves the label id via the /labels sub-endpoint

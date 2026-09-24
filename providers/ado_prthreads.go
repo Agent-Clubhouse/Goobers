@@ -172,11 +172,19 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 	return nil
 }
 
-// pullRequestLabelsWithIDs fetches a PR's labels as a lowercased-name -> id
-// map. ADO returns labels only from this dedicated sub-endpoint for a single
-// PR (the PR object and $expand=labels both omit them — verified live); the
-// id is needed to delete a label whose name contains a colon.
-func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo RepositoryRef, pullID string) (map[string]string, error) {
+// adoPRLabel is one native Azure DevOps PR label as returned by the labels
+// sub-endpoint: an id (needed to delete a colon-containing name) paired with
+// its original-case name.
+type adoPRLabel struct {
+	ID   string
+	Name string
+}
+
+// pullRequestLabels fetches a PR's labels, original case preserved. ADO
+// returns labels only from this dedicated sub-endpoint for a single PR (the
+// PR object and $expand=labels both omit them — verified live); the id is
+// needed to delete a label whose name contains a colon.
+func (p *ADOProvider) pullRequestLabels(ctx context.Context, repo RepositoryRef, pullID string) ([]adoPRLabel, error) {
 	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
 	if err != nil {
 		return nil, err
@@ -190,23 +198,26 @@ func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo Reposit
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
 		return nil, err
 	}
-	m := make(map[string]string, len(out.Value))
+	labels := make([]adoPRLabel, 0, len(out.Value))
 	for _, l := range out.Value {
-		m[strings.ToLower(l.Name)] = l.ID
+		labels = append(labels, adoPRLabel{ID: l.ID, Name: l.Name})
 	}
-	return m, nil
+	return labels, nil
 }
 
-// PullRequestLabelNames returns a PR's active label names via the dedicated
-// labels sub-endpoint (the single-PR GET omits them — verified live).
+// PullRequestLabelNames returns a PR's active label names, original case
+// preserved, via the dedicated labels sub-endpoint (the single-PR GET omits
+// them — verified live). A caller that needs exact-match or display
+// semantics (rather than the lowercase-only equality this provider's own
+// verdict-label check happens to use today) depends on this original case.
 func (p *ADOProvider) PullRequestLabelNames(ctx context.Context, repo RepositoryRef, pullID string) ([]string, error) {
-	labels, err := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
+	labels, err := p.pullRequestLabels(ctx, repo, pullID)
 	if err != nil {
 		return nil, err
 	}
 	names := make([]string, 0, len(labels))
-	for name := range labels {
-		names = append(names, name)
+	for _, l := range labels {
+		names = append(names, l.Name)
 	}
 	return names, nil
 }
@@ -229,12 +240,22 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 	}
 	// ADO's delete-by-name endpoint 400s on a label whose name contains a
 	// colon (e.g. goobers:needs-remediation) — verified live. Resolve the
-	// label's id and delete by id, which ADO accepts.
-	labels, err := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
+	// label's id and delete by id, which ADO accepts. The match is
+	// case-insensitive: ADO label names are case-preserving but not
+	// case-sensitive for lookup purposes.
+	labels, err := p.pullRequestLabels(ctx, repo, pullID)
 	if err != nil {
 		return err
 	}
-	id, present := labels[strings.ToLower(name)]
+	var id string
+	present := false
+	for _, l := range labels {
+		if strings.EqualFold(l.Name, name) {
+			id = l.ID
+			present = true
+			break
+		}
+	}
 	if !present {
 		// Already absent — benign, mirror GitHub's 404-is-not-an-error removal.
 		return nil
