@@ -537,7 +537,12 @@ func TestClaudeAdapterSkipsOversizedEventBeforeCapturedTerminalResult(t *testing
 }
 
 func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *testing.T) {
-	const limit = 4096
+	// limit must stay comfortably above the rendered prompt's size (a few KB,
+	// and only grows as prompt.go's hints do) so the shared-rune-cap budget in
+	// truncateTranscriptContents always has room to retain both prompts in
+	// full; the oversized "y"-repeated assistant blob below (limit*2 bytes on
+	// its own) is what this test actually means to force truncated.
+	const limit = 8192
 	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	recovery := []byte(strings.Join([]string{
