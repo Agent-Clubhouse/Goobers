@@ -13,6 +13,8 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
@@ -231,7 +233,8 @@ func resumeExhaustedRecovery(t *testing.T, layout instance.Layout, source string
 	recoveryCLIGit(t, destination, "checkout", "-b", providers.BranchName("implementation-recovery", "receiving-run"))
 	t.Setenv("GOOBERS_RUN_ID", "receiving-run")
 	t.Setenv("GOOBERS_WORKFLOW", "implementation-recovery")
-	t.Setenv("GOOBERS_GITHUB_TOKEN", "fixture-only-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "fixture-only-token")
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "")
 	t.Chdir(destination)
 	if code := runRecoveryResume([]string{layout.Root}, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("resume returned %d", code)

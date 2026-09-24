@@ -2,11 +2,32 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
+
+type recoveryTestADOCredentialSource struct {
+	credential providers.ADOCredential
+}
+
+func (s recoveryTestADOCredentialSource) Credential(context.Context) (providers.ADOCredential, error) {
+	return s.credential, nil
+}
 
 func TestRecoveryRestoreSelectsProviderCompleteIdentity(t *testing.T) {
 	config := &instance.Config{Repos: []instance.RepoRef{
@@ -38,6 +59,275 @@ func TestRecoveryRestoreRequiresExplicitRecordDestinationAndBranch(t *testing.T)
 		var stdout, stderr bytes.Buffer
 		if code := runRecoveryRestore(args, &stdout, &stderr); code != 2 {
 			t.Fatalf("missing restore input returned %d", code)
+		}
+	}
+}
+
+func TestRecoveryRestoreGitEnvironmentUsesStageScopedRepoPushCredential(t *testing.T) {
+	t.Setenv("GOOBERS_RUN_ID", "receiving-run")
+	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "stage-repo-push-token")
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "host-token-must-not-be-read")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: string(apiv1.ProviderGitHub),
+			Owner:    "Agent-Clubhouse",
+			Name:     "Goobers",
+			Token:    instance.TokenRef{Env: "GOOBERS_GITHUB_TOKEN"},
+		}},
+	}
+	project := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "Agent-Clubhouse", Name: "Goobers"}
+	registry, _ := journal.DefaultScrubber()
+
+	env, err := recoveryRestoreGitEnvironment(context.Background(), instance.Layout{}, cfg, project, "https://github.com/Agent-Clubhouse/Goobers.git", registry)
+	if err != nil {
+		t.Fatalf("recoveryRestoreGitEnvironment: %v", err)
+	}
+	joined := strings.Join(recoveryAuthenticationEnvironment(env), "\n")
+	if !strings.Contains(joined, "AUTHORIZATION: basic") {
+		t.Fatalf("stage-scoped repo:push auth not used: %q", joined)
+	}
+	if strings.Contains(joined, "host-token-must-not-be-read") {
+		t.Fatalf("recovery forwarded the configured host token: %q", joined)
+	}
+	if scrubbed := string(registry.Scrub([]byte("token=stage-repo-push-token"))); strings.Contains(scrubbed, "stage-repo-push-token") {
+		t.Fatalf("stage credential was not registered with the scrubber: %q", scrubbed)
+	}
+}
+
+func TestRecoveryRestoreGitEnvironmentFailsClosedWithoutStageScopedRepoPushCredential(t *testing.T) {
+	t.Setenv("GOOBERS_RUN_ID", "receiving-run")
+	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "")
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: string(apiv1.ProviderGitHub),
+			Owner:    "Agent-Clubhouse",
+			Name:     "Goobers",
+			Token:    instance.TokenRef{Env: "GOOBERS_GITHUB_TOKEN"},
+		}},
+	}
+	project := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "Agent-Clubhouse", Name: "Goobers"}
+	registry, _ := journal.DefaultScrubber()
+
+	_, err := recoveryRestoreGitEnvironment(context.Background(), instance.Layout{}, cfg, project, "https://github.com/Agent-Clubhouse/Goobers.git", registry)
+	if err == nil {
+		t.Fatal("recoveryRestoreGitEnvironment succeeded without stage-scoped repo:push credential")
+	}
+	if !strings.Contains(err.Error(), executor.CredentialEnvVar(string(capability.RepoPush))) {
+		t.Fatalf("error = %q, want credential env var %q", err, executor.CredentialEnvVar(string(capability.RepoPush)))
+	}
+}
+
+func TestRecoveryRestoreGitEnvironmentUsesStageScopedADOPAT(t *testing.T) {
+	t.Setenv(executor.RunIDEnvVar, "receiving-run")
+	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "stage-ado-pat")
+	t.Setenv("ADO_HOST_PAT", "host-pat-must-not-be-read")
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "web",
+		Token:    instance.TokenRef{Env: "ADO_HOST_PAT"},
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthPAT},
+	}}}
+	project := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "widgets", Name: "web"}
+	registry, _ := journal.DefaultScrubber()
+
+	env, err := recoveryRestoreGitEnvironment(context.Background(), instance.Layout{}, cfg, project, "https://dev.azure.com/acme/widgets/_git/web", registry)
+	if err != nil {
+		t.Fatalf("recoveryRestoreGitEnvironment: %v", err)
+	}
+	expected := base64.StdEncoding.EncodeToString([]byte("goobers:stage-ado-pat"))
+	joined := strings.Join(recoveryAuthenticationEnvironment(env), "\n")
+	if !strings.Contains(joined, "AUTHORIZATION: Basic "+expected) {
+		t.Fatalf("stage-scoped ADO PAT auth not used: %q", joined)
+	}
+	if strings.Contains(joined, "host-pat-must-not-be-read") {
+		t.Fatalf("recovery forwarded the configured host PAT: %q", joined)
+	}
+}
+
+func TestRecoveryRestoreGitEnvironmentPreservesADODynamicAuthentication(t *testing.T) {
+	for _, kind := range []string{
+		instance.ADOAuthAzureCLI,
+		instance.ADOAuthWorkloadIdentity,
+		instance.ADOAuthManagedIdentity,
+	} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv(executor.RunIDEnvVar, "receiving-run")
+			t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "")
+			cfg := &instance.Config{Repos: []instance.RepoRef{{
+				Provider: "ado",
+				Owner:    "acme",
+				Project:  "widgets",
+				Name:     "web",
+				Auth:     &instance.RepoAuthConfig{Kind: kind},
+			}}}
+			project := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "widgets", Name: "web"}
+			registry, _ := journal.DefaultScrubber()
+			previous := recoveryADOCredentialSource
+			t.Cleanup(func() { recoveryADOCredentialSource = previous })
+			recoveryADOCredentialSource = func(repo instance.RepoRef, _ providers.CommandRunner, _ credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+				if repo.Auth == nil || repo.Auth.Kind != kind {
+					t.Fatalf("configured ADO auth kind = %#v, want %q", repo.Auth, kind)
+				}
+				return recoveryTestADOCredentialSource{credential: providers.ADOCredential{
+					Kind:   "bearer",
+					Secret: "dynamic-ado-token",
+				}}, nil
+			}
+
+			env, err := recoveryRestoreGitEnvironment(context.Background(), instance.Layout{}, cfg, project, "https://dev.azure.com/acme/widgets/_git/web", registry)
+			if err != nil {
+				t.Fatalf("recoveryRestoreGitEnvironment: %v", err)
+			}
+			joined := strings.Join(recoveryAuthenticationEnvironment(env), "\n")
+			if !strings.Contains(joined, "AUTHORIZATION: Bearer dynamic-ado-token") {
+				t.Fatalf("configured ADO dynamic auth not used: %q", joined)
+			}
+			if scrubbed := string(registry.Scrub([]byte("token=dynamic-ado-token"))); strings.Contains(scrubbed, "dynamic-ado-token") {
+				t.Fatalf("ADO dynamic credential was not registered with the scrubber: %q", scrubbed)
+			}
+		})
+	}
+}
+
+func TestRecoveryRestoreConfiguredFileCredentialRemainsSupported(t *testing.T) {
+	t.Setenv("GOOBERS_RUN_ID", "")
+	t.Setenv(claimsclient.EnvEndpoint, "")
+	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "ambient-stage-token")
+	tokenFile := filepath.Join(t.TempDir(), "github-token")
+	if err := os.WriteFile(tokenFile, []byte("configured-file-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: string(apiv1.ProviderGitHub),
+		Owner:    "Agent-Clubhouse",
+		Name:     "Goobers",
+		Token:    instance.TokenRef{File: tokenFile},
+	}}}
+	project := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "Agent-Clubhouse", Name: "Goobers"}
+	registry, _ := journal.DefaultScrubber()
+	env, err := recoveryRestoreGitEnvironment(context.Background(), instance.NewLayout(t.TempDir()), cfg, project, "https://github.com/Agent-Clubhouse/Goobers.git", registry)
+	if err != nil {
+		t.Fatalf("recoveryRestoreGitEnvironment: %v", err)
+	}
+	var gitToken string
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "GOOBERS_GIT_TOKEN="); ok {
+			gitToken = value
+		}
+	}
+	if gitToken != "configured-file-token" {
+		t.Fatalf("GOOBERS_GIT_TOKEN = %q, want configured file credential; env: %q", gitToken, env)
+	}
+	if scrubbed := string(registry.Scrub([]byte("token=configured-file-token"))); strings.Contains(scrubbed, "configured-file-token") {
+		t.Fatalf("configured file credential was not registered with the scrubber: %q", scrubbed)
+	}
+}
+
+type recoveryTestSecretStore struct {
+	value string
+}
+
+func (s recoveryTestSecretStore) FetchSecret(_ context.Context, ref string) (string, error) {
+	if ref != "vault/recovery" {
+		return "", errors.New("unexpected secret ref")
+	}
+	return s.value, nil
+}
+
+func TestRecoveryConfiguredGitEnvironmentSupportsStoreAndAppSources(t *testing.T) {
+	t.Run("secret store", func(t *testing.T) {
+		registry, _ := journal.DefaultScrubber()
+		repo := instance.RepoRef{
+			Provider: "github",
+			Owner:    "Agent-Clubhouse",
+			Name:     "Goobers",
+			Token:    instance.TokenRef{Store: "vault/recovery"},
+		}
+		resolver, err := githubWorktreeGitEnvironment(t.TempDir(), repo, registry, recoveryTestSecretStore{value: "store-recovery-token"})
+		if err != nil {
+			t.Fatalf("githubWorktreeGitEnvironment: %v", err)
+		}
+		env, err := resolver(context.Background(), "https://github.com/Agent-Clubhouse/Goobers.git")
+		if err != nil {
+			t.Fatalf("configured store resolver: %v", err)
+		}
+		if !strings.Contains(strings.Join(env, "\n"), "store-recovery-token") {
+			t.Fatalf("configured store credential was not used: %q", env)
+		}
+		if got := string(registry.Scrub([]byte("store-recovery-token"))); strings.Contains(got, "store-recovery-token") {
+			t.Fatalf("configured store credential was not registered with scrubber: %q", got)
+		}
+	})
+
+	t.Run("github app", func(t *testing.T) {
+		previous := newGitHubAppTokenSource
+		t.Cleanup(func() { newGitHubAppTokenSource = previous })
+		newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+			return func(context.Context) (string, time.Time, error) {
+				return "app-recovery-token", time.Time{}, nil
+			}, nil
+		}
+		registry, _ := journal.DefaultScrubber()
+		repo := instance.RepoRef{
+			Provider: "github",
+			Owner:    "Agent-Clubhouse",
+			Name:     "Goobers",
+			Auth: &instance.RepoAuthConfig{
+				Kind:           instance.GitHubAuthApp,
+				AppID:          "123",
+				InstallationID: "456",
+				PrivateKey:     &instance.TokenRef{File: filepath.Join(t.TempDir(), "app.pem")},
+			},
+		}
+		resolver, err := githubWorktreeGitEnvironment(t.TempDir(), repo, registry, nil)
+		if err != nil {
+			t.Fatalf("githubWorktreeGitEnvironment: %v", err)
+		}
+		env, err := resolver(context.Background(), "https://github.com/Agent-Clubhouse/Goobers.git")
+		if err != nil {
+			t.Fatalf("configured app resolver: %v", err)
+		}
+		if !strings.Contains(strings.Join(env, "\n"), "app-recovery-token") {
+			t.Fatalf("configured app credential was not used: %q", env)
+		}
+		if got := string(registry.Scrub([]byte("app-recovery-token"))); strings.Contains(got, "app-recovery-token") {
+			t.Fatalf("configured app credential was not registered with scrubber: %q", got)
+		}
+	})
+}
+
+func TestRecoveryAuthenticationEnvironmentExcludesStageAndHostSecrets(t *testing.T) {
+	environment := []string{
+		"GOOBERS_CRED_REPO_PUSH=stage-repo-push-token",
+		"GOOBERS_GITHUB_TOKEN=host-token",
+		"GOOBERS_GIT_TOKEN=transport-token",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.https://example.invalid/.extraheader",
+		"GIT_CONFIG_VALUE_0=AUTHORIZATION: basic transport-token",
+		"PATH=C:\\bin",
+	}
+
+	got := strings.Join(recoveryAuthenticationEnvironment(environment), "\n")
+	for _, excluded := range []string{
+		"GOOBERS_CRED_REPO_PUSH=stage-repo-push-token",
+		"GOOBERS_GITHUB_TOKEN=host-token",
+		"PATH=C:\\bin",
+	} {
+		if strings.Contains(got, excluded) {
+			t.Fatalf("recovery Git environment forwarded %q: %q", excluded, got)
+		}
+	}
+	for _, allowed := range []string{
+		"GOOBERS_GIT_TOKEN=transport-token",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.https://example.invalid/.extraheader",
+		"GIT_CONFIG_VALUE_0=AUTHORIZATION: basic transport-token",
+	} {
+		if !strings.Contains(got, allowed) {
+			t.Fatalf("recovery Git environment omitted %q: %q", allowed, got)
 		}
 	}
 }
