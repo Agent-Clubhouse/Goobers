@@ -1921,7 +1921,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
 			continue
 		}
-		if opts.respectAssignee && item.Assignee != opts.assignedTo {
+		if opts.respectAssignee && !item.AssigneeMatches(opts.assignedTo) {
 			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
@@ -2126,7 +2126,7 @@ func runReadOnlyBacklogQuery(
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
 			continue
 		}
-		if opts.respectAssignee && item.Assignee != opts.assignedTo {
+		if opts.respectAssignee && !item.AssigneeMatches(opts.assignedTo) {
 			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}

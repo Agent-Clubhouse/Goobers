@@ -291,14 +291,17 @@ func planBacklogAssignments(
 	scopedItems []providers.WorkItem,
 	maxItems int,
 ) []assignmentPlanEntry {
+	// Counted via item.AssigneeMatches rather than an exact-string map lookup
+	// (#5556): a roster entry configured with an Azure DevOps display name
+	// must still count an item whose provider-reported identity carries a
+	// distinct uniqueName alias for the same account, and vice versa.
 	load := make([]int, len(roster))
-	indexByAssignee := make(map[string]int, len(roster))
-	for i, entry := range roster {
-		indexByAssignee[entry.Assignee] = i
-	}
 	for _, item := range scopedItems {
-		if i, ok := indexByAssignee[item.Assignee]; ok {
-			load[i]++
+		for i, entry := range roster {
+			if item.AssigneeMatches(entry.Assignee) {
+				load[i]++
+				break
+			}
 		}
 	}
 	var unassigned []providers.WorkItem

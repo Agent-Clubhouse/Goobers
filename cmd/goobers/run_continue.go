@@ -488,7 +488,7 @@ func validateContinuationEligibility(item providers.WorkItem, claimID string, po
 	if policy == nil {
 		return nil
 	}
-	if policy.respectAssignee && item.Assignee != policy.assignedTo {
+	if policy.respectAssignee && !item.AssigneeMatches(policy.assignedTo) {
 		return fmt.Errorf("source claim %q is assigned to %q, need %q", claimID, item.Assignee, policy.assignedTo)
 	}
 	matched, err := policy.labelFilter.Matches(item.Labels)

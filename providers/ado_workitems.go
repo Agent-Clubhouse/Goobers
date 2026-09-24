@@ -865,27 +865,28 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 	parent, links, hierarchy := adoHierarchy(item.Relations)
 	updated := timeField(item.Fields, "System.ChangedDate")
 	return WorkItem{
-		Provider:       ProviderADO,
-		ID:             strconv.Itoa(item.ID),
-		ExternalID:     strconv.Itoa(item.Rev),
-		Revision:       strconv.Itoa(item.Rev),
-		Type:           stringField(item.Fields, "System.WorkItemType"),
-		Title:          stringField(item.Fields, "System.Title"),
-		Body:           stringField(item.Fields, "System.Description"),
-		Labels:         labels,
-		State:          state,
-		Status:         statusFromLabels(labels, string(status)),
-		Assignee:       stringField(item.Fields, "System.AssignedTo"),
-		Links:          links,
-		Parent:         parent,
-		Hierarchy:      hierarchy,
-		URL:            item.URL,
-		CreatedAt:      timeField(item.Fields, "System.CreatedDate"),
-		UpdatedAt:      updated,
-		Fields:         adoWorkItemFields(item),
-		BlockedByCount: adoBlockedByCount(item.Relations),
-		Raw:            item,
-		Integrity:      apiintegrity.Unapproved,
+		Provider:        ProviderADO,
+		ID:              strconv.Itoa(item.ID),
+		ExternalID:      strconv.Itoa(item.Rev),
+		Revision:        strconv.Itoa(item.Rev),
+		Type:            stringField(item.Fields, "System.WorkItemType"),
+		Title:           stringField(item.Fields, "System.Title"),
+		Body:            stringField(item.Fields, "System.Description"),
+		Labels:          labels,
+		State:           state,
+		Status:          statusFromLabels(labels, string(status)),
+		Assignee:        stringField(item.Fields, "System.AssignedTo"),
+		AssigneeAliases: identityAliases(item.Fields, "System.AssignedTo"),
+		Links:           links,
+		Parent:          parent,
+		Hierarchy:       hierarchy,
+		URL:             item.URL,
+		CreatedAt:       timeField(item.Fields, "System.CreatedDate"),
+		UpdatedAt:       updated,
+		Fields:          adoWorkItemFields(item),
+		BlockedByCount:  adoBlockedByCount(item.Relations),
+		Raw:             item,
+		Integrity:       apiintegrity.Unapproved,
 	}
 }
 
@@ -994,6 +995,34 @@ func stringField(fields map[string]interface{}, key string) string {
 		}
 	}
 	return fmt.Sprint(value)
+}
+
+// identityAliases reads an ADO identity field (e.g. System.AssignedTo) and
+// returns any additional identity forms beyond the display name already
+// captured in the WorkItem's primary field (Assignee, via stringField): the
+// account's stable uniqueName (typically an email), when present and
+// distinct. Display names are not unique and need not match the account
+// identifier a workflow author configures in assignedTo/a roster entry
+// (#5556); rather than normalizing the primary field and silently breaking
+// today's working display-name configs, providers.AssigneeMatches checks a
+// configured value against both Assignee and these aliases.
+func identityAliases(fields map[string]interface{}, key string) []string {
+	value, ok := fields[key]
+	if !ok || value == nil {
+		return nil
+	}
+	typed, ok := value.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	unique, ok := typed["uniqueName"].(string)
+	if !ok || unique == "" {
+		return nil
+	}
+	if display, ok := typed["displayName"].(string); ok && strings.EqualFold(display, unique) {
+		return nil
+	}
+	return []string{unique}
 }
 
 func timeField(fields map[string]interface{}, key string) *time.Time {

@@ -197,6 +197,69 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 }
 
+// TestADOProviderAssigneeCarriesUniqueNameAlias verifies that a work item
+// whose identity's displayName and uniqueName differ keeps Assignee as the
+// display name (today's working behavior, per #5556 — an existing
+// display-name-configured assignedTo/roster must not silently stop
+// matching) while surfacing the stable uniqueName account identifier as an
+// AssigneeAliases entry, so AssigneeMatches can accept either form.
+func TestADOProviderAssigneeCarriesUniqueNameAlias(t *testing.T) {
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 42}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"id":  42,
+			"rev": 3,
+			"url": "https://dev.azure.com/org/project/_workitems/edit/42",
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "User Story",
+				"System.Title":        "Fix API",
+				"System.State":        "Active",
+				"System.AssignedTo":   map[string]interface{}{"displayName": "Alex Example", "uniqueName": "alex@example.com"},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		State:      "Active",
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems returned error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d", len(items))
+	}
+	item := items[0]
+	if item.Assignee != "Alex Example" {
+		t.Fatalf("Assignee = %q, want the display name %q unchanged", item.Assignee, "Alex Example")
+	}
+	if len(item.AssigneeAliases) != 1 || item.AssigneeAliases[0] != "alex@example.com" {
+		t.Fatalf("AssigneeAliases = %#v, want [%q]", item.AssigneeAliases, "alex@example.com")
+	}
+	// Both the display name and the uniqueName (in any case) must match.
+	if !item.AssigneeMatches("Alex Example") {
+		t.Fatal("AssigneeMatches(display name) = false, want true")
+	}
+	if !item.AssigneeMatches("alex@example.com") {
+		t.Fatal("AssigneeMatches(uniqueName) = false, want true")
+	}
+	if !item.AssigneeMatches("ALEX@EXAMPLE.COM") {
+		t.Fatal("AssigneeMatches(uniqueName, different case) = false, want true (case-insensitive)")
+	}
+	if item.AssigneeMatches("someone-else@example.com") {
+		t.Fatal("AssigneeMatches(unrelated identity) = true, want false")
+	}
+}
+
 func TestADOUpdateWorkItemAssignee(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
