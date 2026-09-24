@@ -25,11 +25,11 @@ const selfUpdateHelp = "Usage: goobers self-update [flags] [path]\n\n" +
 	"on-main builds the configured branch. on-release resolves the newest stable\n" +
 	"release unless --include-prerelease is set, which considers all GitHub\n" +
 	"releases.\n\n" +
-	"EVERY policy refuses a target that is not strictly newer than the running\n" +
-	"build -- manual included. There is no downgrade flag and no rollback path\n" +
-	"here: self-update only moves forward, and a supervised update that turns\n" +
-	"out unhealthy is reverted by the supervisor's own rollback, not by staging\n" +
-	"an older tag. To move to an older build deliberately, install it directly.\n\n" +
+	"By default, release policies only move forward. Manual policy accepts\n" +
+	"--allow-downgrade to reconcile an explicitly selected older release.\n" +
+	"This opt-in retains checksum verification, candidate validation, supervised\n" +
+	"activation, health monitoring, and rollback. Latest-release and on-main\n" +
+	"policies do not accept the downgrade override.\n\n" +
 	"Releases are resolved from the canonical Goobers product repository\n" +
 	"(Agent-Clubhouse/Goobers) by default, independent of any workload\n" +
 	"repositories the instance is configured to operate on. Override the\n" +
@@ -50,6 +50,7 @@ func runSelfUpdateWith(
 	fs.SetOutput(stderr)
 	policy := fs.String("policy", providerInput("policy", selfupdate.PolicyOnRelease), "update policy: manual, on-release, or on-main")
 	includePrerelease := fs.Bool("include-prerelease", false, "for on-release, include GitHub pre-releases when selecting the newest target")
+	allowDowngrade := fs.Bool("allow-downgrade", false, "for manual policy, permit supervised activation of an older release")
 	branch := fs.String("branch", providerInput("branch", "main"), "branch tracked by on-main")
 	target := fs.String("target", providerInput("target", ""), "manual release tag")
 	healthTicks := fs.Int("health-ticks", selfupdate.DefaultHealthTicks, "required clean heartbeat ticks")
@@ -112,6 +113,7 @@ func runSelfUpdateWith(
 		WorkDir:           workDir,
 		Policy:            *policy,
 		IncludePrerelease: *includePrerelease,
+		AllowDowngrade:    *allowDowngrade,
 		Owner:             owner,
 		Repository:        repository,
 		Branch:            *branch,

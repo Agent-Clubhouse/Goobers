@@ -102,8 +102,11 @@ _goobers_completion()
         up)
             flags+=" --quiet --diagnostics --notify --skip-preflight --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
             ;;
+        upgrade)
+            flags+=" --version --channel"
+            ;;
         self-update)
-            flags+=" --policy --include-prerelease --branch --target --health-ticks --health-timeout"
+            flags+=" --policy --allow-downgrade --include-prerelease --branch --target --health-ticks --health-timeout"
             ;;
         service)
             case "${COMP_WORDS[2]:-}" in

@@ -322,6 +322,10 @@ func init() {
 			withSynopsis(synopsisByID["apply"]).
 			withHelp("reconcile a live daemon's workflow definitions now", applyHelp).
 			withExamples("goobers apply", "goobers apply ./instance"),
+		command("upgrade", apicontract.ActionDaemonLifecycle, runUpgrade).
+			withSynopsis(synopsisByID["upgrade"]).
+			withHelp("reconcile a Microsoft-managed daemon and supervisor", upgradeHelp).
+			withExamples("goobers upgrade", "goobers upgrade --version v0.5.0 --channel beta"),
 		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
 			withSynopsis(synopsisByID["self-update"]).
 			withHelp("stage and request a supervised binary update", selfUpdateHelp).

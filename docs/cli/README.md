@@ -135,6 +135,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
+| [`goobers upgrade`](#goobers-upgrade) | reconcile a Microsoft-managed daemon and supervisor |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
@@ -3828,11 +3829,11 @@ on-main builds the configured branch. on-release resolves the newest stable
 release unless --include-prerelease is set, which considers all GitHub
 releases.
 
-EVERY policy refuses a target that is not strictly newer than the running
-build -- manual included. There is no downgrade flag and no rollback path
-here: self-update only moves forward, and a supervised update that turns
-out unhealthy is reverted by the supervisor's own rollback, not by staging
-an older tag. To move to an older build deliberately, install it directly.
+By default, release policies only move forward. Manual policy accepts
+--allow-downgrade to reconcile an explicitly selected older release.
+This opt-in retains checksum verification, candidate validation, supervised
+activation, health monitoring, and rollback. Latest-release and on-main
+policies do not accept the downgrade override.
 
 Releases are resolved from the canonical Goobers product repository
 (Agent-Clubhouse/Goobers) by default, independent of any workload
@@ -4590,6 +4591,29 @@ another PR. Exit codes: 0 = updated, routed, or no-work;
 
 ~~~console
 $ goobers update-behind-pr
+~~~
+
+## `goobers upgrade`
+
+reconcile a Microsoft-managed daemon and supervisor
+
+~~~text
+Usage: goobers upgrade [--version <tag>] [--channel stable|dogfood|beta] [path]
+
+Reconcile a Microsoft-managed Windows installation, including its daemon
+and supervisor, through the installed Microsoft Goobers Setup application.
+Without --version, use the saved installation channel (stable by default).
+An explicit version is temporary: the enabled updater later restores the
+channel's exact supported version, including a downgrade when necessary.
+Disable the Setup update Scheduled Task to hold a manually selected version.
+Other installation types must use their owning package manager.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers upgrade
+$ goobers upgrade --version v0.5.0 --channel beta
 ~~~
 
 ## `goobers validate`

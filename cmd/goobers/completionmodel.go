@@ -79,6 +79,10 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"upgrade": {
+		{name: "version", takesArg: true, desc: "One-time Goobers release tag"},
+		{name: "channel", takesArg: true, values: []string{"stable", "dogfood", "beta"}, desc: "Saved installation channel"},
+	},
 	"config templates import": {
 		{name: "repository", takesArg: true, desc: "Template Git repository"},
 		{name: "directory", takesArg: true, desc: "Template directory in the repository"},
@@ -265,6 +269,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"self-update": {
 		{name: "policy", takesArg: true, values: []string{"manual", "on-release", "on-main"}, desc: "Update policy"},
+		{name: "allow-downgrade", desc: "Allow an explicitly selected older release with manual policy"},
 		{name: "include-prerelease", desc: "Consider pre-releases when on-release selects the newest target"},
 		{name: "branch", takesArg: true, desc: "Branch tracked by on-main"},
 		{name: "target", takesArg: true, desc: "Manual release tag"},

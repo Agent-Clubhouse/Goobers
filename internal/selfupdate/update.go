@@ -80,6 +80,7 @@ type Request struct {
 type PrepareOptions struct {
 	Root, WorkDir, Policy, Owner, Repository, Branch, Target, Token, RunID string
 	IncludePrerelease                                                      bool
+	AllowDowngrade                                                         bool
 	HealthTicks                                                            int
 	HealthTimeout, HeartbeatInterval                                       time.Duration
 	GOOS, GOARCH, APIBaseURL                                               string
@@ -169,6 +170,9 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 		target, version = release.TagName, release.TagName
 		if err == nil {
 			newer, unparseable, compareErr := compareReleaseVersion(current.Version, version)
+			if compareErr == nil && !newer && opts.AllowDowngrade {
+				newer, _, compareErr = compareReleaseVersion(version, current.Version)
+			}
 			if compareErr != nil {
 				err = fmt.Errorf("compare current version %q with release %q: %w", current.Version, version, compareErr)
 			} else if !newer {
@@ -182,10 +186,8 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 	if err != nil {
 		return PrepareResult{}, err
 	}
-	// The resolved release not being newer than the running build is a
-	// steady state (already up to date, or a downgrade target), not a
-	// failure — Prepare reports it the same way as the on-main "nothing
-	// changed" case below rather than erroring.
+	// Equal releases and older releases without manual opt-in are steady
+	// state, just like an unchanged on-main commit.
 	if notNewer {
 		return PrepareResult{Policy: opts.Policy, Target: target, SkippedInvalidTags: skippedInvalidTags}, nil
 	}
@@ -255,6 +257,9 @@ func valueOr[T comparable](value, fallback T) T {
 }
 
 func validatePrepareOptions(opts PrepareOptions) error {
+	if opts.AllowDowngrade && opts.Policy != PolicyManual {
+		return errors.New("allow-downgrade requires manual policy")
+	}
 	if opts.Root == "" || opts.WorkDir == "" || opts.Owner == "" || opts.Repository == "" {
 		return errors.New("instance root, working directory, and product repository are required")
 	}
