@@ -718,6 +718,13 @@ func TestUpReloadsResolvedGooberContentForNextRun(t *testing.T) {
 	address := freeLoopbackAddress(t)
 	setAPIListenAddress(t, root, address)
 	workflowPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
+	// Both concurrency caps admit all three runs this test starts (#5156). A
+	// run's journal turns terminal, which is what `goobers run` waits for,
+	// before the scheduler frees the run's slot: the starter first ingests
+	// the run's telemetry. With one slot, a busy machine can still be
+	// ingesting run N when the test triggers run N+1, and the scheduler
+	// refuses it as max-parallel. This test is about digests, not admission.
+	allowParallelFixtureRuns(t, layout, 3)
 	writeFixture(t, workflowPath, `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 dslVersion: "2.0"
@@ -727,6 +734,8 @@ spec:
   gaggle: example
   triggers:
     - type: manual
+  readiness:
+    maxConcurrentRuns: 3
   start: implement
   tasks:
     - name: implement
@@ -833,6 +842,19 @@ spec:
 	}
 	if after.WorkflowDigest != afterSkill.WorkflowDigest {
 		t.Fatalf("workflow digest changed after skill edit: before=%q after=%q", after.WorkflowDigest, afterSkill.WorkflowDigest)
+	}
+}
+
+// allowParallelFixtureRuns raises the instance-wide run cap to n.
+func allowParallelFixtureRuns(t *testing.T, layout instance.Layout, n int) {
+	t.Helper()
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RunConditions.MaxParallelRuns = n
+	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
 	}
 }
 
