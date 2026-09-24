@@ -23,6 +23,8 @@ type startupPhaseTracker struct {
 	budgetElapsed time.Duration
 	budgetFloor   time.Duration
 	accumulation  startupAccumulation
+	recoveryScan  bool
+	budgetUpdates chan struct{}
 }
 
 func newStartupPhaseTracker(budgetFloor time.Duration) *startupPhaseTracker {
@@ -93,11 +95,12 @@ func syncStartupStdout(stdout io.Writer) io.Writer {
 }
 
 type startupBudgetSnapshot struct {
-	Accumulation startupAccumulation
-	Budget       time.Duration
-	Elapsed      time.Duration
-	State        string
-	UsedPercent  float64
+	Accumulation       startupAccumulation
+	RecoveryScanActive bool
+	Budget             time.Duration
+	Elapsed            time.Duration
+	State              string
+	UsedPercent        float64
 }
 
 func (t *startupPhaseTracker) configureBudget(floor time.Duration) {
@@ -107,18 +110,55 @@ func (t *startupPhaseTracker) configureBudget(floor time.Duration) {
 	if t.budgetStarted.IsZero() {
 		t.budgetStarted = time.Now()
 	}
+	t.signalBudgetUpdateLocked()
 }
 
 func (t *startupPhaseTracker) setWorktreeAccumulation(count int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.accumulation.Worktrees = count
+	t.signalBudgetUpdateLocked()
+}
+
+func (t *startupPhaseTracker) beginRecoveryAccumulation() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.recoveryScan = true
+	t.signalBudgetUpdateLocked()
+}
+
+func (t *startupPhaseTracker) observeRecoveryAccumulation(count int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.accumulation.RecoveryRuns = count
+	t.signalBudgetUpdateLocked()
 }
 
 func (t *startupPhaseTracker) setRecoveryAccumulation(count int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.accumulation.RecoveryRuns = count
+	t.recoveryScan = false
+	t.signalBudgetUpdateLocked()
+}
+
+func (t *startupPhaseTracker) budgetUpdateChannel() <-chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.budgetUpdates == nil {
+		t.budgetUpdates = make(chan struct{}, 1)
+	}
+	return t.budgetUpdates
+}
+
+func (t *startupPhaseTracker) signalBudgetUpdateLocked() {
+	if t.budgetUpdates == nil {
+		t.budgetUpdates = make(chan struct{}, 1)
+	}
+	select {
+	case t.budgetUpdates <- struct{}{}:
+	default:
+	}
 }
 
 func (t *startupPhaseTracker) completeBudget(now time.Time) {
@@ -144,11 +184,12 @@ func (t *startupPhaseTracker) budgetSnapshot(now time.Time) startupBudgetSnapsho
 	}
 	state, used := startupBudgetState(elapsed, budget)
 	return startupBudgetSnapshot{
-		Accumulation: t.accumulation,
-		Budget:       budget,
-		Elapsed:      elapsed,
-		State:        state,
-		UsedPercent:  used,
+		Accumulation:       t.accumulation,
+		RecoveryScanActive: t.recoveryScan,
+		Budget:             budget,
+		Elapsed:            elapsed,
+		State:              state,
+		UsedPercent:        used,
 	}
 }
 
@@ -229,21 +270,13 @@ func watchStartupReadiness(ctx context.Context, w io.Writer, tracker *startupPha
 		return
 	}
 	tracker.configureBudget(threshold)
-	timer := time.NewTimer(threshold)
-	defer timer.Stop()
+	updates := tracker.budgetUpdateChannel()
 	for {
-		select {
-		case <-ctx.Done():
+		if ready() {
 			return
-		case <-timer.C:
-			if ready() {
-				return
-			}
-			budget := tracker.budgetSnapshot(time.Now())
-			if budget.Elapsed < budget.Budget {
-				timer.Reset(budget.Budget - budget.Elapsed)
-				continue
-			}
+		}
+		budget := tracker.budgetSnapshot(time.Now())
+		if !budget.RecoveryScanActive && budget.Elapsed >= budget.Budget {
 			phase, target, since := tracker.snapshot()
 			if phase == "" {
 				phase = "unknown"
@@ -252,6 +285,25 @@ func watchStartupReadiness(ctx context.Context, w io.Writer, tracker *startupPha
 				startupTimestamp(), budget.Budget, budget.Accumulation.Worktrees, budget.Accumulation.RecoveryRuns,
 				budget.Accumulation.total(), phase, target, time.Since(since))
 			return
+		}
+
+		var timer *time.Timer
+		var timerC <-chan time.Time
+		if !budget.RecoveryScanActive {
+			timer = time.NewTimer(budget.Budget - budget.Elapsed)
+			timerC = timer.C
+		}
+		select {
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			return
+		case <-updates:
+			if timer != nil {
+				timer.Stop()
+			}
+		case <-timerC:
 		}
 	}
 }

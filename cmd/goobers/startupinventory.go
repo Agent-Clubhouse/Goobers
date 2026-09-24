@@ -54,8 +54,10 @@ func loadStartupRecoveryInventory(
 	}
 	var runDirs []string
 	var counts startupInventoryCounts
+	tracker.beginRecoveryAccumulation()
 	observe := func(seen startupInventoryCounts) {
 		counts = seen
+		tracker.observeRecoveryAccumulation(seen.Marked + seen.Discovered)
 		tracker.update("recovery-run-inventory", fmt.Sprintf("source=%s %s", source, seen))
 	}
 	err := runStartupPhase(stdout, tracker, "recovery-run-inventory", "source="+source, func() error {
