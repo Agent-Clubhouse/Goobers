@@ -197,13 +197,13 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 }
 
-// TestADOProviderAssigneeUsesUniqueName verifies that a work item whose
-// identity's displayName and uniqueName differ maps Assignee to the stable
-// uniqueName (an account identifier), not the display name (#5556). A
-// respectAssignee eligibility filter compares WorkItem.Assignee against a
-// configured account identifier (e.g. an email), which only a uniqueName-
-// preferring mapping can match.
-func TestADOProviderAssigneeUsesUniqueName(t *testing.T) {
+// TestADOProviderAssigneeCarriesUniqueNameAlias verifies that a work item
+// whose identity's displayName and uniqueName differ keeps Assignee as the
+// display name (today's working behavior, per #5556 — an existing
+// display-name-configured assignedTo/roster must not silently stop
+// matching) while surfacing the stable uniqueName account identifier as an
+// AssigneeAliases entry, so AssigneeMatches can accept either form.
+func TestADOProviderAssigneeCarriesUniqueNameAlias(t *testing.T) {
 	mux := http.NewServeMux()
 	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
@@ -238,8 +238,25 @@ func TestADOProviderAssigneeUsesUniqueName(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("len(items) = %d", len(items))
 	}
-	if got := items[0].Assignee; got != "alex@example.com" {
-		t.Fatalf("Assignee = %q, want the account uniqueName %q (not the display name)", got, "alex@example.com")
+	item := items[0]
+	if item.Assignee != "Alex Example" {
+		t.Fatalf("Assignee = %q, want the display name %q unchanged", item.Assignee, "Alex Example")
+	}
+	if len(item.AssigneeAliases) != 1 || item.AssigneeAliases[0] != "alex@example.com" {
+		t.Fatalf("AssigneeAliases = %#v, want [%q]", item.AssigneeAliases, "alex@example.com")
+	}
+	// Both the display name and the uniqueName (in any case) must match.
+	if !item.AssigneeMatches("Alex Example") {
+		t.Fatal("AssigneeMatches(display name) = false, want true")
+	}
+	if !item.AssigneeMatches("alex@example.com") {
+		t.Fatal("AssigneeMatches(uniqueName) = false, want true")
+	}
+	if !item.AssigneeMatches("ALEX@EXAMPLE.COM") {
+		t.Fatal("AssigneeMatches(uniqueName, different case) = false, want true (case-insensitive)")
+	}
+	if item.AssigneeMatches("someone-else@example.com") {
+		t.Fatal("AssigneeMatches(unrelated identity) = true, want false")
 	}
 }
 

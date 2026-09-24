@@ -240,7 +240,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 	b.mu.Unlock()
 	observation.complete = cursor == "" && !pageInfo.HasNext
 	for _, item := range items {
-		if b.respectAssignee && item.Assignee != b.assignedTo {
+		if b.respectAssignee && !item.AssigneeMatches(b.assignedTo) {
 			continue
 		}
 		matched, err := b.labelPredicate.Matches(item.Labels)
