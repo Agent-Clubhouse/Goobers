@@ -875,7 +875,7 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 		Labels:         labels,
 		State:          state,
 		Status:         statusFromLabels(labels, string(status)),
-		Assignee:       stringField(item.Fields, "System.AssignedTo"),
+		Assignee:       identityField(item.Fields, "System.AssignedTo"),
 		Links:          links,
 		Parent:         parent,
 		Hierarchy:      hierarchy,
@@ -989,6 +989,34 @@ func stringField(fields map[string]interface{}, key string) string {
 	case string:
 		return typed
 	case map[string]interface{}:
+		if display, ok := typed["displayName"].(string); ok {
+			return display
+		}
+	}
+	return fmt.Sprint(value)
+}
+
+// identityField reads an ADO identity field (e.g. System.AssignedTo) and
+// returns its stable account identifier rather than its display name.
+// Display names are not unique and need not match the account identifier
+// (email/uniqueName) an author configures in assignedTo (#5556); a display
+// name normalization here would force server-side eligibility filtering
+// (cmd/goobers/backlogquery.go's item.Assignee == opts.assignedTo) to
+// compare an account input against a human-readable label instead of an
+// identity. This mirrors adoIdentityName's uniqueName-first resolution used
+// for PR reviewer/author identity elsewhere in this package.
+func identityField(fields map[string]interface{}, key string) string {
+	value, ok := fields[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case map[string]interface{}:
+		if unique, ok := typed["uniqueName"].(string); ok && unique != "" {
+			return unique
+		}
 		if display, ok := typed["displayName"].(string); ok {
 			return display
 		}

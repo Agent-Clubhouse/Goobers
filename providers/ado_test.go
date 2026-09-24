@@ -197,6 +197,52 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 }
 
+// TestADOProviderAssigneeUsesUniqueName verifies that a work item whose
+// identity's displayName and uniqueName differ maps Assignee to the stable
+// uniqueName (an account identifier), not the display name (#5556). A
+// respectAssignee eligibility filter compares WorkItem.Assignee against a
+// configured account identifier (e.g. an email), which only a uniqueName-
+// preferring mapping can match.
+func TestADOProviderAssigneeUsesUniqueName(t *testing.T) {
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 42}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"id":  42,
+			"rev": 3,
+			"url": "https://dev.azure.com/org/project/_workitems/edit/42",
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "User Story",
+				"System.Title":        "Fix API",
+				"System.State":        "Active",
+				"System.AssignedTo":   map[string]interface{}{"displayName": "Alex Example", "uniqueName": "alex@example.com"},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		State:      "Active",
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems returned error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d", len(items))
+	}
+	if got := items[0].Assignee; got != "alex@example.com" {
+		t.Fatalf("Assignee = %q, want the account uniqueName %q (not the display name)", got, "alex@example.com")
+	}
+}
+
 func TestADOUpdateWorkItemAssignee(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
