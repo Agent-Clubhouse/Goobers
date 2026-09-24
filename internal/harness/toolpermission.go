@@ -75,13 +75,12 @@ var contentExclusionClaimMarkers = []string{
 //
 // Unlike contentExclusionClaimMarkers, these may NEVER complete a claim on
 // their own — they are also the exact vocabulary a genuine cloud-provider
-// permission denial uses (a real Key Vault, S3, or IAM 403). An independent
-// review (review DA, 2026-09-24) reproduced KEYVAULT_FORBIDDEN and
-// S3_ACCESS_DENIED failures being misclassified as unsubstantiated
-// content-exclusion claims when these were folded into the unconditional
-// marker list. matchesClaimMarkers is only called against this list
-// alongside positive runtime tool-refusal evidence (ev.denied) — see
-// reclassifyToolPermissionBlock.
+// permission denial uses (a real Key Vault, S3, or IAM 403). Folding them
+// into the unconditional marker list misclassified KEYVAULT_FORBIDDEN and
+// S3_ACCESS_DENIED failures as unsubstantiated content-exclusion claims
+// (#5444). matchesClaimMarkers is only called against this list on a
+// "failure" status and alongside positive runtime tool-refusal evidence
+// (ev.denied) — see reclassifyToolPermissionBlock.
 var evidenceGatedClaimMarkers = []string{
 	"access_denied",
 	"access policy",
@@ -209,8 +208,8 @@ func claimsContentExclusion(result apiv1.ResultEnvelope) bool {
 //  1. Positive runtime evidence of a tool-permission refusal (ev.denied) turns
 //     the result into a failure carrying ErrorCodeToolPermissionDenied and the
 //     observed refusal lines, so the journal names the real fault. This is
-//     the only conversion a "failure" status can take (#5444 review DA):
-//     applies to BOTH "blocked" and "failure" statuses.
+//     the only conversion a "failure" status can take: applies to BOTH
+//     "blocked" and "failure" statuses.
 //  2. An unsubstantiated content-exclusion claim with NO runtime evidence at
 //     all turns a "blocked" result — never a "failure" one — into a failure
 //     carrying ErrorCodeUnsubstantiatedContentExclusion, because a model may
@@ -222,18 +221,22 @@ func claimsContentExclusion(result apiv1.ResultEnvelope) bool {
 // identical refusal — and both are strictly narrower than the original
 // behavior, which admitted the claim unconditionally. Blocks that never
 // mention content exclusion (nor, alongside runtime evidence, an
-// evidenceGatedClaimMarkers phrase) are untouched, so the ordinary
-// dependency-block path (docs/stage-contract.md) is unaffected.
+// evidenceGatedClaimMarkers phrase ON A FAILURE) are untouched, so the
+// ordinary dependency-block path (docs/stage-contract.md) is unaffected.
 //
-// #5444 review DA (2026-09-24) found the original "failure" widening
-// misclassified genuine cloud-provider access-denied failures (Key Vault, S3,
-// IAM) that happened to share the new markers' vocabulary, and could flip an
-// ordinary blocked dependency mentioning "access policy" to failure. The fix:
-// a "failure" status, and evidenceGatedClaimMarkers on any status, now both
-// require ev.denied — actual observed runtime evidence, not vocabulary alone.
-// A deliberate #415 non-retryable escalation code is never touched at all,
-// regardless of evidence, since overwriting it would silently turn escalation
-// into an ordinary retry route.
+// #5444's original fix misclassified genuine cloud-provider access-denied
+// failures (Key Vault, S3, IAM) that happened to share the new markers'
+// vocabulary, and could flip an ordinary blocked dependency mentioning
+// "access policy" to failure. The fix: a "failure" status now requires
+// ev.denied — actual observed runtime evidence, not vocabulary alone — and
+// evidenceGatedClaimMarkers are scoped to "failure" only. A "blocked" result
+// is never reclassified by those markers alone, regardless of evidence,
+// because #5444's live cases were all "failure"; only the pre-existing,
+// unconditional contentExclusionClaimMarkers can move a "blocked" result
+// (matching #2962's original, unwidened design). A deliberate #415
+// non-retryable escalation code is never touched at all, regardless of
+// evidence, since overwriting it would silently turn escalation into an
+// ordinary retry route.
 func reclassifyToolPermissionBlock(result *apiv1.ResultEnvelope, transcript, stderr []byte) {
 	if result == nil {
 		return
@@ -246,10 +249,13 @@ func reclassifyToolPermissionBlock(result *apiv1.ResultEnvelope, transcript, std
 	}
 
 	ev := observeToolPermissions(transcript, stderr)
-	// evidenceGatedClaimMarkers only complete a claim alongside ev.denied —
-	// see its doc comment. claimsContentExclusion (the unconditional marker
-	// set) is unaffected.
-	claimed := claimsContentExclusion(*result) || (ev.denied && matchesClaimMarkers(*result, evidenceGatedClaimMarkers))
+	// evidenceGatedClaimMarkers only complete a claim on a "failure" status,
+	// and only alongside ev.denied — see its doc comment. A "blocked" result
+	// is never moved by these markers, only by the unconditional
+	// contentExclusionClaimMarkers set below.
+	evidenceGatedClaim := result.Status == apiv1.ResultFailure && ev.denied &&
+		matchesClaimMarkers(*result, evidenceGatedClaimMarkers)
+	claimed := claimsContentExclusion(*result) || evidenceGatedClaim
 	if !claimed {
 		return
 	}
@@ -283,7 +289,7 @@ func reclassifyToolPermissionBlock(result *apiv1.ResultEnvelope, transcript, std
 	// result may still be reclassified through the unsubstantiated-claim
 	// path (#2962's original design); a "failure" already told the operator
 	// something went wrong, and without runtime denial evidence there is
-	// nothing this guard can prove it should correct (#5444 review DA).
+	// nothing this guard can prove it should correct (#5444).
 	if result.Status != apiv1.ResultBlocked {
 		return
 	}

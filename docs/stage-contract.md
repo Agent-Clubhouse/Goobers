@@ -959,9 +959,12 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > reproduces the identical refusal), both set
 > `outputs.contentExclusionClaimRejected: true`, and both preserve your
 > original summary and error detail inside `error.message` — no cause is ever
-> invented or discarded. Blocks and failures that do not mention content
-> exclusion (nor, alongside an actually-observed refusal, the access-denied
-> vocabulary above) are untouched. The effective CLI version and
+> invented or discarded. A `blocked` result is reclassified only when its own
+> prose claims content exclusion; the `*_ACCESS_DENIED`/"access policy"
+> vocabulary above applies to `failure` only, so an ordinary blocked
+> dependency (`DEPENDENCY_NOT_MET`, `blockedBy` set) that happens to mention
+> "access policy" is untouched even in a session that also had an unrelated
+> refused tool call. The effective CLI version and
 > tool/permission arguments for every Copilot session are recorded at
 > `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
 > attributed to the invocation after the fact.
