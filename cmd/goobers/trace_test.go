@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -381,6 +382,68 @@ func TestTraceRendersAgentProgressAndHistory(t *testing.T) {
 			t.Fatalf("trace output missing %q:\n%s", want, stdout)
 		}
 	}
+}
+
+func TestTraceSurfacesAgentProgressProjectionFailure(t *testing.T) {
+	root := t.TempDir()
+	const runID = "trace-progress-error"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	var stdout, stderr bytes.Buffer
+	code := runTraceWithFollowContextAndFactory(
+		context.Background(),
+		[]string{runID, root},
+		&stdout,
+		&stderr,
+		traceAgentProgressErrorFactory(),
+	)
+	if code != 2 {
+		t.Fatalf("trace code = %d, want 2; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "error: agent progress: synthetic progress projection failure") {
+		t.Fatalf("trace stderr = %q", stderr.String())
+	}
+}
+
+func TestTraceFollowSurfacesAgentProgressProjectionFailure(t *testing.T) {
+	root := t.TempDir()
+	const runID = "trace-follow-progress-error"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	var stdout, stderr bytes.Buffer
+	code := runTraceWithFollowContextAndFactory(
+		context.Background(),
+		[]string{"--follow", runID, root},
+		&stdout,
+		&stderr,
+		traceAgentProgressErrorFactory(),
+	)
+	if code != 2 {
+		t.Fatalf("trace --follow code = %d, want 2; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "error: follow trace: agent progress: synthetic progress projection failure") {
+		t.Fatalf("trace --follow stderr = %q", stderr.String())
+	}
+}
+
+func traceAgentProgressErrorFactory() func(instance.Layout) (readservice.OfflineRuns, error) {
+	return func(layout instance.Layout) (readservice.OfflineRuns, error) {
+		reads, err := readservice.NewOfflineRuns(layout)
+		if err != nil {
+			return nil, err
+		}
+		return &traceAgentProgressErrorReader{OfflineRuns: reads}, nil
+	}
+}
+
+type traceAgentProgressErrorReader struct {
+	readservice.OfflineRuns
+}
+
+func (*traceAgentProgressErrorReader) RunAgentProgress(context.Context, string) ([]readservice.AgentProgressSummary, error) {
+	return nil, errors.New("synthetic progress projection failure")
 }
 
 func TestTraceRendersBlockerAndQuestionHistoryText(t *testing.T) {

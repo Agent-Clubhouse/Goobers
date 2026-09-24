@@ -207,7 +207,11 @@ func runTraceWithFactories(
 	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, telemetryAttempts, now)
 	terminal := terminalCause(detail, ledger.Events)
 	verdicts := loadVerdictViews(ctx, reads, runID, ledger.Events)
-	agentProgress, _ := reads.RunAgentProgress(ctx, runID)
+	agentProgress, err := reads.RunAgentProgress(ctx, runID)
+	if err != nil {
+		pf(stderr, "error: agent progress: %v\n", err)
+		return 2
+	}
 	if *jsonOutput {
 		result := traceJSONResult{
 			Identity:      identity,
@@ -337,11 +341,12 @@ func followTrace(
 		}
 		if !jsonOutput {
 			summaries, err := reads.RunAgentProgress(ctx, runID)
-			if err == nil {
-				lastProgressRender, err = writeFollowAgentProgress(stdout, summaries, lastProgressRender)
-				if err != nil {
-					return err
-				}
+			if err != nil {
+				return fmt.Errorf("agent progress: %w", err)
+			}
+			lastProgressRender, err = writeFollowAgentProgress(stdout, summaries, lastProgressRender)
+			if err != nil {
+				return err
 			}
 		}
 		if terminalReached {
