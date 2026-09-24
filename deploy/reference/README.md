@@ -207,7 +207,12 @@ supplies a dedicated RWX persistent volume at `/var/goobers/cache`, exported as
 continues to live under the attempt-private `tmp:ephemeral` root at `/tmp`, so
 the #3969 growth bound remains in force. Without the separate module-cache
 volume, a stage pod starts every build cold and spends its budget re-downloading
-modules. The PVC's 20Gi request is the documented growth bound.
+modules. The PVC's 20Gi request is the documented growth bound. A namespace
+without the claim still runs stage pods: the dispatcher checks for the claim
+(`dispatcher-rbac.yaml` grants `get` on it) and, when it is missing or cannot
+be read, mounts an `emptyDir` there instead, logs a warning once and annotates
+each such pod `goobers.dev/go-mod-cache: ephemeral`. Those builds start cold
+until the claim exists (#5595).
 Run the same render and schema gate locally with:
 
 ```sh
@@ -238,8 +243,8 @@ the class-independent floor (default-deny-all + allow-dns).
 
 The base also ships `dispatcher-rbac.yaml`, binding the **existing** `goobers-worker`
 ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to create,
-get, delete and list pods in this gaggle's namespace, and read the worker's own
-Deployment (DI-9 template read). This is what lets a worker actually dispatch
+get, delete and list pods in this gaggle's namespace, read the worker's own
+Deployment (DI-9 template read), and read the Go module cache claim. This is what lets a worker actually dispatch
 pod-per-stage runs into a gaggle namespace (#4286); stage pods themselves still get
 no token mount and no RBAC grants at all. The included `goobers-stage` ServiceAccount
 is still a target-topology template, not one the current dispatcher selects — every

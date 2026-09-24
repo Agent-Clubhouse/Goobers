@@ -194,6 +194,9 @@ type Config struct {
 	// CapacityInterval overrides DefaultCapacityInterval; zero uses the
 	// default.
 	CapacityInterval time.Duration
+	// Logf receives operator warnings, such as a gaggle namespace missing
+	// its Go module cache claim (#5595); nil uses log.Printf.
+	Logf func(format string, args ...any)
 }
 
 // NeedsHumanAssignee returns the daemon-resolved routing identity that CLI
@@ -535,6 +538,9 @@ type PodAPI interface {
 	// GetDeployment reads a consumer-authored Deployment used as a pod
 	// template by reference (DI-9).
 	GetDeployment(ctx context.Context, namespace, name string) (*appsv1.Deployment, error)
+	// GetPersistentVolumeClaim reads one claim; the dispatcher uses it only to
+	// learn whether the durable Go module cache claim exists (#5595).
+	GetPersistentVolumeClaim(ctx context.Context, namespace, name string) (*corev1.PersistentVolumeClaim, error)
 }
 
 // JournalRelay is the live-journal seam (D5/architecture §4): the dispatcher
@@ -572,6 +578,9 @@ type Dispatcher struct {
 	journal  JournalRelay
 	gate     SurrenderGate
 	capacity CapacityProber
+	// goModCache caches whether each namespace has the Go module cache
+	// claim (#5595).
+	goModCache goModCacheProbes
 
 	// now and sleep are test seams; defaults wire the real clock.
 	now   func() time.Time
@@ -1028,7 +1037,21 @@ func (d *Dispatcher) mintPlaneTokens(attempt *Attempt) error {
 // image → dispatcher-rendered spec; deployment → instantiated from the named
 // Deployment's template (DI-9). Both paths run the decision-009 skew check
 // against the stage container image before anything is created.
+//
+// A namespace without the durable Go module cache claim gets an emptyDir in
+// its place rather than a pod that can never schedule (#5595).
 func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner RunnerSpec) (*corev1.Pod, error) {
+	pod, err := d.renderHost(ctx, attempt, runner)
+	if err != nil {
+		return nil, err
+	}
+	if !d.goModCacheClaimPresent(ctx, pod.Namespace) {
+		useEphemeralGoModCache(pod)
+	}
+	return pod, nil
+}
+
+func (d *Dispatcher) renderHost(ctx context.Context, attempt Attempt, runner RunnerSpec) (*corev1.Pod, error) {
 	switch runner.HostKind {
 	case instance.RunnerHostImage:
 		if err := VerifySkew(d.cfg.EmbeddedCommit, d.cfg.EmbeddedVersion, runner.Host); err != nil {

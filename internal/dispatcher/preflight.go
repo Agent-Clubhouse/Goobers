@@ -15,7 +15,10 @@ import (
 // verb set kubePodAPI calls (kubepods.go) — the same narrow Role
 // deploy/reference/gaggle-namespace/base/dispatcher-rbac.yaml renders — so a
 // grant this package never uses is never demanded, and one it depends on is
-// never missed.
+// never missed. The one exception is persistentvolumeclaims get (#5595): the
+// Role grants it, but it is not demanded here because a worker without it
+// still dispatches, with an emptyDir Go module cache instead of the claim.
+// Demanding it would stop an upgraded worker whose namespaces predate it.
 var namespaceGrants = []struct{ group, resource, verb string }{
 	{"", "pods", "create"},
 	{"", "pods", "get"},
