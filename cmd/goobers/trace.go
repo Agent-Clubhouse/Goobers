@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -225,6 +226,7 @@ func runTraceWithFactories(
 			Events:        traceJSONEvents(ledger.Events),
 			Spans:         spans,
 			Verdicts:      verdicts,
+			Attribution:   loadTraceAttribution(l, runID),
 			Recovery:      recoveryState,
 			AgentProgress: agentProgress,
 		}
@@ -239,10 +241,7 @@ func runTraceWithFactories(
 		return 0
 	}
 	if *summary {
-		printTraceRunSummary(stdout, detail, state, repasses, now)
-		printRecoveryView(stdout, recoveryState)
-		pln(stdout, "")
-		renderVerdicts(stdout, verdicts)
+		printTraceSummary(stdout, detail, state, repasses, now, l, runID, recoveryState, verdicts)
 		return 0
 	}
 	ciFailures, err := traceCIFailures(ctx, reads, runID, ledger.Events)
@@ -446,6 +445,43 @@ type traceJSONResult struct {
 	Spans         []rollup.SpanSummary               `json:"spans"`
 	Verdicts      []verdictView                      `json:"verdicts"`
 	AgentProgress []readservice.AgentProgressSummary `json:"agentProgress,omitempty"`
+	Attribution   *creditgraph.RunRecord             `json:"attribution,omitempty"`
+}
+
+func loadTraceAttribution(layout instance.Layout, runID string) *creditgraph.RunRecord {
+	runDir, err := layout.FindRunDir(runID)
+	if err != nil {
+		return nil
+	}
+	record, err := creditgraph.ReadRunRecord(runDir)
+	if err != nil {
+		return nil
+	}
+	return &record
+}
+
+func printTraceAttributionSummary(stdout io.Writer, attribution *creditgraph.RunRecord) {
+	if attribution != nil {
+		pf(stdout, "backprop: %s (%s)\n", attribution.Status, attribution.ContractVersion)
+	}
+}
+
+func printTraceSummary(
+	stdout io.Writer,
+	detail readservice.RunDetail,
+	state *journal.State,
+	repasses int,
+	now time.Time,
+	layout instance.Layout,
+	runID string,
+	recoveryState *recoveryView,
+	verdicts []verdictView,
+) {
+	printTraceRunSummary(stdout, detail, state, repasses, now)
+	printTraceAttributionSummary(stdout, loadTraceAttribution(layout, runID))
+	printRecoveryView(stdout, recoveryState)
+	pln(stdout, "")
+	renderVerdicts(stdout, verdicts)
 }
 
 func printTraceRunSummary(stdout io.Writer, detail readservice.RunDetail, state *journal.State, repasses int, now time.Time) {

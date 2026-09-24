@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
@@ -68,6 +69,7 @@ type engineTerminalOutcome struct {
 	RunID    string
 	Gaggle   string
 	Workflow string
+	Backprop bool
 	// Phase is the journal phase the run reached — engine.PhaseForStatus of
 	// the workflow's status, NEVER a re-derivation from the status word.
 	Phase journal.RunPhase
@@ -114,6 +116,13 @@ func (h *engineTerminalHooks) run(ctx context.Context, out engineTerminalOutcome
 	h.fireExistingFix(ctx, out)
 	h.fireBlocked(ctx, out)
 	h.fireFailed(ctx, out)
+	if out.Backprop && h.layout.Root != "" {
+		if runDir, err := h.layout.FindRunDir(out.RunID); err != nil {
+			h.recordHookFailure(out, "", "backprop_attribution_failed", err)
+		} else if _, err := creditgraph.WriteRunRecord(runDir, nil); err != nil {
+			h.recordHookFailure(out, "", "backprop_attribution_failed", err)
+		}
+	}
 
 	if h.prepare != nil {
 		if err := h.prepare(out.RunID, out.Phase, h.annotator(out)); err != nil {

@@ -331,7 +331,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 	}
-	if res, done, terr := r.resumeTerminalPhase(rd, in); done || terr != nil {
+	if res, done, terr := r.resumeTerminalPhase(rd, jr, in); done || terr != nil {
 		return res, terr
 	}
 
@@ -467,14 +467,16 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 // or a duplicate NotifyEscalated call. Phase() reconstructs straight
 // from the event log — the source of truth — so it stays correct
 // regardless of whether state.json ever caught up, and a missing or
-// corrupt checkpoint no longer fails Resume outright.
+// corrupt checkpoint no longer fails Resume outright. The only recovery
+// work performed for a terminal run is backfilling a missing attribution
+// record from its trusted pinned workflow enrollment.
 //
 // Checked BEFORE the WF-016 digest verification below (#520): a terminal
 // run is returned as-is, never re-walked, so a definition change cannot
 // affect it — and a run a refusal already aborted must short-circuit
 // here on any later Resume rather than re-refuse and journal a second
 // run.finished event onto a finished run.
-func (r *Runner) resumeTerminalPhase(rd *journal.Reader, in ResumeInput) (Result, bool, error) {
+func (r *Runner) resumeTerminalPhase(rd *journal.Reader, jr *journal.Run, in ResumeInput) (Result, bool, error) {
 	phase, err := rd.Phase()
 	if err != nil {
 		return Result{}, true, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
@@ -482,6 +484,7 @@ func (r *Runner) resumeTerminalPhase(rd *journal.Reader, in ResumeInput) (Result
 	switch phase {
 	case journal.PhaseCompleted, journal.PhaseAborted, journal.PhaseEscalated, journal.PhaseFailed:
 		res := Result{Phase: phase}
+		r.attributeAfterTerminalIfMissing(jr)
 		if err := r.FinalizeTerminal(in.RunID, phase); err != nil {
 			return res, true, err
 		}
@@ -1261,14 +1264,16 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
 		return outcome.result, outcome.err
 	}
-	if err := jr.Append(journal.Event{
+	terminal := journal.Event{
 		Type:        journal.EventRunFinished,
 		Status:      string(journal.PhaseFailed),
 		Disposition: journal.RunDispositionProduced,
 		Error:       &journal.ErrorDetail{Code: code, Message: msg},
-	}); err != nil {
+	}
+	if err := jr.Append(terminal); err != nil {
 		return Result{}, fmt.Errorf("runner: %s (additionally failed to journal terminal refusal: %w)", msg, err)
 	}
+	r.attributeAfterTerminal(jr)
 	// FailureCode/Message (issue #710) let the scheduler/daemon echo surface
 	// the WF-016 refusal reason too, not just a bare "failed" — the same fix
 	// as taskOutcome's business-failure arm and failTerminal, applied to this

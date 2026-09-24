@@ -425,6 +425,10 @@ export const goWireFixtures = {
           "version": 7,
           "digest": "sha256:workflow"
         },
+        "backprop": {
+          "enabled": true,
+          "version": "v1"
+        },
         "warnings": [
           {
             "code": "VER001",
@@ -508,6 +512,10 @@ export const goWireFixtures = {
     "definition": {
       "version": 7,
       "digest": "sha256:workflow"
+    },
+    "backprop": {
+      "enabled": true,
+      "version": "v1"
     },
     "warnings": [
       {

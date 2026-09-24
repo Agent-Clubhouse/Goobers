@@ -35,6 +35,26 @@ func writeStatusRun(t *testing.T, root, runID, workflow, gaggle string, startedA
 	writeStatusRunWithPhase(t, root, runID, workflow, gaggle, startedAt, journal.PhaseRunning)
 }
 
+func TestStatusSurfacesBackpropEnrollment(t *testing.T) {
+	config := &apiv1.BackpropConfig{Enabled: true, Version: "v1"}
+	got := statusWorkflowBackprop(config)
+	if !got.Enabled || got.Version != "v1" {
+		t.Fatalf("status backprop = %+v", got)
+	}
+	var output strings.Builder
+	renderStatusFleetSummary(&output, statusFleetSummary{
+		SuccessRateWindow: 20,
+		Workflows: []statusWorkflowSummary{{
+			Workflow: "implementation",
+			Gaggle:   "goobers",
+			Backprop: got,
+		}},
+	}, time.Now())
+	if !strings.Contains(output.String(), "backprop: enabled (v1)") {
+		t.Fatalf("status output = %q", output.String())
+	}
+}
+
 func TestStatusLimitUsesExistingReadModelWithoutRunJournalWalk(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)

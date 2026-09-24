@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -164,6 +165,47 @@ func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
 	if len(got.Spans) != 1 || got.Spans[0].Name != "task/implement" ||
 		got.Spans[0].Status != "error" || got.Spans[0].DurationMs != 1500 {
 		t.Fatalf("spans = %#v", got.Spans)
+	}
+}
+
+func TestTraceSurfacesPersistedBackpropRecord(t *testing.T) {
+	root := t.TempDir()
+	const runID = "backprop-trace"
+	run := newTraceTestRun(t, root, runID)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	record := creditgraph.RunRecord{
+		Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordComplete,
+		ContractVersion: "v1", RunID: runID, EffectiveVersion: "sha256:effective",
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
+	if err := journal.WriteFileAtomic(filepath.Join(runDir, creditgraph.RecordFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", "--json", runID, root)
+	if code != 0 {
+		t.Fatalf("trace --json: code=%d stderr=%q", code, stderr)
+	}
+	var got traceJSONResult
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Attribution == nil || got.Attribution.EffectiveVersion != "sha256:effective" {
+		t.Fatalf("trace attribution = %+v", got.Attribution)
+	}
+
+	code, stdout, stderr = runArgs(t, "trace", "--summary", runID, root)
+	if code != 0 || !strings.Contains(stdout, "backprop: complete (v1)") {
+		t.Fatalf("trace --summary: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 

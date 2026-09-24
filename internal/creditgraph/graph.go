@@ -29,6 +29,10 @@ const (
 	KindEvidence NodeKind = "evidence"
 	// KindEvaluator is a gate evaluation that judged the run.
 	KindEvaluator NodeKind = "evaluator"
+	// KindRuntime is a recorded execution harness or runtime component.
+	KindRuntime NodeKind = "runtime"
+	// KindEnvironment is a recorded deployment environment component.
+	KindEnvironment NodeKind = "environment"
 )
 
 // EdgeKind is the type of a directed edge. Every edge points from the

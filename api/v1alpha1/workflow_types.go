@@ -832,6 +832,11 @@ type WorkflowSpec struct {
 	// MaxRepasses.
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// Backprop explicitly enrolls terminal runs in provenance-aware credit
+	// attribution. Omitted and enabled=false both preserve legacy execution
+	// without attribution work.
+	// +optional
+	Backprop *BackpropConfig `json:"backprop,omitempty" yaml:"backprop,omitempty"`
 	// OutboxMirrorPath is the default local filesystem root where this
 	// workflow mirrors durable journal outbox files. A task may override it.
 	// The configured path must be absolute, or start with "~/".
@@ -894,6 +899,18 @@ type WorkflowSpec struct {
 	// (docs/design/static-fan-out-fan-in.md).
 	// +optional
 	Parallels []Parallel `json:"parallels,omitempty" yaml:"parallels,omitempty"`
+}
+
+// BackpropConfig is the versioned workflow-level enrollment contract for
+// post-outcome credit attribution.
+type BackpropConfig struct {
+	// Enabled opts terminal runs into attribution.
+	// +kubebuilder:validation:Required
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Version pins the attribution contract interpreted for the run.
+	// +kubebuilder:validation:Enum=v1
+	// +kubebuilder:validation:Required
+	Version string `json:"version" yaml:"version"`
 }
 
 // BranchFailurePolicy declares what a parallel does when one of its branches

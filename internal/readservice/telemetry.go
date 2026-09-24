@@ -142,7 +142,8 @@ type TelemetryAttributionRequest struct {
 // TelemetryAttributionResult is the cohorted, path-preserving view over one
 // attribution evidence set.
 type TelemetryAttributionResult struct {
-	Cohorts []creditgraph.CohortAggregation `json:"cohorts,omitempty"`
+	Records []creditgraph.AttributionObservation `json:"records,omitempty"`
+	Cohorts []creditgraph.CohortAggregation      `json:"cohorts,omitempty"`
 }
 
 // AggregateAttributionObservations exposes the cohort aggregation to status and
@@ -157,7 +158,10 @@ func (s *Telemetry) TelemetryAttribution(ctx context.Context, req TelemetryAttri
 	if err := ctx.Err(); err != nil {
 		return TelemetryAttributionResult{}, err
 	}
-	return TelemetryAttributionResult{Cohorts: AggregateAttributionObservations(req.Observations)}, nil
+	return TelemetryAttributionResult{
+		Records: req.Observations,
+		Cohorts: AggregateAttributionObservations(req.Observations),
+	}, nil
 }
 
 // TelemetryAttribution aggregates attribution observations into the cohorted
@@ -167,17 +171,19 @@ func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributi
 		return TelemetryAttributionResult{}, ErrTelemetryUnavailable
 	}
 	if len(req.Observations) == 0 && s.sources.ReadModel != nil {
-		if invocations, ok := s.telemetry.store.(AgentInvocationReader); ok {
-			cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
-				Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
-			})
-			if err != nil {
-				return TelemetryAttributionResult{}, err
-			}
-			return TelemetryAttributionResult{Cohorts: cohorts}, nil
+		records, err := storedAttributionObservations(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
+			Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
+		})
+		if err != nil {
+			return TelemetryAttributionResult{}, err
 		}
+		return TelemetryAttributionResult{Records: records, Cohorts: AggregateAttributionObservations(records)}, nil
 	}
-	return s.telemetry.TelemetryAttribution(ctx, req)
+	result, err := s.telemetry.TelemetryAttribution(ctx, req)
+	if err == nil {
+		result.Records = req.Observations
+	}
+	return result, err
 }
 
 // PromotionSignal is the bounded evidence interface for automated promotion.
@@ -1033,11 +1039,7 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 }
 
 func (s *Local) attachStoredAttributionCohorts(ctx context.Context, req TelemetryStatsRequest, result *TelemetryStatsResult) error {
-	invocations, ok := s.telemetry.store.(AgentInvocationReader)
-	if !ok {
-		return nil
-	}
-	cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
+	cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
 		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
 	})
 	if err != nil {

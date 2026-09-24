@@ -60,6 +60,17 @@ func TestAggregateAttributionEvidenceByCohort(t *testing.T) {
 	}
 }
 
+func TestAggregateAttributionEvidenceExcludesUndefinedEffectiveVersions(t *testing.T) {
+	got := AggregateAttributionEvidence([]AttributionObservation{
+		{RunID: "mixed-1", Workload: "implementation"},
+		{RunID: "mixed-2", Workload: "implementation"},
+		{RunID: "cohort", EffectiveVersion: "v1", Workload: "implementation"},
+	})
+	if len(got) != 1 || got[0].EffectiveVersion != "v1" || got[0].RunCount != 1 {
+		t.Fatalf("cohorts = %+v, want only the defined effective version", got)
+	}
+}
+
 func TestAggregateAttributionEvidencePreservesMixedConfidence(t *testing.T) {
 	obs := []AttributionObservation{
 		{RunID: "a", EffectiveVersion: "v1", Workload: "main", Attribution: Attribution{

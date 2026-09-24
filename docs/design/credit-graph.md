@@ -14,6 +14,31 @@
 > tracked by
 > [#4523](https://github.com/Agent-Clubhouse/Goobers/issues/4523).
 
+## Workflow enrollment
+
+Backprop is opt-in per workflow on DSL 3.0:
+
+```yaml
+dslVersion: "3.0"
+spec:
+  backprop:
+    enabled: true
+    version: v1
+```
+
+Omitting `backprop`, or setting `enabled: false`, performs no attribution work.
+For an enrolled workflow, terminalization durably appends `run.finished` and
+then writes `attribution.json` beside the run journal. The record pins the workflow identity and digest, EffectiveVersion,
+workload, run ID, contract version, deterministic attribution, and an explicit
+`complete`, `insufficient-evidence`, or `failed` analysis status. Analysis is
+read-only and best effort: a failure is reported independently and never changes
+the run's phase, gate verdict, CI admission, or publication path.
+EffectiveVersion includes the pinned workflow and goober digests plus the
+recorded model and harness version; readers use that persisted value unchanged
+for every analysis status so incompatible runs cannot enter the same cohort.
+Runs containing more than one model/harness pair have no defined
+EffectiveVersion and are excluded from cohort aggregation.
+
 ## Why
 
 Credit assignment needs one shared answer to "what produced this outcome, and
@@ -30,7 +55,7 @@ a recorded one once it lands in an aggregate.
 
 **Nodes** (`NodeKind`): `outcome`, `run`, `stage`, `subagent`,
 `model-invocation`, `tool-call`, `tool-result`, `tool`, `evidence`,
-`evaluator`.
+`evaluator`, `runtime`, `environment`.
 
 **Edges** (`EdgeKind`), always pointing from the containing or causing element
 to the nested or caused one: `attributed-to` (outcome → run), `contains`,
@@ -68,6 +93,10 @@ The graph is built from what a run already emits: `run.started`/`run.finished`,
 `artifact.recorded`, `gate.evaluated`/`gate.overridden`, and `span.recorded`
 transcript spans in the `goobers.dev/telemetry/genai-event/v1` shape, whose
 records supply model invocations, tool calls, and tool results.
+Recorded telemetry span attributes also project harness versions as `runtime`
+nodes and deployment identities as `environment` nodes. Missing attributes do
+not invent components; when present, each component retains the exact
+`span.recorded` journal sequence and span artifact reference used as evidence.
 
 The one link the journal did not carry is *which subagent a transcript span
 belongs to*. The harness executor now appends an additive `runner.annotation`

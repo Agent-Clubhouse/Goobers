@@ -434,18 +434,19 @@ type statusFleetSummary struct {
 }
 
 type statusWorkflowSummary struct {
-	Workflow          string           `json:"workflow"`
-	Gaggle            string           `json:"gaggle"`
-	InFlight          int              `json:"inFlight"`
-	MaxConcurrentRuns int              `json:"maxConcurrentRuns"`
-	DesiredRuns       int              `json:"desiredRuns,omitempty"`
-	AdmissionBlocked  string           `json:"admissionBlocked,omitempty"`
-	LastOutcome       journal.RunPhase `json:"lastOutcome,omitempty"`
-	LastOutcomeAt     *time.Time       `json:"lastOutcomeAt,omitempty"`
-	TerminalRuns      int              `json:"terminalRuns"`
-	SuccessfulRuns    int              `json:"successfulRuns"`
-	SuccessRate       *float64         `json:"successRate"`
-	NextFire          statusNextFire   `json:"nextFire"`
+	Workflow          string                       `json:"workflow"`
+	Gaggle            string                       `json:"gaggle"`
+	Backprop          readservice.WorkflowBackprop `json:"backprop"`
+	InFlight          int                          `json:"inFlight"`
+	MaxConcurrentRuns int                          `json:"maxConcurrentRuns"`
+	DesiredRuns       int                          `json:"desiredRuns,omitempty"`
+	AdmissionBlocked  string                       `json:"admissionBlocked,omitempty"`
+	LastOutcome       journal.RunPhase             `json:"lastOutcome,omitempty"`
+	LastOutcomeAt     *time.Time                   `json:"lastOutcomeAt,omitempty"`
+	TerminalRuns      int                          `json:"terminalRuns"`
+	SuccessfulRuns    int                          `json:"successfulRuns"`
+	SuccessRate       *float64                     `json:"successRate"`
+	NextFire          statusNextFire               `json:"nextFire"`
 	// FailureStreak is non-nil only once the streak reaches
 	// statusFailureStreakThreshold (#4263) — most callers should treat a nil
 	// streak as "no alarm", not "no failures".
@@ -454,6 +455,13 @@ type statusWorkflowSummary struct {
 	// statusFailureRateMinSamples and reaches statusFailureRateThreshold
 	// (#4880) — independent of, and can be non-nil alongside, FailureStreak.
 	FailureRate *statusFailureRate `json:"failureRate,omitempty"`
+}
+
+func statusWorkflowBackprop(config *apiv1.BackpropConfig) readservice.WorkflowBackprop {
+	if config == nil {
+		return readservice.WorkflowBackprop{}
+	}
+	return readservice.WorkflowBackprop{Enabled: config.Enabled, Version: config.Version}
 }
 
 // statusFailureStreak names a run of consecutive infra-classified failures
@@ -714,6 +722,7 @@ func buildStatusFleetSummary(
 		workflowSummary := statusWorkflowSummary{
 			Workflow:          def.Name,
 			Gaggle:            def.Spec.Gaggle,
+			Backprop:          statusWorkflowBackprop(def.Spec.Backprop),
 			MaxConcurrentRuns: maxConcurrent,
 			NextFire:          nextFire,
 		}
@@ -879,6 +888,9 @@ func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now 
 		)
 		if workflow.AdmissionBlocked != "" {
 			pf(stdout, "  %-19.19s blocked: %.45s\n", name, workflow.AdmissionBlocked)
+		}
+		if workflow.Backprop.Enabled {
+			pf(stdout, "  %-19.19s backprop: enabled (%s)\n", name, workflow.Backprop.Version)
 		}
 		if streak := workflow.FailureStreak; streak != nil {
 			pf(stdout, "ALARM: %s has failed %d consecutive times (infra) since %s: %.80s\n",

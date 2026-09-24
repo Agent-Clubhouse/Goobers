@@ -136,8 +136,14 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	}
 	if def.Spec.Enabled != nil {
 		features = append(features, binaryLayerFeature("workflow.spec.enabled"))
-		sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	}
+	if def.Spec.Backprop != nil {
+		features = append(features,
+			binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion),
+			binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion),
+		)
+	}
+	sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	return features, nil
 }
 
@@ -214,17 +220,28 @@ func binaryLayerFeatures() []Feature {
 		binaryLayerFeature("gaggle.spec.cost.enabled"),
 		binaryLayerFeature("gaggle.spec.enabled"),
 		binaryLayerFeature("workflow.spec.enabled"),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion),
 	}
 }
 
 func binaryLayerFeature(id FeatureID) Feature {
+	return binaryLayerFeatureSince(id, "v0.4.0")
+}
+
+func binaryLayerFeatureSince(id FeatureID, since string) Feature {
+	return binaryLayerFeatureForDSL(id, since, v20.DSLVersion, v30.DSLVersion)
+}
+
+func binaryLayerFeatureForDSL(id FeatureID, since string, versions ...string) Feature {
+	dslVersions := make([]DSLFeatureSupport, len(versions))
+	for i, version := range versions {
+		dslVersions[i] = DSLFeatureSupport{Version: version, Level: SupportGA}
+	}
 	return Feature{
-		ID: id, Level: SupportGA, SinceVersion: "v0.4.0",
-		History: []SupportTransition{{Level: SupportGA, SinceVersion: "v0.4.0"}},
-		DSLVersions: []DSLFeatureSupport{
-			{Version: "2.0", Level: SupportGA},
-			{Version: "3.0", Level: SupportGA},
-		},
+		ID: id, Level: SupportGA, SinceVersion: since,
+		History:     []SupportTransition{{Level: SupportGA, SinceVersion: since}},
+		DSLVersions: dslVersions,
 	}
 }
 

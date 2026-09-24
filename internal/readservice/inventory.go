@@ -239,6 +239,12 @@ type WorkflowDefinition struct {
 	Digest  string `json:"digest"`
 }
 
+// WorkflowBackprop reports the workflow's explicit attribution enrollment.
+type WorkflowBackprop struct {
+	Enabled bool   `json:"enabled"`
+	Version string `json:"version,omitempty"`
+}
+
 // WorkflowConcurrency reports active, desired, maximum, and blocked occupancy.
 type WorkflowConcurrency struct {
 	ActiveRuns        int32  `json:"activeRuns"`
@@ -262,6 +268,7 @@ type WorkflowSummary struct {
 	Owners         []GooberReference         `json:"owners"`
 	StageCount     int                       `json:"stageCount"`
 	Definition     WorkflowDefinition        `json:"definition"`
+	Backprop       WorkflowBackprop          `json:"backprop"`
 	Warnings       []validate.CodedWarning   `json:"warnings"`
 }
 
@@ -874,8 +881,16 @@ func (s *Local) workflowSummary(
 		Owners:      owners,
 		StageCount:  len(graph.Nodes),
 		Definition:  WorkflowDefinition{Version: graph.Version, Digest: graph.Digest},
+		Backprop:    workflowBackprop(def.Spec.Backprop),
 		Warnings:    workflowWarnings(inventory, def),
 	}
+}
+
+func workflowBackprop(config *apiv1.BackpropConfig) WorkflowBackprop {
+	if config == nil {
+		return WorkflowBackprop{}
+	}
+	return WorkflowBackprop{Enabled: config.Enabled, Version: config.Version}
 }
 
 func workflowStages(def *apiv1.Workflow) []StageDefinition {
