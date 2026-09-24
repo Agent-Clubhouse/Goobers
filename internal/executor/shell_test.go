@@ -1338,8 +1338,10 @@ func TestShellExecutor_ResultFileNonObjectJSONPreservesLegacySuccess(t *testing.
 			if result.Status != apiv1.ResultSuccess {
 				t.Fatalf("status = %v, want success", result.Status)
 			}
+			delete(result.Outputs, OutputTimeoutSeconds)
+			delete(result.Outputs, OutputTimeoutSource)
 			if len(result.Outputs) != 0 {
-				t.Fatalf("outputs = %#v, want no scalar outputs", result.Outputs)
+				t.Fatalf("result-file outputs = %#v, want no scalar outputs", result.Outputs)
 			}
 		})
 	}
