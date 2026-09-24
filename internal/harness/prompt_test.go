@@ -255,6 +255,32 @@ func TestResultShapeHintStatesScalarOnlyOutputsGenerally(t *testing.T) {
 	}
 }
 
+// TestResultShapeHintNeverDirectsStructuredDataToArtifacts is #2522 review
+// DA's regression test. An earlier draft of the generalized scalar-only rule
+// added "Larger or structured data belongs in \"artifacts\" instead" —
+// directly contradicting this same hint's "Do not populate \"artifacts\"" a
+// few sentences earlier, and #301's contract (resultShapeHint's own doc
+// comment): a model-supplied artifacts entry fails schema validation, since
+// "artifacts" accepts only digested ArtifactPointer objects the runner
+// produces. Steering the exact model #2522 describes — one inventing a
+// structured "trust" object — into "artifacts" would trade one completion
+// failure for another. The hint must point structured detail at "summary" or
+// a scalar string instead.
+func TestResultShapeHintNeverDirectsStructuredDataToArtifacts(t *testing.T) {
+	req := RunRequest{
+		Envelope:       apiv1.InvocationEnvelope{Goal: "do the thing"},
+		CompletionPath: DefaultResultPath,
+		Mode:           ModeInvoke,
+	}
+	prompt := renderPrompt(req)
+	if strings.Contains(prompt, `belongs in "artifacts"`) {
+		t.Fatalf("result hint tells the model to put structured data in artifacts, reopening #301: %q", prompt)
+	}
+	if !strings.Contains(prompt, `do not put it in "artifacts"`) {
+		t.Fatalf("result hint does not explicitly steer structured detail away from artifacts: %q", prompt)
+	}
+}
+
 // TestResultShapeHintRequiresNumericMetrics guards the producer-side contract:
 // metrics is optional and must not invite freeform labels or references that
 // the numeric-only result schema rejects.
