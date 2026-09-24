@@ -380,6 +380,12 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 }
 
 func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, args []string, stdout, stderr io.Writer) int {
+	// #4570: watchStartupReadiness runs in its own goroutine below while the
+	// main goroutine keeps writing startup-phase diagnostics to the same
+	// stdout; wrapping it once here, before that goroutine starts, serializes
+	// every writer that goes through the stdout variable for the rest of this
+	// function.
+	stdout = &syncWriter{w: stdout}
 	// #4252: process-start reference point for logGateFlip's elapsed-time
 	// readout on every named startup gate below.
 	processStart := time.Now()

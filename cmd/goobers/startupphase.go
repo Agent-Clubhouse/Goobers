@@ -49,6 +49,28 @@ func (t *startupPhaseTracker) snapshot() (phase, target string, since time.Time)
 	return t.phase, t.target, t.started
 }
 
+// syncWriter serializes concurrent writers onto one underlying io.Writer.
+//
+// runUpContextWithForce starts watchStartupReadiness in its own goroutine
+// (#4368) while the main goroutine keeps running runStartupPhase for each
+// subsequent synchronous startup phase (#4570) — both write diagnostics to
+// the same stdout with no synchronization otherwise. A bare io.Writer gives
+// no such guarantee: concurrent Write calls on it can interleave mid-line, or
+// race outright when the underlying writer is not itself concurrency-safe
+// (e.g. bytes.Buffer in tests). Wrapping the daemon's stdout once, before the
+// watchdog goroutine starts, serializes every writer that goes through it —
+// not just those two — with one mutex rather than one per call site.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // startupTimestamp formats now for a startup log line. A fixed, sortable,
 // greppable format (unlike the daemon's ordinary un-timestamped stdout
 // lines) so a blocked startup operation can be correlated to wall-clock time

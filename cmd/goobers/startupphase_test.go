@@ -147,6 +147,45 @@ func TestWatchStartupReadinessEmitsDiagnosticNamingCurrentPhase(t *testing.T) {
 	}
 }
 
+// TestSyncWriterSerializesWatchdogAndPhaseDiagnostics is #4570's regression
+// test. watchStartupReadiness runs in its own goroutine (started before the
+// synchronous startup phases) while runStartupPhase keeps writing on the
+// main goroutine — both against the same stdout, with no synchronization
+// between them before this fix. A bare io.Writer (bytes.Buffer here,
+// matching how tests construct stdout, and the same type that is not safe
+// for concurrent use in production either) races under `go test -race` when
+// both goroutines write it concurrently.
+//
+// syncWriter (runUpContextWithForce wraps stdout with it before starting the
+// watchdog goroutine) is what removes the race: both goroutines' writes go
+// through the same mutex.
+func TestSyncWriterSerializesWatchdogAndPhaseDiagnostics(t *testing.T) {
+	var buf bytes.Buffer
+	stdout := &syncWriter{w: &buf}
+	tracker := &startupPhaseTracker{}
+	tracker.set("phase-a", "target-a")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// A near-zero threshold keeps the watchdog goroutine writing
+		// throughout the loop below instead of firing once and exiting.
+		for i := 0; i < 200; i++ {
+			watchStartupReadiness(ctx, stdout, tracker, func() bool { return false }, time.Microsecond)
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		if err := runStartupPhase(stdout, tracker, "phase-b", "target-b", func() error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-done
+}
+
 func TestWatchStartupReadinessSilentOnceReady(t *testing.T) {
 	var buf syncBuffer
 	tracker := &startupPhaseTracker{}
