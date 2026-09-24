@@ -65,6 +65,10 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 			"workflow.spec.runControls.stalledRunTimeout",
 			"workflow.spec.runControls.maxRunDuration",
 		},
+		"WorkflowSpec.Backprop": {
+			"workflow.spec.backprop.enabled",
+			"workflow.spec.backprop.version",
+		},
 		"WorkflowSpec.OutboxMirrorPath": {"workflow.spec.outboxMirrorPath"},
 		"WorkflowSpec.Start":            {"workflow.spec.start"},
 		"WorkflowSpec.DocsRoots":        {"workflow.spec.docsRoots"},

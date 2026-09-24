@@ -880,6 +880,16 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.backprop.enabled",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.backprop.version",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.displayName",
       "stability": "ga",
       "sinceVersion": "dev"
