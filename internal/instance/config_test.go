@@ -2428,6 +2428,19 @@ func TestConfigValidate(t *testing.T) {
 			}},
 		},
 		{
+			name: "valid ado workload identity client ID",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Auth: &RepoAuthConfig{Kind: ADOAuthWorkloadIdentity, ClientID: "00000000-0000-0000-0000-000000000000"}},
+			}},
+		},
+		{
+			name: "ado Azure CLI rejects client ID",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Auth: &RepoAuthConfig{Kind: ADOAuthAzureCLI, ClientID: "00000000-0000-0000-0000-000000000000"}},
+			}},
+			wantErr: "auth.clientId is only valid for workload-identity or managed-identity",
+		},
+		{
 			name: "ado missing project",
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "ado", Owner: "acme", Name: "web", Auth: &RepoAuthConfig{Kind: ADOAuthAzureCLI}},

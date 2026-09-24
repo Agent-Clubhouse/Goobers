@@ -37,7 +37,7 @@ func Source(repo instance.RepoRef, runner providers.CommandRunner, stores creden
 	case instance.ADOAuthAzureCLI:
 		return providers.NewAzureCLIADOCredentialSource(runner, repo.Auth.Tenant), nil
 	case instance.ADOAuthWorkloadIdentity:
-		return providers.NewWorkloadIdentityADOCredentialSource()
+		return providers.NewWorkloadIdentityADOCredentialSource(repo.Auth.ClientID)
 	case instance.ADOAuthManagedIdentity:
 		return providers.NewManagedIdentityADOCredentialSource(repo.Auth.ClientID)
 	default:

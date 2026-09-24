@@ -576,8 +576,8 @@ func (r RepoRef) validateADO(i int) error {
 	default:
 		return fmt.Errorf("repos[%d] (%s/%s): unsupported ADO auth kind %q", i, r.Owner, r.Name, kind)
 	}
-	if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthManagedIdentity {
-		return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for managed-identity", i, r.Owner, r.Name)
+	if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthWorkloadIdentity && kind != ADOAuthManagedIdentity {
+		return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for workload-identity or managed-identity", i, r.Owner, r.Name)
 	}
 	return nil
 }

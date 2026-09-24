@@ -244,8 +244,14 @@ func newAzureIdentityADOCredentialSource(credential azureTokenCredential) ADOCre
 
 // NewWorkloadIdentityADOCredentialSource uses Azure workload identity
 // federation configured through the standard AZURE_* environment variables.
-func NewWorkloadIdentityADOCredentialSource() (ADOCredentialSource, error) {
-	credential, err := azidentity.NewWorkloadIdentityCredential(nil)
+// clientID overrides AZURE_CLIENT_ID when one projected service-account token
+// is trusted by multiple user-assigned identities.
+func NewWorkloadIdentityADOCredentialSource(clientID string) (ADOCredentialSource, error) {
+	options := &azidentity.WorkloadIdentityCredentialOptions{}
+	if clientID != "" {
+		options.ClientID = clientID
+	}
+	credential, err := azidentity.NewWorkloadIdentityCredential(options)
 	if err != nil {
 		return nil, fmt.Errorf("create Azure workload identity credential: %w", err)
 	}

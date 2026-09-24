@@ -351,7 +351,7 @@
           "description": "Identity mechanism: `pat` reads the static token ref; `github-app` mints short-lived installation tokens (GitHub); `azure-cli` borrows the current local az login, `workload-identity` uses federated Azure workload identity, and `managed-identity` uses an Azure managed identity (all Azure DevOps). Every kind except `pat` forbids a token ref on the same repository."
         },
         "tenant": { "type": "string", "minLength": 1, "description": "Pins Azure CLI authentication to one tenant. Azure DevOps only." },
-        "clientId": { "type": "string", "minLength": 1, "description": "Selects a user-assigned managed identity. Valid only with kind `managed-identity`." },
+        "clientId": { "type": "string", "minLength": 1, "description": "Selects a user-assigned identity. Valid with kind `workload-identity` or `managed-identity`; for workload identity it overrides the ambient AZURE_CLIENT_ID while reusing the projected federated token." },
         "appId": {
           "$ref": "#/$defs/githubId",
           "description": "GitHub App identifier for kind `github-app`: the numeric App ID or the App's client ID string — GitHub accepts either as the App JWT issuer."

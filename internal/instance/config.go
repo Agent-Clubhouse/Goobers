@@ -813,7 +813,8 @@ type RepoAuthConfig struct {
 	Kind string `json:"kind" yaml:"kind"`
 	// Tenant optionally pins Azure CLI authentication to one tenant (ADO).
 	Tenant string `json:"tenant,omitempty" yaml:"tenant,omitempty"`
-	// ClientID optionally selects a user-assigned managed identity (ADO).
+	// ClientID optionally selects a user-assigned identity for ADO workload or
+	// managed identity authentication.
 	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
 	// AppID identifies the GitHub App for kind github-app: the numeric App
 	// ID or the app's client ID string — GitHub accepts either as the App
