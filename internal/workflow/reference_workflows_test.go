@@ -628,6 +628,57 @@ func TestReferenceWorkflowsImplementationCIPollDeclaresRequiredCapability(t *tes
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }
 
+// TestReferenceWorkflowsCIPollRetriesOnDispatchFailure is #5462's regression
+// guard (a workaround, not a full fix — see #5462). The credential is
+// resolved once at ci-poll stage entry from a process-level token cache and
+// then held static for the whole poll (up to pollTimeoutSeconds, default
+// 30m); a run whose poll is still running as that cached token nears its
+// own expiry can 401 mid-poll. Retrying re-dispatches the stage, which
+// calls the token source again — proven live to recover, because the cache
+// re-mints once the held token is past its expiry skew, where a bare retry
+// of the same already-expired token cannot. `retry.maxAttempts` here is
+// internal/runner's per-stage attempt loop (run.go's dispatch retry,
+// charged before any gate ever evaluates this task's result) — a completely
+// different budget from the gate-level repass count ci-gate's own
+// onTimeout re-entry spends (#5558), so this does not double-charge it. It
+// does not cover a poll long enough to outlive even a freshly re-minted
+// token.
+func TestReferenceWorkflowsCIPollRetriesOnDispatchFailure(t *testing.T) {
+	for _, name := range []string{
+		"implementation.yaml",
+		"implementation-pre-review-experiment.yaml",
+		"implementation-recovery.yaml",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", name)
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read workflow: %v", err)
+			}
+			var w apiv1.Workflow
+			if err := yaml.Unmarshal(raw, &w); err != nil {
+				t.Fatalf("unmarshal workflow: %v", err)
+			}
+			for _, task := range w.Spec.Tasks {
+				if task.Inputs["kind"] != "ci-poll" {
+					continue
+				}
+				if task.Retry == nil {
+					t.Fatalf("ci-poll task %q declares no retry; want maxAttempts>1 so a dispatch-level failure (e.g. an expired credential's 401) re-dispatches instead of failing the run", task.Name)
+				}
+				if task.Retry.MaxAttempts < 2 {
+					t.Fatalf("ci-poll task %q retry.maxAttempts = %d, want >= 2", task.Name, task.Retry.MaxAttempts)
+				}
+				if task.Retry.BackoffSeconds <= 0 {
+					t.Fatalf("ci-poll task %q retry.backoffSeconds = %d, want > 0 so a re-dispatch doesn't immediately race the same failure", task.Name, task.Retry.BackoffSeconds)
+				}
+				return
+			}
+			t.Fatalf("%s has no inputs.kind=ci-poll task", name)
+		})
+	}
+}
+
 // TestReferenceWorkflowsImplementationBoundsModuleDownloadSeparatelyFromImplement
 // is #4179's regression guard: a stalled `go mod download` inside the agentic
 // implement session used to burn the whole implement budget invisibly (one
