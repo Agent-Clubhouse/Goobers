@@ -8,8 +8,11 @@ import (
 // #3139 catalogued every unretried network fetch in ci.yml. The npm/Chromium
 // install already got the bounded-retry treatment; this guards the other one
 // named in that issue: `choco install make` on the windows-smoke job, which
-// reaches the Chocolatey feed with no retry of its own and has no bounded
-// timeout to convert a hang into a retryable failure without one.
+// reached the Chocolatey feed with a single unretried attempt. The step
+// already declares `timeout-minutes: 8`, but that timeout bounds the whole
+// step — including the entire 3-attempt loop this test pins — so it does
+// not by itself convert a hang into a retry; it only bounds one. This test
+// only pins the retry loop's presence, not hang behavior.
 func TestWindowsMakeInstallRetriesOnFailure(t *testing.T) {
 	w := loadCIWorkflow(t)
 	step := w.Jobs["windows-smoke"].step(t, "Install make (windows)")
