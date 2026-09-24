@@ -142,6 +142,39 @@ func TestReclassifyToolPermissionBlockLeavesOrdinaryBlocksAlone(t *testing.T) {
 	}
 }
 
+// TestReclassifyToolPermissionBlockConvertsFailureStatusToo is #5444's
+// regression test: the guard originally only ran on status "blocked", so a
+// model authoring the identical fabricated content-exclusion narrative under
+// status "failure" sailed straight through unchecked. This reproduces one of
+// the four live envelopes cited in #5444 (run
+// b479bd6363feb410b68ac177413ca553): status "failure" with an
+// "*_ACCESS_DENIED" code phrased as an environment access policy, not the
+// words "content exclusion".
+func TestReclassifyToolPermissionBlockConvertsFailureStatusToo(t *testing.T) {
+	result := apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Summary: "could not complete the task",
+		Error: &apiv1.ErrorInfo{
+			Code:    "CANONICAL_SPEC_ACCESS_DENIED",
+			Message: "reading the canonical spec was denied by the environment access policy",
+		},
+	}
+
+	reclassifyToolPermissionBlock(&result, []byte(liveDenialTranscript), nil)
+
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %q, want %q", result.Status, apiv1.ResultFailure)
+	}
+	if result.Error == nil || result.Error.Code != ErrorCodeToolPermissionDenied {
+		t.Fatalf("error = %+v, want code %s — the runtime observed a tool-permission refusal, "+
+			"not a content-exclusion policy, and status:failure must not exempt that from the guard",
+			result.Error, ErrorCodeToolPermissionDenied)
+	}
+	if result.Outputs["toolPermissionDenied"] != true {
+		t.Errorf("outputs.toolPermissionDenied = %v, want true", result.Outputs["toolPermissionDenied"])
+	}
+}
+
 // TestReclassifyToolPermissionBlockReadsStderr proves the evidence scan covers
 // stderr too: the CLI does not always route a refusal through the transcript.
 func TestReclassifyToolPermissionBlockReadsStderr(t *testing.T) {

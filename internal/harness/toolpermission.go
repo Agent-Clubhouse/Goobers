@@ -65,6 +65,14 @@ var contentExclusionClaimMarkers = []string{
 	"excluded by the repository owner",
 	"organization policy blocks",
 	"org content policy",
+	// #5444: real model-authored codes/messages that assert the same
+	// conclusion without using the words "content exclusion" — e.g.
+	// CANONICAL_SPEC_ACCESS_DENIED: "... was denied by the environment
+	// access policy" and PINNED_SPEC_ACCESS_DENIED. Narrower than a bare
+	// "denied", which would collide with toolPermissionMarkers' own
+	// vocabulary for a plain tool refusal.
+	"access_denied",
+	"access policy",
 }
 
 // toolPermissionEvidence is what the harness itself observed about tool
@@ -174,7 +182,17 @@ func claimsContentExclusion(result apiv1.ResultEnvelope) bool {
 // mention content exclusion are untouched, so the ordinary dependency-block
 // path (docs/stage-contract.md) is unaffected.
 func reclassifyToolPermissionBlock(result *apiv1.ResultEnvelope, transcript, stderr []byte) {
-	if result == nil || result.Status != apiv1.ResultBlocked {
+	if result == nil {
+		return
+	}
+	// #5444: the guard originally ran only on status "blocked". An agent that
+	// authors the identical fabricated content-exclusion narrative under
+	// status "failure" sailed straight through unchecked — the exact outcome
+	// this guard exists to prevent. "success" is deliberately left out: a
+	// successful result mentioning content exclusion in passing (e.g. "I
+	// documented the content exclusion policy") is not a claim that this run
+	// was blocked by it.
+	if result.Status != apiv1.ResultBlocked && result.Status != apiv1.ResultFailure {
 		return
 	}
 	if !claimsContentExclusion(*result) {
