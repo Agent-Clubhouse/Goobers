@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -17,7 +18,7 @@ func TestPrepareManualDowngradeRequiresOptInAndKeepsValidation(t *testing.T) {
 	archive := testTarGz(t, "candidate")
 	sum := sha256.Sum256(archive)
 	var server *httptest.Server
-	badChecksum := false
+	var badChecksum atomic.Bool
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/goobers/releases/tags/v0.4.1":
@@ -29,7 +30,7 @@ func TestPrepareManualDowngradeRequiresOptInAndKeepsValidation(t *testing.T) {
 			_, _ = w.Write(archive)
 		case "/sums":
 			checksum := sum
-			if badChecksum {
+			if badChecksum.Load() {
 				checksum[0] ^= 1
 			}
 			_, _ = fmt.Fprintf(w, "%x  goobers_v0.4.1_linux_amd64.tar.gz\n", checksum)
@@ -50,7 +51,7 @@ func TestPrepareManualDowngradeRequiresOptInAndKeepsValidation(t *testing.T) {
 		{"downgrade rejects corrupt payload", "v0.5.0-beta.1", true, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			badChecksum = test.badChecksum
+			badChecksum.Store(test.badChecksum)
 			root := t.TempDir()
 			current := currentBinary(root, "linux")
 			writeTestExecutable(t, current, "current")
