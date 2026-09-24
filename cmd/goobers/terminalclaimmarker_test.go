@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestTerminalSharedClaimsNeverUseLegacyMarkerRelease(t *testing.T) {
@@ -32,7 +33,7 @@ func TestTerminalSharedClaimsNeverUseLegacyMarkerRelease(t *testing.T) {
 	if ok, _, err := ledger.ClaimScopedUntil(key, owner.Run, "claim", time.Now().Add(time.Minute), owner); err != nil || !ok {
 		t.Fatalf("seed shared claim: %v %v", ok, err)
 	}
-	entries, err := terminalClaimMarkerEntries(l, owner.Run)
+	entries, err := terminalClaimMarkerEntries(l, owner.Run, providers.ProviderGitHub)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("shared claim reached legacy marker cleanup: %+v %v", entries, err)
 	}
@@ -225,6 +226,47 @@ func TestTerminalCleanupSkipsClaimMarkerWhenAlreadyReleased(t *testing.T) {
 	}
 }
 
+func TestADOTerminalAbortReleasesProviderBeforeLedger(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const runID = "ado-aborted-run"
+	newStaleTerminalRun(t, l, runID, "default-implement", journal.PhaseAborted, "implement")
+	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	ledger := openTestClaimLedger(t, ledgerPath)
+	if ok, _, err := ledger.ClaimScoped(localscheduler.ClaimKey{
+		Gaggle: "example", Provider: "ado", ExternalID: "5648",
+	}, runID, "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed ADO claim: ok=%v err=%v", ok, err)
+	}
+
+	manager, err := worktree.NewManager(l.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeClaimMarkerRelease{ledgerPath: ledgerPath, runID: runID}
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderADO,
+		Owner:    "org",
+		Project:  "backlog-project",
+		Name:     "repo",
+	}
+	if err := finalizeTerminalRunWithClaimMarkers(l, nil, manager, runID, repo, fake.release); err != nil {
+		t.Fatalf("finalize aborted ADO run: %v", err)
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("ADO provider releases = %+v, want one", fake.requests)
+	}
+	if got := fake.requests[0]; got.Repository != repo || got.ID != "5648" || got.RunID != runID || got.LedgerAuthorized {
+		t.Fatalf("ADO release request = %+v, want routed ownership-checked release", got)
+	}
+	if len(fake.heldAtCall) != 1 || !fake.heldAtCall[0] {
+		t.Fatalf("ADO ledger held at provider call = %v, want true", fake.heldAtCall)
+	}
+	if entries := openTestClaimLedger(t, ledgerPath).ForRunAll(runID); len(entries) != 0 {
+		t.Fatalf("aborted ADO run still holds claims: %+v", entries)
+	}
+}
+
 // TestTerminalCleanupClaimMarkerFailureStillReleasesLedger pins the best-effort
 // contract: the ledger is the truth, so a provider hiccup must neither hold the
 // lease nor fail the terminal transition — it degrades to exactly the
@@ -274,6 +316,25 @@ func TestTerminalCleanupClaimMarkerFailureStillReleasesLedger(t *testing.T) {
 	}
 	if recorded != 1 {
 		t.Fatalf("%s events = %d, want 1 (events: %+v)", claimMarkerReleaseErrorCode, recorded, events)
+	}
+}
+
+func TestApplyBacklogProjectRoutesADOTerminalCleanup(t *testing.T) {
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{
+		ObjectMeta: metav1.ObjectMeta{Name: "example"},
+		Spec: apiv1.GaggleSpec{
+			Backlog: apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "backlog-project"},
+		},
+	}}}
+	routed := providers.RepositoryRef{
+		Provider: providers.ProviderADO,
+		Owner:    "org",
+		Project:  "code-project",
+		Name:     "repo",
+	}
+	got := applyBacklogProject(set, "example", routed)
+	if got.Project != "backlog-project" || got.Owner != routed.Owner || got.Name != routed.Name {
+		t.Fatalf("ADO backlog route = %+v, want backlog project with code-repo org/name preserved", got)
 	}
 }
 
@@ -327,7 +388,7 @@ func TestBuildTerminalClaimMarkerReleaseForwardsConfiguredLogin(t *testing.T) {
 	t.Cleanup(func() { newTerminalClaimMarkerProvider = previous })
 
 	registrar, _ := journal.DefaultScrubber()
-	release, _, err := buildTerminalClaimMarkerRelease(cfg, apiv1.RepoRef{}, registrar, nil)
+	release, _, err := buildTerminalClaimMarkerRelease(instance.Layout{}, cfg, apiv1.RepoRef{}, registrar, nil)
 	if err != nil {
 		t.Fatalf("build terminal claim-marker release: %v", err)
 	}
@@ -377,15 +438,24 @@ func TestBuildTerminalClaimMarkerReleaseScope(t *testing.T) {
 			wantRepo: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "gaggle-org", Name: "gaggle-repo"},
 		},
 		{
-			name:     "ado keeps deferring to curation reconciliation",
+			name:     "ado targets the configured backlog",
 			cfg:      &instance.Config{Repos: []instance.RepoRef{adoRepo}},
-			wantFunc: false,
+			wantFunc: true,
+			wantRepo: providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Name: "repo"},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			registrar, _ := journal.DefaultScrubber()
-			release, repo, err := buildTerminalClaimMarkerRelease(tc.cfg, tc.project, registrar, nil)
+			previousADO := newTerminalADOClaimMarkerProvider
+			newTerminalADOClaimMarkerProvider = func(instance.RepoRef, providers.SecretRegistrar, credentials.StoreResolver) (workItemClaimReleaser, error) {
+				return claimReleaserFunc(func(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+					return providers.WorkItem{}, nil
+				}), nil
+			}
+			t.Cleanup(func() { newTerminalADOClaimMarkerProvider = previousADO })
+
+			release, repo, err := buildTerminalClaimMarkerRelease(instance.Layout{}, tc.cfg, tc.project, registrar, nil)
 			if err != nil {
 				t.Fatalf("build terminal claim-marker release: %v", err)
 			}

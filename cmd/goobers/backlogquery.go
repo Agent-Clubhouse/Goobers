@@ -1096,7 +1096,12 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 			pf(session.env.stderr, "error: %v\n", err)
 			return malformedReadyItems, 1
 		}
-		if labelFilter.ReferencesLabel(providers.LabelReady) {
+		// ReadyAt is optional claim-output enrichment, not part of label
+		// eligibility. Only GitHub currently exposes the label-transition
+		// history needed to derive it. ADO must not fail an otherwise valid
+		// claim merely because the selector references the canonical ready tag.
+		if labelFilter.ReferencesLabel(providers.LabelReady) &&
+			session.env.issueProvider.Kind() == providers.ProviderGitHub {
 			for index := firstNewClaim; index < len(session.claimed); {
 				if !session.claimed[index].HasLabel(providers.LabelReady) {
 					index++

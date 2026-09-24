@@ -503,12 +503,14 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   eligibility. The projection is retired at the same moment the lease is —
   a stage does it on the paths that have one (`issue-close-out`,
   `backlog-query --release`), and the instance's terminal cleanup does it for
-  every run that reaches a terminal phase still holding a lease. The `no-work`
+  every GitHub- or Azure DevOps-backed run that reaches a terminal phase still
+  holding a lease. The `no-work`
   outcome is the case that makes the second path necessary rather than
   defensive: it short-circuits to `completed` from whatever stage reported it,
   so no close-out stage runs. Backlog curation's reconciliation of markers with
   no backing lease remains the backstop for a projection that could not be
-  written (a forge outage, a credential-less instance, a non-GitHub provider),
+  written (a forge outage, a credential-less instance, or an unsupported
+  provider),
   not the primary mechanism — so the window in which the ledger and the forge
   disagree is bounded by one provider call, not by one curation interval.
 - **Readiness conditions** enforced before any run starts: max parallel runs per
