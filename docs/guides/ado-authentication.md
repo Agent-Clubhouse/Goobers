@@ -48,16 +48,27 @@ above:
   short form Azure DevOps itself emits when project and repository share a
   name, `https://dev.azure.com/<organization>/_git/<repository>`
 - the legacy pre-rename host, `https://<organization>.visualstudio.com/[DefaultCollection/]<project>/_git/<repository>`
-- `git@ssh.dev.azure.com:v3/<organization>/<project>/<repository>`, and its
-  legacy `<organization>@vs-ssh.visualstudio.com:v3/<organization>/<project>/<repository>`
+- `git@ssh.dev.azure.com:v3/<organization>/<project>/<repository>` (or
+  `ssh://git@ssh.dev.azure.com/v3/...`), and its legacy
+  `<organization>@vs-ssh.visualstudio.com:v3/<organization>/<project>/<repository>`
   equivalent
-- the bare three-part slug, `<organization>/<project>/<repository>`
+- for `goobers connect` only, the bare three-part slug,
+  `<organization>/<project>/<repository>`; `push-branch` and `validate` never
+  treat a bare slug or a local mirror path as Azure DevOps
 
-Matching is case-insensitive on the host and tolerates a userinfo-bearing
-origin (`https://<organization>@dev.azure.com/...`). A legacy
-`*.visualstudio.com` remote is accepted for matching and credential routing
-only — Goobers never rewrites an operator's configured remote, and every URL
-Goobers itself generates stays the canonical `dev.azure.com` form.
+Matching is case-insensitive on the host and on the configured organization,
+project and repository names, and tolerates a username-only origin
+(`https://<organization>@dev.azure.com/...`). An origin that embeds a password
+(`https://user:secret@dev.azure.com/...`) is refused by `push-branch`; remove
+the password from the remote and configure the repository's `auth` instead. A
+legacy `*.visualstudio.com` remote is accepted for matching and credential
+routing only — Goobers never rewrites an operator's configured remote, and
+every URL Goobers itself generates stays the canonical `dev.azure.com` form.
+
+SSH remotes are matched for routing only: `push-branch` still resolves the
+repository's configured Azure DevOps credential for an SSH origin, but the SSH
+transport ignores that HTTP credential, so the push authenticates with the
+operator's SSH key.
 
 ## Unattended authentication
 

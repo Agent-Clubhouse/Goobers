@@ -259,6 +259,67 @@ func TestADORepoForOriginRequiresExactConfiguredRemote(t *testing.T) {
 		got.Owner != repo.Owner || got.Project != repo.Project || got.Name != repo.Name {
 		t.Fatalf("adoRepoForOrigin() userinfo = %#v, %v", got, ok)
 	}
+
+	// An origin embedding a password fails closed rather than routing: the
+	// push would otherwise carry it on argv.
+	if _, ok := adoRepoForOrigin(cfg, "https://organization:placeholder@dev.azure.com/organization/project%20name/_git/repository"); ok {
+		t.Fatal("password-bearing ADO origin was routed to configured credentials")
+	}
+	if err := adoOriginMismatchError("https://organization:placeholder@dev.azure.com/o/p/_git/r"); strings.Contains(err.Error(), "placeholder") ||
+		!strings.Contains(err.Error(), "embeds a password") {
+		t.Fatalf("adoOriginMismatchError() = %q, want a redacted password refusal", err)
+	}
+
+	// A bare slug or local path is never an ADO origin.
+	if _, ok := adoRepoForOrigin(cfg, "organization/project name/repository"); ok {
+		t.Fatal("bare slug origin was routed to configured ADO credentials")
+	}
+}
+
+// TestADORepoForOriginAcceptsNamesOutsideConnectCharacterClass pins that
+// routing does not impose connect's conservative name regex: Azure DevOps
+// allows non-ASCII letters and '&' in project and repository names, and the
+// pre-ADO-N35 canonical-string comparison matched them.
+func TestADORepoForOriginAcceptsNamesOutsideConnectCharacterClass(t *testing.T) {
+	cases := []struct {
+		name    string
+		project string
+		repo    string
+		origin  string
+	}{
+		{"non-ASCII project", "Café", "repository", "https://dev.azure.com/example-org/Caf%C3%A9/_git/repository"},
+		{"non-ASCII repo", "example-project", "repo_ü", "https://dev.azure.com/example-org/example-project/_git/repo_%C3%BC"},
+		{"ampersand project", "Team&Ops", "repository", "https://dev.azure.com/example-org/Team&Ops/_git/repository"},
+		{"escaped ampersand project", "Team&Ops", "repository", "https://dev.azure.com/example-org/Team%26Ops/_git/repository"},
+		{"non-ASCII project on visualstudio.com", "Café", "repository", "https://example-org.visualstudio.com/Caf%C3%A9/_git/repository"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := instance.RepoRef{Provider: "ado", Owner: "example-org", Project: tc.project, Name: tc.repo}
+			cfg := &instance.Config{Repos: []instance.RepoRef{repo}}
+			got, ok := adoRepoForOrigin(cfg, tc.origin)
+			if !ok || got.Project != tc.project || got.Name != tc.repo {
+				t.Fatalf("adoRepoForOrigin(%q) = %#v, %v; want the configured repository", tc.origin, got, ok)
+			}
+		})
+	}
+}
+
+// TestADORepoForOriginMatchesSSHForms pins the SSH spellings
+// (scp-like and ssh://) of both ADO SSH hosts.
+func TestADORepoForOriginMatchesSSHForms(t *testing.T) {
+	repo := instance.RepoRef{Provider: "ado", Owner: "example-org", Project: "example-project", Name: "example-repo"}
+	cfg := &instance.Config{Repos: []instance.RepoRef{repo}}
+	for _, origin := range []string{
+		"git@ssh.dev.azure.com:v3/example-org/example-project/example-repo",
+		"ssh://git@ssh.dev.azure.com/v3/example-org/example-project/example-repo",
+		"example-org@vs-ssh.visualstudio.com:v3/example-org/example-project/example-repo",
+		"ssh://example-org@vs-ssh.visualstudio.com/v3/example-org/example-project/example-repo",
+	} {
+		if _, ok := adoRepoForOrigin(cfg, origin); !ok {
+			t.Errorf("adoRepoForOrigin(%q) did not match the configured repository", origin)
+		}
+	}
 }
 
 // TestPushBranchDetachedHeadFailsClosed proves push-branch refuses to guess

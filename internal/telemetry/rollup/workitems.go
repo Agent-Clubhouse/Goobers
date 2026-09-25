@@ -415,15 +415,7 @@ func workItemRepository(provider, rawURL string) string {
 	host := parsed.Hostname()
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if strings.EqualFold(provider, "ado") {
-		if org, ok := adoVisualStudioOrganization(host); ok {
-			// Legacy <org>.visualstudio.com URLs carry the organization in
-			// the host, not as the path's leading segment the way
-			// dev.azure.com and a self-hosted ADO Server both do (ADO-N35).
-			// Prepending it here lets adoRepositoryIdentity's
-			// <org>/<project>/... shape read the same off either host.
-			parts = append([]string{org}, parts...)
-		}
-		return adoRepositoryIdentity(parts)
+		return adoRepositoryIdentity(adoIdentityParts(host, parts))
 	}
 	if !strings.EqualFold(provider, "github") || !strings.EqualFold(host, "github.com") {
 		return ""
@@ -451,18 +443,34 @@ func workItemRepositoryFromAPI(provider, rawURL string) string {
 	return ""
 }
 
-// adoVisualStudioOrganization reads the organization off a legacy
-// <org>.visualstudio.com host (ADO-N35). dev.azure.com and a self-hosted ADO
-// Server both carry the organization as the URL path's leading segment, but
-// the pre-rename visualstudio.com host carries it in the host instead, so
-// adoRepositoryIdentity's parts slice would otherwise be missing it entirely.
+// adoIdentityParts puts the organization back at the front of a legacy
+// <org>.visualstudio.com URL's path parts (ADO-N35). dev.azure.com and a
+// self-hosted ADO Server both carry the organization as the path's leading
+// segment, but the pre-rename visualstudio.com host carries it in the host,
+// so adoRepositoryIdentity's <org>/<project>/... shape would otherwise be
+// missing it. The legacy host's optional leading DefaultCollection segment is
+// dropped for the same reason. The host label keeps its original case, the
+// same as a dev.azure.com path segment does, so neither host is normalised
+// differently from the other.
+func adoIdentityParts(host string, parts []string) []string {
+	organization, ok := adoVisualStudioOrganization(host)
+	if !ok {
+		return parts
+	}
+	if len(parts) > 0 && strings.EqualFold(parts[0], "DefaultCollection") {
+		parts = parts[1:]
+	}
+	return append([]string{organization}, parts...)
+}
+
+// adoVisualStudioOrganization reads the organization label off a legacy
+// <org>.visualstudio.com host, matching the suffix case-insensitively.
 func adoVisualStudioOrganization(host string) (string, bool) {
-	host = strings.ToLower(host)
-	organization := strings.TrimSuffix(host, ".visualstudio.com")
-	if organization == "" || organization == host {
+	const suffix = ".visualstudio.com"
+	if len(host) <= len(suffix) || !strings.EqualFold(host[len(host)-len(suffix):], suffix) {
 		return "", false
 	}
-	return organization, true
+	return host[:len(host)-len(suffix)], true
 }
 
 // adoRepositoryIdentity reads "<org>/<project>" off a work-item URL and

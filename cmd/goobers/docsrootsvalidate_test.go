@@ -194,6 +194,13 @@ func TestRemoteURLNamesRepositoryADOForms(t *testing.T) {
 		{"visualstudio.com wrong repo", "https://contoso.visualstudio.com/project/_git/other-repo", "contoso", "example-repo", false},
 		{"github.com unaffected", "https://github.com/contoso/example-repo.git", "contoso", "example-repo", true},
 		{"scp-like unaffected", "git@github.com:contoso/example-repo.git", "contoso", "example-repo", true},
+		{"ssh.dev.azure.com ssh:// form", "ssh://git@ssh.dev.azure.com/v3/contoso/project/example-repo", "contoso", "example-repo", true},
+		{"vs-ssh.visualstudio.com scp-like", "contoso@vs-ssh.visualstudio.com:v3/contoso/project/example-repo", "contoso", "example-repo", true},
+		// A three-segment local path is not an ADO slug: the generic walk
+		// still matches it exactly as before ADO-N35.
+		{"local absolute path", "/srv/acme/web", "acme", "web", true},
+		{"local absolute path with .git", "/srv/acme/web.git", "acme", "web", true},
+		{"local relative path", "mirrors/acme/web", "acme", "web", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
