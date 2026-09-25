@@ -572,7 +572,7 @@ func setupTargetedGatherPRContextADO(t *testing.T, runID string) (root, workDir 
 	}
 	mux.HandleFunc("/"+repo.Owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{
-			"authenticatedUser": map[string]string{"providerDisplayName": "merge-review-bot"},
+			"authenticatedUser": map[string]string{"id": "merge-review-bot-guid", "providerDisplayName": "merge-review-bot"},
 		})
 	})
 	server := httptest.NewServer(mux)

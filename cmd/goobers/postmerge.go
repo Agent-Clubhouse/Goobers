@@ -256,8 +256,12 @@ type adoWorkItemCloser interface {
 	UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error)
 }
 
+// adoPostMergePRComments is the ADO pull-request thread surface the post-merge
+// cost summary needs. Receipts and the summary marker on PR threads are
+// trusted by identity GUID (ADO-N5), so it reads the authenticated identity
+// rather than the display-name login.
 type adoPostMergePRComments interface {
-	AuthenticatedLogin(context.Context) (string, error)
+	adoIdentityReader
 	ListPullRequestThreadComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error)
 	PostPullRequestThreadComment(context.Context, providers.RepositoryRef, string, string) (providers.Comment, error)
 }

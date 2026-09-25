@@ -109,7 +109,7 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 	mux.HandleFunc("/"+repo.Owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
 		connectionDataRead = true
 		writeJSONResp(t, w, map[string]interface{}{
-			"authenticatedUser": map[string]string{"providerDisplayName": login},
+			"authenticatedUser": map[string]string{"id": "merge-review-bot-guid", "providerDisplayName": login},
 		})
 	})
 	server := httptest.NewServer(mux)
@@ -248,7 +248,7 @@ func TestGatherPRContextADOParksRepeatedEscalatedDigest(t *testing.T) {
 	mux := adoCheckpointMux(t, repo, prNumber, headSHA, baseSHA, []string{needsRemediationLabel}, threadValues, rec)
 	mux.HandleFunc("/"+repo.Owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{
-			"authenticatedUser": map[string]string{"providerDisplayName": "merge-review-bot"},
+			"authenticatedUser": map[string]string{"id": "merge-review-bot-guid", "providerDisplayName": "merge-review-bot"},
 		})
 	})
 	server := httptest.NewServer(mux)
