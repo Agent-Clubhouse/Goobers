@@ -438,7 +438,10 @@ func closeReferencedWorkItemsADOWithComments(ctx context.Context, closer adoWork
 // mirrors closeReferencedIssue's idempotency: the status write is skipped when
 // the item is already in the closed state and already carries goobers/status:done
 // (ADO maps the Completed state category to State=="closed" and surfaces the
-// status tag as a visible label), and the comment is not re-posted if present.
+// status tag as a visible label). A successful close also retires the claim
+// and ready markers so an ADO auto-transition to Done cannot leave the item
+// looking selectable or owned after merge. The comment is not re-posted if
+// present.
 func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, id, comment string) error {
 	item, err := closer.GetWorkItem(ctx, backlogRepo, id)
 	if err != nil {
@@ -459,15 +462,25 @@ func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, b
 	if err != nil {
 		return err
 	}
+	commentPresent := false
 	for _, existing := range comments {
 		if strings.HasPrefix(existing.Body, strings.SplitN(comment, "\n", 2)[0]) {
-			return nil
+			commentPresent = true
+			break
 		}
 	}
+	removeLabels := []string{providers.LabelClaimed, providers.LabelReady}
+	if commentPresent && !hasAnyLabel(item.Labels, removeLabels) {
+		return nil
+	}
+	if commentPresent {
+		comment = ""
+	}
 	_, err = closer.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository: backlogRepo,
-		ID:         id,
-		Comment:    comment,
+		Repository:   backlogRepo,
+		ID:           id,
+		Comment:      comment,
+		RemoveLabels: removeLabels,
 	})
 	return err
 }

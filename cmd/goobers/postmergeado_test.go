@@ -115,6 +115,9 @@ func TestPerformPostMergeADOClosesReferencedWorkItem(t *testing.T) {
 	if want := "Merged in pull request #359."; closer.commentReqs[0].Comment != want {
 		t.Errorf("comment = %q, want %q", closer.commentReqs[0].Comment, want)
 	}
+	if got := strings.Join(closer.commentReqs[0].RemoveLabels, ","); got != "goobers:claimed,goobers:ready" {
+		t.Errorf("removed labels = %q, want terminal ADO lifecycle labels", got)
+	}
 	if closer.commentReqs[0].Repository.Project != backlogRef.Project {
 		t.Errorf("comment targeted project %q, want backlog project %q", closer.commentReqs[0].Repository.Project, backlogRef.Project)
 	}
@@ -148,6 +151,36 @@ func TestPerformPostMergeADOIdempotentWhenAlreadyDone(t *testing.T) {
 	}
 	if len(closer.commentReqs) != 0 {
 		t.Errorf("dedupe comment writes = %d, want 0 (comment already present)", len(closer.commentReqs))
+	}
+}
+
+func TestPerformPostMergeADOReconcilesAutoCompletedWorkItemLabels(t *testing.T) {
+	closer := &fakeADOWorkItemCloser{
+		item: providers.WorkItem{
+			ID:     "1456",
+			State:  "closed",
+			Labels: []string{"goobers/status:in-review", providers.LabelClaimed, providers.LabelReady},
+		},
+		comments: []providers.Comment{{Body: "Merged in pull request #359."}},
+	}
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.statusReqs) != 1 || closer.statusReqs[0].Status != providers.WorkItemStatusDone {
+		t.Fatalf("status requests = %+v, want done reconciliation", closer.statusReqs)
+	}
+	if len(closer.commentReqs) != 1 {
+		t.Fatalf("cleanup writes = %d, want 1", len(closer.commentReqs))
+	}
+	if closer.commentReqs[0].Comment != "" {
+		t.Fatalf("cleanup comment = %q, want no duplicate comment", closer.commentReqs[0].Comment)
+	}
+	if got := strings.Join(closer.commentReqs[0].RemoveLabels, ","); got != "goobers:claimed,goobers:ready" {
+		t.Fatalf("removed labels = %q, want terminal ADO lifecycle labels", got)
 	}
 }
 
