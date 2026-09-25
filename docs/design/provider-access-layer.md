@@ -35,9 +35,12 @@ writes to.
 
 DSL 3.0 addresses this with five changes:
 
-1. **Roles.** A gaggle binds *source*, *review*, *backlog* and *trigger* roles, each
-   to a named connection. More than one source or review connection is allowed, so one
-   gaggle can coordinate across providers.
+1. **Slots and bindings.** A workflow declares the named *slots* it needs (for
+   example `code` and `work`) and the provider surfaces each slot requires. A gaggle
+   defines named *bindings* to concrete targets on connections and wires slots to
+   bindings. Nothing about the set of roles is fixed: names are custom, one binding can
+   fill several slots, and a slot can take several bindings, so one gaggle can
+   coordinate across providers.
 2. **Neutral operations.** Every provider-dispatched operation is named
    `provider:<resource>:<verb>` (ADR 0002). Provider-specific names remain only for
    provider-specific semantics.
@@ -47,7 +50,7 @@ DSL 3.0 addresses this with five changes:
 4. **Explicit multiple credentials.** A gaggle, workflow or stage may use several
    read and write credentials, including several for the same provider. Every choice
    is explicit and resolvable at validation time, and ambiguity is an error.
-5. **Metadata-driven registry.** Each operation declares its role, class and required
+5. **Metadata-driven registry.** Each operation declares its surface, class and required
    provider features. That drives admission, preflight, the landing-authority fence
    and the generated access matrix.
 
@@ -93,7 +96,7 @@ shape this design:
 - **R1 — Operation naming (ADR 0002).** Provider-dispatched operations are
   `provider:<resource>:<verb>`. Provider-specific ones are `<provider>:<resource>:<verb>`.
   Names are not aliases.
-- **R2 — Provider independence (BL-033).** Moving a role to another provider changes
+- **R2 — Provider independence (BL-033).** Moving a binding to another provider changes
   bindings, never workflow or goober definitions.
 - **R3 — Separable authority (pr-lifecycle §7, SEC-053).** Landing, review identity
   and trust decisions are separately grantable and revocable, and never implied by PR
@@ -117,10 +120,13 @@ shape this design:
 
 ## 4. Design
 
-### D1. Roles and connections
+### D1. Connections, bindings and slots (fully composable)
 
-**Connection.** A connection is a named provider endpoint with its identities. It is
-declared once, in `instance.yaml` for tiers 1–2 or the Manifest for tier 3:
+The design has no fixed set of roles. Three layers compose instead.
+
+**1. Connections** (instance level). A connection is a named provider endpoint with
+its identities, declared once in `instance.yaml` for tiers 1–2 or the Manifest for
+tier 3:
 
 ```yaml
 connections:
@@ -138,42 +144,76 @@ connections:
       reader:  { token: { store: kv/readonly-pat } }
 ```
 
-**Role binding.** The gaggle binds roles to connections and repositories:
+**2. Bindings** (gaggle level). A binding is a named, concrete target on a
+connection. It exposes whichever provider *surfaces* the target supports: `repo`,
+`pr`, `backlog` and `trigger`. These are the provider's declared features, not a role
+list. An optional `surfaces` field narrows a binding for least privilege.
+
+```yaml
+bindings:
+  client-code:  { connection: ado-web,    repository: example-project/client-app }
+  service-code: { connection: gh-service, repository: example-org/service }
+  work:         { connection: gh-service, repository: example-org/service, surfaces: [backlog] }
+  boards:       { connection: ado-web,    backlog: { project: example-project, areaPath: "Client\\Web" } }
+```
+
+**3. Slots** (workflow level). A workflow declares the abstract slots it needs, like
+function parameters. Each slot lists the surfaces it requires. Stages address slots,
+never repositories.
 
 ```yaml
 spec:
-  roles:
-    source:
-      - name: client            # an ADO repository
-        connection: ado-web
-        repository: example-project/client-app
-      - name: service           # a GitHub repository
-        connection: gh-service
-        repository: example-org/service
-    review:  [client, service]  # PRs are opened where the code lives
-    backlog:
-      connection: gh-service
-      repository: example-org/service   # GitHub Issues as the backlog
-    trigger: { mode: poll }
+  slots:
+    code:  { requires: [repo, pr] }
+    work:  { requires: [backlog] }
+    peers: { requires: [repo], many: true, optional: true }   # e.g. cross-repo context
 ```
 
-- **Defaults and sugar.** `review` defaults to the `source` entries. A gaggle with a
-  single source entry needs no names. The DSL 2.0 fields (`project`, `backlog`,
-  `additionalRepos`, `repos[]`) remain as sugar that lowers to exactly this shape, so
-  existing instances keep their meaning.
-- **Provider interface split.** `Provider` becomes independently registrable
-  `SourceProvider`, `ReviewProvider`, `BacklogProvider` and `TriggerProvider`.
-  Provider features partition by prefix (`repo.*`, `pr.*`, `backlog.*`, `trigger.*`),
-  and the declared⇔implemented conformance rule applies per role. A backlog-only
-  provider becomes registrable.
-- **Topology (c).** A product that spans ADO and GitHub is one gaggle with two
-  `source` entries. A stage addresses a specific one with a qualifier (D4). The claims
-  ledger key gains a repository dimension (`ClaimKey` + role entry), which also
-  retires the draft's single-claim-site limit.
+**Wiring.** When a gaggle enables a workflow, it maps each slot to one binding, or to
+several where the slot declares `many: true`. The same shipped workflow can be
+enabled more than once with different wiring:
+
+```yaml
+workflows:
+  implementation:
+    slots: { code: client-code, work: work, peers: [service-code] }
+  implementation-service:
+    use: implementation
+    slots: { code: service-code, work: work }
+```
+
+**Validation.**
+
+- Every required slot is wired.
+- Every wired binding exposes the surfaces its slot requires. This generalises
+  CONF-6 to arbitrary slots.
+- Every stage key `op@slot` names a slot whose declared surfaces include the
+  operation's surface (D3).
+
+**Composability.**
+
+- Slot and binding names are user-defined.
+- A binding can fill several slots, and a slot can take several bindings.
+- Any provider can back any slot whose surfaces it supports.
+- Cross-provider products (topology c) need no special concept.
+
+**Defaults and sugar.**
+
+- A gaggle with a single repository binds automatically to every slot whose surfaces
+  that repository supports.
+- The DSL 2.0 fields `project`, `backlog`, `additionalRepos` and `repos[]` lower to
+  bindings named `project` and `backlog`, and to `peers`. Shipped workflows use
+  matching default slot names, so existing instances keep their meaning with no edits.
+
+**Underneath.** `Provider` splits into independently registrable surface providers:
+`SourceProvider`, `ReviewProvider`, `BacklogProvider` and `TriggerProvider`. The
+declared⇔implemented conformance rule applies per surface, and a backlog-only
+provider becomes registrable. The claims ledger key gains the binding name, which
+retires the draft's single-claim-site limit.
 
 ### D2. Neutral operation vocabulary
 
-| Operation | Role | Class | DSL 2.0 name(s) it replaces |
+| Operation | Surface | Class | DSL 2.0 name(s) it replaces |
 |---|---|---|---|
 | `provider:backlog:read` | backlog | read | `github:issues:read` |
 | `provider:backlog:write` | backlog | mutate | `github:issues:write`, `ado:work-items:write` |
@@ -198,13 +238,13 @@ spec:
 
 ### D3. Operation metadata
 
-Each registry entry declares its role, its class, the provider features its
+Each registry entry declares its surface, its class, the provider features its
 operations need, whether it is neutral, and its DSL window:
 
 ```go
 type Spec struct {
     Name     Capability
-    Role     Role                    // source | review | backlog | trigger | none
+    Surface  Surface                 // repo | pr | backlog | trigger | none
     Class    Class                   // read | mutate | trust | review-identity | landing | service
     Features []providers.Capability  // provider features the operation needs
     Neutral  bool
@@ -243,43 +283,47 @@ is by operation class:
 |---|---|
 | read | `reader` if declared, else `default` |
 | mutate | `author` if declared, else `default` |
-| review-identity | `reviewer`, **required** (no default) |
-| landing | `lander`, **required** (no default) |
-| trust | `approver`, **required** (no default) |
+| review-identity | `reviewer` if declared, else the mutate default, **with a warning** |
+| landing | `lander` if declared, else the mutate default, **with a warning** |
+| trust | `approver` if declared, else the mutate default, **with a warning** |
 
-The three separated classes must be bound explicitly. They never share the author's
-secret implicitly. On ADO this matches its split permissions: "Contribute to pull
-requests", "Contribute" and "Bypass". It also matches ADO's rule of discounting the
-creator's vote.
+**Separation is recommended, and the fallback is visible (PO decision).** When a
+landing, review or trust operation falls back to the author identity, validation
+emits a warning naming the operation, the binding and the identity it fell back to.
+Separate identities match ADO's split permissions ("Contribute to pull requests",
+"Contribute", "Bypass") and its option to discount the creator's vote. A gaggle can
+silence the warning by naming the shared identity explicitly (`~author`), which
+records the choice.
 
-**Explicit multiplicity.** Workflow and stage declarations can name exactly which
-binding an operation uses. A qualifier addresses the role entry, and optionally an
-identity:
+**Explicit multiplicity.** Stage declarations name exactly which slot, and
+optionally which identity, an operation uses:
 
 ```yaml
 capabilities:
-  - provider:backlog:write                 # the backlog role, class default identity
-  - repo:read@service                      # read the GitHub service repo
-  - repo:push@client                       # push to the ADO client repo
-  - provider:pr:write@client
-  - provider:pr:write@service
-  - provider:pr:land@client~lander         # explicit identity
+  - provider:backlog:write                 # the only slot exposing backlog
+  - repo:read@peers                        # every binding wired to peers
+  - repo:push@code
+  - provider:pr:write@code
+  - provider:pr:land@code~lander           # explicit identity
+  - { op: provider:pr:review, slot: code, identity: reviewer }   # object form
 ```
 
-- **One key grammar.** `<operation>[@<role-entry>][~<identity>][#harness:<name>]`,
-  parsed once in `internal/capability`. The JSON schemas validate it with a pattern
-  instead of enums. The existing `base@owner/name` keys and `#harness:` keys lower
-  into it.
-- **Resolution.** For each declared key: role entry → connection → identity →
-  credential source. The most specific binding wins, in this order:
-  1. stage key;
-  2. workflow default;
-  3. gaggle role default;
-  4. connection class default.
+- **One key grammar, two spellings (PO decision).**
+  - The string form is `<operation>[@<slot>][~<identity>][#harness:<name>]`.
+  - The object form is `{op, slot, identity, harness}`.
+  - Both lower to one internal key, parsed once in `internal/capability`. The JSON
+    schemas validate the string with a pattern and the object with a schema.
+  - The existing `base@owner/name` and `#harness:` keys lower into it.
+- **Resolution.** For each declared key: slot → wired binding(s) → connection →
+  identity → credential source. The most specific choice wins, in this order:
+  1. the stage key;
+  2. the workflow's slot wiring in the gaggle;
+  3. the binding's default identity;
+  4. the connection's class default.
 - **Ambiguity is a validation error.** Two sources at the same specificity for the
-  same (operation, audience, scope) fail validation. An unqualified operation in a
-  gaggle with several matching role entries also fails, and the error lists the
-  qualifiers to choose from.
+  same (operation, audience, scope) fail validation. An unqualified operation that
+  matches several slots also fails, and the error lists the qualifiers to choose
+  from.
 - **No runtime fallback** between identities or credentials.
 - **Several credentials in one stage.** This is allowed when each is qualified. Each
   credential is delivered under a distinct, audience-checked variable or client. An
@@ -290,15 +334,15 @@ capabilities:
   future OIDC tokens. Credentials reach stages through the injector for local stages
   and the credential plane for pods. Stages never read `instance.yaml` credentials,
   and nothing needs `envPassthrough`.
-- **Audit.** The journal records the role entry, connection and identity name used by
+- **Audit.** The journal records the slot, binding, connection and identity name used by
   each stage. It never records the secret.
 
 **Converging the two drafts.** From the `explicit-stage-credential-bindings` draft,
-this model keeps named sites (now role entries), `bindingName` (now connections) and
+this model keeps named sites (now bindings), `bindingName` (now connections) and
 the default-deny rule for agentic writes to non-project repositories. From
 `multi-gaggle-validation`, it keeps first-class credential entries (now identities)
 and their per-source kinds. Both drafts' capability names give way to D2. #1794–#1800
-are re-scoped against this model.
+are re-scoped against this model, and the draft is superseded (PO decision).
 
 ### D5. Access modelled in three layers
 
@@ -322,7 +366,7 @@ are re-scoped against this model.
 ### D6. Neutral concepts in the provider contract
 
 - **Markers.** Stages write intent (`mark needs-remediation`). The provider projects
-  it as a label, tag or nothing, declared per role. PR markers never go through
+  it as a label, tag or nothing, declared per surface. PR markers never go through
   work-item APIs, and gating never trusts a projection anyone can edit.
 - **State categories.** Work items expose Proposed, InProgress, Resolved, Completed
   and Removed. Providers map their native states to these.
@@ -342,7 +386,7 @@ are re-scoped against this model.
   next DSL minor, 3.x, through manifest windows and per-DSL policy tables. DSL 2.0
   views keep today's names and the rebinding rule.
 - **`goobers fix`.** It rewrites capabilities, lowers `project`/`backlog`/`repos[]`/
-  `credentials:` into `connections` and `roles` when a workflow's `dslVersion` is
+  `credentials:` into `connections` and `bindings` when a workflow's `dslVersion` is
   bumped, and prints the identity decisions it could not infer. For example, a
   landing identity must be chosen explicitly.
 - **What moves together, per operation family:**
@@ -375,7 +419,7 @@ credentials, and the ADO PR and backlog fixes.
 | L1 | D3 operation metadata; landing as a class; derive manifest, feature and policy tables | near-term plan |
 | L2 | D4 audience on every credential; connection and identity model in config (sugar-compatible with DSL 2.0 config) | L1 |
 | L3 | D2 vocabulary and the D4 qualifier grammar in DSL 3.x; `goobers fix`; generated access matrix (D5) | L1, L2 |
-| L4 | D1 roles and provider interface split; multi-source gaggles; claims keyed by role entry | L2, L3 |
+| L4 | D1 slots, bindings and wiring; surface provider split; multi-binding slots; claims keyed by binding | L2, L3 |
 | L5 | D6 neutral concepts | L4 |
 
 Each phase becomes a set of single-PR issues linked to this document once it is
@@ -392,14 +436,17 @@ approved.
 - **Runtime credential fallback** (try identity A, then B). Violates R6. Behaviour
   would depend on which call failed first, and the audit trail loses meaning.
 
-## 7. Decisions needed from the PO
+## 7. PO decisions (2026-09-25)
 
-1. **Adopt roles and connections (D1, D4) as the DSL 3.0 direction.** This includes
-   the multi-source gaggle for cross-provider products. *Recommendation: yes.*
-2. **Required explicit identities for landing, review and trust (D4).**
-   *Recommendation: yes.* A gaggle that wants one identity for everything says so
-   explicitly with the same identity name.
-3. **Re-scope #1794–#1800 and the explicit-stage-credential-bindings draft against
-   D4.** *Recommendation: yes.* Close the draft as superseded once this is approved.
-4. **Qualifier grammar (D4).** Approve `@<role-entry>` and `~<identity>`, or choose a
-   different spelling before any schema work starts.
+1. **Composable model.** Adopt connections, bindings and workflow-declared slots
+   (D1) as the DSL 3.0 direction, not a fixed set of roles. Names are custom, and
+   slots and bindings compose many-to-many.
+2. **Separated identities.** Landing, review and trust fall back to the author
+   identity **with a validation warning**. Naming the shared identity explicitly
+   silences it (D4).
+3. **Older designs.** Once this design is approved, the
+   `explicit-stage-credential-bindings` draft is superseded, and #1794–#1800 are
+   re-scoped against D1 and D4, or closed where obsolete.
+4. **Qualifier grammar.** Both the string form `<op>[@<slot>][~<identity>][#harness:<name>]`
+   and the object form `{op, slot, identity, harness}` are accepted, and both lower to
+   one key (D4).
