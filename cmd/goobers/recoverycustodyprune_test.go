@@ -99,16 +99,10 @@ func TestTelemetryPruneRefusesJournalWithLiveRecoverySnapshot(t *testing.T) {
 	}
 }
 
-// TestTelemetryRetentionReconcileSurvivesHeldRecoveryCustody is #5505. The
-// custody guard also runs while COMPLETING an interrupted pass during
-// startup, and a refusal there used to abort the daemon. Because it returned
-// before the pass advanced past its prepared phase, the pending manifest
-// stayed on disk, so every subsequent startup replayed the same refusal and
-// exited non-zero — a restart loop no operator command could break, since
-// the only thing that retires a snapshot is the sweep that runs after the
-// readiness the daemon never reached. A refusal must now preserve the
-// journal, retire the pending pass, and let startup continue.
-func TestTelemetryRetentionReconcileSurvivesHeldRecoveryCustody(t *testing.T) {
+func prepareHeldTelemetryRetentionPass(
+	t *testing.T,
+) (instance.Layout, *rollup.DB, *journal.InstanceLog, string) {
+	t.Helper()
 	layout := writeRecoveryPolicyInstance(t, 0)
 	now := time.Now().UTC()
 	runID := "prepared-then-held"
@@ -117,7 +111,7 @@ func TestTelemetryRetentionReconcileSurvivesHeldRecoveryCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
+	t.Cleanup(func() { _ = db.Close() })
 	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +119,7 @@ func TestTelemetryRetentionReconcileSurvivesHeldRecoveryCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = log.Close() }()
+	t.Cleanup(func() { _ = log.Close() })
 
 	// Freeze a prepared pass the way a crash between prepare and delete does.
 	writes := 0
@@ -152,6 +146,20 @@ func TestTelemetryRetentionReconcileSurvivesHeldRecoveryCustody(t *testing.T) {
 	// The owning snapshot appears before the daemon restarts, so the pass
 	// that was prepared against a clear inventory now meets a live owner.
 	seedLiveRecoveryRecord(t, layout, runID, now)
+	return layout, db, log, runDir
+}
+
+// TestTelemetryRetentionReconcileSurvivesHeldRecoveryCustody is #5505. The
+// custody guard also runs while COMPLETING an interrupted pass during
+// startup, and a refusal there used to abort the daemon. Because it returned
+// before the pass advanced past its prepared phase, the pending manifest
+// stayed on disk, so every subsequent startup replayed the same refusal and
+// exited non-zero — a restart loop no operator command could break, since
+// the only thing that retires a snapshot is the sweep that runs after the
+// readiness the daemon never reached. A refusal must now preserve the
+// journal, retire the pending pass, and let startup continue.
+func TestTelemetryRetentionReconcileSurvivesHeldRecoveryCustody(t *testing.T) {
+	layout, db, log, runDir := prepareHeldTelemetryRetentionPass(t)
 
 	_, reconciled, err := reconcilePendingTelemetryRetentionPass(log, layout, db, writeTelemetryRetentionState)
 	if !errors.Is(err, retention.ErrCustodyHeld) {
@@ -165,7 +173,7 @@ func TestTelemetryRetentionReconcileSurvivesHeldRecoveryCustody(t *testing.T) {
 	}
 
 	// The loop fix: the pending pass must not survive in its prepared phase.
-	state, ok, err = readTelemetryRetentionState(layout)
+	state, ok, err := readTelemetryRetentionState(layout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +188,46 @@ func TestTelemetryRetentionReconcileSurvivesHeldRecoveryCustody(t *testing.T) {
 	}
 	if _, err := os.Stat(runDir); err != nil {
 		t.Fatalf("second reconcile deleted the protected journal: %v", err)
+	}
+}
+
+func TestTelemetryRetentionReconcileDoesNotSuppressCustodyAcknowledgementFailure(t *testing.T) {
+	layout, db, log, runDir := prepareHeldTelemetryRetentionPass(t)
+	writes := 0
+	ackErr := errors.New("injected acknowledgement failure")
+	writeWithAckFailure := func(layout instance.Layout, state telemetryRetentionState) error {
+		writes++
+		if writes == 2 {
+			return ackErr
+		}
+		return writeTelemetryRetentionState(layout, state)
+	}
+
+	_, reconciled, err := reconcilePendingTelemetryRetentionPass(log, layout, db, writeWithAckFailure)
+	if !reconciled {
+		t.Fatal("reconcile reported no pending pass to complete")
+	}
+	if !errors.Is(err, ackErr) {
+		t.Fatalf("reconcile error = %v, want acknowledgement failure", err)
+	}
+	if errors.Is(err, retention.ErrCustodyHeld) {
+		t.Fatalf("reconcile error = %v, custody marker would hide acknowledgement failure", err)
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatalf("held custody deleted the journal it exists to protect: %v", err)
+	}
+
+	// The completed pass remains retryable: the next startup de-duplicates the
+	// journal event and retries only the failed acknowledgement.
+	if _, _, err := reconcilePendingTelemetryRetentionPass(log, layout, db, writeTelemetryRetentionState); err != nil {
+		t.Fatalf("acknowledgement retry: %v", err)
+	}
+	state, ok, err := readTelemetryRetentionState(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok && state.PendingTelemetryPass != nil {
+		t.Fatalf("acknowledged pass remains pending: %+v", state.PendingTelemetryPass)
 	}
 }
 

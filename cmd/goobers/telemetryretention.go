@@ -581,10 +581,14 @@ func reconcilePendingTelemetryRetentionPass(
 			return pass, true, err
 		}
 		if pruneErr != nil {
-			return pass, true, errors.Join(
-				pruneErr,
-				publishTelemetryRetentionPass(log, layout, state, pass, true, writeState),
-			)
+			// A custody refusal becomes non-fatal only after the completed
+			// summary has been durably published and acknowledged. Returning a
+			// joined error here would let the startup caller's errors.Is check
+			// hide a real journal or state-write failure.
+			if err := publishTelemetryRetentionPass(log, layout, state, pass, true, writeState); err != nil {
+				return pass, true, err
+			}
+			return pass, true, pruneErr
 		}
 	}
 	return pass, true, publishTelemetryRetentionPass(log, layout, state, pass, true, writeState)
