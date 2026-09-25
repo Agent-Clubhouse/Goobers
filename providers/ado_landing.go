@@ -155,7 +155,8 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	body := map[string]interface{}{
 		"autoCompleteSetBy": map[string]string{"id": detail.CreatedBy.ID},
 		"completionOptions": adoCompletionOptions{
-			MergeStrategy: adoMergeStrategy(req.MergeMethod),
+			MergeStrategy:      adoMergeStrategy(req.MergeMethod),
+			DeleteSourceBranch: true,
 		},
 	}
 	repositoryAPIURL, err := p.repoURL(req.Repository)
@@ -302,6 +303,7 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 		"status": "completed",
 		"completionOptions": adoCompletionOptions{
 			MergeStrategy:      adoMergeStrategy(req.MergeMethod),
+			DeleteSourceBranch: true,
 			MergeCommitMessage: req.CommitMessage,
 		},
 	}
