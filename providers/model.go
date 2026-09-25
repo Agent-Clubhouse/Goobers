@@ -547,6 +547,11 @@ type CheckDetail struct {
 	Conclusion string     `json:"conclusion,omitempty"`
 	URL        string     `json:"url"`
 	Summary    string     `json:"summary"`
+	// AwaitingHuman marks a check that only a person can satisfy, such as an
+	// Azure DevOps minimum- or required-reviewer policy that is still
+	// queued. Such a check is never CI pending and never a remediation
+	// trigger. Providers without such checks leave it false.
+	AwaitingHuman bool `json:"awaitingHuman,omitempty"`
 }
 
 // CheckAnnotation is one provider-native diagnostic attached to a check run.
@@ -782,6 +787,12 @@ const (
 type RepoMergePolicyRequest struct {
 	Repository RepositoryRef `json:"repository"`
 	Branch     string        `json:"branch"`
+	// PullID optionally names the pull request about to land. A provider
+	// that can evaluate policy per pull request (Azure DevOps policy
+	// evaluations) decides from that pull request's own evaluations and
+	// falls back to the branch scan only when none are available. Providers
+	// whose policy is per branch ignore it.
+	PullID string `json:"pullId,omitempty"`
 }
 
 // RepoMergePolicyResult reports req.Branch's detected merge policy.
@@ -938,6 +949,11 @@ type PollMergeQueueEntryResult struct {
 	// progress is legible in logs rather than an opaque "still pending".
 	QueueState    string `json:"queueState,omitempty"`
 	QueuePosition int    `json:"queuePosition,omitempty"`
+	// AwaitingHuman, on a pending entry, reports that the only thing still
+	// holding the landing is a human approval (on Azure DevOps: auto-complete
+	// is armed and only reviewer policies are unmet). The entry is still
+	// pending; this only lets a watcher say why.
+	AwaitingHuman bool `json:"awaitingHuman,omitempty"`
 }
 
 // ListPullRequestsRequest filters open pull requests for merge-review's
