@@ -439,7 +439,7 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	}
 
 	tagOps := func(_ WorkItem, raw adoWorkItem) []adoPatchOperation {
-		return []adoPatchOperation{adoTagPatch(replaceStatusLabel(adoDropStatusTags(adoRawTags(raw)), req.Status))}
+		return []adoPatchOperation{adoTagPatch(raw, replaceStatusLabel(adoDropStatusTags(adoRawTags(raw)), req.Status))}
 	}
 
 	closing := req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed
@@ -619,7 +619,6 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 			return WorkItem{}, err
 		}
 	}
-
 	fieldOps := func(_ WorkItem, raw adoWorkItem) []adoPatchOperation {
 		var ops []adoPatchOperation
 		if req.Title != nil {
@@ -633,7 +632,7 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
 		}
 		if labelsChanged(req) {
-			ops = append(ops, adoTagPatch(applyADOTagSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)))
+			ops = append(ops, adoTagPatch(raw, applyADOTagSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)))
 		}
 		return ops
 	}
@@ -780,7 +779,7 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 		labels := applyADOTagSet(adoRawTags(raw), add, remove)
 		patch := []adoPatchOperation{
 			{Op: "test", Path: "/rev", Value: raw.Rev},
-			adoTagPatch(labels),
+			adoTagPatch(raw, labels),
 		}
 		endpoint, endpointErr := p.workURL(p.project(repo), "workitems", id)
 		if endpointErr != nil {
@@ -1565,8 +1564,12 @@ func adoRawTags(item adoWorkItem) []string {
 	return adoLabels(stringField(item.Fields, "System.Tags"))
 }
 
-func adoTagPatch(tags []string) adoPatchOperation {
-	return adoPatchOperation{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(uniqueStrings(tags), "; ")}
+func adoTagPatch(item adoWorkItem, tags []string) adoPatchOperation {
+	op := "add"
+	if _, exists := item.Fields["System.Tags"]; exists {
+		op = "replace"
+	}
+	return adoPatchOperation{Op: op, Path: "/fields/System.Tags", Value: strings.Join(uniqueStrings(tags), "; ")}
 }
 
 func (p *ADOProvider) postWorkItemComment(ctx context.Context, repo RepositoryRef, id, text string) error {
