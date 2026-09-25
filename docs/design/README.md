@@ -69,6 +69,7 @@ word — read the page, not this table, before depending on it.
 | [Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)](onboarding-first-value-ladder.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Portal read architecture — a rethink](portal-read-architecture.md) | `implemented` | — | — | #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952 | — | — | — |
 | [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `implemented` | — | — | #2305, #2884 | — | — | — |
+| [Design: Provider access layer — unified providers, connections and explicit credentials (DSL 3.0)](provider-access-layer.md) | `draft` | — | #2061 | — | — | — | 47de1f0d6 (2026-09-25) |
 | [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `implemented` | — | — | #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499 | — | — | — |
 | [Design: Separate GitHub repository sink for docs-updater](separate-docs-repository-sink.md) | `approved` | — | — | — | — | — | — |
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — | — | — | — |
