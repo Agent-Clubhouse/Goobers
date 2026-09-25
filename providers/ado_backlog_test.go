@@ -97,6 +97,124 @@ func TestADOClaimFailsWhenWrittenBreadcrumbIsNotVisible(t *testing.T) {
 	}
 }
 
+func TestADOReleaseWorkItemClaimRetiresEpochAndVisibleMarker(t *testing.T) {
+	comments := []map[string]any{{
+		"id":   1,
+		"text": claimBreadcrumb("run-42"),
+	}}
+	tags := "goobers:approved; " + LabelClaimed
+	revision := 3
+
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, map[string]any{"comments": comments})
+		case http.MethodPost:
+			var body map[string]string
+			decodeJSON(t, r, &body)
+			comments = append(comments, map[string]any{
+				"id":   len(comments) + 1,
+				"text": body["text"],
+			})
+			writeJSON(t, w, comments[len(comments)-1])
+		default:
+			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			var patch []adoPatchOperation
+			decodeJSON(t, r, &patch)
+			for _, operation := range patch {
+				if operation.Path == "/fields/System.Tags" {
+					tags, _ = operation.Value.(string)
+				}
+			}
+			revision++
+		}
+		writeJSON(t, w, map[string]any{
+			"id": 42, "rev": revision,
+			"fields": map[string]any{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "Claimed ADO item",
+				"System.State":        "Active",
+				"System.Tags":         tags,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Provider: ProviderADO, Name: "repo", Project: "project"}
+	released, err := provider.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "42",
+		RunID:      "run-42",
+	})
+	if err != nil {
+		t.Fatalf("ReleaseWorkItemClaim: %v", err)
+	}
+	if released.HasLabel(LabelClaimed) || strings.Contains(tags, LabelClaimed) {
+		t.Fatalf("released ADO item still has %q: item=%v raw tags=%q", LabelClaimed, released.Labels, tags)
+	}
+	winner, claimed, err := provider.adoClaimWinner(context.Background(), repo, "42")
+	if err != nil {
+		t.Fatalf("adoClaimWinner after release: %v", err)
+	}
+	if claimed || winner != "" {
+		t.Fatalf("ADO claim winner after release = (%q, %v), want no active epoch", winner, claimed)
+	}
+}
+
+func TestADOReleaseWorkItemClaimPreservesNewerOwner(t *testing.T) {
+	comments := []map[string]any{
+		{"id": 1, "text": claimBreadcrumb("old-run")},
+		{"id": 2, "text": claimReleaseBreadcrumb("old-run")},
+		{"id": 3, "text": claimBreadcrumb("new-run")},
+	}
+	var mutations int
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations++
+		}
+		writeJSON(t, w, map[string]any{"comments": comments})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations++
+		}
+		writeJSON(t, w, map[string]any{
+			"id": 42, "rev": 3,
+			"fields": map[string]any{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "Reclaimed ADO item",
+				"System.State":        "Active",
+				"System.Tags":         LabelClaimed,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository: RepositoryRef{Provider: ProviderADO, Name: "repo", Project: "project"},
+		ID:         "42",
+		RunID:      "old-run",
+	})
+	if err == nil || !strings.Contains(err.Error(), `held by run "new-run"`) {
+		t.Fatalf("ReleaseWorkItemClaim error = %v, want newer-owner refusal", err)
+	}
+	if mutations != 0 {
+		t.Fatalf("newer-owner refusal performed %d provider mutation(s), want none", mutations)
+	}
+}
+
 // TestADOFindPullRequestByBranch pins the exact source-branch match the
 // idempotent OpenPullRequest and issue-close-out linking rely on: a prefix
 // collision ("run-1" vs "run-10") must not resolve the wrong PR.
