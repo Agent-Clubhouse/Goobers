@@ -477,7 +477,11 @@ func (c *Client) Shutdown(ctx context.Context) error {
 		metricCtx := ctx
 		cancel := func() {}
 		if ctx.Err() != nil {
-			metricCtx, cancel = context.WithTimeout(context.Background(), journalLogTimeout)
+			// The caller's shutdown budget has already elapsed, so this is a
+			// narrow last-chance export rather than a second full transport
+			// timeout. Keep the whole client inside its bounded-shutdown
+			// contract even when the metric destination is also unresponsive.
+			metricCtx, cancel = context.WithTimeout(context.Background(), time.Second)
 		}
 		_ = c.meterProvider.Shutdown(metricCtx)
 		cancel()
