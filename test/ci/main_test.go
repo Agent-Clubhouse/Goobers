@@ -150,7 +150,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 
 	buildTagsCheck := checkByLabel(t, gotChecks, "uncovered-build-tags")
-	const wantBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture"
+	const wantBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture,liveadowrite"
 	wantBuildTagsArgs := []string{
 		"vet", "-tags", wantBuildTags, "./...",
 	}
