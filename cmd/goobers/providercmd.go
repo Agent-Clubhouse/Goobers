@@ -392,6 +392,16 @@ const (
 	// errorCodeBranchMergeQueued is GitHub's transient GH006 rejection when
 	// the branch being updated belongs to a pull request in the merge queue.
 	errorCodeBranchMergeQueued = "github_branch_merge_queued"
+	// errorCodeHeadMoved is a landing refused because the pull request's head
+	// moved past the pinned commit (providers.PullRequestHeadMovedError; on
+	// ADO, the server-side 409 TF401192 of ADO-N9). Not retryable: the stale
+	// verdict must be re-reviewed at the new head, never landed.
+	errorCodeHeadMoved = "provider_head_moved"
+	// errorCodePolicyNotMet is a completion refused because a required branch
+	// policy is not yet satisfied (providers.PullRequestPolicyNotMetError; on
+	// ADO, the 403 GitPullRequestUpdateRejectedByPolicyException). It is not
+	// an auth failure, and is never retried with a policy bypass.
+	errorCodePolicyNotMet = "provider_policy_not_met"
 	// errorCodeProvider is the fallback for a provider-originated failure
 	// that doesn't classify into any of the above (e.g. a non-401/403/5xx
 	// status such as a 422 validation error). Still typed and diagnosable —
@@ -445,6 +455,9 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if strings.Contains(message, "gh006") && strings.Contains(message, "added to a merge queue") {
 		return errorCodeBranchMergeQueued, true, nil
 	}
+	if code, ok := classifyLandingRefusal(err); ok {
+		return code, false, nil
+	}
 	if providers.IsAuthenticationError(err) {
 		return errorCodeAuthFailed, false, nil
 	}
@@ -487,6 +500,21 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 		return telemetry.ErrCodeInfraJournal, true, nil
 	}
 	return errorCodeProvider, false, nil
+}
+
+// classifyLandingRefusal names the typed landing refusals (ADO-N9) ahead of
+// the auth and status-code readings, so a policy refusal's 403 is never
+// reported as an auth failure.
+func classifyLandingRefusal(err error) (string, bool) {
+	var headMoved providers.PullRequestHeadMovedError
+	if errors.As(err, &headMoved) {
+		return errorCodeHeadMoved, true
+	}
+	var policy providers.PullRequestPolicyNotMetError
+	if errors.As(err, &policy) {
+		return errorCodePolicyNotMet, true
+	}
+	return "", false
 }
 
 // runProviderStageCommand is the command-boundary result contract for provider
