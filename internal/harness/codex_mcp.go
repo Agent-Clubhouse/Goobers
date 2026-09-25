@@ -87,13 +87,9 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 		var envNames []string
 		var headerEnv = map[string]string{}
 		for refIndex, ref := range server.CredentialRefs {
-			if req.Credentials == nil {
-				return nil, nil, nil, fmt.Errorf("harness: codex: MCP server %q requires credentials but none were materialized", server.Name)
-			}
-			key := mcpconfig.CredentialKey(ref)
-			token, err := req.Credentials.Token(ctx, key)
+			key, token, err := resolveMCPCredential(ctx, "codex", req, server.Name, ref)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("harness: codex: resolve MCP server %q credential %q: %w", server.Name, key, err)
+				return nil, nil, nil, err
 			}
 			if ref.Env != "" {
 				normalized := strings.ToUpper(ref.Env)

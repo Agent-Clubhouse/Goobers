@@ -712,22 +712,28 @@ func TestAPodProducedArtifactReachesTheNextPodStage(t *testing.T) {
 }
 
 // A pod applies minted credentials to its own environment, where the harness
-// preflight and model discovery read GH_TOKEN/COPILOT_GITHUB_TOKEN. A
-// repository credential reaches those variables only on a GitHub repository;
-// the model credential is applied on every provider.
+// preflight and model discovery read GH_TOKEN/COPILOT_GITHUB_TOKEN and goobers
+// commands read the command-scoped GOOBERS_CRED_GITHUB_* variables. A
+// repository credential reaches GH_TOKEN only on a GitHub repository (or one
+// with no provider); a github:* command-scoped variable is withheld only on
+// Azure DevOps, since Gitea rebinds github:* capabilities to its own token.
+// The model credential is applied on every provider.
 func TestPodAppliesRepositoryCredentialsOnlyForTheirProvider(t *testing.T) {
 	cases := []struct {
-		provider    apiv1.Provider
-		wantGHToken bool
+		provider       apiv1.Provider
+		wantGHToken    bool
+		wantCommandVar bool
 	}{
-		{provider: apiv1.ProviderGitHub, wantGHToken: true},
-		{provider: apiv1.ProviderADO, wantGHToken: false},
-		{provider: apiv1.ProviderGitea, wantGHToken: false},
+		{provider: apiv1.ProviderGitHub, wantGHToken: true, wantCommandVar: true},
+		{provider: "", wantGHToken: true, wantCommandVar: true},
+		{provider: apiv1.ProviderADO, wantGHToken: false, wantCommandVar: false},
+		{provider: apiv1.ProviderGitea, wantGHToken: false, wantCommandVar: true},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.provider), func(t *testing.T) {
 			t.Setenv("GH_TOKEN", "")
 			t.Setenv("COPILOT_GITHUB_TOKEN", "")
+			t.Setenv("GOOBERS_CRED_GITHUB_MILESTONES_WRITE", "")
 			registry := harness.NewRegistry()
 			if err := registry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{}); err != nil {
 				t.Fatal(err)
@@ -743,12 +749,17 @@ func TestPodAppliesRepositoryCredentialsOnlyForTheirProvider(t *testing.T) {
 					Goober:  "coder",
 					RepoRef: apiv1.RepoRef{Provider: tc.provider, Owner: "example-org", Name: "example-repo"},
 				},
-				Goobers:         map[string]apiv1.GooberSpec{"coder": {Harness: apiv1.HarnessCopilot}},
-				Instructions:    map[string]string{"coder": "instructions"},
-				EnvCapabilities: map[string]string{"repo:push": "GH_TOKEN", "agent:model": "COPILOT_GITHUB_TOKEN"},
+				Goobers:      map[string]apiv1.GooberSpec{"coder": {Harness: apiv1.HarnessCopilot}},
+				Instructions: map[string]string{"coder": "instructions"},
+				EnvCapabilities: map[string]string{
+					"repo:push":               "GH_TOKEN",
+					"github:milestones:write": "GOOBERS_CRED_GITHUB_MILESTONES_WRITE",
+					"agent:model":             "COPILOT_GITHUB_TOKEN",
+				},
 			}
 			minted := []dispatcher.MintedCredential{
 				{Capability: "repo:push", Value: "repo-secret"},
+				{Capability: "github:milestones:write", Value: "milestone-secret"},
 				{Capability: "agent:model", Value: "model-secret"},
 			}
 			if _, err := buildPodAgenticExecutor(kit, &strings.Builder{}, minted, t.TempDir()); err != nil {
@@ -756,6 +767,9 @@ func TestPodAppliesRepositoryCredentialsOnlyForTheirProvider(t *testing.T) {
 			}
 			if got := os.Getenv("GH_TOKEN") == "repo-secret"; got != tc.wantGHToken {
 				t.Fatalf("GH_TOKEN set = %v, want %v (provider %q)", got, tc.wantGHToken, tc.provider)
+			}
+			if got := os.Getenv("GOOBERS_CRED_GITHUB_MILESTONES_WRITE") == "milestone-secret"; got != tc.wantCommandVar {
+				t.Fatalf("GOOBERS_CRED_GITHUB_MILESTONES_WRITE set = %v, want %v (provider %q)", got, tc.wantCommandVar, tc.provider)
 			}
 			if os.Getenv("COPILOT_GITHUB_TOKEN") != "model-secret" {
 				t.Fatalf("model credential not applied for provider %q", tc.provider)
