@@ -263,7 +263,11 @@ func (p *ADOProvider) policyEvaluations(ctx context.Context, projectName, projec
 // has concluded green yet (none applies, or one is still queued/running) the
 // state is pending — fail-closed: correctness is unproven until a gating
 // policy passes — unless ADO evaluated only reviewer policies, in which case
-// there is no CI to wait for.
+// there is no CI to wait for. A successful authoritative query that returns
+// no blocking policies is also passing: the repository has no hosted policy
+// gate. A not-applicable blocking evaluation is omitted from details but still
+// distinguishes an unresolved hosted gate from a true zero-policy repository,
+// while a broken gate fails closed.
 func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, projectID, pullID string, humanOnly map[string]bool) (CheckState, []CheckDetail, error) {
 	evals, err := p.policyEvaluations(ctx, projectName, projectID, pullID)
 	if err != nil {
@@ -672,13 +676,16 @@ func adoPullRequestState(status string) string {
 }
 
 // adoPolicyCheckState maps an Azure DevOps policy-evaluation status to a
-// provider-neutral check state. An empty return means the evaluation is not
-// applicable and should be ignored.
+// provider-neutral check state. An empty return omits a not-applicable
+// evaluation from check details; pollPullRequestPolicies still records that a
+// blocking evaluation exists so it cannot be mistaken for a zero-policy repo.
 func adoPolicyCheckState(status string) CheckState {
 	switch strings.ToLower(status) {
 	case "approved":
 		return CheckStatePassing
 	case "rejected":
+		return CheckStateFailing
+	case "broken":
 		return CheckStateFailing
 	case "queued", "running":
 		return CheckStatePending
