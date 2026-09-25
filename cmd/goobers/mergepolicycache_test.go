@@ -20,9 +20,10 @@ import (
 // decide whether to reach DetectMergePolicy at all.
 type fakeMergePolicyProvider struct {
 	providers.Provider
-	calls  int
-	result providers.RepoMergePolicyResult
-	err    error
+	calls      int
+	lastPullID string
+	result     providers.RepoMergePolicyResult
+	err        error
 }
 
 func (f *fakeMergePolicyProvider) Kind() providers.ProviderKind { return providers.ProviderGitHub }
@@ -33,6 +34,7 @@ func (f *fakeMergePolicyProvider) Capabilities() providers.CapabilitySet {
 
 func (f *fakeMergePolicyProvider) DetectMergePolicy(ctx context.Context, req providers.RepoMergePolicyRequest) (providers.RepoMergePolicyResult, error) {
 	f.calls++
+	f.lastPullID = req.PullID
 	return f.result, f.err
 }
 
@@ -43,7 +45,7 @@ func TestDetectMergePolicyCachesAcrossCalls(t *testing.T) {
 	fake := &fakeMergePolicyProvider{result: providers.RepoMergePolicyResult{Policy: providers.MergePolicyMergeQueue}}
 	var stderr bytes.Buffer
 
-	policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
+	policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", "", &stderr)
 	if err != nil {
 		t.Fatalf("first detectMergePolicy call: %v", err)
 	}
@@ -56,7 +58,7 @@ func TestDetectMergePolicyCachesAcrossCalls(t *testing.T) {
 
 	// A second call for the SAME repo+branch, still within TTL, must hit the
 	// cache — not call the provider again.
-	policy, err = detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
+	policy, err = detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", "", &stderr)
 	if err != nil {
 		t.Fatalf("second detectMergePolicy call: %v", err)
 	}
@@ -75,10 +77,10 @@ func TestDetectMergePolicyMissesCacheForDifferentBranch(t *testing.T) {
 	fake := &fakeMergePolicyProvider{result: providers.RepoMergePolicyResult{Policy: providers.MergePolicyDirect}}
 	var stderr bytes.Buffer
 
-	if _, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr); err != nil {
+	if _, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", "", &stderr); err != nil {
 		t.Fatalf("detect for main: %v", err)
 	}
-	if _, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "release", &stderr); err != nil {
+	if _, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "release", "", &stderr); err != nil {
 		t.Fatalf("detect for release: %v", err)
 	}
 	if fake.calls != 2 {
@@ -101,7 +103,7 @@ func TestDetectMergePolicyExpiredEntryReDetects(t *testing.T) {
 
 	fake := &fakeMergePolicyProvider{result: providers.RepoMergePolicyResult{Policy: providers.MergePolicyDirect}}
 	var stderr bytes.Buffer
-	policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
+	policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", "", &stderr)
 	if err != nil {
 		t.Fatalf("detectMergePolicy: %v", err)
 	}
@@ -121,7 +123,7 @@ func TestDetectMergePolicyPropagatesProviderError(t *testing.T) {
 	fake := &fakeMergePolicyProvider{err: wantErr}
 	var stderr bytes.Buffer
 
-	_, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
+	_, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", "", &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("detectMergePolicy error = %v, want %v", err, wantErr)
 	}
@@ -141,7 +143,7 @@ func TestMergePolicyCacheCorruptFileDegradesToLiveDetect(t *testing.T) {
 
 	fake := &fakeMergePolicyProvider{result: providers.RepoMergePolicyResult{Policy: providers.MergePolicyDirect}}
 	var stderr bytes.Buffer
-	policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
+	policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", "", &stderr)
 	if err != nil {
 		t.Fatalf("detectMergePolicy: %v", err)
 	}
@@ -150,5 +152,36 @@ func TestMergePolicyCacheCorruptFileDegradesToLiveDetect(t *testing.T) {
 	}
 	if stderr.Len() == 0 {
 		t.Fatal("want a warning printed for the unreadable cache")
+	}
+}
+
+// TestDetectMergePolicyADOPerPullRequestBypassesCache is ADO-N19: on Azure
+// DevOps the enqueue-or-merge decision comes from the pull request's own policy
+// evaluations, so it must reach the provider with the PullID every time and
+// never be served from, or written to, the branch-keyed cache.
+func TestDetectMergePolicyADOPerPullRequestBypassesCache(t *testing.T) {
+	root := initDemo(t)
+	l := layoutFor(root)
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "example-org", Project: "example-project", Name: "widgets"}
+	fake := &fakeMergePolicyProvider{result: providers.RepoMergePolicyResult{Policy: providers.MergePolicyDirect}}
+	var stderr bytes.Buffer
+
+	for i := 0; i < 2; i++ {
+		policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", "42", &stderr)
+		if err != nil {
+			t.Fatalf("detectMergePolicy call %d: %v", i+1, err)
+		}
+		if policy != providers.MergePolicyDirect {
+			t.Fatalf("policy = %q, want %q", policy, providers.MergePolicyDirect)
+		}
+	}
+	if fake.calls != 2 {
+		t.Fatalf("provider called %d times, want 2 — a per-PR ADO decision must never be a cache hit", fake.calls)
+	}
+	if fake.lastPullID != "42" {
+		t.Fatalf("provider saw PullID %q, want 42", fake.lastPullID)
+	}
+	if _, ok := loadMergePolicyCacheEntry(l.SchedulerDir(), mergePolicyCacheKey(repo, "main"), &stderr); ok {
+		t.Fatal("a per-PR ADO decision was written to the branch-keyed cache")
 	}
 }

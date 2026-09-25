@@ -386,7 +386,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		// serializes on, matching #528's structuredMergeCommitMessage
 		// rationale just above.
 		var policy providers.MergePolicy
-		policy, policyErr = detectMergePolicy(ctx, dispatcher, l.SchedulerDir(), repo, poll.BaseBranch, stderr)
+		policy, policyErr = detectMergePolicy(ctx, dispatcher, l.SchedulerDir(), repo, poll.BaseBranch, pullNumber, stderr)
 		if policyErr != nil {
 			return nil
 		}
