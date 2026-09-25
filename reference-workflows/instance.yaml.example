@@ -18,15 +18,18 @@ repos:
     # the required scopes.
     token:
       env: GOOBERS_GITHUB_TOKEN
-# Agentic goobers use the current user's stored Copilot CLI sign-in when no
-# agent:model credential is configured. For a headless service/CI account,
-# uncomment the agent:model entry and set a separate personal token with
-# Copilot Requests: Read-only. Native PR reviews still need a different GitHub
-# identity because an author cannot approve its own PR.
+# The stored Copilot CLI sign-in fallback does NOT cover this instance: the
+# curator and nominator goobers below are copilot-harness and declare
+# agent:model alongside github:issues:write, so `goobers up` refuses a stored
+# login for them (it would let GH_TOKEN intercept the Copilot subprocess) —
+# see validateStoredCopilotAuthBoundaries in cmd/goobers/runnerwiring_executors.go.
+# Set a separate personal fine-grained PAT with Copilot Requests: Read-only.
+# Native PR reviews still need a different GitHub identity because an author
+# cannot approve its own PR.
 credentials:
-  # - capability: agent:model
-  #   token:
-  #     env: GOOBERS_COPILOT_TOKEN
+  - capability: agent:model
+    token:
+      env: GOOBERS_COPILOT_TOKEN
   - capability: github:pr:review
     token:
       env: GOOBERS_GITHUB_REVIEW_TOKEN
