@@ -421,7 +421,9 @@ Contract rules:
 
 ```
 <instance-root>/
-  instance.yaml     # connections: target repo(s), provider (GitHub/ADO), token refs,
+  instance.yaml     # connections: target repo(s), provider (GitHub/ADO/Gitea), repos[].auth
+                    # kind (pat/azure-cli/workload-identity/managed-identity/github-app),
+                    # token refs, per-capability credentials:, daemonIdentity, secretStores,
                     # telemetry settings
   config/           # the config repo/directory: gaggles, goobers, workflows, gates,
                     # instruction markdown  (the ONLY thing the Tutor may write to)
@@ -478,7 +480,10 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   `created_at`, `updated_at`, milestone number/title, and native dependency
   count (`issue_dependencies_summary.total_blocked_by`); Azure DevOps projects
   every scalar work-item field by its reference name plus `System.Id` and
-  `System.Rev`. Gaggle and workflow-trigger field predicates are ANDed.
+  `System.Rev`. Gitea projects a narrower fixed set: `id`, `number`, `state`,
+  `comments`, `user.login`, `assignee.login`, `created_at`, `updated_at`, and
+  `milestone.title` (`providers/gitea_issues.go:1139-1160`). Gaggle and
+  workflow-trigger field predicates are ANDed.
   Optional or unsupported fields are errors rather than false matches.
   `backlog-query` also accepts `fieldOrder` as comma-separated
   `field[:asc|desc]` terms, applied across the complete candidate set after
@@ -502,15 +507,20 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   label and its claim breadcrumb are a projection of it, never an input to
   eligibility. The projection is retired at the same moment the lease is —
   a stage does it on the paths that have one (`issue-close-out`,
-  `backlog-query --release`), and the instance's terminal cleanup does it for
-  every run that reaches a terminal phase still holding a lease. The `no-work`
-  outcome is the case that makes the second path necessary rather than
-  defensive: it short-circuits to `completed` from whatever stage reported it,
-  so no close-out stage runs. Backlog curation's reconciliation of markers with
-  no backing lease remains the backstop for a projection that could not be
-  written (a forge outage, a credential-less instance, a non-GitHub provider),
-  not the primary mechanism — so the window in which the ledger and the forge
-  disagree is bounded by one provider call, not by one curation interval.
+  `backlog-query --release`), and on GitHub the instance's terminal cleanup
+  does it for every run that reaches a terminal phase still holding a lease.
+  On Azure DevOps and Gitea, terminal cleanup skips the release entirely and
+  returns early (`cmd/goobers/terminalclaimmarker.go:82-84`; #5648) — for
+  those providers, backlog curation's reconciliation of markers with no
+  backing lease is the *only* mechanism that repairs a leftover marker, not a
+  backstop for the rare miss. The `no-work` outcome is the case that makes
+  the terminal-cleanup path necessary on GitHub rather than defensive: it
+  short-circuits to `completed` from whatever stage reported it, so no
+  close-out stage runs. On GitHub, curation's reconciliation remains the
+  backstop for a projection that could not be written (a forge outage, a
+  credential-less instance), so the window in which the ledger and the forge
+  disagree is bounded by one provider call, not by one curation interval; on
+  ADO and Gitea that window is bounded by the curation interval instead.
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and
@@ -553,8 +563,8 @@ See the security alert intake guide under `docs/guides/`.
 
 | Tier | Identity/auth | Secrets | Isolation |
 |---|---|---|---|
-| 1 — Solo | None (local trust) | Env vars / token file, redacted from journals | Worktree + process isolation, capability-scoped credential injection |
-| 2 — Team | Optional OIDC on portal/daemon | Env/file or team secret store | + per-goober credential scoping (shipped, #823); sandboxed stage execution (V1, mechanism per ADR 0001) |
+| 1 — Solo | None (local trust) | Env vars / token file / macOS Keychain / secret-store refs, redacted from journals | Worktree + process isolation, capability-scoped credential injection |
+| 2 — Team | Optional OIDC on portal/daemon | Env/file, Keychain, or team secret store (Azure Key Vault refs already usable, not tier-3-only) | + per-goober credential scoping (shipped, #823); native sandbox shipped and wired through the harness, but `sandbox.agentic` defaults to `disabled` — opt-in, not yet the default (epic #35, closed; default flip tracked on #4517) |
 | 3 — Cloud | Entra ID (OIDC) | **Azure Key Vault** | Per-gaggle namespaces (`SEC-*`, #4897): the active mode-3 worker routes each gaggle's stage pods into its own declared namespace, validated by a startup preflight; per-gaggle workload identity/network policy remain target-state |
 
 The protocol (OIDC) and the seam (an `Authenticator` + a secret-resolver interface)
@@ -576,7 +586,7 @@ implementation of a seam the local runner also implements. "This is where it goe
 | Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **Temporal Schedules** |
 | Config delivery | Automatically watched local `config/` (`--watch-config=false` opts out); or continuous Git `workflowSource` reconciliation via polling, local-ref/webhook wakeups, and last-known-good retention | **ArgoCD** sync → CRDs → **Goobers operator** |
 | Run telemetry store | Journal spans + SQLite | **ADX** via OTLP |
-| Secrets | Env/file | **Azure Key Vault** |
+| Secrets | Env/file, Keychain, and `store` refs into a declared Azure Key Vault (usable at tiers 1-2 already) | **Azure Key Vault** as the primary tier-3 secret backend |
 | AuthN | None / optional OIDC | **Entra ID** |
 | Provisioning | `goobers init` | **Bicep** (`infra/`) + release pipeline |
 
@@ -586,7 +596,7 @@ implementation of a seam the local runner also implements. "This is where it goe
 |---|---|
 | `api/` types + JSON envelope schemas | **Keep** — the definition & envelope contracts; extended for DSL v0 |
 | `internal/engine` compile/state machine | **Extract** the substrate-neutral core (compile, states, gates) for the local runner; the Temporal workflow function around it becomes the V2 adapter |
-| `providers/` | **Keep & extend** — GitHub issues/PR operations are V0 workload |
+| `providers/` | **Keep & extend** — carries GitHub (supported), Azure DevOps (supported), and Gitea (experimental) issue/PR/work-item operations (`docs/provider-capability-matrix.md`) |
 | `internal/telemetry` | **Keep** — add journal/SQLite exporter |
 | `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path) | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2. The tier-3 scheduler fork (`internal/scheduler`, `cmd/scheduler`) was **deleted** per goobernetes-architecture.md D5/§4 (#2055 resolved: supersede) — `internal/localscheduler` is the one scheduler |
 | `infra/` (Bicep, ArgoCD, Temporal) | **Quarantine** — tier-3 provisioning, revived in V2. Not to be confused with `deploy/reference/`, which ships the live Kubernetes reference manifests mode 3 uses |
@@ -628,10 +638,15 @@ deployed config separately, and it can drift from the checked-in reference.
 
 Arbitrary tier-1/tier-2 repositories are current scope, not a future V1
 prerequisite. Repository-neutral GitHub onboarding and multi-gaggle configuration
-are shipped, alongside the Azure DevOps provider, packaged-install machinery, the
-journal-backed portal, capability-scoped and per-goober credential injection,
-optional OIDC, and a narrow Tutor workflow. The remaining V1 roadmap is team and
-hardening work: sandboxed stage execution and expansion of the packaged-install,
+are shipped, alongside the Azure DevOps provider (supported, though with known
+provider-parity gaps still open, e.g. #5554, #5648, #5649 — see
+`docs/provider-capability-matrix.md`) and an experimental Gitea provider,
+packaged-install machinery, the journal-backed portal, capability-scoped and
+per-goober credential injection, optional OIDC, and a narrow Tutor workflow.
+Native sandboxed stage execution has also shipped (epic #35, closed) but
+defaults to disabled (`sandbox.agentic`; default flip tracked on #4517). The
+remaining V1 roadmap is team and hardening work: flipping the sandbox default,
+closing the remaining ADO parity gaps, and expansion of the packaged-install,
 authentication, and Tutor surfaces beyond their current slices.
 
 ### V2 — Cloud scale

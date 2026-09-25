@@ -1,6 +1,6 @@
 # Design: Claim visibility - local by default, shared by opt-in
 
-> Status: **approved — GitHub implementation pending merge; local remains the default**
+> Status: **approved — shipped for GitHub ([#1487](https://github.com/Agent-Clubhouse/Goobers/issues/1487), closed); local remains the default**
 > Requirements: [`docs/requirements/scheduler.md`](../requirements/scheduler.md)
 > (`SCH-020`-`SCH-022`),
 > [`docs/requirements/backlog-providers.md`](../requirements/backlog-providers.md)
@@ -102,15 +102,18 @@ repairs labels using current provider-clock lease state.
 
 ## Provider sequence
 
-The first `shared` implementation is GitHub-specific and is tracked by
-[#1487](https://github.com/Agent-Clubhouse/Goobers/issues/1487). It encodes a
-GitHub shared coordination record distinct from the local human-readable mirror
-while retaining the local ledger's owner and lease data.
+The first `shared` implementation is GitHub-specific and shipped in
+[#1487](https://github.com/Agent-Clubhouse/Goobers/issues/1487) (closed). It
+encodes a GitHub shared coordination record distinct from the local
+human-readable mirror while retaining the local ledger's owner and lease data.
 
-Azure DevOps must not accept `claimVisibility: shared` until the provider reaches
-claim-marker parity through [#32](https://github.com/Agent-Clubhouse/Goobers/issues/32).
-After that parity exists, the same workflow-level contract applies without a
-provider-specific definition shape.
+`claimVisibility: shared` is accepted at workflow-admission time for any
+provider, but Azure DevOps and Gitea both refuse it at claim time: the runtime
+check only allows `shared` for the GitHub provider and returns an error for
+every other provider. There is no remaining tracking issue gating this — ADO
+and Gitea simply do not have a shared coordination-record implementation yet.
+Until one exists, the same workflow-level contract from this doc does not
+apply to them.
 
 ## Live activity visibility
 

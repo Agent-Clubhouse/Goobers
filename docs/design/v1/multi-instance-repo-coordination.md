@@ -92,10 +92,11 @@ overlap by construction** (so the race window is never entered), not lean on a
 mutex that doesn't exist yet:
 
 - **Region ownership via disjoint required labels** is the primary mechanism —
-  reuses existing `backlog-query` label filters, provider-neutral (GitHub and
-  ADO both support required labels the same way), zero new schema needed to use
-  it today. Document this as the recommended pattern, not a incidental
-  possibility.
+  reuses existing `backlog-query` label filters, and is provider-neutral on
+  GitHub. On Azure DevOps, `requireLabels` currently fails the claim outright
+  (label transitions are unimplemented; [#5554](https://github.com/Agent-Clubhouse/Goobers/issues/5554),
+  open), so this pattern is not yet usable there; see §5. Document this as the
+  recommended pattern for GitHub, not a incidental possibility.
 - **Distinct `BranchNamespace` per instance** for the PR-lifecycle side — already
   shipped, needs to become an explicit, paired recommendation rather than an
   unrelated knob operators might not think to combine with label partitioning.
@@ -190,17 +191,30 @@ supplement, the soft mechanisms above for that deployment:
   by every instance) could deliver the same atomic guarantee sooner than a full
   Temporal migration, for teams who want the hard guarantee before tier-3 is
   ready. Not designed here — flagged as a real fork in the road (see Open
-  Questions).
+  Questions). **Correction (2026-09-25):** a cross-instance shared claim
+  substrate has since shipped for GitHub, opt-in via `claimVisibility: shared`
+  (see [`docs/design/claim-visibility.md`](../claim-visibility.md),
+  [#1487](https://github.com/Agent-Clubhouse/Goobers/issues/1487), closed). It
+  is GitHub-only; ADO and Gitea still refuse `shared` at claim time.
 
 ## 5. GitHub / ADO parity
 
-Everything Phase 1 depends on is already symmetric across both providers:
-required-label filtering, assignee (COORD's `providers.WorkItem.Assignee` is
-already read/filter/create-plumbed for both GitHub and ADO per the COORD
-design's own research), and `BranchNamespace`'s branch-prefix matching (a
-git-branch-name mechanism, not provider-specific at all). No provider-specific
-design decisions are needed for Phase 1; Phase 2's shared-claim-store option
-would need equivalent treatment for both if that path is chosen, since Temporal
+> **Correction (2026-09-25):** this section overstated Phase 1 symmetry. Required-label
+> filtering is not yet symmetric: on Azure DevOps, `requireLabels` including a
+> label like `goobers:ready` fails the claim because label transitions are
+> unimplemented ([#5554](https://github.com/Agent-Clubhouse/Goobers/issues/5554),
+> open). Tag filtering that does work on ADO is a WIQL `CONTAINS` substring
+> match plus an exact client-side recheck, not an exact label match. MIRC-6
+> (ADO parity verification, [#1905](https://github.com/Agent-Clubhouse/Goobers/issues/1905))
+> is still open, so the symmetry this design assumed has not been verified for
+> the remaining mechanisms either.
+
+Assignee (COORD's `providers.WorkItem.Assignee` is already read/filter/create-plumbed
+for both GitHub and ADO per the COORD design's own research), and
+`BranchNamespace`'s branch-prefix matching (a git-branch-name mechanism, not
+provider-specific at all) are symmetric. Region ownership via required labels
+is not, until #5554 is fixed. Phase 2's shared-claim-store option would need
+equivalent treatment for both if that path is chosen, since Temporal
 workflow-ID claiming is itself provider-agnostic (it keys on `repo+issue`
 identity, not on which provider hosts the issue).
 
@@ -210,7 +224,7 @@ identity, not on which provider hosts the issue).
 |---|---|---|---|
 | MIRC-1 (#1900) | Authoring guide: combine disjoint required-label partitioning + distinct `BranchNamespace` as the recommended local multi-instance pattern, with the brownfield 10-20-team monorepo as the worked example. Resolves #1657's documentation ask directly. Shipped: [`docs/guides/multiple-instances-one-repo.md`](../../guides/multiple-instances-one-repo.md). | Low (docs-only) | **shipped** |
 | MIRC-2 (#1901) | Sibling-scope declaration + `goobers validate`/`lint` overlap warning: a gaggle can declare known sibling instances/gaggles and their label scopes; validation warns (does not fail closed) on non-disjoint required-label sets between declared siblings. | Low-Med (additive, new optional config surface, warn-only) | **shipped**: `GaggleSpec.RequireLabels`/`Siblings` (`api/v1alpha1/gaggle_types.go`), `checkGaggleSiblingLabelOverlap` (`api/validate/validate.go`, SIB001) |
-| MIRC-3 (#1902) | Claim-race detection: write-then-reread hardening in the claim path (`backlog-query --claim`) — detect a lost race against another instance's claim and back off instead of proceeding. | Med (touches the claim path directly) | supervised — not auto-approved |
+| MIRC-3 (#1902) | Claim-race detection: write-then-reread hardening in the claim path (`backlog-query --claim`) — detect a lost race against another instance's claim and back off instead of proceeding. | Med (touches the claim path directly) | **shipped** (closed) |
 | MIRC-4 (#1903) | Conformance test: two independently-configured instances (disjoint labels + distinct namespaces) against a shared fixture repo never claim the same item; a second fixture with a *deliberately* overlapping scope proves MIRC-3's detection actually fires and the loser backs off rather than duplicating a PR. | Low (test-only) | **approvable** once MIRC-3 lands |
 | MIRC-5 (#1904) | Phase-2 stub: shared-claim-substrate or Temporal-workflow-ID cross-instance exactly-once claim, for teams who lift onto a shared deployment before full tier-3 Temporal migration is ready. Genuinely unscoped — the "lighter-weight alternative" fork in the road from §4 needs a real decision before this becomes implementable. | — | **Future milestone, not approved** |
 | MIRC-6 (#1905) | ADO-specific parity verification for MIRC-1/2/3's mechanisms (required labels, assignee, branch-prefix matching) — confirm no ADO-specific gap once the above land, since this design asserts symmetry but the actual verification is implementation-time work. | Low (verification, not new design) | **approvable** once MIRC-1-3 land |
