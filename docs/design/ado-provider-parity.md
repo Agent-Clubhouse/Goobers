@@ -287,6 +287,15 @@ branch that constructs the ADO provider and calls the native thread / label / si
 primitives directly (the GitHub/Gitea `remediationProvider` interface stays those two
 providers; ADO is a separate code path routed by provider kind):
 
+- **`update-behind-pr`** is **not applicable** on ADO (ADO-N15): ADO always computes a
+  PR's `mergeStatus` against its current target, so there is no "branch must be up to
+  date" policy for a behind-but-clean PR to satisfy via API update. The stage's ADO
+  branch makes no provider call — it reports `not-applicable` and hands off to full
+  remediation, which reselects a candidate itself; a genuinely conflicting PR still
+  reaches `rebase-pr` through that same chain. The derived-capabilities table
+  (`stageProviderCapabilityOverrides`, `providercapability.go`) carries a matching
+  present-but-empty override so config load never requires `pr.update-branch` on ADO
+  for this stage.
 - **`gather-pr-context`** recovers the verdict and finding-set by reading the PR threads
   back (`ListPullRequestThreadComments`), trusting the head/base because `apply-verdict`
   SHA-pinned them, and computes the remediation priority from the PR's native labels plus

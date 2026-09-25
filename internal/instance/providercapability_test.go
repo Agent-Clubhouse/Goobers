@@ -62,6 +62,37 @@ func TestWorkflowRequiredProviderCapabilitiesDerivesFromStages(t *testing.T) {
 	}
 }
 
+// TestUpdateBehindPRDerivesNoCapabilityOnADO pins ADO-N15: the ADO override
+// for update-behind-pr is a present-but-empty entry, so a workflow whose only
+// deterministic stage is update-behind-pr requires nothing on ADO (the
+// override REPLACES the GitHub-shaped default) while still requiring
+// pr.compare and pr.update-branch on GitHub, where the default derivation
+// applies unchanged.
+func TestUpdateBehindPRDerivesNoCapabilityOnADO(t *testing.T) {
+	wf := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Tasks: []apiv1.Task{
+			deterministicStage("update", "update-behind-pr"),
+		},
+	}}
+	wf.Name = "pr-remediation"
+
+	if got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderADO); len(got) != 0 {
+		t.Fatalf("required on ADO = %v, want none", got)
+	}
+
+	got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderGitHub)
+	want := []providers.Capability{providers.CapPRCompare, providers.CapPRUpdateBranch}
+	if len(got) != len(want) {
+		t.Fatalf("required on GitHub = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("required on GitHub = %v, want %v", got, want)
+		}
+	}
+}
+
 // TestBacklogQueryAloneDerivesNoProviderCapabilityRequirement pins the fix
 // for CONF-6's original over-broad requirement: backlog-query's
 // HasOpenWorkItemBlocker call only fires when a work item's BlockedByCount
@@ -201,9 +232,11 @@ func TestProviderCapabilityProblemsReportsEveryWorkflowAndCapability(t *testing.
 	set := &ConfigSet{Gaggles: []apiv1.Gaggle{adoGaggle("web")}, Workflows: []apiv1.Workflow{remediation, review}}
 
 	got := ProviderCapabilityProblems(set)
+	// update-behind-pr contributes no problem here (ADO-N15): its ADO
+	// override derives no capability at all, so pr.update-branch never
+	// reaches ProviderCapabilityProblems for this workflow.
 	want := []ProviderCapabilityProblem{
 		{Gaggle: "web", Workflow: "pr-remediation", Capability: providers.CapPRReviewThreads, Provider: "ado"},
-		{Gaggle: "web", Workflow: "pr-remediation", Capability: providers.CapPRUpdateBranch, Provider: "ado"},
 		{Gaggle: "web", Workflow: "review", Capability: providers.CapPRReviewThreads, Provider: "ado"},
 	}
 	if len(got) != len(want) {
