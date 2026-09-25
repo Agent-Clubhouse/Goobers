@@ -1,7 +1,7 @@
 package v1alpha1
 
-// Provider identifies a backing system vendor. v1 abstracts repo + backlog over
-// both GitHub and Azure DevOps (ADO) from the start (see VISION §8 "v1 providers").
+// Provider identifies a backing system vendor. Repo + backlog are abstracted
+// over GitHub, Azure DevOps (ADO) and Gitea.
 type Provider string
 
 const (
@@ -14,25 +14,31 @@ const (
 	ProviderGitea Provider = "gitea"
 )
 
-// SecretRef references a secret without storing its value in the repo. Secrets
-// are always Key Vault references injected at runtime (CFG-009, SEC-010); they
-// are never inlined into config-as-code.
+// SecretRef references a secret by name without storing its value in the repo;
+// secrets are never inlined into config-as-code (CFG-009, SEC-010).
+//
+// It is accepted but not yet used to source credentials: no runtime path reads
+// a Connection's SecretRef. Credentials come from instance.yaml repos[] and
+// credentials[], and a Key Vault-backed token is a `store:` ref to an
+// instance.yaml secretStores entry. Connection-level credentials are planned
+// (docs/design/provider-access-layer.md).
 type SecretRef struct {
-	// Name of the connection/secret this reference resolves through. For Key
-	// Vault-backed secrets this is the Key Vault secret name.
+	// Name of the referenced secret.
 	// +kubebuilder:validation:Required
 	Name string `json:"name" yaml:"name"`
 	// Key optionally selects a single field within the referenced secret.
 	// +optional
 	Key string `json:"key,omitempty" yaml:"key,omitempty"`
-	// KeyVault optionally names the Key Vault holding the secret; when empty the
-	// gaggle's default vault is used.
+	// KeyVault optionally names the Key Vault holding the secret. Like the rest
+	// of SecretRef it is not read at runtime; declare vaults in instance.yaml
+	// secretStores instead.
 	// +optional
 	KeyVault string `json:"keyVault,omitempty" yaml:"keyVault,omitempty"`
 }
 
-// RepoRef points at a git repository through a provider connection. Auth is a
-// SecretRef — never an inline token.
+// RepoRef points at a git repository. It carries no credential and never an
+// inline token: the token for the repository comes from its instance.yaml
+// repos[] entry.
 type RepoRef struct {
 	// +kubebuilder:validation:Enum=github;ado;gitea
 	// +kubebuilder:validation:Required
@@ -139,8 +145,13 @@ type BacklogRef struct {
 }
 
 // Connection declares a named, reusable link to an external system. Manifests
-// declare connections once; gaggles/goobers reference them by name. Credentials
-// are always SecretRefs.
+// declare connections once; gaggles reference them by name (connectionRef).
+//
+// Connections are accepted but not yet used to source credentials: no runtime
+// path reads connectionRef or SecretRef, and validate reports REF012 for every
+// declared connectionRef. Credentials come from instance.yaml repos[],
+// credentials[] and secretStores. Connection-level credentials are planned
+// (docs/design/provider-access-layer.md).
 type Connection struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name" yaml:"name"`
@@ -151,7 +162,8 @@ type Connection struct {
 	// Provider is the backing vendor/service (e.g. github, ado, azure-adx, entra).
 	// +kubebuilder:validation:Required
 	Provider string `json:"provider" yaml:"provider"`
-	// SecretRef holds the credentials for this connection (Key Vault reference).
+	// SecretRef names the secret for this connection. It is required but not
+	// yet read at runtime; see Connection.
 	// +kubebuilder:validation:Required
 	SecretRef SecretRef `json:"secretRef" yaml:"secretRef"`
 	// Endpoint optionally overrides the default service endpoint/host.
