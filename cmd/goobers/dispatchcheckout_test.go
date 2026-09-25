@@ -675,6 +675,45 @@ func TestComposedGitEnvPreservesTwoSlotADOAuthentication(t *testing.T) {
 	}
 }
 
+// TestComposedGitEnvPreservesThreeSlotADOAuthentication covers a bearer ADO
+// credential (ADO-N4): adoGitAuthEnv adds a second extraheader slot for
+// X-VSS-ForceMsaPassThrough, so composeGitEnv must extend past slot 2, not
+// slot 1, when it appends safe.directory.
+func TestComposedGitEnvPreservesThreeSlotADOAuthentication(t *testing.T) {
+	ws := t.TempDir()
+	const scopedHeader = "http.https://dev.azure.com/acme/project/_git/repo/.extraheader"
+	auth := []string{
+		"PATH=/usr/bin",
+		"GIT_CONFIG_COUNT=3",
+		"GIT_CONFIG_KEY_0=credential.helper",
+		"GIT_CONFIG_VALUE_0=",
+		"GIT_CONFIG_KEY_1=" + scopedHeader,
+		"GIT_CONFIG_VALUE_1=AUTHORIZATION: Bearer test-token",
+		"GIT_CONFIG_KEY_2=" + scopedHeader,
+		"GIT_CONFIG_VALUE_2=X-VSS-ForceMsaPassThrough: true",
+		"GIT_TERMINAL_PROMPT=0",
+	}
+	env := composeGitEnv(ws, auth)
+
+	eff := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		eff[k] = v
+	}
+	if eff["GIT_CONFIG_COUNT"] != "4" {
+		t.Fatalf("GIT_CONFIG_COUNT = %q, want 4", eff["GIT_CONFIG_COUNT"])
+	}
+	if eff["GIT_CONFIG_KEY_2"] != scopedHeader ||
+		eff["GIT_CONFIG_VALUE_2"] != "X-VSS-ForceMsaPassThrough: true" {
+		t.Fatalf("ADO passthrough slot was overwritten: key=%q value=%q",
+			eff["GIT_CONFIG_KEY_2"], eff["GIT_CONFIG_VALUE_2"])
+	}
+	if eff["GIT_CONFIG_KEY_3"] != "safe.directory" || eff["GIT_CONFIG_VALUE_3"] != ws {
+		t.Fatalf("safe.directory slot = %q/%q, want slot 3 for %q",
+			eff["GIT_CONFIG_KEY_3"], eff["GIT_CONFIG_VALUE_3"], ws)
+	}
+}
+
 // Without a credential the exemption takes slot 0, and any inherited
 // GIT_CONFIG_* must be cleared so the indices are unambiguous.
 func TestComposedGitEnvWithoutAuthClaimsSlotZero(t *testing.T) {

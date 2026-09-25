@@ -170,6 +170,11 @@ func TestADOProviderCloneUsesChildOnlyCredentialEnvironment(t *testing.T) {
 		!strings.Contains(joined, "GIT_TERMINAL_PROMPT=0") {
 		t.Fatalf("git auth environment = %#v", runner.env)
 	}
+	// PAT (Basic) never gets the MSA passthrough header: it already works on
+	// every org, and the header is undocumented and untested for Basic.
+	if strings.Contains(joined, "GIT_CONFIG_COUNT=3") || strings.Contains(joined, adoForceMsaPassThroughHeader) {
+		t.Fatalf("PAT git auth environment must not carry the passthrough header: %#v", runner.env)
+	}
 }
 
 func TestADOProviderRepositoryReachableUsesChildOnlyCredentialEnvironment(t *testing.T) {
@@ -213,6 +218,24 @@ func TestADOProviderRegistersDynamicBearerCredential(t *testing.T) {
 	}
 	if got := string(reg.Scrub([]byte("Bearer dynamic-bearer"))); strings.Contains(got, "dynamic-bearer") {
 		t.Fatalf("dynamic bearer was not scrubbed: %q", got)
+	}
+
+	// A bearer credential also gets the MSA passthrough header as a second
+	// git extraheader slot, since Bearer needs it against a non-Entra-backed
+	// org (or an MSA account) for git, not just REST.
+	runner := &adoAuthRunner{}
+	provider.Runner = runner
+	if _, err := provider.CloneRepository(context.Background(), CloneRequest{
+		Repository:  RepositoryRef{Name: "repo", Project: "project"},
+		Destination: "dest",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(runner.env, "\n")
+	if !strings.Contains(joined, "GIT_CONFIG_COUNT=3") ||
+		!strings.Contains(joined, "GIT_CONFIG_KEY_2=http.https://dev.azure.com/org/project/_git/repo/.extraheader") ||
+		!strings.Contains(joined, "GIT_CONFIG_VALUE_2="+adoForceMsaPassThroughHeader+": "+adoForceMsaPassThroughValue) {
+		t.Fatalf("bearer git auth environment missing the passthrough header slot: %#v", runner.env)
 	}
 }
 
