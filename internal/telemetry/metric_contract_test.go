@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
+	apimetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -162,7 +163,8 @@ func TestMetricContractMatchesRuntimeEmission(t *testing.T) {
 	schedulerSpan.Succeed("claimed")
 
 	client.InstanceJournalAppendDropped()
-	client.journalExportDropped(dropQueueFull, 1)
+	client.instruments.journalExportDrops.Add(context.Background(), 1,
+		apimetric.WithAttributes(attribute.String(MetricAttrJournalDropCause, "queue_full")))
 	client.SnapshotCaptured("delta", 123)
 	client.SnapshotCaptured("full", 456)
 	client.SnapshotFallback("no_base_ref")

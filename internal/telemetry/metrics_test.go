@@ -826,16 +826,6 @@ func (e *countingMetricExporter) Export(_ context.Context, collected *metricdata
 	return nil
 }
 
-func (e *countingMetricExporter) journalDropCounts() map[string]int64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	counts := make(map[string]int64, len(e.journalDrops))
-	for cause, count := range e.journalDrops {
-		counts[cause] = count
-	}
-	return counts
-}
-
 func (e *countingMetricExporter) ForceFlush(context.Context) error { return nil }
 
 func (e *countingMetricExporter) Shutdown(context.Context) error {
