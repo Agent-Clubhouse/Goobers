@@ -99,7 +99,8 @@ type gatherPRContextFeatures struct{ checkState, siblingBlocking, liveBaseTip bo
 
 type gatherPRContextAdapter struct {
 	features         gatherPRContextFeatures
-	pushToken, note  string
+	note             string
+	gitAuth          gitAuthEnvironmentResolver
 	list             func(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
 	prepare          func(context.Context, []providers.PullRequestSummary, map[string]bool) ([]providers.PullRequestSummary, map[int]int, error)
 	resolveCheck     func(context.Context, *providers.PullRequestSummary) error
@@ -148,7 +149,7 @@ func newGitHubGiteaGatherPRContextAdapter(root string, repo providers.Repository
 	}
 	bases := map[string]bool{}
 	return gatherPRContextAdapter{
-		features: gatherPRContextFeatures{checkState: true, siblingBlocking: true, liveBaseTip: true}, pushToken: pushToken, list: provider.ListPullRequests,
+		features: gatherPRContextFeatures{checkState: true, siblingBlocking: true, liveBaseTip: true}, gitAuth: tokenGitAuthEnvironment(pushToken), list: provider.ListPullRequests,
 		prepare: func(ctx context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 			if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
 				return nil, nil, gatherPRAdapterError("resolve remediation check states", err)
@@ -164,12 +165,12 @@ func newGitHubGiteaGatherPRContextAdapter(root string, repo providers.Repository
 		},
 		behindBase: func(pr providers.PullRequestSummary) (bool, error) {
 			if !bases[pr.Base] {
-				if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
+				if _, err := fetchExistingBranchWithAuth(context.Background(), ".", pr.Base, tokenGitAuthEnvironment(pushToken)); err != nil {
 					return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
 				}
 				bases[pr.Base] = true
 			}
-			head, err := fetchExistingBranch(".", pr.Head, pushToken)
+			head, err := fetchExistingBranchWithAuth(context.Background(), ".", pr.Head, tokenGitAuthEnvironment(pushToken))
 			if err != nil {
 				return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
 			}
@@ -197,11 +198,11 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 	if err != nil {
 		return gatherPRContextAdapter{}, err
 	}
-	pushToken, err := providerToken(capability.RepoPush)
+	gitAuth, err := adoRemediationGitAuthEnvironment(root, repo)
 	if err != nil {
 		return gatherPRContextAdapter{}, err
 	}
-	return gatherPRContextAdapter{pushToken: pushToken, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
+	return gatherPRContextAdapter{gitAuth: gitAuth, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
 		prepare: func(_ context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 			eligible := make([]providers.PullRequestSummary, 0, len(prs))
 			for _, pr := range prs {
@@ -261,7 +262,7 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 			return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", selected.Number), err, remediationBriefResultFile)
 		}
 	}
-	if _, err := checkoutExistingBranch(".", selected.Head, a.pushToken); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(ctx, ".", selected.Head, a.gitAuth); err != nil {
 		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selected.Number, selected.Head, err)
 		return 1
 	}
@@ -1029,8 +1030,8 @@ func canonicalPath(p string) string {
 // tautological (it would always match whatever just landed), silently
 // defeating the "don't clobber a concurrent push" guarantee force-with-lease
 // exists for.
-func checkoutExistingBranch(dir, branch, token string) (fetchedSHA string, err error) {
-	fetchedSHA, err = fetchExistingBranch(dir, branch, token)
+func checkoutExistingBranchWithAuth(ctx context.Context, dir, branch string, auth gitAuthEnvironmentResolver) (fetchedSHA string, err error) {
+	fetchedSHA, err = fetchExistingBranchWithAuth(ctx, dir, branch, auth)
 	if err != nil {
 		return "", err
 	}
@@ -1046,12 +1047,18 @@ func checkoutExistingBranch(dir, branch, token string) (fetchedSHA string, err e
 // (which checks out on top) and by selectRemediationCandidates' behind-base
 // probe (which only needs the SHA to compare ancestry, and must not disturb
 // dir's currently-checked-out branch while probing OTHER PRs' candidacy).
-func fetchExistingBranch(dir, branch, token string) (string, error) {
+func fetchExistingBranchWithAuth(ctx context.Context, dir, branch string, auth gitAuthEnvironmentResolver) (string, error) {
 	url, err := originURL(dir)
 	if err != nil {
 		return "", err
 	}
-	env := gitAuthEnv(token)
+	if auth == nil {
+		return "", fmt.Errorf("repository authentication is unavailable")
+	}
+	env, err := auth(ctx, url)
+	if err != nil {
+		return "", err
+	}
 	fetch := workspaceGitAuthEnvCommand(dir, env, "fetch", url, "refs/heads/"+branch)
 	if out, err := workspaceGitCombinedOutput(fetch); err != nil {
 		return "", fmt.Errorf("fetch %s: %w: %s", branch, err, strings.TrimSpace(string(out)))

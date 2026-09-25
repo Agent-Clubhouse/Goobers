@@ -125,6 +125,33 @@ func TestCIPollExecutor_Pass(t *testing.T) {
 	}
 }
 
+func TestCIPollExecutor_NoChecksPassesWithoutSleeping(t *testing.T) {
+	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePassing}}
+	recorder := newFakeRecorder()
+	exec, err := NewCIPollExecutor(poller, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = func(context.Context, time.Duration) error {
+		t.Fatal("ci-poll slept after the provider reported an empty passing check set")
+		return nil
+	}
+
+	result, err := exec.Run(context.Background(), cfgFor("o", "r", "42"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStatePassing) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStatePassing)
+	}
+	if len(result.Artifacts) != 0 || len(recorder.recorded) != 0 {
+		t.Fatalf("no-check result recorded artifacts: %+v", result.Artifacts)
+	}
+}
+
 func TestCIPollExecutor_Fail(t *testing.T) {
 	poller := &fakePoller{results: []providers.CheckState{providers.CheckStateFailing}}
 	recorder := newFakeRecorder()

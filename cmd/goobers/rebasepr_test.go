@@ -374,7 +374,7 @@ func prWorktree(t *testing.T, origin, prBranch string) *worktree.Worktree {
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
-	if _, err := checkoutExistingBranch(wt.Path, prBranch, "test-token"); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), wt.Path, prBranch, tokenGitAuthEnvironment("test-token")); err != nil {
 		t.Fatalf("checkoutExistingBranch: %v", err)
 	}
 	return wt
@@ -1786,7 +1786,7 @@ func TestForcePushWithLeaseRefusesOnStaleExpectedSHA(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
 
-	staleSHA, err := checkoutExistingBranch(wt.Path, prBranch, "test-token")
+	staleSHA, err := checkoutExistingBranchWithAuth(t.Context(), wt.Path, prBranch, tokenGitAuthEnvironment("test-token"))
 	if err != nil {
 		t.Fatalf("checkoutExistingBranch: %v", err)
 	}
@@ -1814,7 +1814,7 @@ func TestForcePushWithLeaseRefusesOnStaleExpectedSHA(t *testing.T) {
 	runGitT(t, wt.Path, "add", "goober-change.txt")
 	runGitT(t, wt.Path, "commit", "-m", "goober's commit, based on the stale view")
 
-	if err := forcePushWithLease(wt.Path, prBranch, staleSHA, "test-token"); err == nil {
+	if err := forcePushWithLeaseWithAuth(t.Context(), wt.Path, prBranch, staleSHA, tokenGitAuthEnvironment("test-token")); err == nil {
 		t.Fatal("forcePushWithLease succeeded against a stale expectedSHA — the human's concurrent commit would have been clobbered")
 	} else if !strings.Contains(err.Error(), "stale") && !strings.Contains(err.Error(), "rejected") && !strings.Contains(err.Error(), "fetch first") {
 		t.Fatalf("forcePushWithLease error = %v, want a lease-rejection error", err)

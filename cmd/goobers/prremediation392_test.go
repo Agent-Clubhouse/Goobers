@@ -262,7 +262,7 @@ func pushRemediatedFixture(t *testing.T, recordHeadSHA bool) (instanceRoot strin
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
-	if _, err := checkoutExistingBranch(wt.Path, remediationPRBranch, "test-token"); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), wt.Path, remediationPRBranch, tokenGitAuthEnvironment("test-token")); err != nil {
 		t.Fatalf("checkoutExistingBranch: %v", err)
 	}
 	// The rework `implement` committed but never pushed.
@@ -635,7 +635,7 @@ func TestPushRemediatedRefusesToPublishAnUnchangedBranch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
 	// On the PR's branch, but with NO new commit — the no-op remediation.
-	if _, err := checkoutExistingBranch(wt.Path, remediationPRBranch, "test-token"); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), wt.Path, remediationPRBranch, tokenGitAuthEnvironment("test-token")); err != nil {
 		t.Fatalf("checkoutExistingBranch: %v", err)
 	}
 

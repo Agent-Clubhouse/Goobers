@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	wf "github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/providers"
 )
 
 func evalCheck(t *testing.T, check string, params map[string]string, inputs map[string]interface{}) (string, error) {
@@ -779,6 +780,30 @@ func TestCIStatusCheck(t *testing.T) {
 	out, err = evalCheck(t, "ci-status", nil, map[string]interface{}{"ciStatus": executor.CIStatusMerged})
 	if err != nil || out != OutcomePass {
 		t.Fatalf("got %q, %v; want pass for merged PR", out, err)
+	}
+}
+
+func TestCIGatePassesNoChecksCIPollOutcome(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "ci-gate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "ci-status"},
+		Branches: map[string]string{
+			OutcomePass: "merge",
+			OutcomeFail: "implement",
+		},
+	}
+	e := &Evaluator{Automated: NewAutomatedEvaluator()}
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{
+		"ciStatus": string(providers.CheckStatePassing),
+	}}
+
+	result, err := e.Evaluate(context.Background(), g, env, "ci-poll", apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Outcome != OutcomePass || result.Target != "merge" {
+		t.Fatalf("result = %+v, want pass routed to merge", result)
 	}
 }
 

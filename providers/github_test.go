@@ -1975,8 +1975,47 @@ func TestGitHubProviderRefCheckStatesUsesOneGraphQLRequest(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("GraphQL calls = %d, want 1", calls)
 	}
-	if states["aaa111"] != CheckStatePassing || states["bbb222"] != CheckStateFailing || states["ccc333"] != CheckStatePending {
-		t.Fatalf("states = %v, want passing, failing, pending", states)
+	if states["aaa111"] != CheckStatePassing || states["bbb222"] != CheckStateFailing || states["ccc333"] != CheckStatePassing {
+		t.Fatalf("states = %v, want passing, failing, passing (no rollup is unblocked)", states)
+	}
+}
+
+func TestGitHubProviderPollPullRequestNoChecksPassesImmediately(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"number": 9, "state": "open", "html_url": "https://github.com/acme/app/pull/9",
+			"head": map[string]interface{}{"ref": "feature", "sha": "deadbeef"},
+			"base": map[string]interface{}{"ref": "main", "sha": "base"},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"statuses": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/repos/acme/app/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+	})
+	if err != nil {
+		t.Fatalf("PollPullRequest returned error: %v", err)
+	}
+	if result.CheckState != CheckStatePassing {
+		t.Fatalf("CheckState = %q, want passing when GitHub reports no checks", result.CheckState)
+	}
+	if len(result.Checks) != 0 {
+		t.Fatalf("Checks = %+v, want empty", result.Checks)
 	}
 }
 

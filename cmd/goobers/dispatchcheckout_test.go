@@ -642,6 +642,39 @@ func TestComposedGitEnvKeepsBothConfigSlots(t *testing.T) {
 	}
 }
 
+func TestComposedGitEnvPreservesTwoSlotADOAuthentication(t *testing.T) {
+	ws := t.TempDir()
+	const scopedHeader = "http.https://dev.azure.com/acme/project/_git/repo/.extraheader"
+	auth := []string{
+		"PATH=/usr/bin",
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=credential.helper",
+		"GIT_CONFIG_VALUE_0=",
+		"GIT_CONFIG_KEY_1=" + scopedHeader,
+		"GIT_CONFIG_VALUE_1=AUTHORIZATION: Bearer test-token",
+		"GIT_TERMINAL_PROMPT=0",
+	}
+	env := composeGitEnv(ws, auth)
+
+	eff := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		eff[k] = v
+	}
+	if eff["GIT_CONFIG_COUNT"] != "3" {
+		t.Fatalf("GIT_CONFIG_COUNT = %q, want 3", eff["GIT_CONFIG_COUNT"])
+	}
+	if eff["GIT_CONFIG_KEY_1"] != scopedHeader ||
+		eff["GIT_CONFIG_VALUE_1"] != "AUTHORIZATION: Bearer test-token" {
+		t.Fatalf("ADO authorization slot was overwritten: key=%q value=%q",
+			eff["GIT_CONFIG_KEY_1"], eff["GIT_CONFIG_VALUE_1"])
+	}
+	if eff["GIT_CONFIG_KEY_2"] != "safe.directory" || eff["GIT_CONFIG_VALUE_2"] != ws {
+		t.Fatalf("safe.directory slot = %q/%q, want slot 2 for %q",
+			eff["GIT_CONFIG_KEY_2"], eff["GIT_CONFIG_VALUE_2"], ws)
+	}
+}
+
 // Without a credential the exemption takes slot 0, and any inherited
 // GIT_CONFIG_* must be cleared so the indices are unambiguous.
 func TestComposedGitEnvWithoutAuthClaimsSlotZero(t *testing.T) {
