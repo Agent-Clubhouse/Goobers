@@ -273,6 +273,21 @@ func TestADOClaimFailsClosedWithoutIdentity(t *testing.T) {
 	}
 }
 
+// TestADOClaimIgnoresLegacyOwnerTag pins ADO-N38: a stray
+// goobers:claim-run:<b64> tag left on an item from before the claim-tag
+// fallback was removed no longer confers a claim when there is no breadcrumb
+// backing it.
+func TestADOClaimIgnoresLegacyOwnerTag(t *testing.T) {
+	fake := &adoClaimFake{tags: "goobers:claim-run:cnVuLWxlZ2FjeQ"}
+	result, err := claimADOTestItem(t, fake.server(t, true), "run-ours")
+	if err != nil {
+		t.Fatalf("ClaimWorkItem: %v", err)
+	}
+	if !result.Claimed || result.ClaimedBy != "run-ours" {
+		t.Fatalf("claim = %#v, want run-ours to win over a stray legacy tag", result)
+	}
+}
+
 // TestADOFindPullRequestByBranch pins the exact source-branch match the
 // idempotent OpenPullRequest and issue-close-out linking rely on: a prefix
 // collision ("run-1" vs "run-10") must not resolve the wrong PR.

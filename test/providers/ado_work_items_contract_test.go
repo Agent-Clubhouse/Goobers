@@ -669,48 +669,41 @@ func TestContract_ADOWorkItemErrorMapping(t *testing.T) {
 	}
 }
 
-// Items claimed before ownership moved into the comment thread carry a legacy
-// `goobers:claim-run:<b64>` tag and no breadcrumb. Those claims must still be
-// recognized — otherwise the change would orphan every in-flight claim — and
-// releasing one must clear the legacy tag rather than leaving it behind
-// forever in the project's tag namespace (#1979).
-//
-// This test is deleted along with the fallback it covers — #1990, target
-// 2026-08-14.
-func TestContract_ADOLegacyOwnerTagIsHonoredAndCleared(t *testing.T) {
+// #1990 removed the legacy claim-tag fallback: ownership lives only in the
+// comment thread now, so a stray `goobers:claim-run:<b64>` tag left on an
+// item from before that change no longer confers a claim, and a release no
+// longer reads or clears it.
+func TestContract_ADOLegacyOwnerTagNoLongerHonored(t *testing.T) {
 	legacyOwnerTag := "goobers:claim-run:" + base64.RawURLEncoding.EncodeToString([]byte("run-legacy"))
 	backend := newADOWorkItemBackend()
-	backend.tags = []string{"route/backend", providers.LabelClaimed, legacyOwnerTag}
+	backend.tags = []string{"route/backend", legacyOwnerTag}
 	server := backend.server(t)
 	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
 		p.BaseURL = server.URL
 	})
 	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}
 
-	// A different run must not be able to claim over the legacy owner.
+	// No breadcrumb, so the legacy tag alone must not stand in the way of a
+	// fresh claim.
 	result, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
 		Repository: repo, ID: "42", RunID: "run-new",
 	})
 	if err != nil {
 		t.Fatalf("ClaimWorkItem: %v", err)
 	}
-	if result.Claimed || result.ClaimedBy != "run-legacy" {
-		t.Fatalf("legacy claim was not honored: %#v", result)
+	if !result.Claimed || result.ClaimedBy != "run-new" {
+		t.Fatalf("legacy tag blocked a fresh claim: %#v", result)
 	}
 
-	// The legacy owner re-claiming its own item is idempotent.
-	again, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
-		Repository: repo, ID: "42", RunID: "run-legacy",
-	})
-	if err != nil {
-		t.Fatalf("re-claim: %v", err)
-	}
-	if !again.Claimed || again.ClaimedBy != "run-legacy" {
-		t.Fatalf("legacy owner could not re-claim its own item: %#v", again)
+	// The legacy tag stays hidden from the labels callers see.
+	for _, label := range result.Item.Labels {
+		if strings.HasPrefix(label, "goobers:claim-run:") {
+			t.Fatalf("legacy claim tag leaked into visible labels: %#v", result.Item.Labels)
+		}
 	}
 
 	released, err := provider.ReleaseWorkItemClaim(context.Background(), providers.ClaimWorkItemRequest{
-		Repository: repo, ID: "42", RunID: "run-legacy",
+		Repository: repo, ID: "42", RunID: "run-new",
 	})
 	if err != nil {
 		t.Fatalf("ReleaseWorkItemClaim: %v", err)
@@ -718,23 +711,19 @@ func TestContract_ADOLegacyOwnerTagIsHonoredAndCleared(t *testing.T) {
 	if released.HasLabel(providers.LabelClaimed) {
 		t.Fatalf("claim label remained after release: %#v", released.Labels)
 	}
+
+	// Release no longer touches the legacy tag; it is neither read nor
+	// cleared, so it is still present in the backend's raw tags.
 	backend.mu.Lock()
 	storedTags := append([]string(nil), backend.tags...)
 	backend.mu.Unlock()
+	found := false
 	for _, tag := range storedTags {
-		if strings.HasPrefix(tag, "goobers:claim-run:") {
-			t.Fatalf("release left the legacy owner tag behind: %#v", storedTags)
+		if strings.EqualFold(tag, legacyOwnerTag) {
+			found = true
 		}
 	}
-
-	// With the legacy epoch ended, a new run can take the item.
-	next, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
-		Repository: repo, ID: "42", RunID: "run-new",
-	})
-	if err != nil {
-		t.Fatalf("claim after release: %v", err)
-	}
-	if !next.Claimed || next.ClaimedBy != "run-new" {
-		t.Fatalf("item was not claimable after release: %#v", next)
+	if !found {
+		t.Fatalf("release unexpectedly touched the legacy owner tag: %#v", storedTags)
 	}
 }
