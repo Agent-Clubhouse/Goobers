@@ -866,15 +866,6 @@ func (p *ADOProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 	return p.setADOClaimLabel(ctx, req.Repository, req.ID, nil, remove)
 }
 
-// ListWorkItemLabelTransitionsForItem reaches parity in V1: ADO's work-item
-// update history maps to label-transition events differently than GitHub's
-// timeline. Only reached when a workflow gates claiming on a ready label's age
-// (requireLabels contains a ready label), which the ADO backlog workload does
-// not use.
-func (p *ADOProvider) ListWorkItemLabelTransitionsForItem(context.Context, RepositoryRef, string, string) ([]WorkItemLabelTransition, error) {
-	return nil, fmt.Errorf("ADO work-item label transitions reach parity in V1")
-}
-
 // Subscribe emits Azure Boards backlog item availability events.
 func (p *ADOProvider) Subscribe(ctx context.Context, sub TriggerSubscription) (<-chan WorkItemEvent, error) {
 	if sub.Kind != TriggerPolling {
