@@ -28,6 +28,70 @@ type openPRProvider interface {
 	OpenPullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error)
 }
 
+type adoPullRequestWorkItemLinker interface {
+	LinkPullRequestToWorkItem(context.Context, providers.RepositoryRef, providers.RepositoryRef, string, string) error
+}
+
+func openPRWorkItemLinker(root string, repo providers.RepositoryRef, haveIssue bool, issueID string) (adoPullRequestWorkItemLinker, error) {
+	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
+		return nil, nil
+	}
+	return newProviderForStageSurface[adoPullRequestWorkItemLinker](root, repo, false,
+		withStageProviderCapability(capability.ADOWorkItemsWrite),
+		withStageProviderMutations("issue"),
+	)
+}
+
+func linkADOPullRequestToWorkItem(
+	ctx context.Context,
+	linker adoPullRequestWorkItemLinker,
+	repo providers.RepositoryRef,
+	root, issueID, pullID string,
+	haveIssue bool,
+	stderr io.Writer,
+) int {
+	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
+		return 0
+	}
+	if linker == nil {
+		pf(stderr, "error: ADO provider cannot create native work-item links\n")
+		return 1
+	}
+	err := linker.LinkPullRequestToWorkItem(ctx, repo, backlogRepoRefForStage(root, repo), issueID, pullID)
+	if err == nil {
+		return 0
+	}
+	if providers.IsNotFoundError(err) {
+		pf(stderr, "warning: work item #%s no longer resolves; pull request %s could not be linked natively\n", issueID, pullID)
+		return 0
+	}
+	return failProviderStage(stderr, "link pull request to work item", err, "pr-result.json")
+}
+
+func openPullRequestWithADOLink(
+	ctx context.Context,
+	provider openPRProvider,
+	linker adoPullRequestWorkItemLinker,
+	repo providers.RepositoryRef,
+	root, issueID string,
+	haveIssue bool,
+	prReq providers.PullRequestRequest,
+	tutorHoldout *tutorHoldoutRecord,
+	stderr io.Writer,
+) (providers.PullRequestResult, int) {
+	result, err := provider.OpenPullRequest(ctx, prReq)
+	if err != nil {
+		if tutorHoldout != nil {
+			if cleanupErr := clearTutorHoldoutsForRun(root, tutorHoldout.Gaggle, tutorHoldout.AuthoringRunID); cleanupErr != nil {
+				pf(stderr, "error: discard Tutor live verification after open pull request failed: %v (open pull request: %v)\n", cleanupErr, err)
+				return providers.PullRequestResult{}, 1
+			}
+		}
+		return providers.PullRequestResult{}, failProviderStage(stderr, "open pull request", err, "pr-result.json")
+	}
+	return result, linkADOPullRequestToWorkItem(ctx, linker, repo, root, issueID, result.ID, haveIssue, stderr)
+}
+
 const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"Open the run's PR — or, on a repass through this stage, find and update\n" +
 	"the PR it already opened (idempotent: the run's branch name is stable\n" +
@@ -270,6 +334,12 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	workItemLinker, err := openPRWorkItemLinker(root, repo, haveIssue, issueID)
+	if err != nil {
+		pf(stderr, "error: resolve ADO work-item link authority: %v\n", err)
+		return 1
+	}
+
 	// Persist the mandatory finding before the external mutation. If the
 	// process crashes after GitHub accepts the PR, the prepared record still
 	// survives for a later exact-cohort verification pass. Repasses atomically
@@ -293,15 +363,9 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	result, err := provider.OpenPullRequest(ctx, prReq)
-	if err != nil {
-		if tutorHoldout != nil {
-			if cleanupErr := clearTutorHoldoutsForRun(root, tutorHoldout.Gaggle, tutorHoldout.AuthoringRunID); cleanupErr != nil {
-				pf(stderr, "error: discard Tutor live verification after open pull request failed: %v (open pull request: %v)\n", cleanupErr, err)
-				return 1
-			}
-		}
-		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
+	result, code := openPullRequestWithADOLink(ctx, provider, workItemLinker, repo, root, issueID, haveIssue, prReq, tutorHoldout, stderr)
+	if code != 0 {
+		return code
 	}
 
 	if recordTutorLiveVerification {

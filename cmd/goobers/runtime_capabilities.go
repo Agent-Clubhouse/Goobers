@@ -329,7 +329,7 @@ func init() {
 			// actually accept (#4887). It previously pinned v0.1.0, which
 			// every build since has been newer than, so the shipped example
 			// failed verbatim for every reader who ran it.
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.0"),
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.1"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",
