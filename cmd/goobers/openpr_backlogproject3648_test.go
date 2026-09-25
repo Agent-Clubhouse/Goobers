@@ -122,12 +122,13 @@ func TestOpenPRStalenessChecksBacklogProjectOnADO(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	previous := newADOProviderForOpenPR
-	newADOProviderForOpenPR = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	t.Setenv(executor.CredentialEnvVar("provider:pr:write"), "pr-write-token")
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}
-	t.Cleanup(func() { newADOProviderForOpenPR = previous })
+	t.Cleanup(func() { newADOProviderForStage = previous })
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
@@ -191,12 +192,13 @@ func TestOpenPRStalenessNotFoundDiagnosticNamesBacklogProject(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	previous := newADOProviderForOpenPR
-	newADOProviderForOpenPR = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	t.Setenv(executor.CredentialEnvVar("provider:pr:write"), "pr-write-token")
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}
-	t.Cleanup(func() { newADOProviderForOpenPR = previous })
+	t.Cleanup(func() { newADOProviderForStage = previous })
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)

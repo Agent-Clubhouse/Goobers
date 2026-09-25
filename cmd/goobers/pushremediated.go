@@ -133,16 +133,17 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 //     wrong-object hazard, §0.5). Clearing the label is the re-entry trigger that
 //     lets merge-review re-select the reworked PR.
 //
-// The provider and Git publication both use config-sourced ADO auth. The
-// repo:push capability authorizes publication without requiring a separately
-// materialized PAT when the repository uses Azure CLI or managed identity.
+// The provider and Git publication each use the credential their declared
+// capability delivered: github:pr:write for the pull request, repo:push for the
+// branch publication (docs/design/ado-parity-dsl-2-0.md §3.1). Every ADO auth
+// kind backs both in the daemon, so no instance config is read here.
 func runPushRemediatedADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.GitHubPRWrite))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	gitAuth, err := adoRemediationGitAuthEnvironment(root, repo)
+	gitAuth, err := adoRemediationGitAuthEnvironment()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

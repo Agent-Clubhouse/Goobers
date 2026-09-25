@@ -161,7 +161,7 @@ func adoMergePREnv(t *testing.T, serverURL string, withoutGrant bool, inputs map
 	}
 
 	prev := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(
 			routed.Owner,
 			routed.Project,

@@ -832,8 +832,10 @@ func resolveStageCredentialsWithScheme(ctx context.Context) ([]dispatcher.Minted
 // repository credential. The scheme is not a secret; it tells the stage which
 // Authorization header the delivered token belongs in. The rule matches the
 // local executor's (executor.ShellExecutor.appendRepoEnv): the scheme travels
-// only with at least one credential. cred.ExpiresAt is not exported yet; the
-// consumer that raises a clear "credential expired" error lands with ADO-N18.
+// only with at least one credential. cred.ExpiresAt is not exported: a stage
+// that outlives its token gets Azure DevOps' 401, and the stage's ADO
+// credential source (providers.NewADODeliveredCredentialSource) turns that into
+// a clear "expired or revoked" failure instead of retrying the same value.
 func stageCredentialEnv(creds []dispatcher.MintedCredential, repoAuthScheme string) []string {
 	env := make([]string, 0, len(creds)+1)
 	for _, cred := range creds {

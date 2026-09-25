@@ -43,14 +43,14 @@ func TestElectedLander(t *testing.T) {
 	}
 }
 
-func TestElectLanderADOUsesADOProviderCapability(t *testing.T) {
+func TestElectLanderADOUsesPRWriteCapability(t *testing.T) {
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
-	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubPRWrite)), "ado-token")
 	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](
 		root,
 		repo,
 		false,
-		withStageProviderCapability(capability.ADOPRWrite),
+		withStageProviderCapability(capability.GitHubPRWrite),
 	)
 	if err != nil {
 		t.Fatalf("newMergeReviewProviderAs: %v", err)
@@ -77,7 +77,12 @@ func TestElectLanderDispatchesADOAndElectsCandidate(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	previous := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		// ADO-N18: elect-lander's ADO provider is built from the delivered
+		// github:pr:write credential and no other.
+		if got := deliveredCapabilityOf(t, credential); got != string(capability.GitHubPRWrite) {
+			t.Errorf("elect-lander built its ADO provider from %q's credential, want github:pr:write", got)
+		}
 		return providers.NewADOProvider(routed.Owner, routed.Project, "ado-token", func(p *providers.ADOProvider) {
 			p.BaseURL = server.URL
 		}), nil

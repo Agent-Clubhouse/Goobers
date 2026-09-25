@@ -273,26 +273,34 @@ type adoPostMergePRComments interface {
 // unparkSelfHealedEscalations, unparkSelfHealedDemotions — is a documented no-op
 // here: each takes a concrete *GitHubProvider and issues a PR-number-as-work-item
 // write (UpdateWorkItem(ID: pr.Number, …)) that on ADO would mutate the unrelated
-// work item sharing the PR's numeric id (wrong-object hazard, §8). The provider
-// is built via the shared stage provider factory (never providerToken(github:*)); work-item
-// calls target backlogRepoRefForStage so they hit the backlog project, not the
-// routed code-repo project (§6). The reconcile-lock idempotency is unchanged.
+// work item sharing the PR's numeric id (wrong-object hazard, §8). The providers
+// are built via the shared stage provider factory, each from the credential its
+// declared capability delivered: github:pr:write for the pull request (poll and
+// threads) and github:issues:write for the backlog work items
+// (docs/design/ado-parity-dsl-2-0.md §3.1). Work-item calls target
+// backlogRepoRefForStage so they hit the backlog project, not the routed
+// code-repo project (§6). The reconcile-lock idempotency is unchanged.
 func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
+	prProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.GitHubPRWrite))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Mandatory Provider methods (PollPullRequest here, BacklogProvider in the
-	// close) route through the dispatcher, which embeds Provider — never a
-	// concrete *providers.GitHubProvider (merge-wiring-plan.md §8).
-	dispatcher := providers.NewDispatcher(adoProvider)
+	issuesProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.GitHubIssuesWrite))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	// Work items (the closed PBI) live in the backlog project on ADO, not the
 	// routed code repo whose PR this stage merged; address them there (§6).
 	backlogRepo := backlogRepoRefForStage(root, repo)
 
+	// Mandatory Provider methods (PollPullRequest here, BacklogProvider in the
+	// close) route through the dispatcher, which embeds Provider — never a
+	// concrete *providers.GitHubProvider (merge-wiring-plan.md §8).
 	transport := threadCommentPostMergeTransport{
-		provider: dispatcher, prComments: adoProvider, backlogRepo: backlogRepo, root: root, repo: repo,
+		provider: providers.NewDispatcher(prProvider), closer: providers.NewDispatcher(issuesProvider),
+		prComments: prProvider, backlogRepo: backlogRepo, root: root, repo: repo,
 	}
 	return runPostMergeCore(root, repo, transport, stdout, stderr)
 }
@@ -322,6 +330,7 @@ func (t issueCommentPostMergeTransport) Perform(ctx context.Context, pullNumber 
 
 type threadCommentPostMergeTransport struct {
 	provider    providers.Provider
+	closer      adoWorkItemCloser
 	prComments  adoPostMergePRComments
 	backlogRepo providers.RepositoryRef
 	root        string
@@ -333,7 +342,7 @@ func (t threadCommentPostMergeTransport) Poll(ctx context.Context, repo provider
 }
 
 func (t threadCommentPostMergeTransport) Perform(ctx context.Context, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
-	return performPostMergeADOWithPRComments(ctx, t.provider, t.prComments, t.backlogRepo, poll, pullNumber, t.root, t.repo, stdout, stderr)
+	return performPostMergeADOWithPRComments(ctx, t.closer, t.prComments, t.backlogRepo, poll, pullNumber, t.root, t.repo, stdout, stderr)
 }
 
 func runPostMergeCore(root string, repo providers.RepositoryRef, transport postMergeTransport, stdout, stderr io.Writer) int {

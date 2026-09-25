@@ -91,10 +91,9 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// github:pr:write authorizes the pull-request reads and writes on every
+	// provider, Azure DevOps included (docs/design/ado-parity-dsl-2-0.md §3.1).
 	stageCapability := capability.GitHubPRWrite
-	if repo.Provider == providers.ProviderADO {
-		stageCapability = capability.ADOPRWrite
-	}
 	provider, err := newMergeReviewRemediationProvider(root, repo,
 		withStageProviderCapability(stageCapability),
 		withStageProviderMutations("pr"),

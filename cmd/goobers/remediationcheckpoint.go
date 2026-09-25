@@ -474,8 +474,8 @@ func githubRemediationCheckpointFeatures(provider remediationProvider, repo prov
 	}
 }
 
-func adoRemediationCheckpointFeatures(root string, repo providers.RepositoryRef) (remediationCheckpointFeatures, error) {
-	gitAuth, err := adoRemediationGitAuthEnvironment(root, repo)
+func adoRemediationCheckpointFeatures() (remediationCheckpointFeatures, error) {
+	gitAuth, err := adoRemediationGitAuthEnvironment()
 	if err != nil {
 		return remediationCheckpointFeatures{}, err
 	}
@@ -1923,14 +1923,14 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		features  remediationCheckpointFeatures
 	)
 	if repo.Provider == providers.ProviderADO {
-		provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
+		provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.GitHubPRWrite))
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 		reader = provider
 		transport = threadCheckpointTransport{provider: provider, repo: repo, pullID: strconv.Itoa(selectedNumber)}
-		features, err = adoRemediationCheckpointFeatures(root, repo)
+		features, err = adoRemediationCheckpointFeatures()
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1

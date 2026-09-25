@@ -282,6 +282,23 @@ one `GOOBERS_CRED_<CAPABILITY>` also receives the scheme. Agentic stages do not
 receive it. The stage does not receive the token's expiry. See "Where the
 credential resolves" in `docs/guides/ado-authentication.md`.
 
+A built-in stage command authenticates only with what it was delivered, on
+every provider. On Azure DevOps a declared `github:*` capability selects the
+credential for the same operation on the provider the stage routes to
+(pull-request work from `github:pr:write`, backlog work items from
+`github:issues:*`, pushes from `repo:push`), and the command builds its
+connection from that capability's `GOOBERS_CRED_<CAPABILITY>` and
+`GOOBERS_REPO_AUTH_SCHEME`. It never reads `repos[].auth` from `instance.yaml`,
+so an undeclared capability means no credential on Azure DevOps too, and the
+command runs the same in a stage pod, which has no instance config. A
+`GOOBERS_CRED_<CAPABILITY>` set without a scheme (a standalone invocation) is
+sent as a PAT (`basic`). A delivered value cannot be refreshed by the stage: if
+Azure DevOps rejects it with HTTP 401, the stage fails with an "expired or been
+revoked" error naming the capability, and a new attempt receives a new value.
+Agentic stages fail closed on a missing grant on Azure DevOps as on GitHub;
+only a capability the harness marks optional (such as `agent:model`) is
+skipped.
+
 ## Where a stage writes its output
 
 The stage returns a `ResultEnvelope`:

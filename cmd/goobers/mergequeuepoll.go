@@ -546,7 +546,7 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
+	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.ADOPRComplete))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

@@ -149,7 +149,11 @@ func TestRecoveryRestoreGitEnvironmentUsesStageScopedADOPAT(t *testing.T) {
 	assertRecoveryFetchAcceptsCredentialEnvironment(t, env, "https://dev.azure.com/acme/widgets/_git/web")
 }
 
-func TestRecoveryRestoreGitEnvironmentPreservesADODynamicAuthentication(t *testing.T) {
+// TestRecoveryRestoreGitEnvironmentUsesDeliveredADOBearer pins ADO-N18 for
+// stage recovery: every Microsoft Entra auth kind reaches the stage as the
+// delivered repo:push value with the bearer scheme beside it, and recovery
+// authenticates with exactly that, never the repository's configured source.
+func TestRecoveryRestoreGitEnvironmentUsesDeliveredADOBearer(t *testing.T) {
 	for _, kind := range []string{
 		instance.ADOAuthAzureCLI,
 		instance.ADOAuthWorkloadIdentity,
@@ -157,7 +161,8 @@ func TestRecoveryRestoreGitEnvironmentPreservesADODynamicAuthentication(t *testi
 	} {
 		t.Run(kind, func(t *testing.T) {
 			t.Setenv(executor.RunIDEnvVar, "receiving-run")
-			t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "")
+			t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "delivered-ado-token")
+			t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
 			cfg := &instance.Config{Repos: []instance.RepoRef{{
 				Provider: "ado",
 				Owner:    "acme",
@@ -167,29 +172,18 @@ func TestRecoveryRestoreGitEnvironmentPreservesADODynamicAuthentication(t *testi
 			}}}
 			project := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "widgets", Name: "web"}
 			registry, _ := journal.DefaultScrubber()
-			previous := recoveryADOCredentialSource
-			t.Cleanup(func() { recoveryADOCredentialSource = previous })
-			recoveryADOCredentialSource = func(repo instance.RepoRef, _ providers.CommandRunner, _ credentials.StoreResolver) (providers.ADOCredentialSource, error) {
-				if repo.Auth == nil || repo.Auth.Kind != kind {
-					t.Fatalf("configured ADO auth kind = %#v, want %q", repo.Auth, kind)
-				}
-				return recoveryTestADOCredentialSource{credential: providers.ADOCredential{
-					Kind:   "bearer",
-					Secret: "dynamic-ado-token",
-				}}, nil
-			}
 
 			env, err := recoveryRestoreGitEnvironment(context.Background(), instance.Layout{}, cfg, project, "https://dev.azure.com/acme/widgets/_git/web", registry)
 			if err != nil {
 				t.Fatalf("recoveryRestoreGitEnvironment: %v", err)
 			}
 			joined := strings.Join(recoveryAuthenticationEnvironment(env), "\n")
-			if !strings.Contains(joined, "AUTHORIZATION: Bearer dynamic-ado-token") {
-				t.Fatalf("configured ADO dynamic auth not used: %q", joined)
+			if !strings.Contains(joined, "AUTHORIZATION: Bearer delivered-ado-token") {
+				t.Fatalf("delivered ADO bearer not used: %q", joined)
 			}
 			assertRecoveryFetchAcceptsCredentialEnvironment(t, env, "https://dev.azure.com/acme/widgets/_git/web")
-			if scrubbed := string(registry.Scrub([]byte("token=dynamic-ado-token"))); strings.Contains(scrubbed, "dynamic-ado-token") {
-				t.Fatalf("ADO dynamic credential was not registered with the scrubber: %q", scrubbed)
+			if scrubbed := string(registry.Scrub([]byte("token=delivered-ado-token"))); strings.Contains(scrubbed, "delivered-ado-token") {
+				t.Fatalf("delivered ADO credential was not registered with the scrubber: %q", scrubbed)
 			}
 		})
 	}

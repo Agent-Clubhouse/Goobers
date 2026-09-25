@@ -159,17 +159,14 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 		}
 		token, err := req.Credentials.Token(ctx, capability)
 		if err != nil {
-			// A missing grant is tolerated in two cases: an explicitly optional
-			// capability (the CLI can fall back to an existing user session,
-			// e.g. agent:model), or an Azure DevOps repo. Since ADO-N17 every
-			// ADO auth kind backs the repository's grants in the daemon, so an
-			// ADO grant normally exists and injects like any other. The ADO
-			// tolerance stays only until ADO-N18 moves ADO stages onto the
-			// delivered credential and removes it. Only the absence of a grant
-			// is tolerated, so GitHub stays fail-closed.
+			// A missing grant is tolerated only for an explicitly optional
+			// capability: the CLI can fall back to an existing user session
+			// (e.g. agent:model). Every other declared capability fails closed
+			// on every provider. Azure DevOps included: every ADO auth kind
+			// backs the repository's grants in the daemon, so a missing ADO
+			// grant is a configuration fault, not a supported posture.
 			if errors.Is(err, credentials.ErrNoCredentialForCapability) &&
-				(cfg.optionalCredentialCapabilities[capability] ||
-					req.Envelope.RepoRef.Provider == apiv1.ProviderADO) {
+				cfg.optionalCredentialCapabilities[capability] {
 				continue
 			}
 			return nil, fmt.Errorf("harness: %s: resolve %s: %w", cfg.adapterName, capability, err)

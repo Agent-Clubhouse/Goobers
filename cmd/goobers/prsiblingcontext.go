@@ -740,7 +740,7 @@ type gatherSiblingContextAdapter struct {
 // supported selected-PR poll is injected into the provider-neutral no-sibling
 // decision core below.
 func newADOGatherSiblingContextAdapter(root string, repo providers.RepositoryRef) (gatherSiblingContextAdapter, error) {
-	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, true)
+	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
 	if err != nil {
 		return gatherSiblingContextAdapter{}, err
 	}

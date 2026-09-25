@@ -216,6 +216,55 @@ func TestPushBranchMissingCredentialFailsClosed(t *testing.T) {
 	}
 }
 
+// TestPushBranchEnvironmentADOUsesDeliveredRepoPush pins push-branch on Azure
+// DevOps (ADO-N18): the push authenticates with the delivered repo:push value
+// in the delivered scheme, only to the routed repository, and reads no
+// credential from instance.yaml (none is configured here at all).
+func TestPushBranchEnvironmentADOUsesDeliveredRepoPush(t *testing.T) {
+	const origin = "https://dev.azure.com/example-org/example-project/_git/example-repo"
+	dir := t.TempDir()
+	runGitT(t, dir, "init", "-b", "work")
+	runGitT(t, dir, "remote", "add", "origin", origin)
+	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
+	route := func(t *testing.T, owner string) {
+		t.Setenv(executor.RepoProviderEnvVar, "ado")
+		t.Setenv(executor.RepoOwnerEnvVar, owner)
+		t.Setenv(executor.RepoProjectEnvVar, "example-project")
+		t.Setenv(executor.RepoNameEnvVar, "example-repo")
+	}
+
+	t.Run("routed origin gets the delivered bearer", func(t *testing.T) {
+		route(t, "example-org")
+		t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "delivered-push-token")
+		t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
+		env, err := pushBranchEnvironment(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined := strings.Join(env, "\n")
+		if !strings.Contains(joined, "GIT_CONFIG_KEY_1=http."+origin+"/.extraheader\nGIT_CONFIG_VALUE_1=AUTHORIZATION: Bearer delivered-push-token\n") ||
+			!strings.Contains(joined, "X-VSS-ForceMsaPassThrough: true") {
+			t.Fatalf("push environment = %q, want the delivered bearer scoped to origin", joined)
+		}
+	})
+	t.Run("an origin other than the routed repository gets nothing", func(t *testing.T) {
+		route(t, "other-org")
+		t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "delivered-push-token")
+		_, err := pushBranchEnvironment(dir)
+		if err == nil || !strings.Contains(err.Error(), "does not match the routed repository other-org/example-project/example-repo") {
+			t.Fatalf("error = %v, want a routed-repository mismatch", err)
+		}
+	})
+	t.Run("undeclared repo:push gets nothing", func(t *testing.T) {
+		route(t, "example-org")
+		t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "")
+		_, err := pushBranchEnvironment(dir)
+		if err == nil || !strings.Contains(err.Error(), "GOOBERS_CRED_REPO_PUSH") {
+			t.Fatalf("error = %v, want a missing GOOBERS_CRED_REPO_PUSH failure", err)
+		}
+	})
+}
+
 func TestADORepoForOriginRequiresExactConfiguredRemote(t *testing.T) {
 	repo := instance.RepoRef{
 		Provider: "ado",

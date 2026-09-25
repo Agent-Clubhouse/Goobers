@@ -515,7 +515,7 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 		}
 		provider, err = newProviderForStage(root, repo, true, withStageProviderToken(token))
 	default:
-		provider, err = newProviderForStage(root, repo, true)
+		provider, err = newProviderForStage(root, repo, true, withStageProviderConfiguredADOAuth())
 	}
 	if err != nil {
 		return fmt.Errorf("validate pull request #%d in configured repository %s: %w", number, repoDisplay, err)

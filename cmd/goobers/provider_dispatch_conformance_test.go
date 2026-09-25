@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/providerstage"
@@ -198,7 +202,7 @@ func assertRemediationStageDispatch(t *testing.T, command string, setup func(*te
 }
 
 func TestBacklogAssignmentDispatchesFromCommand(t *testing.T) {
-	assertADOBacklogStageDispatch(t, "backlog-assignment", nil, func(t *testing.T) {
+	assertADOBacklogStageDispatch(t, "backlog-assignment", nil, capability.GitHubIssuesWrite, func(t *testing.T) {
 		t.Setenv(executor.InputEnvVar("trustLabel"), "goobers:approved")
 		t.Setenv(executor.InputEnvVar("strategy"), assignmentStrategyConstantCap)
 		t.Setenv(executor.InputEnvVar("roster"), `[{"assignee":"goober","maxOpen":1}]`)
@@ -206,92 +210,56 @@ func TestBacklogAssignmentDispatchesFromCommand(t *testing.T) {
 }
 
 func TestBacklogQueryDispatchesFromCommand(t *testing.T) {
-	assertADOBacklogStageDispatch(t, "backlog-query", []string{"--read-only"}, func(t *testing.T) {
+	assertADOBacklogStageDispatch(t, "backlog-query", []string{"--read-only"}, capability.GitHubIssuesRead, func(t *testing.T) {
 		t.Setenv(executor.InputEnvVar("trustLabel"), "goobers:approved")
 	})
 }
 
 func TestIssueCloseOutDispatchesFromCommand(t *testing.T) {
-	assertADOBacklogStageDispatch(t, "issue-close-out", nil, func(*testing.T) {})
+	assertADOBacklogStageDispatch(t, "issue-close-out", nil, capability.GitHubIssuesWrite, func(*testing.T) {})
 }
 
 func TestReportPRStatusDispatchesFromCommand(t *testing.T) {
-	assertADOBacklogStageDispatch(t, "report-pr-status", nil, func(t *testing.T) {
+	assertADOBacklogStageDispatch(t, "report-pr-status", nil, capability.GitHubPRWrite, func(t *testing.T) {
 		t.Setenv(executor.InputEnvVar("prNumber"), "77")
 	})
 }
 
 func TestSetMilestoneDispatchesFromCommand(t *testing.T) {
-	assertADOBacklogStageDispatch(t, "set-milestone", []string{"--item", "7", "--milestone", "22"}, func(*testing.T) {})
+	assertADOBacklogStageDispatch(t, "set-milestone", []string{"--item", "7", "--milestone", "22"}, capability.GitHubMilestonesWrite, func(*testing.T) {})
 }
 
-func assertADOBacklogStageDispatch(t *testing.T, command string, args []string, setup func(*testing.T)) {
+func assertADOBacklogStageDispatch(t *testing.T, command string, args []string, want capability.Capability, setup func(*testing.T)) {
 	t.Helper()
-	root := initDemo(t)
-	setup(t)
-	setNonGitHubStageEnv(t, providers.ProviderADO)
-	previous := newADOProviderForStage
-	called := false
-	newADOProviderForStage = func(_ string, repo providers.RepositoryRef) (*providers.ADOProvider, error) {
-		called = true
-		if repo.Provider != providers.ProviderADO {
-			t.Fatalf("provider = %q, want ado", repo.Provider)
-		}
-		return nil, errors.New(dispatchProbeError)
-	}
-	t.Cleanup(func() { newADOProviderForStage = previous })
-
-	commandArgs := append([]string{command}, args...)
-	commandArgs = append(commandArgs, root)
-	code, _, stderr := runArgs(t, commandArgs...)
-	if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
-		t.Fatalf("code = %d, called = %v, stderr = %q; want ADO dispatch probe failure", code, called, stderr)
-	}
+	assertADOStageDispatch(t, command, args, want, setup)
 }
 
 func TestBacklogDedupeCommandDispatchesToADO(t *testing.T) {
-	assertADOCommandDispatch(t, "backlog-dedupe", func(t *testing.T) {
+	assertADOCommandDispatch(t, "backlog-dedupe", capability.GitHubIssuesRead, func(t *testing.T) {
 		t.Setenv("GOOBERS_RUN_ID", "dispatch-backlog-dedupe")
 		t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
 	})
 }
 
 func TestGatherImplementContextCommandDispatchesToADO(t *testing.T) {
-	assertADOCommandDispatch(t, "gather-implement-context", func(t *testing.T) {
+	assertADOCommandDispatch(t, "gather-implement-context", capability.GitHubPRWrite, func(t *testing.T) {
 		t.Setenv("GOOBERS_GAGGLE", "acme-web")
 	})
 }
 
-func assertADOCommandDispatch(t *testing.T, command string, setup func(*testing.T)) {
+func assertADOCommandDispatch(t *testing.T, command string, want capability.Capability, setup func(*testing.T)) {
 	t.Helper()
-	root := initDemo(t)
-	setup(t)
-	setNonGitHubStageEnv(t, providers.ProviderADO)
-	previous := newADOProviderForStage
-	called := false
-	newADOProviderForStage = func(_ string, repo providers.RepositoryRef) (*providers.ADOProvider, error) {
-		called = true
-		if repo.Provider != providers.ProviderADO {
-			t.Fatalf("provider = %q, want ado", repo.Provider)
-		}
-		return nil, errors.New(dispatchProbeError)
-	}
-	t.Cleanup(func() { newADOProviderForStage = previous })
-
-	code, _, stderr := runArgs(t, command, root)
-	if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
-		t.Fatalf("code = %d, called = %v, stderr = %q; want ADO dispatch probe failure", code, called, stderr)
-	}
+	assertADOStageDispatch(t, command, nil, want, setup)
 }
 
 func TestSelectSourceDispatchesFromCommand(t *testing.T) {
-	assertADOCommandDispatch(t, "select-source", func(t *testing.T) {
+	assertADOCommandDispatch(t, "select-source", capability.GitHubIssuesWrite, func(t *testing.T) {
 		t.Setenv(executor.InputEnvVar("trustLabel"), providers.LabelApproved)
 	})
 }
 
 func TestPublishBatchDispatchesFromCommand(t *testing.T) {
-	assertADOCommandDispatch(t, "publish-batch", func(t *testing.T) {
+	assertADOCommandDispatch(t, "publish-batch", capability.GitHubIssuesWrite, func(t *testing.T) {
 		plan := validDecompositionPlan(decomposition.Selection{})
 		digest, err := decomposition.PlanDigest(plan)
 		if err != nil {
@@ -318,7 +286,7 @@ func TestPublishBatchDispatchesFromCommand(t *testing.T) {
 }
 
 func TestValidatePlanDispatchesFromCommand(t *testing.T) {
-	assertADOCommandDispatch(t, "validate-plan", func(t *testing.T) {
+	assertADOCommandDispatch(t, "validate-plan", capability.GitHubIssuesRead, func(t *testing.T) {
 		dir := t.TempDir()
 		planFile := filepath.Join(dir, "plan.json")
 		selectionFile := filepath.Join(dir, "selection.json")
@@ -360,4 +328,211 @@ func setNonGitHubStageEnv(t *testing.T, kind providers.ProviderKind) {
 	t.Setenv(executor.CredentialEnvVar("github:issues:read"), "issues-read-token")
 	t.Setenv(executor.CredentialEnvVar("repo:push"), "push-token")
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), "result.json"))
+}
+
+// ADO credential conformance (docs/design/ado-parity-dsl-2-0.md §3.1, ADO-N18).
+// On Azure DevOps the declared capability selects the credential through the
+// same injector as GitHub: a github:* capability declared on a stage whose
+// command dispatches through newProviderForStage authorizes the same operation
+// on the provider the stage routes to, and the ADO provider must be built from
+// exactly that capability's GOOBERS_CRED_ value. The probes below deliver a
+// distinct value for EVERY credentialed capability, so a provider built from
+// the wrong one is caught by name.
+
+// everyCredentialedCapability is every capability the daemon can deliver as
+// GOOBERS_CRED_<capability> (credentialedCapabilities), so the probe can tell
+// any of them apart.
+func everyCredentialedCapability() []string {
+	names := make([]string, 0, len(credentialedCapabilities))
+	for _, c := range credentialedCapabilities {
+		names = append(names, string(c))
+	}
+	return names
+}
+
+// deliverEveryADOStageCapability delivers a distinct value for every
+// credentialed capability, with the bearer scheme beside them.
+func deliverEveryADOStageCapability(t *testing.T) {
+	t.Helper()
+	for _, name := range everyCredentialedCapability() {
+		t.Setenv(executor.CredentialEnvVar(name), deliveredADOStageToken(name))
+	}
+	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
+}
+
+// deliveredCapabilityOf names the capability whose delivered value credential
+// carries, and checks it is sent in the delivered (bearer) scheme.
+func deliveredCapabilityOf(t *testing.T, credential providers.ADOCredentialSource) string {
+	t.Helper()
+	if credential == nil {
+		t.Error("ADO stage provider built with no credential")
+		return ""
+	}
+	got, err := credential.Credential(context.Background())
+	if err != nil {
+		t.Errorf("resolve delivered credential: %v", err)
+		return ""
+	}
+	if got.Kind != providers.ADOCredentialKindBearer {
+		t.Errorf("credential kind = %q, want %q from %s", got.Kind, providers.ADOCredentialKindBearer, executor.RepoAuthSchemeEnvVar)
+	}
+	for _, name := range everyCredentialedCapability() {
+		if got.Secret == deliveredADOStageToken(name) {
+			return name
+		}
+	}
+	t.Errorf("ADO stage provider built from a value no capability delivered")
+	return ""
+}
+
+// assertManifestDeclares fails unless command's manifest row names cap: the
+// ADO path may only consume a capability the stage can declare for it.
+func assertManifestDeclares(t *testing.T, command, cap string) {
+	t.Helper()
+	entry, ok := providerstage.Lookup(command)
+	if !ok {
+		t.Fatalf("%q is not a manifest command", command)
+	}
+	for _, use := range entry.Capabilities {
+		if string(use.Capability) == cap {
+			return
+		}
+	}
+	t.Errorf("%s: the ADO path consumed %q, which its manifest row does not name", command, cap)
+}
+
+// assertADOStageDispatch runs command routed to Azure DevOps and fails its
+// first ADO provider construction with dispatchProbeError. It asserts the
+// command dispatched to ADO, that the provider was built from want's
+// delivered value and no other capability's, and that the manifest names want.
+func assertADOStageDispatch(t *testing.T, command string, args []string, want capability.Capability, setup func(*testing.T)) {
+	t.Helper()
+	root := initDemo(t)
+	setup(t)
+	setNonGitHubStageEnv(t, providers.ProviderADO)
+	deliverEveryADOStageCapability(t)
+	previous := newADOProviderForStage
+	var consumed []string
+	newADOProviderForStage = func(repo providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		if repo.Provider != providers.ProviderADO {
+			t.Errorf("provider = %q, want ado", repo.Provider)
+		}
+		consumed = append(consumed, deliveredCapabilityOf(t, credential))
+		return nil, errors.New(dispatchProbeError)
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+
+	commandArgs := append([]string{command}, args...)
+	commandArgs = append(commandArgs, root)
+	code, _, stderr := runArgs(t, commandArgs...)
+	if code != 1 || len(consumed) == 0 || !strings.Contains(stderr, dispatchProbeError) {
+		t.Fatalf("code = %d, consumed = %v, stderr = %q; want ADO dispatch probe failure", code, consumed, stderr)
+	}
+	if consumed[0] != string(want) {
+		t.Fatalf("%s: the ADO provider was built from %q's credential, want the declared %q", command, consumed[0], want)
+	}
+	assertManifestDeclares(t, command, consumed[0])
+}
+
+// installADOCredentialProbe replaces newADOProviderForStage with a real stage
+// provider pointed at a server that refuses every request. The command builds
+// every provider it needs and then fails at its first call; the returned
+// slice records, in order, the capability each provider was built from.
+func installADOCredentialProbe(t *testing.T) *[]string {
+	t.Helper()
+	deliverEveryADOStageCapability(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, dispatchProbeError, http.StatusBadRequest)
+	}))
+	t.Cleanup(server.Close)
+	var consumed []string
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		consumed = append(consumed, deliveredCapabilityOf(t, credential))
+		provider, err := buildADOProviderForStage(routed, credential)
+		if err != nil {
+			return nil, err
+		}
+		provider.BaseURL = server.URL
+		return provider, nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+	return &consumed
+}
+
+// TestADOStageProvidersConsumeTheDeclaredCapability covers the commands whose
+// Azure DevOps path builds its own providers (merge review and PR
+// remediation). Each must build every ADO provider from the delivered value of
+// a capability its manifest row names, and exactly the capabilities listed:
+// pull-request work on the project provider from github:pr:write (or
+// provider:pr:write), backlog work items from github:issues:*.
+//
+// merge-pr and merge-queue-poll consume ado:pr:complete for completion today;
+// ADO-N2 moves landing authority onto github:pr:merge through this seam.
+// apply-verdict and elect-lander read a journaled verdict before they build a
+// provider, so their end-to-end ADO tests (TestRunApplyVerdictADO*,
+// TestElectLanderDispatchesADOAndElectsCandidate) assert the same rule.
+func TestADOStageProvidersConsumeTheDeclaredCapability(t *testing.T) {
+	prWrite, issuesWrite, issuesRead := string(capability.GitHubPRWrite), string(capability.GitHubIssuesWrite), string(capability.GitHubIssuesRead)
+	for _, tc := range []struct {
+		command string
+		args    []string
+		inputs  map[string]string
+		want    []string
+	}{
+		{command: "backlog-health", inputs: map[string]string{"trustLabel": providers.LabelApproved}, want: []string{issuesRead}},
+		{command: "check-issue-staleness", inputs: map[string]string{"pullNumber": "77", "head": "goobers/implementation/run"}, want: []string{prWrite, issuesWrite}},
+		{command: "gather-pr-context", want: []string{prWrite}},
+		{command: "gather-sibling-context", inputs: map[string]string{"selectedNumber": "77"}, want: []string{prWrite}},
+		{command: "merge-pr", inputs: map[string]string{"pullNumber": "77", "verdict": "pass"}, want: []string{string(capability.ADOPRComplete)}},
+		{command: "merge-queue-poll", inputs: map[string]string{"pullNumber": "77"}, want: []string{string(capability.ADOPRComplete)}},
+		{command: "open-pr", want: []string{string(capability.ProviderPRWrite)}},
+		{command: "post-merge", inputs: map[string]string{"pullNumber": "77"}, want: []string{prWrite, issuesWrite}},
+		{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{prWrite}},
+		{command: "push-remediated", want: []string{prWrite}},
+		{command: "rebase-pr", inputs: map[string]string{"selectedNumber": "77", "head": "goobers/pr-remediation/run"}, want: []string{prWrite}},
+		{command: "reconcile-post-merge", want: []string{prWrite, issuesWrite}},
+		{command: "record-merge-refusal", inputs: map[string]string{"selectedNumber": "77", "selectedHeadSha": "head-sha", "reason": "blocked"}, want: []string{prWrite}},
+		{command: "remediation-checkpoint", inputs: map[string]string{"selectedNumber": "77"}, want: []string{prWrite}},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			root := initDemo(t)
+			t.Setenv("GOOBERS_RUN_ID", "ado-credential-"+tc.command)
+			t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+			setNonGitHubStageEnv(t, providers.ProviderADO)
+			for key, value := range tc.inputs {
+				t.Setenv(executor.InputEnvVar(key), value)
+			}
+			consumed := installADOCredentialProbe(t)
+			t.Chdir(t.TempDir())
+
+			code, stdout, stderr := runArgs(t, append(append([]string{tc.command}, tc.args...), root)...)
+			if !reflect.DeepEqual(*consumed, tc.want) {
+				t.Fatalf("%s built ADO providers from %v, want exactly %v (code = %d, stdout = %q, stderr = %q)", tc.command, *consumed, tc.want, code, stdout, stderr)
+			}
+			for _, cap := range *consumed {
+				assertManifestDeclares(t, tc.command, cap)
+			}
+		})
+	}
+}
+
+// TestADOStageWithoutDeclaredCapabilityGetsNoCredential is the other half of
+// the §3.1 rule: with every other capability delivered, a command whose
+// declared capability delivered nothing fails naming the variable it needed,
+// and builds no ADO provider at all.
+func TestADOStageWithoutDeclaredCapabilityGetsNoCredential(t *testing.T) {
+	root := initDemo(t)
+	setNonGitHubStageEnv(t, providers.ProviderADO)
+	t.Setenv(executor.InputEnvVar("prNumber"), "77")
+	consumed := installADOCredentialProbe(t)
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubPRWrite)), "")
+
+	code, _, stderr := runArgs(t, "report-pr-status", root)
+	if code != 1 || !strings.Contains(stderr, "GOOBERS_CRED_GITHUB_PR_WRITE") {
+		t.Fatalf("code = %d, stderr = %q; want a missing GOOBERS_CRED_GITHUB_PR_WRITE failure", code, stderr)
+	}
+	if len(*consumed) != 0 {
+		t.Fatalf("built ADO providers from %v with the declared capability undelivered", *consumed)
+	}
 }

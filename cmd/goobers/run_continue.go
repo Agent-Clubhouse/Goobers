@@ -119,7 +119,7 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	provider, err := newProviderForStage(root, repo, true)
+	provider, err := newProviderForStage(root, repo, true, withStageProviderConfiguredADOAuth())
 	if err != nil {
 		pf(stderr, "error: resolve continuation provider: %v\n", err)
 		return 1

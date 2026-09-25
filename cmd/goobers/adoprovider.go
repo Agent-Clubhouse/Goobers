@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
@@ -12,13 +13,14 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// adoRepoRefForStage resolves the instance ADO RepoRef a provider-chain stage
-// operates against, matching the scheduler-routed repository (owner/project/
-// name) against the instance config. A single-ADO-repo instance falls back to
-// its only repo. The returned RepoRef carries the auth block (azure-cli/PAT/
-// workload/managed identity) the credential source needs — the routed env only
-// carries the addressing tuple, not the auth configuration.
-func adoRepoRefForStage(root string, routed providers.RepositoryRef) (instance.RepoRef, error) {
+// adoRepoRefForConfig resolves the instance ADO RepoRef matching the routed
+// repository (owner/project/name) in the instance config. A single-ADO-repo
+// instance falls back to its only repo. The returned RepoRef carries the auth
+// block (azure-cli/PAT/workload/managed identity) a configured credential
+// source needs. Only processes that are not stages read it (see
+// newConfiguredADOProvider); a stage authenticates with the credential the
+// daemon delivered for its declared capability instead.
+func adoRepoRefForConfig(root string, routed providers.RepositoryRef) (instance.RepoRef, error) {
 	l := instance.NewLayout(root)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
@@ -48,36 +50,61 @@ func adoRepoRefForStage(root string, routed providers.RepositoryRef) (instance.R
 	return instance.RepoRef{}, fmt.Errorf("no ADO repo %s/%s/%s configured in %s", routed.Owner, routed.Project, routed.Name, l.ConfigFile())
 }
 
-// newADOProviderForStage builds the ADO provider a provider-chain stage talks
-// to using its configured authentication source.
-var newADOProviderForStage = buildADOProviderForStage
+// newConfiguredADOProvider builds an ADO provider from the repository's
+// configured authentication in instance.yaml. It serves the processes that
+// are not stages and hold the instance config: the daemon (the runner's
+// escalation comments) and operator commands that opt in with
+// withStageProviderConfiguredADOAuth (goobers run, goobers status). A stage
+// never uses it, so a stage on Azure DevOps authenticates only with what its
+// declared capabilities delivered (docs/design/ado-parity-dsl-2-0.md §3.1).
+var newConfiguredADOProvider = buildConfiguredADOProvider
 
-func buildADOProviderForStage(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
-	repo, err := adoRepoRefForStage(root, routed)
+func buildConfiguredADOProvider(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	repo, err := adoRepoRefForConfig(root, routed)
 	if err != nil {
 		return nil, err
 	}
 	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }
 
-// open-pr receives PAT credentials through its provider:pr:write capability;
-// the configured PAT environment variable is intentionally absent from the
-// stage's default-deny environment.
-var newADOProviderForOpenPR = buildADOProviderForOpenPR
+// newADOProviderForStage builds the ADO provider a stage talks to from
+// credential, the value the daemon delivered for the capability the stage
+// declared (stageADOCredentialSource). It reads no instance config, so it
+// works the same in a stage pod, which has none. A package var so tests point
+// the provider at a fake server and observe which credential it was given.
+var newADOProviderForStage = buildADOProviderForStage
 
-func buildADOProviderForOpenPR(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
-	repo, err := adoRepoRefForStage(root, routed)
+func buildADOProviderForStage(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+	if credential == nil {
+		return nil, fmt.Errorf("ADO stage provider for %s/%s/%s has no credential", routed.Owner, routed.Project, routed.Name)
+	}
+	return providers.NewADOProvider(routed.Owner, routed.Project, "", providers.WithADOCredentialSource(credential)), nil
+}
+
+// stageADOCredentialSource turns the token delivered for cap
+// (GOOBERS_CRED_<cap>) into an Azure DevOps credential, in the authorization
+// scheme the daemon stated beside it (executor.RepoAuthSchemeEnvVar). The
+// scheme is never guessed from the token. A token with no scheme is sent as
+// Basic: that is the historical personal-access-token behaviour a standalone
+// invocation (GOOBERS_CRED_<cap> set by hand) relies on.
+func stageADOCredentialSource(cap capability.Capability, token string) (providers.ADOCredentialSource, error) {
+	kind, err := stageADOCredentialKind()
 	if err != nil {
 		return nil, err
 	}
-	kind := instance.ADOAuthPAT
-	if repo.Auth != nil {
-		kind = repo.Auth.Kind
+	return providers.NewADODeliveredCredentialSource(kind, token, string(cap))
+}
+
+func stageADOCredentialKind() (string, error) {
+	scheme := strings.TrimSpace(os.Getenv(executor.RepoAuthSchemeEnvVar))
+	switch strings.ToLower(scheme) {
+	case "", adoauth.SchemeBasic:
+		return providers.ADOCredentialKindPAT, nil
+	case adoauth.SchemeBearer:
+		return providers.ADOCredentialKindBearer, nil
+	default:
+		return "", fmt.Errorf("%s=%q is not a supported Azure DevOps authorization scheme (want %q or %q)", executor.RepoAuthSchemeEnvVar, scheme, adoauth.SchemeBasic, adoauth.SchemeBearer)
 	}
-	if kind == instance.ADOAuthPAT {
-		repo.Token = instance.TokenRef{Env: executor.CredentialEnvVar(string(capability.ProviderPRWrite))}
-	}
-	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }
 
 // backlogRepoRefForStage resolves the RepositoryRef the work-item (backlog)

@@ -31,10 +31,14 @@ type stageProviderConfig struct {
 	// kind="branch" separately from the merge's kind="pr") hands it over
 	// intact rather than being forced to re-derive one from a kind string.
 	mutationRecorder providers.MutationRecorder
-	openPR           bool
-	noRetries        bool
-	observeToken     func(string)
-	quota            *localscheduler.ProviderQuotaState
+	// configuredADOAuth selects the repository's configured Azure DevOps
+	// authentication (instance.yaml) instead of the declared capability's
+	// delivered credential. Only an operator command that is not a stage sets
+	// it; see withStageProviderConfiguredADOAuth.
+	configuredADOAuth bool
+	noRetries         bool
+	observeToken      func(string)
+	quota             *localscheduler.ProviderQuotaState
 }
 
 type stageProviderOption func(*stageProviderConfig)
@@ -72,9 +76,15 @@ func withStageProviderMutationRecorder(recorder providers.MutationRecorder) stag
 	}
 }
 
-func withStageProviderOpenPR() stageProviderOption {
+// withStageProviderConfiguredADOAuth is for operator commands that run
+// outside any stage (goobers run, goobers status) and read the instance config
+// anyway: on Azure DevOps they keep authenticating with the repository's
+// configured auth, as they always have. A stage must never pass it — a stage
+// authenticates only with the credential its declared capability delivered.
+// It has no effect on GitHub or Gitea.
+func withStageProviderConfiguredADOAuth() stageProviderOption {
 	return func(cfg *stageProviderConfig) {
-		cfg.openPR = true
+		cfg.configuredADOAuth = true
 	}
 }
 
@@ -325,11 +335,38 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	return newGitHubProvider(token, opts...), nil
 }
 
+// newRegisteredADOProviderForStage builds a stage's Azure DevOps provider from
+// the credential delivered for its declared capability, exactly as the GitHub
+// and Gitea factories do: stageProviderToken reads GOOBERS_CRED_<capability>
+// (or the caller's explicit token), and the daemon-stated scheme decides the
+// header. An undeclared capability therefore means no credential on Azure
+// DevOps too (docs/design/ado-parity-dsl-2-0.md §3.1).
 func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
-	if cfg.openPR {
-		return newADOProviderForOpenPR(cfg.root, cfg.repo)
+	var (
+		provider *providers.ADOProvider
+		err      error
+	)
+	if cfg.configuredADOAuth {
+		provider, err = newConfiguredADOProvider(cfg.root, cfg.repo)
+	} else {
+		provider, err = newDeliveredADOProvider(cfg)
 	}
-	return newADOProviderForStage(cfg.root, cfg.repo)
+	if err != nil {
+		return nil, err
+	}
+	return provider, nil
+}
+
+func newDeliveredADOProvider(cfg stageProviderConfig) (*providers.ADOProvider, error) {
+	token, err := stageProviderToken(cfg)
+	if err != nil {
+		return nil, err
+	}
+	source, err := stageADOCredentialSource(cfg.capability, token)
+	if err != nil {
+		return nil, err
+	}
+	return newADOProviderForStage(cfg.repo, source)
 }
 
 func newRegisteredGiteaProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {

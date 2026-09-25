@@ -242,8 +242,8 @@ func TestApplyVerdictProviderRoutesThroughStageSeam(t *testing.T) {
 			if got.mutationKind != tc.wantMutationKind {
 				t.Fatalf("mutationKind = %q, want %q", got.mutationKind, tc.wantMutationKind)
 			}
-			if got.openPR {
-				t.Fatalf("openPR = true, want false")
+			if got.configuredADOAuth {
+				t.Fatalf("configuredADOAuth = true, want false: a stage authenticates with its delivered credential")
 			}
 		})
 	}

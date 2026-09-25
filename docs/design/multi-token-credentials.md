@@ -134,6 +134,17 @@ only `agent:model`. Fail-closed is preserved end to end: an undeclared `agent:mo
 `COPILOT_GITHUB_TOKEN` is never materialized; both tokens are registered with the secret
 scrubber.
 
+> **Correction (2026-09-25, ADO-N18):** the mapping above describes a GitHub repository. On an
+> Azure DevOps repository `GH_TOKEN` and `GITHUB_TOKEN` never carry a repository credential,
+> because GitHub tooling sends them to GitHub (#5664); the `github:*` command-scoped
+> `GOOBERS_CRED_*` variables are withheld there too (ADO-N42). A declared repository capability
+> with no grant now fails an agentic stage closed on Azure DevOps exactly as on GitHub: the
+> former ADO missing-grant exception is gone, because every ADO auth kind backs the repository's
+> grants in the daemon. Only a capability the adapter marks optional (`agent:model`) is still
+> skipped when ungranted. Deterministic stages on Azure DevOps authenticate only with their
+> delivered `GOOBERS_CRED_<capability>` and `GOOBERS_REPO_AUTH_SCHEME`
+> (`docs/stage-contract.md`, "Credential delivery").
+
 ## 4. Spec / acceptance criteria
 
 - **AC1 — two tokens coexist.** With `repo:push` sourced from token A and `agent:model` from

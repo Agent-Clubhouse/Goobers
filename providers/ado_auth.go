@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -102,6 +103,70 @@ func (s *adoPATCredentialSource) Credential(ctx context.Context) (ADOCredential,
 		return ADOCredential{}, fmt.Errorf("ado PAT credential is empty")
 	}
 	return ADOCredential{Kind: adoCredentialPAT, Secret: token, Username: s.username}, nil
+}
+
+// ErrADODeliveredCredentialRejected reports that Azure DevOps answered HTTP
+// 401 to a credential a stage was handed rather than one it can mint. The
+// daemon delivers a stage one value per declared capability, and the stage
+// has no way to fetch another, so a rejected value ends the stage's use of it.
+var ErrADODeliveredCredentialRejected = errors.New("ado: delivered credential rejected")
+
+// adoDeliveredCredentialSource is the credential a stage process received
+// from the daemon for one declared capability: a fixed value in a fixed
+// authorization scheme. It cannot refresh. Invalidate, which the provider
+// calls after an HTTP 401, marks it rejected, and every later Credential call
+// fails with ErrADODeliveredCredentialRejected instead of resending the value.
+type adoDeliveredCredentialSource struct {
+	kind   string
+	secret string
+	label  string
+
+	mu       sync.Mutex
+	rejected bool
+}
+
+// NewADODeliveredCredentialSource returns the source for a credential a stage
+// was handed: secret is the delivered value, kind is ADOCredentialKindPAT
+// (sent as HTTP Basic) or ADOCredentialKindBearer (a Microsoft Entra token),
+// and label names where it came from (the capability it was delivered for) in
+// error messages. The value is never part of an error.
+//
+// After Azure DevOps rejects the value with HTTP 401, the source reports
+// ErrADODeliveredCredentialRejected: the value expired or was revoked, and a
+// stage cannot mint another one, so the stage fails with that cause rather
+// than a generic authorization error.
+func NewADODeliveredCredentialSource(kind, secret, label string) (ADOCredentialSource, error) {
+	switch kind {
+	case adoCredentialPAT, adoCredentialBearer:
+	default:
+		return nil, fmt.Errorf("unsupported ado credential kind %q", kind)
+	}
+	if strings.TrimSpace(secret) == "" {
+		return nil, fmt.Errorf("ado credential for %s is empty", label)
+	}
+	return &adoDeliveredCredentialSource{kind: kind, secret: secret, label: label}, nil
+}
+
+func (s *adoDeliveredCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
+	if err := ctx.Err(); err != nil {
+		return ADOCredential{}, err
+	}
+	s.mu.Lock()
+	rejected := s.rejected
+	s.mu.Unlock()
+	if rejected {
+		return ADOCredential{}, fmt.Errorf("%w: Azure DevOps answered HTTP 401 to the credential delivered for %s; it has expired or been revoked, and a stage cannot refresh it (run the stage again to receive a new one)", ErrADODeliveredCredentialRejected, s.label)
+	}
+	return ADOCredential{Kind: s.kind, Secret: s.secret}, nil
+}
+
+// Invalidate marks the delivered value rejected. The provider calls it after
+// an HTTP 401 before its single retry, so the retry fails with the rejection
+// instead of sending the same value again.
+func (s *adoDeliveredCredentialSource) Invalidate() {
+	s.mu.Lock()
+	s.rejected = true
+	s.mu.Unlock()
 }
 
 func (c ADOCredential) authorizationHeader() (string, error) {

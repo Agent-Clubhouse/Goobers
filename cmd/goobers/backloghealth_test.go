@@ -70,7 +70,7 @@ func TestBacklogHealthCommandRunsWithADO(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	original := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		if routed != repo {
 			t.Fatalf("routed repo = %#v, want %#v", routed, repo)
 		}

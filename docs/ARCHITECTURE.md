@@ -342,8 +342,13 @@ Contract rules:
   tiers 1–2 by declaration validation at compile time plus **capability-scoped
   credential non-injection** (an undeclared capability's credentials are
   simply never materialized), and by sandbox policy from V1 (`SEC-042`,
-  `SEC-044`). A task whose command, policy, persona, or verdict vocabulary can
-  prescribe an external mutation also declares that closed vocabulary in
+  `SEC-044`). Non-injection holds on every provider, Azure DevOps included:
+  every ADO auth kind resolves in the daemon, a stage receives only the
+  `GOOBERS_CRED_<capability>` values its declared capabilities deliver (plus
+  the non-secret `GOOBERS_REPO_AUTH_SCHEME`), and no stage reads
+  `repos[].auth` (see [the stage contract](stage-contract.md)). A task whose
+  command, policy, persona, or verdict vocabulary can prescribe an external
+  mutation also declares that closed vocabulary in
   `policyActions`. Goober definitions make persona prescriptions
   machine-readable in `policyActions`; capability-gated persona behavior lives
   in `conditionalPolicyActions` and is disabled unless a task explicitly opts
@@ -566,6 +571,12 @@ See the security alert intake guide under `docs/guides/`.
 | 1 — Solo | None (local trust) | Env vars / token file / macOS Keychain / secret-store refs, redacted from journals | Worktree + process isolation, capability-scoped credential injection |
 | 2 — Team | Optional OIDC on portal/daemon | Env/file, Keychain, or team secret store (Azure Key Vault refs already usable, not tier-3-only) | + per-goober credential scoping (shipped, #823); native sandbox shipped and wired through the harness, but `sandbox.agentic` defaults to `disabled` — opt-in, not yet the default (epic #35, closed; default flip tracked on #4517) |
 | 3 — Cloud | Entra ID (OIDC) | **Azure Key Vault** | Per-gaggle namespaces (`SEC-*`, #4897): the active mode-3 worker routes each gaggle's stage pods into its own declared namespace, validated by a startup preflight; per-gaggle workload identity/network policy remain target-state |
+
+Forge credentials resolve in the daemon at every tier and reach a stage only as
+the credential of a capability it declared: a GitHub App mints installation
+tokens, and every Azure DevOps auth kind (`pat`, `azure-cli`,
+`workload-identity`, `managed-identity`) resolves its PAT or Microsoft Entra
+token the same way, so a stage pod needs no forge identity of its own.
 
 The protocol (OIDC) and the seam (an `Authenticator` + a secret-resolver interface)
 are constant; tiers select implementations. The Tutor write-boundary (`SEC-021`) is

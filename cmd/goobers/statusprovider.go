@@ -40,7 +40,7 @@ func statusWorkItemLookup(root string, definitions *instance.ConfigSet) readserv
 			case providers.ProviderADO:
 				repo.Project = backlog.Project
 			}
-			provider, err := newProviderForStage(root, repo, true, withStageProviderCache())
+			provider, err := newProviderForStage(root, repo, true, withStageProviderCache(), withStageProviderConfiguredADOAuth())
 			if err != nil {
 				return providers.WorkItem{}, err
 			}

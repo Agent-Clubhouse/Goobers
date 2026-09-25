@@ -187,7 +187,7 @@ func TestRecordMergeRefusalADOUsesADOProviderPath(t *testing.T) {
 	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
 	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
 	t.Setenv(executor.RepoNameEnvVar, repo.Name)
-	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubPRWrite)), "ado-token")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "359")
 	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "head-sha")
 	t.Setenv("GOOBERS_INPUT_REASON", "base moved")
@@ -239,7 +239,7 @@ func TestRecordMergeRefusalDispatchesADOAndRecordsComment(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	previous := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "ado-token", func(p *providers.ADOProvider) {
 			p.BaseURL = server.URL
 		}), nil

@@ -593,6 +593,10 @@ func TestCopilotAdapterStoredAuthWithRepoPushKeepsTokenOutOfSubprocess(t *testin
 	}
 }
 
+// TestCopilotAdapterAllowsStoredAuthWithUnmaterializedADOCapability holds with
+// no Azure DevOps missing-grant exception: GH_TOKEN is sent to GitHub, so
+// provider:pr:write is never mapped to it on an ADO repository
+// (CredentialFitsEnvAudience) and the absent grant is never consulted.
 func TestCopilotAdapterAllowsStoredAuthWithUnmaterializedADOCapability(t *testing.T) {
 	resolver, err := credentials.NewResolver(nil)
 	if err != nil {
@@ -713,12 +717,49 @@ func TestCopilotAdapterStillFailsClosedForMissingRequiredCredential(t *testing.T
 	}
 }
 
-func TestCredentialEnvToleratesMissingRepoPushOnADO(t *testing.T) {
+// TestCredentialEnvFailsClosedForMissingRepoPushOnADO pins that an Azure
+// DevOps repository gets no missing-grant exception: every ADO auth kind backs
+// the repository's grants in the daemon, so a declared repo:push without one
+// fails the stage exactly as it does on GitHub.
+func TestCredentialEnvFailsClosedForMissingRepoPushOnADO(t *testing.T) {
 	resolver, err := credentials.NewResolver(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"repo:push"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command:         []string{"copilot"},
+		EnvCapabilities: map[string]string{"repo:push": "GOOBERS_REPO_TOKEN"},
+	}
+	env := testEnvelope(t.TempDir(), "repo:push")
+	env.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "Example Service", Name: "Example.Repo"}
+	_, err = adapter.credentialEnv(context.Background(), nil, RunRequest{
+		Envelope:    env,
+		Workspace:   t.TempDir(),
+		Credentials: creds,
+	})
+	if !errors.Is(err, credentials.ErrNoCredentialForCapability) {
+		t.Fatalf("credentialEnv on ADO repo = %v, want ErrNoCredentialForCapability", err)
+	}
+}
+
+// TestCredentialEnvInjectsGrantedRepoPushOnADO is the granted counterpart: an
+// ADO repository's repo:push grant injects like any other, beside the ADO
+// project the harness routes by.
+func TestCredentialEnvInjectsGrantedRepoPushOnADO(t *testing.T) {
+	t.Setenv("ADO_REPO_TOKEN_ENV", "ado-repository-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "ado-ref", Env: "ADO_REPO_TOKEN_ENV"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{Capability: "repo:push", Ref: "ado-ref"}}, noopRegistrar{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,12 +779,10 @@ func TestCredentialEnvToleratesMissingRepoPushOnADO(t *testing.T) {
 		Credentials: creds,
 	})
 	if err != nil {
-		t.Fatalf("credentialEnv on ADO repo = %v, want nil (repo:push tolerated)", err)
+		t.Fatalf("credentialEnv on ADO repo = %v, want nil", err)
 	}
-	for _, kv := range got {
-		if strings.HasPrefix(kv, "GOOBERS_REPO_TOKEN=") {
-			t.Fatalf("repo:push token injected without a grant: %q", kv)
-		}
+	if !containsEnv(got, "GOOBERS_REPO_TOKEN=ado-repository-token") {
+		t.Fatalf("granted ADO repo:push not injected: %v", got)
 	}
 	if !containsEnv(got, executor.RepoProjectEnvVar+"=Example Service") {
 		t.Fatalf("ADO project not injected into harness env: %v", got)

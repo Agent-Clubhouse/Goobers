@@ -57,6 +57,7 @@ func providerDispatchFixture(t *testing.T, kind providers.ProviderKind) (string,
 		configured.Project = repo.Project
 		configured.Token = instance.TokenRef{Env: "ADO_DISPATCH_TOKEN"}
 		t.Setenv("ADO_DISPATCH_TOKEN", "ado-token")
+		setDeliveredADOStageCredentials(t)
 	case providers.ProviderGitea:
 		configured.BaseURL = "https://gitea.example.test"
 		configured.Token = instance.TokenRef{Env: "GITEA_DISPATCH_TOKEN"}

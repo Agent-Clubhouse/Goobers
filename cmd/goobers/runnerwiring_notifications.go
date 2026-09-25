@@ -75,7 +75,7 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 	req.ID = blockedLookupID(req.ID)
 	req = withNeedsHumanAssignee(req, c.needsHumanAssignee)
 	if req.Repository.Provider == providers.ProviderADO {
-		provider, err := newADOProviderForStage(c.layout.Root, req.Repository)
+		provider, err := newConfiguredADOProvider(c.layout.Root, req.Repository)
 		if err != nil {
 			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
 		}
@@ -123,7 +123,7 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 func (c *escalationCommenter) ListComments(ctx context.Context, repository providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
 	itemID = blockedLookupID(itemID)
 	if repository.Provider == providers.ProviderADO {
-		provider, err := newADOProviderForStage(c.layout.Root, repository)
+		provider, err := newConfiguredADOProvider(c.layout.Root, repository)
 		if err != nil {
 			return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
 		}

@@ -190,7 +190,7 @@ func adoCheckpointMux(t *testing.T, repo providers.RepositoryRef, prNumber int, 
 func stubADOProviderForCheckpointStage(t *testing.T, serverURL string) {
 	t.Helper()
 	original := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = serverURL }), nil
 	}
@@ -209,10 +209,10 @@ func setADOCheckpointStageEnv(t *testing.T, repo providers.RepositoryRef) {
 }
 
 func TestADORemediationCheckpointFeaturesUseOnlyADOInputs(t *testing.T) {
-	root, repo := providerDispatchFixture(t, providers.ProviderADO)
-	source := useAzureCLIRemediationAuth(t, root)
-	t.Setenv("GOOBERS_CRED_REPO_PUSH", "")
-	features, err := adoRemediationCheckpointFeatures(root, repo)
+	providerDispatchFixture(t, providers.ProviderADO)
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "delivered-push-token")
+	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
+	features, err := adoRemediationCheckpointFeatures()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,11 +232,8 @@ func TestADORemediationCheckpointFeaturesUseOnlyADOInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(env, "\n"), "AUTHORIZATION: Bearer azure-cli-token-") {
-		t.Fatalf("checkpoint checkout environment = %q, want Azure CLI bearer auth", env)
-	}
-	if source.callCount() != 1 {
-		t.Fatalf("checkpoint credential resolutions = %d, want 1", source.callCount())
+	if !strings.Contains(strings.Join(env, "\n"), "AUTHORIZATION: Bearer delivered-push-token") {
+		t.Fatalf("checkpoint checkout environment = %q, want the delivered repo:push bearer", env)
 	}
 }
 
