@@ -28,7 +28,7 @@ restart, like the rest of `instance.yaml`.
 
 Everywhere a token ref is accepted — repo tokens, per-capability
 `credentials` grants, the webhook secret, telemetry OTLP headers, the
-workflowSource token, an ADO PAT — the same shape works:
+workflowSource token — the same shape works:
 
 ```yaml
 repos:
@@ -41,6 +41,14 @@ repos:
 
 The part after the first `/` is the vault-relative secret name; the latest
 version is read (no version pins — rotate in the vault).
+
+**Azure DevOps repos are an exception.** ADO stage providers and the ci-poll
+executor build their `adoauth.Provider` with a `nil` store resolver
+(`cmd/goobers/adoprovider.go:60,80`; `cmd/goobers/runnerwiring_executors.go:613`),
+so a `store:` ref on an ADO repo's PAT fails closed at construction rather
+than resolving. Use `token.env`, `token.file`, or `token.keychain` for an ADO
+PAT instead. The push-branch, validate, getting-started, and worktree paths do
+pass a store resolver, so `store:` refs work there.
 
 ## Authenticating to the store
 

@@ -5,6 +5,15 @@
 > A clean-profile runner can pass the harness preflight and reach an agentic
 > stage when `COPILOT_GITHUB_TOKEN` is present in the Goobers process
 > environment. The observations below remain as a historical record of #1126.
+>
+> **Correction (2026-09-25, #4292): the "Remaining constraint" section below is
+> also stale.** The sign-in preflight now shares the same credential resolver
+> as the rest of the daemon (`cmd/goobers/daemon.go`, `agentModelCredentialResolver`),
+> so a configured `agent:model` credential — including a `token.file`,
+> `token.keychain`, or `token.store` ref — is sufficient on its own. The
+> ambient `COPILOT_GITHUB_TOKEN` duplication described below is no longer
+> required. See [GitHub token scopes](github-token-scopes.md#agentic-copilot-harness-stages-stored-login-or-agentmodel-token)
+> for the current guidance. The section is kept below as a historical record.
 
 This timeboxed spike asked whether the repository's
 `COPILOT_GITHUB_TOKEN` secret can drive the real `CopilotAdapter`

@@ -165,7 +165,7 @@ The shipped configuration has three credential paths:
 |---|---|---|
 | `GOOBERS_GITHUB_TOKEN` | Yes | Repository identity used for provider reads/writes, branch pushes, and the opt-in merge path. |
 | `GOOBERS_GITHUB_REVIEW_TOKEN` | Yes | Separate reviewer identity used only for native PR reviews. |
-| `GOOBERS_COPILOT_TOKEN` | Headless only | Model identity for `agent:model`; an interactive installation can use the stored Copilot CLI sign-in instead. |
+| `GOOBERS_COPILOT_TOKEN` | Yes | Model identity for `agent:model`. The stored Copilot CLI sign-in fallback does not cover this config: the curator and nominator goobers declare `agent:model` alongside `github:issues:write`, and `goobers up` refuses a stored login there (`validateStoredCopilotAuthBoundaries`, `cmd/goobers/runnerwiring_executors.go`). |
 
 `GOOBERS_GITHUB_TOKEN` must be a fine-grained PAT scoped to
 `Agent-Clubhouse/Goobers` only, with:
@@ -235,23 +235,26 @@ After the canonical quickstart has created and validated a regular instance:
    `instance.yaml` — the loader rejects that, `CFG-009`/`SEC-010`):
 
    ```sh
-   export GOOBERS_GITHUB_TOKEN=ghp_...
+   export GOOBERS_GITHUB_TOKEN=github_pat_...
    export GOOBERS_GITHUB_REVIEW_TOKEN=github_pat_...
-   copilot # sign in once; the local daemon reuses this stored session
+   export GOOBERS_COPILOT_TOKEN=github_pat_...
    ```
 
    PowerShell:
 
    ```powershell
-   $env:GOOBERS_GITHUB_TOKEN = "ghp_..."
+   $env:GOOBERS_GITHUB_TOKEN = "github_pat_..."
    $env:GOOBERS_GITHUB_REVIEW_TOKEN = "github_pat_..."
-   copilot # sign in once; the local daemon reuses this stored session
+   $env:GOOBERS_COPILOT_TOKEN = "github_pat_..."
    ```
 
-   For a headless service or CI account, configure the commented
-   `agent:model` entry in `instance.yaml` and set
-   `GOOBERS_COPILOT_TOKEN` to a fine-grained PAT with Copilot Requests:
-   Read-only.
+   `GOOBERS_COPILOT_TOKEN` must be a fine-grained PAT with Copilot Requests:
+   Read-only. It is required, not optional: the curator and nominator goobers
+   are copilot-harness and declare `agent:model` alongside
+   `github:issues:write`, so `goobers up` refuses to fall back to a stored
+   Copilot CLI sign-in for them (`validateStoredCopilotAuthBoundaries`,
+   `cmd/goobers/runnerwiring_executors.go`). `goobers validate` does not check
+   this — the refusal surfaces only when `goobers up` starts the daemon.
 
 3. **Validate the self-hosting definitions:**
 

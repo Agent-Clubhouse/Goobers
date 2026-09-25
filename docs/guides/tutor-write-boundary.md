@@ -10,8 +10,8 @@ instance's config.
 This guide covers the **path-scoped** half of that boundary (issue #104 / design
 §T4, wired into the real Tutor architecture by #223). It ships today. The
 **structural** half — a credential that cannot push platform changes even if this
-check were bypassed — is deferred to #35 (see
-[What #35 adds](#what-35-adds-structural-enforcement)).
+check were bypassed — is partial (see
+[What's structurally enforced today](#whats-structurally-enforced-today)).
 
 ## What the boundary does
 
@@ -131,16 +131,31 @@ before enabling it there:
    in `.github/CODEOWNERS`.
 3. **Branch protection requires CODEOWNER review** on `main` so the ownership is
    load-bearing, not advisory.
-4. The Tutor's credential is **read + config-write only** where possible (full
-   structural scoping lands with #35).
+4. The Tutor's credential is **read + config-write only** where possible, using
+   a `credentials:` override for `repo:push` (see below).
 
-## What #35 adds (structural enforcement)
+## What's structurally enforced today
 
 Today the boundary is enforced by the `open-pr` stage checking the run's git diff
-before it opens the PR. #35 (per-goober credential injection) adds the second
-layer: a token scoped so that even a compromised or buggy Tutor **physically
-cannot** push a change outside config. Until then, path-scoping + CODEOWNERS +
-branch protection are the boundary; keep all three in place.
+before it opens the PR. #35 (per-goober credential injection) shipped and
+closed 2026-07-23: grants are now bound to a specific goober identity, and a
+forged stage envelope cannot reach a credential granted only to a sibling
+goober (`buildGooberCredentialGrants`,
+`cmd/goobers/runnerwiring_credentials.go`).
+
+That identity scoping is necessary but not sufficient for the Tutor's `repo:push`
+credential specifically: by default every credentialed capability, including
+`repo:push`, is backed by the **same repo token** (`internal/credentials/scoping.go`
+`RunnerGrants`) unless the instance adds an explicit `credentials:` override for
+`repo:push` naming a narrower-scoped token. Without that override, a compromised
+or buggy Tutor still holds a token with the repo's full write authority even
+though the *capability key* it's handed is scoped. A first-class, per-stage
+credential schema that would make this override the default (rather than
+opt-in) is tracked as [#682](https://github.com/Agent-Clubhouse/Goobers/issues/682)
+and [#1794](https://github.com/Agent-Clubhouse/Goobers/issues/1794), both open.
+Until one of those lands, configure a `repo:push` credential override for the
+Tutor and keep path-scoping + CODEOWNERS + branch protection in place as the
+boundary.
 
 ## Testing the boundary
 

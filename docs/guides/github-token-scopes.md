@@ -129,9 +129,9 @@ daemonIdentity:
   privateKey: { file: /secrets/goobersbot.pem }
   slug: goobersbot
   installations:
-    - owner: Agent-Clubhouse
+    - owner: your-org
       installationId: 1111111
-    - owner: example-user
+    - owner: another-owner
       installationId: 2222222
 ```
 
@@ -436,9 +436,13 @@ requests (Read and write), Checks + Commit statuses (Read-only, for
 
 **Limits.**
 
-- `agent:model` cannot come from an App: "Copilot Requests" is an account
-  permission on a personal fine-grained PAT. Keep the `credentials:` entry (or
-  stored Copilot CLI login) from the section above.
+- This `repos[].auth.kind: github-app` binding is for the **repository**
+  token only. `agent:model` for the Copilot harness needs its own, separate
+  `credentials:` entry with a `githubApp:` block scoped to
+  `copilot_requests:write` (see [Agentic (Copilot-harness)
+  stages](#agentic-copilot-harness-stages-stored-login-or-agentmodel-token)
+  above) — an App installation cannot back both at once with one
+  installation grant.
 - GitHub forbids self-approval: `github:pr:review` on goober-authored PRs
   still needs a second identity (the App counts as one identity).
 - Per-capability `credentials:` overrides still work and still win over the
