@@ -14,8 +14,15 @@ func writeGaggleWithProviders(t *testing.T, dir, file, name, projectProvider, ba
 	t.Helper()
 	projectExtra := ""
 	backlogExtra := ""
+	// An ADO backlog names its own ADO project (backlog-project), distinct
+	// from the code project (web), so the ado/ado case models the supported
+	// ADO project split; other providers use an owner/repo backlog string.
+	backlogProject := "acme/web"
+	if backlogProvider == "ado" {
+		backlogProject = "backlog-project"
+	}
 	if projectProvider == "ado" {
-		projectExtra = "\n    project: web"
+		projectExtra = "\n    project: code-project"
 	}
 	if baseURL != "" {
 		if projectProvider == "gitea" {
@@ -36,7 +43,7 @@ spec:
     name: web` + projectExtra + `
   backlog:
     provider: ` + backlogProvider + `
-    project: acme/web` + backlogExtra + `
+    project: ` + backlogProject + backlogExtra + `
   isolation:
     namespace: gaggle-` + name + `
 `
@@ -107,14 +114,15 @@ func TestGaggleMixedNonADOProvidersWarnsOnly(t *testing.T) {
 	if _, ok := issueWithCodeAndSeverity(t, report, errorGaggleMixedProviderADO, Error); ok {
 		t.Fatalf("a non-ADO mismatch must not be a hard error: %v", report.Issues)
 	}
-	if _, ok := issueWithCodeAndSeverity(t, report, warningGaggleMixedProvider, Warning); !ok {
-		t.Fatalf("expected %s warning, got: %v", warningGaggleMixedProvider, report.Issues)
+	if _, ok := issueWithCodeAndSeverity(t, report, WarningGaggleMixedProvider, Warning); !ok {
+		t.Fatalf("expected %s warning, got: %v", WarningGaggleMixedProvider, report.Issues)
 	}
 }
 
 // An ADO project with the backlog in a *different* ADO project is the
-// supported project split: both refs share the ado provider, so this must
-// keep passing.
+// supported project split: the code repository lives in ADO project
+// code-project while spec.backlog.project names backlog-project. Both refs
+// share the ado provider, so this must keep passing.
 func TestGaggleADOProjectSplitAccepted(t *testing.T) {
 	dir := t.TempDir()
 	writeGaggleWithProviders(t, dir, "gaggle.yaml", "alpha", "ado", "ado", "")
@@ -126,7 +134,7 @@ func TestGaggleADOProjectSplitAccepted(t *testing.T) {
 	if _, ok := issueWithCodeAndSeverity(t, report, errorGaggleMixedProviderADO, Error); ok {
 		t.Fatalf("an ADO project split must still pass: %v", report.Issues)
 	}
-	if _, ok := issueWithCodeAndSeverity(t, report, warningGaggleMixedProvider, Warning); ok {
+	if _, ok := issueWithCodeAndSeverity(t, report, WarningGaggleMixedProvider, Warning); ok {
 		t.Fatalf("an ADO project split must not warn either: %v", report.Issues)
 	}
 }
@@ -143,7 +151,7 @@ func TestGaggleSameProviderNoTopologyIssue(t *testing.T) {
 	if _, ok := issueWithCodeAndSeverity(t, report, errorGaggleMixedProviderADO, Error); ok {
 		t.Fatalf("same-provider project/backlog must not error: %v", report.Issues)
 	}
-	if _, ok := issueWithCodeAndSeverity(t, report, warningGaggleMixedProvider, Warning); ok {
+	if _, ok := issueWithCodeAndSeverity(t, report, WarningGaggleMixedProvider, Warning); ok {
 		t.Fatalf("same-provider project/backlog must not warn: %v", report.Issues)
 	}
 }

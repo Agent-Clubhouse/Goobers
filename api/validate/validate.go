@@ -260,6 +260,13 @@ const (
 	// notice that the runtime does not honor the field, not a defect in the
 	// config that declared it.
 	WarningConnectionRefUnhonored WarningCode = "REF012"
+	// WarningGaggleMixedProvider (CFG011) identifies a gaggle whose backlog
+	// provider differs from its project provider where neither side is ado
+	// (for example a GitHub project with a Gitea backlog). It is strict-neutral:
+	// such configs validated cleanly, --strict included, before the ADO-N13
+	// guard shipped, so promoting it would turn unchanged non-ADO configs red
+	// on upgrade. The ADO case is the hard error CFG010 instead.
+	WarningGaggleMixedProvider WarningCode = "CFG011"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -311,7 +318,6 @@ const (
 	errorWorkcopiesRoot           WarningCode = "CFG008"
 	errorWorkcopiesCollision      WarningCode = "CFG009"
 	errorGaggleMixedProviderADO   WarningCode = "CFG010"
-	warningGaggleMixedProvider    WarningCode = "CFG011"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -1957,7 +1963,7 @@ func (ix *index) checkGaggleProviderTopology(r *Report) {
 			r.add(errorGaggleMixedProviderADO, Error, ix.gaggleFile[name], "Gaggle", name, msg, backlog, project)
 			continue
 		}
-		r.add(warningGaggleMixedProvider, Warning, ix.gaggleFile[name], "Gaggle", name, msg, backlog, project)
+		r.add(WarningGaggleMixedProvider, Warning, ix.gaggleFile[name], "Gaggle", name, msg, backlog, project)
 	}
 }
 

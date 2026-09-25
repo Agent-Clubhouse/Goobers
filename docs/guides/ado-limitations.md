@@ -7,16 +7,17 @@ clear reason instead of misbehaving at run time.
 
 ## Mixed-provider backlog and project (topology b)
 
-A gaggle's `spec.backlog.provider` must match its `spec.project.provider`
-today. `validate` refuses a gaggle where the two differ and either side is
-`ado` (for example a GitHub backlog with ADO code, or an ADO backlog with
-GitHub code): every backlog stage currently opens the routed *project*
-provider, so a mismatched backlog would silently query the wrong forge
-instead of failing loudly.
+When either side is `ado`, a gaggle's `spec.backlog.provider` must match
+its `spec.project.provider`. `validate` refuses a gaggle where the two
+differ and either side is `ado` (CFG010; for example a GitHub backlog with
+ADO code, or an ADO backlog with GitHub code): every backlog stage currently
+opens the routed *project* provider, so a mismatched backlog would silently
+query the wrong forge instead of failing loudly.
 
-A mismatch between two non-ADO providers (for example a GitHub project with
-a Gitea backlog) is reported as a warning rather than refused, so an
-existing non-ADO configuration does not break.
+Other mismatches, between two non-ADO providers (for example a GitHub
+project with a Gitea backlog), are warned rather than refused (CFG011), so
+an existing non-ADO configuration does not break. CFG011 is strict-neutral:
+`goobers validate --strict` prints it but does not fail on it.
 
 An Azure DevOps project split — the project repository in one ADO project
 and `spec.backlog.project` naming a different ADO project — is unaffected
@@ -34,8 +35,10 @@ DSL 3.0 scope (`docs/design/provider-access-layer.md`), not this plan.
 
 ## Azure DevOps Server (on-premises)
 
-Only `dev.azure.com` is supported, plus legacy `*.visualstudio.com` URLs
-where that is cheap. Azure DevOps Server (on-premises) is out of scope.
+Only Azure DevOps Services at `dev.azure.com` is supported. Legacy
+`<organization>.visualstudio.com` repository and pull-request URLs are also
+recognised (for example by `goobers connect`), since they address the same
+service. Azure DevOps Server (on-premises) is out of scope.
 
 ## Service-hook triggers
 
