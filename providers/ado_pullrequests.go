@@ -59,7 +59,7 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		// demonstrably existed. Recorded only after p.do returns nil: a failed
 		// or conflicting request must not count as a confirmed mutation.
 		p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "update", req.Repository)
-		return adoPullRequestResult(out), nil
+		return p.adoPullRequestResult(req.Repository, out), nil
 	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
@@ -77,15 +77,33 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		return PullRequestResult{}, err
 	}
 	p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "create", req.Repository)
-	return adoPullRequestResult(out), nil
+	return p.adoPullRequestResult(req.Repository, out), nil
 }
 
-func adoPullRequestResult(pr adoPullRequest) PullRequestResult {
-	prURL := pr.URL
+func (p *ADOProvider) adoPullRequestResult(repo RepositoryRef, pr adoPullRequest) PullRequestResult {
+	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: p.pullRequestWebURL(repo, pr)}
+}
+
+// pullRequestWebURL resolves the browser-navigable URL for a pull request
+// (ADO-N39). ADO's API responses only sometimes populate _links.web.href; when
+// it's empty the raw pr.URL is an _apis/git/... endpoint that 404s in a
+// browser and, worse, is indistinguishable in shape from any other
+// repository's PR — a config that targets repo A could silently be satisfied
+// by a PR in repo B. Building the browser URL from the server-returned
+// repository/project identity keeps a cross-repository PR's URL failing the
+// caller's repository match instead of passing an opaque API URL through.
+func (p *ADOProvider) pullRequestWebURL(repo RepositoryRef, pr adoPullRequest) string {
 	if pr.Links.Web.Href != "" {
-		prURL = pr.Links.Web.Href
+		return pr.Links.Web.Href
 	}
-	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: prURL}
+	if pr.Repository.Name != "" && pr.Repository.Project.Name != "" {
+		base := strings.TrimSuffix(p.BaseURL, "/")
+		if base == "" {
+			base = "https://dev.azure.com"
+		}
+		return base + "/" + p.Organization + "/" + pr.Repository.Project.Name + "/_git/" + pr.Repository.Name + "/pullrequest/" + strconv.Itoa(pr.PullRequestID)
+	}
+	return p.entityWebURL(repo, "pr", strconv.Itoa(pr.PullRequestID))
 }
 
 // FindPullRequestByBranch resolves the open Azure DevOps pull request whose
@@ -163,10 +181,6 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
 		return PullRequestPollResult{}, err
 	}
-	prURL := pr.URL
-	if pr.Links.Web.Href != "" {
-		prURL = pr.Links.Web.Href
-	}
 	result := PullRequestPollResult{
 		Number:             pr.PullRequestID,
 		Title:              pr.Title,
@@ -181,7 +195,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		BaseSHA:            pr.LastMergeTargetCommit.CommitID,
 		Body:               pr.Description,
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
-		URL:                prURL,
+		URL:                p.pullRequestWebURL(req.Repository, pr.adoPullRequest),
 		Integrity:          apiintegrity.Unapproved,
 	}
 	projectName := pr.Repository.Project.Name
@@ -418,14 +432,10 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			continue
 		}
 		labels := adoLabelNames(pr.Labels)
-		prURL := pr.URL
-		if pr.Links.Web.Href != "" {
-			prURL = pr.Links.Web.Href
-		}
 		out = append(out, PullRequestSummary{
 			ID:                 strconv.Itoa(pr.PullRequestID),
 			Number:             pr.PullRequestID,
-			URL:                prURL,
+			URL:                p.pullRequestWebURL(req.Repository, pr),
 			Author:             author,
 			RequestedReviewers: requestedReviewers,
 			Head:               head,
@@ -526,6 +536,7 @@ type adoPullRequest struct {
 	LastMergeSourceCommit adoCommitRef  `json:"lastMergeSourceCommit"`
 	LastMergeTargetCommit adoCommitRef  `json:"lastMergeTargetCommit"`
 	Links                 adoPRLinks    `json:"_links"`
+	Repository            adoRepository `json:"repository"`
 }
 
 type adoPullRequestsResponse struct {
@@ -533,13 +544,13 @@ type adoPullRequestsResponse struct {
 }
 
 // adoPullRequestDetail extends adoPullRequest with the fields a single-PR GET
-// returns that a list does not: description, reviewers (for review-decision
-// mapping), and the repository/project identity needed to key policy
-// evaluations.
+// returns that a list does not: description and reviewers (for
+// review-decision mapping). The embedded adoPullRequest already carries
+// Repository, which this type relies on for the project identity needed to
+// key policy evaluations.
 type adoPullRequestDetail struct {
 	adoPullRequest
-	Description string        `json:"description"`
-	Repository  adoRepository `json:"repository"`
+	Description string `json:"description"`
 	// MergeStatus/MergeID/LastMergeCommit/CompletionOptions/
 	// AutoCompleteSetBy back the landing surfaces (CONF-3 #2076, design
 	// doc §4): MergeStatus is the completion job's own outcome
