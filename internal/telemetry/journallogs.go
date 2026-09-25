@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -14,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	apilog "go.opentelemetry.io/otel/log"
+	apimetric "go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/trace"
@@ -30,6 +30,63 @@ const (
 	journalLogTimeout     = 5 * time.Second
 )
 
+// journalDropCause is the closed set of reasons a committed event is not
+// exported. It exists so an operator can tell a slow collector from an
+// oversized record: those have different fixes, and a single total cannot
+// distinguish them (#5573). String values are the metric label values and are
+// part of the metric contract, so they change only with the contract.
+type journalDropCause int
+
+const (
+	dropInvalidMetadata journalDropCause = iota
+	dropRecordTooLarge
+	dropLockContention
+	dropQueueFull
+	dropStopping
+	dropShutdown
+	numJournalDropCauses
+)
+
+func (c journalDropCause) String() string {
+	switch c {
+	case dropInvalidMetadata:
+		return "invalid_metadata"
+	case dropRecordTooLarge:
+		return "record_too_large"
+	case dropLockContention:
+		return "lock_contention"
+	case dropQueueFull:
+		return "queue_full"
+	case dropStopping:
+		return "stopping"
+	case dropShutdown:
+		return "shutdown"
+	}
+	return "unknown"
+}
+
+// reason is the operator-facing half of a drop message. Each cause keeps one
+// stable message signature, because exportErrorHandler rate-limits on the exact
+// error string: a message carrying a count would defeat suppression and turn a
+// broken collector back into a line-per-drop log storm.
+func (c journalDropCause) reason() string {
+	switch c {
+	case dropInvalidMetadata:
+		return "missing persistent journal identity"
+	case dropRecordTooLarge:
+		return "record exceeds the per-record size limit"
+	case dropLockContention:
+		return "queue lock was contended and the journal write path cannot wait"
+	case dropQueueFull:
+		return "queue is full; the collector is not keeping up"
+	case dropStopping:
+		return "exporter is shutting down"
+	case dropShutdown:
+		return "shutdown deadline expired with records still queued"
+	}
+	return "unknown cause"
+}
+
 // JournalExportStats is a process-local snapshot. Accepted counts admitted
 // records, not collector acknowledgements. Dropped includes overload and records
 // abandoned when shutdown expires. ExportFailures counts failed export calls.
@@ -41,9 +98,21 @@ type JournalExportStats struct {
 	// attributed to this client and not included in Dropped.
 	SinkPanics uint64
 	// InvalidMetadata counts dropped records missing the persistent journal ID.
+	// Retained as its own field for compatibility; it equals
+	// DroppedByCause["invalid_metadata"].
 	InvalidMetadata uint64
-	QueuedRecords   int
-	QueuedBytes     int
+	// The per-cause breakdown of Dropped. These sum to Dropped, so "collector
+	// too slow" (QueueFull) is distinguishable from "record too big"
+	// (RecordTooLarge) and from lock contention, which a single total
+	// conflates. Fixed fields rather than a map: a map would make this struct
+	// non-comparable and break every consumer comparing snapshots with ==.
+	DroppedRecordTooLarge uint64
+	DroppedLockContention uint64
+	DroppedQueueFull      uint64
+	DroppedStopping       uint64
+	DroppedShutdown       uint64
+	QueuedRecords         int
+	QueuedBytes           int
 }
 
 var _ journal.CommittedEventSink = (*Client)(nil)
@@ -57,6 +126,10 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 		return fmt.Errorf("%w: create journal logs exporter: %w", ErrOTLPUnavailable, err)
 	}
 	c.journalLogs = newJournalLogPipeline(exporter, res, c.scrubber)
+	// Called from the pipeline worker, never from Commit: recording a metric is
+	// exporter-adjacent work and the sink contract keeps that off the journal
+	// write path.
+	c.journalLogs.observeDrops = c.journalExportDropped
 	if cfg.JournalRoot == "" {
 		return nil
 	}
@@ -103,8 +176,13 @@ func (c *Client) JournalExportStats() JournalExportStats {
 	return JournalExportStats{
 		Accepted: p.accepted.Load(), Dropped: p.dropped.Load(),
 		ExportFailures: p.failures.Load(), QueuedRecords: p.pending, QueuedBytes: p.bytes,
-		InvalidMetadata: p.invalidMetadata.Load(),
-		SinkPanics:      journal.CommittedSinkPanicCount(),
+		InvalidMetadata:       p.invalidMetadata.Load(),
+		DroppedRecordTooLarge: p.dropCauses[dropRecordTooLarge].Load(),
+		DroppedLockContention: p.dropCauses[dropLockContention].Load(),
+		DroppedQueueFull:      p.dropCauses[dropQueueFull].Load(),
+		DroppedStopping:       p.dropCauses[dropStopping].Load(),
+		DroppedShutdown:       p.dropCauses[dropShutdown].Load(),
+		SinkPanics:            journal.CommittedSinkPanicCount(),
 	}
 }
 
@@ -142,6 +220,18 @@ type journalLogPipeline struct {
 	invalidMetadata atomic.Uint64
 	completed       atomic.Uint64
 	scrubber        journal.Scrubber
+	// dropCauses breaks dropped down by journalDropCause. Written by drop on the
+	// journal write path (atomics only) and published outside that path.
+	dropCauses [numJournalDropCauses]atomic.Uint64
+	// dropPublishMu lets shutdown settle counts concurrently with the worker
+	// without double-publishing a delta. It is never taken by commit/drop.
+	dropPublishMu sync.Mutex
+	reportedDrops [numJournalDropCauses]uint64
+	// observeDrops publishes newly counted drops to the metric. Called only from
+	// the worker or shutdown goroutine, never from commit, and nil when the
+	// client has no instruments — which includes JournalLogsOnly mode, where the
+	// stats API is the only channel.
+	observeDrops func(cause journalDropCause, delta uint64)
 }
 
 func newJournalLogPipeline(exporter sdklog.Exporter, res *resource.Resource, scrubber journal.Scrubber) *journalLogPipeline {
@@ -174,7 +264,12 @@ func (p *journalLogPipeline) signal() {
 	}
 }
 
-func (p *journalLogPipeline) drop() {
+// drop records one unexported event and wakes the worker. It runs on the
+// journal's write path, so it does only atomic adds: publishing the metric and
+// logging the cause belong to the worker, because the CommittedEventSink
+// contract forbids I/O and exporter callbacks under the journal write lock.
+func (p *journalLogPipeline) drop(cause journalDropCause) {
+	p.dropCauses[cause].Add(1)
 	p.dropped.Add(1)
 	p.signal()
 }
@@ -185,30 +280,66 @@ func journalLogSize(e journal.CommittedEvent) int {
 	return len(e.Body) + len(e.Kind) + len(e.JournalID) + len(e.InstanceID) + len(e.Gaggle) + len(e.RunID)
 }
 
+func (p *journalLogPipeline) queueRejectionLocked(size int) (journalDropCause, bool) {
+	if p.stopping {
+		return dropStopping, true
+	}
+	if p.pending >= journalLogQueueLimit || size > journalLogBytesLimit-p.bytes {
+		return dropQueueFull, true
+	}
+	return 0, false
+}
+
 func (p *journalLogPipeline) commit(e journal.CommittedEvent) {
 	if e.JournalID == "" {
 		p.invalidMetadata.Add(1)
-		p.drop()
+		p.drop(dropInvalidMetadata)
 		return
 	}
 	size := journalLogSize(e)
-	if size > journalLogRecordLimit || !p.mu.TryLock() {
-		p.drop()
+	if size > journalLogRecordLimit {
+		p.drop(dropRecordTooLarge)
 		return
 	}
-	if p.stopping || p.pending >= journalLogQueueLimit || size > journalLogBytesLimit-p.bytes {
+	// Reject an already-full/stopping queue before cloning as much as 1 MiB.
+	// The second check below remains authoritative because capacity can change
+	// while the copy runs; this first short lock prevents a saturated queue from
+	// turning every dropped event into avoidable allocation and memcpy work.
+	if !p.mu.TryLock() {
+		p.drop(dropLockContention)
+		return
+	}
+	if cause, rejected := p.queueRejectionLocked(size); rejected {
 		p.mu.Unlock()
-		p.drop()
+		p.drop(cause)
 		return
 	}
-	// Clone even owned data to avoid retaining oversized backing allocations
-	// from callers. Copies are bounded before allocation.
+	p.mu.Unlock()
+	// Copy outside the queue lock (#5575). The copy itself has to
+	// stay: TestJournalLogsQueueBoundsAndOwnership pins that a caller mutating
+	// its slice after Commit cannot alter an already-queued record, which is a
+	// defense the ownership contract asks for but cannot enforce. Doing it here
+	// keeps a memcpy of up to journalLogRecordLimit bytes out of the journal
+	// write lock, and out of the TryLock window whose loss is counted below as
+	// dropLockContention.
 	e.Body = append([]byte(nil), e.Body...)
 	e.Kind = strings.Clone(e.Kind)
 	e.JournalID = strings.Clone(e.JournalID)
 	e.InstanceID = strings.Clone(e.InstanceID)
 	e.Gaggle = strings.Clone(e.Gaggle)
 	e.RunID = strings.Clone(e.RunID)
+	if !p.mu.TryLock() {
+		// Distinct from queue_full: the queue may be empty and the collector
+		// healthy. This is contention on the queue lock itself, which the
+		// journal write path must never wait on.
+		p.drop(dropLockContention)
+		return
+	}
+	if cause, rejected := p.queueRejectionLocked(size); rejected {
+		p.mu.Unlock()
+		p.drop(cause)
+		return
+	}
 	p.queue[(p.head+p.length)%len(p.queue)] = journalLogItem{event: e, bytes: size}
 	p.length++
 	p.pending++
@@ -216,6 +347,44 @@ func (p *journalLogPipeline) commit(e journal.CommittedEvent) {
 	p.accepted.Add(1)
 	p.mu.Unlock()
 	p.signal()
+}
+
+// journalExportDropped records delta unexported committed events attributed to
+// cause. A nil instruments set (any client built without a metric reader,
+// including JournalLogsOnly mode) makes this a no-op and leaves
+// JournalExportStats as the only channel.
+func (c *Client) journalExportDropped(cause journalDropCause, delta uint64) {
+	if c == nil || c.instruments == nil || delta == 0 {
+		return
+	}
+	c.instruments.journalExportDrops.Add(context.Background(), int64(delta),
+		apimetric.WithAttributes(attribute.String(MetricAttrJournalDropCause, cause.String())))
+}
+
+// publishDrops emits one log line and one metric increment per cause that has
+// gained drops since the last call. Runs on the worker goroutine only.
+//
+// Each cause keeps its own stable message signature, so exportErrorHandler
+// suppresses a recurring cause on its own 30-minute window instead of one shared
+// window hiding a second, different cause behind the first. Six causes sit far
+// inside the handler's 64-signature table.
+
+func (p *journalLogPipeline) publishDrops() {
+	p.dropPublishMu.Lock()
+	defer p.dropPublishMu.Unlock()
+	for cause := journalDropCause(0); cause < numJournalDropCauses; cause++ {
+		total := p.dropCauses[cause].Load()
+		delta := total - p.reportedDrops[cause]
+		if delta == 0 {
+			continue
+		}
+		p.reportedDrops[cause] = total
+		if p.observeDrops != nil {
+			p.observeDrops(cause, delta)
+		}
+		p.reporter.Handle(fmt.Errorf("journal logs dropped (%s): %s; inspect JournalExportStats",
+			cause, cause.reason()))
+	}
 }
 
 func (p *journalLogPipeline) run() {
@@ -228,14 +397,9 @@ func (p *journalLogPipeline) run() {
 			p.reporter.Handle(fmt.Errorf("journal logs shutdown: %w", err))
 		}
 	}()
-	var reportedDrops uint64
-	var reportedInvalidMetadata uint64
 	started := false
 	for {
-		if invalid := p.invalidMetadata.Load(); invalid != reportedInvalidMetadata {
-			p.reporter.Handle(errors.New("journal logs dropped: missing persistent journal identity; inspect JournalExportStats.InvalidMetadata"))
-			reportedInvalidMetadata = invalid
-		}
+		p.publishDrops()
 		select {
 		case request := <-p.flushes:
 			err := p.provider.ForceFlush(request.ctx)
@@ -245,21 +409,18 @@ func (p *journalLogPipeline) run() {
 			request.done <- err
 		default:
 		}
-		if drops := p.dropped.Load(); drops != reportedDrops {
-			// Keep one stable signature so the existing rate limiter bounds
-			// repeated overflow notices. Exact totals remain in the stats API.
-			p.reporter.Handle(errors.New("journal logs dropped: invalid metadata, queue full, record too large, or exporter stopping; inspect JournalExportStats"))
-			reportedDrops = drops
-		}
+		p.publishDrops()
 		p.mu.Lock()
 		if p.ctx.Err() != nil {
-			p.dropped.Add(uint64(p.length))
+			abandoned := uint64(p.length)
+			p.dropCauses[dropShutdown].Add(abandoned)
+			p.dropped.Add(abandoned)
 			clear(p.queue[:])
 			p.length, p.pending, p.bytes = 0, 0, 0
 			close(p.progress)
 			p.progress = make(chan struct{})
 			p.mu.Unlock()
-			p.reporter.Handle(errors.New("journal logs shutdown deadline expired; pending records dropped"))
+			p.publishDrops()
 			return
 		}
 		if p.length == 0 {
@@ -388,6 +549,9 @@ func (p *journalLogPipeline) shutdown(ctx context.Context) error {
 	p.signal()
 	select {
 	case <-p.done:
+		// A commit that observed stopping can race the worker's final loop.
+		// Settle that last delta before Client shuts down the metric provider.
+		p.publishDrops()
 		return nil
 	case <-ctx.Done():
 		p.cancel()
@@ -400,10 +564,15 @@ func (p *journalLogPipeline) shutdown(ctx context.Context) error {
 		// resets both once it exits. Both paths run under p.mu, so whichever
 		// arrives second adds zero.
 		p.mu.Lock()
-		p.dropped.Add(uint64(p.length))
+		abandoned := uint64(p.length)
+		p.dropCauses[dropShutdown].Add(abandoned)
+		p.dropped.Add(abandoned)
 		clear(p.queue[:])
 		p.length = 0
 		p.mu.Unlock()
+		// The worker may still be blocked in the exporter. Publish the abandoned
+		// backlog synchronously so Client can export its metric before returning.
+		p.publishDrops()
 		// Shutdown runs outside journal locks. Report before returning so a
 		// short-lived CLI cannot exit before the worker reports cancellation.
 		p.reporter.Handle(fmt.Errorf("journal logs shutdown: %w", ctx.Err()))

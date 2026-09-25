@@ -73,13 +73,9 @@ func prepareClaudeMCP(ctx context.Context, req RunRequest) (mcpConfigArg string,
 			materialized.URL = server.URL
 		}
 		for refIndex, ref := range server.CredentialRefs {
-			if req.Credentials == nil {
-				return "", nil, fmt.Errorf("harness: claude-code: MCP server %q requires credentials but none were materialized", server.Name)
-			}
-			key := mcpconfig.CredentialKey(ref)
-			token, err := req.Credentials.Token(ctx, key)
+			_, token, err := resolveMCPCredential(ctx, "claude-code", req, server.Name, ref)
 			if err != nil {
-				return "", nil, fmt.Errorf("harness: claude-code: resolve MCP server %q credential %q: %w", server.Name, key, err)
+				return "", nil, err
 			}
 			envName := fmt.Sprintf("GOOBERS_MCP_CREDENTIAL_%d_%d", serverIndex, refIndex)
 			envAdditions = append(envAdditions, envName+"="+token)

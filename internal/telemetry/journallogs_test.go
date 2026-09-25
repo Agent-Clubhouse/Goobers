@@ -649,3 +649,132 @@ func TestJournalLogsShutdownDeadlineAccountsAbandonedBacklog(t *testing.T) {
 	}
 	close(exporter.release)
 }
+
+// TestJournalLogsAttributesDropsToDistinctCauses pins the #5573 breakdown: a
+// single Dropped total cannot tell "the collector is not keeping up" from
+// "this record is too big", and those have different fixes.
+func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
+	exporter := &journalTestExporter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
+	defer close(exporter.release)
+
+	// Missing identity.
+	client.Commit(journal.CommittedEvent{Body: []byte("{}")})
+	// Oversized record, which must not be charged to queue_full.
+	client.Commit(journal.CommittedEvent{
+		JournalID: "test-journal",
+		Body:      make([]byte, journalLogRecordLimit+1),
+	})
+	// Fill the queue: one record parks the worker inside Export, the rest fill
+	// the ring, and everything past the bound is a genuine queue_full drop.
+	for range journalLogQueueLimit + 5 {
+		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	}
+	<-exporter.started
+
+	stats := client.JournalExportStats()
+	if stats.InvalidMetadata != 1 {
+		t.Errorf("InvalidMetadata = %d; want 1", stats.InvalidMetadata)
+	}
+	if stats.DroppedRecordTooLarge != 1 {
+		t.Errorf("DroppedRecordTooLarge = %d; want 1", stats.DroppedRecordTooLarge)
+	}
+	if stats.DroppedQueueFull == 0 {
+		t.Error("DroppedQueueFull = 0; want the overflow charged to queue_full, not folded into a single total")
+	}
+	// An oversized record is not overload, and overload is not bad metadata.
+	sum := stats.InvalidMetadata + stats.DroppedRecordTooLarge + stats.DroppedLockContention +
+		stats.DroppedQueueFull + stats.DroppedStopping + stats.DroppedShutdown
+	if sum != stats.Dropped {
+		t.Errorf("per-cause counts sum to %d; want Dropped = %d", sum, stats.Dropped)
+	}
+}
+
+// TestJournalLogsShutdownDropsAreChargedToShutdown keeps the abandoned backlog
+// distinguishable from steady-state overload.
+func TestJournalLogsShutdownDropsAreChargedToShutdown(t *testing.T) {
+	exporter := &journalTestExporter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
+
+	const queued = 6
+	for range queued {
+		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	}
+	<-exporter.started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := client.journalLogs.shutdown(ctx); err == nil {
+		t.Fatal("shutdown returned nil; want a deadline error with records still queued")
+	}
+	stats := client.JournalExportStats()
+	if want := uint64(queued - 1); stats.DroppedShutdown != want {
+		t.Fatalf("DroppedShutdown = %d; want %d", stats.DroppedShutdown, want)
+	}
+	if stats.DroppedQueueFull != 0 {
+		t.Fatalf("DroppedQueueFull = %d; abandoned records are not overload", stats.DroppedQueueFull)
+	}
+	close(exporter.release)
+}
+
+// TestClientShutdownExportsFinalJournalDropCauses exercises the real Client
+// lifecycle boundary. The journal exporter is held past the shutdown deadline
+// so shutdown itself creates both stopping and abandoned-backlog drops; the
+// metric exporter must observe those causes before its provider is closed.
+func TestClientShutdownExportsFinalJournalDropCauses(t *testing.T) {
+	metricExporter := &countingMetricExporter{}
+	client := newMetricsClient(t, Config{
+		MetricExporter:       metricExporter,
+		MetricExportInterval: time.Hour,
+	})
+	logExporter := &journalTestExporter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	defer close(logExporter.release)
+	client.journalLogs = newJournalLogPipeline(logExporter, resource.Empty(), nil)
+	client.journalLogs.observeDrops = client.journalExportDropped
+
+	const accepted = 4
+	for range accepted {
+		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	}
+	<-logExporter.started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- client.Shutdown(ctx) }()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		client.journalLogs.mu.Lock()
+		stopping := client.journalLogs.stopping
+		client.journalLogs.mu.Unlock()
+		if stopping {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("journal pipeline never entered stopping state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	client.Commit(journal.CommittedEvent{JournalID: "after-stop", Body: []byte("{}")})
+
+	if err := <-done; err != nil {
+		t.Fatalf("Client.Shutdown: %v", err)
+	}
+	counts := metricExporter.journalDropCounts()
+	if got := counts[dropStopping.String()]; got != 1 {
+		t.Errorf("stopping metric = %d, want 1 (all causes: %v)", got, counts)
+	}
+	if got, want := counts[dropShutdown.String()], int64(accepted-1); got != want {
+		t.Errorf("shutdown metric = %d, want %d (all causes: %v)", got, want, counts)
+	}
+}

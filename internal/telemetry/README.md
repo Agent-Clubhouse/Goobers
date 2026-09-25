@@ -72,6 +72,7 @@ pipeline is configured against:
 | `goobers.escalations` | counter (int64) | `{escalation}` | cumulative, monotonic | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind` |
 | `goobers.journal.redactions_total` | counter (int64) | `{event}` | cumulative, monotonic | `layer` (`registry`/`pattern`) |
 | `goobers.journal.appends_dropped` | counter (int64) | `{event}` | cumulative, monotonic | none |
+| `goobers.journal.exports_dropped` | counter (int64) | `{event}` | cumulative, monotonic | `goobers.journal.drop_cause` (`invalid_metadata`/`record_too_large`/`lock_contention`/`queue_full`/`stopping`/`shutdown`) |
 | `goobers.work.active` | up-down counter (int64) | `{span}` | cumulative, non-monotonic | `goobers.workflow`, `goobers.span.kind` (`run`/`task`/`gate`/`scheduler`) |
 | `goobers.stage.metric.value` | histogram (float64) | `1` | cumulative | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind`, `goobers.metric.name`, `goobers.metric.unit` |
 | `goobers.worktree.disk.usage` | gauge (int64) | `By` | current value | `goobers.storage.operation` |

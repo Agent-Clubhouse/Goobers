@@ -202,17 +202,66 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 // (the Copilot CLI's github tool, gh), which sends them to GitHub, so a
 // repository credential lands there only when the invocation's repository is
 // a GitHub repository; another provider's credential is never handed to
-// GitHub tooling. agent:model is the model backend's own credential and is
-// independent of the repository provider. Agentic stages on other providers
-// commit locally and publish through a deterministic stage that authenticates
-// against the routed provider, so no credential is lost by withholding it.
+// GitHub tooling. Every other variable (the command-scoped
+// GOOBERS_CRED_GITHUB_* ones) follows CredentialFitsProvider, so a github:*
+// capability's credential is never exposed on an Azure DevOps repository.
+// agent:model
+// is the model backend's own credential and is independent of the repository
+// provider. Agentic stages on other providers commit locally and publish
+// through a deterministic stage that authenticates against the routed
+// provider, so no credential is lost by withholding it.
 func CredentialFitsEnvAudience(capability, envVar string, provider apiv1.Provider) bool {
 	if capability == string(capabilitypkg.AgentModel) {
 		return true
 	}
-	if !strings.EqualFold(envVar, "GH_TOKEN") && !strings.EqualFold(envVar, "GITHUB_TOKEN") {
+	if strings.EqualFold(envVar, "GH_TOKEN") || strings.EqualFold(envVar, "GITHUB_TOKEN") {
+		return providerIsGitHub(provider)
+	}
+	return CredentialFitsProvider(capability, provider)
+}
+
+// CredentialFitsProvider reports whether capability's credential may be
+// materialised for an invocation whose repository is on provider. A
+// capability in a provider's own namespace (github:*, ado:*) belongs to that
+// provider's repositories: an ado:* credential fits only an Azure DevOps
+// repository, and a github:* credential fits every repository except an Azure
+// DevOps one. A GitHub repository (or a legacy repository reference with no
+// provider) is its own namespace; Gitea resolves github:* capabilities against
+// its own repository token by design (the rebinding rule of
+// docs/design/ado-parity-dsl-2-0.md §3.1), so the credential stays with the
+// Gitea repository it was granted for. Provider-neutral capabilities (repo:push,
+// provider:*) resolve against the invocation's own repository, and
+// non-repository capabilities (agent:model, telemetry:read, ...) are
+// independent of it, so both always fit.
+func CredentialFitsProvider(capability string, provider apiv1.Provider) bool {
+	owner, ok := CapabilityProvider(capability)
+	if !ok {
 		return true
 	}
+	if owner == apiv1.ProviderGitHub {
+		return providerIsGitHub(provider) || provider == apiv1.ProviderGitea
+	}
+	return provider == owner
+}
+
+// CapabilityProvider returns the repository provider whose namespace
+// capability belongs to, and false for a provider-neutral or non-repository
+// capability.
+func CapabilityProvider(capability string) (apiv1.Provider, bool) {
+	namespace, _, found := strings.Cut(capability, ":")
+	if !found {
+		return "", false
+	}
+	switch provider := apiv1.Provider(namespace); provider {
+	case apiv1.ProviderGitHub, apiv1.ProviderADO:
+		return provider, true
+	}
+	return "", false
+}
+
+// providerIsGitHub treats the legacy empty provider as GitHub, as a
+// repository reference did before other providers existed.
+func providerIsGitHub(provider apiv1.Provider) bool {
 	return provider == "" || provider == apiv1.ProviderGitHub
 }
 
