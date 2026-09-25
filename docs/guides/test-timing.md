@@ -1,13 +1,14 @@
 # Test timing artifacts and budgets
 
-The macOS behavioral unit job captures the unit test tier's wall-clock,
-package, and test durations and uploads `test-timings-macOS`, containing
-`unit-macOS.json`. That job runs for merge validation and again on the landed
-main SHA so successful main pushes continue to provide the canonical artifact
-for trend comparisons without rerunning the full merge-gate matrix. The
-post-merge lane also retains the platform-independent `checks` job as a safety
-smoke for the exact landed tree; all other merge-gate jobs run only for pull
-requests and merge groups. The report step compares the test tier with
+The `unit coverage gate (linux)` job (`unit-linux-coverage` in `ci.yml`)
+captures the unit test tier's wall-clock, package, and test durations and
+uploads `test-timings-Linux`, containing `unit-Linux.json`. That job runs for
+merge validation and again on the landed main SHA so successful main pushes
+continue to provide the canonical artifact for trend comparisons without
+rerunning the full merge-gate matrix. The post-merge lane also retains the
+platform-independent `checks` job as a safety smoke for the exact landed tree;
+all other merge-gate jobs run only for pull requests and merge groups. The
+report step compares the test tier with
 `.github/test-timing-budgets.json`, appends actual-versus-budget data to the
 workflow summary, and compares with the latest successful `main` artifact when
 one is available. Capture runs inside `test/hermetic`, preserving the unit
@@ -52,21 +53,23 @@ packages first to the currently lightest shard; packages below the table's
 three-second measurement threshold and packages added later use
 `defaultSeconds`.
 
-Refresh the table at least every **30 days**, and sooner when the package mix or
-measured shard balance changes. Use the latest successful `main`
-`test-timings-macOS` artifact and its GitHub API metadata:
+Refresh the table when the package mix or measured shard balance changes
+enough to matter; there is no enforced cadence. Stale weights degrade shard
+balance, not correctness, so nothing times the table out or fails a build over
+its age. Use the latest successful `main` `test-timings-Linux` artifact and
+its GitHub API metadata:
 
 ```sh
 REPOSITORY=Agent-Clubhouse/Goobers
 RUN_ID=$(gh run list --repo "$REPOSITORY" --workflow CI --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-ARTIFACT_ID=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" --paginate --jq '.artifacts[] | select(.name == "test-timings-macOS") | .id')
-JOB_ID=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --paginate --jq '.jobs[] | select(.name == "unit behavioral suite (macos)" and .conclusion == "success") | .id')
+ARTIFACT_ID=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" --paginate --jq '.artifacts[] | select(.name == "test-timings-Linux") | .id')
+JOB_ID=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --paginate --jq '.jobs[] | select(.name == "unit coverage gate (linux)" and .conclusion == "success") | .id')
 TIMING_DIR=$(mktemp -d)
-gh run download --repo "$REPOSITORY" "$RUN_ID" --name test-timings-macOS --dir "$TIMING_DIR"
+gh run download --repo "$REPOSITORY" "$RUN_ID" --name test-timings-Linux --dir "$TIMING_DIR"
 gh api "repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$TIMING_DIR/artifact.json"
 gh api "repos/$REPOSITORY/actions/jobs/$JOB_ID" > "$TIMING_DIR/job.json"
 go run ./test/testtiming weights \
-  -timing "$TIMING_DIR/unit-macOS.json" \
+  -timing "$TIMING_DIR/unit-Linux.json" \
   -artifact-metadata "$TIMING_DIR/artifact.json" \
   -job-metadata "$TIMING_DIR/job.json" \
   -out .github/unit-shard-weights.json \
@@ -79,16 +82,20 @@ artifact's `created_at` to fall within that job's execution window. It records
 that authoritative artifact timestamp as `source.generatedAt`; it never uses
 the command time or the eventual patch time. Run, job, artifact, commit,
 platform, architecture, and threshold remain in the checked-in source record so
-the measurement is independently traceable.
+the measurement is independently traceable, but `generatedAt` is informational
+provenance only -- nothing checks its age.
 
-The macOS job is the canonical source because it captures the complete unit
-suite in one artifact on every successful main push. Its ordinary (non-race)
-package durations are relative LPT weights for the Linux `-race` shards, not a
-prediction of their absolute runtime: race instrumentation and platform costs
-can scale packages differently. Keep the three-second floor to avoid encoding
-noise from tiny packages, and review actual Linux shard elapsed times after a
-refresh. `TestCheckedInShardWeightsAreFresh` enforces the 30-day artifact-age
-ceiling, while loader validation refuses missing or malformed provenance.
+The Linux coverage job is the canonical source because it captures the
+complete unit suite in one artifact on every successful main push (the macOS
+job that previously served this role was retired by the post-#5002 macOS
+consolidation, which stopped uploading a `test-timings-macOS` artifact
+entirely). Its ordinary (non-race) package durations are relative LPT weights
+for the Linux `-race` shards, not a prediction of their absolute runtime: race
+instrumentation costs can scale packages differently even on the same
+platform. Keep the three-second floor to avoid encoding noise from tiny
+packages, and review actual Linux shard elapsed times after a refresh. Loader
+validation refuses missing or malformed provenance, but never rejects a
+weights table for being old.
 
 Timing budgets are intentionally soft, and the comparison command always
 succeeds regardless of what the timing data shows -- test failures and

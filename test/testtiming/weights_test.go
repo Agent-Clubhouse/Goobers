@@ -165,8 +165,8 @@ func validWeightInputs() (artifact, artifactMetadata, jobMetadata) {
 	timing := artifact{
 		SchemaVersion:  schemaVersion,
 		Job:            "unit",
-		Platform:       "darwin",
-		Architecture:   "arm64",
+		Platform:       "linux",
+		Architecture:   "amd64",
 		ElapsedSeconds: 100,
 		Packages: []packageTiming{
 			{Package: "github.com/goobers/goobers/internal/example", Status: "pass", ElapsedSeconds: 4},
