@@ -43,7 +43,7 @@ None of this is a regression: the v0.4.1 binary and `main` behave byte-identical
 on every ADO configuration tested. These are pre-existing gaps that the weekly
 read-only live smoke never reached.
 
-This plan fixes them inside DSL 2.0 in **31 single-PR items for v0.5.0** plus 11
+This plan fixes them inside DSL 2.0 in **32 single-PR items for v0.5.0** plus 10
 for v0.5.x, ordered by impact against risk (§10). The plan has three rules:
 
 1. **Rebinding rule.** In DSL 2.0, a `github:*` capability on a provider-dispatched
@@ -687,7 +687,7 @@ source and are regenerated with `make docs`. The worst wrong docs are in **bold*
 
 ## 10. Work breakdown
 
-Impact (I) and risk (R) are H, M or L. There are **31 v0.5.0 must-haves** and 11
+Impact (I) and risk (R) are H, M or L. There are **32 v0.5.0 must-haves** and 10
 v0.5.x items. Within each band, rows are ordered by impact, then risk. Every PR runs
 `go test -race` on the packages it touches, and `make ci` locally where the gates
 apply.
@@ -730,7 +730,7 @@ apply.
 | ADO-N33 | `workitemsbatch` hydration | D | M | L | — | At most one call per 200 WIQL hits. | Fixture test on call count. | 0.5.x | — |
 | ADO-N34 | `validate --check-repos` ADO permission and policy reads | E | M | L | N5 | Reports identity and missing permissions. Warns on held bypass and blanket Prefix policies. Reads only. | Fixture tests. The no-phone-home gate. | 0.5.x | — |
 | ADO-N35 | Accept `*.visualstudio.com` URLs (normalise) | E | L | L | — | Legacy remotes match in `push-branch` and in routing. | Unit tests on URL forms. | 0.5.x | — |
-| ADO-N36 | Entra-org live legs: SP, workload identity, managed identity (§8.4) | F | M | L | N17, org provisioned | Workload identity and `azure-cli`-with-SP are weekly green. A managed-identity run passes before release. The three §8.4 verifications are recorded. | The leg itself. | 0.5.x | — |
+| ADO-N36 | Entra-org live legs: SP, workload identity, managed identity (§8.4) | F | H | L | N17, N18, org provisioned | The workload-identity leg and `azure-cli`-with-SP are weekly green (**gates v0.5.0**, PO decision 4). The managed-identity run is recorded before release but does not gate. The three §8.4 verifications are recorded. | The leg itself. | 0.5.0 | — |
 | ADO-N37 | `RequestReview` by identity GUID | C | L | L | N5 | Reviewer strings resolve to a GUID. The call succeeds. | Fixture test. | 0.5.x | — |
 | ADO-N38 | Remove the legacy claim-tag fallback | D | L | L | — | The `goobers:claim-run:*` tag is no longer read or cleared. | Unit tests. | 0.5.x | #1990 |
 | ADO-N39 | `run --pr` accepts API-form ADO URLs | E | L | L | — | Both URL forms resolve. | Unit tests. | 0.5.x | #5651 |
@@ -744,11 +744,15 @@ apply.
 - #2750 (v0.5.1): ADO-N11.
 - #2747 (forked `*ADO` functions): deferred to DSL 3.0 (PR #5661).
 
-**Release cut.** v0.5.0 ships as soon as the low-risk, high-impact rows (I=H, R=L)
-and the auth pair (N17, N18) have merged and the soak has passed. Medium-risk rows
-that are not on the critical path for a shipped workflow (N19, N20, N22) may move to
-the first v0.5.x patch if they would delay the tag; each such move is recorded on its
-issue and in the release notes' known-issues section.
+**Release cut.** One ship criterion: v0.5.0 is tagged when every row marked 0.5.0
+has merged, the compile-matrix gate (N1) passes with an empty expected-failure list
+for GitHub and ADO, the live ADO write leg (N16) is green, the workload-identity leg
+of N36 is green, and the soak (§8.3) has passed. No 0.5.0 row may slip on its own.
+If a row would delay the tag, the PO decides explicitly to reclassify it. A row can
+be reclassified only if G1 and G2 still hold without it. That rules out N2, N12,
+N14, N15, N17, N18, N20, N21 and N22, which make shipped workflows and non-PAT auth
+work on ADO. Any reclassification is recorded on the issue and in the release notes'
+known-issues section.
 
 **Critical path.**
 
@@ -756,7 +760,8 @@ issue and in the release notes' known-issues section.
 - N17 → N18 → N2.
 - N5 → N6, N10, N19 and N20.
 - N19 → N22.
-- The soak (§8.3) starts after N2, N12, N16 and N17–N21 merge.
+- The soak (§8.3) starts after N2, N12, N14, N15, N16 and N17–N22 merge.
+- N36's workload-identity leg runs once N17 and N18 merge and the Entra org exists.
 
 ## 11. PO decisions (2026-09-25)
 
