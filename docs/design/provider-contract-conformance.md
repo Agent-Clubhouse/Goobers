@@ -191,3 +191,38 @@ Rules for this table:
   `reference-workflows/.../merge-review.yaml` and asserts it validates on an ADO
   gaggle *and* on a GitHub one. A future stage added to that lane which ADO
   cannot serve fails there, rather than on a consumer's instance.
+
+## 6.2 Provider compile-matrix gate (added by ADO-N1)
+
+§6.1's shipped-definition test covers one workflow on two providers. The
+compile-matrix gate (`test/providermatrix`, ADO-N1,
+[`ado-parity-dsl-2-0.md`](ado-parity-dsl-2-0.md) §8.1) covers every shipped
+definition:
+
+- **Subjects.** `reference-workflows/`, `config-examples/`, and the
+  `goobers init --template=standard` scaffold (every guided workflow module, with
+  pull-request CI and with a local CI command). The scaffold is generated for
+  `--provider=github` and `--provider=ado`.
+- **Providers.** Each subject is copied into a temporary directory. Every
+  gaggle's `spec.project` and `spec.backlog` are then rewritten onto one
+  provider, with that provider's repository shape: an ADO organization and
+  project, or a Gitea base URL.
+- **Checks.** Full config validation through `instance.LoadConfigDir` (schema,
+  workflow semantics, policy actions and manifest admission), then CONF-6 for
+  every workflow through `ProviderCapabilityProblems`. That function reports
+  every unmet requirement, where `CheckProviderCapabilityRequirements` stops at
+  the first, so one workflow's gap cannot hide another's.
+- **Verdicts.** GitHub and ADO results are asserted. Gitea is experimental, so
+  its results are logged and never fail the gate.
+- **Expected failures.** Known gaps are listed in `expectedFailures`, one entry
+  per subject, provider, workflow and capability (or validation code). Each
+  entry names the item that fixes it. The PR that fixes a gap deletes that
+  entry. An entry whose failure no longer occurs fails the gate, so the list
+  cannot go stale. Because each entry covers one capability, the fixing items
+  stay independent of each other.
+- **Mutation check.** A copy of the shipped `merge-review` with
+  `github:pr:merge` removed from `merge-pr` must fail validation on both GitHub
+  and ADO. This shows the gate rejects a missing landing grant.
+
+The gate is hermetic: it uses no git and no network. It runs in the unit test
+shards, not in the slower shipped-workflow contract job.

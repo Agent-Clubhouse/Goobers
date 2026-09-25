@@ -152,8 +152,45 @@ func isBacklogCapability(c providers.Capability) bool {
 // cannot change without a code deploy — no future runner joining fixes it),
 // so this is checked once at config-load rather than every schedule tick:
 // a config-time/park-time diagnostic naming the workflow, the missing
-// capability, and the provider, never a mid-run stage error.
+// capability, and the provider, never a mid-run stage error. It returns the
+// first of ProviderCapabilityProblems.
 func CheckProviderCapabilityRequirements(set *ConfigSet) error {
+	problems := ProviderCapabilityProblems(set)
+	if len(problems) == 0 {
+		return nil
+	}
+	return problems[0]
+}
+
+// ProviderCapabilityProblem is one unmet CONF-6 requirement: a workflow that
+// requires a provider capability its gaggle's connected provider does not
+// declare. Backlog reports that the capability was checked against the
+// gaggle's backlog provider rather than its project provider.
+type ProviderCapabilityProblem struct {
+	Gaggle     string
+	Workflow   string
+	Capability providers.Capability
+	Provider   string
+	Backlog    bool
+}
+
+// Error renders the config-load diagnostic naming the workflow, the missing
+// capability and the provider.
+func (p ProviderCapabilityProblem) Error() string {
+	role := "provider"
+	if p.Backlog {
+		role = "backlog provider"
+	}
+	return fmt.Sprintf("workflow %q requires provider capability %q which %s %q does not declare",
+		p.Workflow, p.Capability, role, p.Provider)
+}
+
+// ProviderCapabilityProblems returns every unmet CONF-6 requirement in set, in
+// workflow order and then capability order. CheckProviderCapabilityRequirements
+// stops at the first; a caller that must see every failure (the provider
+// compile-matrix gate, test/providermatrix) uses this so one workflow's gap
+// cannot mask another's.
+func ProviderCapabilityProblems(set *ConfigSet) []ProviderCapabilityProblem {
 	if set == nil {
 		return nil
 	}
@@ -161,6 +198,7 @@ func CheckProviderCapabilityRequirements(set *ConfigSet) error {
 	for _, g := range set.Gaggles {
 		gagglesByName[g.Name] = g
 	}
+	var problems []ProviderCapabilityProblem
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		gaggle, ok := gagglesByName[wf.Spec.Gaggle]
@@ -170,25 +208,35 @@ func CheckProviderCapabilityRequirements(set *ConfigSet) error {
 			// against here.
 			continue
 		}
-		required := WorkflowRequiredProviderCapabilitiesFor(*wf, providers.ProviderKind(gaggle.Spec.Project.Provider))
-		if len(required) == 0 {
-			continue
+		problems = append(problems, workflowProviderCapabilityProblems(wf, gaggle)...)
+	}
+	return problems
+}
+
+// workflowProviderCapabilityProblems checks one workflow's requirements against
+// its gaggle: backlog.* capabilities against the backlog provider, every other
+// capability against the project provider.
+func workflowProviderCapabilityProblems(wf *apiv1.Workflow, gaggle apiv1.Gaggle) []ProviderCapabilityProblem {
+	required := WorkflowRequiredProviderCapabilitiesFor(*wf, providers.ProviderKind(gaggle.Spec.Project.Provider))
+	if len(required) == 0 {
+		return nil
+	}
+	projectCaps, projectOK := providers.CapabilitiesFor(providers.ProviderKind(gaggle.Spec.Project.Provider))
+	backlogCaps, backlogOK := providers.CapabilitiesFor(providers.ProviderKind(gaggle.Spec.Backlog.Provider))
+	var problems []ProviderCapabilityProblem
+	for _, capability := range required {
+		problem := ProviderCapabilityProblem{
+			Gaggle: gaggle.Name, Workflow: wf.Name, Capability: capability,
+			Provider: string(gaggle.Spec.Project.Provider),
 		}
-		projectCaps, projectOK := providers.CapabilitiesFor(providers.ProviderKind(gaggle.Spec.Project.Provider))
-		backlogCaps, backlogOK := providers.CapabilitiesFor(providers.ProviderKind(gaggle.Spec.Backlog.Provider))
-		for _, capability := range required {
-			if isBacklogCapability(capability) {
-				if !backlogOK || !backlogCaps.Has(capability) {
-					return fmt.Errorf("workflow %q requires provider capability %q which backlog provider %q does not declare",
-						wf.Name, capability, gaggle.Spec.Backlog.Provider)
-				}
-				continue
-			}
-			if !projectOK || !projectCaps.Has(capability) {
-				return fmt.Errorf("workflow %q requires provider capability %q which provider %q does not declare",
-					wf.Name, capability, gaggle.Spec.Project.Provider)
-			}
+		declared := projectOK && projectCaps.Has(capability)
+		if isBacklogCapability(capability) {
+			problem.Provider, problem.Backlog = string(gaggle.Spec.Backlog.Provider), true
+			declared = backlogOK && backlogCaps.Has(capability)
+		}
+		if !declared {
+			problems = append(problems, problem)
 		}
 	}
-	return nil
+	return problems
 }
