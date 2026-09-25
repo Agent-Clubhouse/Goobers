@@ -299,39 +299,7 @@ func probeOptionsFor(dims []Dim, limit int) (ListOptions, bool) {
 // would hold for the wrong reason.
 func seedProbeCorpus(t *testing.T, store *Store, n int) {
 	t.Helper()
-	ctx := t.Context()
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < n; i++ {
-		startedAt := base.Add(time.Duration(i) * time.Minute)
-		p := Projection{Run: RunRow{
-			RunID:        fmt.Sprintf("run-%08d", i),
-			Gaggle:       "gaggle-000",
-			Workflow:     "workflow-000",
-			Phase:        "completed",
-			Terminal:     true,
-			StartedAt:    startedAt,
-			LastActivity: startedAt,
-			LastSeq:      uint64(i + 1),
-			Stages:       []string{"build"},
-		}}
-		if i == n/2 {
-			p.Run.GooberDigest = "needle"
-		}
-		p.Stages = []StageRow{{
-			RunID: p.Run.RunID, Stage: "build", Attempts: 1, LastStatus: "success",
-			StartedAt: &startedAt, HadSuccess: true,
-		}}
-		p.ApplyMeasurement([]StageMeasurement{{
-			Stage: "build", CostMeasured: true, TokenMeasured: true,
-			PremiumMeasured: true, RetryWaste: true,
-		}})
-		if err := store.UpsertRun(ctx, p); err != nil {
-			t.Fatalf("seed %d: %v", i, err)
-		}
-	}
-	if _, err := store.writer.Exec("ANALYZE"); err != nil {
-		t.Fatalf("analyze: %v", err)
-	}
+	seedProbeCorpusBulk(t, store, n, 1)
 }
 
 // TestBoundHoldsAtOneHundredThousandRows is §14.2's stated scale.
@@ -445,17 +413,18 @@ func seedProbeCorpusBulk(t *testing.T, store *Store, n, stagesPerRun int) {
 			t.Fatalf("begin: %v", err)
 		}
 		runStmt, err := tx.Prepare(`INSERT INTO run (
-			run_id, gaggle, workflow, phase, terminal, started_at, last_activity_at, last_seq,
+			run_id, gaggle, workflow, goober_digest, phase, terminal, started_at, last_activity_at, last_seq,
 			repass_count, retry_count, policy_retry_count, infra_retry_count,
 			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste
-		) VALUES (?, ?, ?, 'completed', 1, ?, ?, ?, 0, 0, 0, 0, 1, 1, 1, 1)`)
+		) VALUES (?, ?, ?, ?, 'completed', 1, ?, ?, ?, 0, 0, 0, 0, 1, 1, 1, 1)`)
 		if err != nil {
 			t.Fatalf("prepare run: %v", err)
 		}
 		stageStmt, err := tx.Prepare(`INSERT INTO run_stage (
 			run_id, stage, attempts, last_status, gaggle, run_started_at,
-			token_measured, premium_measured, cost_measured, retry_waste
-		) VALUES (?, ?, ?, 'success', ?, ?, 1, 1, 1, 1)`)
+			token_measured, premium_measured, cost_measured, retry_waste,
+			had_success, run_terminal
+		) VALUES (?, ?, ?, 'success', ?, ?, 1, 1, 1, 1, 1, 1)`)
 		if err != nil {
 			t.Fatalf("prepare stage: %v", err)
 		}
@@ -467,7 +436,11 @@ func seedProbeCorpusBulk(t *testing.T, store *Store, n, stagesPerRun int) {
 		for i := start; i < end; i++ {
 			id := fmt.Sprintf("run-%08d", i)
 			at := formatTime(base.Add(time.Duration(i) * time.Minute))
-			if _, err := runStmt.Exec(id, "gaggle-000", "workflow-000", at, at, i+1); err != nil {
+			gooberDigest := ""
+			if i == n/2 {
+				gooberDigest = "needle"
+			}
+			if _, err := runStmt.Exec(id, "gaggle-000", "workflow-000", gooberDigest, at, at, i+1); err != nil {
 				t.Fatalf("insert run %d: %v", i, err)
 			}
 			// stagesPerRun rows per run, so run_stage reaches 1M+ at 100k runs.
