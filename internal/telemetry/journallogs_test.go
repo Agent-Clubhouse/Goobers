@@ -668,12 +668,13 @@ func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
 		JournalID: "test-journal",
 		Body:      make([]byte, journalLogRecordLimit+1),
 	})
-	// Fill the queue: one record parks the worker inside Export, the rest fill
-	// the ring, and everything past the bound is a genuine queue_full drop.
+	// Park the worker inside Export before filling the ring so scheduling
+	// cannot drain records while this test is creating queue_full drops.
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	<-exporter.started
 	for range journalLogQueueLimit + 5 {
 		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	}
-	<-exporter.started
 
 	stats := client.JournalExportStats()
 	if stats.InvalidMetadata != 1 {
