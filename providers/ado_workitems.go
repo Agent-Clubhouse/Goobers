@@ -111,38 +111,9 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	if boundedScan && candidateLimit > 0 {
 		refs = refs[:min(candidateLimit, len(refs))]
 	}
-	items := make([]WorkItem, 0, len(refs))
-	lastScanned := -1
-	for i, ref := range refs {
-		lastScanned = i
-		item, err := p.GetWorkItem(ctx, req.Repository, strconv.Itoa(ref.ID))
-		if err != nil {
-			return nil, err
-		}
-		if (requestedState == "open" || requestedState == "closed") && item.State != requestedState {
-			continue
-		}
-		matched, err := req.MatchesLabelPredicate(item.Labels)
-		if err != nil {
-			return nil, err
-		}
-		if !matched {
-			continue
-		}
-		matched, err = req.MatchesFieldPredicate(item.Fields)
-		if err != nil {
-			return nil, err
-		}
-		if hasAllLabels(item.Labels, req.Labels) && matched {
-			items = append(items, item)
-			// Stop once Limit real matches are in hand, whether bounded or
-			// not (#2067): with an oversized candidate fetch, scanning the
-			// remaining candidates after the caller's Limit is already
-			// satisfied would only waste GetWorkItem round trips.
-			if req.Limit > 0 && len(items) >= req.Limit {
-				break
-			}
-		}
+	items, lastScanned, err := p.scanWorkItemCandidates(ctx, req, requestedState, refs)
+	if err != nil {
+		return nil, err
 	}
 	if req.PageInfo != nil {
 		// CandidateCount is how many candidates were actually INSPECTED
@@ -236,11 +207,11 @@ func (p *ADOProvider) findWorkItemsByMarker(ctx context.Context, repo Repository
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
 			return nil, err
 		}
-		for _, ref := range result.WorkItems {
-			item, err := p.GetWorkItem(ctx, repo, strconv.Itoa(ref.ID))
-			if err != nil {
-				return nil, err
-			}
+		page, err := p.listWorkItemsBatch(ctx, repo, result.WorkItems)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range page {
 			if containsExactLine(item.Body, marker) {
 				matches = append(matches, item)
 			}
@@ -333,8 +304,12 @@ func (p *ADOProvider) findRunItem(ctx context.Context, repo RepositoryRef, runID
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
 		return WorkItem{}, false, err
 	}
-	for _, ref := range result.WorkItems {
-		item, err := p.GetWorkItem(ctx, repo, strconv.Itoa(ref.ID))
+	candidates, err := p.getWorkItemsBatch(ctx, repo, adoRefIDs(result.WorkItems))
+	if err != nil {
+		return WorkItem{}, false, err
+	}
+	for _, raw := range candidates {
+		item, err := p.mapADOWorkItem(ctx, repo, raw)
 		if err != nil {
 			return WorkItem{}, false, err
 		}
@@ -809,9 +784,13 @@ func (p *ADOProvider) Subscribe(ctx context.Context, sub TriggerSubscription) (<
 }
 
 type adoWIQLResponse struct {
-	WorkItems []struct {
-		ID int `json:"id"`
-	} `json:"workItems"`
+	WorkItems []adoWorkItemRef `json:"workItems"`
+}
+
+// adoWorkItemRef is one WIQL hit: only the id, which the caller hydrates
+// through workitemsbatch.
+type adoWorkItemRef struct {
+	ID int `json:"id"`
 }
 
 type adoWorkItem struct {

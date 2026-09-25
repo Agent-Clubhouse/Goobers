@@ -580,7 +580,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			// response was lost, and ADO has no transport-level dedup marker
 			// (unlike GitHub issue creation's footer check, #140) to make a
 			// blind retry safe for those.
-			if isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
+			if adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
 					return nil, serr
 				}
@@ -595,7 +595,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			authRetried = true
 			continue
 		}
-		if resp.StatusCode >= 500 && isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
+		if resp.StatusCode >= 500 && adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
 			_ = resp.Body.Close()
 			if err := p.sleep(ctx, backoffDuration(transientAttempt)); err != nil {
 				return nil, err

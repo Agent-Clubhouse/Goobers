@@ -169,7 +169,7 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
@@ -224,7 +224,7 @@ func TestADOProviderAssigneeCarriesUniqueNameAlias(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
@@ -368,7 +368,7 @@ func TestADOListWorkItemsLimitCountsMatchingLabels(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 
@@ -427,7 +427,7 @@ func TestADOListWorkItemsOversizedScanFindsMatchBeyondTruncationBoundary(t *test
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 	repo := RepositoryRef{Name: "repo", Project: "project"}
@@ -477,7 +477,7 @@ func TestADOListWorkItemsOversizedScanAppliesToStateFilterToo(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 	repo := RepositoryRef{Name: "repo", Project: "project"}
@@ -525,7 +525,7 @@ func TestADOListWorkItemsProjectsAndFiltersNativeFields(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 
@@ -564,7 +564,7 @@ func TestADOListWorkItemsUnavailableNativeFieldFails(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 
@@ -960,7 +960,7 @@ func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 
 	runner := &adoAuthRunner{}
