@@ -960,13 +960,25 @@ func TestADOProviderPullRequestFiles(t *testing.T) {
 
 func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 	var wiqlCalls int
+	var categoryCalls int
 	mux := http.NewServeMux()
 	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypecategories/Microsoft.RequirementCategory", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		categoryCalls++
+		writeJSON(t, w, map[string]interface{}{
+			"name":                "Requirement Category",
+			"referenceName":       "Microsoft.RequirementCategory",
+			"defaultWorkItemType": map[string]string{"name": "Issue"},
+		})
+	})
 	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		var patch []adoPatchOperation
 		decodeJSON(t, r, &patch)
-		if len(patch) < 3 || patch[0].Value != "New work" || patch[2].Value != "route/backend; goobers/status:claimed" {
+		if len(patch) < 4 || patch[0].Value != "New work" ||
+			patch[2].Path != "/multilineFieldsFormat/System.Description" || patch[2].Value != "Markdown" ||
+			patch[3].Value != "route/backend; goobers/status:claimed" {
 			t.Fatalf("unexpected create patch: %#v", patch)
 		}
 		writeJSON(t, w, map[string]interface{}{
@@ -1022,6 +1034,9 @@ func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 	})
 	if err != nil || item.ID != "51" || item.Status != WorkItemStatusClaimed {
 		t.Fatalf("CreateWorkItem = %#v, %v", item, err)
+	}
+	if categoryCalls != 1 {
+		t.Fatalf("workitemtypecategories calls = %d, want 1", categoryCalls)
 	}
 	if provider.Kind() != ProviderADO {
 		t.Fatalf("Kind = %q", provider.Kind())
