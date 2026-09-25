@@ -110,7 +110,8 @@ const (
 		"goobers init --guided --instance-path ~/goobers/instances/my-repository\n" +
 		"```\n\n" +
 		"The legacy installer `--guided` option prints migration guidance and makes no changes; guided setup belongs to the installed `goobers` binary.\n\n"
-	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
+	quickstartSourceOnboardingAssets = "## 2. Graduate to the token-bearing quickstart template\n\n" +
+		"Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
 		"against a disposable GitHub repository you control. This path requires a\n" +
 		"GitHub token and an authenticated agent harness. The shipped template's\n" +
 		"goobers default to `harness: copilot`; to run it on Claude Code instead, pass\n" +
