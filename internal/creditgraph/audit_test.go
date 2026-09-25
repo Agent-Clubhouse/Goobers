@@ -126,6 +126,52 @@ func TestAuditFaultDomainsCooldownAndPostFixVerification(t *testing.T) {
 	}
 }
 
+func TestAuditFaultDomainsPostFixWorkflowRecurrenceUsesChangedVersion(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	before := auditObservation("before", "one", "v1", "stage", "weak workflow instructions", ClassWeakInstructions, 0.8, "stage")
+	before.ObservedAt = now.Add(-2 * time.Hour)
+	initial := AuditFaultDomains([]AttributionObservation{before}, FaultAuditConfig{Now: now, SampleFloor: 1})
+	id := initial.WorkflowFindings[0].ID
+
+	repeated := auditObservation("after", "one", "v2", "stage", "weak workflow instructions", ClassWeakInstructions, 0.8, "stage")
+	repeated.ObservedAt = now
+	report := AuditFaultDomains([]AttributionObservation{before, repeated}, FaultAuditConfig{
+		Now: now, SampleFloor: 1, FixesAppliedAt: map[string]time.Time{id: now.Add(-time.Hour)},
+	})
+	if len(report.WorkflowFindings) != 1 || len(report.UnknownFindings) != 0 {
+		t.Fatalf("report = %+v, want the pre-fix workflow classification preserved", report)
+	}
+	if got := report.WorkflowFindings[0].Verification; got != VerificationRepeated {
+		t.Fatalf("verification = %q, want repeated for matching failure in changed workflow version", got)
+	}
+}
+
+func TestAuditFaultDomainsPostFixProductRecurrenceUsesChangedGoober(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	first := auditObservation("before-one", "one", "v1", "stage", "shared scheduler failure", ClassUnknown, 0.9, "stage")
+	second := auditObservation("before-two", "two", "v1", "stage", "shared scheduler failure", ClassUnknown, 0.9, "stage")
+	first.ObservedAt = now.Add(-2 * time.Hour)
+	second.ObservedAt = now.Add(-2 * time.Hour)
+	first.WorkflowDigest, second.WorkflowDigest = "workflow-one", "workflow-two"
+	first.GooberDigest, second.GooberDigest = "goober-before", "goober-before"
+	initial := AuditFaultDomains([]AttributionObservation{first, second}, FaultAuditConfig{Now: now, SampleFloor: 2})
+	id := initial.ProductFindings[0].ID
+
+	repeated := auditObservation("after", "one", "v2", "stage", "shared scheduler failure", ClassUnknown, 0.9, "stage")
+	repeated.ObservedAt = now
+	repeated.WorkflowDigest = "workflow-one"
+	repeated.GooberDigest = "goober-after"
+	report := AuditFaultDomains([]AttributionObservation{first, second, repeated}, FaultAuditConfig{
+		Now: now, SampleFloor: 2, FixesAppliedAt: map[string]time.Time{id: now.Add(-time.Hour)},
+	})
+	if len(report.ProductFindings) != 1 || len(report.UnknownFindings) != 0 {
+		t.Fatalf("report = %+v, want the pre-fix product classification preserved", report)
+	}
+	if got := report.ProductFindings[0].Verification; got != VerificationRepeated {
+		t.Fatalf("verification = %q, want repeated for matching failure in changed Goober version", got)
+	}
+}
+
 func TestAuditFaultDomainsPostFixVerificationRequiresMatchingCohort(t *testing.T) {
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	fixedAt := now.Add(-time.Hour)

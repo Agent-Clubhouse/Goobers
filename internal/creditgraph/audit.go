@@ -233,11 +233,23 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 		ID:        "backprop-" + fmt.Sprintf("%x", sha256.Sum256([]byte(signature)))[:20],
 		Signature: signature, Verification: VerificationOpen,
 	}
+	classificationSignals := signals
+	if fixedAt, ok := config.FixesAppliedAt[finding.ID]; ok {
+		var baseline []faultSignal
+		for _, signal := range signals {
+			if signal.observation.ObservedAt.IsZero() || !signal.observation.ObservedAt.After(fixedAt) {
+				baseline = append(baseline, signal)
+			}
+		}
+		if len(baseline) > 0 {
+			classificationSignals = baseline
+		}
+	}
 	runSet, workflowSet, versionSet, environmentSet, pathSet := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	domainCounts := map[FaultDomain]int{}
 	confidence := 0.0
 	missingProvenance, contradictory := false, false
-	for _, signal := range signals {
+	for _, signal := range classificationSignals {
 		runSet[signal.observation.RunID] = true
 		workflowSet[signal.observation.Workflow] = true
 		versionSet[signal.observation.EffectiveVersion] = true
@@ -287,7 +299,7 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 		finding.Domain = FaultDomainUnknown
 		finding.CounterEvidence = append(finding.CounterEvidence, "the signature has not crossed unrelated workflow boundaries")
 	}
-	finding.Confidence = round(confidence / float64(len(signals)))
+	finding.Confidence = round(confidence / float64(len(classificationSignals)))
 	if sparse {
 		finding.Confidence = min(finding.Confidence, 0.35)
 		finding.CounterEvidence = append(finding.CounterEvidence, fmt.Sprintf("sample floor not met: %d runs observed, %d required", len(runSet), config.SampleFloor))
@@ -302,7 +314,7 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 	if finding.Domain == FaultDomainUnknown {
 		finding.Confidence = min(finding.Confidence, 0.45)
 	}
-	finding.Rationale, finding.AlternativeDomains, finding.RecommendedOwner, finding.RecommendedAction = explainFaultFinding(finding, len(signals))
+	finding.Rationale, finding.AlternativeDomains, finding.RecommendedOwner, finding.RecommendedAction = explainFaultFinding(finding, len(classificationSignals))
 	finding.Verification = verificationState(finding, signals, all, config)
 	return finding
 }
@@ -368,7 +380,6 @@ func verificationState(finding FaultFinding, signals []faultSignal, all []Attrib
 		}
 		repeatedRuns[signal.observation.RunID] = true
 	}
-	workflowFix := localizedWorkflowCohort(baseline)
 	affectedWorkflows := map[string]bool{}
 	for _, signal := range baseline {
 		if signal.observation.Workflow != "" {
@@ -380,7 +391,7 @@ func verificationState(finding FaultFinding, signals []faultSignal, all []Attrib
 	for _, observation := range all {
 		repeated := repeatedRuns[observation.RunID]
 		if observation.ObservedAt.IsZero() || !observation.ObservedAt.After(fixedAt) ||
-			!matchesVerificationCohort(observation, baseline, finding.Domain, workflowFix, repeated) {
+			!matchesVerificationCohort(observation, baseline, finding.Domain, repeated) {
 			continue
 		}
 		if repeated {
@@ -405,30 +416,11 @@ func verificationState(finding FaultFinding, signals []faultSignal, all []Attrib
 	return VerificationRecovered
 }
 
-func localizedWorkflowCohort(signals []faultSignal) bool {
-	if len(signals) == 0 {
-		return false
-	}
-	workflow, version, path := signals[0].observation.Workflow, signals[0].observation.EffectiveVersion, strings.Join(signals[0].path, "\x00")
-	if workflow == "" || version == "" || path == "" {
-		return false
-	}
-	for _, signal := range signals {
-		if signalDomain(signal) != FaultDomainWorkflow ||
-			signal.observation.Workflow != workflow ||
-			signal.observation.EffectiveVersion != version ||
-			strings.Join(signal.path, "\x00") != path {
-			return false
-		}
-	}
-	return true
-}
-
 func matchesVerificationCohort(
 	observation AttributionObservation,
 	baseline []faultSignal,
 	domain FaultDomain,
-	workflowFix, repeated bool,
+	repeated bool,
 ) bool {
 	for _, signal := range baseline {
 		affected := signal.observation
@@ -436,12 +428,6 @@ func matchesVerificationCohort(
 			affected.Workload == "" || observation.Workload != affected.Workload ||
 			!sameStringSet(observation.Environments, affected.Environments) ||
 			!observationExercisesPath(observation, signal.path) {
-			continue
-		}
-		if workflowFix {
-			if verificationVersionMatches(observation, affected, domain, repeated) {
-				return true
-			}
 			continue
 		}
 		if verificationVersionMatches(observation, affected, domain, repeated) {
@@ -455,8 +441,8 @@ func verificationVersionMatches(observation, affected AttributionObservation, do
 	if observation.EffectiveVersion == "" || affected.EffectiveVersion == "" {
 		return false
 	}
-	if repeated {
-		return observation.EffectiveVersion == affected.EffectiveVersion
+	if repeated && observation.EffectiveVersion == affected.EffectiveVersion {
+		return true
 	}
 	switch domain {
 	case FaultDomainWorkflow:
