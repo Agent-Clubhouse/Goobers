@@ -590,6 +590,34 @@ func pullRequestURLMatchesRepository(repo apiv1.RepoRef, rawURL string, number i
 				return repo.Project == "" || strings.EqualFold(parts[i-1], repo.Project)
 			}
 		}
+		return adoAPIPullRequestURLMatchesRepository(parts, host, visualStudioHost, repo, numberText)
+	}
+	return false
+}
+
+// adoAPIPullRequestURLMatchesRepository accepts the API form of an Azure
+// DevOps pull request URL alongside the browser (_git/.../pullrequest/<n>)
+// form matched above (ADO-N39). PollPullRequest and friends fell back to the
+// server's opaque _apis URL whenever _links.web.href was empty, so a
+// configured PR target with such a URL always failed the browser-form match
+// and the target was rejected as unresolvable even though it was correct.
+// The repository segment is only ever accepted when it equals the
+// configured repository's name (EqualFold) — an opaque GUID there is never
+// verified against anything this process can check without an extra network
+// call, so it is always rejected rather than trusted.
+func adoAPIPullRequestURLMatchesRepository(parts []string, host, visualStudioHost string, repo apiv1.RepoRef, numberText string) bool {
+	for i := 1; i+5 < len(parts); i++ {
+		organizationMatches := host == visualStudioHost ||
+			(i >= 2 && strings.EqualFold(parts[i-2], repo.Owner))
+		if organizationMatches &&
+			strings.EqualFold(parts[i], "_apis") &&
+			strings.EqualFold(parts[i+1], "git") &&
+			strings.EqualFold(parts[i+2], "repositories") &&
+			strings.EqualFold(parts[i+3], repo.Name) &&
+			strings.EqualFold(parts[i+4], "pullRequests") &&
+			parts[i+5] == numberText {
+			return repo.Project == "" || strings.EqualFold(parts[i-1], repo.Project)
+		}
 	}
 	return false
 }
