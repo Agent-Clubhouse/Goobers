@@ -464,12 +464,23 @@ func (c *Client) Shutdown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("shutdown telemetry traces: %w", err))
 		}
 	}
-	// Best-effort, exactly as in Flush.
-	if c.meterProvider != nil {
-		_ = c.meterProvider.Shutdown(ctx)
-	}
 	if c.journalLogs != nil {
 		_ = c.journalLogs.shutdown(ctx)
+	}
+	// Journal shutdown can create the final stopping/shutdown drop counts, so
+	// it must settle them before the meter provider performs its final export.
+	// If the journal consumed the caller's deadline while abandoning a blocked
+	// backlog, give that final metric export its own bounded best-effort window;
+	// otherwise passing the already-cancelled context guarantees the new counts
+	// can never leave the process.
+	if c.meterProvider != nil {
+		metricCtx := ctx
+		cancel := func() {}
+		if ctx.Err() != nil {
+			metricCtx, cancel = context.WithTimeout(context.Background(), journalLogTimeout)
+		}
+		_ = c.meterProvider.Shutdown(metricCtx)
+		cancel()
 	}
 	return errors.Join(errs...)
 }

@@ -722,3 +722,59 @@ func TestJournalLogsShutdownDropsAreChargedToShutdown(t *testing.T) {
 	}
 	close(exporter.release)
 }
+
+// TestClientShutdownExportsFinalJournalDropCauses exercises the real Client
+// lifecycle boundary. The journal exporter is held past the shutdown deadline
+// so shutdown itself creates both stopping and abandoned-backlog drops; the
+// metric exporter must observe those causes before its provider is closed.
+func TestClientShutdownExportsFinalJournalDropCauses(t *testing.T) {
+	metricExporter := &countingMetricExporter{}
+	client := newMetricsClient(t, Config{
+		MetricExporter:       metricExporter,
+		MetricExportInterval: time.Hour,
+	})
+	logExporter := &journalTestExporter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	defer close(logExporter.release)
+	client.journalLogs = newJournalLogPipeline(logExporter, resource.Empty(), nil)
+	client.journalLogs.observeDrops = client.journalExportDropped
+
+	const accepted = 4
+	for range accepted {
+		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	}
+	<-logExporter.started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- client.Shutdown(ctx) }()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		client.journalLogs.mu.Lock()
+		stopping := client.journalLogs.stopping
+		client.journalLogs.mu.Unlock()
+		if stopping {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("journal pipeline never entered stopping state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	client.Commit(journal.CommittedEvent{JournalID: "after-stop", Body: []byte("{}")})
+
+	if err := <-done; err != nil {
+		t.Fatalf("Client.Shutdown: %v", err)
+	}
+	counts := metricExporter.journalDropCounts()
+	if got := counts[dropStopping.String()]; got != 1 {
+		t.Errorf("stopping metric = %d, want 1 (all causes: %v)", got, counts)
+	}
+	if got, want := counts[dropShutdown.String()], int64(accepted-1); got != want {
+		t.Errorf("shutdown metric = %d, want %d (all causes: %v)", got, want, counts)
+	}
+}

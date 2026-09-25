@@ -221,12 +221,16 @@ type journalLogPipeline struct {
 	completed       atomic.Uint64
 	scrubber        journal.Scrubber
 	// dropCauses breaks dropped down by journalDropCause. Written by drop on the
-	// journal write path (atomics only) and published by the worker.
+	// journal write path (atomics only) and published outside that path.
 	dropCauses [numJournalDropCauses]atomic.Uint64
+	// dropPublishMu lets shutdown settle counts concurrently with the worker
+	// without double-publishing a delta. It is never taken by commit/drop.
+	dropPublishMu sync.Mutex
+	reportedDrops [numJournalDropCauses]uint64
 	// observeDrops publishes newly counted drops to the metric. Called only from
-	// the worker goroutine, never from commit, and nil when the client has no
-	// instruments — which includes JournalLogsOnly mode, where the stats API is
-	// the only channel.
+	// the worker or shutdown goroutine, never from commit, and nil when the
+	// client has no instruments — which includes JournalLogsOnly mode, where the
+	// stats API is the only channel.
 	observeDrops func(cause journalDropCause, delta uint64)
 }
 
@@ -345,14 +349,17 @@ func (c *Client) journalExportDropped(cause journalDropCause, delta uint64) {
 // suppresses a recurring cause on its own 30-minute window instead of one shared
 // window hiding a second, different cause behind the first. Six causes sit far
 // inside the handler's 64-signature table.
-func (p *journalLogPipeline) publishDrops(reported *[numJournalDropCauses]uint64) {
+
+func (p *journalLogPipeline) publishDrops() {
+	p.dropPublishMu.Lock()
+	defer p.dropPublishMu.Unlock()
 	for cause := journalDropCause(0); cause < numJournalDropCauses; cause++ {
 		total := p.dropCauses[cause].Load()
-		delta := total - reported[cause]
+		delta := total - p.reportedDrops[cause]
 		if delta == 0 {
 			continue
 		}
-		reported[cause] = total
+		p.reportedDrops[cause] = total
 		if p.observeDrops != nil {
 			p.observeDrops(cause, delta)
 		}
@@ -371,10 +378,9 @@ func (p *journalLogPipeline) run() {
 			p.reporter.Handle(fmt.Errorf("journal logs shutdown: %w", err))
 		}
 	}()
-	var reportedByCause [numJournalDropCauses]uint64
 	started := false
 	for {
-		p.publishDrops(&reportedByCause)
+		p.publishDrops()
 		select {
 		case request := <-p.flushes:
 			err := p.provider.ForceFlush(request.ctx)
@@ -384,7 +390,7 @@ func (p *journalLogPipeline) run() {
 			request.done <- err
 		default:
 		}
-		p.publishDrops(&reportedByCause)
+		p.publishDrops()
 		p.mu.Lock()
 		if p.ctx.Err() != nil {
 			abandoned := uint64(p.length)
@@ -395,7 +401,7 @@ func (p *journalLogPipeline) run() {
 			close(p.progress)
 			p.progress = make(chan struct{})
 			p.mu.Unlock()
-			p.publishDrops(&reportedByCause)
+			p.publishDrops()
 			return
 		}
 		if p.length == 0 {
@@ -524,6 +530,9 @@ func (p *journalLogPipeline) shutdown(ctx context.Context) error {
 	p.signal()
 	select {
 	case <-p.done:
+		// A commit that observed stopping can race the worker's final loop.
+		// Settle that last delta before Client shuts down the metric provider.
+		p.publishDrops()
 		return nil
 	case <-ctx.Done():
 		p.cancel()
@@ -542,6 +551,9 @@ func (p *journalLogPipeline) shutdown(ctx context.Context) error {
 		clear(p.queue[:])
 		p.length = 0
 		p.mu.Unlock()
+		// The worker may still be blocked in the exporter. Publish the abandoned
+		// backlog synchronously so Client can export its metric before returning.
+		p.publishDrops()
 		// Shutdown runs outside journal locks. Report before returning so a
 		// short-lived CLI cannot exit before the worker reports cancellation.
 		p.reporter.Handle(fmt.Errorf("journal logs shutdown: %w", ctx.Err()))
