@@ -11,6 +11,40 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// Authorization schemes an Azure DevOps credential is sent with. The daemon
+// delivers the scheme beside the credential it mints, as a non-secret value,
+// so a stage never infers it from the token's shape.
+const (
+	// SchemeBasic is a PAT, sent as HTTP Basic authentication.
+	SchemeBasic = "basic"
+	// SchemeBearer is a Microsoft Entra access token, sent as a bearer token.
+	SchemeBearer = "bearer"
+)
+
+// AuthScheme returns the authorization scheme repo's configured credential
+// uses: SchemeBasic for a PAT (the kind an ADO repo without an auth block
+// uses), SchemeBearer for every Microsoft Entra identity kind, and "" for a
+// repo that is not Azure DevOps or names an unsupported kind. The scheme
+// follows from configuration alone, so it can be stated before any token is
+// minted.
+func AuthScheme(repo instance.RepoRef) string {
+	if repo.Provider != string(providers.ProviderADO) {
+		return ""
+	}
+	kind := instance.ADOAuthPAT
+	if repo.Auth != nil {
+		kind = repo.Auth.Kind
+	}
+	switch kind {
+	case instance.ADOAuthPAT:
+		return SchemeBasic
+	case instance.ADOAuthAzureCLI, instance.ADOAuthWorkloadIdentity, instance.ADOAuthManagedIdentity:
+		return SchemeBearer
+	default:
+		return ""
+	}
+}
+
 // Source builds the configured Azure DevOps credential source. stores
 // resolves a store-backed PAT ref (#683); it may be nil only when the PAT is
 // env/file-backed — a store ref without it fails closed at construction.

@@ -310,7 +310,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// plane and inject them exactly as the local executor does. Resolution
 	// happens HERE, at stage start, not at dispatch — so no secret ever rides
 	// a dispatch payload or a pod spec (DS9/DS10, #2931).
-	creds, credErr := resolveStageCredentials(ctx)
+	creds, repoAuthScheme, credErr := resolveStageCredentialsWithScheme(ctx)
 	if credErr != nil {
 		// Fail closed. A stage that declared capabilities and did not get them
 		// would run uncredentialed and fail far away, against the provider,
@@ -369,10 +369,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// absent: it exists to provision the working tree, and exporting it here
 	// would hand repository authority to a stage that never declared it —
 	// the over-grant #3770 exists to avoid.
-	credEnv := make([]string, 0, len(creds))
-	for _, cred := range creds {
-		credEnv = append(credEnv, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
-	}
+	credEnv := stageCredentialEnv(creds, repoAuthScheme)
 	// A provider builtin writes its result to an IMPLICIT path when the stage
 	// declared no resultFile — the local executor derives it from the
 	// subcommand (shell.go), and so must the pod, or the builtin writes a file
@@ -806,14 +803,46 @@ func dispatcherStampedEnvNames() []string {
 // capabilities this stage declared. The dispatcher stamps the capability NAMES
 // only; the values never exist outside this process and the daemon.
 func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+	creds, _, err := resolveStageCredentialsWithScheme(ctx)
+	return creds, err
+}
+
+// resolveStageCredentialsWithScheme is resolveStageCredentials plus the
+// non-secret authorization scheme the plane states for an Azure DevOps
+// repository credential ("" for every other provider).
+func resolveStageCredentialsWithScheme(ctx context.Context) ([]dispatcher.MintedCredential, string, error) {
 	capabilities, err := stageDeclaredCapabilities()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if len(capabilities) == 0 {
-		return nil, nil
+		return nil, "", nil
 	}
-	return resolveCapabilities(ctx, capabilities)
+	client, err := credentialPlaneClient(capabilities)
+	if err != nil {
+		return nil, "", err
+	}
+	resolution, err := client.ResolveStage(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
+	return resolution.Credentials, resolution.RepoAuthScheme, err
+}
+
+// stageCredentialEnv renders the stage's own resolved credentials as the
+// GOOBERS_CRED_<capability> variables the local executor sets, plus
+// GOOBERS_REPO_AUTH_SCHEME when the plane stated the scheme of an Azure DevOps
+// repository credential. The scheme is not a secret; it tells the stage which
+// Authorization header the delivered token belongs in. The rule matches the
+// local executor's (executor.ShellExecutor.appendRepoEnv): the scheme travels
+// only with at least one credential. cred.ExpiresAt is not exported yet; the
+// consumer that raises a clear "credential expired" error lands with ADO-N18.
+func stageCredentialEnv(creds []dispatcher.MintedCredential, repoAuthScheme string) []string {
+	env := make([]string, 0, len(creds)+1)
+	for _, cred := range creds {
+		env = append(env, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
+	}
+	if repoAuthScheme != "" && len(creds) > 0 {
+		env = append(env, executor.RepoAuthSchemeEnvVar+"="+repoAuthScheme)
+	}
+	return env
 }
 
 // stageDeclaredCapabilities decodes the capability NAMES the dispatcher
@@ -851,15 +880,25 @@ func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredenti
 }
 
 func resolveCapabilities(ctx context.Context, capabilities []string) ([]dispatcher.MintedCredential, error) {
+	client, err := credentialPlaneClient(capabilities)
+	if err != nil {
+		return nil, err
+	}
+	return client.Resolve(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
+}
+
+// credentialPlaneClient is the pod's client for the daemon's credential plane,
+// or an error naming the missing endpoint for a stage that declared
+// capabilities.
+func credentialPlaneClient(capabilities []string) (*dispatcher.CredentialResolveClient, error) {
 	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
 	if daemonAPI == "" {
 		return nil, fmt.Errorf("stage declares capabilities %v but %s is unset; the pod cannot reach the credential plane", capabilities, dispatcher.EnvDaemonAPI)
 	}
-	client := &dispatcher.CredentialResolveClient{
+	return &dispatcher.CredentialResolveClient{
 		BaseURL: daemonAPI,
 		Token:   os.Getenv(dispatcher.EnvPodToken),
-	}
-	return client.Resolve(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
+	}, nil
 }
 
 // recordStageArtifacts writes the stage's streams into the run journal through

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
@@ -335,10 +336,26 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 	}
 
 	return httpapi.CredentialResolveResponse{
-		RunID:       request.RunID,
-		Stage:       request.Stage,
-		Credentials: minted,
+		RunID:          request.RunID,
+		Stage:          request.Stage,
+		Credentials:    minted,
+		RepoAuthScheme: s.repoAuthScheme(scope, len(minted)),
 	}, nil
+}
+
+// repoAuthScheme is the non-secret authorization scheme of the gaggle's Azure
+// DevOps repository credential, stated beside the minted values so a stage pod
+// builds the right header without inferring it from the token (#5656). Empty
+// when nothing was minted or the gaggle's repository is not on Azure DevOps.
+func (s *daemonCredentialService) repoAuthScheme(scope credentialGaggleScope, minted int) string {
+	if minted == 0 {
+		return ""
+	}
+	repo, ok := adoRepoForGaggle(s.config, scope.Project)
+	if !ok {
+		return ""
+	}
+	return adoauth.AuthScheme(repo)
 }
 
 // resolveExternalTelemetryConnectorCredential mints connectorName's auth

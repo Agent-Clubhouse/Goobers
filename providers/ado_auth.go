@@ -23,6 +23,15 @@ const (
 	adoCredentialPAT    = "pat"
 	adoCredentialBearer = "bearer"
 
+	// ADOCredentialKindPAT is the ADOCredential kind of a personal access
+	// token. It and ADOCredentialKindBearer are exported so a caller outside
+	// this package (a test's fake source, for one) builds a credential the
+	// provider accepts without restating the kind strings.
+	ADOCredentialKindPAT = adoCredentialPAT
+	// ADOCredentialKindBearer is the ADOCredential kind of a Microsoft Entra
+	// token.
+	ADOCredentialKindBearer = adoCredentialBearer
+
 	adoTokenRefreshSkew = 5 * time.Minute
 
 	// adoForceMsaPassThroughHeader and adoForceMsaPassThroughValue make a
@@ -116,6 +125,28 @@ func (c ADOCredential) authorizationHeader() (string, error) {
 	}
 }
 
+// ScrubForms returns every form in which this credential can appear in a
+// request: the raw secret and the Authorization value built from it — the
+// whole "Bearer <token>" value for a bearer credential, or the base64 Basic
+// value with and without its "Basic " prefix for a PAT. Registering every form
+// with a secret registrar is what lets a scrubber redact a captured header as
+// well as the bare token. The daemon's minting source and the provider's own
+// requests call this one function, so both register the same strings.
+func (c ADOCredential) ScrubForms() []string {
+	if strings.TrimSpace(c.Secret) == "" {
+		return nil
+	}
+	forms := []string{c.Secret}
+	header, err := c.authorizationHeader()
+	if err != nil {
+		return forms
+	}
+	if encoded, basic := strings.CutPrefix(header, "Basic "); basic {
+		return append(forms, encoded, header)
+	}
+	return append(forms, header)
+}
+
 // adoGitAuthEnv renders the child-process-only Git environment for one
 // authenticated request. bearer must come from the credential kind (e.g.
 // ADOCredential.Kind), not from re-parsing header, so a caller can never
@@ -170,8 +201,9 @@ func ADOGitAuthEnvironment(ctx context.Context, source ADOCredentialSource, regi
 		return nil, err
 	}
 	if registrar != nil {
-		registrar.Register([]byte(credential.Secret))
-		registrar.Register([]byte(strings.TrimSpace(strings.TrimPrefix(header, "Basic "))))
+		for _, form := range credential.ScrubForms() {
+			registrar.Register([]byte(form))
+		}
 	}
 	return adoGitAuthEnv(header, remoteURL, credential.Kind == adoCredentialBearer), nil
 }

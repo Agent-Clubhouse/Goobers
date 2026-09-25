@@ -94,6 +94,15 @@ auth:
   # clientId: optional-user-assigned-identity-client-id
 ```
 
+The daemon resolves these identities (see
+[Where the credential resolves](#where-the-credential-resolves)), so the
+workload identity or managed identity must be available to the daemon's own
+process or pod, not only to an interactive shell. The Kubernetes reference
+describes the
+[daemon pod's workload identity](../../deploy/reference/README.md#azure-devops-workload-identity-for-the-daemon).
+The service principal or managed identity must be added to the Azure DevOps
+organization at Basic access; Stakeholder access cannot use Repos.
+
 ## PAT compatibility
 
 PAT authentication remains available for controlled headless environments.
@@ -114,6 +123,25 @@ repos:
 Omitting `auth` while configuring `token` preserves the legacy PAT behavior.
 Token files must pass Goobers' private-file permission check.
 
+Global PATs stop working on 2026-12-01. Prefer `azure-cli`, workload identity
+or managed identity. Where a PAT is still needed, use an organization-scoped
+PAT held in a declared [secret store](secret-stores.md):
+
+```yaml
+repos:
+  - provider: ado
+    owner: my-organization
+    project: my-project
+    name: my-repository
+    auth:
+      kind: pat
+    token:
+      store: my-vault/ado-pat
+```
+
+The daemon resolves a store-backed PAT for the repository's grants and for
+the ci-poll executor.
+
 Select scopes for the operations you enable, not full access:
 
 | Operation | PAT scope |
@@ -133,6 +161,50 @@ and [PR status API](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/
 For the PAT-based onboarding path, `connect --seed` uses the same named token
 for Git reachability and Boards creation. `validate --check-repos` separately
 checks Boards read access. See the [production onboarding guide](arbitrary-repo-onboarding.md#3-initialize-the-instance).
+
+## Where the credential resolves
+
+Every auth kind resolves in the daemon. The daemon registers the repository's
+credential source as the source of the repository's grants, the same way it
+does for a GitHub App, and mints a value when a stage starts:
+
+| Kind | Resolved by the daemon from | Value | Scheme | Stated expiry |
+| --- | --- | --- | --- | --- |
+| `azure-cli` | the daemon's own Azure CLI login | Microsoft Entra token, refreshed before expiry | `bearer` | yes |
+| `workload-identity` | the daemon's federated workload identity (`AZURE_*`) | Microsoft Entra token, refreshed before expiry | `bearer` | yes |
+| `managed-identity` | the daemon host's managed identity | Microsoft Entra token, refreshed before expiry | `bearer` | yes |
+| `pat` | `token.env`, `token.file`, `token.keychain` or `token.store` | the PAT | `basic` | no (unbounded) |
+
+Each kind backs every repository capability: `repo:push`, `provider:pr:write`,
+`provider:ci:cancel`, `ado:pr:complete`, and the `github:*` capabilities that
+DSL 2.0 routes to the Azure DevOps repository, unless a `credentials:` entry
+or `daemonIdentity` sources a capability from its own token. A stage receives a credential only
+for the capabilities it declares:
+
+- A local stage receives `GOOBERS_CRED_<CAPABILITY>`.
+- A stage pod resolves the same values from the daemon's credential plane at
+  stage start.
+- A deterministic stage that received at least one credential, local or in a
+  pod, also receives `GOOBERS_REPO_AUTH_SCHEME` (`basic` or `bearer`), so it
+  never infers the scheme from the token's shape. Agentic stages do not
+  receive it.
+
+The daemon tracks each Entra token's expiry and refreshes it shortly before it
+lapses, but the stage does not receive the expiry. A delivered token can
+therefore have only a few minutes left.
+
+The workload and managed identity sources that back grants are built on first
+use, so a host without the identity can still run read-only commands such as
+`goobers status`. The daemon's gaggle runtime still builds the identity at
+startup to authenticate its worktree git operations, so a daemon whose
+workload-identity projection is missing fails to start.
+
+A reference repository (`additionalRepos`) that authenticates as a Microsoft
+Entra identity keeps using the gaggle's own repository source for its checkout.
+
+Built-in stage commands still build their Azure DevOps connection from the
+repository's configured `auth` block. They move to the delivered credential in a
+later release.
 
 ## Publishing review and CI evidence
 
@@ -160,8 +232,14 @@ the instance config surface documented above.
 - Entra tokens are cached with an expiry-aware refresh window.
 - A 401 invalidates an expiring credential and retries exactly once.
 - PAT sources are not retried as though they were refreshable.
-- REST and Git credential representations are registered with the journal and
-  telemetry scrubber.
+- The daemon registers every value it resolves with the journal and telemetry
+  scrubber when it mints it, in each form the value can travel in: the raw
+  token, the `Bearer` header value, and the base64 `Basic` header value.
+  Providers that the daemon constructs with a registrar register the same
+  forms for each request.
+- A stage command that builds its own Azure DevOps connection from the `auth`
+  block does not register what it resolves with the exact-value scrubber;
+  the pattern scrubber still applies to its output.
 - Git receives credentials through its child environment, never command-line
   arguments, repository remotes, or persisted Git configuration.
 - Credential-source failures fail closed; Goobers never falls back to another

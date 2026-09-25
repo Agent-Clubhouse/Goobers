@@ -254,6 +254,34 @@ state is intentional.
   `repoRef` rather than a field on it, so `repoRef`'s own shape never changes
   regardless of checkout config.
 
+### Credential delivery
+
+Credentials never ride the envelope. For each declared capability that has a
+grant, the daemon resolves the value when the stage starts and delivers it as
+`GOOBERS_CRED_<CAPABILITY>` (the capability upper-cased, non-alphanumerics as
+`_`). A declared capability with no grant is skipped; one whose grant fails to
+resolve fails the stage closed. Every delivered value is registered with the
+scrubber first.
+
+- **Local stages** receive the variables from the runner's injector.
+- **Stage pods** resolve them from the daemon's credential plane
+  (`POST /api/v1/credentials/resolve`) at stage start, never at dispatch. A value
+  whose source states an expiry, such as an App or Microsoft Entra token,
+  carries it in the response.
+
+A repository grant is backed by the repository's own configured source: a
+GitHub App mints an installation token, and any other static token is read.
+Every Azure DevOps auth kind resolves in the daemon, so `repo:push` and
+the other repository capabilities have a credential for `azure-cli`,
+`workload-identity`, `managed-identity` and `pat` alike. With an Azure DevOps
+credential the stage also receives the non-secret `GOOBERS_REPO_AUTH_SCHEME`
+(`basic` for a PAT, `bearer` for an Entra token), so it builds the right
+Authorization header without inferring it from the token. The rule is the same
+for a local stage and a stage pod: a deterministic stage that received at least
+one `GOOBERS_CRED_<CAPABILITY>` also receives the scheme. Agentic stages do not
+receive it. The stage does not receive the token's expiry. See "Where the
+credential resolves" in `docs/guides/ado-authentication.md`.
+
 ## Where a stage writes its output
 
 The stage returns a `ResultEnvelope`:

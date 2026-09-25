@@ -383,6 +383,81 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	}
 }
 
+// TestShellExecutor_StampsADORepoAuthSchemeWithTheCredentials proves the
+// non-secret authorization scheme of an Azure DevOps credential travels with
+// the delivered credentials, on the rule a stage pod uses: any stage that
+// received one of its declared credentials gets it, a goobers CLI or not; a
+// stage with no credential does not; and an executor that knows no scheme
+// (any other provider) never stamps it.
+func TestShellExecutor_StampsADORepoAuthSchemeWithTheCredentials(t *testing.T) {
+	const script = "printf '%s|%s|%s' \"$GOOBERS_REPO_PROVIDER\" \"$GOOBERS_REPO_PROJECT\" \"${GOOBERS_REPO_AUTH_SCHEME-unset}\""
+	stub := filepath.Join(t.TempDir(), "goobers")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adoRepo := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "example-repo"}
+	cliCommand := []string{"goobers", "env-check"}
+	for _, tc := range []struct {
+		name         string
+		scheme       string
+		repo         apiv1.RepoRef
+		capabilities []string
+		command      []string
+		want         string
+	}{
+		{
+			name:         "cli stage with a credential",
+			scheme:       "bearer",
+			repo:         adoRepo,
+			capabilities: []string{"repo:push"},
+			command:      cliCommand,
+			want:         "ado|example-project|bearer",
+		},
+		{
+			name:         "shell stage with a credential",
+			scheme:       "basic",
+			repo:         adoRepo,
+			capabilities: []string{"repo:push"},
+			command:      []string{"sh", "-c", script},
+			want:         "||basic",
+		},
+		{
+			name:    "cli stage without a credential",
+			scheme:  "bearer",
+			repo:    adoRepo,
+			command: cliCommand,
+			want:    "ado|example-project|unset",
+		},
+		{
+			name:         "executor with no scheme",
+			repo:         apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example-org", Name: "example-repo"},
+			capabilities: []string{"repo:push"},
+			command:      cliCommand,
+			want:         "github||unset",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, rec := newTestExecutor(t, newTestInjector(t, "repo:push", "GOOBERS_TEST_REPO_PUSH", "repo-token-value"))
+			exec.SelfBin = stub
+			exec.RepoAuthScheme = tc.scheme
+			env := baseEnvelope(t)
+			env.RepoRef = tc.repo
+			env.Capabilities = tc.capabilities
+
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: tc.command})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success", result.Status)
+			}
+			if got := string(rec.recorded["task-1/stdout.log"]); got != tc.want {
+				t.Fatalf("stdout = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestShellExecutor_BuiltinErrorFileHonorsScratchDir is the direct
 // regression test for #3342: a read-only-root deployment with nothing
 // writable at the OS default temp directory previously failed every
