@@ -468,7 +468,12 @@ jobs:
     # preflight added its ~4.4 min to every run's wall clock. A preflight
     # failure cancels the run instead (cancel-on-preflight-failure).
     strategy:
-      fail-fast: false
+      # On a pull request, one red shard cancels its siblings: the matrix
+      # result is then `failure` at once, so cancel-on-unit-failure (which
+      # depends on every leg) fires without waiting for the slowest shard. Main pushes and merge groups keep every shard running,
+      # matching the cancellers: there the full failure signal is wanted and
+      # escalate-main-failure reports it.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         shard: ["1/5", "2/5", "3/5", "4/5", "5/5"]
     runs-on: ubuntu-latest
@@ -545,6 +550,43 @@ jobs:
             echo "::error::go mod download for release tag $latest_tag failed after 3 attempts"
             exit 1
           fi
+
+      # Race-instrumented builds share no action IDs with the non-race build
+      # setup-go's cache holds, so without this every shard spent its first
+      # minutes compiling cold. race-build-cache-warm publishes, from main, a
+      # cache holding exactly what the shards compile; it is restored on top of
+      # setup-go's (entries are content-addressed, so the overlay is safe). A
+      # shard never saves: a pull-request entry is invisible to every other pull
+      # request, and five ~1 GB uploads per run would evict everything else.
+      # Keep both steps byte-identical to race-build-cache-warm's
+      # (TestRaceBuildCacheKeyDerivationIsShared).
+      - name: Resolve race build cache key
+        id: race-build-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The Go build cache is only valid for the toolchain and C compiler
+          # (runner image) that wrote it. go.sum and the commit only choose the
+          # closest entry: every cache hit is still verified by action ID.
+          sum=$(sha256sum go.sum | cut -c1-16)
+          prefix="go-race-build-v1-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-$(go env GOVERSION)"
+          {
+            echo "path=$(go env GOCACHE)"
+            echo "restore-go=${prefix}-"
+            echo "restore-sum=${prefix}-${sum}-"
+            echo "key=${prefix}-${sum}-${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore race build cache
+        id: race-build-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.race-build-key.outputs.path }}
+          key: ${{ steps.race-build-key.outputs.key }}
+          # Newest entry for this go.sum, else newest for this toolchain.
+          restore-keys: |
+            ${{ steps.race-build-key.outputs.restore-sum }}
+            ${{ steps.race-build-key.outputs.restore-go }}
 
       # The shard also records race-mode test timings (job "unit-shard", one
       # part file per go test invocation) so the split table can be refreshed
@@ -1154,6 +1196,150 @@ jobs:
           # marker ages out — a partially warmed repository that poisons the
           # consumers instead of helping them.
           find ~/.m2/repository -name '*.lastUpdated' -delete 2>/dev/null || true
+
+  # Default-branch writer of the race build cache the `unit` shards restore.
+  # setup-go's cache cannot serve them: it is saved once per go.sum by the first
+  # Linux job to finish (preflight, a non-race build) and never rewritten, and
+  # -race changes every action ID. This job compiles, vets and links every unit
+  # test binary with the shards' exact flags and runs none of them
+  # (GOOBERS_CI_COMPILE_ONLY), then saves only the entries that build used, so
+  # the entry is one full race build (~1 GB compressed) rather than an
+  # ever-growing union. It restores the previous entry first, so only what the
+  # push changed recompiles.
+  #
+  # Main only: GitHub scopes an entry written by a pull-request run to that pull
+  # request, where no other run can read it. It gates nothing: continue-on-error,
+  # absent from required-ci and escalate-main-failure, and a shard that misses
+  # simply compiles as it did before.
+  race-build-cache-warm:
+    name: warm race build cache
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    outputs:
+      saved-key: ${{ steps.race-build-save.outcome == 'success' && steps.race-build-key.outputs.key || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # No setup-go cache: its entry is preflight's non-race build, which this
+      # job would only have to prune again.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Download modules
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
+      - name: Resolve race build cache key
+        id: race-build-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The Go build cache is only valid for the toolchain and C compiler
+          # (runner image) that wrote it. go.sum and the commit only choose the
+          # closest entry: every cache hit is still verified by action ID.
+          sum=$(sha256sum go.sum | cut -c1-16)
+          prefix="go-race-build-v1-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-$(go env GOVERSION)"
+          {
+            echo "path=$(go env GOCACHE)"
+            echo "restore-go=${prefix}-"
+            echo "restore-sum=${prefix}-${sum}-"
+            echo "key=${prefix}-${sum}-${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore race build cache
+        id: race-build-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.race-build-key.outputs.path }}
+          key: ${{ steps.race-build-key.outputs.key }}
+          # Newest entry for this go.sum, else newest for this toolchain.
+          restore-keys: |
+            ${{ steps.race-build-key.outputs.restore-sum }}
+            ${{ steps.race-build-key.outputs.restore-go }}
+
+      # Age every restored entry so the go command re-stamps each one it uses
+      # (it only refreshes an mtime older than an hour), and record when the
+      # build starts. trim.txt is set to now so the go command's daily trim
+      # cannot delete the aged entries before the build reaches them.
+      - name: Mark restored entries unused
+        env:
+          RACE_BUILD_CACHE: ${{ steps.race-build-key.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RACE_BUILD_CACHE"
+          find "$RACE_BUILD_CACHE" -mindepth 2 -type f -exec touch -m -d '2000-01-01T00:00:00Z' {} +
+          date +%s > "$RACE_BUILD_CACHE/trim.txt"
+          touch "$RUNNER_TEMP/race-build-start"
+
+      - name: Compile every race unit test binary (no tests run)
+        env:
+          GOOBERS_CI_COMPILE_ONLY: "1"
+          GOOBERS_CI_COVERAGE: "0"
+        run: go run ./test/ci group unit
+
+      - name: Drop entries this build did not use
+        env:
+          RACE_BUILD_CACHE: ${{ steps.race-build-key.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          before=$(du -sm "$RACE_BUILD_CACHE" | cut -f1)
+          find "$RACE_BUILD_CACHE" -mindepth 2 -type f ! -newer "$RUNNER_TEMP/race-build-start" -delete
+          echo "race build cache: ${before} MB -> $(du -sm "$RACE_BUILD_CACHE" | cut -f1) MB after dropping unused entries"
+
+      - name: Save race build cache
+        id: race-build-save
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.race-build-key.outputs.path }}
+          key: ${{ steps.race-build-key.outputs.key }}
+
+  # Each main push saves a new race build cache entry under its own commit key,
+  # and the repository's cache quota (10 GB) is already full: left alone, a
+  # ~1 GB entry per push would evict every other cache within hours. Once the
+  # new entry is saved, the superseded ones on the same ref go. Consumers only
+  # ever restore the newest entry, so nothing reads the ones deleted here.
+  # Separate from the warm job so the token that can delete caches never sits
+  # in a job that compiles repository code.
+  race-build-cache-prune:
+    name: prune superseded race build caches
+    needs: [race-build-cache-warm]
+    if: ${{ needs.race-build-cache-warm.outputs.saved-key != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      actions: write
+    steps:
+      - name: Delete superseded race build cache entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: ${{ needs.race-build-cache-warm.outputs.saved-key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" \
+            --key go-race-build-v1- --limit 100 --json id,key \
+            --jq '.[] | select(.key != env.KEEP) | .id' |
+          while read -r id; do
+            gh cache delete "$id" --repo "$GITHUB_REPOSITORY" \
+              || echo "::warning::could not delete race build cache entry $id"
+          done
 
   # DELETED alongside e2e/envtest/coverage. `make test-conformance` was
   # `-run '^TestConformance' ./...`, and -run filters EXECUTION, not

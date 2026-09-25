@@ -79,8 +79,11 @@ is delivered to a running instance at each deployment tier.
   composable (scaffolded by `goobers init` locally; layout details `CFG-Q2`).
 - **CFG-008 (SHOULD):** Manifests SHOULD be validatable/lintable before apply (catch
   bad definitions early) — surfaced locally as `goobers validate`.
-- **CFG-009 (MUST):** Secrets MUST be referenced (not stored) in config: env vars /
-  token file refs at tiers 1–2; **Tier 3 (V2):** Key Vault references. One
+- **CFG-009 (MUST):** Secrets MUST be referenced (not stored) in config. **Shipped:**
+  env vars, token-file refs, macOS Keychain refs, and GitHub CLI credential-store refs
+  are all already usable at tiers 1–2, alongside `store` refs into a declared Azure Key
+  Vault secret store (`internal/credentials/source.go:26-50`;
+  `internal/instance/config.go:1147-1206`) — Key Vault is not tier-3-only. One
   secret-resolver seam, per-tier implementations (see Security).
 
 ### Delivery by tier

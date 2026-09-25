@@ -381,8 +381,13 @@ instance works" stops being the steady state.
 3. **Doctor**: assert the R2 aggregate passes/fails as seeded.
 4. **Connect**: promote fakeGitHubServer out of cmd/goobers' test package;
    requires the one missing product seam — a config/env-reachable BaseURL for
-   the GitHub provider (GitHubProvider.BaseURL exists; Gitea/ADO already read
-   config) — then `goobers connect` against the fake.
+   the GitHub provider (GitHubProvider.BaseURL exists; Gitea already reads
+   config). ADO does not: `adoauth.Provider` never overrides `BaseURL`
+   (`internal/adoauth/source.go:65`), so it always resolves to
+   `https://dev.azure.com` (`providers/ado.go:123`), and the work-item clone
+   URL is separately hard-coded (`internal/runner/run.go:6902`). Azure DevOps
+   Server (on-prem) is unsupported by this seam. Then `goobers connect`
+   against the fake.
 5. **Daemon + agentic PR**: real-process `goobers up`, run dispatched through
    live-daemon delegation, agent stage served by a stub harness binary
    (established re-exec pattern: writes ResultEnvelope completions, commits a

@@ -98,9 +98,17 @@ wiring (the strategic endpoint in §5).
 
 `buildCredentials` grows a loop over `cfg.Credentials` that merges into the default grant
 set by capability (replace-on-conflict); validation rejects an entry naming an unknown
-capability or a missing token ref at config-load (fail-closed). Note: `instance.yaml` is
-Go-validated only (no JSON schema), so the new `credentials:` field carries no schema-parity
-obligation (cf. #125/#273).
+capability or a missing token ref at config-load (fail-closed).
+
+> **Correction (2026-09-25):** the schema-parity note above is stale. `api/schemas/instance.schema.json`
+> now defines `credentials` (`credentialGrant`, :53) and `daemonIdentity` (:58), so
+> `instance.yaml` is no longer Go-validated only. The `credentials[]` entry shape has also
+> grown past the `{capability, token}` shown above: entries can also key on `mcp` (a
+> bring-your-own MCP credential, not a stage capability), scope a grant to one `harness`
+> (`copilot`/`claude-code`/`codex`, [#5148](https://github.com/Agent-Clubhouse/Goobers/issues/5148)),
+> and, for a Copilot-scoped `agent:model` grant, source from a short-lived `githubApp`
+> installation token instead of a static `token` ref (`api/schemas/instance.schema.json:434-489`).
+> See `docs/guides/github-token-scopes.md` for the current reference shape.
 
 ### 3.3 Copilot adapter env mapping — two tokens, two env vars, one subprocess
 

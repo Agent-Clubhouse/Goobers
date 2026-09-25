@@ -49,53 +49,57 @@ The artifact is JSON with `schemaVersion: 1`:
 
 The Linux race shards use reviewed package measurements checked in at
 `.github/unit-shard-weights.json`. The hermetic runner assigns the longest
-packages first to the currently lightest shard; packages below the table's
-three-second measurement threshold and packages added later use
+packages first to the currently lightest shard. Packages below the table's
+three-second measurement threshold, and packages added later, use
 `defaultSeconds`.
 
+The weights are race-mode seconds taken from the shards themselves. Each race
+shard uploads `test-timings-race-linux-<n>` with one `unit-race.part<k>.json`
+per `go test` process (job `unit-shard`, see the split section below). The
+generator merges every part of one run. A whole package must appear in exactly
+one part. A split package appears once per piece (the piece count comes from
+the split table the run was sharded with), and its pieces' seconds add up to
+the package weight. Before schemaVersion 2 the table came from the non-race
+coverage job, and `-race` scales packages very differently:
+`internal/telemetry/rollup` was weighted 14s but runs 357–462s under `-race`,
+so a "balanced" plan left real shard steps between 9 and 16 minutes. The
+hermetic loader rejects a schemaVersion 1 table.
+
 Refresh the table when the package mix or measured shard balance changes
-enough to matter; there is no enforced cadence. Stale weights degrade shard
+enough to matter. There is no enforced cadence. Stale weights degrade shard
 balance, not correctness, so nothing times the table out or fails a build over
-its age. Use the latest successful `main` `test-timings-Linux` artifact and
-its GitHub API metadata:
+its age. Regenerate the weights and the split table from the same successful
+run. Refresh the split table first when its piece counts change, because
+`-splits` must describe how the source run was sharded:
 
 ```sh
 REPOSITORY=Agent-Clubhouse/Goobers
 RUN_ID=$(gh run list --repo "$REPOSITORY" --workflow CI --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-ARTIFACT_ID=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" --paginate --jq '.artifacts[] | select(.name == "test-timings-Linux") | .id')
-JOB_ID=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --paginate --jq '.jobs[] | select(.name == "unit coverage gate (linux)" and .conclusion == "success") | .id')
 TIMING_DIR=$(mktemp -d)
-gh run download --repo "$REPOSITORY" "$RUN_ID" --name test-timings-Linux --dir "$TIMING_DIR"
-gh api "repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$TIMING_DIR/artifact.json"
-gh api "repos/$REPOSITORY/actions/jobs/$JOB_ID" > "$TIMING_DIR/job.json"
+gh run download --repo "$REPOSITORY" "$RUN_ID" --pattern 'test-timings-race-linux-*' --dir "$TIMING_DIR"
+gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" > "$TIMING_DIR/run.json"
 go run ./test/testtiming weights \
-  -timing "$TIMING_DIR/unit-Linux.json" \
-  -artifact-metadata "$TIMING_DIR/artifact.json" \
-  -job-metadata "$TIMING_DIR/job.json" \
+  $(find "$TIMING_DIR" -name 'unit-race.part*.json' -exec printf -- '-timing %s ' {} \;) \
+  -splits .github/unit-shard-splits.json \
+  -run-metadata "$TIMING_DIR/run.json" \
   -out .github/unit-shard-weights.json \
   -minimum-seconds 3
 ```
 
-The generator accepts only a completed successful canonical job on `main`,
-cross-checks the run and full commit SHA in both API records, and requires the
-artifact's `created_at` to fall within that job's execution window. It records
-that authoritative artifact timestamp as `source.generatedAt`; it never uses
-the command time or the eventual patch time. Run, job, artifact, commit,
-platform, architecture, and threshold remain in the checked-in source record so
-the measurement is independently traceable, but `generatedAt` is informational
-provenance only -- nothing checks its age.
+The generator accepts only a completed successful run. All parts must be
+`unit-shard` parts from one Linux architecture, and every package must have
+run exactly as often as it was scheduled. A missing shard artifact or a
+changed piece count is refused, never under-counted. It records the run,
+branch, full commit SHA, timing job, artifact pattern, platform, architecture
+and threshold, and uses the run's `updated_at` as `source.generatedAt` (never
+the command time). `generatedAt` is informational provenance only: nothing
+checks its age. Refresh from `main`. A PR that changes the sharding may seed
+from its own run, and the recorded branch says so.
 
-The Linux coverage job is the canonical source because it captures the
-complete unit suite in one artifact on every successful main push (the macOS
-job that previously served this role was retired by the post-#5002 macOS
-consolidation, which stopped uploading a `test-timings-macOS` artifact
-entirely). Its ordinary (non-race) package durations are relative LPT weights
-for the Linux `-race` shards, not a prediction of their absolute runtime: race
-instrumentation costs can scale packages differently even on the same
-platform. Keep the three-second floor to avoid encoding noise from tiny
-packages, and review actual Linux shard elapsed times after a refresh. Loader
-validation refuses missing or malformed provenance, but never rejects a
-weights table for being old.
+Package seconds come from concurrent `go test -p` execution on a loaded
+runner, so they include contention. That is what the shards will see too.
+Keep the three-second floor to avoid encoding noise from tiny packages, and
+review actual Linux shard elapsed times after a refresh.
 
 ## Test-level splits for heavy packages
 

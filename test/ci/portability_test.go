@@ -435,6 +435,21 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 	}
 }
 
+// A matrix job's result only settles once every leg has, so with fail-fast off
+// cancel-on-unit-failure waited for the slowest race shard before firing. On a
+// pull request a red shard must cancel its siblings; on main pushes and merge
+// groups every shard keeps running, like the cancellers themselves.
+func TestUnitRaceShardsFailFastOnPullRequestsOnly(t *testing.T) {
+	t.Parallel()
+	unit := loadCIWorkflow(t).Jobs["unit"]
+	if len(unit.Strategy.Matrix.Shard) < 2 {
+		t.Fatalf("unit has %d shards; the fail-fast invariant would pass vacuously", len(unit.Strategy.Matrix.Shard))
+	}
+	if want := "${{ github.event_name == 'pull_request' }}"; unit.Strategy.FailFast != want {
+		t.Errorf("unit strategy fail-fast = %q, want %q", unit.Strategy.FailFast, want)
+	}
+}
+
 // Nothing stops a pull-request run after one job fails, so the rest of the
 // run keeps burning runner-minutes on a result that is already red. Every
 // required job gets a canceller. It must be per job: a `needs` list waits for
@@ -484,11 +499,14 @@ func TestCIWorkflowCancelsPullRequestRunOnFirstFailure(t *testing.T) {
 		}
 	}
 	for _, name := range workflowJobNames(workflow) {
-		if strings.HasPrefix(name, "cancel-on-") {
+		// race-build-cache-prune deletes superseded cache entries on main and is
+		// held to the same no-repository-code rule by
+		// TestRaceBuildCachePruneRunsNoRepositoryCode.
+		if strings.HasPrefix(name, "cancel-on-") || name == raceCachePruneJob {
 			continue
 		}
 		if strings.Contains(workflowJob(workflow, name), "\n      actions: write") {
-			t.Errorf("job %q holds actions: write; only the cancellers may", name)
+			t.Errorf("job %q holds actions: write; only the cancellers and %s may", name, raceCachePruneJob)
 		}
 	}
 
@@ -589,11 +607,13 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	// derives the push lane from the workflow itself, so a new job that lacks
 	// the `!= 'push'` guard fails here until it is either guarded or watched.
 	//
-	// dependency-cache-warm and escalate-main-failure are exempt by name:
-	// the former is push-only, continue-on-error, and gates nothing; the latter
-	// is the escalation itself.
+	// The cache warmers (and the race cache's pruner) and escalate-main-failure
+	// are exempt by name: the former are push-only, continue-on-error, and gate
+	// nothing; the latter is the escalation itself.
 	exemptFromEscalation := map[string]bool{
 		"dependency-cache-warm": true,
+		raceCacheWarmJob:        true,
+		raceCachePruneJob:       true,
 		"escalate-main-failure": true,
 	}
 	for _, job := range workflowJobNames(workflow) {

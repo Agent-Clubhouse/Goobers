@@ -11,56 +11,90 @@ import (
 	"testing"
 )
 
-func TestGenerateShardWeightsUsesArtifactTimestampAndMeasuredThreshold(t *testing.T) {
-	timing, artifactMeta, jobMeta := validWeightInputs()
-	timing.Packages = []packageTiming{
-		{Package: "github.com/goobers/goobers/internal/z", Status: "pass", ElapsedSeconds: 3},
-		{Package: "github.com/goobers/goobers/internal/rounded", Status: "pass", ElapsedSeconds: 3.14159},
-		{Package: "github.com/goobers/goobers/internal/a", Status: "pass", ElapsedSeconds: 2.999},
-		{Package: "github.com/goobers/goobers", Status: "skip", ElapsedSeconds: 0},
-	}
+const (
+	examplePackage = "github.com/goobers/goobers/internal/example"
+	splitPackageA  = "github.com/goobers/goobers/cmd/big"
+)
 
-	got, err := generateShardWeights(timing, artifactMeta, jobMeta, 3)
-	if err != nil {
-		t.Fatal(err)
+// validRaceWeightInputs is one run's worth of race shard parts: two shards'
+// whole packages, plus a package split into two pieces, each measured by its
+// own part as the hermetic runner records it.
+func validRaceWeightInputs() weightInputs {
+	part := func(packages ...packageTiming) artifact {
+		return artifact{SchemaVersion: schemaVersion, Job: raceTimingJob, Platform: "linux", Architecture: "amd64", ElapsedSeconds: 100, Packages: packages}
 	}
-	if got.Source.GeneratedAt != artifactMeta.CreatedAt {
-		t.Fatalf("generatedAt = %q, want artifact created_at %q", got.Source.GeneratedAt, artifactMeta.CreatedAt)
-	}
-	if got.Source.Run != artifactMeta.Workflow.ID || !reflect.DeepEqual(got.Source.Jobs, []int64{jobMeta.ID}) ||
-		got.Source.Artifact != artifactMeta.ID || got.Source.Commit != artifactMeta.Workflow.HeadSHA {
-		t.Fatalf("source provenance = %+v", got.Source)
-	}
-	want := map[string]float64{
-		"github.com/goobers/goobers/internal/rounded": 3.142,
-		"github.com/goobers/goobers/internal/z":       3,
-	}
-	if !reflect.DeepEqual(got.Packages, want) {
-		t.Fatalf("packages = %#v, want measurements at the inclusive threshold rounded to milliseconds", got.Packages)
+	return weightInputs{
+		timings: []artifact{
+			part(
+				packageTiming{Package: examplePackage, Status: "pass", ElapsedSeconds: 4},
+				packageTiming{Package: "github.com/goobers/goobers/internal/rounded", Status: "pass", ElapsedSeconds: 3.14159},
+			),
+			part(packageTiming{Package: splitPackageA, Status: "pass", ElapsedSeconds: 200.5}),
+			part(
+				packageTiming{Package: "github.com/goobers/goobers/internal/small", Status: "pass", ElapsedSeconds: 2.999},
+				packageTiming{Package: "github.com/goobers/goobers", Status: "skip", ElapsedSeconds: 0},
+			),
+			part(packageTiming{Package: splitPackageA, Status: "pass", ElapsedSeconds: 100.25}),
+		},
+		pieces: map[string]int{splitPackageA: 2},
+		run: runMetadata{
+			ID: 42, HeadBranch: "main", HeadSHA: strings.Repeat("c", 40),
+			Status: "completed", Conclusion: "success", UpdatedAt: "2026-09-25T00:19:09Z",
+		},
 	}
 }
 
-func TestGenerateShardWeightsRejectsUnverifiableInputs(t *testing.T) {
+func TestGenerateShardWeightsSumsSplitPiecesAndRecordsRaceProvenance(t *testing.T) {
+	inputs := validRaceWeightInputs()
+	got, err := generateShardWeights(inputs, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := shardWeightDocument{
+		SchemaVersion:  shardWeightsSchemaVersion,
+		DefaultSeconds: defaultShardSeconds,
+		Source: shardWeightSource{
+			Run: 42, Branch: "main", Commit: strings.Repeat("c", 40), GeneratedAt: "2026-09-25T00:19:09Z",
+			TimingJobs: []string{"unit-shard"}, ArtifactPattern: "test-timings-race-linux-*",
+			Platform: "linux", Architecture: "amd64", MinimumRecordedSeconds: 3,
+		},
+		Packages: map[string]float64{
+			examplePackage: 4,
+			"github.com/goobers/goobers/internal/rounded": 3.142,
+			splitPackageA: 300.75,
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("weights = %+v\nwant %+v", got, want)
+	}
+}
+
+func TestGenerateShardWeightsRejectsIncompleteOrForeignParts(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*artifact, *artifactMetadata, *jobMetadata)
+		mutate func(*weightInputs)
 		want   string
 	}{
-		{name: "wrong branch", mutate: func(_ *artifact, meta *artifactMetadata, _ *jobMetadata) { meta.Workflow.HeadBranch = "feature" }, want: "identify main"},
-		{name: "run mismatch", mutate: func(_ *artifact, _ *artifactMetadata, job *jobMetadata) { job.RunID++ }, want: "must match"},
-		{name: "commit mismatch", mutate: func(_ *artifact, _ *artifactMetadata, job *jobMetadata) { job.HeadSHA = strings.Repeat("b", 40) }, want: "must match"},
-		{name: "failed job", mutate: func(_ *artifact, _ *artifactMetadata, job *jobMetadata) { job.Conclusion = "failure" }, want: "completed successful"},
-		{name: "timestamp outside job", mutate: func(_ *artifact, meta *artifactMetadata, _ *jobMetadata) { meta.CreatedAt = "2026-09-12T20:49:00Z" }, want: "within the producing job window"},
-		{name: "failed package", mutate: func(timing *artifact, _ *artifactMetadata, _ *jobMetadata) { timing.Packages[0].Status = "fail" }, want: "non-success status"},
-		{name: "duplicate package", mutate: func(timing *artifact, _ *artifactMetadata, _ *jobMetadata) {
-			timing.Packages = append(timing.Packages, timing.Packages[0])
-		}, want: "duplicate package"},
+		{name: "failed run", mutate: func(in *weightInputs) { in.run.Conclusion = "failure" }, want: "completed successful"},
+		{name: "short commit", mutate: func(in *weightInputs) { in.run.HeadSHA = "abc" }, want: "full commit SHA"},
+		{name: "coverage job part", mutate: func(in *weightInputs) { in.timings[0].Job = "unit" }, want: "unit-shard/linux"},
+		{name: "other platform", mutate: func(in *weightInputs) { in.timings[1].Platform = "darwin" }, want: "unit-shard/linux"},
+		{name: "mixed architecture", mutate: func(in *weightInputs) { in.timings[2].Architecture = "arm64" }, want: "one recorded architecture"},
+		{name: "failed package", mutate: func(in *weightInputs) { in.timings[0].Packages[0].Status = "fail" }, want: "non-success status"},
+		{name: "foreign package", mutate: func(in *weightInputs) { in.timings[0].Packages[0].Package = "example.com/x" }, want: "invalid package"},
+		{name: "whole package twice", mutate: func(in *weightInputs) {
+			in.timings[2].Packages = append(in.timings[2].Packages, in.timings[0].Packages[0])
+		}, want: "ran 2 times, want 1"},
+		{name: "missing piece", mutate: func(in *weightInputs) { in.timings = in.timings[:3] }, want: "ran 1 times, want 2"},
+		{name: "pieces changed", mutate: func(in *weightInputs) { in.pieces[splitPackageA] = 3 }, want: "ran 2 times, want 3"},
+		{name: "split never measured", mutate: func(in *weightInputs) { in.pieces["github.com/goobers/goobers/gone"] = 2 }, want: "never measured"},
+		{name: "no parts", mutate: func(in *weightInputs) { in.timings = nil }, want: "at least one"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			timing, artifactMeta, jobMeta := validWeightInputs()
-			tt.mutate(&timing, &artifactMeta, &jobMeta)
-			_, err := generateShardWeights(timing, artifactMeta, jobMeta, 3)
+			inputs := validRaceWeightInputs()
+			tt.mutate(&inputs)
+			_, err := generateShardWeights(inputs, 3)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}
@@ -69,20 +103,25 @@ func TestGenerateShardWeightsRejectsUnverifiableInputs(t *testing.T) {
 }
 
 func TestRunWeightsWritesDeterministicDocument(t *testing.T) {
-	timing, artifactMeta, jobMeta := validWeightInputs()
+	inputs := validRaceWeightInputs()
 	directory := t.TempDir()
-	timingPath := filepath.Join(directory, "timing.json")
-	artifactPath := filepath.Join(directory, "artifact.json")
-	jobPath := filepath.Join(directory, "job.json")
-	writeJSONFile(t, timingPath, timing)
-	writeJSONFile(t, artifactPath, artifactMeta)
-	writeJSONFile(t, jobPath, jobMeta)
+	args := []string{"weights"}
+	for index, timing := range inputs.timings {
+		path := filepath.Join(directory, "unit-race.part"+string(rune('1'+index))+".json")
+		writeJSONFile(t, path, timing)
+		args = append(args, "-timing", path)
+	}
+	splitsPath := filepath.Join(directory, "splits.json")
+	writeJSONFile(t, splitsPath, splitDocument{SchemaVersion: schemaVersion, Packages: map[string]splitPackage{splitPackageA: {Pieces: 2}}})
+	runPath := filepath.Join(directory, "run.json")
+	writeJSONFile(t, runPath, inputs.run)
+	args = append(args, "-splits", splitsPath, "-run-metadata", runPath)
 
 	var first []byte
 	for index := 0; index < 2; index++ {
 		output := filepath.Join(directory, "weights-"+string(rune('a'+index))+".json")
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"weights", "-timing", timingPath, "-artifact-metadata", artifactPath, "-job-metadata", jobPath, "-out", output}, &stdout, &stderr, nil)
+		code := run(append(append([]string(nil), args...), "-out", output), &stdout, &stderr, nil)
 		if code != 0 {
 			t.Fatalf("run = %d, stderr = %s", code, &stderr)
 		}
@@ -101,6 +140,21 @@ func TestRunWeightsWritesDeterministicDocument(t *testing.T) {
 		}
 		if got := info.Mode().Perm(); got != 0o644 {
 			t.Fatalf("output mode = %o, want 644", got)
+		}
+	}
+}
+
+func TestRunWeightsRequiresTheSplitTable(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"weights", "-timing", "a.json", "-run-metadata", "run.json", "-out", "w.json"}, &stdout, &stderr, nil); code != 2 {
+		t.Fatalf("run without -splits = %d, want usage error 2", code)
+	}
+}
+
+func TestGenerateShardWeightsRejectsInvalidMinimum(t *testing.T) {
+	for _, minimum := range []float64{0, -1, math.Inf(1), math.NaN()} {
+		if _, err := generateShardWeights(validRaceWeightInputs(), minimum); err == nil {
+			t.Fatalf("minimum %v was accepted", minimum)
 		}
 	}
 }
@@ -149,36 +203,4 @@ func assertUnchangedDestinationAndNoTemps(t *testing.T, destination string, want
 	if len(temps) != 0 {
 		t.Fatalf("failed write left temporary files: %v", temps)
 	}
-}
-
-func TestGenerateShardWeightsRejectsInvalidMinimum(t *testing.T) {
-	timing, artifactMeta, jobMeta := validWeightInputs()
-	for _, minimum := range []float64{0, -1, math.Inf(1), math.NaN()} {
-		if _, err := generateShardWeights(timing, artifactMeta, jobMeta, minimum); err == nil {
-			t.Fatalf("minimum %v was accepted", minimum)
-		}
-	}
-}
-
-func validWeightInputs() (artifact, artifactMetadata, jobMetadata) {
-	commit := strings.Repeat("a", 40)
-	timing := artifact{
-		SchemaVersion:  schemaVersion,
-		Job:            "unit",
-		Platform:       "linux",
-		Architecture:   "amd64",
-		ElapsedSeconds: 100,
-		Packages: []packageTiming{
-			{Package: "github.com/goobers/goobers/internal/example", Status: "pass", ElapsedSeconds: 4},
-		},
-	}
-	artifactMeta := artifactMetadata{ID: 30, Name: canonicalTimingArtifact, CreatedAt: "2026-09-12T20:48:16Z"}
-	artifactMeta.Workflow.ID = 10
-	artifactMeta.Workflow.HeadBranch = "main"
-	artifactMeta.Workflow.HeadSHA = commit
-	jobMeta := jobMetadata{
-		ID: 20, RunID: 10, HeadSHA: commit, HeadBranch: "main", Name: canonicalTimingJob,
-		Status: "completed", Conclusion: "success", StartedAt: "2026-09-12T20:28:44Z", CompletedAt: "2026-09-12T20:48:26Z",
-	}
-	return timing, artifactMeta, jobMeta
 }
