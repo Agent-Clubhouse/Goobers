@@ -94,6 +94,16 @@ is consistent end to end.)
 authenticated-identity read before). It underpins the trusted-comment filter the
 merge-review verdict trust check needs, and closes the claim-spoof gap.
 
+Every thread `PostPullRequestThreadComment` opens is posted with `status: "closed"`, not
+ADO's default `active`. All Goobers-authored threads are informational (verdict json,
+finding-set history, the sticky remediation-state comment, close/escalation notes, rebase
+transport) — none of them need to block anything on their own, and an `active` thread trips
+a repo's comment-resolution branch policy, which `closed` does not. Escalations are
+surfaced through the `goobers:merge-escalated` label (§4.2), not by leaving a thread open
+to draw human attention. Threads stay editable after being closed, so
+`UpdatePullRequestThreadComment`'s sticky updates are unaffected, and
+`ListPullRequestThreadComments` still reads closed threads normally.
+
 ### 4.2 Native PR labels carry the routing signals
 
 ADO PRs support native labels. Two routing markers ride there — and only there:

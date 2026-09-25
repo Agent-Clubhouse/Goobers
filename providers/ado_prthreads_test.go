@@ -71,8 +71,8 @@ func TestADOProviderPostPullRequestThreadComment(t *testing.T) {
 		posted.Comments[0].CommentType != "text" {
 		t.Fatalf("posted comment body = %#v", posted.Comments[0])
 	}
-	if posted.Status != "active" {
-		t.Fatalf("posted status = %q, want active", posted.Status)
+	if posted.Status != "closed" {
+		t.Fatalf("posted status = %q, want closed", posted.Status)
 	}
 	if comment.ID != "42/7/1" {
 		t.Fatalf("comment.ID = %q, want 42/7/1", comment.ID)

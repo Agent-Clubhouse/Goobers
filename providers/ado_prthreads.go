@@ -66,7 +66,13 @@ func (p *ADOProvider) postAttributedPullRequestThreadComment(ctx context.Context
 			"content":         body,
 			"commentType":     adoPRThreadCommentType,
 		}},
-		"status": "active",
+		// Goobers-authored threads are informational (verdict JSON, finding
+		// history, sticky remediation state, close/escalation notes, rebase
+		// transport) and never need to block a merge on their own — an
+		// "active" thread trips comment-resolution policies, while "closed"
+		// does not. Escalations are surfaced via labels, not by leaving a
+		// thread open to draw attention.
+		"status": "closed",
 	}
 	var thread adoPullRequestThread
 	if err := p.do(ctx, http.MethodPost, endpoint, payload, &thread); err != nil {
