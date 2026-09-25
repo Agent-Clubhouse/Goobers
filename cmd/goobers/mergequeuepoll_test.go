@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -936,8 +937,29 @@ func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *a
 }
 
 func adoMergeQueuePollEnv(t *testing.T, serverURL, owner, project, name string, grantComplete bool, inputs map[string]string) (root, workDir string) {
+	return adoMergeQueuePollEnvWithAuth(t, serverURL, owner, project, name, grantComplete, instance.ADOAuthPAT, inputs)
+}
+
+func adoMergeQueuePollEnvWithAuth(t *testing.T, serverURL, owner, project, name string, grantComplete bool, authKind string, inputs map[string]string) (root, workDir string) {
 	t.Helper()
 	root = initDemo(t)
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Repos = []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    owner,
+		Project:  project,
+		Name:     name,
+		Auth:     &instance.RepoAuthConfig{Kind: authKind},
+	}}
+	if authKind == instance.ADOAuthPAT {
+		cfg.Repos[0].Token = instance.TokenRef{Env: "TEST_ADO_PAT"}
+	}
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	prev := newADOProviderForStage
 	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
@@ -1010,6 +1032,23 @@ func TestMergeQueuePollADORequiresCompleteCapability(t *testing.T) {
 	}
 	if st.detailCalls != 0 {
 		t.Fatalf("detail calls = %d, want 0 — completion authority must be resolved before the provider polls", st.detailCalls)
+	}
+}
+
+func TestMergeQueuePollADOAzureCLIUsesConfiguredAuthenticationWithoutTokenGrant(t *testing.T) {
+	st := &adoPRDetailState{status: "completed", mergeCommit: "adomergesha"}
+	server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
+	root, dir := adoMergeQueuePollEnvWithAuth(t, server.URL, "acme", "proj", "svc", false, instance.ADOAuthAzureCLI, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "merged" {
+		t.Fatalf("result = %+v, want queueOutcome=merged", result)
 	}
 }
 
