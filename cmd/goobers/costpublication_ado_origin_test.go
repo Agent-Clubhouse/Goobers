@@ -82,7 +82,7 @@ func (s *adoCostOriginServer) serve(w http.ResponseWriter, r *http.Request) {
 	var response any
 	switch {
 	case strings.HasSuffix(path, "/connectiondata"):
-		response = map[string]any{"authenticatedUser": map[string]string{"providerDisplayName": "goobers"}}
+		response = map[string]any{"authenticatedUser": map[string]string{"id": "goobers-guid", "providerDisplayName": "goobers"}}
 	case strings.HasSuffix(path, "/threads"):
 		comment := s.receipt
 		if r.Method == http.MethodPost {
@@ -96,7 +96,7 @@ func (s *adoCostOriginServer) serve(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.prReads++
 		}
-		thread := map[string]any{"id": 1, "comments": []any{map[string]any{"id": 1, "content": comment, "commentType": "text", "author": map[string]string{"displayName": "goobers"}}}}
+		thread := map[string]any{"id": 1, "comments": []any{map[string]any{"id": 1, "content": comment, "commentType": "text", "author": map[string]string{"displayName": "goobers", "id": "goobers-guid"}}}}
 		response = thread
 		if r.Method == http.MethodGet {
 			response = map[string]any{"value": []any{thread}}

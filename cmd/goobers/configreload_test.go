@@ -343,17 +343,23 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 	if rejected.Error == nil || rejected.Error.Code != "config_reload_rejected" {
 		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
 	}
-	status := waitForConfigValue(t, "rejected source generation status", func() (readservice.DefinitionReloadStatus, bool) {
+	// The reloader publishes State=rejected from inside its poll, before the
+	// source apply rolls the rejected tree back off disk, so wait for the
+	// restored disk digest as well instead of reading it the moment health
+	// first reports the rejection.
+	var currentDigest string
+	status := waitForConfigValue(t, "rejected source generation status and restored disk", func() (readservice.DefinitionReloadStatus, bool) {
 		health := readDaemonHealth(t, address)
-		if health.DefinitionReload == nil {
+		if health.DefinitionReload == nil || health.DefinitionReload.State != "rejected" {
 			return readservice.DefinitionReloadStatus{}, false
 		}
-		return *health.DefinitionReload, health.DefinitionReload.State == "rejected"
+		digest, err := configDirectoryDigest(layout.ConfigDir())
+		if err != nil {
+			return readservice.DefinitionReloadStatus{}, false
+		}
+		currentDigest = digest
+		return *health.DefinitionReload, digest == health.DefinitionReload.AppliedDigest
 	})
-	currentDigest, err := configDirectoryDigest(layout.ConfigDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	if currentDigest != status.AppliedDigest || status.ObservedDigest == status.AppliedDigest {
 		t.Fatalf("rejected source restoration: disk=%s status=%+v", currentDigest, status)
 	}

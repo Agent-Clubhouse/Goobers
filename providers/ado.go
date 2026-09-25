@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,20 @@ type ADOProvider struct {
 
 	stateMu         sync.RWMutex
 	stateCategories map[string][]adoWorkItemState
+
+	// requirementTypeMu guards requirementTypes, the per-project cache of the
+	// Requirement category's default work item type (ADO-N27): the create
+	// type CreateWorkItem uses when the caller names none, resolved from
+	// GET workitemtypecategories/Microsoft.RequirementCategory instead of a
+	// process assumed to call it "Issue".
+	requirementTypeMu sync.RWMutex
+	requirementTypes  map[string]string
+
+	// identityMu guards identity, the cached connectionData read behind
+	// AuthenticatedIdentity and AuthenticatedLogin. A provider holds one
+	// credential, so the cache is per credential.
+	identityMu sync.Mutex
+	identity   *adoConnectionData
 }
 
 // SetMutationRecorder configures the recorder after provider construction,
@@ -235,11 +250,11 @@ func (p *ADOProvider) CloneRepository(ctx context.Context, req CloneRequest) (Cl
 		if !ok {
 			return CloneResult{}, fmt.Errorf("authenticated ADO clone requires an environment-capable command runner")
 		}
-		header, authErr := p.authorizationHeader(ctx)
+		header, bearer, authErr := p.authorizationHeader(ctx)
 		if authErr != nil {
 			return CloneResult{}, fmt.Errorf("resolve ADO clone credential: %w", authErr)
 		}
-		out, err = runner.RunWithEnv(ctx, adoGitAuthEnv(header, cloneURL), "git", args...)
+		out, err = runner.RunWithEnv(ctx, adoGitAuthEnv(header, cloneURL, bearer), "git", args...)
 	}
 	if err != nil {
 		return CloneResult{}, fmt.Errorf("git clone: %w: %s", err, strings.TrimSpace(string(out)))
@@ -267,11 +282,11 @@ func (p *ADOProvider) RepositoryReachable(ctx context.Context, repo RepositoryRe
 	if !ok {
 		return fmt.Errorf("authenticated ADO repository preflight requires an environment-capable command runner")
 	}
-	header, err := p.authorizationHeader(ctx)
+	header, bearer, err := p.authorizationHeader(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve ADO repository credential: %w", err)
 	}
-	if _, err := runner.RunWithEnv(ctx, adoGitAuthEnv(header, p.repositoryURL(repo)), "git", args...); err != nil {
+	if _, err := runner.RunWithEnv(ctx, adoGitAuthEnv(header, p.repositoryURL(repo), bearer), "git", args...); err != nil {
 		return fmt.Errorf("git ls-remote: %w", err)
 	}
 	return nil
@@ -524,6 +539,67 @@ func (p *ADOProvider) workURLVersion(project, version string, elems ...string) (
 	return addQuery(endpoint, url.Values{"api-version": []string{version}})
 }
 
+// adoIdentityGUID matches an Azure DevOps identity descriptor's id shape (a
+// bare GUID), so resolveIdentityID can pass one through untouched instead of
+// spending a lookup round-trip resolving a GUID to itself.
+var adoIdentityGUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// adoIdentitiesLookup is the minimal shape of the ADO identities API response
+// (vssps.dev.azure.com/{org}/_apis/identities).
+type adoIdentitiesLookup struct {
+	Value []struct {
+		ID string `json:"id"`
+	} `json:"value"`
+}
+
+// identitiesBaseURL resolves the host that serves the Azure DevOps identities
+// API. On the standard dev.azure.com topology, identities live on a separate
+// vssps.dev.azure.com host rather than under BaseURL/Organization like every
+// other ADO REST call, so it is derived rather than reused directly. Any other
+// BaseURL — an on-prem Azure DevOps Server or a test double — has no such
+// split host, and reusing BaseURL as-is both keeps on-prem out of scope (per
+// the ADO-N37 ruling) and lets tests redirect the identities call to the same
+// fixture server as everything else.
+func (p *ADOProvider) identitiesBaseURL() string {
+	u, err := url.Parse(p.BaseURL)
+	if err != nil || !strings.EqualFold(u.Hostname(), "dev.azure.com") {
+		return p.BaseURL
+	}
+	u.Host = "vssps." + u.Host
+	return strings.TrimRight(u.String(), "/")
+}
+
+// resolveIdentityID resolves a reviewer string (a UPN, an email, or a
+// display name) to the Azure DevOps identity GUID RequestReview's reviewers
+// endpoint requires. A reviewer that already looks like a GUID passes through
+// untouched, skipping the lookup. It errors — rather than silently skipping
+// the reviewer — when nothing resolves.
+func (p *ADOProvider) resolveIdentityID(ctx context.Context, reviewer string) (string, error) {
+	if adoIdentityGUID.MatchString(reviewer) {
+		return reviewer, nil
+	}
+	endpoint, err := joinURL(p.identitiesBaseURL(), p.Organization, "_apis", "identities")
+	if err != nil {
+		return "", err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{
+		"searchFilter": []string{"General"},
+		"filterValue":  []string{reviewer},
+		"api-version":  []string{"7.1"},
+	})
+	if err != nil {
+		return "", err
+	}
+	var out adoIdentitiesLookup
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return "", err
+	}
+	if len(out.Value) == 0 || strings.TrimSpace(out.Value[0].ID) == "" {
+		return "", fmt.Errorf("ado: reviewer %q did not resolve to an identity", reviewer)
+	}
+	return out.Value[0].ID, nil
+}
+
 func (p *ADOProvider) project(repo RepositoryRef) string {
 	if repo.Project != "" {
 		return repo.Project
@@ -564,12 +640,15 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		if contentType != "" {
 			req.Header.Set("Content-Type", contentType)
 		}
-		header, err := p.authorizationHeader(ctx)
+		header, bearer, err := p.authorizationHeader(ctx)
 		if err != nil {
 			return nil, err
 		}
 		if header != "" {
 			req.Header.Set("Authorization", header)
+		}
+		if bearer {
+			req.Header.Set(adoForceMsaPassThroughHeader, adoForceMsaPassThroughValue)
 		}
 		featureusage.RecordProviderHTTP("ado")
 		resp, err := httpClientOrDefault(p.Client).Do(req)
@@ -580,7 +659,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			// response was lost, and ADO has no transport-level dedup marker
 			// (unlike GitHub issue creation's footer check, #140) to make a
 			// blind retry safe for those.
-			if isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
+			if adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
 					return nil, serr
 				}
@@ -595,7 +674,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			authRetried = true
 			continue
 		}
-		if resp.StatusCode >= 500 && isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
+		if resp.StatusCode >= 500 && adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
 			_ = resp.Body.Close()
 			if err := p.sleep(ctx, backoffDuration(transientAttempt)); err != nil {
 				return nil, err
@@ -626,23 +705,27 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 	}
 }
 
-func (p *ADOProvider) authorizationHeader(ctx context.Context) (string, error) {
+// authorizationHeader resolves the current credential's Authorization header.
+// The bearer bool comes from the credential's Kind, not from re-parsing
+// header, so callers that need to know whether the passthrough header
+// belongs on this request never have to guess from the header's shape.
+func (p *ADOProvider) authorizationHeader(ctx context.Context) (header string, bearer bool, err error) {
 	if p.credentialSource == nil {
-		return "", nil
+		return "", false, nil
 	}
 	credential, err := p.credentialSource.Credential(ctx)
 	if err != nil {
-		return "", fmt.Errorf("resolve ADO credential: %w", err)
+		return "", false, fmt.Errorf("resolve ADO credential: %w", err)
 	}
-	header, err := credential.authorizationHeader()
+	header, err = credential.authorizationHeader()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if p.secretRegistrar != nil {
 		p.secretRegistrar.Register([]byte(credential.Secret))
 		p.secretRegistrar.Register([]byte(strings.TrimSpace(strings.TrimPrefix(header, "Basic "))))
 	}
-	return header, nil
+	return header, credential.Kind == adoCredentialBearer, nil
 }
 
 func (p *ADOProvider) invalidateCredential() bool {

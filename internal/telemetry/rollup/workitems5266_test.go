@@ -52,6 +52,41 @@ func TestWorkItemRepositoryResolvesADOIdentity(t *testing.T) {
 		{
 			name: "ado empty url stays unknown", provider: "ado", url: "", want: "",
 		},
+		{
+			// ADO-N35: a legacy *.visualstudio.com URL carries the
+			// organization in the host rather than as the path's leading
+			// segment.
+			name: "ado visualstudio.com work item resolves via host organization", provider: "ado",
+			url:  "https://org.visualstudio.com/proj/_workitems/edit/7",
+			want: "org/proj",
+		},
+		{
+			name: "ado visualstudio.com pull request resolves via host organization", provider: "ado",
+			url:  "https://org.visualstudio.com/proj/_git/repo/pullrequest/42",
+			want: "org/proj/repo",
+		},
+		{
+			name: "ado visualstudio.com host suffix is case-insensitive", provider: "ado",
+			url:  "https://org.VISUALSTUDIO.COM/proj/_workitems/edit/7",
+			want: "org/proj",
+		},
+		{
+			// The organization keeps its case, as a dev.azure.com path
+			// segment does, so neither host normalises it differently.
+			name: "ado visualstudio.com organization keeps its case", provider: "ado",
+			url:  "https://Org.visualstudio.com/proj/_workitems/edit/7",
+			want: "Org/proj",
+		},
+		{
+			name: "ado visualstudio.com DefaultCollection work item", provider: "ado",
+			url:  "https://org.visualstudio.com/DefaultCollection/proj/_workitems/edit/7",
+			want: "org/proj",
+		},
+		{
+			name: "ado visualstudio.com DefaultCollection pull request", provider: "ado",
+			url:  "https://org.visualstudio.com/DefaultCollection/proj/_git/repo/pullrequest/42",
+			want: "org/proj/repo",
+		},
 		// GitHub behavior is re-pinned so widening the function cannot regress it.
 		{
 			name: "github issue", provider: "github",

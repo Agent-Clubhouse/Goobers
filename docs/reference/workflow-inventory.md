@@ -2,11 +2,16 @@
 
 Every workflow in `.github/workflows/`, with the triggers that are actually
 enabled in the file and whether it is **active** (something fires it) or
-**dormant** (its only enabled trigger is `workflow_dispatch` while a `schedule:`
-block sits commented out, so it never runs on its own).
+**dormant**. A workflow is dormant in one of two ways:
 
-A dormant workflow is not a gate. It has no recorded runs and enforces nothing
-until whatever it is blocked on lands and its schedule is uncommented; the
+- its only enabled trigger is `workflow_dispatch` while a `schedule:` block sits
+  commented out, so it never runs on its own; or
+- it carries the top-level comment `# workflow-inventory: dormant-until-provisioned`.
+  Its triggers fire, but every run skips its work and ends green until the
+  credentials or fixtures it needs are provisioned.
+
+A dormant workflow is not a gate. It enforces nothing until whatever it is
+blocked on lands and its schedule is uncommented or its marker removed; the
 `Blocked on` column names that. Reviewers cited the provider-fixture-drift pair
 as a CI strength while both had never fired once (#4224) — this table exists so
 that the difference is legible.
@@ -25,6 +30,7 @@ themselves, so no cell can drift from the YAML.
 | Workflow | Enabled triggers | Status | Blocked on |
 | --- | --- | --- | --- |
 | `ado-live-conformance.yml` | schedule, workflow_dispatch | active | — |
+| `ado-live-write.yml` | pull_request, schedule, workflow_dispatch | dormant | #5727 (scratch repository, `ADO_WRITE_REPOSITORY` variable, first green run) |
 | `ci.yml` | merge_group, pull_request, push | active | — |
 | `config-validate-gate-selftest.yml` | pull_request, push, workflow_dispatch | active | — |
 | `design-delivery.yml` | pull_request | active | — |
@@ -49,6 +55,8 @@ themselves, so no cell can drift from the YAML.
 
 1. Confirm the blocking issue is closed and its prerequisites exist (fixtures,
    credentials, a runner — whatever the workflow's own header names).
-2. Uncomment the `schedule:` block.
+2. Uncomment the `schedule:` block, or, for a provisioning-gated workflow,
+   delete its `# workflow-inventory: dormant-until-provisioned` line once a run
+   has gone green with real credentials.
 3. Re-run `go run ./test/workflowinventory -write`; the row flips to `active`
    and its `Blocked on` cell clears.

@@ -47,8 +47,8 @@ func (f *fakeADOWorkItemCloser) UpdateWorkItemStatus(_ context.Context, req prov
 	return providers.WorkItem{}, nil
 }
 
-func (f *fakeADOWorkItemCloser) AuthenticatedLogin(context.Context) (string, error) {
-	return "goobers", nil
+func (f *fakeADOWorkItemCloser) AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error) {
+	return providers.ADOIdentity{ID: "self-guid", DisplayName: "goobers"}, nil
 }
 
 func (f *fakeADOWorkItemCloser) ListPullRequestThreadComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
@@ -203,6 +203,40 @@ func TestPerformPostMergeADOPublishesReceiptSummaryAndAllocation(t *testing.T) {
 		!strings.Contains(closer.commentReqs[0].Comment, "**Total Goobers cost for this PR:** 10.00 AIC") ||
 		!strings.Contains(closer.commentReqs[0].Comment, "**Cost attributed to this issue:** 10.00 AIC") {
 		t.Fatalf("work item close-out comments = %+v, want total and allocation", closer.commentReqs)
+	}
+}
+
+// TestPerformPostMergeADOCostTrustsPRThreadsByIdentityGUID pins ADO-N5 on the
+// post-merge cost path: a PR thread comment from another identity that shares
+// this identity's display name can neither suppress the cost summary with the
+// summary marker nor plant a receipt that is counted, while a receipt this
+// identity wrote (matching GUID) still is.
+func TestPerformPostMergeADOCostTrustsPRThreadsByIdentityGUID(t *testing.T) {
+	own := costComment(t, "goobers", "merge-review", "run-review", 30, 2_000_000_000)
+	own.AuthorID = "self-guid"
+	planted := costComment(t, "goobers", "implementation", "run-planted", 99, 50_000_000_000)
+	planted.AuthorID = "other-guid"
+	marker := providers.Comment{Author: "goobers", AuthorID: "other-guid", Body: "done\n\n" + postMergeCostSummaryMarker}
+	closer := &fakeADOWorkItemCloser{
+		item:       providers.WorkItem{ID: "1456", State: "open"},
+		prComments: []providers.Comment{own, planted, marker},
+	}
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(
+		context.Background(), closer, closer, backlogRef, poll, "359", "",
+		providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "code", Name: "repo"},
+		&stdout, &stderr,
+	)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.prCommentReqs) != 1 {
+		t.Fatalf("PR summary comments = %q, want exactly one: a marker from a same-named identity must not suppress it", closer.prCommentReqs)
+	}
+	if !strings.Contains(closer.prCommentReqs[0], "**2.00 AIC**") {
+		t.Fatalf("PR summary = %q, want 2.00 AIC: a receipt from a same-named identity must not be counted", closer.prCommentReqs[0])
 	}
 }
 

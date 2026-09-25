@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // `git clone <url> .` refuses a non-empty destination, so NOTHING the checkout
@@ -672,6 +673,43 @@ func TestComposedGitEnvPreservesTwoSlotADOAuthentication(t *testing.T) {
 	if eff["GIT_CONFIG_KEY_2"] != "safe.directory" || eff["GIT_CONFIG_VALUE_2"] != ws {
 		t.Fatalf("safe.directory slot = %q/%q, want slot 2 for %q",
 			eff["GIT_CONFIG_KEY_2"], eff["GIT_CONFIG_VALUE_2"], ws)
+	}
+}
+
+// TestComposedGitEnvPreservesThreeSlotADOAuthentication covers a bearer ADO
+// credential (ADO-N4): providers.ADOGitAuthEnvironment adds a second
+// extraheader slot for X-VSS-ForceMsaPassThrough, so composeGitEnv must extend
+// past slot 2, not slot 1, when it appends safe.directory. The auth
+// environment comes from the provider, not a literal, so the provider's slot
+// layout and composeGitEnv cannot drift apart.
+func TestComposedGitEnvPreservesThreeSlotADOAuthentication(t *testing.T) {
+	ws := t.TempDir()
+	const remoteURL = "https://dev.azure.com/acme/project/_git/repo"
+	const scopedHeader = "http." + remoteURL + "/.extraheader"
+	auth, err := providers.ADOGitAuthEnvironment(context.Background(), recoveryTestADOCredentialSource{
+		credential: providers.ADOCredential{Kind: "bearer", Secret: "test-token"},
+	}, nil, remoteURL)
+	if err != nil {
+		t.Fatalf("ADOGitAuthEnvironment: %v", err)
+	}
+	env := composeGitEnv(ws, auth)
+
+	eff := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		eff[k] = v
+	}
+	if eff["GIT_CONFIG_COUNT"] != "4" {
+		t.Fatalf("GIT_CONFIG_COUNT = %q, want 4", eff["GIT_CONFIG_COUNT"])
+	}
+	if eff["GIT_CONFIG_KEY_2"] != scopedHeader ||
+		eff["GIT_CONFIG_VALUE_2"] != "X-VSS-ForceMsaPassThrough: true" {
+		t.Fatalf("ADO passthrough slot was overwritten: key=%q value=%q",
+			eff["GIT_CONFIG_KEY_2"], eff["GIT_CONFIG_VALUE_2"])
+	}
+	if eff["GIT_CONFIG_KEY_3"] != "safe.directory" || eff["GIT_CONFIG_VALUE_3"] != ws {
+		t.Fatalf("safe.directory slot = %q/%q, want slot 3 for %q",
+			eff["GIT_CONFIG_KEY_3"], eff["GIT_CONFIG_VALUE_3"], ws)
 	}
 }
 

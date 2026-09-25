@@ -128,27 +128,34 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 		wantText    []string
 	}{
 		{
-			name:        "ADO project cannot enforce cap",
-			project:     apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "store", Name: "web"},
+			// ADO-N30: the cap polls the ADO repository's active PRs, so a
+			// configured ADO project is enforceable like a GitHub one.
+			name:       "configured ADO project is enforceable",
+			project:    apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "store", Name: "web"},
+			repos:      []instance.RepoRef{{Provider: "ado", Owner: "acme", Project: "store", Name: "web"}},
+			maxOpenPRs: 2,
+		},
+		{
+			name:        "unconfigured ADO project names actual binding",
+			project:     apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "other", Name: "site"},
 			repos:       []instance.RepoRef{{Provider: "ado", Owner: "acme", Project: "store", Name: "web"}},
 			maxOpenPRs:  2,
 			wantWarning: true,
 			wantText: []string{
-				"cannot be enforced for ADO project repository",
-				`"ado/acme/store/web"`,
-				"cap counts GitHub pull requests",
+				`binds to project repository "ado/acme/other/site"`,
+				"no configured binding",
+				"count remains unknown",
 			},
 		},
 		{
-			name:        "empty project with sole ADO repository cannot enforce cap",
+			name:        "empty project with sole ADO repository binds to it",
 			project:     apiv1.RepoRef{},
 			repos:       []instance.RepoRef{{Provider: "ado", Owner: "acme", Project: "store", Name: "web"}},
 			maxOpenPRs:  2,
 			wantWarning: true,
 			wantText: []string{
-				"cannot be enforced for ADO project repository",
-				`"acme/store/web"`,
-				"cap counts GitHub pull requests",
+				"has no project repository binding",
+				`binds to instance repos[0] repository "acme/store/web"`,
 			},
 		},
 		{

@@ -73,11 +73,102 @@ func TestADOProviderMergePullRequestSucceedsImmediately(t *testing.T) {
 	if !ok || opts["mergeStrategy"] != "squash" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=squash", patched["completionOptions"])
 	}
-	// lastMergeSourceCommit is read-only on ADO's PR-update endpoint (sending
-	// it returns a 400); the head pin is enforced against the fetched detail
-	// before the PATCH, not carried in the body.
-	if _, present := patched["lastMergeSourceCommit"]; present {
-		t.Fatalf("PATCH body must not carry the read-only lastMergeSourceCommit: %#v", patched["lastMergeSourceCommit"])
+	// ADO-N9: the completion PATCH pins the head server-side (live probe F6),
+	// so a push between the fetch and the PATCH is refused with 409.
+	pin, ok := patched["lastMergeSourceCommit"].(map[string]interface{})
+	if !ok || pin["commitId"] != "head1" {
+		t.Fatalf("lastMergeSourceCommit = %#v, want commitId=head1", patched["lastMergeSourceCommit"])
+	}
+	if _, present := patched["bypassPolicy"]; present {
+		t.Fatalf("PATCH body must never set bypassPolicy: %#v", patched)
+	}
+}
+
+// adoCompletionRefusalServer serves an active PR at head1 and answers the
+// completion PATCH with status and body, counting PATCH calls.
+func adoCompletionRefusalServer(t *testing.T, status int, body string, patchCalls *int) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			*patchCalls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, body)
+			return
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"pullRequestId": 42, "status": "active", "mergeStatus": "succeeded",
+			"lastMergeSourceCommit": map[string]string{"commitId": "head1"},
+		})
+	})
+	return httptest.NewServer(mux)
+}
+
+// TestADOProviderMergePullRequestMapsStaleHeadConflict proves ADO-N9's 409
+// mapping: a head that moves after the fetch is refused server-side with
+// TF401192, which surfaces as the typed head-moved error without a retry.
+func TestADOProviderMergePullRequestMapsStaleHeadConflict(t *testing.T) {
+	patchCalls := 0
+	server := adoCompletionRefusalServer(t, http.StatusConflict,
+		`{"message":"TF401192: The pull request source has changed.","typeKey":"GitPullRequestStaleException"}`, &patchCalls)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
+		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodSquash,
+	})
+	var moved PullRequestHeadMovedError
+	if !errors.As(err, &moved) || moved.Expected != "head1" {
+		t.Fatalf("err = %v, want PullRequestHeadMovedError{Expected: head1}", err)
+	}
+	if patchCalls != 1 {
+		t.Fatalf("PATCH calls = %d, want 1 (never retried)", patchCalls)
+	}
+}
+
+// TestADOProviderMergePullRequestMapsPolicyRejection proves ADO-N9's 403
+// mapping: a completion refused because a branch policy is not met is a
+// typed policy-not-met error, not an authentication failure, and is never
+// retried.
+func TestADOProviderMergePullRequestMapsPolicyRejection(t *testing.T) {
+	patchCalls := 0
+	server := adoCompletionRefusalServer(t, http.StatusForbidden,
+		`{"message":"The pull request cannot be completed because required policies are not satisfied.","typeKey":"GitPullRequestUpdateRejectedByPolicyException"}`, &patchCalls)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
+		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodSquash,
+	})
+	var policy PullRequestPolicyNotMetError
+	if !errors.As(err, &policy) || policy.PullID != "42" {
+		t.Fatalf("err = %v, want PullRequestPolicyNotMetError for PR 42", err)
+	}
+	if IsAuthenticationError(err) {
+		t.Fatalf("IsAuthenticationError(%v) = true, want false for a policy refusal", err)
+	}
+	if IsTransientError(err) {
+		t.Fatalf("IsTransientError(%v) = true, want false", err)
+	}
+	if patchCalls != 1 {
+		t.Fatalf("PATCH calls = %d, want 1 (never retried)", patchCalls)
+	}
+}
+
+// TestADOProviderMergePullRequestKeepsPlainForbiddenAsAuth pins the boundary
+// of the 403 mapping: a 403 that is not a policy refusal remains an
+// authentication failure.
+func TestADOProviderMergePullRequestKeepsPlainForbiddenAsAuth(t *testing.T) {
+	patchCalls := 0
+	server := adoCompletionRefusalServer(t, http.StatusForbidden,
+		`{"message":"TF401027: You need the Git 'PullRequestContribute' permission.","typeKey":"GitNeedsPermissionException"}`, &patchCalls)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
+		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodSquash,
+	})
+	var policy PullRequestPolicyNotMetError
+	if errors.As(err, &policy) || !IsAuthenticationError(err) {
+		t.Fatalf("err = %v, want a plain authentication failure", err)
 	}
 }
 
@@ -102,8 +193,9 @@ func TestADOProviderMergePullRequestRejectsMovedHead(t *testing.T) {
 	_, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
 		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodSquash,
 	})
-	if err == nil {
-		t.Fatal("expected an error when the head moved, got nil")
+	var moved PullRequestHeadMovedError
+	if !errors.As(err, &moved) || moved.Expected != "head1" || moved.Actual != "head-moved" {
+		t.Fatalf("err = %v, want PullRequestHeadMovedError{head1 -> head-moved}", err)
 	}
 	if patchCalls != 0 {
 		t.Fatalf("PATCH calls = %d, want 0 (refuse before completing)", patchCalls)
@@ -242,9 +334,17 @@ func TestADOProviderMergePullRequestTimesOutWhenNeverTerminal(t *testing.T) {
 func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 	var patched map[string]interface{}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"authenticatedUser": map[string]interface{}{"id": "caller-1"},
+		})
+	})
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
+			// createdBy deliberately differs from the caller: auto-complete
+			// must be armed as the caller, not the PR's creator (live probe
+			// F3, design ado-parity-dsl-2-0.md §5).
 			writeJSON(t, w, map[string]interface{}{
 				"pullRequestId": 42, "status": "active", "mergeStatus": "notSet",
 				"createdBy": map[string]string{"id": "creator-1"},
@@ -259,7 +359,7 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 			}
 			writeJSON(t, w, map[string]interface{}{
 				"pullRequestId": 42, "status": "active", "mergeStatus": "notSet",
-				"autoCompleteSetBy": map[string]string{"id": "creator-1"},
+				"autoCompleteSetBy": map[string]string{"id": "caller-1"},
 			})
 		}
 	})
@@ -267,6 +367,8 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	recorder := &recordingRecorder{}
+	provider.SetMutationRecorder(recorder)
 	result, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
 		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodMerge,
 	})
@@ -277,12 +379,16 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 		t.Fatalf("Merged = true, want false (enqueue never merges inline): %#v", result)
 	}
 	setBy, ok := patched["autoCompleteSetBy"].(map[string]interface{})
-	if !ok || setBy["id"] != "creator-1" {
-		t.Fatalf("autoCompleteSetBy = %#v, want id=creator-1", patched["autoCompleteSetBy"])
+	if !ok || setBy["id"] != "caller-1" {
+		t.Fatalf("autoCompleteSetBy = %#v, want id=caller-1 (the caller, not createdBy)", patched["autoCompleteSetBy"])
 	}
 	opts, ok := patched["completionOptions"].(map[string]interface{})
 	if !ok || opts["mergeStrategy"] != "noFastForward" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=noFastForward", patched["completionOptions"])
+	}
+	ref, ok := recorder.last()
+	if !ok || ref.Operation != "enqueue" {
+		t.Fatalf("landing receipt recorded = %#v, ok=%v, want an enqueue receipt (ADO confirmed autoCompleteSetBy.id == caller)", ref, ok)
 	}
 }
 

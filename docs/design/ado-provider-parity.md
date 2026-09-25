@@ -85,14 +85,52 @@ repo-wide comment ids), so encoding them into the opaque id lets a later update 
 exact comment with no extra state.
 
 Thread authors render as **displayName**, and `AuthenticatedLogin` (below) returns
-displayName, so a trusted-author filter recognizes a thread the runner itself posted. (PR
-*authors* and *reviewers*, by contrast, key on UPN — a known ADO identity inconsistency;
-the verdict/finding transport deliberately lives on the thread surface, where displayName
-is consistent end to end.)
+displayName for display. (PR *authors* and *reviewers*, by contrast, key on UPN — a known
+ADO identity inconsistency.) Display names are not unique, so the stable identity key is
+the GUID: `ListPullRequestThreadComments` maps each comment's `author.id` into
+`Comment.AuthorID`, and the "is this me" checks on threads compare it with the
+authenticated identity's id (ADO-N5, below).
+
+**Identity (ADO-N5).** `AuthenticatedIdentity` returns `{id, uniqueName, displayName}` from
+`connectionData`: `id` is `authenticatedUser.id` — the same GUID ADO records as a PR's
+`createdBy.id` — and `uniqueName` (the UPN) comes from
+`authenticatedUser.properties.Account.$value`, because `connectionData` has no
+`uniqueName`. The read is cached per provider instance, which is per credential, and backs
+`AuthenticatedLogin` too. gather-pr-context's trusted-verdict filter, merge-pr's pre-lock
+verdict recovery and the post-merge cost summary (its receipts and summary marker on PR
+threads) trust a thread only when its `author.id` equals that id; a comment with no author
+id falls back to the display-name comparison.
+
+That a thread comment's `author.id` equals `authenticatedUser.id` is **pending live
+confirmation**: the live probe (ado-parity-dsl-2-0.md §5) confirmed the equivalence for
+`AssignedTo.id`, `createdBy.id` and `autoCompleteSetBy.id`, not for thread comment authors.
+If the two ever differed, no own thread would be recognized — verdict attribution and
+verdict recovery would be dropped and the cost summary would be re-posted — so the ADO-N5
+live leg must post a thread comment and compare its `author.id` with `connectionData`.
 
 `AuthenticatedLogin` is implemented via the ADO `connectionData` endpoint (ADO had no
 authenticated-identity read before). It underpins the trusted-comment filter the
-merge-review verdict trust check needs, and closes the claim-spoof gap.
+merge-review verdict trust check needs. Display names are not unique, so the name alone
+could not close the claim-spoof gap.
+
+**Claim breadcrumbs (ADO-N10).** A work-item claim or release breadcrumb counts only when
+the comment's `createdBy.id` equals `AuthenticatedIdentity().ID`; breadcrumbs from any
+other identity are ignored before the winner is chosen, so a project member cannot take a
+claim or end another run's claim by posting the marker text. `ListComments` maps
+`createdBy.id` into `Comment.AuthorID` for this. If the identity cannot be read, the claim
+or release fails; it never falls back to an unfiltered scan. Breadcrumbs written under a
+previous identity stop counting when the credential's identity changes. The legacy
+owner-tag fallback (#1990) is unchanged.
+
+Every thread `PostPullRequestThreadComment` opens is posted with `status: "closed"`, not
+ADO's default `active`. All Goobers-authored threads are informational (verdict json,
+finding-set history, the sticky remediation-state comment, close/escalation notes, rebase
+transport) — none of them need to block anything on their own, and an `active` thread trips
+a repo's comment-resolution branch policy, which `closed` does not. Escalations are
+surfaced through the `goobers:merge-escalated` label (§4.2), not by leaving a thread open
+to draw human attention. Threads stay editable after being closed, so
+`UpdatePullRequestThreadComment`'s sticky updates are unaffected, and
+`ListPullRequestThreadComments` still reads closed threads normally.
 
 ### 4.2 Native PR labels carry the routing signals
 
@@ -176,6 +214,14 @@ of a GitHub handoff channel:
    status-check branch policy gates the merge on it. **Pass → `succeeded`; both
    needs-changes and fail → `failed`** (the PR must not land until reworked, and a status
    genre cannot carry the needs-changes/fail split — the label below is the routing signal).
+   The status is posted against the **latest PR iteration**, not the PR itself: a status
+   policy with `invalidateOnSourceUpdate: true` (reset-on-push) rejects a PR-level status
+   with 403, and an iteration-scoped status satisfies it; a new push creates a new
+   iteration, which resets the policy until a fresh status is posted against it (ADO-N7).
+   The latest iteration is resolved when the status is posted, not when the head was
+   reviewed: a push that lands between review and apply-verdict attaches the verdict to
+   the newer iteration. PR-level statuses had the same window; binding the status to the
+   reviewed head SHA is a follow-up.
 2. **The routing label, by decision**, mirroring the GitHub `verdictLabel` contract:
    - **fail →** add `goobers:merge-escalated`, clear `goobers:needs-remediation`. An
      escalation is *never* burned on the remediation budget; clearing needs-remediation and
@@ -207,9 +253,9 @@ providers use:
 | Contract step | ADO behavior |
 |---|---|
 | `DetectMergePolicy` | Any enabled, blocking, non-deleted branch policy scoped to the target ref → `MergeQueue`; otherwise `Direct`. |
-| `EnqueuePullRequest` (MergeQueue) | Arm ADO **auto-complete** (the completion job is the queue), idempotently. |
+| `EnqueuePullRequest` (MergeQueue) | Arm ADO **auto-complete** (the completion job is the queue), idempotently, with `autoCompleteSetBy` set to the caller's own `authenticatedUser.id` — ADO rejects any other id with 400 (ADO-N6). |
 | `PollMergeQueueEntry` (`queue-watch`) | completed → `Merged`; abandoned / auto-complete cleared → `Evicted`; armed → `Pending`. |
-| `MergePullRequest` (Direct) | `PATCH status=completed` with `completionOptions{mergeStrategy, mergeCommitMessage}`, SHA-pinned via `lastMergeSourceCommit`, then await the async completion job to a terminal `mergeStatus` (conflict → `ErrMergeConflict`). |
+| `MergePullRequest` (Direct) | `PATCH status=completed` with `completionOptions{mergeStrategy, mergeCommitMessage}`, SHA-pinned server-side via `lastMergeSourceCommit` (409 TF401192 → head moved; 403 policy refusal → policy not met; see §11), then await the async completion job to a terminal `mergeStatus` (conflict → `ErrMergeConflict`). |
 
 **Landed** is defined solely by the poll reporting the PR merged with a resolvable merge
 commit — auto-complete *set* is not landed, *enqueued* is not landed. **Eviction is a
@@ -241,7 +287,11 @@ resolved.** The work-item id comes from the PR body's closing reference — *not
 ledger, whose lease was released back at `issue-close-out`; by the time post-merge runs the
 body reference is the durable id. The stage then calls `UpdateWorkItemStatus(done)` against
 the backlog project, which sets the Completed-category `System.State` and swaps the
-`goobers/status:` tag. This is what stops an ADO work item parking at in-review forever. All
+`goobers/status:` tag. The close is idempotent over server transitions (ADO-N28): an item
+Azure Boards already moved to a Completed or Removed state is left there, an item at Resolved
+stops there (with a one-time note) when its type has no Completed state or the server refuses
+Resolved→Completed, and a `test /rev` conflict re-reads and retries.
+This is what stops an ADO work item parking at in-review forever. All
 sibling fan-out and unpark machinery is gated off — each is a PR-number-as-work-item write.
 
 ## 7. pr-remediation on ADO
@@ -283,9 +333,11 @@ updated in place via the composite comment id.
   gate wins), branch cleanup skipped.
 - **advisoryMode misfire.** The ADO run-branch namespace must be present in the gaggle's
   head prefixes, or a goobers-authored ADO PR is misclassified and never merges (§6.1).
-- **Identity strings differ by surface.** The thread/verdict transport uses **displayName**
-  end to end (`AuthenticatedLogin` returns displayName; thread authors render as
-  displayName). PR authors/reviewers key on **UPN**, and assignee comparison uses
+- **Identity strings differ by surface.** The stable key is the identity GUID
+  (`connectionData` `authenticatedUser.id`, §4.1): thread "is this me" checks compare
+  `Comment.AuthorID` with it, because display names are not unique. `AuthenticatedLogin`
+  still returns **displayName** for display and for surfaces with no GUID. PR
+  authors/reviewers key on **UPN**, and assignee comparison uses
   displayName — so assignee-scoped PR filters and native-review vote paths are intentionally
   not used on the ADO merge path.
 - **Completion authority.** `ado:pr:complete` is required for `merge-pr` and `queue-watch`
@@ -370,3 +422,28 @@ through the capability seam and, because ADO does not declare `ci.cancel`,
 degrades to an `unsupported` status without disturbing the published verdict —
 correct behaviour that was undocumented. ADO PR thread comments also carry
 attribution now (#3984).
+
+## 11. Merge review on Azure DevOps
+
+The branch policies of the target repository decide when a pull request may
+land. Goobers does not relax them, and it does not supply the approval they ask
+for. These rules come from `docs/design/ado-parity-dsl-2-0.md` §5 (ADO-N9).
+
+- **No bypass.** No request Goobers sends asks ADO to skip a branch policy.
+  If a direct completion is refused because a required policy is not met (403
+  `GitPullRequestUpdateRejectedByPolicyException`), `merge-pr` fails the stage
+  with `provider_policy_not_met`. It does not retry, and it does not report the
+  refusal as an authentication failure. The pull request waits for a human, or
+  for its policies to pass.
+- **No approval.** Goobers never casts a reviewer vote other than 0 ("no
+  vote"). ADO lets an identity vote on its own pull request, and on some
+  configurations that vote would count toward a required-reviewer policy.
+- **Head pin.** A direct completion sends the reviewed head as
+  `lastMergeSourceCommit`. If the source branch moved after review, ADO refuses
+  the completion with 409 TF401192, and `merge-pr` fails the stage with
+  `provider_head_moved`. The stale verdict is not landed. Auto-complete cannot
+  be pinned (ADO rejects the field with 400), so the queued path keeps a
+  client-side compare of the freshly fetched source commit instead.
+
+`providers/ado_conformance_test.go` scans the provider sources and fails if a
+policy bypass or a non-zero vote appears, so the first two rules stay true.

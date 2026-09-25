@@ -59,7 +59,7 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		// demonstrably existed. Recorded only after p.do returns nil: a failed
 		// or conflicting request must not count as a confirmed mutation.
 		p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "update", req.Repository)
-		return adoPullRequestResult(out), nil
+		return p.adoPullRequestResult(req.Repository, out), nil
 	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
@@ -77,15 +77,33 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		return PullRequestResult{}, err
 	}
 	p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "create", req.Repository)
-	return adoPullRequestResult(out), nil
+	return p.adoPullRequestResult(req.Repository, out), nil
 }
 
-func adoPullRequestResult(pr adoPullRequest) PullRequestResult {
-	prURL := pr.URL
+func (p *ADOProvider) adoPullRequestResult(repo RepositoryRef, pr adoPullRequest) PullRequestResult {
+	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: p.pullRequestWebURL(repo, pr)}
+}
+
+// pullRequestWebURL resolves the browser-navigable URL for a pull request
+// (ADO-N39). ADO's API responses only sometimes populate _links.web.href; when
+// it's empty the raw pr.URL is an _apis/git/... endpoint that 404s in a
+// browser and, worse, is indistinguishable in shape from any other
+// repository's PR — a config that targets repo A could silently be satisfied
+// by a PR in repo B. Building the browser URL from the server-returned
+// repository/project identity keeps a cross-repository PR's URL failing the
+// caller's repository match instead of passing an opaque API URL through.
+func (p *ADOProvider) pullRequestWebURL(repo RepositoryRef, pr adoPullRequest) string {
 	if pr.Links.Web.Href != "" {
-		prURL = pr.Links.Web.Href
+		return pr.Links.Web.Href
 	}
-	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: prURL}
+	if pr.Repository.Name != "" && pr.Repository.Project.Name != "" {
+		base := strings.TrimSuffix(p.BaseURL, "/")
+		if base == "" {
+			base = "https://dev.azure.com"
+		}
+		return base + "/" + p.Organization + "/" + pr.Repository.Project.Name + "/_git/" + pr.Repository.Name + "/pullrequest/" + strconv.Itoa(pr.PullRequestID)
+	}
+	return p.entityWebURL(repo, "pr", strconv.Itoa(pr.PullRequestID))
 }
 
 // FindPullRequestByBranch resolves the open Azure DevOps pull request whose
@@ -123,7 +141,11 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 		return errPullIDRequired
 	}
 	for _, reviewer := range req.Reviewers {
-		endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "reviewers", reviewer)
+		identityID, err := p.resolveIdentityID(ctx, reviewer)
+		if err != nil {
+			return err
+		}
+		endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "reviewers", identityID)
 		if err != nil {
 			return err
 		}
@@ -163,10 +185,6 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
 		return PullRequestPollResult{}, err
 	}
-	prURL := pr.URL
-	if pr.Links.Web.Href != "" {
-		prURL = pr.Links.Web.Href
-	}
 	result := PullRequestPollResult{
 		Number:             pr.PullRequestID,
 		Title:              pr.Title,
@@ -181,7 +199,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		BaseSHA:            pr.LastMergeTargetCommit.CommitID,
 		Body:               pr.Description,
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
-		URL:                prURL,
+		URL:                p.pullRequestWebURL(req.Repository, pr.adoPullRequest),
 		Integrity:          apiintegrity.Unapproved,
 	}
 	projectName := pr.Repository.Project.Name
@@ -319,10 +337,37 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	}, nil
 }
 
+// latestPullRequestIteration returns the highest iteration ID for the given
+// pull request. ADO iteration IDs are monotonically increasing but the
+// iterations list is not guaranteed to be sorted, so callers must scan for
+// the max rather than take the last entry.
+func (p *ADOProvider) latestPullRequestIteration(ctx context.Context, repo RepositoryRef, pullID string) (int, error) {
+	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
+	if err != nil {
+		return 0, err
+	}
+	var iterations adoPullRequestIterationsResponse
+	if err := p.do(ctx, http.MethodGet, iterationsEndpoint, nil, &iterations); err != nil {
+		return 0, err
+	}
+	latestIteration := 0
+	for _, iteration := range iterations.Value {
+		if iteration.ID > latestIteration {
+			latestIteration = iteration.ID
+		}
+	}
+	if latestIteration == 0 {
+		return 0, fmt.Errorf("ado pull request %s returned no iterations", pullID)
+	}
+	return latestIteration, nil
+}
+
 // PublishPullRequestStatus posts an Azure DevOps pull-request status so a
 // status-check branch policy can gate on goobers-supplied evidence — a reviewer
 // verdict or local-CI result — making ADO's policy engine the source of truth
-// for PR correctness (#772).
+// for PR correctness (#772). Statuses are posted against the latest PR
+// iteration rather than the PR itself: a status policy with reset-on-push
+// rejects PR-level statuses with 403, and iteration-scoped statuses satisfy it.
 func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequestStatusRequest) (PullRequestStatusResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestStatusResult{}, err
@@ -333,7 +378,11 @@ func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequ
 	if req.Name == "" {
 		return PullRequestStatusResult{}, fmt.Errorf("status name is required")
 	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "statuses")
+	latestIteration, err := p.latestPullRequestIteration(ctx, req.Repository, req.PullID)
+	if err != nil {
+		return PullRequestStatusResult{}, err
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "iterations", strconv.Itoa(latestIteration), "statuses")
 	if err != nil {
 		return PullRequestStatusResult{}, err
 	}
@@ -418,14 +467,10 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			continue
 		}
 		labels := adoLabelNames(pr.Labels)
-		prURL := pr.URL
-		if pr.Links.Web.Href != "" {
-			prURL = pr.Links.Web.Href
-		}
 		out = append(out, PullRequestSummary{
 			ID:                 strconv.Itoa(pr.PullRequestID),
 			Number:             pr.PullRequestID,
-			URL:                prURL,
+			URL:                p.pullRequestWebURL(req.Repository, pr),
 			Author:             author,
 			RequestedReviewers: requestedReviewers,
 			Head:               head,
@@ -442,6 +487,23 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 	return out, nil
 }
 
+// ListOpenPullRequests returns the head branch and labels of every active pull
+// request in the repository, across all pages. It is the open-PR-count
+// throttle's read (readiness.maxOpenPRs), the ADO counterpart of
+// GitHubProvider.ListOpenPullRequests: the scheduler buckets the heads by
+// run-branch namespace and drops human-parked PRs by label.
+func (p *ADOProvider) ListOpenPullRequests(ctx context.Context, repo RepositoryRef) ([]OpenPRSummary, error) {
+	prs, err := p.ListPullRequests(ctx, ListPullRequestsRequest{Repository: repo})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OpenPRSummary, 0, len(prs))
+	for _, pr := range prs {
+		out = append(out, OpenPRSummary{Head: pr.Head, Labels: pr.Labels})
+	}
+	return out, nil
+}
+
 // PullRequestFiles lists the cumulative changes in the latest pull request
 // iteration, relative to the common source/target commit.
 func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, pullID string) ([]ChangedFile, error) {
@@ -451,22 +513,9 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 	if pullID == "" {
 		return nil, errPullIDRequired
 	}
-	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
+	latestIteration, err := p.latestPullRequestIteration(ctx, repo, pullID)
 	if err != nil {
 		return nil, err
-	}
-	var iterations adoPullRequestIterationsResponse
-	if err := p.do(ctx, http.MethodGet, iterationsEndpoint, nil, &iterations); err != nil {
-		return nil, err
-	}
-	latestIteration := 0
-	for _, iteration := range iterations.Value {
-		if iteration.ID > latestIteration {
-			latestIteration = iteration.ID
-		}
-	}
-	if latestIteration == 0 {
-		return nil, fmt.Errorf("ado pull request %s returned no iterations", pullID)
 	}
 
 	changesEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations", strconv.Itoa(latestIteration), "changes")
@@ -526,6 +575,7 @@ type adoPullRequest struct {
 	LastMergeSourceCommit adoCommitRef  `json:"lastMergeSourceCommit"`
 	LastMergeTargetCommit adoCommitRef  `json:"lastMergeTargetCommit"`
 	Links                 adoPRLinks    `json:"_links"`
+	Repository            adoRepository `json:"repository"`
 }
 
 type adoPullRequestsResponse struct {
@@ -533,13 +583,13 @@ type adoPullRequestsResponse struct {
 }
 
 // adoPullRequestDetail extends adoPullRequest with the fields a single-PR GET
-// returns that a list does not: description, reviewers (for review-decision
-// mapping), and the repository/project identity needed to key policy
-// evaluations.
+// returns that a list does not: description and reviewers (for
+// review-decision mapping). The embedded adoPullRequest already carries
+// Repository, which this type relies on for the project identity needed to
+// key policy evaluations.
 type adoPullRequestDetail struct {
 	adoPullRequest
-	Description string        `json:"description"`
-	Repository  adoRepository `json:"repository"`
+	Description string `json:"description"`
 	// MergeStatus/MergeID/LastMergeCommit/CompletionOptions/
 	// AutoCompleteSetBy back the landing surfaces (CONF-3 #2076, design
 	// doc §4): MergeStatus is the completion job's own outcome

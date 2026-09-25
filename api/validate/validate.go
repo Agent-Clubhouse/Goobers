@@ -260,6 +260,13 @@ const (
 	// notice that the runtime does not honor the field, not a defect in the
 	// config that declared it.
 	WarningConnectionRefUnhonored WarningCode = "REF012"
+	// WarningGaggleMixedProvider (CFG011) identifies a gaggle whose backlog
+	// provider differs from its project provider where neither side is ado
+	// (for example a GitHub project with a Gitea backlog). It is strict-neutral:
+	// such configs validated cleanly, --strict included, before the ADO-N13
+	// guard shipped, so promoting it would turn unchanged non-ADO configs red
+	// on upgrade. The ADO case is the hard error CFG010 instead.
+	WarningGaggleMixedProvider WarningCode = "CFG011"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -310,6 +317,7 @@ const (
 	errorGaggleCheckoutSparse     WarningCode = "CFG007"
 	errorWorkcopiesRoot           WarningCode = "CFG008"
 	errorWorkcopiesCollision      WarningCode = "CFG009"
+	errorGaggleMixedProviderADO   WarningCode = "CFG010"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -1135,6 +1143,11 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleCheckout(r)
 	// Managed working-copy root normalization and cross-gaggle collisions (#3663).
 	ix.checkGaggleWorkcopies(r)
+	// A backlog on a different provider than the project is refused when ADO
+	// is on either side (ADO-N13); topology (b) support lands in ADO-N31. A
+	// non-ADO mismatch (e.g. GitHub project, Gitea backlog) is warned, not
+	// refused, so no existing non-ADO config breaks.
+	ix.checkGaggleProviderTopology(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
@@ -1917,6 +1930,40 @@ func (ix *index) checkGaggleWorkcopies(r *Report) {
 					"each gaggle needs its own managed working-copy tree",
 				roots[j].root, roots[j].dir, roots[i].gaggle, roots[i].dir)
 		}
+	}
+}
+
+// checkGaggleProviderTopology flags a gaggle whose backlog provider differs
+// from its project (code) provider. Every backlog stage today opens the
+// routed *project* provider (cmd/goobers/backlogquery.go), so a mismatched
+// backlog silently queries the wrong forge instead of failing loudly.
+//
+// A project/backlog split that stays on the SAME provider (e.g. an ADO
+// project with the backlog in a different ADO project) is unaffected: that
+// is the supported "ADO project split" and Provider values are equal there.
+//
+// A mismatch where ADO is on either side is refused outright (ADO-N13):
+// that is the case the v0.5.0 code path silently mis-routes. A mismatch
+// between two non-ADO providers (e.g. GitHub project, Gitea backlog) is
+// warned instead of refused, so no existing non-ADO config breaks under the
+// no-breaking-change goal. Full mixed-provider support is planned for
+// v0.5.x (ADO-N31), which lifts this guard.
+func (ix *index) checkGaggleProviderTopology(r *Report) {
+	for _, name := range sortedGaggleNames(ix.gaggles) {
+		spec := ix.gaggles[name].Spec
+		project := spec.Project.Provider
+		backlog := spec.Backlog.Provider
+		if project == "" || backlog == "" || project == backlog {
+			continue
+		}
+		msg := "spec.backlog.provider %q differs from spec.project.provider %q; a backlog on a different " +
+			"provider than the project is not yet supported and would query the wrong forge — " +
+			"planned for v0.5.x (ADO-N31)"
+		if project == apiv1.ProviderADO || backlog == apiv1.ProviderADO {
+			r.add(errorGaggleMixedProviderADO, Error, ix.gaggleFile[name], "Gaggle", name, msg, backlog, project)
+			continue
+		}
+		r.add(WarningGaggleMixedProvider, Warning, ix.gaggleFile[name], "Gaggle", name, msg, backlog, project)
 	}
 }
 

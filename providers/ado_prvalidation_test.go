@@ -219,6 +219,34 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 	}
 }
 
+// TestADOProviderPollPullRequestURLFallsBackToRepositoryIdentity is ADO-N39:
+// a PR detail response without _links.web.href must not surface the raw
+// _apis endpoint as the PR's URL. That opaque URL 404s in a browser and, more
+// importantly, run.go's repository match can't tell it apart from any other
+// repository's PR, so a wrong-repository PR could pass as the configured
+// target. The provider must instead build the browser (_git/.../pullrequest)
+// URL from the repository/project identity the server did return.
+func TestADOProviderPollPullRequestURLFallsBackToRepositoryIdentity(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", prDetailHandler(t, nil))
+	mux.HandleFunc("/org/project/_apis/policy/evaluations", policyEvaluationsHandler(t, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		PullID:     "42",
+	})
+	if err != nil {
+		t.Fatalf("PollPullRequest returned error: %v", err)
+	}
+	want := server.URL + "/org/project/_git/repo/pullrequest/42"
+	if result.URL != want {
+		t.Fatalf("URL = %q, want %q", result.URL, want)
+	}
+}
+
 func TestADOProviderPollPullRequestProviderError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", prDetailHandler(t, nil))
@@ -246,7 +274,14 @@ func TestADOProviderPollPullRequestProviderError(t *testing.T) {
 func TestADOProviderPublishPullRequestStatus(t *testing.T) {
 	var captured map[string]interface{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/statuses", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/iterations", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]int{{"id": 1}, {"id": 3}, {"id": 2}}})
+	})
+	// Statuses must be posted against the latest iteration, not the PR
+	// itself: a status policy with reset-on-push rejects PR-level statuses
+	// with 403 (ADO-N7).
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/iterations/3/statuses", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -284,6 +319,34 @@ func TestADOProviderPublishPullRequestStatus(t *testing.T) {
 	ctx, ok := captured["context"].(map[string]interface{})
 	if !ok || ctx["genre"] != "goobers" || ctx["name"] != "review" {
 		t.Fatalf("context = %#v, want genre=goobers name=review", captured["context"])
+	}
+}
+
+func TestADOProviderPublishPullRequestStatusNoIterationsErrors(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/iterations", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]int{}})
+	})
+	// Any other request — in particular a status POST at the PR or an
+	// iteration — means the no-iterations guard did not fire.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request %s %s: no status may be posted without an iteration", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.PublishPullRequestStatus(context.Background(), PullRequestStatusRequest{
+		Repository:  RepositoryRef{Name: "repo", Project: "project"},
+		PullID:      "42",
+		Name:        "review",
+		State:       CheckStatePassing,
+		Description: "reviewer approved",
+	})
+	if err == nil || !strings.Contains(err.Error(), "returned no iterations") {
+		t.Fatalf("PublishPullRequestStatus error = %v, want the no-iterations guard", err)
 	}
 }
 

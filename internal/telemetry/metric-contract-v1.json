@@ -262,6 +262,21 @@
       }
     },
     {
+      "name": "goobers.journal.exports_dropped",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{event}",
+      "description": "Committed journal events never handed to the OTLP Logs exporter, by cause. The journal file stays authoritative.",
+      "allowedDimensions": [
+        "goobers.journal.drop_cause"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
       "name": "goobers.work.active",
       "kind": "up_down_counter",
       "numberType": "int64",

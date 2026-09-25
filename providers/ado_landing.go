@@ -2,6 +2,8 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -141,19 +143,27 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	if err != nil {
 		return EnqueuePullRequestResult{}, err
 	}
-	// lastMergeSourceCommit is read-only on ADO's PR-update endpoint (it rejects
-	// any attempt to set it), so the head pin is enforced by comparing the freshly
-	// fetched detail — a fetch→compare→PATCH window ADO's API forces, unlike
-	// GitHub's server-enforced expected_head_sha. An empty commit id means ADO has
-	// not computed the merge preview yet (mergeStatus "notSet"): there is nothing
-	// to compare against, and auto-complete re-evaluates the source at completion
-	// time, so the pin is asserted only once ADO has resolved the source commit.
-	if req.ExpectedHeadSHA != "" && detail.LastMergeSourceCommit.CommitID != "" &&
-		!strings.EqualFold(detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA) {
-		return EnqueuePullRequestResult{}, fmt.Errorf("pull request head moved to %s, expected %s", detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA)
+	// Auto-complete cannot be pinned to a head: ADO rejects lastMergeSourceCommit
+	// on an auto-complete PATCH with 400 (live probe F6, design
+	// ado-parity-dsl-2-0.md §5), so the pin here is a client-side compare of the
+	// freshly fetched detail. An empty commit id means ADO has not computed the
+	// merge preview yet (mergeStatus "notSet"): there is nothing to compare
+	// against, and auto-complete re-evaluates the source at completion time, so
+	// the pin is asserted only once ADO has resolved the source commit.
+	if err := adoCheckFetchedHead(detail, req.ExpectedHeadSHA); err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	// autoCompleteSetBy must name the caller: ADO accepts only the
+	// credential's own identity (or omitting the field) and returns 400 for
+	// any other id (live probe F3, design ado-parity-dsl-2-0.md §5) — the PR
+	// creator's id (N5's earlier assumption) is wrong whenever some other
+	// identity opened the pull request.
+	identity, err := p.AuthenticatedIdentity(ctx)
+	if err != nil {
+		return EnqueuePullRequestResult{}, fmt.Errorf("ado: resolve authenticated identity for auto-complete: %w", err)
 	}
 	body := map[string]interface{}{
-		"autoCompleteSetBy": map[string]string{"id": detail.CreatedBy.ID},
+		"autoCompleteSetBy": map[string]string{"id": identity.ID},
 		"completionOptions": adoCompletionOptions{
 			MergeStrategy: adoMergeStrategy(req.MergeMethod),
 		},
@@ -175,7 +185,7 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	}
 	// ADO has no queue-entry ID. Record the acknowledged auto-complete
 	// mutation, but do not invent a GitHub-style admission or merge receipt.
-	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == detail.CreatedBy.ID {
+	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == identity.ID {
 		if err := recordLandingReceipt(ctx, p.mutationRecorder, ExternalRef{
 			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "enqueue", LandingIntent: intent,
 		}); err != nil {
@@ -287,24 +297,13 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
-	// lastMergeSourceCommit is read-only on ADO's PR-update endpoint (it rejects
-	// any attempt to set it), so the head pin is enforced by comparing the freshly
-	// fetched detail — a fetch→compare→PATCH window ADO's API forces, unlike
-	// GitHub's server-enforced expected_head_sha. An empty commit id means ADO has
-	// not computed the merge preview yet (mergeStatus "notSet"): there is nothing
-	// to compare against, so the pin is asserted only once ADO has resolved the
-	// source commit (a residual gap on the direct-merge path tracked separately).
-	if req.ExpectedHeadSHA != "" && detail.LastMergeSourceCommit.CommitID != "" &&
-		!strings.EqualFold(detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA) {
-		return MergePullRequestResult{}, fmt.Errorf("pull request head moved to %s, expected %s", detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA)
+	// The client-side compare is only an early exit. The completion PATCH
+	// carries the head pin itself (adoCompletionBody), and ADO refuses a stale
+	// pin server-side with 409 TF401192 (live probe F6).
+	if err := adoCheckFetchedHead(detail, req.ExpectedHeadSHA); err != nil {
+		return MergePullRequestResult{}, err
 	}
-	body := map[string]interface{}{
-		"status": "completed",
-		"completionOptions": adoCompletionOptions{
-			MergeStrategy:      adoMergeStrategy(req.MergeMethod),
-			MergeCommitMessage: req.CommitMessage,
-		},
-	}
+	body := adoCompletionBody(req)
 	repositoryAPIURL, err := p.repoURL(req.Repository)
 	if err != nil {
 		return MergePullRequestResult{}, err
@@ -315,7 +314,7 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	}
 	var out adoPullRequestDetail
 	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
-		return MergePullRequestResult{}, err
+		return MergePullRequestResult{}, adoCompletionError(err, req)
 	}
 	final, err := p.awaitMergeCompletion(ctx, req.Repository, req.PullID, out)
 	if err != nil {
@@ -446,4 +445,66 @@ type adoCommitDiffsResponse struct {
 			IsFolder bool   `json:"isFolder"`
 		} `json:"item"`
 	} `json:"changes"`
+}
+
+// adoCheckFetchedHead compares the freshly fetched source commit against the
+// caller's pinned head. An empty pin or an unresolved source commit (ADO has
+// not computed the merge preview yet) has nothing to compare.
+func adoCheckFetchedHead(detail adoPullRequestDetail, expected string) error {
+	actual := detail.LastMergeSourceCommit.CommitID
+	if expected == "" || actual == "" || strings.EqualFold(actual, expected) {
+		return nil
+	}
+	return PullRequestHeadMovedError{Expected: expected, Actual: actual}
+}
+
+// adoCompletionBody builds the direct-completion PATCH. When the caller pins
+// a head, lastMergeSourceCommit carries it so ADO enforces the pin at
+// completion time (live probe F6). The body never asks ADO to skip branch
+// policies: a policy refusal is reported, never overridden.
+func adoCompletionBody(req MergePullRequestRequest) map[string]interface{} {
+	body := map[string]interface{}{
+		"status": "completed",
+		"completionOptions": adoCompletionOptions{
+			MergeStrategy:      adoMergeStrategy(req.MergeMethod),
+			MergeCommitMessage: req.CommitMessage,
+		},
+	}
+	if req.ExpectedHeadSHA != "" {
+		body["lastMergeSourceCommit"] = adoCommitRef{CommitID: req.ExpectedHeadSHA}
+	}
+	return body
+}
+
+// adoCompletionError maps ADO's completion refusals onto typed errors
+// (design ado-parity-dsl-2-0.md §5, ADO-N9): 409 TF401192 means the pinned
+// head is stale, and 403 GitPullRequestUpdateRejectedByPolicyException means
+// a required branch policy is not met. Neither is retried, and the policy
+// refusal is deliberately not left as a raw 403, which would classify as an
+// authentication failure. Any other error is returned unchanged.
+func adoCompletionError(err error, req MergePullRequestRequest) error {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) {
+		return err
+	}
+	switch {
+	case responseErr.statusCode == http.StatusConflict && strings.Contains(responseErr.body, "TF401192"):
+		return PullRequestHeadMovedError{Expected: req.ExpectedHeadSHA}
+	case responseErr.statusCode == http.StatusForbidden &&
+		strings.Contains(responseErr.body, "GitPullRequestUpdateRejectedByPolicyException"):
+		return PullRequestPolicyNotMetError{PullID: req.PullID, Message: adoErrorMessage(responseErr.body)}
+	}
+	return err
+}
+
+// adoErrorMessage extracts the human-readable "message" field from an ADO
+// error body, or "" when the body is not the usual JSON error shape.
+func adoErrorMessage(body string) string {
+	var parsed struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(body), &parsed) != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Message)
 }
