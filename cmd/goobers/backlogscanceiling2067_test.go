@@ -60,20 +60,25 @@ func TestListBacklogScanWindowADOOversizedScanDoesNotViolateInvariant(t *testing
 		}
 		writeADOJSON(t, w, map[string]interface{}{"workItems": items})
 	})
-	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
-		id := strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitems/")
-		numericID, err := strconv.Atoi(id)
-		if err != nil {
-			t.Fatalf("parse work item id %q: %v", id, err)
+	mux.HandleFunc("/org/project/_apis/wit/workitemsbatch", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			IDs []int `json:"ids"`
 		}
-		writeADOJSON(t, w, map[string]interface{}{
-			"id": numericID,
-			"fields": map[string]interface{}{
-				"System.WorkItemType": "Active",
-				"System.Title":        "item " + id,
-				"System.State":        "Active",
-			},
-		})
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode workitemsbatch request body: %v", err)
+		}
+		values := make([]map[string]interface{}, 0, len(body.IDs))
+		for _, id := range body.IDs {
+			values = append(values, map[string]interface{}{
+				"id": id,
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Active",
+					"System.Title":        "item " + strconv.Itoa(id),
+					"System.State":        "Active",
+				},
+			})
+		}
+		writeADOJSON(t, w, map[string]interface{}{"count": len(values), "value": values})
 	})
 	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, _ *http.Request) {
 		writeADOJSON(t, w, map[string]interface{}{"value": []map[string]string{
