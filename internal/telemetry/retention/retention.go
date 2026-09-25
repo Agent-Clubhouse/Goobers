@@ -305,7 +305,20 @@ func pruneOne(candidate Result, db *rollup.DB, beforeDelete func(Result) error) 
 	}
 	if beforeDelete != nil {
 		if err := beforeDelete(candidate); err != nil {
-			return false, errors.Join(err, journal.ClearPruneReservation(candidate.RunDir))
+			clearErr := journal.ClearPruneReservation(candidate.RunDir)
+			// A custody refusal is expected only after its durable prune
+			// reservation has been rolled back. If rollback fails, return the
+			// operational failure without ErrCustodyHeld: callers must not
+			// suppress a journal left in reserved half-state merely because the
+			// guard also refused deletion.
+			if errors.Is(err, ErrCustodyHeld) && clearErr != nil {
+				return false, fmt.Errorf(
+					"telemetry retention: clear reservation for custody-held run %s: %w",
+					candidate.RunID,
+					clearErr,
+				)
+			}
+			return false, errors.Join(err, clearErr)
 		}
 	}
 
