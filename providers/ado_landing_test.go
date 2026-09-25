@@ -334,9 +334,17 @@ func TestADOProviderMergePullRequestTimesOutWhenNeverTerminal(t *testing.T) {
 func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 	var patched map[string]interface{}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"authenticatedUser": map[string]interface{}{"id": "caller-1"},
+		})
+	})
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
+			// createdBy deliberately differs from the caller: auto-complete
+			// must be armed as the caller, not the PR's creator (live probe
+			// F3, design ado-parity-dsl-2-0.md §5).
 			writeJSON(t, w, map[string]interface{}{
 				"pullRequestId": 42, "status": "active", "mergeStatus": "notSet",
 				"createdBy": map[string]string{"id": "creator-1"},
@@ -351,7 +359,7 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 			}
 			writeJSON(t, w, map[string]interface{}{
 				"pullRequestId": 42, "status": "active", "mergeStatus": "notSet",
-				"autoCompleteSetBy": map[string]string{"id": "creator-1"},
+				"autoCompleteSetBy": map[string]string{"id": "caller-1"},
 			})
 		}
 	})
@@ -359,6 +367,8 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	recorder := &recordingRecorder{}
+	provider.SetMutationRecorder(recorder)
 	result, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
 		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodMerge,
 	})
@@ -369,12 +379,16 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 		t.Fatalf("Merged = true, want false (enqueue never merges inline): %#v", result)
 	}
 	setBy, ok := patched["autoCompleteSetBy"].(map[string]interface{})
-	if !ok || setBy["id"] != "creator-1" {
-		t.Fatalf("autoCompleteSetBy = %#v, want id=creator-1", patched["autoCompleteSetBy"])
+	if !ok || setBy["id"] != "caller-1" {
+		t.Fatalf("autoCompleteSetBy = %#v, want id=caller-1 (the caller, not createdBy)", patched["autoCompleteSetBy"])
 	}
 	opts, ok := patched["completionOptions"].(map[string]interface{})
 	if !ok || opts["mergeStrategy"] != "noFastForward" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=noFastForward", patched["completionOptions"])
+	}
+	ref, ok := recorder.last()
+	if !ok || ref.Operation != "enqueue" {
+		t.Fatalf("landing receipt recorded = %#v, ok=%v, want an enqueue receipt (ADO confirmed autoCompleteSetBy.id == caller)", ref, ok)
 	}
 }
 
