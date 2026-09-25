@@ -164,7 +164,7 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 		}
 		writeJSON(t, w, map[string]interface{}{"value": states})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOWorkItemsBatch(t, mux))
 	t.Cleanup(server.Close)
 	return server
 }
@@ -441,7 +441,7 @@ func TestContract_ADOCreateWorkItemIdempotentOnRetry(t *testing.T) {
 		createRequests++
 		http.Error(w, "duplicate create", http.StatusConflict)
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
 		p.BaseURL = server.URL
