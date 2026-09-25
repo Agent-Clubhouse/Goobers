@@ -28,6 +28,10 @@ type openPRProvider interface {
 	OpenPullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error)
 }
 
+type adoPullRequestWorkItemLinker interface {
+	LinkPullRequestToWorkItem(context.Context, providers.RepositoryRef, providers.RepositoryRef, string, string) error
+}
+
 const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"Open the run's PR — or, on a repass through this stage, find and update\n" +
 	"the PR it already opened (idempotent: the run's branch name is stable\n" +
@@ -302,6 +306,20 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
+	}
+	if repo.Provider == providers.ProviderADO && haveIssue && issueID != "" {
+		linker, ok := stageProvider.(adoPullRequestWorkItemLinker)
+		if !ok {
+			pf(stderr, "error: ADO provider cannot create native work-item links\n")
+			return 1
+		}
+		if err := linker.LinkPullRequestToWorkItem(ctx, repo, backlogRepoRefForStage(root, repo), issueID, result.ID); err != nil {
+			if providers.IsNotFoundError(err) {
+				pf(stderr, "warning: work item #%s no longer resolves; pull request %s could not be linked natively\n", issueID, result.ID)
+			} else {
+				return failProviderStage(stderr, "link pull request to work item", err, "pr-result.json")
+			}
+		}
 	}
 
 	if recordTutorLiveVerification {
