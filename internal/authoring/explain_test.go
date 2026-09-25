@@ -116,6 +116,16 @@ func TestExplainResolvesNewerVersionSelectors(t *testing.T) {
 	}
 }
 
+func TestExplainResolvesNestedArraySelectors(t *testing.T) {
+	got, err := Explain("candidate-findings-v1.faultAudit.workflowFindings[].nodePaths[][]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Type == nil || got.Example == nil {
+		t.Fatalf("nested array explanation is incomplete: %+v", got)
+	}
+}
+
 func TestMinimalPatternExampleAllowsEmptyString(t *testing.T) {
 	pattern := `^(?:|https?://example\.invalid)$`
 	got, err := minimalPatternExample(pattern)

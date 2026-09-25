@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY MARK FIX" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry mark-fix \- mark a Backprop finding for post-fix verification
+.SH SYNOPSIS
+\fBgoobers telemetry mark-fix\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry mark-fix --finding=<backprop-id> [--applied-at=RFC3339] [path]
+
+Record when an operator-deployed fix for a Backprop fault-audit finding was
+applied. Subsequent report-only audit passes compare held-out runs after this
+time and show verification-pending, recovered, or repeated. --applied-at
+defaults to the current time. Exit codes: 0 = recorded, 1 = state error,
+2 = usage/config error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

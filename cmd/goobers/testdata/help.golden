@@ -167,7 +167,7 @@ Advanced operator commands:
   service task-stop stop a per-user Windows Scheduled Task supervisor
   service task-uninstall remove a per-user Windows Scheduled Task supervisor
   speech            preflight and test local speech notifications
-  telemetry         query, export, prune, or compact run telemetry
+  telemetry         query, export, mark fixes, prune, or compact run telemetry
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
   worker            host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
@@ -2720,12 +2720,13 @@ with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit 
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <stats|merges|errors|export|mark-fix|prune|prune-orphans|compact> [flags] [path]
 
 merges: confirmed PR landings and daily counts by originating instance
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
+mark-fix: mark a Backprop finding for post-fix verification
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -2756,6 +2757,15 @@ Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
 Every discovered run journal is validated before output; missing, corrupt, or
 unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 1 = journal data error, 2 = usage/output error.
+
+### telemetry mark-fix
+Usage: goobers telemetry mark-fix --finding=<backprop-id> [--applied-at=RFC3339] [path]
+
+Record when an operator-deployed fix for a Backprop fault-audit finding was
+applied. Subsequent report-only audit passes compare held-out runs after this
+time and show verification-pending, recovered, or repeated. --applied-at
+defaults to the current time. Exit codes: 0 = recorded, 1 = state error,
+2 = usage/config error.
 
 ### telemetry merges
 Usage: goobers telemetry merges [--json] [--gaggle=name] [--instance-id=id] [--repository-api-url=url] [--compare-github=owner/repository] [--shared-identities=login[,login]] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]

@@ -353,7 +353,7 @@ check the configured local speech engine without emitting sound
 speak the fixed local readiness phrase
 .TP
 \fBgoobers telemetry\fR
-query, export, prune, or compact run telemetry
+query, export, mark fixes, prune, or compact run telemetry
 .TP
 \fBgoobers telemetry compact\fR
 drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -363,6 +363,9 @@ recent errors across runs, by class, with run/stage refs
 .TP
 \fBgoobers telemetry export\fR
 re-emit a span-start-time window from journaled OTLP/JSON
+.TP
+\fBgoobers telemetry mark-fix\fR
+mark a Backprop finding for post-fix verification
 .TP
 \fBgoobers telemetry merges\fR
 confirmed PR landings and daily counts by originating instance
@@ -687,6 +690,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-telemetry-compact\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
+\fBgoobers-telemetry-mark-fix\fR(1),
 \fBgoobers-telemetry-merges\fR(1),
 \fBgoobers-telemetry-prune\fR(1),
 \fBgoobers-telemetry-prune-orphans\fR(1),
