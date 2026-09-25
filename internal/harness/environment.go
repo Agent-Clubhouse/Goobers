@@ -151,6 +151,9 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 		if !ok {
 			continue
 		}
+		if !CredentialFitsEnvAudience(capability, envVar, req.Envelope.RepoRef.Provider) {
+			continue
+		}
 		if req.Credentials == nil {
 			return nil, fmt.Errorf("harness: %s: resolve %s: no credential set", cfg.adapterName, capability)
 		}
@@ -192,6 +195,25 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 		env = append(env, envVar+"="+token)
 	}
 	return appendRunAuthorityEnv(ctx, env, req), nil
+}
+
+// CredentialFitsEnvAudience reports whether a repository credential may be
+// exposed under envVar. GH_TOKEN and GITHUB_TOKEN are read by GitHub tooling
+// (the Copilot CLI's github tool, gh), which sends them to GitHub, so a
+// repository credential lands there only when the invocation's repository is
+// a GitHub repository; another provider's credential is never handed to
+// GitHub tooling. agent:model is the model backend's own credential and is
+// independent of the repository provider. Agentic stages on other providers
+// commit locally and publish through a deterministic stage that authenticates
+// against the routed provider, so no credential is lost by withholding it.
+func CredentialFitsEnvAudience(capability, envVar string, provider apiv1.Provider) bool {
+	if capability == string(capabilitypkg.AgentModel) {
+		return true
+	}
+	if !strings.EqualFold(envVar, "GH_TOKEN") && !strings.EqualFold(envVar, "GITHUB_TOKEN") {
+		return true
+	}
+	return provider == "" || provider == apiv1.ProviderGitHub
 }
 
 func withoutEnvVars(env []string, names ...string) []string {
