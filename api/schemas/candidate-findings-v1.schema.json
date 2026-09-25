@@ -416,6 +416,7 @@
         "id": {
           "type": "string",
           "pattern": "^backprop-[0-9a-f]{20}$",
+          "examples": ["backprop-00000000000000000000"],
           "description": "A deterministic identifier used for deduplication and cooldown tracking."
         },
         "signature": {
