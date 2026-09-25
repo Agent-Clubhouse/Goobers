@@ -451,12 +451,9 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var cleanup *mergeBranchCleanup
-	// Branch cleanup is unavailable on ADO: its PollPullRequest does not populate
-	// HeadRepository, so it could only fail "did not report a head repository".
-	// Gate OFF
-	// (no-op); ADO source-branch deletion rides on the enqueue/merge
-	// deleteSourceBranch flag, out of scope for this epic (merge-wiring-plan
-	// §1a/§8). GitHub and Gitea use the shared provider-neutral cleanup path.
+	// ADO deletes the source branch through completionOptions.deleteSourceBranch;
+	// its PollPullRequest does not populate HeadRepository, so the shared
+	// provider-neutral cleanup path remains limited to GitHub and Gitea.
 	if !isADO && landResult.Outcome == mergepolicy.OutcomeMerged {
 		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
 		cleanup = &outcome

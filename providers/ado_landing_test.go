@@ -73,6 +73,9 @@ func TestADOProviderMergePullRequestSucceedsImmediately(t *testing.T) {
 	if !ok || opts["mergeStrategy"] != "squash" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=squash", patched["completionOptions"])
 	}
+	if opts["deleteSourceBranch"] != true {
+		t.Fatalf("completionOptions = %#v, want deleteSourceBranch=true", patched["completionOptions"])
+	}
 	// ADO-N9: the completion PATCH pins the head server-side (live probe F6),
 	// so a push between the fetch and the PATCH is refused with 409.
 	pin, ok := patched["lastMergeSourceCommit"].(map[string]interface{})
@@ -385,6 +388,9 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 	opts, ok := patched["completionOptions"].(map[string]interface{})
 	if !ok || opts["mergeStrategy"] != "noFastForward" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=noFastForward", patched["completionOptions"])
+	}
+	if opts["deleteSourceBranch"] != true {
+		t.Fatalf("completionOptions = %#v, want deleteSourceBranch=true", patched["completionOptions"])
 	}
 	ref, ok := recorder.last()
 	if !ok || ref.Operation != "enqueue" {
