@@ -710,3 +710,56 @@ func TestAPodProducedArtifactReachesTheNextPodStage(t *testing.T) {
 		t.Fatalf("pod B read %q, want what pod A produced %q", got, produced)
 	}
 }
+
+// A pod applies minted credentials to its own environment, where the harness
+// preflight and model discovery read GH_TOKEN/COPILOT_GITHUB_TOKEN. A
+// repository credential reaches those variables only on a GitHub repository;
+// the model credential is applied on every provider.
+func TestPodAppliesRepositoryCredentialsOnlyForTheirProvider(t *testing.T) {
+	cases := []struct {
+		provider    apiv1.Provider
+		wantGHToken bool
+	}{
+		{provider: apiv1.ProviderGitHub, wantGHToken: true},
+		{provider: apiv1.ProviderADO, wantGHToken: false},
+		{provider: apiv1.ProviderGitea, wantGHToken: false},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			t.Setenv("GH_TOKEN", "")
+			t.Setenv("COPILOT_GITHUB_TOKEN", "")
+			registry := harness.NewRegistry()
+			if err := registry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{}); err != nil {
+				t.Fatal(err)
+			}
+			previous := podHarnessRegistry
+			podHarnessRegistry = func(map[string]string, harness.EnvironmentConfig, map[string][]string, string, string, bool, func(context.Context) (string, error), bool) (*harness.Registry, error) {
+				return registry, nil
+			}
+			t.Cleanup(func() { podHarnessRegistry = previous })
+
+			kit := &agentickit.Kit{
+				Envelope: apiv1.InvocationEnvelope{
+					Goober:  "coder",
+					RepoRef: apiv1.RepoRef{Provider: tc.provider, Owner: "example-org", Name: "example-repo"},
+				},
+				Goobers:         map[string]apiv1.GooberSpec{"coder": {Harness: apiv1.HarnessCopilot}},
+				Instructions:    map[string]string{"coder": "instructions"},
+				EnvCapabilities: map[string]string{"repo:push": "GH_TOKEN", "agent:model": "COPILOT_GITHUB_TOKEN"},
+			}
+			minted := []dispatcher.MintedCredential{
+				{Capability: "repo:push", Value: "repo-secret"},
+				{Capability: "agent:model", Value: "model-secret"},
+			}
+			if _, err := buildPodAgenticExecutor(kit, &strings.Builder{}, minted, t.TempDir()); err != nil {
+				t.Fatalf("buildPodAgenticExecutor: %v", err)
+			}
+			if got := os.Getenv("GH_TOKEN") == "repo-secret"; got != tc.wantGHToken {
+				t.Fatalf("GH_TOKEN set = %v, want %v (provider %q)", got, tc.wantGHToken, tc.provider)
+			}
+			if os.Getenv("COPILOT_GITHUB_TOKEN") != "model-secret" {
+				t.Fatalf("model credential not applied for provider %q", tc.provider)
+			}
+		})
+	}
+}

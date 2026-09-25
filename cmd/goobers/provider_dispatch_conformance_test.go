@@ -221,6 +221,10 @@ func TestReportPRStatusDispatchesFromCommand(t *testing.T) {
 	})
 }
 
+func TestSetMilestoneDispatchesFromCommand(t *testing.T) {
+	assertADOBacklogStageDispatch(t, "set-milestone", []string{"--item", "7", "--milestone", "22"}, func(*testing.T) {})
+}
+
 func assertADOBacklogStageDispatch(t *testing.T, command string, args []string, setup func(*testing.T)) {
 	t.Helper()
 	root := initDemo(t)

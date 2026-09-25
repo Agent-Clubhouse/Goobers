@@ -55,13 +55,15 @@ func runSetMilestone(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubMilestonesWrite)
+	// Built through the stage seam so the client always matches the routed
+	// repository's provider; a provider without milestones refuses the update.
+	provider, err := newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.GitHubMilestonesWrite),
+		withStageProviderMutations("issue"))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	item, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{

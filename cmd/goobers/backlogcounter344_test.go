@@ -635,3 +635,77 @@ func TestBacklogCounterRefundsPreRequestFailure(t *testing.T) {
 		t.Fatalf("budget after pre-request failure = %+v, want reservation refunded", next)
 	}
 }
+
+type counterResolverProbe struct{ calls []string }
+
+func (r *counterResolverProbe) Resolve(_ context.Context, name string) (string, error) {
+	r.calls = append(r.calls, name)
+	return "repo-secret", nil
+}
+
+// Demand counters carry the counted repository's own provider, so a non-GitHub
+// repository's credential is never resolved for a GitHub client.
+func TestDemandCountersKeepTheRepositoryProvider(t *testing.T) {
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "gitea", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GITEA_TOK"}},
+	}}
+	repoRef := apiv1.RepoRef{Provider: apiv1.ProviderGitea, Owner: "acme", Name: "web"}
+
+	t.Run("schedule demand", func(t *testing.T) {
+		wf := &apiv1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "pr-remediation"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle:   "goobers",
+				Start:    "select",
+				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h", Priority: 100}},
+				Tasks: []apiv1.Task{{
+					Name: "select",
+					Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "update-behind-pr"}},
+				}},
+			},
+		}
+		probe := &counterResolverProbe{}
+		counter := buildScheduleDemandCounter(cfg, wf, repoRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil)
+		remediation, ok := counter.(*remediationDemandCounter)
+		if !ok {
+			t.Fatalf("counter type = %T, want *remediationDemandCounter", counter)
+		}
+		if remediation.repo.Provider != providers.ProviderGitea {
+			t.Fatalf("counted provider = %q, want gitea", remediation.repo.Provider)
+		}
+		if _, err := remediation.EligibleCount(context.Background()); err == nil {
+			t.Fatal("EligibleCount on gitea succeeded, want an unsupported-provider error")
+		}
+		if len(probe.calls) != 0 {
+			t.Fatalf("credential resolved for an unsupported provider: %v", probe.calls)
+		}
+	})
+
+	t.Run("refill demand", func(t *testing.T) {
+		wf := &apiv1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle:    "goobers",
+				Start:     "query",
+				Readiness: apiv1.ReadinessConditions{DesiredConcurrentRuns: 2},
+				Triggers:  []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h", Priority: 100}},
+				Tasks: []apiv1.Task{{
+					Name:   "query",
+					Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}},
+					Inputs: map[string]string{"requireLabels": "goobers:ready"},
+				}},
+			},
+		}
+		counter, err := buildRefillDemandCounter(cfg, apiv1.Gaggle{}, wf, repoRef, &counterResolverProbe{}, &backlogTestRegistrar{}, t.TempDir(), "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refill, ok := counter.(*backlogCounter)
+		if !ok {
+			t.Fatalf("counter type = %T, want *backlogCounter", counter)
+		}
+		if refill.repo.Provider != providers.ProviderGitea {
+			t.Fatalf("counted provider = %q, want gitea", refill.repo.Provider)
+		}
+	})
+}

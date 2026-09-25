@@ -333,6 +333,13 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		if !ok || envVar == "" || c.Value == "" {
 			continue
 		}
+		// The same provider rule the harness applies to its subprocess
+		// environment: the pod's own preflight and model discovery read these
+		// variables too, so a repository credential is set only where its
+		// provider's tooling reads it.
+		if !harness.CredentialFitsEnvAudience(c.Capability, envVar, kit.Envelope.RepoRef.Provider) {
+			continue
+		}
 		if err := os.Setenv(envVar, c.Value); err != nil {
 			return nil, fmt.Errorf("apply credential for capability %s: %w", c.Capability, err)
 		}

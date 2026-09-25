@@ -183,6 +183,9 @@ func (b *backlogCounter) newCounterProvider(ctx context.Context) (backlogCountPr
 		)
 		return providers.NewGiteaProvider(baseURL, token, telemetryOpt), func() {}, nil
 	}
+	if b.repo.Provider != providers.ProviderGitHub {
+		return nil, func() {}, fmt.Errorf("backlog count is not supported for provider %q", b.repo.Provider)
+	}
 	return newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
 }
 
@@ -459,7 +462,7 @@ func buildRefillDemandCounter(
 	}
 	counter := &backlogCounter{
 		ref:             repoRef.Owner + "/" + repoRef.Name,
-		repo:            providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		repo:            backlogCounterRepoRef(cfg, repoRef),
 		labels:          requireLabels,
 		labelPredicate:  predicate,
 		fieldPredicate:  fieldPredicate,
@@ -500,7 +503,7 @@ func buildScheduleDemandCounter(
 	}
 	return &remediationDemandCounter{
 		ref:          repoRef.Owner + "/" + repoRef.Name,
-		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		repo:         backlogCounterRepoRef(cfg, repoRef),
 		base:         base,
 		headPrefix:   headPrefix,
 		gaggle:       wf.Spec.Gaggle,
