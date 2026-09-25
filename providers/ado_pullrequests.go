@@ -141,7 +141,11 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 		return errPullIDRequired
 	}
 	for _, reviewer := range req.Reviewers {
-		endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "reviewers", reviewer)
+		identityID, err := p.resolveIdentityID(ctx, reviewer)
+		if err != nil {
+			return err
+		}
+		endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "reviewers", identityID)
 		if err != nil {
 			return err
 		}

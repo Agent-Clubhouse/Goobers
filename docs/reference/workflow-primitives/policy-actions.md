@@ -63,7 +63,7 @@ off to a task.
 | `record-remediation-checkpoint` | `github:pr:write` | Persist remediation attempt and cause state. |
 | `release-backlog-claim` | `github:issues:write` | Release the workflow's backlog claim. |
 | `release-pr-claim` | `github:pr:write` | Release a PR-remediation claim. |
-| `report-pr-status` | `ado:pr:status` | Publish Goobers evidence as an Azure DevOps PR status. |
+| `report-pr-status` | `github:pr:write` | Publish Goobers evidence as a provider-native PR status (`ado:pr:status` accepted). |
 | `respond-to-findings` | `github:issues:write` | Publish structured responses to review findings. |
 | `resolve-review-threads` | `github:pr:write` | Reply to and resolve remediated review threads. |
 | `rework-pr` | `repo:push` | Change and republish a PR's repository content. |

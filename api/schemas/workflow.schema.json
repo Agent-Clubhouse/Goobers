@@ -356,6 +356,7 @@
               "record-remediation-checkpoint",
               "release-backlog-claim",
               "release-pr-claim",
+              "report-pr-status",
               "respond-to-findings",
               "resolve-review-threads",
               "rework-pr",
