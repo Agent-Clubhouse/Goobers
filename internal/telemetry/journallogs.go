@@ -280,6 +280,16 @@ func journalLogSize(e journal.CommittedEvent) int {
 	return len(e.Body) + len(e.Kind) + len(e.JournalID) + len(e.InstanceID) + len(e.Gaggle) + len(e.RunID)
 }
 
+func (p *journalLogPipeline) queueRejectionLocked(size int) (journalDropCause, bool) {
+	if p.stopping {
+		return dropStopping, true
+	}
+	if p.pending >= journalLogQueueLimit || size > journalLogBytesLimit-p.bytes {
+		return dropQueueFull, true
+	}
+	return 0, false
+}
+
 func (p *journalLogPipeline) commit(e journal.CommittedEvent) {
 	if e.JournalID == "" {
 		p.invalidMetadata.Add(1)
@@ -291,7 +301,21 @@ func (p *journalLogPipeline) commit(e journal.CommittedEvent) {
 		p.drop(dropRecordTooLarge)
 		return
 	}
-	// Copy before taking the lock, not under it (#5575). The copy itself has to
+	// Reject an already-full/stopping queue before cloning as much as 1 MiB.
+	// The second check below remains authoritative because capacity can change
+	// while the copy runs; this first short lock prevents a saturated queue from
+	// turning every dropped event into avoidable allocation and memcpy work.
+	if !p.mu.TryLock() {
+		p.drop(dropLockContention)
+		return
+	}
+	if cause, rejected := p.queueRejectionLocked(size); rejected {
+		p.mu.Unlock()
+		p.drop(cause)
+		return
+	}
+	p.mu.Unlock()
+	// Copy outside the queue lock (#5575). The copy itself has to
 	// stay: TestJournalLogsQueueBoundsAndOwnership pins that a caller mutating
 	// its slice after Commit cannot alter an already-queued record, which is a
 	// defense the ownership contract asks for but cannot enforce. Doing it here
@@ -311,14 +335,9 @@ func (p *journalLogPipeline) commit(e journal.CommittedEvent) {
 		p.drop(dropLockContention)
 		return
 	}
-	if p.stopping {
+	if cause, rejected := p.queueRejectionLocked(size); rejected {
 		p.mu.Unlock()
-		p.drop(dropStopping)
-		return
-	}
-	if p.pending >= journalLogQueueLimit || size > journalLogBytesLimit-p.bytes {
-		p.mu.Unlock()
-		p.drop(dropQueueFull)
+		p.drop(cause)
 		return
 	}
 	p.queue[(p.head+p.length)%len(p.queue)] = journalLogItem{event: e, bytes: size}
