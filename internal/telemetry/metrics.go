@@ -90,7 +90,7 @@ const (
 	// tier a transition entered: "healthy", "warning", "admission-stopped",
 	// or "measurement-unavailable" (localscheduler.StorageTier.String()).
 	MetricAttrStorageTier = "goobers.storage.tier"
-	metricNameAttribute = "goobers.metric.name"
+	metricNameAttribute   = "goobers.metric.name"
 
 	// metricExportInterval is the periodic reader's collect-and-push period.
 	metricExportInterval = 60 * time.Second
