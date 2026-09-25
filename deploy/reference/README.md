@@ -351,10 +351,9 @@ The daemon mints the Microsoft Entra token, backs the repository's grants with
 it, and gives stage pods the token through the credential plane. The federated
 identity therefore belongs on the pod that runs `goobers up` (`goobers-api`
 here) and on any worker that runs self-placed stages for that gaggle
-(`goobers-worker`). Once built-in stage commands consume the delivered
-credential (ADO-N18), stage pods need no identity. Until then, a stage pod that
-runs a built-in Azure DevOps stage command still builds its connection from
-`repos[].auth` and needs the same projection (step 2).
+(`goobers-worker`). Stage pods need no identity: built-in Azure DevOps stage
+commands authenticate only with the credential delivered for their declared
+capabilities, and never read `repos[].auth`.
 
 1. Create a user-assigned identity and add it to the Azure DevOps organization
    at **Basic** access. Give it Contribute, Contribute to pull requests and
@@ -363,9 +362,7 @@ runs a built-in Azure DevOps stage command still builds its connection from
 2. Add a federated credential for the cluster's OIDC issuer whose subject is
    `system:serviceaccount:goobers-system:goobers-api`, plus
    `system:serviceaccount:goobers-system:goobers-worker` when a worker runs
-   self-placed stages. Until ADO-N18, also add the ServiceAccount stage pods
-   run under in the gaggle's namespace (its `default` ServiceAccount today)
-   when those pods run built-in Azure DevOps stage commands.
+   self-placed stages.
 3. Annotate each ServiceAccount with `azure.workload.identity/client-id:
    <client-id>` and label its pod template `azure.workload.identity/use:
    "true"`, so the webhook projects `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and

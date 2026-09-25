@@ -194,11 +194,11 @@ func newGitHubGiteaGatherPRContextAdapter(root string, repo providers.Repository
 	}, nil
 }
 func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (gatherPRContextAdapter, error) {
-	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.GitHubPRWrite))
 	if err != nil {
 		return gatherPRContextAdapter{}, err
 	}
-	gitAuth, err := adoRemediationGitAuthEnvironment(root, repo)
+	gitAuth, err := adoRemediationGitAuthEnvironment()
 	if err != nil {
 		return gatherPRContextAdapter{}, err
 	}

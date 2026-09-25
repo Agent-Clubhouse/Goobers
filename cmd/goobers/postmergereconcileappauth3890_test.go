@@ -207,8 +207,8 @@ func TestMergeStageProviderWithRecorderRoutesThroughStageSeam(t *testing.T) {
 			if got.mutationKind != "" {
 				t.Fatalf("mutationKind = %q, want empty: this constructor supplies the recorder itself", got.mutationKind)
 			}
-			if got.openPR {
-				t.Fatal("openPR = true, want false")
+			if got.configuredADOAuth {
+				t.Fatal("configuredADOAuth = true, want false: a stage authenticates with its delivered credential")
 			}
 		})
 	}

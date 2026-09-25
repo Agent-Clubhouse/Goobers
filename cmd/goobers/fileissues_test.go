@@ -1407,7 +1407,7 @@ func TestFileIssuesRefusesNonGitHubProviders(t *testing.T) {
 			f.writeArtifact(lowRisk("elsewhere"))
 			setNonGitHubStageEnv(t, kind)
 			previous := newADOProviderForStage
-			newADOProviderForStage = func(_ string, repo providers.RepositoryRef) (*providers.ADOProvider, error) {
+			newADOProviderForStage = func(repo providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 				t.Fatalf("file-issues constructed an ADO provider for %+v", repo)
 				return nil, nil
 			}

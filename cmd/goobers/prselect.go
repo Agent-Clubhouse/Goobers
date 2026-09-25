@@ -472,7 +472,7 @@ type prSelectSourceRequest struct {
 // comment, file, or branch operations.
 func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSource, remediationProvider, error) {
 	if repo.Provider == providers.ProviderADO {
-		provider, err := newMergeReviewProvider(root, repo, true)
+		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
 		if err != nil {
 			return nil, nil, err
 		}

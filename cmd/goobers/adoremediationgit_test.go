@@ -1,41 +1,22 @@
 package main
 
 import (
-	"context"
+	"encoding/base64"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
-	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
 
-type rotatingRemediationADOCredentialSource struct {
-	mu    sync.Mutex
-	calls int
-}
-
-func (s *rotatingRemediationADOCredentialSource) Credential(context.Context) (providers.ADOCredential, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.calls++
-	return providers.ADOCredential{
-		Kind:      "bearer",
-		Secret:    "azure-cli-token-" + time.Duration(s.calls).String(),
-		ExpiresAt: time.Now().Add(time.Hour),
-	}, nil
-}
-
-func (s *rotatingRemediationADOCredentialSource) callCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.calls
-}
-
-func useAzureCLIRemediationAuth(t *testing.T, root string) *rotatingRemediationADOCredentialSource {
-	t.Helper()
+// TestADORemediationGitAuthEnvironmentUsesDeliveredRepoPush pins that
+// remediation Git auth on Azure DevOps is built from the repo:push credential
+// the stage was delivered, in the scheme the daemon stated beside it, and not
+// from the repository's configured auth: the instance config here names Azure
+// CLI auth, and the stage must still send exactly the delivered value.
+func TestADORemediationGitAuthEnvironmentUsesDeliveredRepoPush(t *testing.T) {
+	root, _ := providerDispatchFixture(t, providers.ProviderADO)
 	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
 	if err != nil {
 		t.Fatal(err)
@@ -45,38 +26,55 @@ func useAzureCLIRemediationAuth(t *testing.T, root string) *rotatingRemediationA
 	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	source := &rotatingRemediationADOCredentialSource{}
-	original := remediationADOCredentialSource
-	remediationADOCredentialSource = func(instance.RepoRef, providers.CommandRunner, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
-		return source, nil
+	const remote = "https://dev.azure.com/acme/project/_git/web"
+	for _, tc := range []struct {
+		name       string
+		scheme     string
+		wantHeader string
+		wantMSA    bool
+	}{
+		{name: "bearer", scheme: "bearer", wantHeader: "AUTHORIZATION: Bearer delivered-push-token", wantMSA: true},
+		{name: "basic", scheme: "basic", wantHeader: "AUTHORIZATION: Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:delivered-push-token"))},
+		{name: "no scheme defaults to basic", wantHeader: "AUTHORIZATION: Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:delivered-push-token"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(executor.CredentialEnvVar("repo:push"), "delivered-push-token")
+			t.Setenv(executor.RepoAuthSchemeEnvVar, tc.scheme)
+			resolve, err := adoRemediationGitAuthEnvironment()
+			if err != nil {
+				t.Fatal(err)
+			}
+			env, err := resolve(t.Context(), remote)
+			if err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(env, "\n")
+			if !strings.Contains(joined, "GIT_CONFIG_VALUE_1="+tc.wantHeader+"\n") {
+				t.Fatalf("git environment does not carry %q: %q", tc.wantHeader, joined)
+			}
+			if got := strings.Contains(joined, "X-VSS-ForceMsaPassThrough: true"); got != tc.wantMSA {
+				t.Fatalf("MSA passthrough header present = %v, want %v", got, tc.wantMSA)
+			}
+		})
 	}
-	t.Cleanup(func() { remediationADOCredentialSource = original })
-	return source
 }
 
-func TestADORemediationGitAuthEnvironmentUsesConfiguredBearerSourcePerOperation(t *testing.T) {
-	root, repo := providerDispatchFixture(t, providers.ProviderADO)
-	source := useAzureCLIRemediationAuth(t, root)
-	t.Setenv("GOOBERS_CRED_REPO_PUSH", "")
+// TestADORemediationGitAuthEnvironmentRequiresDeclaredRepoPush pins "an
+// undeclared capability means no credential" on Azure DevOps: with no
+// delivered repo:push there is no Git credential, whatever the instance
+// config says.
+func TestADORemediationGitAuthEnvironmentRequiresDeclaredRepoPush(t *testing.T) {
+	t.Setenv(executor.CredentialEnvVar("repo:push"), "")
+	if _, err := adoRemediationGitAuthEnvironment(); err == nil || !strings.Contains(err.Error(), "GOOBERS_CRED_REPO_PUSH") {
+		t.Fatalf("error = %v, want a missing GOOBERS_CRED_REPO_PUSH failure", err)
+	}
+}
 
-	resolve, err := adoRemediationGitAuthEnvironment(root, repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		env, err := resolve(t.Context(), "https://dev.azure.com/acme/project/_git/web")
-		if err != nil {
-			t.Fatal(err)
-		}
-		joined := strings.Join(env, "\n")
-		if !strings.Contains(joined, "AUTHORIZATION: Bearer azure-cli-token-") {
-			t.Fatalf("git environment did not use the Azure CLI bearer scheme: %q", joined)
-		}
-		if strings.Contains(joined, "AUTHORIZATION: Basic") {
-			t.Fatalf("git environment converted an Azure CLI bearer into basic auth: %q", joined)
-		}
-	}
-	if got := source.callCount(); got != 2 {
-		t.Fatalf("credential resolutions = %d, want one per Git operation", got)
+func TestADORemediationGitAuthEnvironmentRejectsUnknownScheme(t *testing.T) {
+	t.Setenv(executor.CredentialEnvVar("repo:push"), "delivered-push-token")
+	t.Setenv(executor.RepoAuthSchemeEnvVar, "digest")
+	_, err := adoRemediationGitAuthEnvironment()
+	if err == nil || !strings.Contains(err.Error(), executor.RepoAuthSchemeEnvVar) || strings.Contains(err.Error(), "delivered-push-token") {
+		t.Fatalf("error = %v, want an unsupported-scheme failure that does not echo the token", err)
 	}
 }

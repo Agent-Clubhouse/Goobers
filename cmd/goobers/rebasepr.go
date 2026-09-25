@@ -110,11 +110,11 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	var pushToken string
 	var gitAuth gitAuthEnvironmentResolver
 	if repo.Provider == providers.ProviderADO {
-		adoProvider, providerErr := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
+		adoProvider, providerErr := newProviderForStageAs[*providers.ADOProvider](root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
 		if providerErr != nil {
 			return fail(providerErr)
 		}
-		gitAuth, err = adoRemediationGitAuthEnvironment(root, repo)
+		gitAuth, err = adoRemediationGitAuthEnvironment()
 		if err != nil {
 			return fail(err)
 		}

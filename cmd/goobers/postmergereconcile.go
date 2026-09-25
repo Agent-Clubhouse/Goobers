@@ -168,9 +168,10 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 }
 
 func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit int, lookback time.Duration, stdout, stderr io.Writer) int {
-	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false,
-		withStageProviderCapability(capability.ADOPRWrite),
-	)
+	// The pull request poll and threads authenticate with github:pr:write and
+	// the backlog work-item close with github:issues:write, each with the
+	// credential its declared capability delivered (ado-parity-dsl-2-0.md §3.1).
+	provider, issuesProvider, err := newReconcilePostMergeADOProviders(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -211,7 +212,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 				report.Pending++
 				continue
 			}
-			actionErrs := performPostMergeADOWithOrigin(ctx, provider, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, root, entry.Gaggle, repo, stdout, stderr)
+			actionErrs := performPostMergeADOWithOrigin(ctx, issuesProvider, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, root, entry.Gaggle, repo, stdout, stderr)
 			if len(actionErrs) > 0 {
 				report.Pending++
 				ledger.Entries[key] = entry
@@ -247,6 +248,25 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 	pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
 		report.Scanned, report.Reconciled, report.Pending, report.Expired)
 	return 0
+}
+
+// newReconcilePostMergeADOProviders builds reconcile-post-merge's two Azure
+// DevOps providers: one for the pull request (github:pr:write) and one for the
+// backlog work items it closes (github:issues:write).
+func newReconcilePostMergeADOProviders(root string, repo providers.RepositoryRef) (*providers.ADOProvider, *providers.ADOProvider, error) {
+	prProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubPRWrite),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	issuesProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubIssuesWrite),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return prProvider, issuesProvider, nil
 }
 
 func reconcileOpenPullRequestParks(

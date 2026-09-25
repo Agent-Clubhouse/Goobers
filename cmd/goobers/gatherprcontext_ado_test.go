@@ -51,7 +51,6 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 	})
 
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
-	azureCLISource := useAzureCLIRemediationAuth(t, root)
 	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
 	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
 	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
@@ -116,7 +115,7 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	original := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}
@@ -137,10 +136,9 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 
 	t.Setenv("GOOBERS_RUN_ID", "run-ado-362")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-	// No repo:push token is materialized for tokenless Azure CLI auth. Git uses
-	// the configured ADO credential source directly, while the provider keeps
-	// drawing its REST authentication from instance config.
-	t.Setenv("GOOBERS_CRED_REPO_PUSH", "")
+	// Every ADO auth kind delivers the declared capabilities' credentials: the
+	// provider authenticates with github:pr:write and Git with repo:push.
+	setDeliveredADOStageCredentials(t)
 	t.Chdir(wt.Path)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", root)
@@ -152,9 +150,6 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 	}
 	if !connectionDataRead {
 		t.Fatal("connectionData (AuthenticatedLogin) was never read — the thread author could not be trusted")
-	}
-	if azureCLISource.callCount() == 0 {
-		t.Fatal("the configured Azure CLI credential source was not used for the branch checkout")
 	}
 	if !strings.Contains(stdout, "PR #359") {
 		t.Fatalf("stdout = %q, want a mention of PR #359", stdout)

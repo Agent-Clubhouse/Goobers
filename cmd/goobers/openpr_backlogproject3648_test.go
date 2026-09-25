@@ -122,15 +122,13 @@ func TestOpenPRStalenessChecksBacklogProjectOnADO(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	previous := newADOProviderForOpenPR
-	newADOProviderForOpenPR = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	t.Setenv(executor.CredentialEnvVar("provider:pr:write"), "pr-write-token")
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}
-	t.Cleanup(func() { newADOProviderForOpenPR = previous })
-	previousWorkItem := newADOProviderForWorkItemWrite
-	newADOProviderForWorkItemWrite = newADOProviderForOpenPR
-	t.Cleanup(func() { newADOProviderForWorkItemWrite = previousWorkItem })
+	t.Cleanup(func() { newADOProviderForStage = previous })
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
@@ -194,15 +192,16 @@ func TestOpenPRStalenessNotFoundDiagnosticNamesBacklogProject(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	previous := newADOProviderForOpenPR
-	newADOProviderForOpenPR = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	t.Setenv(executor.CredentialEnvVar("provider:pr:write"), "pr-write-token")
+	// Linking the opened PR to its work item uses its own delivered
+	// credential (ado:work-items:write), like every other ADO stage call.
+	t.Setenv(executor.CredentialEnvVar("ado:work-items:write"), "work-item-token")
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}
-	t.Cleanup(func() { newADOProviderForOpenPR = previous })
-	previousWorkItem := newADOProviderForWorkItemWrite
-	newADOProviderForWorkItemWrite = newADOProviderForOpenPR
-	t.Cleanup(func() { newADOProviderForWorkItemWrite = previousWorkItem })
+	t.Cleanup(func() { newADOProviderForStage = previous })
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)

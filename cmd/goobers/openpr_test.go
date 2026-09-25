@@ -321,13 +321,13 @@ func TestOpenPRADOWorkItemLinkRequiresDedicatedCapability(t *testing.T) {
 }
 
 func TestOpenPRGitHubDoesNotResolveADOWorkItemAuthority(t *testing.T) {
-	previous := newADOProviderForWorkItemWrite
+	previous := newADOProviderForStage
 	called := false
-	newADOProviderForWorkItemWrite = func(string, providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(providers.RepositoryRef, providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		called = true
 		return nil, fmt.Errorf("unexpected ADO provider construction")
 	}
-	t.Cleanup(func() { newADOProviderForWorkItemWrite = previous })
+	t.Cleanup(func() { newADOProviderForStage = previous })
 
 	linker, err := openPRWorkItemLinker("", providers.RepositoryRef{Provider: providers.ProviderGitHub}, true, "42")
 	if err != nil {
@@ -350,8 +350,8 @@ func TestOpenPRADOStageHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 	baseURL := os.Getenv("GOOBERS_TEST_ADO_API_URL")
-	newADOProviderForOpenPR = func(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
-		provider, err := buildADOProviderForOpenPR(root, routed)
+	newADOProviderForStage = func(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		provider, err := buildADOProviderForStage(routed, credential)
 		if err != nil {
 			return nil, err
 		}

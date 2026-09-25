@@ -193,7 +193,12 @@ func TestRunApplyVerdictADOPassPublishesStatusAndDecisionPass(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	original := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		// ADO-N18: apply-verdict's ADO provider is built from the delivered
+		// provider:pr:write credential and no other.
+		if got := deliveredCapabilityOf(t, credential); got != "provider:pr:write" {
+			t.Errorf("apply-verdict built its ADO provider from %q's credential, want provider:pr:write", got)
+		}
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}
@@ -537,7 +542,12 @@ func TestRunApplyVerdictADONeedsChangesBridgesToRemediation(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	original := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		// ADO-N18: apply-verdict's ADO provider is built from the delivered
+		// provider:pr:write credential and no other.
+		if got := deliveredCapabilityOf(t, credential); got != "provider:pr:write" {
+			t.Errorf("apply-verdict built its ADO provider from %q's credential, want provider:pr:write", got)
+		}
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}

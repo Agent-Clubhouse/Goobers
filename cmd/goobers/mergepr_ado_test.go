@@ -176,7 +176,7 @@ func adoMergePREnvWithAuth(t *testing.T, serverURL string, withoutGrant bool, au
 	}
 
 	prev := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(
 			routed.Owner,
 			routed.Project,
@@ -271,14 +271,20 @@ func TestMergePRADORequiresCompletionCapability(t *testing.T) {
 	}
 }
 
-func TestMergePRAzureCLIUsesConfiguredAuthenticationWithoutTokenGrant(t *testing.T) {
+// TestMergePRAzureCLICompletesWithDeliveredCredential covers a repository
+// configured for Microsoft Entra (azure-cli) auth: merge-pr completes with the
+// bearer value delivered for ado:pr:complete, not the repository's configured
+// auth (ADO-N18).
+func TestMergePRAzureCLICompletesWithDeliveredCredential(t *testing.T) {
 	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
-	root, dir := adoMergePREnvWithAuth(t, server.URL, true, "azure-cli", map[string]string{
+	root, dir := adoMergePREnvWithAuth(t, server.URL, false, "azure-cli", map[string]string{
 		"pullNumber": "359",
 		"verdict":    "pass",
 		"headSha":    "headsha1",
 		"baseSha":    "basesha1",
 	})
+	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
+	credentials := recordADOStageCredentials(t)
 
 	code, stdout, stderr := runArgs(t, "merge-pr", root)
 	if code != 0 {
@@ -291,6 +297,52 @@ func TestMergePRAzureCLIUsesConfiguredAuthenticationWithoutTokenGrant(t *testing
 	if atomic.LoadInt64(&state.patchCalls) != 1 {
 		t.Fatalf("completion PATCH called %d times, want 1", state.patchCalls)
 	}
+	want := providers.ADOCredential{Kind: providers.ADOCredentialKindBearer, Secret: "ado-complete-token"}
+	if len(*credentials) != 1 || (*credentials)[0] != want {
+		t.Fatalf("ADO stage credentials = %+v, want exactly the delivered ado:pr:complete bearer", *credentials)
+	}
+}
+
+// TestMergePRAzureCLIWithoutCompleteGrantFailsClosed is the other half: with
+// no ado:pr:complete delivered, merge-pr on an Entra repository fails before
+// any request instead of falling back to the configured auth.
+func TestMergePRAzureCLIWithoutCompleteGrantFailsClosed(t *testing.T) {
+	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+	root, _ := adoMergePREnvWithAuth(t, server.URL, true, "azure-cli", map[string]string{
+		"pullNumber": "359",
+		"verdict":    "pass",
+		"headSha":    "headsha1",
+		"baseSha":    "basesha1",
+	})
+	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 1 || !strings.Contains(stderr, "GOOBERS_CRED_ADO_PR_COMPLETE") {
+		t.Fatalf("code = %d, stderr = %q, want a missing GOOBERS_CRED_ADO_PR_COMPLETE failure", code, stderr)
+	}
+	if atomic.LoadInt64(&state.patchCalls) != 0 {
+		t.Fatalf("completion PATCH called %d times, want 0", state.patchCalls)
+	}
+}
+
+// recordADOStageCredentials wraps the installed newADOProviderForStage seam
+// and records the credential each ADO stage provider was built from.
+func recordADOStageCredentials(t *testing.T) *[]providers.ADOCredential {
+	t.Helper()
+	var got []providers.ADOCredential
+	prev := newADOProviderForStage
+	newADOProviderForStage = func(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		if credential == nil {
+			t.Error("ADO stage provider built with no credential")
+		} else if resolved, err := credential.Credential(context.Background()); err != nil {
+			t.Errorf("resolve ADO stage credential: %v", err)
+		} else {
+			got = append(got, resolved)
+		}
+		return prev(routed, credential)
+	}
+	t.Cleanup(func() { newADOProviderForStage = prev })
+	return &got
 }
 
 // TestADOMergeCommitMessageBypassesVerdictLookup pins the single-hard-blocker

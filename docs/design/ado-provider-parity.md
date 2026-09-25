@@ -58,10 +58,14 @@ code path byte-identical.
 
 ## 3. Provider construction and auth
 
-ADO stage branches build the provider with `newADOProviderForStage(root, repo)`, which
-resolves the configured auth source — PAT, Azure CLI, workload identity, or managed
-identity — from the instance config, org-scoped. No `github:*` token is resolved on an ADO
-branch. Work-item reads/writes route through the backlog project reference
+ADO stage branches build the provider through the shared stage seam
+(`newProviderForStage` → `newADOProviderForStage`) from the credential delivered for the
+capability the stage declared, in the daemon-stated `GOOBERS_REPO_AUTH_SCHEME`
+(ADO-N18, `docs/design/ado-parity-dsl-2-0.md` §3.1): `github:pr:write` or
+`provider:pr:write` for pull-request work, `github:issues:*` for work items, `repo:push` for
+Git, `ado:pr:complete` for completion. Every auth kind — PAT, Azure CLI, workload identity,
+managed identity — resolves in the daemon; no stage reads `repos[].auth`. Work-item
+reads/writes route through the backlog project reference
 (`backlogRepoRefForStage`) so a split code-repo/backlog-project instance addresses the
 right project; PR-scoped calls use the routed code repo.
 
