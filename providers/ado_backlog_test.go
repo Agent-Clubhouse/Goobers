@@ -334,6 +334,9 @@ func TestADODecompositionMarkerAndCommentMutations(t *testing.T) {
 	}
 	mux.HandleFunc("/org/project/_apis/wit/workItems/7/comments", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
+		if got := r.URL.Query().Get("format"); got != "markdown" {
+			t.Fatalf("comment format = %q, want markdown (ADO-N27)", got)
+		}
 		var body map[string]string
 		decodeJSON(t, r, &body)
 		writeJSON(t, w, map[string]interface{}{"commentId": 9, "text": body["text"]})
@@ -356,6 +359,119 @@ func TestADODecompositionMarkerAndCommentMutations(t *testing.T) {
 	}
 	if comment.ID != "9" || comment.Body != "prepared" {
 		t.Fatalf("comment = %#v", comment)
+	}
+}
+
+// TestADOCreateWorkItemDefaultTypeFromRequirementCategory pins ADO-N27: with
+// no req.Type, CreateWorkItem resolves the project's create type from the
+// Requirement category's default work item type rather than a hard-coded
+// "Issue", so it works on every stock process and on a custom process that
+// renamed the type while keeping the category's own referenceName stable.
+// Each case also proves state resolution (adoWorkItemStateCategories, used
+// afterwards to map the created item's state) keys on the type's name, not
+// its referenceName — states are read at workitemtypes/{name}/states, which
+// only works if the type name, not an internal referenceName, is what gets
+// sent.
+func TestADOCreateWorkItemDefaultTypeFromRequirementCategory(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		process     string
+		defaultType string
+	}{
+		{name: "basic", process: "Basic", defaultType: "Issue"},
+		{name: "agile", process: "Agile", defaultType: "User Story"},
+		{name: "scrum", process: "Scrum", defaultType: "Product Backlog Item"},
+		{
+			name:        "inherited process renames the type",
+			process:     "Inherited from Agile",
+			defaultType: "Example Requirement",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var categoryCalls, createCalls int
+			mux := http.NewServeMux()
+			mux.HandleFunc("/org/project/_apis/wit/workitemtypecategories/Microsoft.RequirementCategory", func(w http.ResponseWriter, r *http.Request) {
+				assertMethod(t, r, http.MethodGet)
+				categoryCalls++
+				writeJSON(t, w, map[string]interface{}{
+					"name":                "Requirement Category",
+					"referenceName":       "Microsoft.RequirementCategory",
+					"defaultWorkItemType": map[string]string{"name": tc.defaultType},
+				})
+			})
+			// Registered as path prefixes rather than exact literal patterns:
+			// Go 1.22's ServeMux reads a bare space in a pattern as the start
+			// of a method verb, which the default type's real-world names
+			// ("User Story", "Product Backlog Item") contain.
+			mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, r *http.Request) {
+				assertMethod(t, r, http.MethodGet)
+				if !strings.HasSuffix(r.URL.Path, "/states") || r.URL.Path != "/org/project/_apis/wit/workitemtypes/"+tc.defaultType+"/states" {
+					t.Fatalf("states path = %q, want type %q", r.URL.Path, tc.defaultType)
+				}
+				writeJSON(t, w, map[string]interface{}{"value": []map[string]string{
+					{"name": "New", "category": "Proposed"},
+				}})
+			})
+			mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
+				assertMethod(t, r, http.MethodPost)
+				if r.URL.Path != "/org/project/_apis/wit/workitems/$"+tc.defaultType {
+					t.Fatalf("create path = %q, want type %q", r.URL.Path, tc.defaultType)
+				}
+				createCalls++
+				var patch []adoPatchOperation
+				decodeJSON(t, r, &patch)
+				var hasMarkdownOp bool
+				for _, op := range patch {
+					if op.Path == "/multilineFieldsFormat/System.Description" && op.Value == "Markdown" {
+						hasMarkdownOp = true
+					}
+				}
+				if !hasMarkdownOp {
+					t.Fatalf("create patch missing multilineFieldsFormat op: %#v", patch)
+				}
+				writeJSON(t, w, map[string]interface{}{
+					"id": 61, "rev": 1, "url": "item-url",
+					"fields": map[string]interface{}{
+						"System.WorkItemType": tc.defaultType,
+						"System.Title":        "New work",
+						"System.State":        "New",
+					},
+				})
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+			repo := RepositoryRef{Name: "repo", Project: "project"}
+			item, err := provider.CreateWorkItem(context.Background(), CreateWorkItemRequest{
+				Repository: repo,
+				Title:      "New work",
+				Body:       "details",
+			})
+			if err != nil {
+				t.Fatalf("CreateWorkItem (%s process): %v", tc.process, err)
+			}
+			if item.Type != tc.defaultType {
+				t.Fatalf("created item type = %q, want %q", item.Type, tc.defaultType)
+			}
+			if createCalls != 1 {
+				t.Fatalf("create POSTs to workitems/$%s = %d, want 1", tc.defaultType, createCalls)
+			}
+
+			// A second create against a different run reuses the cached
+			// default type: no repeat GET against workitemtypecategories.
+			if _, err := provider.CreateWorkItem(context.Background(), CreateWorkItemRequest{
+				Repository: repo, Title: "New work 2", Body: "more details",
+			}); err != nil {
+				t.Fatalf("second CreateWorkItem: %v", err)
+			}
+			if categoryCalls != 1 {
+				t.Fatalf("workitemtypecategories calls = %d, want 1 (type cache not hit)", categoryCalls)
+			}
+			if createCalls != 2 {
+				t.Fatalf("create POSTs = %d, want 2", createCalls)
+			}
+		})
 	}
 }
 

@@ -68,6 +68,13 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 		b.mu.Unlock()
 		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 42}}})
 	})
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypecategories/Microsoft.RequirementCategory", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"name":                "Requirement Category",
+			"referenceName":       "Microsoft.RequirementCategory",
+			"defaultWorkItemType": map[string]string{"name": "Issue"},
+		})
+	})
 	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("create method = %s", r.Method)

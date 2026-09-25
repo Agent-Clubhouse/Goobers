@@ -84,7 +84,12 @@ same abstraction, whose shape is unchanged.
   (`BL-005`).
 - **BL-033 (MUST):** *(V1)* The ADO provider MUST reach parity (work items + PRs +
   claiming markers) behind the same abstraction, with no change to workflow or goober
-  definitions.
+  definitions. Work-item creation is **process-agnostic**: with no type named, the
+  create type is the project's Requirement-category default work item type
+  (`workitemtypecategories`), not a hard-coded `"Issue"` — this matches Basic, Agile,
+  Scrum and inherited processes alike. Descriptions and comments are written as
+  Markdown (`multilineFieldsFormat` on create/update, `format=markdown` on comments)
+  rather than left to fall back to HTML-escaped plain text (`ADO-N27`).
   - *ADO label case:* work-item tags and PR labels share one project-wide namespace
     that matches case-insensitively, and ADO returns the casing of whoever wrote a
     tag first. The ADO provider therefore compares tags and PR labels ignoring
