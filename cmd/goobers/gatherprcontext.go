@@ -213,7 +213,7 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 			return eligible, map[int]int{}, nil
 		},
 		comments: func(ctx context.Context, id string) ([]providers.Comment, error) {
-			return provider.ListPullRequestThreadComments(ctx, repo, id)
+			return adoSelfAttributedThreadComments(ctx, provider, repo, id)
 		}, commentOperation: func(n int) string { return fmt.Sprintf("list thread comments on PR #%d", n) }, login: provider.AuthenticatedLogin,
 		park: func(ctx context.Context, pr providers.PullRequestSummary, prior, body string) error {
 			id := strconv.Itoa(pr.Number)
@@ -229,6 +229,22 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 			return nil
 		},
 	}, nil
+}
+
+// adoSelfAttributedThreadComments lists a PR's thread comments with their
+// authors attributed by identity GUID (ADO-N5), so the shared display-name
+// trust checks gather-pr-context applies only recognize threads this identity
+// wrote.
+func adoSelfAttributedThreadComments(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pullID string) ([]providers.Comment, error) {
+	comments, err := provider.ListPullRequestThreadComments(ctx, repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	self, err := provider.AuthenticatedIdentity(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve authenticated identity: %w", err)
+	}
+	return adoAttributeCommentsByID(comments, self), nil
 }
 func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherPRContextAdapter, stdout, stderr io.Writer) int {
 	if a.note != "" {

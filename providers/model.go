@@ -186,8 +186,13 @@ type WorkItemLabelTransition struct {
 
 // Comment is a comment on a backlog work item (a GitHub issue comment).
 type Comment struct {
-	ID         string             `json:"id"`
-	Author     string             `json:"author,omitempty"`
+	ID     string `json:"id"`
+	Author string `json:"author,omitempty"`
+	// AuthorID is the provider's stable identifier for the author, when the
+	// provider exposes one distinct from the display-oriented Author. Azure
+	// DevOps sets it to the author's identity GUID (display names are not
+	// unique); GitHub and Gitea leave it empty.
+	AuthorID   string             `json:"authorId,omitempty"`
 	AuthorType string             `json:"authorType,omitempty"`
 	Body       string             `json:"body"`
 	CreatedAt  *time.Time         `json:"createdAt,omitempty"`

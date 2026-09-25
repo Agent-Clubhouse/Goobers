@@ -100,8 +100,8 @@ func TestADOProviderListPullRequestThreadComments(t *testing.T) {
 			{
 				"id": 7,
 				"comments": []map[string]interface{}{
-					{"id": 1, "content": "verdict", "commentType": "text", "author": map[string]string{"displayName": "Reviewer"}, "publishedDate": "2026-08-08T10:00:00Z"},
-					{"id": 2, "content": "finding history", "commentType": "text", "author": map[string]string{"displayName": "Reviewer"}, "publishedDate": "2026-08-08T10:05:00Z"},
+					{"id": 1, "content": "verdict", "commentType": "text", "author": map[string]string{"displayName": "Reviewer", "id": "reviewer-guid"}, "publishedDate": "2026-08-08T10:00:00Z"},
+					{"id": 2, "content": "finding history", "commentType": "text", "author": map[string]string{"displayName": "Reviewer", "id": "other-reviewer-guid"}, "publishedDate": "2026-08-08T10:05:00Z"},
 				},
 			},
 			{
@@ -133,6 +133,9 @@ func TestADOProviderListPullRequestThreadComments(t *testing.T) {
 	wantIDs := []string{"42/7/1", "42/7/2", "42/9/4"}
 	wantBodies := []string{"verdict", "finding history", "sticky remediation-state head=abc123"}
 	wantAuthors := []string{"Reviewer", "Reviewer", "Checkpoint"}
+	// Two authors share a display name; author.id keeps them apart (ADO-N5).
+	// A comment without an author id maps to an empty AuthorID.
+	wantAuthorIDs := []string{"reviewer-guid", "other-reviewer-guid", ""}
 	for i, c := range comments {
 		if c.ID != wantIDs[i] {
 			t.Fatalf("comments[%d].ID = %q, want %q", i, c.ID, wantIDs[i])
@@ -142,6 +145,9 @@ func TestADOProviderListPullRequestThreadComments(t *testing.T) {
 		}
 		if c.Author != wantAuthors[i] {
 			t.Fatalf("comments[%d].Author = %q, want %q", i, c.Author, wantAuthors[i])
+		}
+		if c.AuthorID != wantAuthorIDs[i] {
+			t.Fatalf("comments[%d].AuthorID = %q, want %q", i, c.AuthorID, wantAuthorIDs[i])
 		}
 	}
 }
@@ -353,6 +359,87 @@ func TestADOProviderAuthenticatedLoginMissingIdentity(t *testing.T) {
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 	if _, err := provider.AuthenticatedLogin(context.Background()); err == nil {
 		t.Fatal("AuthenticatedLogin returned nil error for an identity with no display name")
+	}
+}
+
+func TestADOProviderAuthenticatedIdentity(t *testing.T) {
+	var calls int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		calls++
+		writeJSON(t, w, map[string]interface{}{
+			"authenticatedUser": map[string]interface{}{
+				"id":                  "identity-guid",
+				"providerDisplayName": "Goobers Bot",
+				"properties":          map[string]interface{}{"Account": map[string]string{"$value": "bot@example.com"}},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	identity, err := provider.AuthenticatedIdentity(context.Background())
+	if err != nil {
+		t.Fatalf("AuthenticatedIdentity returned error: %v", err)
+	}
+	want := ADOIdentity{ID: "identity-guid", UniqueName: "bot@example.com", DisplayName: "Goobers Bot"}
+	if identity != want {
+		t.Fatalf("identity = %+v, want %+v", identity, want)
+	}
+	// The identity is cached per provider (per credential): a second identity
+	// read and a display-name read reuse the first connectionData response.
+	if _, err := provider.AuthenticatedIdentity(context.Background()); err != nil {
+		t.Fatalf("second AuthenticatedIdentity returned error: %v", err)
+	}
+	if login, err := provider.AuthenticatedLogin(context.Background()); err != nil || login != "Goobers Bot" {
+		t.Fatalf("AuthenticatedLogin = %q, %v; want Goobers Bot, nil", login, err)
+	}
+	if calls != 1 {
+		t.Fatalf("connectionData calls = %d, want 1 (cached)", calls)
+	}
+}
+
+func TestADOProviderAuthenticatedIdentityMissingID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"authenticatedUser": map[string]interface{}{"providerDisplayName": "Goobers Bot"}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	if _, err := provider.AuthenticatedIdentity(context.Background()); err == nil {
+		t.Fatal("AuthenticatedIdentity returned nil error for an identity with no id")
+	}
+	// The display-name read does not need the id and keeps working.
+	if login, err := provider.AuthenticatedLogin(context.Background()); err != nil || login != "Goobers Bot" {
+		t.Fatalf("AuthenticatedLogin = %q, %v; want Goobers Bot, nil", login, err)
+	}
+}
+
+func TestADOProviderAuthenticatedIdentityFailedReadIsNotCached(t *testing.T) {
+	var calls int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(t, w, map[string]interface{}{"authenticatedUser": map[string]interface{}{"id": "identity-guid", "providerDisplayName": "Goobers Bot"}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	if _, err := provider.AuthenticatedIdentity(context.Background()); err == nil {
+		t.Fatal("AuthenticatedIdentity returned nil error for a failed connectionData read")
+	}
+	identity, err := provider.AuthenticatedIdentity(context.Background())
+	if err != nil || identity.ID != "identity-guid" {
+		t.Fatalf("AuthenticatedIdentity after a failed read = %+v, %v; want identity-guid, nil", identity, err)
 	}
 }
 

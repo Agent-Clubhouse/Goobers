@@ -46,6 +46,12 @@ type ADOProvider struct {
 
 	stateMu         sync.RWMutex
 	stateCategories map[string][]adoWorkItemState
+
+	// identityMu guards identity, the cached connectionData read behind
+	// AuthenticatedIdentity and AuthenticatedLogin. A provider holds one
+	// credential, so the cache is per credential.
+	identityMu sync.Mutex
+	identity   *adoConnectionData
 }
 
 // SetMutationRecorder configures the recorder after provider construction,
