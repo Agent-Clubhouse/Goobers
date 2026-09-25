@@ -435,6 +435,21 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 	}
 }
 
+// A matrix job's result only settles once every leg has, so with fail-fast off
+// cancel-on-unit-failure waited for the slowest race shard before firing. On a
+// pull request a red shard must cancel its siblings; on main pushes and merge
+// groups every shard keeps running, like the cancellers themselves.
+func TestUnitRaceShardsFailFastOnPullRequestsOnly(t *testing.T) {
+	t.Parallel()
+	unit := loadCIWorkflow(t).Jobs["unit"]
+	if len(unit.Strategy.Matrix.Shard) < 2 {
+		t.Fatalf("unit has %d shards; the fail-fast invariant would pass vacuously", len(unit.Strategy.Matrix.Shard))
+	}
+	if want := "${{ github.event_name == 'pull_request' }}"; unit.Strategy.FailFast != want {
+		t.Errorf("unit strategy fail-fast = %q, want %q", unit.Strategy.FailFast, want)
+	}
+}
+
 // Nothing stops a pull-request run after one job fails, so the rest of the
 // run keeps burning runner-minutes on a result that is already red. Every
 // required job gets a canceller. It must be per job: a `needs` list waits for

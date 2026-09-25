@@ -468,7 +468,12 @@ jobs:
     # preflight added its ~4.4 min to every run's wall clock. A preflight
     # failure cancels the run instead (cancel-on-preflight-failure).
     strategy:
-      fail-fast: false
+      # On a pull request, one red shard cancels its siblings: the matrix
+      # result is then `failure` at once, so cancel-on-unit-failure (which
+      # depends on every leg) fires without waiting for the slowest shard. Main pushes and merge groups keep every shard running,
+      # matching the cancellers: there the full failure signal is wanted and
+      # escalate-main-failure reports it.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         shard: ["1/5", "2/5", "3/5", "4/5", "5/5"]
     runs-on: ubuntu-latest
