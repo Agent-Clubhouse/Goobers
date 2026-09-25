@@ -100,9 +100,11 @@ func resolveElectionPolicy(name string) (electionPolicyFunc, string) {
 // elect-lander stage: election fires only when the verdict is entirely
 // cross-PR-ordering asks (electableUnderOrdering — the PR is individually fine
 // and merely waiting on a sibling) AND this PR wins its cluster's election under
-// the configured policy. Any verdict carrying a real defect (a substantive/
-// conflict/rebase-needed finding above `info` severity) is never electable; an
-// `info` finding is a nit and does not withhold landing authority (#1726).
+// the configured policy. Any verdict carrying a real defect (a substantive or
+// conflict finding above `info` severity) is never electable; an `info` finding
+// is a nit and does not withhold landing authority (#1726), and a bare
+// `rebase-needed` finding is an ordering fact about the base, not a defect in
+// the diff (#5576) — see findingIsCleanRebaseNeed.
 func electionDecision(findings []apiv1.Finding, selectedNumber int, policy electionPolicyFunc, demoted map[int]bool) bool {
 	// #950: a demoted lander (one that repeatedly could not merge at an
 	// unchanged head) is never crowned — that is exactly the re-election that
