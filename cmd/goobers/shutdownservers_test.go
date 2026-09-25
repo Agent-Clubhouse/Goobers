@@ -76,13 +76,17 @@ func startHeldServer(t *testing.T, handler http.Handler, arrived <-chan struct{}
 //   - With its own fresh context (the fix), it gets the full grace period
 //     measured from its own call, which is enough to drain normally.
 func TestShutdownHTTPServersGivesEachServerItsOwnDeadline(t *testing.T) {
-	const grace = 300 * time.Millisecond
+	// grace is deliberately generous: http.Server.Shutdown only notices a
+	// drained connection on its next poll, and that poll interval backs off
+	// toward 500ms. With a 300ms grace, the first poll after webhookServer's
+	// request finished could land past its fresh deadline on a loaded runner.
+	const grace = 2 * time.Second
 	// webhookHoldFor outlasts apiServer's Shutdown call (which always takes
 	// exactly `grace`, since apiServer never unblocks on its own) by enough
 	// margin that webhookServer's connection is still active when its own
 	// Shutdown is invoked, but comfortably finishes within a second, fresh
 	// `grace` window measured from that call.
-	const webhookHoldFor = grace + 150*time.Millisecond
+	const webhookHoldFor = grace + 250*time.Millisecond
 
 	apiStop := make(chan struct{}) // never closed during the test: apiServer never finishes draining on its own
 	apiArrived := make(chan struct{})
