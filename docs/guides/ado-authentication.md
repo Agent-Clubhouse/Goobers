@@ -166,6 +166,15 @@ the instance config surface documented above.
   arguments, repository remotes, or persisted Git configuration.
 - Credential-source failures fail closed; Goobers never falls back to another
   configured identity.
+- A push into an ADO branch protected by an enabled policy is not a
+  credential failure. ADO's Git server rejects the raw `git push` itself —
+  `! [remote rejected] ... (TF402455: Pushes to this branch are not
+  permitted...)`, with `GitRefUpdateRejectedByPolicyException` in the
+  underlying exception text — and `push-branch` and the remediation/rebase
+  force-pushes classify that rejection as `branch_policy_protected`, never
+  `auth_failed`, and never retry it as a ref race or with a fresh credential:
+  the fix is to land the change through a pull request, not to re-run with a
+  different token.
 
 ### MSA passthrough header
 
