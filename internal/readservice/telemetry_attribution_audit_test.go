@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 type pagedAttributionReader struct {
@@ -57,7 +58,7 @@ func TestStoredFaultAuditContinuesPastUnenrolledTerminalRows(t *testing.T) {
 func TestStoredFaultAuditPersistsCooldownAndPostFixVerification(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
-	writeAuditRecord(t, root, "before", "v1", true)
+	writeAuditRecordWithEnvironment(t, root, "before", "v1", true, "windows")
 	reader := &pagedAttributionReader{pages: []readmodel.ListPage{{
 		Runs: []readmodel.RunRow{terminalAuditRow("before", now.Add(-time.Hour))},
 	}}}
@@ -85,7 +86,7 @@ func TestStoredFaultAuditPersistsCooldownAndPostFixVerification(t *testing.T) {
 	if err := RecordFaultAuditFix(context.Background(), root, id, fixedAt); err != nil {
 		t.Fatal(err)
 	}
-	writeAuditRecord(t, root, "healthy", "v2", false)
+	writeAuditRecordWithEnvironment(t, root, "healthy", "v2", false, "windows")
 	reader.pages[0].Runs = append(reader.pages[0].Runs, terminalAuditRow("healthy", fixedAt.Add(time.Hour)))
 	config.Now = fixedAt.Add(2 * time.Hour)
 	recovered, err := StoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{}, config)
@@ -96,7 +97,7 @@ func TestStoredFaultAuditPersistsCooldownAndPostFixVerification(t *testing.T) {
 		t.Fatalf("recovered report = %+v, want recovered verification", recovered)
 	}
 
-	writeAuditRecord(t, root, "repeated", "v1", true)
+	writeAuditRecordWithEnvironment(t, root, "repeated", "v1", true, "windows")
 	reader.pages[0].Runs = append(reader.pages[0].Runs, terminalAuditRow("repeated", fixedAt.Add(90*time.Minute)))
 	config.Now = fixedAt.Add(3 * time.Hour)
 	repeated, err := StoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{}, config)
@@ -149,19 +150,68 @@ func TestStoredFaultAuditScopesCooldownToQuery(t *testing.T) {
 
 func writeAuditRecord(t *testing.T, root, runID, version string, withCause bool) {
 	t.Helper()
+	writeAuditRecordWithEnvironment(t, root, runID, version, withCause, "")
+}
+
+func writeAuditRecordWithEnvironment(t *testing.T, root, runID, version string, withCause bool, environment string) {
+	t.Helper()
 	summary := ""
 	if withCause {
 		summary = "workflow instructions failed"
 	}
-	writeAuditRecordForWorkflow(t, root, runID, "implementation", version, summary)
+	writeAuditRecordForWorkflowEnvironment(t, root, runID, "implementation", version, summary, environment)
 }
 
 func writeAuditRecordForWorkflow(t *testing.T, root, runID, workflow, version, summary string) {
 	t.Helper()
-	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	writeAuditRecordForWorkflowEnvironment(t, root, runID, workflow, version, summary, "")
+}
+
+func writeAuditRecordForWorkflowEnvironment(
+	t *testing.T,
+	root, runID, workflow, version, summary, environment string,
+) {
+	t.Helper()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        workflow,
+		WorkflowVersion: 1,
+		WorkflowDigest:  "sha256:workflow",
+		GooberDigest:    "sha256:goober",
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		StartedAt:       time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "implement", Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if environment != "" {
+		span, err := json.Marshal(telemetry.SpanRecord{
+			Schema: telemetry.SpanSchema,
+			Attributes: map[string]string{
+				"deployment.environment": environment,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := run.RecordSpanWithSchema("implement", "runtime", telemetry.SpanSchema, span); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := run.Dir()
 	record := creditgraph.RunRecord{
 		Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordFailed,
 		RunID: runID, Workflow: workflow, EffectiveVersion: version, Workload: "issue",
