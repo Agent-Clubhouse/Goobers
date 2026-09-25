@@ -590,8 +590,9 @@ func composeGitEnv(dir string, authEnv []string) []string {
 		)
 	}
 	// With auth, append safe.directory after every slot the complete credential
-	// environment already owns. GitHub/Gitea currently use one slot, while ADO
-	// uses two (credential.helper plus a URL-scoped authorization header).
+	// environment already owns. GitHub/Gitea currently use one slot; ADO uses two
+	// for a PAT (credential.helper plus a URL-scoped authorization header) and
+	// three for a bearer credential (plus the MSA passthrough extraheader).
 	// Assuming slot 1 is free drops ADO's header and makes Git prompt for a
 	// username despite a valid Azure CLI login (#5555).
 	count := 0

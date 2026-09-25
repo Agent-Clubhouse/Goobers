@@ -27,6 +27,51 @@ func handleADOTestStateCategories(t *testing.T, mux *http.ServeMux) {
 	})
 }
 
+// TestADOProviderSendsMsaPassThroughOnlyForBearer verifies the ADO-N4 fix:
+// a Bearer-authenticated REST request carries X-VSS-ForceMsaPassThrough
+// (required against a non-Entra-backed org or an MSA account, live probe
+// F1 in docs/design/ado-parity-dsl-2-0.md Appendix A), while a PAT (Basic)
+// request never does — PAT already works everywhere, and the header is
+// untested for Basic.
+func TestADOProviderSendsMsaPassThroughOnlyForBearer(t *testing.T) {
+	mux := http.NewServeMux()
+	var gotAuth, gotPassThrough string
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPassThrough = r.Header.Get("X-VSS-ForceMsaPassThrough")
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	listReq := ListPullRequestsRequest{Repository: RepositoryRef{Name: "repo", Project: "project"}}
+
+	bearerProvider := NewADOProvider("org", "project", "", func(p *ADOProvider) {
+		p.BaseURL = server.URL
+		p.credentialSource = &rotatingADOCredentialSource{token: "bearer-token"}
+	})
+	if _, err := bearerProvider.ListPullRequests(context.Background(), listReq); err != nil {
+		t.Fatalf("ListPullRequests (bearer): %v", err)
+	}
+	if gotAuth != "Bearer bearer-token" {
+		t.Fatalf("Authorization = %q, want Bearer bearer-token", gotAuth)
+	}
+	if gotPassThrough != "true" {
+		t.Fatalf("X-VSS-ForceMsaPassThrough = %q, want true for a bearer request", gotPassThrough)
+	}
+
+	patProvider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	if _, err := patProvider.ListPullRequests(context.Background(), listReq); err != nil {
+		t.Fatalf("ListPullRequests (PAT): %v", err)
+	}
+	if gotAuth != basicAuth("goobers", "token") {
+		t.Fatalf("Authorization = %q, want Basic PAT auth", gotAuth)
+	}
+	if gotPassThrough != "" {
+		t.Fatalf("X-VSS-ForceMsaPassThrough = %q, want absent for a PAT request", gotPassThrough)
+	}
+}
+
 func TestADOProviderOpenPullRequestCreatesThenUpdates(t *testing.T) {
 	type requestBody struct {
 		SourceRefName string `json:"sourceRefName"`
