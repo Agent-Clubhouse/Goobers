@@ -678,7 +678,7 @@ func TestCredentialPlaneMaterializesTheCheckoutCapabilityForRepoWorkspaces(t *te
 		Name: "open-pr", Type: apiv1.TaskDeterministic, Goal: "open a pr",
 		// Exactly production open-pr: provider authority, a repo workspace, and
 		// deliberately NO repo-shaped capability.
-		Capabilities:  []string{"provider:pr:write"},
+		Capabilities:  []string{"provider:pr:write", "ado:work-items:write"},
 		PolicyActions: []string{"open-or-update-pr"},
 		Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}, Workspace: apiv1.WorkspaceRepo},
 	}}
