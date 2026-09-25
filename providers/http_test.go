@@ -201,6 +201,49 @@ func TestIsRequiredStatusCheckPendingError(t *testing.T) {
 	}
 }
 
+func TestMergeRefusalReason(t *testing.T) {
+	respErr := func(status int, body string) error {
+		return &providerResponseError{
+			method:     http.MethodPut,
+			endpoint:   "https://api.github.com/repos/o/r/pulls/9/merge",
+			statusCode: status,
+			body:       body,
+		}
+	}
+	cases := []struct {
+		name       string
+		err        error
+		wantReason string
+		want       bool
+	}{
+		{
+			name:       "review rejection",
+			err:        respErr(http.StatusMethodNotAllowed, `{"message":"Repository rule violations found\n\n1 review requesting changes by reviewers with write access.\n\n"}`),
+			wantReason: "Repository rule violations found 1 review requesting changes by reviewers with write access.",
+			want:       true,
+		},
+		{
+			name:       "unparseable response",
+			err:        respErr(http.StatusMethodNotAllowed, "not-json"),
+			wantReason: "provider rejected the merge request",
+			want:       true,
+		},
+		{
+			name: "non-405",
+			err:  respErr(http.StatusForbidden, `{"message":"forbidden"}`),
+		},
+		{name: "nil", err: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotReason, got := MergeRefusalReason(tc.err)
+			if got != tc.want || gotReason != tc.wantReason {
+				t.Fatalf("MergeRefusalReason(%v) = (%q, %v), want (%q, %v)", tc.err, gotReason, got, tc.wantReason, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsIdempotentHTTPMethod(t *testing.T) {
 	for method, want := range map[string]bool{
 		http.MethodGet:    true,
