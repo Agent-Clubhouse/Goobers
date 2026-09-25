@@ -108,7 +108,55 @@ func TestStoredFaultAuditPersistsCooldownAndPostFixVerification(t *testing.T) {
 	}
 }
 
+func TestStoredFaultAuditScopesCooldownToQuery(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	writeAuditRecordForWorkflow(t, root, "first", "implementation", "v1", "shared worktree failure")
+	writeAuditRecordForWorkflow(t, root, "second", "curation", "v1", "shared worktree failure")
+
+	scopedReader := &pagedAttributionReader{pages: []readmodel.ListPage{{
+		Runs: []readmodel.RunRow{terminalAuditRow("first", now.Add(-time.Hour))},
+	}}}
+	scoped, err := StoredFaultAudit(
+		context.Background(), root, scopedReader,
+		StoredAttributionQuery{Workflow: "implementation"},
+		creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped.UnknownFindings) != 1 {
+		t.Fatalf("scoped report = %+v, want one narrow mixed/unknown finding", scoped)
+	}
+
+	globalReader := &pagedAttributionReader{pages: []readmodel.ListPage{{
+		Runs: []readmodel.RunRow{
+			terminalAuditRow("first", now.Add(-time.Hour)),
+			terminalAuditRow("second", now.Add(-30*time.Minute)),
+		},
+	}}}
+	global, err := StoredFaultAudit(
+		context.Background(), root, globalReader, StoredAttributionQuery{},
+		creditgraph.FaultAuditConfig{Now: now.Add(time.Hour), SampleFloor: 2},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global.Suppressed != 0 || len(global.ProductFindings) != 1 {
+		t.Fatalf("global report = %+v, want unsuppressed cross-workflow product finding", global)
+	}
+}
+
 func writeAuditRecord(t *testing.T, root, runID, version string, withCause bool) {
+	t.Helper()
+	summary := ""
+	if withCause {
+		summary = "workflow instructions failed"
+	}
+	writeAuditRecordForWorkflow(t, root, runID, "implementation", version, summary)
+}
+
+func writeAuditRecordForWorkflow(t *testing.T, root, runID, workflow, version, summary string) {
 	t.Helper()
 	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
@@ -116,16 +164,16 @@ func writeAuditRecord(t *testing.T, root, runID, version string, withCause bool)
 	}
 	record := creditgraph.RunRecord{
 		Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordFailed,
-		RunID: runID, Workflow: "implementation", EffectiveVersion: version,
+		RunID: runID, Workflow: workflow, EffectiveVersion: version,
 	}
-	if withCause {
+	if summary != "" {
 		record.Attribution = creditgraph.Attribution{
 			Contributions: []creditgraph.Contribution{{
 				NodeID: "stage", Stage: "implement", Path: []string{"stage"}, Confidence: 0.9,
 			}},
 			Causes: []creditgraph.CauseFinding{{
 				NodeID: "stage", Stage: "implement", Class: creditgraph.ClassWeakInstructions,
-				Confidence: 0.9, Summary: "workflow instructions failed",
+				Confidence: 0.9, Summary: summary,
 			}},
 		}
 		record.Evidence = []creditgraph.AttributionEvidenceLink{{

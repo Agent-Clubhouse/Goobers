@@ -2,6 +2,7 @@ package readservice
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +27,10 @@ const (
 	faultAuditStateSchema          = "goobers.dev/backprop/fault-audit-state/v1"
 )
 
-var interventionEvidencePattern = regexp.MustCompile(`^intervention: stage (.+) attempt ([0-9]+) failed and attempt ([0-9]+) succeeded$`)
+var (
+	interventionEvidencePattern = regexp.MustCompile(`^intervention: stage (.+) attempt ([0-9]+) failed and attempt ([0-9]+) succeeded$`)
+	faultAuditFindingIDPattern  = regexp.MustCompile(`^backprop-[0-9a-f]{20}$`)
+)
 
 // StoredAttributionQuery scopes the stored run evidence to aggregate.
 type StoredAttributionQuery struct {
@@ -81,10 +85,10 @@ func StoredFaultAudit(
 	if err != nil {
 		return creditgraph.FaultAuditReport{}, err
 	}
-	config.PreviousReports = mergeAuditTimes(state.PreviousReports, config.PreviousReports)
+	config.PreviousReports = mergeAuditTimes(previousReportsForScope(state.PreviousReports, query), config.PreviousReports)
 	config.FixesAppliedAt = mergeAuditTimes(state.FixesAppliedAt, config.FixesAppliedAt)
 	report := creditgraph.AuditFaultDomains(observations, config)
-	if err := recordFaultAuditReports(ctx, root, config.Now, report); err != nil {
+	if err := recordFaultAuditReports(ctx, root, query, config.Now, report); err != nil {
 		return creditgraph.FaultAuditReport{}, err
 	}
 	return report, nil
@@ -203,7 +207,39 @@ func mergeAuditTimes(stored, supplied map[string]time.Time) map[string]time.Time
 	return merged
 }
 
-func recordFaultAuditReports(ctx context.Context, root string, now time.Time, report creditgraph.FaultAuditReport) error {
+func previousReportsForScope(stored map[string]time.Time, query StoredAttributionQuery) map[string]time.Time {
+	if strings.TrimSpace(query.Gaggle) == "" && strings.TrimSpace(query.Workflow) == "" {
+		reports := map[string]time.Time{}
+		for key, at := range stored {
+			if strings.HasPrefix(key, "backprop-") {
+				reports[key] = at
+			}
+		}
+		return reports
+	}
+	prefix := faultAuditScopePrefix(query)
+	reports := map[string]time.Time{}
+	for key, at := range stored {
+		if strings.HasPrefix(key, prefix) {
+			reports[strings.TrimPrefix(key, prefix)] = at
+		}
+	}
+	return reports
+}
+
+func faultAuditScopePrefix(query StoredAttributionQuery) string {
+	scope := strings.TrimSpace(query.Gaggle) + "\x00" + strings.TrimSpace(query.Workflow)
+	return fmt.Sprintf("scope-%x:", sha256.Sum256([]byte(scope)))
+}
+
+func faultAuditReportKey(query StoredAttributionQuery, findingID string) string {
+	if strings.TrimSpace(query.Gaggle) == "" && strings.TrimSpace(query.Workflow) == "" {
+		return findingID
+	}
+	return faultAuditScopePrefix(query) + findingID
+}
+
+func recordFaultAuditReports(ctx context.Context, root string, query StoredAttributionQuery, now time.Time, report creditgraph.FaultAuditReport) error {
 	ids := make([]string, 0, len(report.ProductFindings)+len(report.ExternalFindings)+len(report.WorkflowFindings)+len(report.UnknownFindings))
 	for _, findings := range [][]creditgraph.FaultFinding{report.ProductFindings, report.ExternalFindings, report.WorkflowFindings, report.UnknownFindings} {
 		for _, finding := range findings {
@@ -215,7 +251,7 @@ func recordFaultAuditReports(ctx context.Context, root string, now time.Time, re
 	}
 	return updateFaultAuditState(ctx, root, func(state *faultAuditState) {
 		for _, id := range ids {
-			state.PreviousReports[id] = now
+			state.PreviousReports[faultAuditReportKey(query, id)] = now
 		}
 	})
 }
@@ -223,8 +259,23 @@ func recordFaultAuditReports(ctx context.Context, root string, now time.Time, re
 // RecordFaultAuditFix marks a finding for held-out verification by subsequent
 // report-only audit passes.
 func RecordFaultAuditFix(ctx context.Context, root, findingID string, appliedAt time.Time) error {
-	if strings.TrimSpace(findingID) == "" || appliedAt.IsZero() {
-		return fmt.Errorf("record fault audit fix: finding ID and applied time are required")
+	findingID = strings.TrimSpace(findingID)
+	if !faultAuditFindingIDPattern.MatchString(findingID) || appliedAt.IsZero() {
+		return fmt.Errorf("record fault audit fix: a valid Backprop finding ID and applied time are required")
+	}
+	state, err := readFaultAuditState(root)
+	if err != nil {
+		return err
+	}
+	known := false
+	for key := range state.PreviousReports {
+		if key == findingID || strings.HasSuffix(key, ":"+findingID) {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return fmt.Errorf("record fault audit fix: finding %q has not been reported", findingID)
 	}
 	return updateFaultAuditState(ctx, root, func(state *faultAuditState) {
 		state.FixesAppliedAt[findingID] = appliedAt
