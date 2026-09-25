@@ -1152,6 +1152,52 @@ func TestCompilePolicyActionsRequireCapabilities(t *testing.T) {
 	}
 }
 
+// TestCompileReportPRStatusPolicyAction is the ADO-N23 rs-* matrix: the
+// report-pr-status policy action requires github:pr:write (matching the
+// built-in subcommand's provider manifest and the Gitea commit-status path),
+// accepts the optional ado:pr:status declaration alongside it harmlessly,
+// and fails admission without github:pr:write even when ado:pr:status alone
+// is declared.
+func TestCompileReportPRStatusPolicyAction(t *testing.T) {
+	spec := func(capabilities []string) apiv1.WorkflowSpec {
+		return apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "report",
+			Tasks: []apiv1.Task{{
+				Name:          "report",
+				Type:          apiv1.TaskDeterministic,
+				Goal:          "publish PR status",
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "report-pr-status"}},
+				PolicyActions: []string{"report-pr-status"},
+				Capabilities:  capabilities,
+			}},
+		}
+	}
+
+	t.Run("rs-gh", func(t *testing.T) {
+		def := Definition{Name: "rs-gh", Version: 1, Spec: spec([]string{string(capability.GitHubPRWrite)})}
+		if _, err := compileAcknowledged(def); err != nil {
+			t.Fatalf("report-pr-status with github:pr:write should compile: %v", err)
+		}
+	})
+
+	t.Run("rs-both", func(t *testing.T) {
+		def := Definition{Name: "rs-both", Version: 1, Spec: spec([]string{string(capability.GitHubPRWrite), string(capability.ADOPRStatus)})}
+		if _, err := compileAcknowledged(def); err != nil {
+			t.Fatalf("report-pr-status with github:pr:write and ado:pr:status should compile: %v", err)
+		}
+	})
+
+	t.Run("rs-none", func(t *testing.T) {
+		def := Definition{Name: "rs-none", Version: 1, Spec: spec([]string{string(capability.ADOPRStatus)})}
+		_, err := compileAcknowledged(def)
+		want := `policy action "report-pr-status" requires capability "github:pr:write", but the task does not declare it`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Compile error = %v, want containing %q", err, want)
+		}
+	})
+}
+
 func TestCompilePolicyBearingCommandRequiresActionDeclarations(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
