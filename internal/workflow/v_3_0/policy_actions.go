@@ -50,11 +50,11 @@ var policyActionContracts = map[string]policyActionContract{
 	"release-pr-claim":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	// report-pr-status publishes goobers' own evidence (reviewer verdict +
 	// local-CI result) as a provider-native, policy-gate-able pull-request
-	// status. Unlike the backlog/PR actions above — whose canonical capability
-	// name is a GitHub name the credential seam rebinds per provider — this is
-	// an Azure DevOps parity capability with no GitHub equivalent, so it
-	// requires ado:pr:status directly (#772).
-	"report-pr-status":         {requiredCapabilities: []capability.Capability{capability.ADOPRStatus}},
+	// status. It requires github:pr:write, matching the manifest
+	// (internal/providerstage/manifest.go) and the Gitea commit-status path;
+	// ado:pr:status remains a declarable name (harmless if present) but is
+	// not required.
+	"report-pr-status":         {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"respond-to-findings":      {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"resolve-review-threads":   {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"rework-pr":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
