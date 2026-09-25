@@ -415,6 +415,14 @@ func workItemRepository(provider, rawURL string) string {
 	host := parsed.Hostname()
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if strings.EqualFold(provider, "ado") {
+		if org, ok := adoVisualStudioOrganization(host); ok {
+			// Legacy <org>.visualstudio.com URLs carry the organization in
+			// the host, not as the path's leading segment the way
+			// dev.azure.com and a self-hosted ADO Server both do (ADO-N35).
+			// Prepending it here lets adoRepositoryIdentity's
+			// <org>/<project>/... shape read the same off either host.
+			parts = append([]string{org}, parts...)
+		}
 		return adoRepositoryIdentity(parts)
 	}
 	if !strings.EqualFold(provider, "github") || !strings.EqualFold(host, "github.com") {
@@ -441,6 +449,20 @@ func workItemRepositoryFromAPI(provider, rawURL string) string {
 		}
 	}
 	return ""
+}
+
+// adoVisualStudioOrganization reads the organization off a legacy
+// <org>.visualstudio.com host (ADO-N35). dev.azure.com and a self-hosted ADO
+// Server both carry the organization as the URL path's leading segment, but
+// the pre-rename visualstudio.com host carries it in the host instead, so
+// adoRepositoryIdentity's parts slice would otherwise be missing it entirely.
+func adoVisualStudioOrganization(host string) (string, bool) {
+	host = strings.ToLower(host)
+	organization := strings.TrimSuffix(host, ".visualstudio.com")
+	if organization == "" || organization == host {
+		return "", false
+	}
+	return organization, true
 }
 
 // adoRepositoryIdentity reads "<org>/<project>" off a work-item URL and

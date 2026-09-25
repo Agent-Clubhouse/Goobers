@@ -52,6 +52,24 @@ func TestWorkItemRepositoryResolvesADOIdentity(t *testing.T) {
 		{
 			name: "ado empty url stays unknown", provider: "ado", url: "", want: "",
 		},
+		{
+			// ADO-N35: a legacy *.visualstudio.com URL carries the
+			// organization in the host rather than as the path's leading
+			// segment.
+			name: "ado visualstudio.com work item resolves via host organization", provider: "ado",
+			url:  "https://org.visualstudio.com/proj/_workitems/edit/7",
+			want: "org/proj",
+		},
+		{
+			name: "ado visualstudio.com pull request resolves via host organization", provider: "ado",
+			url:  "https://org.visualstudio.com/proj/_git/repo/pullrequest/42",
+			want: "org/proj/repo",
+		},
+		{
+			name: "ado visualstudio.com host is case-insensitive", provider: "ado",
+			url:  "https://ORG.VISUALSTUDIO.COM/proj/_workitems/edit/7",
+			want: "org/proj",
+		},
 		// GitHub behavior is re-pinned so widening the function cannot regress it.
 		{
 			name: "github issue", provider: "github",

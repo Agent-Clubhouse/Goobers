@@ -237,6 +237,28 @@ func TestADORepoForOriginRequiresExactConfiguredRemote(t *testing.T) {
 		isADORemote("https://github.com/organization/repository") {
 		t.Fatal("ADO remote classification is incorrect")
 	}
+
+	// ADO-N35: a legacy *.visualstudio.com remote routes to the same
+	// configured credentials a dev.azure.com remote for the same repository
+	// would.
+	if got, ok := adoRepoForOrigin(cfg, "https://organization.visualstudio.com/project%20name/_git/repository"); !ok ||
+		got.Owner != repo.Owner || got.Project != repo.Project || got.Name != repo.Name {
+		t.Fatalf("adoRepoForOrigin() visualstudio.com = %#v, %v", got, ok)
+	}
+	if got, ok := adoRepoForOrigin(cfg, "https://ORGANIZATION.VISUALSTUDIO.COM/project%20name/_git/repository"); !ok ||
+		got.Owner != repo.Owner || got.Project != repo.Project || got.Name != repo.Name {
+		t.Fatalf("adoRepoForOrigin() uppercase visualstudio.com host = %#v, %v", got, ok)
+	}
+	if _, ok := adoRepoForOrigin(cfg, "https://other.visualstudio.com/project%20name/_git/repository"); ok {
+		t.Fatal("mismatched visualstudio.com remote received configured credentials")
+	}
+
+	// ADO-N35: a userinfo-bearing origin (https://<org>@dev.azure.com/...)
+	// matches on the path/host coordinate, not the userinfo.
+	if got, ok := adoRepoForOrigin(cfg, "https://organization@dev.azure.com/organization/project%20name/_git/repository"); !ok ||
+		got.Owner != repo.Owner || got.Project != repo.Project || got.Name != repo.Name {
+		t.Fatalf("adoRepoForOrigin() userinfo = %#v, %v", got, ok)
+	}
 }
 
 // TestPushBranchDetachedHeadFailsClosed proves push-branch refuses to guess

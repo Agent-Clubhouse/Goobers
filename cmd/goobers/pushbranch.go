@@ -494,19 +494,26 @@ func pushBranchEnvironment(dir string) ([]string, error) {
 	return gitAuthEnv(token), nil
 }
 
+// adoRepoForOrigin matches the origin remote against the instance's
+// configured ADO repositories via providers.ParseADORepositoryURL (ADO-N35)
+// rather than a single canonical-string comparison, so legacy
+// *.visualstudio.com remotes and a userinfo-bearing origin
+// (https://<org>@dev.azure.com/...) route to the same credentials a
+// dev.azure.com remote for the same repository would.
 func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bool) {
 	if cfg == nil {
 		return instance.RepoRef{}, false
 	}
-	normalized := strings.TrimSuffix(strings.TrimRight(remote, "/"), ".git")
+	org, project, name, ok := providers.ParseADORepositoryURL(remote)
+	if !ok {
+		return instance.RepoRef{}, false
+	}
 	for i := range cfg.Repos {
 		repo := cfg.Repos[i]
 		if repo.Provider != string(providers.ProviderADO) {
 			continue
 		}
-		expected := fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s",
-			url.PathEscape(repo.Owner), url.PathEscape(repo.Project), url.PathEscape(repo.Name))
-		if strings.EqualFold(normalized, expected) {
+		if strings.EqualFold(repo.Owner, org) && strings.EqualFold(repo.Project, project) && strings.EqualFold(repo.Name, name) {
 			return repo, true
 		}
 	}

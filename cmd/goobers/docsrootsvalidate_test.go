@@ -173,3 +173,33 @@ func TestValidateChecksDocsRootsWithScpLikeRemote(t *testing.T) {
 		t.Fatalf("stdout = %q, want a 'MISSING.md does not exist' error", stdout)
 	}
 }
+
+// TestRemoteURLNamesRepositoryADOForms (ADO-N35): the target-repo match must
+// recognize a legacy *.visualstudio.com ADO remote — where the organization
+// lives in the host, not a path segment — as well as the ordinary
+// dev.azure.com form, without regressing GitHub/Gitea/scp-like matching.
+func TestRemoteURLNamesRepositoryADOForms(t *testing.T) {
+	cases := []struct {
+		name   string
+		remote string
+		owner  string
+		repo   string
+		want   bool
+	}{
+		{"dev.azure.com matches", "https://dev.azure.com/contoso/project/_git/example-repo", "contoso", "example-repo", true},
+		{"dev.azure.com wrong org", "https://dev.azure.com/other/project/_git/example-repo", "contoso", "example-repo", false},
+		{"visualstudio.com matches", "https://contoso.visualstudio.com/project/_git/example-repo", "contoso", "example-repo", true},
+		{"visualstudio.com uppercase host", "https://CONTOSO.VISUALSTUDIO.COM/project/_git/example-repo", "contoso", "example-repo", true},
+		{"visualstudio.com wrong org", "https://other.visualstudio.com/project/_git/example-repo", "contoso", "example-repo", false},
+		{"visualstudio.com wrong repo", "https://contoso.visualstudio.com/project/_git/other-repo", "contoso", "example-repo", false},
+		{"github.com unaffected", "https://github.com/contoso/example-repo.git", "contoso", "example-repo", true},
+		{"scp-like unaffected", "git@github.com:contoso/example-repo.git", "contoso", "example-repo", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := remoteURLNamesRepository(tc.remote, tc.owner, tc.repo); got != tc.want {
+				t.Errorf("remoteURLNamesRepository(%q, %q, %q) = %v, want %v", tc.remote, tc.owner, tc.repo, got, tc.want)
+			}
+		})
+	}
+}
