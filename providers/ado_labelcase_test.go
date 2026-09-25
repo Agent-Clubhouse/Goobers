@@ -361,18 +361,14 @@ func TestADOAddPullRequestLabelsProceedsWhenPreReadFails(t *testing.T) {
 	}
 }
 
-// TestADOClaimOwnerMatchesLegacyPrefixInAnyCase: a legacy owner tag whose
-// prefix ADO holds in another casing is still read as an owner, with its
-// case-sensitive payload intact.
-func TestADOClaimOwnerMatchesLegacyPrefixInAnyCase(t *testing.T) {
-	tag, err := adoClaimTag("run-Ours")
-	if err != nil {
-		t.Fatalf("adoClaimTag: %v", err)
-	}
-	mixed := strings.ToUpper(adoClaimTagPrefix) + strings.TrimPrefix(tag, adoClaimTagPrefix)
-	owner, ok, err := adoClaimOwner([]string{"keep", mixed})
-	if err != nil || !ok || owner != "run-Ours" {
-		t.Fatalf("adoClaimOwner = %q, %t, %v; want run-Ours", owner, ok, err)
+// TestADOVisibleLabelsHidesLegacyPrefixInAnyCase: adoVisibleLabels still
+// filters a legacy owner tag regardless of the casing ADO holds its prefix
+// in, keeping a stray pre-#1990 tag from surfacing as a routing label.
+func TestADOVisibleLabelsHidesLegacyPrefixInAnyCase(t *testing.T) {
+	mixed := strings.ToUpper(adoClaimTagPrefix) + "cnVuLU91cnM"
+	visible := adoVisibleLabels([]string{"keep", mixed})
+	if !slices.Equal(visible, []string{"keep"}) {
+		t.Fatalf("adoVisibleLabels = %v, want legacy tag filtered", visible)
 	}
 }
 

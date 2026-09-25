@@ -2,7 +2,6 @@ package providers
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -718,19 +717,16 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 	return WorkItem{}, fmt.Errorf("update claim label on work item %s after revision conflicts: %w", id, conflict)
 }
 
-// adoClaimWinner resolves the current claim owner from the work item's comment
-// thread, falling back to a legacy owner tag.
+// adoClaimWinner resolves the current claim owner from the work item's
+// comment thread.
 //
 // Ownership used to live in a tag encoding the run id, which minted a unique,
 // never-reused entry in the project-global tag namespace on every claim — one
 // per run, forever, with a 100% garbage rate (#1979). Comments carry the same
 // information without a shared namespace, and match the GitHub provider's
-// protocol exactly so the two backends do not drift.
-//
-// The legacy tag is still READ so items claimed before this change are not
-// orphaned; it is never written again, and release clears it. That fallback is
-// TEMPORARY — #1990 removes it (target 2026-08-14). A pre-1.0 product should
-// not carry a permanent compat path for a format only Goobers ever wrote.
+// protocol exactly so the two backends do not drift. The legacy tag fallback
+// was removed in #1990; a stray goobers:claim-run:* tag on an old item no
+// longer confers a claim.
 //
 // Only breadcrumbs written by the authenticated identity count (see
 // ownClaimComments), matching the GitHub provider's filter to the
@@ -760,19 +756,7 @@ func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id
 			winner = claimRunID(comment.Body)
 		}
 	}
-	if winner != "" {
-		return winner, true, nil
-	}
-
-	current, err := p.GetWorkItem(ctx, repo, id)
-	if err != nil {
-		return "", false, err
-	}
-	raw, err := rawADOWorkItem(current)
-	if err != nil {
-		return "", false, err
-	}
-	return adoClaimOwner(adoRawTags(raw))
+	return winner, winner != "", nil
 }
 
 // ownClaimComments lists the work item's comments written by the identity the
@@ -802,8 +786,7 @@ func (p *ADOProvider) ownClaimComments(ctx context.Context, repo RepositoryRef, 
 }
 
 // ReleaseWorkItemClaim ends the current ADO claim epoch: it posts a release
-// breadcrumb, drops the visible claim label, and clears any legacy owner tag
-// left by a claim taken before ownership moved into the comment thread (#1979).
+// breadcrumb and drops the visible claim label.
 func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
 	result, err := p.releaseWorkItemClaim(ctx, req)
 	p.recordClaimAttempt(ctx, req, "claim-release", "success", err)
@@ -859,10 +842,6 @@ func (p *ADOProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 		return current, nil
 	}
 	remove := []string{label}
-	// Legacy owner-tag cleanup; removed with the rest of the fallback in #1990.
-	if legacy, tagErr := adoClaimTag(winner); tagErr == nil {
-		remove = append(remove, legacy)
-	}
 	return p.setADOClaimLabel(ctx, req.Repository, req.ID, nil, remove)
 }
 
@@ -1009,6 +988,12 @@ func adoLabels(tags string) []string {
 	return uniqueStrings(strings.Split(tags, ";"))
 }
 
+// adoVisibleLabels drops legacy goobers:claim-run:* tags from the labels a
+// work item reports. The claim-tag fallback that read and cleared these tags
+// was removed in #1990, but items claimed before that change may still carry
+// a stale tag until it is naturally overwritten or the item is next released;
+// hiding the prefix keeps that garbage from surfacing as a routing label in
+// the meantime. Safe to drop this filter once no pre-#1990 tags remain.
 func adoVisibleLabels(labels []string) []string {
 	visible := make([]string, 0, len(labels))
 	for _, label := range labels {
@@ -1528,38 +1513,6 @@ func (p *ADOProvider) postAttributedWorkItemComment(ctx context.Context, repo Re
 	var comment adoComment
 	err = p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": text}, &comment)
 	return err
-}
-
-// adoClaimTag renders the LEGACY owner tag. Retained only to recognize and
-// clear claims taken before ownership moved into the comment thread (#1979) —
-// never written by a new claim. Deleted by #1990 (target 2026-08-14).
-func adoClaimTag(runID string) (string, error) {
-	tag := adoClaimTagPrefix + base64.RawURLEncoding.EncodeToString([]byte(runID))
-	if err := validateADOTags([]string{tag}); err != nil {
-		return "", fmt.Errorf("encode ADO claim owner: %w", err)
-	}
-	return tag, nil
-}
-
-func adoClaimOwner(tags []string) (string, bool, error) {
-	owner := ""
-	for _, tag := range tags {
-		// The prefix matches in any casing (ADO keeps the first writer's);
-		// the base64 payload after it stays case-sensitive.
-		if len(tag) < len(adoClaimTagPrefix) || !strings.EqualFold(tag[:len(adoClaimTagPrefix)], adoClaimTagPrefix) {
-			continue
-		}
-		encoded := tag[len(adoClaimTagPrefix):]
-		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
-		if err != nil || len(decoded) == 0 {
-			return "", false, fmt.Errorf("invalid ADO claim owner tag")
-		}
-		if owner != "" && owner != string(decoded) {
-			return "", false, fmt.Errorf("ADO work item has multiple claim owners")
-		}
-		owner = string(decoded)
-	}
-	return owner, owner != "", nil
 }
 
 func isADORevisionConflict(err error) bool {

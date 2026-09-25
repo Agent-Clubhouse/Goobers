@@ -212,15 +212,14 @@ command instead. **CI:** each validation job maps to the same contract:
 | `checks` | Portal, canvas-extension, generated-contract, and manifest slice of `make ci` |
 | `deploy reference manifests` | Render and schema validation for the shipped reference deployment |
 | `lint (${{ matrix.goos }})` | `golangci-lint` across Linux, macOS, and Windows |
-| `darwin gate (build · vet)` | The macOS build + `go vet` slice of `verify-fast` |
+| `darwin gate (build · vet)` | Linux cross-compile `go build` + `go vet` (tests included) of the whole tree for darwin/arm64 and darwin/amd64, built with cgo off as the release builds macOS binaries; the only pre-merge macOS gate |
 | `windows gate (build · vet · runtime smoke)` | The Windows `go vet` + build slice of `verify-fast`, plus a runtime smoke |
 | `Go vulnerability scan` | Standalone `make vulncheck` gate for reachable standard-library and dependency vulnerabilities |
 | `unit race shard ${{ matrix.shard }} (linux)` | Hermetic whole-tree unit suite split into Linux race shards |
 | `unit coverage gate (linux)` | Whole-tree Go coverage profile and threshold gate, plus the per-test timing ledger |
-| `macOS runtime (unit · shipped · sandbox)` | Whole-tree behavioural suite and shipped-workflow contracts, plus required native Seatbelt confinement on PRs, consolidated onto one macOS allocation |
-| `shipped workflow contracts (${{ matrix.os }})` | Shipped workflow contract suite on Linux and Windows; the macOS leg is consolidated above |
+| `shipped workflow contracts (${{ matrix.os }})` | Shipped workflow contract suite on Linux and Windows; the macOS leg runs nightly (see below) |
 | `declared-dependency integration` | Full-tier `make test-integration-strict` gate with every inventoried executable provisioned, plus the envtest control-plane gate (`KUBEBUILDER_ASSETS`) |
-| `sandbox confinement (ubuntu-latest)` | Full-tier `make sandbox-check` gate with native bubblewrap availability required; macOS Seatbelt is consolidated above |
+| `sandbox confinement (ubuntu-latest)` | Full-tier `make sandbox-check` gate with native bubblewrap availability required; macOS Seatbelt runs nightly (see below) |
 | `linux node validation (#636/#639)` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
 | `make ci (fmt-check · vet · build · test · lint)` | Required aggregate status for all rows above; it runs no additional validation |
 
@@ -231,13 +230,25 @@ their corresponding Make targets. The vulnerability target also runs daily from
 `.github/workflows/vulnerability-scan.yml`, so newly disclosed findings surface
 without a code change.
 
-#### macOS allocation benchmark
+#### macOS runtime runs nightly
 
-The behavioral, shipped-workflow, and Seatbelt gates share the `unit-macos`
-allocation. This preserves three separately named steps; each later step is
-guarded with `!cancelled()` so a failed earlier command does not suppress the
-remaining coverage. The macOS build and lint jobs remain separate because they
-cover different responsibilities.
+No pull-request or push job uses a macOS runner. The macOS behavioural
+runtime (the unit suite without race or coverage, the shipped-workflow
+contracts, and native Seatbelt confinement) runs in
+`.github/workflows/macos-nightly.yml` once a night against `main`, and on
+demand with `workflow_dispatch` (pass `pr` to run a pull request's merge ref
+before it lands). Pre-merge, macOS is gated by the `darwin gate (build · vet)`
+cross-compile and the `lint (darwin)` leg.
+
+The pre-merge macOS job had become the run's long pole: ~21 min of job plus
+17-19 min waiting in the hosted macOS queue (run 36125334006). A macOS-only
+behaviour regression is now caught the night after it lands instead of before
+merge. Failures are filed by the existing mechanisms: `flake-watch.yml` scans
+the nightly's job log and files each failing test in the flake ledger, and
+`scheduled-failure-alarm.yml` opens an alarm after consecutive red nights.
+
+The history below records the earlier consolidation of three macOS jobs into
+one, which the nightly supersedes.
 
 The following sample was collected from ten successful pull-request `ci.yml`
 runs before and after the consolidation on 2026-09-21. Queue is
@@ -356,13 +367,14 @@ reported by `make test-integration`; when adding a dependency, update
 | Runner | Command | PR status | What it gates |
 |---|---|---|---|
 | `ubuntu-latest` | `go run ./test/ci` | Required via the aggregate CI check | The full Linux Go and portal gate |
-| `macos-latest` | `go run ./test/ci` | Required via the aggregate CI check | The full macOS Go and portal gate |
+| `ubuntu-latest` (GOOS=darwin) | `go build ./...` + `go vet ./...` | Required via the aggregate CI check | macOS cross-compile and vet coverage |
+| `macos-latest` | `go run ./test/ci group unit` + `group shipped` + `make sandbox-check` | Nightly (`macos-nightly.yml`), not a PR check | The macOS behavioural runtime |
 | `windows-latest` | `go build ./...` + `go vet ./...` | Required via the aggregate CI check | Native Windows compile and vet coverage |
 | `ubuntu-latest` | `make vulncheck` | Required via the aggregate CI check | Reachable Go vulnerability findings |
 
 The required `make ci (fmt-check · vet · build · test · lint)` status keeps its
 existing name for branch-protection compatibility and fails when either full
-platform leg, the Windows compile slice, or the vulnerability scan fails. Go
+Linux leg, the darwin or Windows compile slice, or the vulnerability scan fails. Go
 module and build caches are scoped to each runner OS.
 
 ## Workflow
@@ -374,15 +386,15 @@ module and build caches are scoped to each runner OS.
 5. Run the `make ci` merge tier locally.
 6. Open a **pull request against `main`**, filling in the
    [PR template](.github/PULL_REQUEST_TEMPLATE.md).
-7. The required Ubuntu, macOS, and Windows CI checks must pass. Address review
+7. The required CI checks (Ubuntu, plus the macOS and Windows compile gates) must pass. Address review
    feedback; keep the branch up to date with `main`.
 
 ## Merge requirements
 
 `main` is protected. The active repository rules require:
 
-- **CI is green** — the required aggregate confirms the Ubuntu and macOS
-  portable CI checks, Windows compile smoke, vulnerability scan, and
+- **CI is green** — the required aggregate confirms the Ubuntu portable CI
+  checks, the darwin cross-compile gate, Windows compile smoke, vulnerability scan, and
   journal-conformance gate pass on the latest commit.
 - **Approvals** — none. The required approval count is zero, and
   [CODEOWNER](.github/CODEOWNERS) approval is not required. CODEOWNERS are still
