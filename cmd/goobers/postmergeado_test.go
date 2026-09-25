@@ -171,6 +171,7 @@ func TestPerformPostMergeADOReconcilesAutoCompletedWorkItemLabels(t *testing.T) 
 		},
 		comments: []providers.Comment{{Body: "Merged in pull request #359."}},
 	}
+
 	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
 	var stdout, stderr bytes.Buffer
 
@@ -189,6 +190,30 @@ func TestPerformPostMergeADOReconcilesAutoCompletedWorkItemLabels(t *testing.T) 
 	}
 	if got := strings.Join(closer.commentReqs[0].RemoveLabels, ","); got != "goobers:claimed,goobers:ready" {
 		t.Fatalf("removed labels = %q, want terminal ADO lifecycle labels", got)
+	}
+}
+
+func TestPerformPostMergeADORemovesStaleStatusAlongsideDone(t *testing.T) {
+	closer := &fakeADOWorkItemCloser{
+		item: providers.WorkItem{
+			ID:     "1456",
+			State:  "closed",
+			Labels: []string{"goobers/status:done", "goobers/status:in-review", "goobers:approved"},
+		},
+		comments: []providers.Comment{{Body: "Merged in pull request #359."}},
+	}
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.statusReqs) != 1 || closer.statusReqs[0].Status != providers.WorkItemStatusDone {
+		t.Fatalf("status requests = %+v, want done reconciliation", closer.statusReqs)
+	}
+	if got := strings.Join(closer.item.Labels, ","); got != "goobers:approved,goobers/status:done" {
+		t.Fatalf("labels = %q, want only the terminal status label", got)
 	}
 }
 

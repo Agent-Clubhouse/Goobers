@@ -92,6 +92,22 @@ func ciReadyForMerge(poll providers.PullRequestPollResult) bool {
 	return poll.MergeableState == providers.MergeableStateUnstable
 }
 
+func mergePRProviderCapability(root string, repo providers.RepositoryRef) (capability.Capability, error) {
+	if repo.Provider != providers.ProviderADO {
+		return capability.GitHubPRMerge, nil
+	}
+	usesPAT, err := adoStageUsesPAT(root, repo)
+	if err != nil {
+		return "", fmt.Errorf("resolve ADO completion authentication: %w", err)
+	}
+	if usesPAT {
+		if _, err := providerToken(capability.ADOPRComplete); err != nil {
+			return "", err
+		}
+	}
+	return capability.ADOPRComplete, nil
+}
+
 func runMergePR(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("merge-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -120,28 +136,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// require. dispatcher is the provider-neutral landing seam (CONF-1 #2074)
 	// every poll/compare/detect/enqueue/merge call flows through, so every
 	// registered provider runs one shared code path.
-	providerCapability := capability.GitHubPRMerge
-	if isADO {
-		// Merge/completion authority on ADO rides on the dedicated
-		// capability.ADOPRComplete ("ado:pr:complete") — the ADO counterpart to
-		// github:pr:merge — so the decider≠executor capability isolation
-		// (docs/design/v0/pr-lifecycle-loop.md §7) is preserved on ADO too.
-		// Resolve that grant fail-closed FIRST (mirroring the github:pr:merge
-		// check on the GitHub branch), then construct the completion-authorized
-		// provider: a stage carrying only ado:pr:write must never silently
-		// acquire completion authority (merge-wiring-plan §3).
-		usesPAT, err := adoStageUsesPAT(root, repo)
-		if err != nil {
-			pf(stderr, "error: resolve ADO completion authentication: %v\n", err)
-			return 1
-		}
-		if usesPAT {
-			if _, err := providerToken(capability.ADOPRComplete); err != nil {
-				pf(stderr, "error: %v\n", err)
-				return 1
-			}
-		}
-		providerCapability = capability.ADOPRComplete
+	providerCapability, err := mergePRProviderCapability(root, repo)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	stageProvider, err := newMergeReviewProvider(root, repo, false,
 		withStageProviderCapability(providerCapability),
@@ -152,6 +150,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+
 	dispatcher := providers.NewDispatcher(stageProvider)
 	var prProvider mergeProvider
 	if !isADO {
