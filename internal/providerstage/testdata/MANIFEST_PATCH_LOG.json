@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "e4f047b6157d8d9cb30d232195057ce46819d989af58d46ab86b582cb9873dbe",
+  "snapshotSha256": "c8e8eb0a33f877df9ccb4108b3dc7864a61953badc2fec9430818f519725fbd6",
   "changes": [
     {
       "version": 1,
@@ -40,6 +40,10 @@
     {
       "version": 10,
       "description": "Require open-pr to declare the exact ado:work-items:write capability separately from provider:pr:write before it may create the native Azure Boards ArtifactLink. All shipped open-pr workflows are updated in the same change; GitHub open-pr still uses only its provider-neutral PR credential at runtime."
+    },
+    {
+      "version": 11,
+      "description": "Make open-pr's ado:work-items:write use optional at static admission because the command is provider-neutral. GitHub workflows again compile without Azure Boards authority; ADO workflows can declare the capability, and the ADO-only runtime linker still fails closed when its dedicated credential is absent."
     }
   ]
 }
