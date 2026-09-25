@@ -93,12 +93,20 @@ authenticated identity's id (ADO-N5, below).
 
 **Identity (ADO-N5).** `AuthenticatedIdentity` returns `{id, uniqueName, displayName}` from
 `connectionData`: `id` is `authenticatedUser.id` — the same GUID ADO records as a PR's
-`createdBy.id` and a thread comment's `author.id` — and `uniqueName` (the UPN) comes from
+`createdBy.id` — and `uniqueName` (the UPN) comes from
 `authenticatedUser.properties.Account.$value`, because `connectionData` has no
 `uniqueName`. The read is cached per provider instance, which is per credential, and backs
-`AuthenticatedLogin` too. gather-pr-context's trusted-verdict filter and merge-pr's pre-lock
-verdict recovery trust a thread only when its `author.id` equals that id; a comment with no
-author id falls back to the display-name comparison.
+`AuthenticatedLogin` too. gather-pr-context's trusted-verdict filter, merge-pr's pre-lock
+verdict recovery and the post-merge cost summary (its receipts and summary marker on PR
+threads) trust a thread only when its `author.id` equals that id; a comment with no author
+id falls back to the display-name comparison.
+
+That a thread comment's `author.id` equals `authenticatedUser.id` is **pending live
+confirmation**: the live probe (ado-parity-dsl-2-0.md §5) confirmed the equivalence for
+`AssignedTo.id`, `createdBy.id` and `autoCompleteSetBy.id`, not for thread comment authors.
+If the two ever differed, no own thread would be recognized — verdict attribution and
+verdict recovery would be dropped and the cost summary would be re-posted — so the ADO-N5
+live leg must post a thread comment and compare its `author.id` with `connectionData`.
 
 `AuthenticatedLogin` is implemented via the ADO `connectionData` endpoint (ADO had no
 authenticated-identity read before). It underpins the trusted-comment filter the

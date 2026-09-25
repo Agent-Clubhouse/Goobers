@@ -37,10 +37,11 @@ const adoPRThreadCommentType = "text"
 // The returned Comment.ID is the composite "<pullID>/<threadId>/<commentId>" so
 // UpdatePullRequestThreadComment can address the exact comment later with no
 // extra state — the ADO update endpoint needs all three, unlike GitHub's
-// repo-wide comment ids. The author is mapped from the thread comment's
-// displayName (ADO renders thread authors as displayName), matching what
-// AuthenticatedLogin returns so a trusted-author filter recognizes a thread we
-// posted.
+// repo-wide comment ids. Comment.Author carries the thread comment's
+// displayName for display (ADO renders thread authors as displayName), and
+// Comment.AuthorID carries its author.id; a trusted-author check compares
+// AuthorID with AuthenticatedIdentity().ID, because display names are not
+// unique.
 func (p *ADOProvider) PostPullRequestThreadComment(ctx context.Context, repo RepositoryRef, pullID, body string) (Comment, error) {
 	return p.postAttributedPullRequestThreadComment(ctx, repo, pullID, body, "pull-request-comment")
 }
@@ -260,10 +261,11 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 
 // ADOIdentity is the Azure DevOps identity the provider's credential
 // authenticates as. ID is the stable key: it is connectionData's
-// authenticatedUser.id, the same GUID ADO records as a PR's createdBy.id and a
-// thread comment's author.id. Display names are not unique, so every "is this
-// me" check compares ID; DisplayName is for rendering and UniqueName (the
-// account UPN) for operator-facing reports.
+// authenticatedUser.id, the same GUID ADO records as a PR's createdBy.id (and,
+// pending live confirmation, a thread comment's author.id — see
+// docs/design/ado-provider-parity.md §4). Display names are not unique, so
+// every "is this me" check compares ID; DisplayName is for rendering and
+// UniqueName (the account UPN) for operator-facing reports.
 type ADOIdentity struct {
 	ID          string `json:"id"`
 	UniqueName  string `json:"uniqueName,omitempty"`
@@ -313,12 +315,13 @@ func (p *ADOProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
 
 // connectionData reads the organization's connectionData once per provider
 // instance and caches the decoded response; a failed read is retried on the
-// next call.
+// next call. The lock covers only the cache check and store, never the HTTP
+// round-trip, so concurrent callers do not queue behind one slow request; two
+// callers racing on a cold cache may each read, and the identity they store is
+// the same.
 func (p *ADOProvider) connectionData(ctx context.Context) (adoConnectionData, error) {
-	p.identityMu.Lock()
-	defer p.identityMu.Unlock()
-	if p.identity != nil {
-		return *p.identity, nil
+	if cached, ok := p.cachedConnectionData(); ok {
+		return cached, nil
 	}
 	endpoint, err := joinURL(p.BaseURL, p.Organization, "_apis", "connectionData")
 	if err != nil {
@@ -332,8 +335,21 @@ func (p *ADOProvider) connectionData(ctx context.Context) (adoConnectionData, er
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &data); err != nil {
 		return adoConnectionData{}, err
 	}
-	p.identity = &data
-	return data, nil
+	p.identityMu.Lock()
+	defer p.identityMu.Unlock()
+	if p.identity == nil {
+		p.identity = &data
+	}
+	return *p.identity, nil
+}
+
+func (p *ADOProvider) cachedConnectionData() (adoConnectionData, bool) {
+	p.identityMu.Lock()
+	defer p.identityMu.Unlock()
+	if p.identity == nil {
+		return adoConnectionData{}, false
+	}
+	return *p.identity, true
 }
 
 // GetPullRequest returns a single Azure DevOps pull request as a
