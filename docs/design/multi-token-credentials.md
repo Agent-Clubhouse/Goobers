@@ -26,7 +26,7 @@ hard wall on the live loop (#30):
 
 A personal Copilot-Requests PAT and an org-repo-authorized PAT are, in the general case,
 **two different tokens** (org PAT policy is a separate approval axis, and the personal token
-Mason can mint is Copilot-Requests-only). The system must therefore hold **more than one
+the operator can mint is Copilot-Requests-only). The system must therefore hold **more than one
 credential at a time** and route each to the capability that needs it. Today it can't.
 
 ## 2. Current state — what's built vs. what's missing
