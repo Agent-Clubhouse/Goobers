@@ -234,7 +234,32 @@ const (
 		"```sh\n" +
 		"# second terminal\n" +
 		"bin/goobers dashboard ./tutorial-instance\n" +
-		"```\n\n"
+		"```\n\n" +
+		"To seed the same template as a checked-in config source without runtime state,\n" +
+		"use the non-interactive source-tree action. Its JSON result lists every created\n" +
+		"or preserved file and the validation command to run next:\n\n" +
+		"```sh\n" +
+		"bin/goobers init --template=quickstart --source-tree ./tutorial-config --json\n" +
+		"bin/goobers validate --source-tree --json ./tutorial-config\n" +
+		"```\n\n" +
+		"The browser wizard is intentionally not an alternative tutorial. Use\n" +
+		"`goobers init --guided` when you are ready to configure a real repository with\n" +
+		"the production-oriented canonical workflow modules. Guided setup creates one\n" +
+		"durable Goobers Instance beside the application repository by default. The\n" +
+		"Instance contains the active configuration and runtime state; pass\n" +
+		"`--instance-path <durable-instance-root>` only when you want to pin another\n" +
+		"durable location.\n\n" +
+		"The tutorial is complete after this disposable run. Do not promote the\n" +
+		"`quickstart@v1` workflow into production: it intentionally omits safeguards.\n" +
+		"To configure a real repository, use `goobers init --guided` and\n" +
+		"[Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md).\n\n" +
+		"For reference, the production-oriented path starts from the\n" +
+		"[`config-examples` reference layout](../../config-examples/README.md) and adapt\n" +
+		"its\n" +
+		"[`implementation` workflow](../../config-examples/gaggles/acme-web/workflows/implementation.yaml)\n" +
+		"for production-oriented review, local CI with bounded implementation repasses,\n" +
+		"explicit escalation paths, and PR CI polling. Add the separate `merge-review`\n" +
+		"workflow only after those safeguards are configured.\n\n"
 	quickstartSourceRun               = "```sh\ngoobers run <workflow>\n```"
 	quickstartSourceStatusWorkflow    = "default-implement         example"
 	quickstartInstalledStatusWorkflow = "implementation            example"
