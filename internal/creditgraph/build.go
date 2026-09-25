@@ -553,15 +553,37 @@ func spanCallKey(spanDigest, callID string) string {
 
 func (b *builder) ensureTool(name, spanDigest string) string {
 	if id, ok := b.toolNodes[name]; ok {
+		node := &b.graph.Nodes[b.graph.index[id]]
+		digests := toolSpanDigests(node.Attributes)
+		for _, digest := range digests {
+			if digest == spanDigest {
+				return id
+			}
+		}
+		digests = append(digests, spanDigest)
+		encoded, _ := json.Marshal(digests)
+		node.Attributes["spanDigests"] = string(encoded)
 		return id
 	}
 	id := "tool:" + name
 	b.toolNodes[name] = id
+	encoded, _ := json.Marshal([]string{spanDigest})
 	b.addNode(Node{
 		ID: id, Kind: KindTool, Label: name, Provenance: ProvenanceRecorded,
-		Attributes: map[string]string{"spanDigest": spanDigest},
+		Attributes: map[string]string{"spanDigest": spanDigest, "spanDigests": string(encoded)},
 	})
 	return id
+}
+
+func toolSpanDigests(attributes map[string]string) []string {
+	var digests []string
+	if encoded := attributes["spanDigests"]; encoded != "" {
+		_ = json.Unmarshal([]byte(encoded), &digests)
+	}
+	if len(digests) == 0 && attributes["spanDigest"] != "" {
+		digests = []string{attributes["spanDigest"]}
+	}
+	return digests
 }
 
 func (b *builder) reportUnresolvedToolCalls() {

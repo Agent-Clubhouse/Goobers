@@ -238,40 +238,11 @@ func recordEvidence(events []journal.Event, graph *Graph, attribution Attributio
 		if !ok {
 			continue
 		}
-		event, found := evidenceEvent(node, terminal, byStage, byArtifact, byAgent, bySpan, bySequence)
-		if !found {
-			continue
-		}
-		link := AttributionEvidenceLink{
-			RunID: attribution.RunID, NodeID: node.ID, Stage: node.Stage,
-			Detail: fmt.Sprintf("score=%.6f, uncertainty=%.6f", contribution.Score, contribution.Uncertainty),
-			Source: "contribution", JournalSequence: int64(event.Seq), JournalPath: "events.jsonl",
-		}
-		if event.Ref != nil {
-			link.ArtifactPath = event.Ref.Path
-			link.ArtifactDigest = event.Ref.Digest
-			link.ArtifactMediaType = event.Ref.MediaType
-		}
-		links = append(links, link)
-	}
-	for _, cause := range attribution.Causes {
-		node, ok := graph.Node(cause.NodeID)
-		if !ok {
-			continue
-		}
-		event, found := evidenceEvent(node, terminal, byStage, byArtifact, byAgent, bySpan, bySequence)
-		if !found {
-			continue
-		}
-		details := cause.Evidence
-		if len(details) == 0 {
-			details = []string{cause.Summary}
-		}
-		for _, detail := range details {
+		for _, event := range evidenceEvents(node, terminal, byStage, byArtifact, byAgent, bySpan, bySequence) {
 			link := AttributionEvidenceLink{
-				RunID: attribution.RunID, NodeID: node.ID, Stage: cause.Stage,
-				Detail: detail, Source: string(cause.Class),
-				JournalSequence: int64(event.Seq), JournalPath: "events.jsonl",
+				RunID: attribution.RunID, NodeID: node.ID, Stage: node.Stage,
+				Detail: fmt.Sprintf("score=%.6f, uncertainty=%.6f", contribution.Score, contribution.Uncertainty),
+				Source: "contribution", JournalSequence: int64(event.Seq), JournalPath: "events.jsonl",
 			}
 			if event.Ref != nil {
 				link.ArtifactPath = event.Ref.Path
@@ -281,10 +252,39 @@ func recordEvidence(events []journal.Event, graph *Graph, attribution Attributio
 			links = append(links, link)
 		}
 	}
+	for _, cause := range attribution.Causes {
+		node, ok := graph.Node(cause.NodeID)
+		if !ok {
+			continue
+		}
+		nodeEvents := evidenceEvents(node, terminal, byStage, byArtifact, byAgent, bySpan, bySequence)
+		if len(nodeEvents) == 0 {
+			continue
+		}
+		details := cause.Evidence
+		if len(details) == 0 {
+			details = []string{cause.Summary}
+		}
+		for _, detail := range details {
+			for _, event := range nodeEvents {
+				link := AttributionEvidenceLink{
+					RunID: attribution.RunID, NodeID: node.ID, Stage: cause.Stage,
+					Detail: detail, Source: string(cause.Class),
+					JournalSequence: int64(event.Seq), JournalPath: "events.jsonl",
+				}
+				if event.Ref != nil {
+					link.ArtifactPath = event.Ref.Path
+					link.ArtifactDigest = event.Ref.Digest
+					link.ArtifactMediaType = event.Ref.MediaType
+				}
+				links = append(links, link)
+			}
+		}
+	}
 	return links
 }
 
-func evidenceEvent(
+func evidenceEvents(
 	node Node,
 	terminal journal.Event,
 	byStage map[string]journal.Event,
@@ -292,40 +292,57 @@ func evidenceEvent(
 	byAgent map[string]journal.Event,
 	bySpan map[string]journal.Event,
 	bySequence map[uint64]journal.Event,
-) (journal.Event, bool) {
+) []journal.Event {
 	switch node.Kind {
 	case KindOutcome, KindRun:
-		return terminal, terminal.Type == journal.EventRunFinished
+		if terminal.Type == journal.EventRunFinished {
+			return []journal.Event{terminal}
+		}
 	case KindStage:
-		event, ok := byStage[stageAttemptKey(node.Stage, node.Attempt)]
-		return event, ok
+		if event, ok := byStage[stageAttemptKey(node.Stage, node.Attempt)]; ok {
+			return []journal.Event{event}
+		}
 	case KindEvidence:
-		event, ok := byArtifact[node.Attributes["digest"]]
-		return event, ok
+		if event, ok := byArtifact[node.Attributes["digest"]]; ok {
+			return []journal.Event{event}
+		}
 	case KindSubagent:
-		event, ok := byAgent[node.Label]
-		return event, ok
+		if event, ok := byAgent[node.Label]; ok {
+			return []journal.Event{event}
+		}
 	case KindEvaluator:
 		sequence, err := strconv.ParseUint(node.Attributes["journalSequence"], 10, 64)
 		if err != nil {
-			return journal.Event{}, false
+			return nil
 		}
-		event, ok := bySequence[sequence]
-		return event, ok
-	case KindTool, KindRuntime, KindEnvironment:
-		event, ok := bySpan[node.Attributes["spanDigest"]]
-		return event, ok
+		if event, ok := bySequence[sequence]; ok {
+			return []journal.Event{event}
+		}
+	case KindTool:
+		events := make([]journal.Event, 0, len(toolSpanDigests(node.Attributes)))
+		for _, digest := range toolSpanDigests(node.Attributes) {
+			if event, ok := bySpan[digest]; ok {
+				events = append(events, event)
+			}
+		}
+		return events
+	case KindRuntime, KindEnvironment:
+		if event, ok := bySpan[node.Attributes["spanDigest"]]; ok {
+			return []journal.Event{event}
+		}
 	case KindModelInvocation, KindToolCall, KindToolResult:
 		if digest := spanDigest(node.ID); digest != "" {
-			event, ok := bySpan[digest]
-			return event, ok
+			if event, ok := bySpan[digest]; ok {
+				return []journal.Event{event}
+			}
 		}
 		if len(node.ID) > len("model:") && node.ID[:len("model:")] == "model:" {
-			event, ok := byAgent[node.ID[len("model:"):]]
-			return event, ok
+			if event, ok := byAgent[node.ID[len("model:"):]]; ok {
+				return []journal.Event{event}
+			}
 		}
 	}
-	return journal.Event{}, false
+	return nil
 }
 
 func stageAttemptKey(stage string, attempt int) string {

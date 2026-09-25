@@ -196,6 +196,52 @@ func TestRunRecordPersistsExactGateToolAndRuntimeEvidence(t *testing.T) {
 	}
 }
 
+func TestRunRecordPersistsEverySharedToolSpanEvidence(t *testing.T) {
+	run, runDir := recordTestRun(t, map[string]any{"enabled": true, "version": "v1"})
+	defer func() { _ = run.Close() }()
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "act", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	digests := map[string]bool{}
+	for i, success := range []bool{true, false} {
+		callID := fmt.Sprintf("call-%d", i+1)
+		transcript := []byte(strings.Join([]string{
+			fmt.Sprintf(`{"role":"assistant","model":"gpt-5.6-sol","tool_call":{"id":%q,"name":"bash"}}`, callID),
+			fmt.Sprintf(`{"role":"tool","tool_call":{"id":%q,"success":%t}}`, callID, success),
+		}, "\n"))
+		ref, err := run.RecordSpanWithSchema("act", fmt.Sprintf("transcript-%d", i+1), telemetry.GenAIEventSchema, transcript)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digests[ref.Digest] = false
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "act", Attempt: 1, Status: "failed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteRunRecord(runDir, &journal.Event{Type: journal.EventRunFinished, Status: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := ReadRunRecord(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range record.Evidence {
+		contribution, ok := record.Attribution.Contribution(link.NodeID)
+		if ok && contribution.Kind == KindTool {
+			if _, expected := digests[link.ArtifactDigest]; expected {
+				digests[link.ArtifactDigest] = true
+			}
+		}
+	}
+	for digest, found := range digests {
+		if !found {
+			t.Fatalf("shared tool evidence omitted span %q: %+v", digest, record.Evidence)
+		}
+	}
+}
+
 func TestRunRecordDoesNotCohortMixedEffectiveVersions(t *testing.T) {
 	run, runDir := recordTestRun(t, map[string]any{"enabled": true, "version": "v1"})
 	defer func() { _ = run.Close() }()
