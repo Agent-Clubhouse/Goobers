@@ -427,6 +427,31 @@ Resolved category, while a User Story's `Resolved` state is in the InProgress ca
 (live probe §4). PR completion with `transitionWorkItems` leaves Bugs in Resolved
 (F9). So "the predecessor's code has landed" is Resolved *by category*.
 
+**Done states are configurable per gaggle (PO decision).** Custom, non-uniform
+processes need an override, so the gaggle's `backlog` block gains an optional
+setting. It is gaggle configuration, not workflow vocabulary:
+
+```yaml
+backlog:
+  provider: ado
+  project: example-project
+  doneStates:
+    categories: [Resolved, Completed, Removed]   # default when omitted
+    byType:                                      # optional per-type state names
+      Bug: [Closed]                              # a team that uses Resolved as "awaiting QA"
+```
+
+- **Categories** give a process-agnostic default. `byType` matches state names for
+  one work item type and takes precedence for that type.
+- **Uses.** The same setting decides when a predecessor stops blocking (ADO-N32) and
+  when a claimed item counts as already done (ADO-N28). Goobers' own close still
+  targets the Completed category.
+- **Validation.** Unknown category names are errors. Unknown state names warn, and
+  are checked against the project's real per-type states by
+  `validate --check-repos` (ADO-N34).
+- **Other providers.** GitHub and Gitea map closed to Completed, so the setting is
+  accepted but has no effect there.
+
 **Iterations: a declared, unsupported gap in v0.5.0.** `set-milestone` on ADO now
 refuses cleanly with "use an Azure Boards iteration" (credential containment, #5664).
 The capability matrix records milestones as "not modelled on ADO". `init
@@ -701,7 +726,7 @@ apply.
 | ADO-N30 | Enforce `readiness.maxOpenPRs` on ADO | E | M | L | — | The ADO count is enforced and fails closed on error. | Unit test with an ADO fake. | 0.5.0 | #5649 |
 | ADO-N42 | Containment follow-ups: MCP `credentialRefs` and command-scoped GitHub credential variables follow the provider rule of #5664 | B | M | L | — | A capability-based MCP credential and a `GOOBERS_CRED_GITHUB_*` variable are materialised only for the provider they belong to. | Harness and MCP config unit tests per provider. | 0.5.0 | — |
 | ADO-N31 | Topology (b): route backlog by role; credentials by family; no cross-provider `Fixes #` | E | H | M | N13, N17, N18 | A GitHub backlog with ADO code runs claim → PR → merge → close. The N13 guard is lifted. | N1 gate with a (b) gaggle. Live: one (b) scenario. | 0.5.x | — |
-| ADO-N32 | Blockers use predecessor state; declare `backlog.blockers` | D | M | M | N33 | An item whose predecessor is Resolved or Completed is eligible. An open predecessor blocks. | Fixture tests. Live: link cases. | 0.5.x | #2061 |
+| ADO-N32 | Blockers use predecessor state; configurable `backlog.doneStates`; declare `backlog.blockers` | D | M | M | N33 | An item whose predecessor is in a done state (default Resolved, Completed or Removed; per-gaggle override) is eligible. An open predecessor blocks. | Fixture tests incl. a `byType` override. Live: link cases. | 0.5.x | #2061 |
 | ADO-N33 | `workitemsbatch` hydration | D | M | L | — | At most one call per 200 WIQL hits. | Fixture test on call count. | 0.5.x | — |
 | ADO-N34 | `validate --check-repos` ADO permission and policy reads | E | M | L | N5 | Reports identity and missing permissions. Warns on held bypass and blanket Prefix policies. Reads only. | Fixture tests. The no-phone-home gate. | 0.5.x | — |
 | ADO-N35 | Accept `*.visualstudio.com` URLs (normalise) | E | L | L | — | Legacy remotes match in `push-branch` and in routing. | Unit tests on URL forms. | 0.5.x | — |
@@ -733,33 +758,24 @@ issue and in the release notes' known-issues section.
 - N19 → N22.
 - The soak (§8.3) starts after N2, N12, N16 and N17–N21 merge.
 
-## 11. Open questions for the PO
+## 11. PO decisions (2026-09-25)
 
-1. **Topology (b) in v0.5.0 or v0.5.x?** v0.5.0 ships the fail-closed guard (N13).
-   Full support (N31) is about three PRs of routing work at medium risk.
-   *Recommendation:* ship it as the first v0.5.x patch, not as a v0.5.0 blocker.
-   Pull it forward only if the customer's first rollout is a (b) gaggle.
-2. **Landing rule (§3.3).** Should `github:pr:merge` be accepted as ADO completion
-   authority, with `ado:pr:complete` optional, and be documented as the DSL 2.0 rule
-   until DSL 3.0 gives it a neutral name? *Recommendation:* yes. This is what makes
-   the shipped `merge-review` drop in, and SEC-053 is preserved.
-3. **Passthrough header scope.** Should `X-VSS-ForceMsaPassThrough` be sent on every
-   Bearer request (as Microsoft's SDK does), or only for `azure-cli`?
-   *Recommendation:* send it on every Bearer request. Narrow it to `azure-cli` only if
-   the Entra-org check (N36) shows any effect.
-4. **Entra test org.** Who provisions the tenant, the ADO org, the service principal
-   and managed identity, and the 1–2 Basic seats, and by when? *Recommendation:* the
-   PO provisions it this week. The workload-identity leg runs through GitHub OIDC,
-   and the managed-identity leg is a manual pre-release run. v0.5.0 ships once the
-   workload-identity leg is green, and the managed-identity result is recorded but
-   not blocking.
-5. **Resolved means done for blockers (§6).** *Recommendation:* treat the Resolved
-   category as done for dependency eligibility, and close explicitly to Completed in
-   `post-merge`. Revisit it if a team's process uses Resolved for "awaiting QA", which
-   must still block.
-6. **Default auth for `init --provider=ado`.** *Recommendation:* make `azure-cli` the
-   default and keep `pat` as an explicit flag. Document the org-scoped PAT held in a
-   secret store as the only supported PAT form after 2026-12-01.
+1. **Topology (b):** the v0.5.0 validation guard (ADO-N13), with full support
+   (ADO-N31) as the first v0.5.x patch.
+2. **Landing:** `github:pr:merge` is landing authority on ADO in DSL 2.0, and
+   `ado:pr:complete` is accepted but optional (§3.3). DSL 3.0 names it
+   `provider:pr:land`.
+3. **Passthrough header:** send `X-VSS-ForceMsaPassThrough: true` on every Bearer
+   request. Narrow it only if the Entra-org check (ADO-N36) shows any effect (§4.2).
+4. **Entra test org:** the PO provisions the tenant and the ADO org and grants CLI
+   access. The app registration, OIDC federation, org membership and permissions
+   are scripted (§8.4). v0.5.0 is gated on the workload-identity leg; the
+   managed-identity result is recorded but not blocking.
+5. **Blocker done states:** Resolved, Completed and Removed categories by default,
+   configurable per gaggle through `backlog.doneStates` (§6).
+6. **`init --provider=ado` auth default:** `azure-cli`. Workload and managed
+   identity are selectable, and PAT is an explicit opt-in (an org-scoped PAT in a
+   secret store) (§7.1).
 
 ## Appendix A. Live-probe facts cited
 
