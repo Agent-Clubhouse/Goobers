@@ -106,9 +106,18 @@ jobs:
   # Their Makefile targets (test-e2e, test-envtest, cover-check) are retained
   # for local and full-tier use; only the redundant PR-leg jobs are gone.
 
-  # Node-free admission gate. Expensive and scarce-runner jobs do not acquire
-  # runners until the fast source lint, formatting, module hygiene, repository
-  # policy, vet, command builds, and config validation pass.
+  # Node-free admission gate. Jobs that finish well inside the long pole do not
+  # acquire runners until the fast source lint, formatting, module hygiene,
+  # repository policy, vet, command builds, and config validation pass. The two
+  # long-pole jobs (`unit`, `unit-macos`) start at once instead, because gating
+  # them put preflight's ~4.4 min on every run's critical path; on a pull
+  # request a preflight failure cancels them (cancel-on-preflight-failure).
+  #
+  # Preflight is also the job that writes the shared Linux setup-go cache
+  # entry: setup-go saves once per key, and the first job to finish wins. Every
+  # other Linux job is either gated behind preflight or runs much longer than it,
+  # so preflight's full module and build cache is what gets saved. Un-gating a
+  # short Linux job would let it win and pin a near-empty cache.
   preflight:
     name: preflight (lint · format · policy · vet · build)
     runs-on: ubuntu-latest
@@ -451,7 +460,9 @@ jobs:
   # SemVer-compatibility tests read the latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
-    needs: [preflight]
+    # Not gated on preflight: the shards are the long pole, and waiting for
+    # preflight added its ~4.4 min to every run's wall clock. A preflight
+    # failure cancels the run instead (cancel-on-preflight-failure).
     strategy:
       fail-fast: false
       matrix:
@@ -670,7 +681,8 @@ jobs:
   # conditions preserve independent failure evidence from the later checks.
   unit-macos:
     name: macOS runtime (unit · shipped · sandbox)
-    needs: [preflight]
+    # Not gated on preflight, for the same reason as `unit`: this is the other
+    # long pole. A preflight failure cancels the run instead.
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -1598,6 +1610,287 @@ jobs:
           name: linux-validation-evidence
           path: bin/linux-validation-evidence/
           if-no-files-found: warn
+
+  # Cancel-on-failure (pull requests only). The jobs above are independent
+  # and nothing stops the rest of a run once one of them has failed: 36% of a
+  # failed PR run's job-minutes were spent after its first job failure
+  # (80 failed runs, Sep 19-25). Each required job gets a canceller that only
+  # acquires a runner when that job fails, and then cancels the whole run.
+  #
+  # - One canceller per job, not one for all: a job's `needs` waits for every
+  #   listed job (and every leg of a matrix job) to finish, so a shared
+  #   canceller would fire only after the slowest one, when nothing is left
+  #   to save.
+  # - `actions: write` is granted only here. These jobs check out nothing and
+  #   run no repository code, so the job that runs untrusted PR code never
+  #   holds a token that can cancel or rerun workflows. On a fork PR the
+  #   token is read-only, the cancel is refused, and the run behaves as before.
+  # - The required check stays correct: required-ci runs under always(), so
+  #   it still runs after the cancel, and its fail-closed check() reads every
+  #   `cancelled` job as not passed. `make ci` goes red, never green.
+  # - The condition reads the job's own result, not failure(): failure() is
+  #   also true when an ANCESTOR failed, so a preflight failure would start
+  #   every downstream canceller at once, one runner-minute each.
+  # - Main pushes are excluded (`!= 'push'`): there the full failure signal
+  #   is wanted, and escalate-main-failure reports per-job reds.
+  #   merge_group is excluded too; this is a pull-request economy only.
+  #
+  # test/ci pins one canceller for every required-ci need
+  # (TestCIWorkflowCancelsPullRequestRunOnFirstFailure).
+  cancel-on-preflight-failure:
+    name: cancel run on failure (preflight)
+    needs: [preflight]
+    if: ${{ !cancelled() && needs.preflight.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-checks-failure:
+    name: cancel run on failure (checks)
+    needs: [checks]
+    if: ${{ !cancelled() && needs.checks.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-deploy-reference-failure:
+    name: cancel run on failure (deploy-reference)
+    needs: [deploy-reference]
+    if: ${{ !cancelled() && needs.deploy-reference.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-lint-failure:
+    name: cancel run on failure (lint)
+    needs: [lint]
+    if: ${{ !cancelled() && needs.lint.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-darwin-build-failure:
+    name: cancel run on failure (darwin-build)
+    needs: [darwin-build]
+    if: ${{ !cancelled() && needs.darwin-build.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-unit-failure:
+    name: cancel run on failure (unit)
+    needs: [unit]
+    if: ${{ !cancelled() && needs.unit.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-unit-linux-coverage-failure:
+    name: cancel run on failure (unit-linux-coverage)
+    needs: [unit-linux-coverage]
+    if: ${{ !cancelled() && needs.unit-linux-coverage.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-unit-macos-failure:
+    name: cancel run on failure (unit-macos)
+    needs: [unit-macos]
+    if: ${{ !cancelled() && needs.unit-macos.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-shipped-failure:
+    name: cancel run on failure (shipped)
+    needs: [shipped]
+    if: ${{ !cancelled() && needs.shipped.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-deadcode-failure:
+    name: cancel run on failure (deadcode)
+    needs: [deadcode]
+    if: ${{ !cancelled() && needs.deadcode.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-windows-smoke-failure:
+    name: cancel run on failure (windows-smoke)
+    needs: [windows-smoke]
+    if: ${{ !cancelled() && needs.windows-smoke.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-vulnerability-scan-failure:
+    name: cancel run on failure (vulnerability-scan)
+    needs: [vulnerability-scan]
+    if: ${{ !cancelled() && needs.vulnerability-scan.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-integration-failure:
+    name: cancel run on failure (integration)
+    needs: [integration]
+    if: ${{ !cancelled() && needs.integration.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-sandbox-failure:
+    name: cancel run on failure (sandbox)
+    needs: [sandbox]
+    if: ${{ !cancelled() && needs.sandbox.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-linux-validation-failure:
+    name: cancel run on failure (linux-validation)
+    needs: [linux-validation]
+    if: ${{ !cancelled() && needs.linux-validation.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
 
   # Watches EVERY job that validates a landed main SHA. `deploy-reference` was
   # the one push-lane job reporting into a void: it could go red on main with no
