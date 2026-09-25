@@ -60,6 +60,18 @@ func buildADOProviderForStage(root string, routed providers.RepositoryRef) (*pro
 	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }
 
+func adoStageUsesPAT(root string, routed providers.RepositoryRef) (bool, error) {
+	repo, err := adoRepoRefForStage(root, routed)
+	if err != nil {
+		return false, err
+	}
+	kind := instance.ADOAuthPAT
+	if repo.Auth != nil {
+		kind = repo.Auth.Kind
+	}
+	return kind == instance.ADOAuthPAT, nil
+}
+
 // open-pr receives PAT credentials through its provider:pr:write capability;
 // the configured PAT environment variable is intentionally absent from the
 // stage's default-deny environment.
@@ -76,6 +88,26 @@ func buildADOProviderForOpenPR(root string, routed providers.RepositoryRef) (*pr
 	}
 	if kind == instance.ADOAuthPAT {
 		repo.Token = instance.TokenRef{Env: executor.CredentialEnvVar(string(capability.ProviderPRWrite))}
+	}
+	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
+}
+
+var newADOProviderForWorkItemWrite = buildADOProviderForWorkItemWrite
+
+func buildADOProviderForWorkItemWrite(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	repo, err := adoRepoRefForStage(root, routed)
+	if err != nil {
+		return nil, err
+	}
+	kind := instance.ADOAuthPAT
+	if repo.Auth != nil {
+		kind = repo.Auth.Kind
+	}
+	if kind == instance.ADOAuthPAT {
+		if _, err := providerToken(capability.ADOWorkItemsWrite); err != nil {
+			return nil, err
+		}
+		repo.Token = instance.TokenRef{Env: executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite))}
 	}
 	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }

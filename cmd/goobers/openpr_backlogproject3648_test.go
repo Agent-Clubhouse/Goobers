@@ -113,6 +113,9 @@ func TestOpenPRStalenessChecksBacklogProjectOnADO(t *testing.T) {
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}
 	t.Cleanup(func() { newADOProviderForOpenPR = previous })
+	previousWorkItem := newADOProviderForWorkItemWrite
+	newADOProviderForWorkItemWrite = newADOProviderForOpenPR
+	t.Cleanup(func() { newADOProviderForWorkItemWrite = previousWorkItem })
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
@@ -182,6 +185,9 @@ func TestOpenPRStalenessNotFoundDiagnosticNamesBacklogProject(t *testing.T) {
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}
 	t.Cleanup(func() { newADOProviderForOpenPR = previous })
+	previousWorkItem := newADOProviderForWorkItemWrite
+	newADOProviderForWorkItemWrite = newADOProviderForOpenPR
+	t.Cleanup(func() { newADOProviderForWorkItemWrite = previousWorkItem })
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)

@@ -230,20 +230,25 @@ func (p *ADOProvider) policyEvaluations(ctx context.Context, projectName, projec
 // re-implementing; reducing on them would peg the state to failing forever and
 // starve the fix loop, so a loop declares their configuration ids as human-only
 // and they are recorded in the detail list for transparency but never drive the
-// gate. When no gating policy has concluded green yet (none applies, or one is
-// still queued/running) the state is pending — fail-closed: correctness is
-// unproven until a gating policy passes.
+// gate. A successful authoritative query that returns no blocking policies is
+// passing: the repository has no hosted policy gate. An enabled blocking
+// evaluation whose status is not applicable is omitted from details but still
+// distinguishes an unresolved hosted gate from a true zero-policy repository.
+// If blocking policies exist but all are classified human-only, the state
+// remains pending because no agent-fixable correctness signal exists. A
+// queued/running gate is pending, while a broken gate fails closed.
 func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, projectID, pullID string, humanOnly map[string]bool) (CheckState, []CheckDetail, error) {
 	evals, err := p.policyEvaluations(ctx, projectName, projectID, pullID)
 	if err != nil {
 		return "", nil, err
 	}
 	checks := make([]CheckDetail, 0, len(evals))
-	gateFailing, gatePending, gatePassing, sawGate := false, false, false, false
+	gateFailing, gatePending, gatePassing, sawGate, sawBlocking := false, false, false, false, false
 	for _, ev := range evals {
 		if !ev.Configuration.IsEnabled || !ev.Configuration.IsBlocking {
 			continue
 		}
+		sawBlocking = true
 		state := adoPolicyCheckState(ev.Status)
 		if state == "" {
 			continue
@@ -270,6 +275,8 @@ func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, 
 	case gateFailing:
 		return CheckStateFailing, checks, nil
 	case sawGate && gatePassing && !gatePending:
+		return CheckStatePassing, checks, nil
+	case !sawBlocking:
 		return CheckStatePassing, checks, nil
 	default:
 		return CheckStatePending, checks, nil
@@ -635,13 +642,16 @@ func adoPullRequestState(status string) string {
 }
 
 // adoPolicyCheckState maps an Azure DevOps policy-evaluation status to a
-// provider-neutral check state. An empty return means the evaluation is not
-// applicable and should be ignored.
+// provider-neutral check state. An empty return omits a not-applicable
+// evaluation from check details; pollPullRequestPolicies still records that a
+// blocking evaluation exists so it cannot be mistaken for a zero-policy repo.
 func adoPolicyCheckState(status string) CheckState {
 	switch strings.ToLower(status) {
 	case "approved":
 		return CheckStatePassing
 	case "rejected":
+		return CheckStateFailing
+	case "broken":
 		return CheckStateFailing
 	case "queued", "running":
 		return CheckStatePending

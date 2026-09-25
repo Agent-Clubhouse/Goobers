@@ -20,6 +20,7 @@ const (
 	adoCommentPageSize = 200
 	adoWIQLPageSize    = 20000
 	adoClaimRetries    = 4
+	adoLinkRetries     = 4
 	adoMaxTagLength    = 400
 	adoClaimTagPrefix  = "goobers:claim-run:"
 )
@@ -197,6 +198,88 @@ func (p *ADOProvider) GetWorkItem(ctx context.Context, repo RepositoryRef, id st
 	return p.mapADOWorkItem(ctx, repo, out)
 }
 
+// LinkPullRequestToWorkItem adds ADO's native Pull Request artifact relation
+// to a work item. The relation is the source of both the work item's
+// Development link and the PR's workItemRefs projection.
+func (p *ADOProvider) LinkPullRequestToWorkItem(ctx context.Context, codeRepo, workItemRepo RepositoryRef, workItemID, pullID string) error {
+	if err := requireRepo(codeRepo); err != nil {
+		return err
+	}
+	if err := p.requireWorkItemScope(p.project(workItemRepo)); err != nil {
+		return err
+	}
+	if err := validateADOWorkItemID(workItemID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(pullID) == "" {
+		return errPullIDRequired
+	}
+
+	prEndpoint, err := p.repoURL(codeRepo, "pullrequests", pullID)
+	if err != nil {
+		return err
+	}
+	var pr adoPullRequestDetail
+	if err := p.do(ctx, http.MethodGet, prEndpoint, nil, &pr); err != nil {
+		return err
+	}
+	if pr.Repository.Project.ID == "" || pr.Repository.ID == "" {
+		return fmt.Errorf("ado pull request %s: project and repository ids are required for native work-item linking", pullID)
+	}
+	artifactURL := fmt.Sprintf(
+		"vstfs:///Git/PullRequestId/%s%%2F%s%%2F%d",
+		pr.Repository.Project.ID,
+		pr.Repository.ID,
+		pr.PullRequestID,
+	)
+
+	workItemEndpoint, err := p.workURL(p.project(workItemRepo), "workitems", workItemID)
+	if err != nil {
+		return err
+	}
+	expandedEndpoint, err := addQuery(workItemEndpoint, url.Values{"$expand": []string{"Relations"}})
+	if err != nil {
+		return err
+	}
+	var conflict error
+	for attempt := 0; attempt < adoLinkRetries; attempt++ {
+		var current adoWorkItem
+		if err := p.do(ctx, http.MethodGet, expandedEndpoint, nil, &current); err != nil {
+			return err
+		}
+		for _, relation := range current.Relations {
+			if relation.Rel == "ArtifactLink" && strings.EqualFold(relation.URL, artifactURL) {
+				return nil
+			}
+		}
+		patch := []adoPatchOperation{
+			{Op: "test", Path: "/rev", Value: current.Rev},
+			{
+				Op:   "add",
+				Path: "/relations/-",
+				Value: map[string]interface{}{
+					"rel": "ArtifactLink",
+					"url": artifactURL,
+					"attributes": map[string]string{
+						"name": "Pull Request",
+					},
+				},
+			},
+		}
+		var out adoWorkItem
+		if err := p.doPatch(ctx, http.MethodPatch, workItemEndpoint, patch, &out); err != nil {
+			if isADORevisionConflict(err) {
+				conflict = err
+				continue
+			}
+			return err
+		}
+		p.recordMutation(ctx, "issue", workItemID, "link-pr")
+		return nil
+	}
+	return fmt.Errorf("link ADO work item %s to pull request %s after %d revision conflicts: %w", workItemID, pullID, adoLinkRetries, conflict)
+}
+
 // FindWorkItemsByMarker reads the project's authoritative work-item IDs and
 // checks each live description for an exact single-line marker.
 func (p *ADOProvider) FindWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string) ([]WorkItem, error) {
@@ -362,7 +445,7 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	labels := replaceStatusLabel(adoRawTags(raw), req.Status)
 	patch := []adoPatchOperation{
 		{Op: "test", Path: "/rev", Value: raw.Rev},
-		adoTagPatch(labels),
+		adoTagPatch(raw, labels),
 	}
 	if (req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed) && current.State != "closed" {
 		state, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, "closed")
@@ -514,7 +597,7 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	}
 	if labelsChanged(req) {
 		labels := applyLabelSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)
-		patch = append(patch, adoTagPatch(labels))
+		patch = append(patch, adoTagPatch(raw, labels))
 	}
 	if state != "" && state != current.State {
 		nativeState, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, state)
@@ -642,7 +725,7 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 		labels := applyLabelSet(adoRawTags(raw), add, remove)
 		patch := []adoPatchOperation{
 			{Op: "test", Path: "/rev", Value: raw.Rev},
-			adoTagPatch(labels),
+			adoTagPatch(raw, labels),
 		}
 		endpoint, endpointErr := p.workURL(p.project(repo), "workitems", id)
 		if endpointErr != nil {
@@ -1165,8 +1248,12 @@ func adoRawTags(item adoWorkItem) []string {
 	return adoLabels(stringField(item.Fields, "System.Tags"))
 }
 
-func adoTagPatch(tags []string) adoPatchOperation {
-	return adoPatchOperation{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(uniqueStrings(tags), "; ")}
+func adoTagPatch(item adoWorkItem, tags []string) adoPatchOperation {
+	op := "add"
+	if _, exists := item.Fields["System.Tags"]; exists {
+		op = "replace"
+	}
+	return adoPatchOperation{Op: op, Path: "/fields/System.Tags", Value: strings.Join(uniqueStrings(tags), "; ")}
 }
 
 func (p *ADOProvider) postWorkItemComment(ctx context.Context, repo RepositoryRef, id, text string) error {

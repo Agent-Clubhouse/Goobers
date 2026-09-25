@@ -434,38 +434,67 @@ func closeReferencedWorkItemsADOWithComments(ctx context.Context, closer adoWork
 // mirrors closeReferencedIssue's idempotency: the status write is skipped when
 // the item is already in the closed state and already carries goobers/status:done
 // (ADO maps the Completed state category to State=="closed" and surfaces the
-// status tag as a visible label), and the comment is not re-posted if present.
+// status tag as a visible label). A successful close also retires the claim
+// and ready markers so an ADO auto-transition to Done cannot leave the item
+// looking selectable or owned after merge. The comment is not re-posted if
+// present.
 func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, id, comment string) error {
 	item, err := closer.GetWorkItem(ctx, backlogRepo, id)
 	if err != nil {
 		return err
 	}
 	statusLabel := "goobers/status:" + string(providers.WorkItemStatusDone)
-	if !strings.EqualFold(item.State, "closed") || !hasAnyLabel(item.Labels, []string{statusLabel}) {
-		if _, err := closer.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
+	if !strings.EqualFold(item.State, "closed") || !hasExclusiveStatusLabel(item.Labels, statusLabel) {
+		updated, err := closer.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
 			Repository: backlogRepo,
 			ID:         id,
 			Status:     providers.WorkItemStatusDone,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
+		item = updated
 	}
 
 	comments, err := closer.ListComments(ctx, backlogRepo, id)
 	if err != nil {
 		return err
 	}
+	commentPresent := false
 	for _, existing := range comments {
 		if strings.HasPrefix(existing.Body, strings.SplitN(comment, "\n", 2)[0]) {
-			return nil
+			commentPresent = true
+			break
 		}
 	}
+	removeLabels := []string{providers.LabelClaimed, providers.LabelReady}
+	if commentPresent && !hasAnyLabel(item.Labels, removeLabels) {
+		return nil
+	}
+	if commentPresent {
+		comment = ""
+	}
 	_, err = closer.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository: backlogRepo,
-		ID:         id,
-		Comment:    comment,
+		Repository:   backlogRepo,
+		ID:           id,
+		Comment:      comment,
+		RemoveLabels: removeLabels,
 	})
 	return err
+}
+
+func hasExclusiveStatusLabel(labels []string, want string) bool {
+	found := false
+	for _, label := range labels {
+		if !strings.HasPrefix(label, "goobers/status:") {
+			continue
+		}
+		if label != want {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 func performPostMerge(ctx context.Context, provider, issuesProvider remediationProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {

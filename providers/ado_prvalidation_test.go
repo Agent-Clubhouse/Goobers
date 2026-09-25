@@ -113,6 +113,26 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 			wantCheckNames: []string{"Build", "Status"},
 		},
 		{
+			name:      "a broken gating policy fails closed",
+			reviewers: []map[string]interface{}{{"vote": 10}},
+			evaluations: []map[string]interface{}{
+				blockingPolicy("Build", "broken"),
+			},
+			wantState:      CheckStateFailing,
+			wantReview:     ReviewDecisionApproved,
+			wantCheckNames: []string{"Build"},
+		},
+		{
+			name:      "a not applicable blocking policy is not zero policy",
+			reviewers: []map[string]interface{}{{"vote": 10}},
+			evaluations: []map[string]interface{}{
+				blockingPolicy("Build", "notApplicable"),
+			},
+			wantState:      CheckStatePending,
+			wantReview:     ReviewDecisionApproved,
+			wantCheckNames: nil,
+		},
+		{
 			// The core config-driven fix: a rejected human/merge-time policy
 			// declared human-only by its configuration id must NOT fail the gate
 			// when the gating (agent-fixable) policies are green — otherwise
@@ -155,10 +175,10 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 			wantCheckNames: []string{"Require a merge strategy"},
 		},
 		{
-			name:           "no blocking policies is pending (fail-closed)",
+			name:           "no blocking policies is passing",
 			reviewers:      []map[string]interface{}{{"vote": 10}},
 			evaluations:    []map[string]interface{}{},
-			wantState:      CheckStatePending,
+			wantState:      CheckStatePassing,
 			wantReview:     ReviewDecisionApproved,
 			wantCheckNames: nil,
 		},

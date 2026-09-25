@@ -695,6 +695,7 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	if len(patchBody) != 2 ||
 		patchBody[0].Op != "test" ||
 		patchBody[0].Path != "/rev" ||
+		patchBody[1].Op != "replace" ||
 		patchBody[1].Path != "/fields/System.Tags" ||
 		patchBody[1].Value != "route/backend; goobers/status:in-progress" {
 		t.Fatalf("patch body = %#v", patchBody)

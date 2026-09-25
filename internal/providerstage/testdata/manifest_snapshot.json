@@ -266,6 +266,11 @@
       {
         "capability": "provider:pr:write",
         "consequence": "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"
+      },
+      {
+        "capability": "ado:work-items:write",
+        "consequence": "the separately brokered Azure Boards credential is not injected, so native ADO work-item linking fails closed before pull-request creation",
+        "exact": true
       }
     ]
   },

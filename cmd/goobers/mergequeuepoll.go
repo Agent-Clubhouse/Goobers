@@ -532,9 +532,16 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 	// Completion authority is a distinct capability from ordinary
 	// ado:pr:write. Resolve the grant before constructing the provider so an
 	// un-granted stage fails closed rather than completing a pull request.
-	if _, err := providerToken(capability.ADOPRComplete); err != nil {
-		pf(stderr, "error: %v\n", err)
+	usesPAT, err := adoStageUsesPAT(root, repo)
+	if err != nil {
+		pf(stderr, "error: resolve ADO completion authentication: %v\n", err)
 		return 1
+	}
+	if usesPAT {
+		if _, err := providerToken(capability.ADOPRComplete); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
