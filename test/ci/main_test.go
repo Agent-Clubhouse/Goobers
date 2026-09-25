@@ -1156,6 +1156,31 @@ func TestApplyRuntimeTogglesKeepsCoverageByDefault(t *testing.T) {
 	}
 }
 
+// TestApplyRuntimeTogglesCompileOnlyKeepsEveryBuildFlag pins what makes the
+// race-build-cache-warm job's cache useful to the shards: a compile-only run
+// differs from a shard's invocation only by -exec (not a build input) and the
+// shard selector, so every compile and vet action ID it caches is one a shard
+// asks for.
+func TestApplyRuntimeTogglesCompileOnlyKeepsEveryBuildFlag(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	warmEnv := map[string]string{"GOOBERS_CI_COMPILE_ONLY": "1", "GOOBERS_CI_COVERAGE": "0"}
+	shardEnv := map[string]string{"GOOBERS_CI_SHARD": "2/5"}
+	warm := labelArgs(applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(name string) string { return warmEnv[name] }), "test")
+	shard := labelArgs(applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(name string) string { return shardEnv[name] }), "test")
+
+	separator := slices.Index(warm, "--")
+	if separator < 0 || separator+2 >= len(warm) || warm[separator+1] != "-exec" || warm[separator+2] != compileOnlyExec {
+		t.Fatalf("compile-only args must start the go-test arguments with -exec %s: %q", compileOnlyExec, warm)
+	}
+	goTestArgs := func(args []string) []string {
+		return args[slices.Index(args, "--")+1:]
+	}
+	if got, want := warm[separator+3:], goTestArgs(shard); !slices.Equal(got, want) {
+		t.Errorf("compile-only go test arguments (minus -exec) = %q, want the race shards' %q", got, want)
+	}
+}
+
 func TestApplyRuntimeTogglesShardsUnitSuite(t *testing.T) {
 	t.Parallel()
 	all := mergeGateChecks()
