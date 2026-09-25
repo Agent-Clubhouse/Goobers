@@ -56,10 +56,12 @@ reference assumes:
   `claude-code` instead (#2777's additive fleet posture — a parallel
   demonstration alongside `acme-web`, not a replacement for it). Deterministic-only
   policy workflows do not need a model.
-- GitHub project and backlog connections named `github-main` and
-  `github-backlog`. The example resolves `github-pat` from the `acme-kv` key
-  vault; an adapted credential must grant only the capabilities listed below.
-  Never put a token directly in these files.
+- A GitHub token for the target repository, configured in `instance.yaml`
+  `repos[]` (and `credentials[]` for per-capability overrides). To read it from
+  Azure Key Vault, declare the vault under `secretStores` and use a `store:`
+  ref ([secret stores guide](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/secret-stores.md)). An adapted
+  credential must grant only the capabilities listed below. Never put a token
+  directly in these files.
 - Preinstalled project tools. The scheduler does not install toolchains:
   `node@20` plus npm for `acme-web`, the .NET 9 SDK for `dotnet-service`, Java 21
   plus Maven for `java-service`, and Python 3.12 plus pytest for
@@ -211,9 +213,15 @@ tags: [implementer]
 
 ## Connections & secrets
 
-`connections[]` in the manifest declare named links to external systems; gaggles
-and repos reference them by name (`connectionRef`). Credentials are **Key Vault
-references** (`secretRef`), never inline tokens (`CFG-009`, `SEC-010`).
+`connections[]` in the manifest declare named links to external systems, and a
+gaggle can name one with `connectionRef`. These fields, and a connection's
+`secretRef`, are accepted but **not yet used to source credentials**: `validate`
+reports `REF012` for any `connectionRef`. Credentials come from `instance.yaml`:
+the repository token in `repos[]`, per-capability overrides in `credentials[]`,
+and Azure Key Vault secrets through `secretStores` plus `store:` refs (see the
+[secret stores guide](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/secret-stores.md)). Tokens are never
+inlined into config (`CFG-009`, `SEC-010`). Connection-level credentials are
+planned ([provider access layer](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/provider-access-layer.md)).
 
 ## Scaling and process — what to change next
 

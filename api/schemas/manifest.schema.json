@@ -28,7 +28,7 @@
         },
         "connections": {
           "type": "array",
-          "description": "Named reusable links to external systems that gaggles and goobers may reference.",
+          "description": "Named reusable links to external systems that gaggles may reference by connectionRef. Accepted but not yet used to source credentials; credentials come from instance.yaml repos[], credentials[] and secretStores.",
           "items": { "$ref": "#/$defs/connection" }
         },
         "gaggles": {
@@ -64,7 +64,7 @@
         "name": { "type": "string", "minLength": 1, "description": "Name used by gaggles and goobers to reference this connection." },
         "type": { "type": "string", "enum": ["repo", "backlog", "telemetry", "identity", "harness"], "description": "Category of external system this connection links to." },
         "provider": { "type": "string", "minLength": 1, "description": "Backing vendor or service, such as github, ado, azure-adx, or entra." },
-        "secretRef": { "$ref": "#/$defs/secretRef", "description": "Reference to the credentials used for this connection." },
+        "secretRef": { "$ref": "#/$defs/secretRef", "description": "Name of the secret for this connection. Required but not yet read at runtime: credentials come from instance.yaml repos[] and credentials[], and Key Vault secrets are read through instance.yaml secretStores. Connection-level credentials are planned (docs/design/provider-access-layer.md)." },
         "endpoint": { "type": "string", "description": "Optional service endpoint or host override." }
       }
     },
@@ -75,7 +75,7 @@
       "properties": {
         "name": { "type": "string", "minLength": 1, "description": "Name of the referenced secret." },
         "key": { "type": "string", "description": "Optional field selected from the referenced secret." },
-        "keyVault": { "type": "string", "description": "Optional Key Vault containing the secret; omit to use the gaggle's default vault." }
+        "keyVault": { "type": "string", "description": "Optional Key Vault containing the secret. Not read at runtime; declare Key Vaults in instance.yaml secretStores." }
       }
     }
   }

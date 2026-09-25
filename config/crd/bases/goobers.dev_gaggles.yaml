@@ -63,8 +63,9 @@ spec:
                   the backlog and infra/config repos always remain singletons (GAG-007).
                 items:
                   description: |-
-                    RepoRef points at a git repository through a provider connection. Auth is a
-                    SecretRef — never an inline token.
+                    RepoRef points at a git repository. It carries no credential and never an
+                    inline token: the token for the repository comes from its instance.yaml
+                    repos[] entry.
                   properties:
                     baseUrl:
                       description: |-
@@ -118,8 +119,8 @@ spec:
                       type: string
                     provider:
                       description: |-
-                        Provider identifies a backing system vendor. v1 abstracts repo + backlog over
-                        both GitHub and Azure DevOps (ADO) from the start (see VISION §8 "v1 providers").
+                        Provider identifies a backing system vendor. Repo + backlog are abstracted
+                        over GitHub, Azure DevOps (ADO) and Gitea.
                       enum:
                       - github
                       - ado
@@ -178,8 +179,8 @@ spec:
                     type: string
                   provider:
                     description: |-
-                      Provider identifies a backing system vendor. v1 abstracts repo + backlog over
-                      both GitHub and Azure DevOps (ADO) from the start (see VISION §8 "v1 providers").
+                      Provider identifies a backing system vendor. Repo + backlog are abstracted
+                      over GitHub, Azure DevOps (ADO) and Gitea.
                     enum:
                     - github
                     - ado
@@ -328,8 +329,8 @@ spec:
                     type: string
                   provider:
                     description: |-
-                      Provider identifies a backing system vendor. v1 abstracts repo + backlog over
-                      both GitHub and Azure DevOps (ADO) from the start (see VISION §8 "v1 providers").
+                      Provider identifies a backing system vendor. Repo + backlog are abstracted
+                      over GitHub, Azure DevOps (ADO) and Gitea.
                     enum:
                     - github
                     - ado
@@ -543,8 +544,8 @@ spec:
                           type: string
                         provider:
                           description: |-
-                            Provider identifies a backing system vendor. v1 abstracts repo + backlog over
-                            both GitHub and Azure DevOps (ADO) from the start (see VISION §8 "v1 providers").
+                            Provider identifies a backing system vendor. Repo + backlog are abstracted
+                            over GitHub, Azure DevOps (ADO) and Gitea.
                           enum:
                           - github
                           - ado

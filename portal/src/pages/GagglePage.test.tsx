@@ -129,6 +129,19 @@ describe("gaggle view summary (#2531)", () => {
       "#/goobers?gaggle=core",
     );
   });
+
+  it("labels each connected repository with its own provider, not GitHub for everything", async () => {
+    window.location.hash = "#/gaggle/tools";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("heading", { name: "Developer tools" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Repository connections/ }));
+
+    const topology = screen.getByRole("region", { name: "Developer tools repository connections" });
+    expect(within(topology).getByText("GitHub")).toBeInTheDocument();
+    expect(within(topology).getByText("Gitea")).toBeInTheDocument();
+    expect(within(topology).queryByText("Azure DevOps")).not.toBeInTheDocument();
+  });
 });
 
 describe("gaggle switcher (#2531)", () => {

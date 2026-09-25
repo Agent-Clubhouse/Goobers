@@ -148,17 +148,18 @@ On Linux, the stored OAuth session uses libsecret when a keyring is available
 and otherwise may use `~/.copilot/config.json`; a systemd service must run with
 the same home/profile or it will not see that session. A headless service can
 instead use a separate personal fine-grained PAT with **Copilot Requests:
-Read-only** as the instance's `agent:model` credential. Because the preflight
-runs before that credential is resolved, also expose the value to the Goobers
-process as `COPILOT_GITHUB_TOKEN`; no stored sign-in is then required. Keep the
-PAT separate from repository credentials as described in
+Read-only** as the instance's `agent:model` credential. Since #4292, the
+sign-in preflight resolves this credential the same way the rest of the daemon
+does, so a `token.file`/`token.keychain`/`token.store` ref is sufficient on its
+own; no stored sign-in and no ambient `COPILOT_GITHUB_TOKEN` are required. Keep
+the PAT separate from repository credentials as described in
 [GitHub token scopes](github-token-scopes.md#agentic-copilot-harness-stages-stored-login-or-agentmodel-token).
 Never put either token in this evidence bundle.
 
 The correction to the token-only hosted-runner spike in
 [Copilot hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
-records how #1996 enabled this clean-profile PAT path and documents the
-remaining ambient-environment requirement.
+records how #1996 enabled this clean-profile PAT path; #4292 later removed the
+ambient-environment requirement it still noted.
 
 ### Run and capture evidence
 
@@ -251,10 +252,12 @@ before sharing it.
   systemd user, not only the interactive shell.
 - Authentication that works interactively but fails under systemd usually
   means the service has a different `HOME`, cannot access the user's keyring,
-  lacks a stored Copilot CLI sign-in, or does not receive
-  `COPILOT_GITHUB_TOKEN` in its process environment. An `agent:model` file ref
-  alone cannot satisfy the preflight. If configured, a personal fine-grained
-  PAT needs **Copilot Requests: Read-only**; classic PATs are not supported.
+  and lacks a stored Copilot CLI sign-in. Configure an `agent:model` credential
+  (`token.file`, `token.keychain`, or `token.store`) instead of relying on the
+  stored session; since #4292 the preflight resolves that credential directly,
+  so no ambient `COPILOT_GITHUB_TOKEN` is needed. If configured, a personal
+  fine-grained PAT needs **Copilot Requests: Read-only**; classic PATs are not
+  supported.
 - `operation not permitted` while starting a deterministic `network: none`
   stage usually means the distribution disabled unprivileged user namespaces.
   Apply the host policy described in [Validated environment](#validated-environment)

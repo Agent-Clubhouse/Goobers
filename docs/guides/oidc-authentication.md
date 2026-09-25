@@ -217,19 +217,22 @@ expired token returns `401`.
 ## Upgrade to the tier-3 Azure posture
 
 The authentication seam does not change at tier 3. Configure Microsoft Entra
-ID as the issuer, using its tenant-specific OIDC issuer, API audience, public
-client ID, redirect URI, and app-role or group claim values in the same fields
-above. Tier-3 RBAC strengthens authorization without introducing an
-Entra-specific authenticator; per-gaggle workload identities remain separate
-from human OIDC login.
+ID as the issuer, using its tenant-specific OIDC issuer, API audience, and
+app-role or group claim values in `api.auth.oidc.issuer`,
+`api.auth.oidc.audience`, `api.auth.oidc.rolesClaim`, and
+`api.auth.oidc.roles` above. `api.auth.oidc` has no client ID or redirect URI
+field — Goobers ships no browser OIDC client (see [Portal
+sign-in](#portal-sign-in-not-shipped) above), so there is nothing for those
+fields to configure. Tier-3 RBAC strengthens authorization without
+introducing an Entra-specific authenticator; per-gaggle workload identities
+remain separate from human OIDC login.
 
 Move operational credentials from env/file refs to Azure Key Vault through the
 same secret-resolver seam. The
 [external secret stores guide](secret-stores.md) covers `secretStores`,
 `store:` token refs, workload or managed identity, caching, and rotation. OIDC
-issuer, audience, client ID, and redirect URI are identifiers rather than
-secrets; bearer tokens and TLS private keys still require normal secret
-handling.
+issuer and audience are identifiers rather than secrets; bearer tokens and TLS
+private keys still require normal secret handling.
 
 See the [security and auth ladder](../ARCHITECTURE.md#9-security-and-auth-ladder)
 and the [OIDC seam design](../design/v1/38-auth-oidc-seam.md) for the

@@ -101,12 +101,23 @@ func TestWithOverlapBackstopPreservesMixedRemediationFindings(t *testing.T) {
 	for _, finding := range []apiv1.Finding{
 		{Severity: apiv1.SeverityError, Class: apiv1.FindingSubstantive, Message: "selected PR has a broken link", Location: "docs/guides/quickstart.md:42"},
 		{Severity: apiv1.SeverityError, Class: apiv1.FindingConflict, Message: "merge conflict"},
-		{Severity: apiv1.SeverityError, Class: apiv1.FindingRebaseNeeded, Message: "base advanced"},
 	} {
 		effective := withOverlapBackstop([]apiv1.Finding{overlap, finding}, []int{11})
 		if got := verdictLabel(apiv1.VerdictNeedsChanges, effective); got != needsRemediationLabel {
 			t.Errorf("class %q label = %q, want %q", finding.Class, got, needsRemediationLabel)
 		}
+	}
+
+	// #5576: `rebase-needed` used to sit in the list above. It does not
+	// describe a defect in the diff — the class contract reserves `conflict`
+	// for a base that does not apply cleanly — and pr-remediation's own
+	// substantive floor already ignores it (FindingClass.RequiresCodeChange),
+	// so routing it to remediation dispatched a rework with nothing to rework.
+	// Alongside an ordering finding it parks blocked-on-sibling instead.
+	behind := apiv1.Finding{Severity: apiv1.SeverityError, Class: apiv1.FindingRebaseNeeded, Message: "base advanced"}
+	effective := withOverlapBackstop([]apiv1.Finding{overlap, behind}, []int{11})
+	if got := verdictLabel(apiv1.VerdictNeedsChanges, effective); got != blockedOnSiblingLabel {
+		t.Errorf("class %q label = %q, want %q", behind.Class, got, blockedOnSiblingLabel)
 	}
 }
 

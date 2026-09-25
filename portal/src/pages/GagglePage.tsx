@@ -10,6 +10,7 @@ import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryS
 import { GaggleWorkflowExplorer } from "../components/GaggleWorkflowExplorer";
 import { DisclosureSection } from "../components/DisclosureSection";
 import { ScopePivot } from "../components/ScopePivot";
+import { providerName } from "../runDetailData";
 import {
   incompleteRunPhasesMessage,
   useGaggleActivity,
@@ -265,7 +266,7 @@ function ConnectionTopology({
                     : "Reference repository"}
                 </span>
                 <strong>{identity}</strong>
-                <p>{connection.repository.provider === "ado" ? "Azure DevOps" : "GitHub"}</p>
+                <p>{providerName(connection.repository.provider)}</p>
                 <span className="gaggle-repository-access">{access} access</span>
                 {hasWorkflows ? (
                   <span className="sr-only">

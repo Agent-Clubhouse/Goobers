@@ -146,17 +146,17 @@
     },
     "repoRef": {
       "type": "object",
-      "description": "Provider-neutral reference to a git repository and its credential connection.",
+      "description": "Provider-neutral reference to a git repository. It carries no credential; the token comes from the matching instance.yaml repos[] entry.",
       "additionalProperties": false,
       "required": ["provider", "owner", "name"],
       "properties": {
         "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Repository provider." },
         "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host." },
-        "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, or Azure DevOps organization." },
+        "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, Gitea owner, or Azure DevOps organization." },
         "project": { "type": "string", "minLength": 1, "description": "Azure DevOps project. Omit for GitHub repositories." },
         "name": { "type": "string", "minLength": 1, "description": "Repository name." },
         "branch": { "type": "string", "description": "Default branch checked out by runs. Omitted defaults to main." },
-        "connectionRef": { "type": "string", "description": "Manifest connection that supplies credentials for this repository." },
+        "connectionRef": { "type": "string", "description": "Name of a Manifest connection. Accepted but not yet used to source credentials (validate reports REF012): the token for this repository comes from instance.yaml repos[] and credentials[], with Key Vault tokens resolved through secretStores. Connection-level credentials are planned (docs/design/provider-access-layer.md)." },
         "checkout": {
           "description": "Partial-checkout declaration (B2, #649). Accepted but not honored by the local runner yet — inert, surfaced as a VER003 compatibility warning at validate time.",
           "type": "object",
@@ -221,7 +221,7 @@
           "minLength": 1,
           "description": "CEL predicate over the provider's typed native-field projection. ANDed with labels; unavailable fields are errors."
         },
-        "connectionRef": { "type": "string", "description": "Manifest connection that supplies credentials for this backlog." }
+        "connectionRef": { "type": "string", "description": "Name of a Manifest connection. Accepted but not yet used to source credentials (validate reports REF012): backlog access uses the same instance.yaml repos[]/credentials[] credential as the rest of the gaggle, with Key Vault tokens resolved through secretStores. Connection-level credentials are planned (docs/design/provider-access-layer.md)." }
       }
     }
   }
