@@ -109,7 +109,7 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	}
 
 	transport := issueCommentPushTransport{prProvider: prProvider, issuesProvider: issuesProvider, repo: repo}
-	return runPushRemediatedCore(root, repo, pushToken, transport, stdout, stderr)
+	return runPushRemediatedCoreWithAuth(root, repo, pushToken, tokenGitAuthEnvironment(pushToken), transport, stdout, stderr)
 }
 
 // runPushRemediatedADO runs the push-remediated stage on Azure DevOps. The
@@ -133,23 +133,23 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 //     wrong-object hazard, §0.5). Clearing the label is the re-entry trigger that
 //     lets merge-review re-select the reworked PR.
 //
-// The provider is built from config-sourced ADO auth via the shared stage factory
-// (no github:* token is resolved); only the provider-neutral repo:push credential
-// feeds the force-push.
+// The provider and Git publication both use config-sourced ADO auth. The
+// repo:push capability authorizes publication without requiring a separately
+// materialized PAT when the repository uses Azure CLI or managed identity.
 func runPushRemediatedADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
 	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pushToken, err := providerToken(capability.RepoPush)
+	gitAuth, err := adoRemediationGitAuthEnvironment(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
 	transport := threadCommentPushTransport{provider: provider, repo: repo}
-	return runPushRemediatedCore(root, repo, pushToken, transport, stdout, stderr)
+	return runPushRemediatedCoreWithAuth(root, repo, "", gitAuth, transport, stdout, stderr)
 }
 
 // remediatedPushTransport isolates the two provider-native PR channels used by
@@ -203,6 +203,17 @@ func runPushRemediatedCore(
 	root string,
 	repo providers.RepositoryRef,
 	pushToken string,
+	transport remediatedPushTransport,
+	stdout, stderr io.Writer,
+) int {
+	return runPushRemediatedCoreWithAuth(root, repo, pushToken, tokenGitAuthEnvironment(pushToken), transport, stdout, stderr)
+}
+
+func runPushRemediatedCoreWithAuth(
+	root string,
+	repo providers.RepositoryRef,
+	pushToken string,
+	gitAuth gitAuthEnvironmentResolver,
 	transport remediatedPushTransport,
 	stdout, stderr io.Writer,
 ) int {
@@ -280,7 +291,7 @@ func runPushRemediatedCore(
 		return skipTerminalRemediatedPullRequest(selectedNumber, stdout, stderr)
 	}
 
-	if err := forcePushWithLease(".", current.Head, state.HeadSHA, pushToken); err != nil {
+	if err := forcePushWithLeaseWithAuth(ctx, ".", current.Head, state.HeadSHA, gitAuth); err != nil {
 		return failProviderStage(
 			stderr,
 			fmt.Sprintf("force-push remediated PR #%d branch %q", selectedNumber, current.Head),

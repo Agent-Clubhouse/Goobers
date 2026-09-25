@@ -243,6 +243,8 @@ func pushRemediatedADOFixture(t *testing.T, recordHeadSHA bool) (root string, st
 // thread's sticky remediation-state comment.
 func TestPushRemediatedADOPublishesAndClearsLabel(t *testing.T) {
 	root, st, wtPath, remoteTip := pushRemediatedADOFixture(t, true)
+	azureCLISource := useAzureCLIRemediationAuth(t, root)
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "")
 
 	code, stdout, stderr := runArgs(t, "push-remediated", root)
 	if code != 0 {
@@ -250,6 +252,9 @@ func TestPushRemediatedADOPublishesAndClearsLabel(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "#77") {
 		t.Errorf("stdout = %q, want a mention of PR #77", stdout)
+	}
+	if azureCLISource.callCount() == 0 {
+		t.Fatal("the configured Azure CLI credential source was not used for the force-push")
 	}
 	pushResult := readCheckpointResult(t, filepath.Join(wtPath, pushRemediatedResultName))
 	if pushResult["published"] != "true" || pushResult["selectedNumber"] != "77" {

@@ -208,7 +208,13 @@ func setADOCheckpointStageEnv(t *testing.T, repo providers.RepositoryRef) {
 }
 
 func TestADORemediationCheckpointFeaturesUseOnlyADOInputs(t *testing.T) {
-	features := adoRemediationCheckpointFeatures()
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	source := useAzureCLIRemediationAuth(t, root)
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "")
+	features, err := adoRemediationCheckpointFeatures(root, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !features.CopyListedLabels || features.StabilizeLiveReads {
 		t.Fatalf("ADO features = %+v, want listed labels without live-read stabilization", features)
 	}
@@ -218,8 +224,18 @@ func TestADORemediationCheckpointFeaturesUseOnlyADOInputs(t *testing.T) {
 		features.LiveBaseTip != nil {
 		t.Fatalf("ADO features expose unsupported GitHub enrichments: %+v", features)
 	}
-	if features.CheckoutToken == nil || features.CommentNoun != "thread comments" {
+	if features.CheckoutAuth == nil || features.CheckoutToken != "" || features.CommentNoun != "thread comments" {
 		t.Fatalf("ADO features = %+v, want thread comments and checkout support", features)
+	}
+	env, err := features.CheckoutAuth(t.Context(), "https://dev.azure.com/acme/project/_git/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(env, "\n"), "AUTHORIZATION: Bearer azure-cli-token-") {
+		t.Fatalf("checkpoint checkout environment = %q, want Azure CLI bearer auth", env)
+	}
+	if source.callCount() != 1 {
+		t.Fatalf("checkpoint credential resolutions = %d, want 1", source.callCount())
 	}
 }
 

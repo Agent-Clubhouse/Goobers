@@ -108,12 +108,13 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	}
 	var transport rebasePRTransport
 	var pushToken string
+	var gitAuth gitAuthEnvironmentResolver
 	if repo.Provider == providers.ProviderADO {
 		adoProvider, providerErr := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
 		if providerErr != nil {
 			return fail(providerErr)
 		}
-		pushToken, err = providerToken(capability.RepoPush)
+		gitAuth, err = adoRemediationGitAuthEnvironment(root, repo)
 		if err != nil {
 			return fail(err)
 		}
@@ -123,6 +124,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(err)
 		}
+		gitAuth = tokenGitAuthEnvironment(pushToken)
 		issuesToken, tokenErr := providerToken(capability.GitHubIssuesWrite)
 		if tokenErr != nil {
 			return fail(tokenErr)
@@ -141,8 +143,8 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		}
 		transport = issueCommentRebaseTransport{issueProvider: issueProvider, handoffProvider: handoffProvider}
 	}
-	return runRebasePRCore(ctx, root, repo, resultFile, selectedNumber, selectedPRNumber, head, base,
-		hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, remediate, pushToken, transport, stdout, stderr)
+	return runRebasePRCoreWithAuth(ctx, root, repo, resultFile, selectedNumber, selectedPRNumber, head, base,
+		hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, remediate, pushToken, gitAuth, transport, stdout, stderr)
 }
 
 // rebasePRTransport confines provider-specific I/O to reading native comment
@@ -221,6 +223,11 @@ func (t threadCommentRebaseTransport) ClearNeedsRemediation(ctx context.Context,
 }
 
 func runRebasePRCore(ctx context.Context, root string, repo providers.RepositoryRef, resultFile, selectedNumber string, selectedPRNumber int, head, base string, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap bool, remediate, pushToken string, transport rebasePRTransport, stdout, stderr io.Writer) int {
+	return runRebasePRCoreWithAuth(ctx, root, repo, resultFile, selectedNumber, selectedPRNumber, head, base,
+		hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, remediate, pushToken, tokenGitAuthEnvironment(pushToken), transport, stdout, stderr)
+}
+
+func runRebasePRCoreWithAuth(ctx context.Context, root string, repo providers.RepositoryRef, resultFile, selectedNumber string, selectedPRNumber int, head, base string, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap bool, remediate, pushToken string, gitAuth gitAuthEnvironmentResolver, transport rebasePRTransport, stdout, stderr io.Writer) int {
 	attemptedHeadSHA := ""
 	rebaseBaseSHA := ""
 	conflict := false
@@ -229,7 +236,7 @@ func runRebasePRCore(ctx context.Context, root string, repo providers.Repository
 	fail := func(err error) int {
 		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, conflict, conflictLocations, policy, err)
 	}
-	attemptedHeadSHA, err := checkoutExistingBranch(".", head, pushToken)
+	attemptedHeadSHA, err := checkoutExistingBranchWithAuth(ctx, ".", head, gitAuth)
 	if err != nil {
 		return fail(fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
 	}
@@ -280,7 +287,7 @@ func runRebasePRCore(ctx context.Context, root string, repo providers.Repository
 	}
 	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, hasNewHumanComment)
 
-	conflict, conflictLocations, rebaseBaseSHA, err = attemptRebase(".", base, pushToken)
+	conflict, conflictLocations, rebaseBaseSHA, err = attemptRebaseWithAuth(ctx, ".", base, gitAuth)
 	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, hasNewHumanComment)
 	if err != nil {
 		return fail(fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
@@ -289,7 +296,7 @@ func runRebasePRCore(ctx context.Context, root string, repo providers.Repository
 	if !policy.needsAgent {
 		// Nothing detected at all — the liberal-default behavior this
 		// reproduces exactly regardless of the declared policy.
-		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
+		if err := forcePushWithLeaseWithAuth(ctx, ".", head, attemptedHeadSHA, gitAuth); err != nil {
 			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
 		if err := transport.ClearNeedsRemediation(ctx, repo, selectedNumber); err != nil {
@@ -325,7 +332,7 @@ func runRebasePRCore(ctx context.Context, root string, repo providers.Repository
 	// rebase (safe: it neither rewrites content nor drops a finding) and defers
 	// to the checkpoint for the agentic response to the comment.
 	if !conflict && !hasSubstantiveFindings && !hasSiblingOverlap {
-		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
+		if err := forcePushWithLeaseWithAuth(ctx, ".", head, attemptedHeadSHA, gitAuth); err != nil {
 			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
 	}
@@ -708,12 +715,22 @@ func isSiblingOverlapHandoff(handoff postMergeRemediationHandoff) bool {
 // position. Every other conflict is inspected for structural-collision
 // evidence, aborted cleanly, and reported for the existing agentic path.
 func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseConflictLocation, rebaseBaseSHA string, err error) {
+	return attemptRebaseWithAuth(context.Background(), dir, base, tokenGitAuthEnvironment(token))
+}
+
+func attemptRebaseWithAuth(ctx context.Context, dir, base string, auth gitAuthEnvironmentResolver) (conflict bool, locations []rebaseConflictLocation, rebaseBaseSHA string, err error) {
 	url, err := originURL(dir)
 	if err != nil {
 		return false, nil, "", err
 	}
-	auth := gitAuthEnv(token)
-	fetch := workspaceGitAuthEnvCommand(dir, auth, "fetch", url, "refs/heads/"+base)
+	if auth == nil {
+		return false, nil, "", fmt.Errorf("repository authentication is unavailable")
+	}
+	env, err := auth(ctx, url)
+	if err != nil {
+		return false, nil, "", err
+	}
+	fetch := workspaceGitAuthEnvCommand(dir, env, "fetch", url, "refs/heads/"+base)
 	if out, err := workspaceGitCombinedOutput(fetch); err != nil {
 		return false, nil, "", fmt.Errorf("fetch base %s: %w: %s", base, err, strings.TrimSpace(string(out)))
 	}
@@ -864,11 +881,22 @@ func abortRebaseAfterError(dir string, cause error) error {
 // ever updated for the bare flag to compare against, which misreports every
 // push as "stale info" regardless of whether the remote actually moved.
 func forcePushWithLease(dir, branch, expectedSHA, token string) error {
+	return forcePushWithLeaseWithAuth(context.Background(), dir, branch, expectedSHA, tokenGitAuthEnvironment(token))
+}
+
+func forcePushWithLeaseWithAuth(ctx context.Context, dir, branch, expectedSHA string, auth gitAuthEnvironmentResolver) error {
 	url, err := originURL(dir)
 	if err != nil {
 		return err
 	}
-	cmd := workspaceGitAuthCommand(dir, token, "push", "--force-with-lease="+branch+":"+expectedSHA, url, branch+":"+branch)
+	if auth == nil {
+		return fmt.Errorf("repository authentication is unavailable")
+	}
+	env, err := auth(ctx, url)
+	if err != nil {
+		return err
+	}
+	cmd := workspaceGitAuthEnvCommand(dir, env, "push", "--force-with-lease="+branch+":"+expectedSHA, url, branch+":"+branch)
 	if out, err := workspaceGitCombinedOutput(cmd); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
