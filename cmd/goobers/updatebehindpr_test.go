@@ -650,3 +650,54 @@ func TestUpdateBehindPRRetryAfterLabelFailureOnlyClearsLabel(t *testing.T) {
 		t.Fatalf("retry stdout = %q, stderr = %q", stdout, stderr)
 	}
 }
+
+// TestUpdateBehindPRNotApplicableOnADO pins ADO-N15
+// (docs/design/ado-parity-dsl-2-0.md §3.4): on Azure DevOps the stage exits 0
+// without ever constructing a remediation provider (stubbed to t.Fatal below,
+// so any attempt fails the test loudly), writes needsFullRemediation=true
+// with an empty selectedNumber so gather-pr-context reselects instead of
+// treating it as a pinned handoff, and prints a not-applicable message
+// instead of claiming to have updated or routed a specific PR.
+func TestUpdateBehindPRNotApplicableOnADO(t *testing.T) {
+	previous := remediationStageProvider
+	remediationStageProvider = func(string, providers.RepositoryRef, string, bool) (remediationProvider, error) {
+		t.Fatal("update-behind-pr must not construct a provider on ADO")
+		return nil, nil
+	}
+	t.Cleanup(func() { remediationStageProvider = previous })
+
+	root, _ := providerDispatchFixture(t, providers.ProviderADO)
+	t.Setenv("GOOBERS_RUN_ID", "run-ado-not-applicable")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+
+	code, stdout, stderr := runArgs(t, "update-behind-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want clean not-applicable result", stderr)
+	}
+	if !strings.Contains(stdout, "not applicable") {
+		t.Fatalf("stdout = %q, want a not-applicable message", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(workspace, "update-behind-result.json"))
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result["needsFullRemediation"] != "true" {
+		t.Fatalf("result = %v, want needsFullRemediation=true so update-behind-gate routes to gather-pr-context", result)
+	}
+	if _, ok := result["selectedNumber"]; !ok || result["selectedNumber"] != "" {
+		t.Fatalf("result = %v, want an empty (not \"0\") selectedNumber so gather-pr-context reselects", result)
+	}
+	if result["notApplicable"] != "true" {
+		t.Fatalf("result = %v, want notApplicable=true", result)
+	}
+}
