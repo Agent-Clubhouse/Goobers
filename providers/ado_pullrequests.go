@@ -442,6 +442,23 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 	return out, nil
 }
 
+// ListOpenPullRequests returns the head branch and labels of every active pull
+// request in the repository, across all pages. It is the open-PR-count
+// throttle's read (readiness.maxOpenPRs), the ADO counterpart of
+// GitHubProvider.ListOpenPullRequests: the scheduler buckets the heads by
+// run-branch namespace and drops human-parked PRs by label.
+func (p *ADOProvider) ListOpenPullRequests(ctx context.Context, repo RepositoryRef) ([]OpenPRSummary, error) {
+	prs, err := p.ListPullRequests(ctx, ListPullRequestsRequest{Repository: repo})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OpenPRSummary, 0, len(prs))
+	for _, pr := range prs {
+		out = append(out, OpenPRSummary{Head: pr.Head, Labels: pr.Labels})
+	}
+	return out, nil
+}
+
 // PullRequestFiles lists the cumulative changes in the latest pull request
 // iteration, relative to the common source/target commit.
 func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, pullID string) ([]ChangedFile, error) {

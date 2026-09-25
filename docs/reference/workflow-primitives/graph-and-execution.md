@@ -173,4 +173,8 @@ narrower scope overriding the broader one.
 
 Readiness fields (`maxConcurrentRuns`, `desiredConcurrentRuns`,
 `maxRunsPerHour`, `maxRunsPerDay`, `maxChainDepth`, and `maxOpenPRs`) govern
-admission rather than stage execution.
+admission rather than stage execution. `maxOpenPRs` counts the open pull
+requests under the workflow's run-branch namespace in the gaggle's project
+repository, on GitHub and Azure DevOps alike, and ignores PRs labelled
+`goobers:merge-escalated` in any casing. Until a count has been read, and
+whenever a read fails, admission is not held back by the cap.

@@ -68,7 +68,7 @@ func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, inter
 	}
 	excluded := make(map[string]bool, len(excludeLabels))
 	for _, l := range excludeLabels {
-		excluded[l] = true
+		excluded[strings.ToLower(l)] = true
 	}
 	return &OpenPRRefresher{lister: lister, repo: repo, interval: interval, excludeLabels: excluded, branchNamespaces: branchNamespaces}
 }
@@ -105,10 +105,13 @@ func (r *OpenPRRefresher) OpenPRCount(gaggle, workflow string) (int, bool) {
 }
 
 // hasExcludedLabel reports whether pr carries any label the refresher was told
-// to drop from the count (caller holds r.mu).
+// to drop from the count (caller holds r.mu). The compare ignores case: forge
+// labels are case-insensitive, and Azure DevOps returns the casing of whoever
+// first created the label, so a human-created "Goobers:Merge-Escalated" still
+// parks the PR out of the count.
 func (r *OpenPRRefresher) hasExcludedLabel(pr providers.OpenPRSummary) bool {
 	for _, l := range pr.Labels {
-		if r.excludeLabels[l] {
+		if r.excludeLabels[strings.ToLower(l)] {
 			return true
 		}
 	}
