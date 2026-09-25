@@ -101,6 +101,13 @@ same abstraction, whose shape is unchanged.
     `Needs-Design` matches those. Any other label keeps ADO's casing and is
     compared exactly, as before. The claim label is compared ignoring case, and
     adding a label already present in another casing is a no-op.
+  - *ADO ready-label timing:* a label's add/remove history (for example when
+    `goobers:ready` was added, which a claim records as `readyAt`) is read from
+    the work item's update history (`workItems/{id}/updates`, paged with
+    `$top`/`$skip`): each update that changes `System.Tags` is diffed old against
+    new, matching the label ignoring case, and timed by that update's
+    `System.ChangedDate`. A work item whose history reaches ADO's 10,000-revision
+    cap fails closed rather than returning a truncated history (`ADO-N21`).
   - *ADO partial label add:* ADO adds one PR label per request. When some labels
     in a multi-label add fail, the ones that applied are kept (not rolled back)
     and the error names each label that failed.
