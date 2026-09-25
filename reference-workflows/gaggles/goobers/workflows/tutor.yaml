@@ -217,7 +217,6 @@ spec:
         actionRoots: "reference-workflows/gaggles/goobers,skills"
       capabilities:
         - provider:pr:write
-        - ado:work-items:write
       policyActions:
         - open-or-update-pr
       expectedOutputs:
