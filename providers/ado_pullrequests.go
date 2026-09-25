@@ -156,8 +156,8 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 	return nil
 }
 
-// adoLabelNames maps ADO PR labels to their bare names, with Goobers-namespace
-// labels folded to their canonical lower case (ADO keeps the first writer's
+// adoLabelNames maps ADO PR labels to their bare names, with the labels
+// Goobers owns folded to Goobers' spelling (ADO keeps the first writer's
 // casing; see ado_labelcase.go).
 func adoLabelNames(labels []adoLabel) []string {
 	names := make([]string, 0, len(labels))

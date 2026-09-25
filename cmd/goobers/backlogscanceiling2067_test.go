@@ -92,7 +92,7 @@ func TestListBacklogScanWindowADOOversizedScanDoesNotViolateInvariant(t *testing
 	repo := providers.RepositoryRef{Name: "repo", Project: "project"}
 
 	items, _, err := listBacklogScanWindow(
-		context.Background(), provider, repo, nil, "", nil, backlogScanCeiling, backlogScanCursor{}, false,
+		context.Background(), provider, repo, nil, nil, "", nil, backlogScanCeiling, backlogScanCursor{}, false,
 	)
 	if err != nil {
 		t.Fatalf("listBacklogScanWindow: %v (this is exactly the invariant #2067's ADO fix must not trip)", err)

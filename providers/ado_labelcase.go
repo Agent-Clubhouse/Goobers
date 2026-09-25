@@ -13,24 +13,38 @@ import (
 // it reads onto a canonical spelling instead of pushing case-insensitivity
 // into provider-neutral code. GitHub and Gitea are untouched.
 
-// adoGoobersLabelNamespaces are the label prefixes Goobers reserves. Every
-// label Goobers itself writes under them is lower case, so a read tag in
-// these namespaces is folded to lower case.
-var adoGoobersLabelNamespaces = []string{"goobers:", "goobers/"}
+// goobersOwnedLabels lists every label Goobers itself writes and compares
+// exactly: the marker labels in model.go, the status labels, and the labels
+// cmd/goobers owns (TestGoobersOwnedLabelsCoverCommandLabels pins that each
+// of cmd/goobers' label constants is listed here). The ADO provider reads a
+// tag matching one of them ignoring case back in this spelling.
+var goobersOwnedLabels = []string{
+	LabelApproved, LabelClaimed, LabelReady, LabelCritical, LabelNeedsHuman,
+	LabelNominated, LabelAutoClose, LabelStale, LabelTracking,
+	statusLabel(WorkItemStatusOpen), statusLabel(WorkItemStatusClaimed),
+	statusLabel(WorkItemStatusInProgress), statusLabel(WorkItemStatusInReview),
+	statusLabel(WorkItemStatusDone), statusLabel(WorkItemStatusClosed),
+	statusLabelPrefix + "decomposing",
+	"goobers:needs-remediation", "goobers:run-aborted", "goobers:merge-ready",
+	"goobers:merge-escalated", "goobers:no-merge-review", "goobers:scope-gate",
+	"goobers:scope-gate-ack", "goobers:blocked-on-sibling", "goobers:scope-drift",
+	"goobers:merge-demoted",
+}
 
 // canonicalADOLabel returns the spelling Goobers compares label against: the
-// exact spelling of a wanted label it matches case-insensitively, else the
-// lower-case form of a label in a Goobers namespace, else label unchanged.
+// exact spelling of a wanted label it matches case-insensitively, else that of
+// a Goobers-owned label it matches, else label unchanged. Tags matching
+// neither keep ADO's casing, so a configured mixed-case label such as
+// goobers:Hold still compares exactly as it did before.
 func canonicalADOLabel(label string, wanted []string) string {
 	for _, want := range wanted {
 		if strings.EqualFold(label, want) {
 			return want
 		}
 	}
-	lower := strings.ToLower(label)
-	for _, prefix := range adoGoobersLabelNamespaces {
-		if strings.HasPrefix(lower, prefix) {
-			return lower
+	for _, owned := range goobersOwnedLabels {
+		if strings.EqualFold(label, owned) {
+			return owned
 		}
 	}
 	return label
@@ -50,9 +64,11 @@ func canonicalADOLabels(labels, wanted []string) []string {
 }
 
 // adoRequestedLabels lists every label a ListWorkItems request compares
-// exactly: its native label filter and its label predicate's labels.
+// exactly: its native label filter, its label predicate's labels and the
+// caller's CompareLabels.
 func adoRequestedLabels(req ListWorkItemsRequest) []string {
-	return append(append([]string(nil), req.Labels...), req.LabelPredicate.Labels()...)
+	requested := append(append([]string(nil), req.Labels...), req.LabelPredicate.Labels()...)
+	return append(requested, req.CompareLabels...)
 }
 
 // adoHasLabel reports whether labels holds label, ignoring case.

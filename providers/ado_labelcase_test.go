@@ -5,6 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -26,6 +29,13 @@ func TestCanonicalADOLabel(t *testing.T) {
 	}{
 		{"GOOBERS:READY", nil, "goobers:ready"},
 		{"Goobers/Status:In-Progress", nil, "goobers/status:in-progress"},
+		{"Goobers:Merge-Escalated", nil, "goobers:merge-escalated"},
+		{"Tracking", nil, LabelTracking},
+		{"STALE", nil, LabelStale},
+		// A Goobers-namespace label Goobers does not own keeps ADO's casing,
+		// so a config naming it in that spelling still matches exactly.
+		{"goobers:Hold", nil, "goobers:Hold"},
+		{"GOOBERS:Custom", nil, "GOOBERS:Custom"},
 		{"Needs-Design", nil, "Needs-Design"},
 		{"needs-design", []string{"Needs-Design"}, "Needs-Design"},
 		{"GOOBERS:Custom", []string{"goobers:Custom"}, "goobers:Custom"},
@@ -53,6 +63,74 @@ func TestApplyADOTagSetIgnoresCase(t *testing.T) {
 	}
 	if got := adoDropStatusTags([]string{"Goobers/Status:Open", "keep"}); !slices.Equal(got, []string{"keep"}) {
 		t.Fatalf("adoDropStatusTags = %v, want [keep]", got)
+	}
+}
+
+// TestGoobersOwnedLabelsCoverCommandLabels is the drift guard for
+// goobersOwnedLabels: every label constant cmd/goobers declares must be
+// listed, or the ADO provider reads it back in whatever casing ADO holds it.
+func TestGoobersOwnedLabelsCoverCommandLabels(t *testing.T) {
+	sources, err := filepath.Glob(filepath.Join("..", "cmd", "goobers", "*.go"))
+	if err != nil || len(sources) == 0 {
+		t.Fatalf("glob cmd/goobers sources: %v (found %d)", err, len(sources))
+	}
+	decl := regexp.MustCompile(`(?m)^\s*(?:const\s+)?\w+\s*=\s*"(goobers:[a-z0-9-]+|goobers/status:[a-z0-9-]+)"\s*$`)
+	found := 0
+	for _, path := range sources {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, match := range decl.FindAllStringSubmatch(string(src), -1) {
+			found++
+			if !slices.Contains(goobersOwnedLabels, match[1]) {
+				t.Errorf("%s declares label %q, missing from goobersOwnedLabels", path, match[1])
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("found no cmd/goobers label constants; the guard's pattern no longer matches their declarations")
+	}
+}
+
+// TestADOGetWorkItemFoldsOnlyGoobersOwnedLabels: GetWorkItem has no request
+// labels to fold onto, so it folds onto the labels Goobers owns (including
+// the unprefixed stale and tracking) and leaves every other tag as ADO holds
+// it.
+func TestADOGetWorkItemFoldsOnlyGoobersOwnedLabels(t *testing.T) {
+	fake := &adoClaimFake{tags: "Tracking; Stale; GOOBERS:READY; goobers:Hold; Needs-Design"}
+	server := fake.server(t, true)
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	item, err := provider.GetWorkItem(context.Background(), RepositoryRef{Name: "repo", Project: "project"}, "42")
+	if err != nil {
+		t.Fatalf("GetWorkItem: %v", err)
+	}
+	for _, label := range []string{LabelTracking, LabelStale, LabelReady, "goobers:Hold", "Needs-Design"} {
+		if !item.HasLabel(label) {
+			t.Errorf("HasLabel(%q) = false, labels = %v", label, item.Labels)
+		}
+	}
+}
+
+// TestADOListWorkItemsFoldsCompareLabels: a caller that applies its label
+// predicate itself names the predicate's labels in CompareLabels, and a tag
+// first written in another casing reads back in that spelling.
+func TestADOListWorkItemsFoldsCompareLabels(t *testing.T) {
+	_, server := newADOBatchTestServer(t, 1, func(int) string { return "GOOBERS:READY; Needs-Design" })
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository:    RepositoryRef{Name: "repo", Project: "project"},
+		Labels:        []string{LabelReady},
+		CompareLabels: []string{"needs-design"},
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if len(items) != 1 || !items[0].HasLabel(LabelReady) || !items[0].HasLabel("needs-design") {
+		t.Fatalf("items = %#v, want one item carrying goobers:ready and needs-design", items)
 	}
 }
 
@@ -160,6 +238,7 @@ type adoPRLabelsFake struct {
 	mu       sync.Mutex
 	labels   []adoPullRequestLabel
 	failPost map[string]bool
+	failGet  bool
 	posted   []string
 	deleted  []string
 }
@@ -173,6 +252,10 @@ func (f *adoPRLabelsFake) server(t *testing.T) *httptest.Server {
 		defer f.mu.Unlock()
 		switch r.Method {
 		case http.MethodGet:
+			if f.failGet {
+				http.Error(w, "label read refused", http.StatusBadRequest)
+				return
+			}
 			values := make([]map[string]string, 0, len(f.labels))
 			for _, l := range f.labels {
 				values = append(values, map[string]string{"id": l.ID, "name": l.Name})
@@ -255,6 +338,41 @@ func TestADOAddPullRequestLabelsReportsPartialSuccess(t *testing.T) {
 	}
 	if !slices.Equal(fake.posted, []string{"label-a", "label-b", "label-c"}) {
 		t.Fatalf("posted = %v, want all three attempted in order", fake.posted)
+	}
+}
+
+// TestADOAddPullRequestLabelsProceedsWhenPreReadFails: a failed read of the
+// existing labels does not stop the adds.
+func TestADOAddPullRequestLabelsProceedsWhenPreReadFails(t *testing.T) {
+	fake := &adoPRLabelsFake{failGet: true, failPost: map[string]bool{"label-b": true}}
+	provider := newADOPRLabelsTestProvider(fake.server(t))
+	if err := provider.AddPullRequestLabels(context.Background(), adoPRLabelsTestRepo, "42", []string{"label-a"}); err != nil {
+		t.Fatalf("AddPullRequestLabels: %v", err)
+	}
+	err := provider.AddPullRequestLabels(context.Background(), adoPRLabelsTestRepo, "42", []string{"label-b"})
+	var partial *PullRequestLabelAddError
+	if !errors.As(err, &partial) || !strings.Contains(err.Error(), "read existing pull request labels") {
+		t.Fatalf("error = %v, want a *PullRequestLabelAddError joined with the read failure", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if !slices.Equal(fake.posted, []string{"label-a", "label-b"}) {
+		t.Fatalf("posted = %v, want both adds attempted", fake.posted)
+	}
+}
+
+// TestADOClaimOwnerMatchesLegacyPrefixInAnyCase: a legacy owner tag whose
+// prefix ADO holds in another casing is still read as an owner, with its
+// case-sensitive payload intact.
+func TestADOClaimOwnerMatchesLegacyPrefixInAnyCase(t *testing.T) {
+	tag, err := adoClaimTag("run-Ours")
+	if err != nil {
+		t.Fatalf("adoClaimTag: %v", err)
+	}
+	mixed := strings.ToUpper(adoClaimTagPrefix) + strings.TrimPrefix(tag, adoClaimTagPrefix)
+	owner, ok, err := adoClaimOwner([]string{"keep", mixed})
+	if err != nil || !ok || owner != "run-Ours" {
+		t.Fatalf("adoClaimOwner = %q, %t, %v; want run-Ours", owner, ok, err)
 	}
 }
 

@@ -1468,10 +1468,12 @@ func adoClaimTag(runID string) (string, error) {
 func adoClaimOwner(tags []string) (string, bool, error) {
 	owner := ""
 	for _, tag := range tags {
-		if !strings.HasPrefix(tag, adoClaimTagPrefix) {
+		// The prefix matches in any casing (ADO keeps the first writer's);
+		// the base64 payload after it stays case-sensitive.
+		if len(tag) < len(adoClaimTagPrefix) || !strings.EqualFold(tag[:len(adoClaimTagPrefix)], adoClaimTagPrefix) {
 			continue
 		}
-		encoded := strings.TrimPrefix(tag, adoClaimTagPrefix)
+		encoded := tag[len(adoClaimTagPrefix):]
 		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
 		if err != nil || len(decoded) == 0 {
 			return "", false, fmt.Errorf("invalid ADO claim owner tag")

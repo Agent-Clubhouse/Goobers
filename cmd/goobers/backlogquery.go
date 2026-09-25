@@ -1510,6 +1510,7 @@ func appendBlockedResweepCandidates(
 		env.issueProvider,
 		env.repo,
 		compactLabels(opts.trustLabel, blockedOnSiblingLabel),
+		opts.requireLabels,
 		"",
 		opts.fieldFilter,
 		backlogScanCeiling,
@@ -1624,6 +1625,7 @@ func appendReadyResweepCandidates(
 		env.issueProvider,
 		env.repo,
 		compactLabels(opts.trustLabel, opts.policy.readyLabel),
+		opts.requireLabels,
 		"",
 		opts.fieldFilter,
 		backlogScanCeiling,
@@ -1904,7 +1906,8 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		}
 	}
 	items, window, err := listBacklogScanWindow(
-		ctx, env.issueProvider, env.backlogRepo, labels, queryAssignee, opts.fieldFilter, opts.scanLimit, result.cursor, exhaustiveScan,
+		ctx, env.issueProvider, env.backlogRepo, labels, opts.labelFilter.Labels(), queryAssignee,
+		opts.fieldFilter, opts.scanLimit, result.cursor, exhaustiveScan,
 	)
 	if err != nil {
 		return result, failProviderStage(env.stderr, "list work items", err, "claimed-item.json")
@@ -2109,6 +2112,7 @@ func runReadOnlyBacklogQuery(
 		env.issueProvider,
 		env.backlogRepo,
 		labels,
+		opts.labelFilter.Labels(),
 		queryAssignee,
 		opts.fieldFilter,
 		opts.scanLimit,
@@ -2625,11 +2629,15 @@ type backlogScanWindow struct {
 // where the last one stopped, and the items it already covered are simply
 // skipped as duplicates) while restoring the property the scan budget was
 // always meant to give: a window is short only because the budget ran out.
+//
+// compareLabels are the labels the caller then compares the items' labels
+// against exactly (ListWorkItemsRequest.CompareLabels); they never filter.
 func listBacklogScanWindow(
 	ctx context.Context,
 	provider providers.BacklogProvider,
 	repo providers.RepositoryRef,
 	labels []string,
+	compareLabels []string,
 	assignee string,
 	fieldFilter *fieldpredicate.Predicate,
 	limit int,
@@ -2641,9 +2649,10 @@ func listBacklogScanWindow(
 		return nil, window, nil
 	}
 	scan := backlogScanState{
-		items:  make([]providers.WorkItem, 0, limit),
-		seen:   make(map[string]bool, limit),
-		budget: limit,
+		items:         make([]providers.WorkItem, 0, limit),
+		seen:          make(map[string]bool, limit),
+		budget:        limit,
+		compareLabels: compareLabels,
 	}
 	position, exhausted, err := scan.run(ctx, provider, repo, labels, assignee, fieldFilter, cursor, exhaustive, false)
 	if err != nil {
@@ -2680,6 +2689,8 @@ type backlogScanState struct {
 	seen   map[string]bool
 	budget int
 	spent  int
+	// compareLabels is passed through as ListWorkItemsRequest.CompareLabels.
+	compareLabels []string
 }
 
 // run reads pages from start until the budget is spent, the page cap is hit,
@@ -2711,6 +2722,7 @@ func (s *backlogScanState) run(
 		pageItems, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 			Repository:     repo,
 			Labels:         labels,
+			CompareLabels:  s.compareLabels,
 			Assignee:       assignee,
 			FieldPredicate: fieldFilter,
 			State:          "open",

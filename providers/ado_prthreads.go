@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -171,10 +172,9 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 	if len(pending) == 0 {
 		return nil
 	}
-	existing, err := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
-	if err != nil {
-		return err
-	}
+	// A failed pre-read only loses the already-present skip: the POSTs still
+	// run, and ADO merges a label that exists in another casing server-side.
+	existing, readErr := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
 	// The PR-labels endpoint is published only under the -preview version;
 	// a plain "7.1" is rejected (VssInvalidPreviewVersionException).
 	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
@@ -194,10 +194,20 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 		result.Applied = append(result.Applied, name)
 		p.recordMutation(ctx, "pr", pullID, "label", repo)
 	}
-	if len(result.Failed) > 0 {
-		return &result
+	return adoPullRequestLabelAddResult(&result, readErr)
+}
+
+// adoPullRequestLabelAddResult is AddPullRequestLabels' outcome: nil when
+// every label applied, else the *PullRequestLabelAddError, joined with the
+// failed pre-read of existing labels when no label applied at all.
+func adoPullRequestLabelAddResult(result *PullRequestLabelAddError, readErr error) error {
+	if len(result.Failed) == 0 {
+		return nil
 	}
-	return nil
+	if readErr != nil && len(result.Applied) == 0 {
+		return errors.Join(fmt.Errorf("read existing pull request labels: %w", readErr), result)
+	}
+	return result
 }
 
 // adoPendingPullRequestLabels drops blank names and case-insensitive
@@ -248,9 +258,9 @@ func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo Reposit
 
 // PullRequestLabelNames returns a PR's active label names via the dedicated
 // labels sub-endpoint (the single-PR GET omits them — verified live), sorted.
-// A label keeps the casing ADO returned, except that a Goobers-namespace
-// label is folded to its canonical lower case so callers' exact compares
-// match whoever wrote it first (see ado_labelcase.go).
+// A label keeps the casing ADO returned, except that one Goobers owns
+// (goobersOwnedLabels) is folded to Goobers' spelling so callers' exact
+// compares match whoever wrote it first (see ado_labelcase.go).
 func (p *ADOProvider) PullRequestLabelNames(ctx context.Context, repo RepositoryRef, pullID string) ([]string, error) {
 	labels, err := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
 	if err != nil {

@@ -114,7 +114,7 @@ func runBacklogAssignmentWithMutationHook(
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	items, _, err := listBacklogScanWindow(
-		ctx, assigner, backlogRepo, labels, "", fieldFilter, 0, backlogScanCursor{}, true,
+		ctx, assigner, backlogRepo, labels, labelFilter.Labels(), "", fieldFilter, 0, backlogScanCursor{}, true,
 	)
 	if err != nil {
 		return failProviderStage(stderr, "list backlog for assignment", err, "backlog-assignment.json")
@@ -125,7 +125,7 @@ func runBacklogAssignmentWithMutationHook(
 		return 1
 	}
 	scopedItems, _, err := listBacklogScanWindow(
-		ctx, assigner, backlogRepo, nil, "", allFields, 0, backlogScanCursor{}, true,
+		ctx, assigner, backlogRepo, nil, nil, "", allFields, 0, backlogScanCursor{}, true,
 	)
 	if err != nil {
 		return failProviderStage(stderr, "list backlog assignment load", err, "backlog-assignment.json")
