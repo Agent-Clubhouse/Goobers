@@ -24,11 +24,26 @@ func adoBacklogProjectFixture(t *testing.T, root, gaggle, codeProject, backlogPr
 	if err != nil {
 		t.Fatalf("read gaggle: %v", err)
 	}
-	updated := strings.Replace(string(raw),
-		"  backlog:\n    provider: github\n    project: your-org/your-repo\n",
-		"  backlog:\n    provider: ado\n    project: "+backlogProject+"\n", 1)
-	if updated == string(raw) {
-		t.Fatalf("starter gaggle did not contain the expected github backlog block:\n%s", raw)
+	// Both sides must be ado: a GitHub project with an ADO backlog is a mixed
+	// provider topology that validation refuses (ADO-N13, CFG010).
+	updated := string(raw)
+	for _, sub := range []struct{ old, new, what string }{
+		{
+			"  project:\n    provider: github\n    owner: your-org\n    name: your-repo\n",
+			"  project:\n    provider: ado\n    owner: acme\n    project: " + codeProject + "\n    name: web\n",
+			"project",
+		},
+		{
+			"  backlog:\n    provider: github\n    project: your-org/your-repo\n",
+			"  backlog:\n    provider: ado\n    project: " + backlogProject + "\n",
+			"backlog",
+		},
+	} {
+		next := strings.Replace(updated, sub.old, sub.new, 1)
+		if next == updated {
+			t.Fatalf("starter gaggle did not contain the expected github %s block:\n%s", sub.what, raw)
+		}
+		updated = next
 	}
 	if err := os.WriteFile(gagglePath, []byte(updated), 0o644); err != nil {
 		t.Fatalf("write gaggle: %v", err)

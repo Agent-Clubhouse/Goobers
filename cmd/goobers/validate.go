@@ -540,6 +540,7 @@ var strictNeutralWarningCodes = func() []validate.WarningCode {
 		validate.WarningConnectionRefUnhonored,
 		validate.RunnerAVExclusionsUnverified,
 		validate.WarningImplicitWritableWorkspace,
+		validate.WarningGaggleMixedProvider,
 	}
 	for _, code := range workflowsafety.Codes() {
 		codes = append(codes, validate.WarningCode(code))
@@ -979,7 +980,21 @@ func remotesNameRepository(remotes []string, owner, name string) bool {
 // scp-like git@host:owner/name, and ADO's org/project/_git/repo — without a
 // per-provider parser; a local mirror path that carries neither coordinate
 // simply fails to match and downgrades to the advisory warning.
+//
+// A legacy *.visualstudio.com ADO remote is the one shape that breaks that
+// generic segment walk: the organization lives in the host, not a path
+// segment, so "owner" (the organization) would never be found among the
+// path's segments. providers.ParseADORemoteURL, which recognizes only
+// host-anchored ADO forms (never a bare slug or local path), is tried first
+// for exactly that reason (ADO-N35). Only a positive ADO match returns early;
+// everything else — including an ADO remote whose coordinate differs — falls
+// through to the generic walk, so the check only ever widens and GitHub,
+// Gitea, local-path and dev.azure.com remotes behave as before.
 func remoteURLNamesRepository(remote, owner, name string) bool {
+	if org, _, repo, ok := providers.ParseADORemoteURL(remote); ok &&
+		strings.EqualFold(org, owner) && strings.EqualFold(repo, name) {
+		return true
+	}
 	path := remote
 	if scheme := strings.Index(path, "://"); scheme >= 0 {
 		path = path[scheme+len("://"):]

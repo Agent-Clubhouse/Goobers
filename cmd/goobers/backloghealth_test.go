@@ -48,8 +48,8 @@ func TestBacklogHealthCommandRunsWithADO(t *testing.T) {
 			"workItems": []map[string]int{{"id": 42}},
 		})
 	})
-	mux.HandleFunc("/acme/project/_apis/wit/workitems/42", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
+	mux.HandleFunc("/acme/project/_apis/wit/workitemsbatch", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"count": 1, "value": []map[string]any{{
 			"id": 42,
 			"fields": map[string]any{
 				"System.WorkItemType": "Task",
@@ -59,7 +59,7 @@ func TestBacklogHealthCommandRunsWithADO(t *testing.T) {
 				"System.CreatedDate":  changedAt.Add(-time.Hour).Format(time.RFC3339),
 				"System.ChangedDate":  changedAt.Format(time.RFC3339),
 			},
-		})
+		}}})
 	})
 	mux.HandleFunc("/acme/project/_apis/wit/workitemtypes/Task/states", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{

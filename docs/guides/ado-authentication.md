@@ -37,6 +37,39 @@ project:
   branch: main
 ```
 
+## Repository remote URL forms
+
+`goobers connect`, `push-branch`'s credential routing, and `validate`'s
+target-repository match all recognize the same set of Azure DevOps remote/URL
+shapes, normalized to the `organization`/`project`/`repository` coordinate
+above:
+
+- `https://dev.azure.com/<organization>/<project>/_git/<repository>`, and the
+  short form Azure DevOps itself emits when project and repository share a
+  name, `https://dev.azure.com/<organization>/_git/<repository>`
+- the legacy pre-rename host, `https://<organization>.visualstudio.com/[DefaultCollection/]<project>/_git/<repository>`
+- `git@ssh.dev.azure.com:v3/<organization>/<project>/<repository>` (or
+  `ssh://git@ssh.dev.azure.com/v3/...`), and its legacy
+  `<organization>@vs-ssh.visualstudio.com:v3/<organization>/<project>/<repository>`
+  equivalent
+- for `goobers connect` only, the bare three-part slug,
+  `<organization>/<project>/<repository>`; `push-branch` and `validate` never
+  treat a bare slug or a local mirror path as Azure DevOps
+
+Matching is case-insensitive on the host and on the configured organization,
+project and repository names, and tolerates a username-only origin
+(`https://<organization>@dev.azure.com/...`). An origin that embeds a password
+(`https://user:secret@dev.azure.com/...`) is refused by `push-branch`; remove
+the password from the remote and configure the repository's `auth` instead. A
+legacy `*.visualstudio.com` remote is accepted for matching and credential
+routing only — Goobers never rewrites an operator's configured remote, and
+every URL Goobers itself generates stays the canonical `dev.azure.com` form.
+
+SSH remotes are matched for routing only: `push-branch` still resolves the
+repository's configured Azure DevOps credential for an SSH origin, but the SSH
+transport ignores that HTTP credential, so the push authenticates with the
+operator's SSH key.
+
 ## Unattended authentication
 
 Use workload identity federation in Kubernetes or CI:
@@ -165,9 +198,23 @@ name or its stable `uniqueName` account identifier, case-insensitively.
 Close and reopen mutations select the target work-item state by the process
 state category instead of assuming one process template's state names. Numeric
 GitHub milestones have no Azure Boards equivalent and are rejected; existing
-iteration paths are left unchanged. Claims write `goobers:claimed` plus an
-internal run-owner tag in one revision-tested patch, so concurrent schedulers
-settle on one visible owner without overwriting unrelated tags.
+iteration paths are left unchanged. A claim posts a claim breadcrumb comment on
+the work item, re-reads the comment thread so concurrent schedulers settle on
+the earliest breadcrumb, and then adds the visible `goobers:claimed` tag in a
+revision-tested patch that leaves unrelated tags alone. Releasing a claim posts
+a release breadcrumb and removes the tag.
+
+Only breadcrumbs written by the identity the credential authenticates as
+count: the comment's `createdBy.id` must equal the `authenticatedUser.id` that
+`connectionData` returns for the credential. A breadcrumb posted by any other
+identity is ignored, and a claim fails if that identity cannot be read.
+
+> **Rotating the identity orphans its claims.** Claims are matched by identity
+> GUID, not by display name. If you switch the credential to a different
+> identity (for example from a PAT to a service principal), the new identity
+> does not see claims the old one made, and it cannot release them. Let
+> in-flight runs finish, or release their claims, before you rotate. Remove any
+> leftover `goobers:claimed` tags by hand afterwards.
 
 Repository and pull-request parity remains incremental. Keep human branch
 policies authoritative for ADO repo operations that the provider does not yet

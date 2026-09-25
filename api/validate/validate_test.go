@@ -575,6 +575,28 @@ func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 	}
 }
 
+// TestGooberSchemaAcceptsReportPRStatusPolicyAction is part of the ADO-N23
+// rs-* matrix: report-pr-status must be declarable in both the
+// unconditional and conditional goober policy-action enums.
+func TestGooberSchemaAcceptsReportPRStatusPolicyAction(t *testing.T) {
+	v := newV(t)
+	goober := `{
+	"apiVersion": "goobers.dev/v1alpha1",
+	"kind": "Goober",
+	"metadata": {"name": "reporter"},
+	"spec": {
+		"gaggle": "example",
+		"role": "reporter",
+		"instructions": "instructions.md",
+		"policyActions": ["report-pr-status"],
+		"conditionalPolicyActions": ["report-pr-status"]
+	}
+	}`
+	if err := v.ValidateJSON("goober.schema.json", []byte(goober)); err != nil {
+		t.Fatalf("report-pr-status goober policy action failed schema validation: %v", err)
+	}
+}
+
 func TestWorkflowSchemaAcceptsExplicitManualOnlyTrigger(t *testing.T) {
 	v := newV(t)
 	workflow := `{
