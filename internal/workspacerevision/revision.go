@@ -10,7 +10,7 @@ import (
 
 const (
 	// CodeInvalid reports a malformed or structurally invalid selected revision.
-	CodeInvalid = "workspace_revision_invalid"
+	CodeInvalid = apiv1.WorkspaceRevisionInvalidCode
 	// CodeUnauthorized reports a selected revision not allowed by configured repos.
 	CodeUnauthorized = "workspace_revision_unauthorized"
 	// CodeConflict reports a conflicting revision after authority was established.
@@ -46,14 +46,11 @@ func (e *Error) NonRetryable() bool { return e.Code != CodeAcquisition }
 // StageErrorCode returns the canonical stage error code for the selected revision.
 func (e *Error) StageErrorCode() string { return e.Code }
 
-// Accept establishes immutable authority. Agentic, failed, and absent results
-// cannot establish it; repeated identical deterministic values are idempotent.
-func Accept(current, candidate *apiv1.WorkspaceRevision, deterministic, success bool) (*apiv1.WorkspaceRevision, error) {
-	if candidate == nil || !success {
+// Accept preserves immutable authority after the caller verifies eligibility
+// and configuration authorization.
+func Accept(current, candidate *apiv1.WorkspaceRevision) (*apiv1.WorkspaceRevision, error) {
+	if candidate == nil {
 		return current, nil
-	}
-	if !deterministic {
-		return current, &Error{Code: CodeUnauthorized, Message: "agentic results cannot establish workspace revision authority"}
 	}
 	if err := candidate.Validate(); err != nil {
 		return current, &Error{Code: CodeInvalid, Message: err.Error(), Cause: err}

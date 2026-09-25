@@ -711,6 +711,9 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// than an error.
 	surrendered, rerr := a.readDispatchSurrender(ctx, attempt, report.SurrenderConfirmed)
 	if rerr != nil {
+		if rejection := workspaceRevisionRejection(rerr); rejection != nil {
+			return dispatchFailureResult(classifySeamError(rejection), report)
+		}
 		// The gate confirmed surrender yet the result is unreadable: the
 		// substrate lost or garbled the outputs after the stage did its work.
 		// Infra-classed — the attempt retries on a fresh pod (D1), never
@@ -722,6 +725,9 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	}
 	if surrendered.Result.Status == "" {
 		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
+	}
+	if rejection := admitDistributedRevision(&surrendered.Result, input.Run != nil); rejection != nil {
+		return dispatchFailureResult(classifySeamError(rejection), report)
 	}
 	if input.Review {
 		result, reviewErr := a.reviewActivityResult(ctx, input, attempt.Number, surrendered, report)

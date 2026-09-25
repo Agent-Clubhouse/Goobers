@@ -177,6 +177,10 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			continue
 		}
 		lastErr = err
+		if rejection := workspaceRevisionRejection(err); rejection != nil {
+			rec.workspaceRevisionRefused(ctx, t.Name, int(attempt), class, rejection, attemptIdentityFromError(err))
+			return apiv1.ResultEnvelope{}, rejection
+		}
 		failureClass, cerr := ClassifyDispatchFailure(err)
 		if cerr != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)

@@ -1,7 +1,6 @@
 package v1alpha1
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -37,12 +36,16 @@ type WorkspaceRevision struct {
 // UnmarshalJSON preserves the closed revision contract at envelope boundaries
 // without rejecting unrelated envelope extensions.
 func (r *WorkspaceRevision) UnmarshalJSON(data []byte) error {
+	if err := validateRevisionJSONMembers(data, false); err != nil {
+		return &WorkspaceRevisionDecodeError{Err: err}
+	}
 	type revision WorkspaceRevision
 	var decoded revision
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&decoded); err != nil {
-		return fmt.Errorf("workspaceRevision: %w", err)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return &WorkspaceRevisionDecodeError{Err: err}
+	}
+	if err := WorkspaceRevision(decoded).Validate(); err != nil {
+		return &WorkspaceRevisionDecodeError{Err: err}
 	}
 	*r = WorkspaceRevision(decoded)
 	return nil

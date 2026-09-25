@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -788,7 +789,8 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 // minimum a caller of that helper can add.
 //
 //complexitygate:allow #4273 guarded-credential-path refusal, see above
-func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (outcome apiv1.ResultEnvelope, retErr error) {
+	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	if env.Workspace == "" {
 		// exec.Cmd treats Dir == "" as "run in the daemon's own working
 		// directory" — a silent, surprising fallback (#122) rather than the
@@ -1424,20 +1426,15 @@ func MergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil
 	}
+	revision, err := apiv1.DecodeWorkspaceRevisionField(data)
+	if err != nil {
+		return err
+	}
+	if revision != nil {
+		result.WorkspaceRevision = revision
+	}
 	for k, v := range m {
 		if k == "workspaceRevision" {
-			raw, err := json.Marshal(v)
-			if err != nil {
-				return fmt.Errorf("workspaceRevision: %w", err)
-			}
-			var revision apiv1.WorkspaceRevision
-			if err := json.Unmarshal(raw, &revision); err != nil {
-				return fmt.Errorf("workspaceRevision: %w", err)
-			}
-			if err := revision.Validate(); err != nil {
-				return err
-			}
-			result.WorkspaceRevision = revision.DeepCopy()
 			continue
 		}
 		switch v.(type) {

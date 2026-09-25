@@ -288,7 +288,7 @@ func (r *Runner) runConcurrentParallel(
 		if branch.settled {
 			var err error
 			var terminalTarget string
-			outcomes[i], terminalTarget, _, _, err = r.settledParallelBranchResult(branch, history, baseCompleted, in, i)
+			outcomes[i], terminalTarget, _, _, err = r.settledParallelBranchResult(ctx, branch, history, baseCompleted, in, i)
 			if err != nil {
 				return concurrentParallelResult{}, err
 			}
@@ -413,7 +413,7 @@ func (r *Runner) runConcurrentParallel(
 		}
 		if outcome.workspaceRevision != nil {
 			var err error
-			workspaceRevision, err = workspacerevision.Accept(workspaceRevision, outcome.workspaceRevision, true, true)
+			workspaceRevision, err = workspacerevision.Accept(workspaceRevision, outcome.workspaceRevision)
 			if err != nil {
 				return concurrentParallelResult{}, fmt.Errorf("runner: reconcile parallel workspace revision: %w", err)
 			}
@@ -486,7 +486,7 @@ func (r *Runner) runParallelBranch(
 		captureParallelBranchBinding(&result, &initialRepoRef, &in.RepoRef, &in.workspaceRevision)
 	}()
 	result = initialParallelBranchResult(branch, baseLastStage, baseLastResult, baseCompleted, in, history)
-	in, result.err = r.restoreWorkspaceRevision(in, history)
+	in, result.err = r.restoreWorkspaceRevision(ctx, in, history)
 	if result.err != nil {
 		result.status = journal.BranchFailed
 		return result

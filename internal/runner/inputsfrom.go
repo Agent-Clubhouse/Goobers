@@ -320,8 +320,12 @@ func reconstructWorkspaceRevision(events []journal.Event, machine *workflow.Mach
 		if !ok {
 			return nil, &workspacerevision.Error{Code: workspacerevision.CodeUnauthorized, Message: "journal workspace revision producer is not a pinned task"}
 		}
+		result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, WorkspaceRevision: event.WorkspaceRevision}
+		if err := workspacerevision.NormalizeResult(&result, task.Type == apiv1.TaskDeterministic); err != nil {
+			return nil, err
+		}
 		var err error
-		revision, err = workspacerevision.Accept(revision, event.WorkspaceRevision, task.Type == apiv1.TaskDeterministic, true)
+		revision, err = workspacerevision.Accept(revision, result.WorkspaceRevision)
 		if err != nil {
 			return nil, err
 		}

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -120,6 +121,7 @@ func cancelQueuedWhenTriggered(triggered bool, jr *journal.Run, par *parallelExe
 }
 
 func (r *Runner) acceptTaskWorkspaceRevision(
+	ctx context.Context,
 	jr executionJournal,
 	task string,
 	attempt int,
@@ -129,7 +131,7 @@ func (r *Runner) acceptTaskWorkspaceRevision(
 	repoRef *apiv1.RepoRef,
 	revision *apiv1.WorkspaceRevision,
 ) error {
-	configuredRepo, err := workspacerevision.Resolve(*revision, in.configuredRepository(), r.cfg.AdditionalRepos)
+	configuredRepo, err := r.resolveWorkspaceRevision(ctx, *revision, in.configuredRepository())
 	if err != nil {
 		errorCode := workspacerevision.CodeUnauthorized
 		var revisionErr *workspacerevision.Error
@@ -145,7 +147,7 @@ func (r *Runner) acceptTaskWorkspaceRevision(
 		}
 		return fmt.Errorf("runner: stage %q workspace revision rejected: %w", task, err)
 	}
-	accepted, err := workspacerevision.Accept(*current, revision, true, true)
+	accepted, err := workspacerevision.Accept(*current, revision)
 	if err != nil {
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: task, Attempt: attempt, AttemptClass: class,
@@ -165,6 +167,7 @@ func (r *Runner) acceptTaskWorkspaceRevision(
 }
 
 func (r *Runner) prepareTaskResult(
+	ctx context.Context,
 	jr executionJournal,
 	task apiv1.Task,
 	result *apiv1.ResultEnvelope,
@@ -174,16 +177,13 @@ func (r *Runner) prepareTaskResult(
 	attempt int,
 	class journal.AttemptClass,
 ) error {
+	if err := workspacerevision.NormalizeResult(result, task.Type == apiv1.TaskDeterministic); err != nil {
+		return recordWorkspaceRevisionRejection(jr, task.Name, attempt, class, err)
+	}
 	result.Artifacts = normalizeArtifactIntegrity(task.Type, result.Artifacts)
 	*result = r.validateDependencyResult(jr, task.Name, *result, upstream)
-	if task.Type != apiv1.TaskDeterministic && result.WorkspaceRevision != nil {
+	if result.Status != apiv1.ResultSuccess {
 		result.WorkspaceRevision = nil
-		result.Status = apiv1.ResultFailure
-		result.Error = &apiv1.ErrorInfo{
-			Code:    workspacerevision.CodeUnauthorized,
-			Message: "agentic results cannot establish workspace revision authority",
-		}
-		result.Summary = "workspace revision authority is restricted to deterministic stages"
 	}
 	if task.Type == apiv1.TaskDeterministic &&
 		result.Status == apiv1.ResultSuccess &&
@@ -192,12 +192,25 @@ func (r *Runner) prepareTaskResult(
 		if tf.workspaceRevision != nil {
 			current = tf.workspaceRevision
 		}
-		if err := r.acceptTaskWorkspaceRevision(jr, task.Name, attempt, class, in,
+		if err := r.acceptTaskWorkspaceRevision(ctx, jr, task.Name, attempt, class, in,
 			current, tf.repoRef, result.WorkspaceRevision); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func taskAttemptClass(attempt, startAttempt int32, firstClass, nextClass journal.AttemptClass) journal.AttemptClass {
+	switch {
+	case attempt == startAttempt && firstClass != "":
+		return firstClass
+	case attempt == startAttempt && startAttempt > 1:
+		return journal.AttemptInfra
+	case attempt > startAttempt:
+		return nextClass
+	default:
+		return ""
+	}
 }
 
 func applyTaskUsageBudget(
@@ -219,6 +232,7 @@ func applyTaskUsageBudget(
 }
 
 func (r *Runner) settledParallelBranchResult(
+	ctx context.Context,
 	branch branchState,
 	history []journal.Event,
 	baseCompleted stageOutputs,
@@ -227,7 +241,7 @@ func (r *Runner) settledParallelBranchResult(
 ) (*parallelBranchResult, string, *parallelTaskTerminal, *parallelGateTerminal, error) {
 	lastStage, lastResult, _ := lastFinishedSubject(history)
 	terminalTarget, terminalTask, terminalGate := parallelBranchTerminal(history, in.Machine)
-	branchInput, err := r.restoreWorkspaceRevision(in, history)
+	branchInput, err := r.restoreWorkspaceRevision(ctx, in, history)
 	if err != nil {
 		return nil, "", nil, nil, fmt.Errorf("runner: reconstruct settled parallel branch %d workspace revision: %w", branch.id, err)
 	}

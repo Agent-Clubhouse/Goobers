@@ -1089,10 +1089,11 @@ func newTestRunnerWithDeterministic(t *testing.T, newDet NewDeterministicFunc, a
 	fixtureRepo := newFixtureRepo(t)
 
 	r, err := New(Config{
-		NewDeterministic: newDet,
-		Automated:        automated,
-		Worktrees:        wtMgr,
-		RunsDir:          runsDir,
+		ResolveRepositoryIdentity: lookupRunnerRepositoryFixture,
+		NewDeterministic:          newDet,
+		Automated:                 automated,
+		Worktrees:                 wtMgr,
+		RunsDir:                   runsDir,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
 			return fixtureRepo, nil
 		},

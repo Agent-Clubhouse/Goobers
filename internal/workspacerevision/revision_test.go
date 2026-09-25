@@ -1,13 +1,27 @@
 package workspacerevision
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/providers"
 )
+
+func lookupFixture(_ context.Context, configured apiv1.RepoRef) (providers.RepositoryMetadata, error) {
+	metadata := providers.RepositoryMetadata{ServiceRoot: serviceRoot(configured), Repository: providers.RepositoryRef{
+		Provider: providers.ProviderKind(configured.Provider), Owner: configured.Owner,
+		Project: configured.Project, Name: configured.Name, ID: "17",
+	}}
+	if configured.Name == "12345678-1234-1234-1234-123456789abc" {
+		metadata.Repository.Name, metadata.Repository.ID = "readable-name", configured.Name
+	}
+	metadata.Repository.URL = canonicalRepositoryURL(metadata)
+	return metadata, nil
+}
 
 func validRevision() *apiv1.WorkspaceRevision {
 	return &apiv1.WorkspaceRevision{
@@ -23,7 +37,7 @@ func validRevision() *apiv1.WorkspaceRevision {
 
 func TestAcceptCopiesAndIsIdempotent(t *testing.T) {
 	candidate := validRevision()
-	accepted, err := Accept(nil, candidate, true, true)
+	accepted, err := Accept(nil, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,34 +45,31 @@ func TestAcceptCopiesAndIsIdempotent(t *testing.T) {
 	if accepted.Repository.Name != "repo" {
 		t.Fatal("accepted revision was not copied")
 	}
-	if _, err := Accept(accepted, validRevision(), true, true); err != nil {
+	if _, err := Accept(accepted, validRevision()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestAcceptRejectsAgenticAndConflicts(t *testing.T) {
+func TestAcceptRejectsConflicts(t *testing.T) {
 	candidate := validRevision()
-	if _, err := Accept(nil, candidate, false, true); err == nil || errorCode(err) != CodeUnauthorized {
-		t.Fatalf("agentic result error = %v", err)
-	}
-	accepted, err := Accept(nil, candidate, true, true)
+	accepted, err := Accept(nil, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := validRevision()
 	other.CommitSHA = strings.Repeat("b", 40)
-	if _, err := Accept(accepted, other, true, true); err == nil || errorCode(err) != CodeConflict {
+	if _, err := Accept(accepted, other); err == nil || errorCode(err) != CodeConflict {
 		t.Fatalf("conflict error = %v", err)
 	}
 }
 
-func TestAcceptFailedAndInvalidDoNotEstablish(t *testing.T) {
+func TestAcceptAbsentAndInvalidDoNotEstablish(t *testing.T) {
 	candidate := validRevision()
-	if got, err := Accept(nil, candidate, true, false); err != nil || got != nil {
-		t.Fatalf("failed result established authority: %v %v", got, err)
+	if got, err := Accept(nil, nil); err != nil || got != nil {
+		t.Fatalf("absent result established authority: %v %v", got, err)
 	}
 	candidate.CommitSHA = strings.ToUpper(candidate.CommitSHA)
-	if got, err := Accept(nil, candidate, true, true); err == nil || got != nil || errorCode(err) != CodeInvalid {
+	if got, err := Accept(nil, candidate); err == nil || got != nil || errorCode(err) != CodeInvalid {
 		t.Fatalf("invalid result = %v %v", got, err)
 	}
 }
@@ -75,7 +86,7 @@ func TestResolveAuthorizesConfiguredRepositoryIdentity(t *testing.T) {
 		Provider: apiv1.ProviderGitea, BaseURL: "https://git.example.test",
 		Owner: "team", Name: "repo", Branch: "main",
 	}
-	got, err := Resolve(*revision, configured, nil)
+	got, err := Resolve(context.Background(), *revision, configured, nil, lookupFixture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +132,7 @@ func TestResolveMatchesServiceRootURLs(t *testing.T) {
 				Project:  tt.configured.Project,
 				Name:     tt.configured.Name,
 			}
-			if _, err := Resolve(*revision, tt.configured, nil); err != nil {
+			if _, err := Resolve(context.Background(), *revision, tt.configured, nil, lookupFixture); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -139,11 +150,11 @@ func TestResolveRequiresADOProjectAndRepositoryName(t *testing.T) {
 	configured := apiv1.RepoRef{
 		Provider: apiv1.ProviderADO, Owner: "acme", Project: "project", Name: "repo",
 	}
-	if _, err := Resolve(*revision, configured, nil); err != nil {
+	if _, err := Resolve(context.Background(), *revision, configured, nil, lookupFixture); err != nil {
 		t.Fatal(err)
 	}
 	revision.Repository.Project = "other"
-	if _, err := Resolve(*revision, configured, nil); errorCode(err) != CodeUnauthorized {
+	if _, err := Resolve(context.Background(), *revision, configured, nil, lookupFixture); errorCode(err) != CodeUnauthorized {
 		t.Fatalf("project mismatch error = %v, want %s", err, CodeUnauthorized)
 	}
 }
@@ -159,7 +170,7 @@ func TestResolveRejectsUnverifiedADONativeRepositoryID(t *testing.T) {
 	configured := apiv1.RepoRef{
 		Provider: apiv1.ProviderADO, Owner: "acme", Project: "project", Name: "repo",
 	}
-	if _, err := Resolve(*revision, configured, nil); errorCode(err) != CodeUnauthorized {
+	if _, err := Resolve(context.Background(), *revision, configured, nil, lookupFixture); errorCode(err) != CodeUnauthorized {
 		t.Fatalf("native repository ID mismatch error = %v, want %s", err, CodeUnauthorized)
 	}
 }
@@ -169,7 +180,7 @@ func TestResolveRejectsAmbiguousConfiguredPolicy(t *testing.T) {
 	revision.BaseRepository = nil
 	base := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "org", Name: "repo", Branch: "main"}
 	additional := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "org", Name: "repo", Branch: "release"}
-	if _, err := Resolve(*revision, base, []apiv1.RepoRef{additional}); errorCode(err) != CodeUnauthorized {
+	if _, err := Resolve(context.Background(), *revision, base, []apiv1.RepoRef{additional}, lookupFixture); errorCode(err) != CodeUnauthorized {
 		t.Fatalf("ambiguous match error = %v, want %s", err, CodeUnauthorized)
 	}
 }
@@ -186,12 +197,12 @@ func TestResolveAuthorizesOnlyConfiguredADONativeID(t *testing.T) {
 	}
 	baseIdentity := revision.Repository
 	revision.BaseRepository = &baseIdentity
-	got, err := Resolve(revision, configured, nil)
+	got, err := Resolve(context.Background(), revision, configured, nil, lookupFixture)
 	if err != nil || !reflect.DeepEqual(got, configured) {
 		t.Fatalf("configured native ID: got=%+v err=%v", got, err)
 	}
 	revision.Repository.ID = "unverified-id"
-	if _, err := Resolve(revision, configured, nil); errorCode(err) != CodeUnauthorized {
+	if _, err := Resolve(context.Background(), revision, configured, nil, lookupFixture); errorCode(err) != CodeUnauthorized {
 		t.Fatalf("incorrect ID authorized: %v", err)
 	}
 }

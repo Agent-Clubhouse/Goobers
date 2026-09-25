@@ -32,6 +32,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -602,6 +603,9 @@ type Config struct {
 	// each reference-repo clone with that repo's contents:read token (MGV-10);
 	// no push credential is ever provisioned for them.
 	AdditionalRepos []apiv1.RepoRef
+	// ResolveRepositoryIdentity reads metadata using only a configured route.
+	// Required for selected-revision acceptance and recovery; unused otherwise.
+	ResolveRepositoryIdentity workspacerevision.RepositoryLookup
 	// Telemetry optionally spans the run/task/gate walk (issue #126). Nil
 	// disables span emission — every telemetry.Span zero-value method no-ops,
 	// so call sites below need no nil checks beyond the one guard in each
@@ -1802,7 +1806,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 				next, more = nil, false
 			}
 			ws.jr.SetBranchCursors(ws.parallel.cursors())
-			if err := r.restoreSerialParallelRevision(ws, more); err != nil {
+			if err := r.restoreSerialParallelRevision(ctx, ws, more); err != nil {
 				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
 			}
 			if more {
@@ -4671,15 +4675,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// with "human"; a retry within this dispatch uses the class selected by
 		// the prior failure ("infra" or "policy"). A crash-driven continuation
 		// starts "infra" so it stays excluded from conformance (§3.3).
-		var class journal.AttemptClass
-		switch {
-		case attempt == startAttempt && firstClass != "":
-			class = firstClass
-		case attempt == startAttempt && startAttempt > 1:
-			class = journal.AttemptInfra
-		case attempt > startAttempt:
-			class = nextRetryClass
-		}
+		class := taskAttemptClass(attempt, startAttempt, firstClass, nextRetryClass)
 		// A crash-driven continuation is infra-tagged for conformance, but it
 		// occupies the policy slot that the interrupted dispatch did not finish.
 		// Provider infrastructure retries after that do not consume policy.
@@ -4731,6 +4727,11 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			return apiv1.ResultEnvelope{}, nil, errStalledRun
 		}
 		if dispatchErr != nil {
+			if rejection := workspacerevision.FromError(dispatchErr); rejection != nil && rejection.NonRetryable() {
+				err := recordWorkspaceRevisionRejection(jr, t.Name, int(attempt), class, rejection)
+				span.Fail(err)
+				return apiv1.ResultEnvelope{}, nil, err
+			}
 			lastErr = dispatchErr
 			retryLimit := policyMaxAttempts
 			retryCount := policyAttempts
@@ -4799,7 +4800,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		if prepareErr := r.prepareTaskResult(jr, t, &result, upstream, &in, tf, int(attempt), class); prepareErr != nil {
+		if prepareErr := r.prepareTaskResult(ctx, jr, t, &result, upstream, &in, tf, int(attempt), class); prepareErr != nil {
 			span.Fail(prepareErr)
 			return apiv1.ResultEnvelope{}, nil, prepareErr
 		}

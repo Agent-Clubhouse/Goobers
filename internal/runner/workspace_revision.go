@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -20,18 +22,34 @@ func (in *StartInput) pinConfiguredRepository() {
 	in.configuredRepoRef = base.DeepCopy()
 }
 
-func (r *Runner) restoreWorkspaceRevision(in StartInput, events []journal.Event) (StartInput, error) {
+func (r *Runner) resolveWorkspaceRevision(ctx context.Context, revision apiv1.WorkspaceRevision, base apiv1.RepoRef) (apiv1.RepoRef, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	return workspacerevision.Resolve(lookupCtx, revision, base, r.cfg.AdditionalRepos, r.cfg.ResolveRepositoryIdentity)
+}
+
+func recordWorkspaceRevisionRejection(jr executionJournal, stage string, attempt int, class journal.AttemptClass, rejection *workspacerevision.Error) error {
+	if err := jr.Append(journal.Event{
+		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
+		Error: &journal.ErrorDetail{Code: rejection.Code, Message: rejection.Error()},
+	}); err != nil {
+		return fmt.Errorf("runner: journal workspace revision rejection: %w", err)
+	}
+	return rejection
+}
+
+func (r *Runner) restoreWorkspaceRevision(ctx context.Context, in StartInput, events []journal.Event) (StartInput, error) {
 	in.pinConfiguredRepository()
 	revision, err := reconstructWorkspaceRevision(events, in.Machine)
 	if err != nil {
 		return in, err
 	}
-	revision, err = workspacerevision.Accept(in.workspaceRevision, revision, true, true)
+	revision, err = workspacerevision.Accept(in.workspaceRevision, revision)
 	if err != nil {
 		return in, err
 	}
 	if revision != nil {
-		in.RepoRef, err = workspacerevision.Resolve(*revision, in.configuredRepository(), r.cfg.AdditionalRepos)
+		in.RepoRef, err = r.resolveWorkspaceRevision(ctx, *revision, in.configuredRepository())
 		if err != nil {
 			return in, fmt.Errorf("runner: resolve persisted workspace revision repository: %w", err)
 		}
@@ -40,22 +58,22 @@ func (r *Runner) restoreWorkspaceRevision(in StartInput, events []journal.Event)
 	return in, nil
 }
 
-func (r *Runner) restoreResumeWorkspaceRevision(in StartInput, events []journal.Event, parallel *parallelExec, start, branch int) (StartInput, error) {
-	if err := r.validateWorkspaceRevisionHistory(in, events); err != nil {
+func (r *Runner) restoreResumeWorkspaceRevision(ctx context.Context, in StartInput, events []journal.Event, parallel *parallelExec, start, branch int) (StartInput, error) {
+	if err := r.validateWorkspaceRevisionHistory(ctx, in, events); err != nil {
 		return in, err
 	}
 	rootEvents := events
 	if parallel != nil {
 		rootEvents = events[:start]
 	}
-	in, err := r.restoreWorkspaceRevision(in, rootEvents)
+	in, err := r.restoreWorkspaceRevision(ctx, in, rootEvents)
 	if err != nil || parallel == nil || branch == 0 {
 		return in, err
 	}
-	return r.restoreWorkspaceRevision(in, newParallelBranchEventIndex(events, parallel.spec.Name).events(branch))
+	return r.restoreWorkspaceRevision(ctx, in, newParallelBranchEventIndex(events, parallel.spec.Name).events(branch))
 }
 
-func (r *Runner) validateWorkspaceRevisionHistory(in StartInput, events []journal.Event) error {
+func (r *Runner) validateWorkspaceRevisionHistory(ctx context.Context, in StartInput, events []journal.Event) error {
 	for _, event := range events {
 		if event.WorkspaceRevision == nil {
 			continue
@@ -64,14 +82,14 @@ func (r *Runner) validateWorkspaceRevisionHistory(in StartInput, events []journa
 		if err != nil {
 			return err
 		}
-		if _, err := workspacerevision.Resolve(*revision, in.configuredRepository(), r.cfg.AdditionalRepos); err != nil {
+		if _, err := r.resolveWorkspaceRevision(ctx, *revision, in.configuredRepository()); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (r *Runner) restoreSerialParallelRevision(ws *walkState, more bool) error {
+func (r *Runner) restoreSerialParallelRevision(ctx context.Context, ws *walkState, more bool) error {
 	reader, err := journal.OpenRead(ws.jr.Dir())
 	if err != nil {
 		return err
@@ -87,9 +105,9 @@ func (r *Runner) restoreSerialParallelRevision(ws *walkState, more bool) error {
 		if !ok {
 			return fmt.Errorf("runner: missing parallel %q history", ws.parallel.spec.Name)
 		}
-		in, err = r.restoreWorkspaceRevision(in, rootEvents)
+		in, err = r.restoreWorkspaceRevision(ctx, in, rootEvents)
 	} else {
-		in, err = r.restoreWorkspaceRevision(in, events)
+		in, err = r.restoreWorkspaceRevision(ctx, in, events)
 	}
 	if err == nil {
 		ws.in = in

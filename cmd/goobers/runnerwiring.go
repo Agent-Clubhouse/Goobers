@@ -336,10 +336,11 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// The gaggle's read-only reference repos (MGV-11 #1286): the runner
 		// provisions a read-only checkout of each alongside a repo-workspace
 		// stage's primary worktree. Empty for a single-repo gaggle (unchanged).
-		AdditionalRepos:        additionalRepos,
-		GateGooberCapabilities: gateGooberCaps,
-		AgentProvenance:        agentProvenance,
-		BaselineHealth:         baselineHealth,
+		AdditionalRepos:           additionalRepos,
+		ResolveRepositoryIdentity: buildRevisionIdentityResolver(cfg, resolver, sharedReg, stores),
+		GateGooberCapabilities:    gateGooberCaps,
+		AgentProvenance:           agentProvenance,
+		BaselineHealth:            baselineHealth,
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
 		Escalation: buildEscalationNotifier(l, cfg, resolver, sharedReg),

@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -256,7 +257,8 @@ func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 // returns a ResultEnvelope — success, failure, or an infra-shaped failure
 // for a malformed declaration — never an error, because the caller's only
 // job past this point is to surrender whatever envelope comes back.
-func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.ResultEnvelope {
+func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome apiv1.ResultEnvelope) {
+	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	// THE INVARIANT THAT MAKES THE REST OF THIS FUNCTION SAFE, stated because
 	// it is currently enforced by an ABSENCE and an absence is invisible to the
 	// next change: only the agentic branch (runStage) materializes this stage's
@@ -539,7 +541,6 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		if v, ok := outputs[executor.OutputNoWork].(bool); ok && v {
 			result.Status = apiv1.ResultNoWork
 			result.Summary = "stage found no work to do"
-			result.WorkspaceRevision = nil
 		} else {
 			result.Status = apiv1.ResultSuccess
 			result.Summary = "stage completed"
@@ -547,7 +548,6 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		return result
 	}
 
-	result.WorkspaceRevision = nil
 	code, message := "stage_failed", "stage exited with an error"
 	if runErr != nil {
 		message = runErr.Error()

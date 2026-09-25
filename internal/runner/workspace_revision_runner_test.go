@@ -11,7 +11,15 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/providers"
 )
+
+func lookupRunnerRepositoryFixture(_ context.Context, repo apiv1.RepoRef) (providers.RepositoryMetadata, error) {
+	return providers.RepositoryMetadata{ServiceRoot: "https://github.com", Repository: providers.RepositoryRef{
+		Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name, ID: "17",
+		URL: "https://github.com/" + repo.Owner + "/" + repo.Name,
+	}}, nil
+}
 
 func runnerWorkspaceRevision(owner, name, sha string) *apiv1.WorkspaceRevision {
 	return &apiv1.WorkspaceRevision{
