@@ -347,6 +347,7 @@ func storedAttributionObservation(
 		RunID: record.RunID, Workflow: record.Workflow, EffectiveVersion: record.EffectiveVersion,
 		WorkflowDigest: record.WorkflowDigest,
 		Workload:       record.Workload, Status: record.Status, Failure: record.Failure,
+		RunPhase:    row.Phase,
 		Attribution: record.Attribution,
 		Evidence:    append([]creditgraph.AttributionEvidenceLink(nil), record.Evidence...),
 	}

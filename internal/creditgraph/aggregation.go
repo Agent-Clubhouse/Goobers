@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // CohortKey identifies one cohort of repeated attribution evidence.
@@ -59,6 +61,7 @@ type AttributionObservation struct {
 	Environments     []string                  `json:"environments,omitempty"`
 	ObservedAt       time.Time                 `json:"observedAt,omitempty"`
 	Status           RecordStatus              `json:"status,omitempty"`
+	RunPhase         journal.RunPhase          `json:"runPhase,omitempty"`
 	Failure          string                    `json:"failure,omitempty"`
 	Attribution      Attribution               `json:"attribution"`
 	Evidence         []AttributionEvidenceLink `json:"evidence,omitempty"`
