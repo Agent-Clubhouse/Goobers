@@ -222,7 +222,7 @@ func TestGatherPRContextADOParksRepeatedEscalatedDigest(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
-	if _, err := checkoutExistingBranch(wt.Path, prBranch, "test-token"); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), wt.Path, prBranch, tokenGitAuthEnvironment("test-token")); err != nil {
 		t.Fatalf("checkout PR branch: %v", err)
 	}
 	digest, err := diffDigest(wt.Path, baseSHA)

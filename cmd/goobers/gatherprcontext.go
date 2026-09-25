@@ -1030,10 +1030,6 @@ func canonicalPath(p string) string {
 // tautological (it would always match whatever just landed), silently
 // defeating the "don't clobber a concurrent push" guarantee force-with-lease
 // exists for.
-func checkoutExistingBranch(dir, branch, token string) (fetchedSHA string, err error) {
-	return checkoutExistingBranchWithAuth(context.Background(), dir, branch, tokenGitAuthEnvironment(token))
-}
-
 func checkoutExistingBranchWithAuth(ctx context.Context, dir, branch string, auth gitAuthEnvironmentResolver) (fetchedSHA string, err error) {
 	fetchedSHA, err = fetchExistingBranchWithAuth(ctx, dir, branch, auth)
 	if err != nil {

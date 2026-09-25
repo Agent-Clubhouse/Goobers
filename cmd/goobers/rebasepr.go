@@ -709,10 +709,6 @@ func isSiblingOverlapHandoff(handoff postMergeRemediationHandoff) bool {
 // entry to the same existing line-oriented list at an unambiguous ancestor
 // position. Every other conflict is inspected for structural-collision
 // evidence, aborted cleanly, and reported for the existing agentic path.
-func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseConflictLocation, rebaseBaseSHA string, err error) {
-	return attemptRebaseWithAuth(context.Background(), dir, base, tokenGitAuthEnvironment(token))
-}
-
 func attemptRebaseWithAuth(ctx context.Context, dir, base string, auth gitAuthEnvironmentResolver) (conflict bool, locations []rebaseConflictLocation, rebaseBaseSHA string, err error) {
 	url, err := originURL(dir)
 	if err != nil {
@@ -875,10 +871,6 @@ func abortRebaseAfterError(dir string, cause error) error {
 // an explicit refspec), so no refs/remotes/origin/<branch> tracking ref is
 // ever updated for the bare flag to compare against, which misreports every
 // push as "stale info" regardless of whether the remote actually moved.
-func forcePushWithLease(dir, branch, expectedSHA, token string) error {
-	return forcePushWithLeaseWithAuth(context.Background(), dir, branch, expectedSHA, tokenGitAuthEnvironment(token))
-}
-
 func forcePushWithLeaseWithAuth(ctx context.Context, dir, branch, expectedSHA string, auth gitAuthEnvironmentResolver) error {
 	url, err := originURL(dir)
 	if err != nil {

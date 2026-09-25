@@ -196,7 +196,7 @@ func pushRemediatedADOFixture(t *testing.T, recordHeadSHA bool) (root string, st
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
-	if _, err := checkoutExistingBranch(wt.Path, remediationPRBranch, "test-token"); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), wt.Path, remediationPRBranch, tokenGitAuthEnvironment("test-token")); err != nil {
 		t.Fatalf("checkoutExistingBranch: %v", err)
 	}
 	// The rework `implement` committed but never pushed.
