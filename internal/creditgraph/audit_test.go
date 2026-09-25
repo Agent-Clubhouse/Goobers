@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestAuditFaultDomainsClassifiesSharedRuntimeOnce(t *testing.T) {
@@ -214,6 +216,52 @@ func TestAuditFaultDomainsRecoveryRequiresSampleFloorAndAffectedWorkflowCoverage
 	}
 }
 
+func TestAuditFaultDomainsRecoveryRequiresCompleteAttributionAndSuccessfulRun(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	before := auditObservation("before", "one", "v1", "stage", "weak workflow instructions", ClassWeakInstructions, 0.8, "stage")
+	before.ObservedAt = now.Add(-2 * time.Hour)
+	initial := AuditFaultDomains([]AttributionObservation{before}, FaultAuditConfig{Now: now, SampleFloor: 1})
+	id := initial.WorkflowFindings[0].ID
+
+	healthy := auditObservation("after", "one", "v2", "stage", "", ClassUnknown, 0.8, "stage")
+	healthy.ObservedAt = now
+	healthy.Attribution.Causes = nil
+	healthy.Evidence = nil
+	tests := []struct {
+		name   string
+		mutate func(*AttributionObservation)
+	}{
+		{name: "failed attribution", mutate: func(observation *AttributionObservation) {
+			observation.Status = RecordFailed
+		}},
+		{name: "insufficient attribution evidence", mutate: func(observation *AttributionObservation) {
+			observation.Status = RecordInsufficientEvidence
+		}},
+		{name: "failed run", mutate: func(observation *AttributionObservation) {
+			observation.RunPhase = journal.PhaseFailed
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := healthy
+			test.mutate(&invalid)
+			report := AuditFaultDomains([]AttributionObservation{before, invalid}, FaultAuditConfig{
+				Now: now, SampleFloor: 1, FixesAppliedAt: map[string]time.Time{id: now.Add(-time.Hour)},
+			})
+			if got := report.WorkflowFindings[0].Verification; got != VerificationPending {
+				t.Fatalf("verification = %q, want pending for %s", got, test.name)
+			}
+		})
+	}
+
+	recovered := AuditFaultDomains([]AttributionObservation{before, healthy}, FaultAuditConfig{
+		Now: now, SampleFloor: 1, FixesAppliedAt: map[string]time.Time{id: now.Add(-time.Hour)},
+	})
+	if got := recovered.WorkflowFindings[0].Verification; got != VerificationRecovered {
+		t.Fatalf("verification = %q, want recovered for complete attribution from a successful run", got)
+	}
+}
+
 func auditObservation(runID, workflow, version, stage, summary string, class FailureClass, confidence float64, node string) AttributionObservation {
 	path := []string{node}
 	if class == ClassBadToolChoice {
@@ -222,7 +270,7 @@ func auditObservation(runID, workflow, version, stage, summary string, class Fai
 	return AttributionObservation{
 		RunID: runID, Workflow: workflow, WorkflowDigest: version, GooberDigest: "goober",
 		EffectiveVersion: version, Workload: "issue",
-		Status: RecordComplete, Environments: []string{"windows"},
+		Status: RecordComplete, RunPhase: journal.PhaseCompleted, Environments: []string{"windows"},
 		Attribution: Attribution{
 			Contributions: []Contribution{{NodeID: node, Stage: stage, Path: path, Confidence: confidence}},
 			Causes:        []CauseFinding{{NodeID: node, Stage: stage, Class: class, Confidence: confidence, Summary: summary}},

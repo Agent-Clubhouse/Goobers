@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // FaultAuditSchemaVersion identifies the persisted fault-audit report contract.
@@ -378,12 +380,16 @@ func verificationState(finding FaultFinding, signals []faultSignal, all []Attrib
 	for _, observation := range all {
 		repeated := repeatedRuns[observation.RunID]
 		if observation.ObservedAt.IsZero() || !observation.ObservedAt.After(fixedAt) ||
-			(!repeated && len(observation.Attribution.Causes) > 0) ||
 			!matchesVerificationCohort(observation, baseline, finding.Domain, workflowFix, repeated) {
 			continue
 		}
 		if repeated {
 			return VerificationRepeated
+		}
+		if observation.Status != RecordComplete ||
+			observation.RunPhase != journal.PhaseCompleted ||
+			len(observation.Attribution.Causes) > 0 {
+			continue
 		}
 		recoveredRuns[observation.RunID] = true
 		recoveredWorkflows[observation.Workflow] = true

@@ -216,7 +216,7 @@ func writeAuditRecordForWorkflowEnvironment(
 	}
 	runDir := run.Dir()
 	record := creditgraph.RunRecord{
-		Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordFailed,
+		Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordComplete,
 		RunID: runID, Workflow: workflow, EffectiveVersion: version, Workload: "issue",
 	}
 	if summary != "" {
@@ -250,5 +250,8 @@ func writeAuditRecordForWorkflowEnvironment(
 }
 
 func terminalAuditRow(runID string, finishedAt time.Time) readmodel.RunRow {
-	return readmodel.RunRow{RunID: runID, Terminal: true, StartedAt: finishedAt.Add(-time.Minute), FinishedAt: &finishedAt}
+	return readmodel.RunRow{
+		RunID: runID, Phase: journal.PhaseCompleted, Terminal: true,
+		StartedAt: finishedAt.Add(-time.Minute), FinishedAt: &finishedAt,
+	}
 }
