@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,17 +45,53 @@ func StoredAttributionCohorts(
 	return creditgraph.AggregateAttributionEvidence(observations), nil
 }
 
+// StoredFaultAudit classifies enrolled terminal evidence without mutating
+// workflows, issues, or runs.
+func StoredFaultAudit(
+	ctx context.Context,
+	root string,
+	reads readmodel.Reader,
+	query StoredAttributionQuery,
+	config creditgraph.FaultAuditConfig,
+) (creditgraph.FaultAuditReport, error) {
+	maxObservations := config.MaxObservations
+	if maxObservations < 1 {
+		maxObservations = 500
+	}
+	observations, err := storedAttributionObservationsLimit(ctx, root, reads, query, maxObservations)
+	if err != nil {
+		return creditgraph.FaultAuditReport{}, err
+	}
+	if config.Since.IsZero() {
+		config.Since = query.Since
+	}
+	if config.Until.IsZero() {
+		config.Until = query.Until
+	}
+	return creditgraph.AuditFaultDomains(observations, config), nil
+}
+
 func storedAttributionObservations(
 	ctx context.Context,
 	root string,
 	reads readmodel.Reader,
 	query StoredAttributionQuery,
 ) ([]creditgraph.AttributionObservation, error) {
+	return storedAttributionObservationsLimit(ctx, root, reads, query, 0)
+}
+
+func storedAttributionObservationsLimit(
+	ctx context.Context,
+	root string,
+	reads readmodel.Reader,
+	query StoredAttributionQuery,
+	limit int,
+) ([]creditgraph.AttributionObservation, error) {
 	if reads == nil || strings.TrimSpace(root) == "" {
 		return nil, nil
 	}
 	layout := instance.NewLayout(root)
-	rows, err := terminalRuns(ctx, reads, query)
+	rows, err := terminalRuns(ctx, reads, query, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +111,7 @@ func storedAttributionObservations(
 	return observations, nil
 }
 
-func terminalRuns(ctx context.Context, reads readmodel.Reader, query StoredAttributionQuery) ([]readmodel.RunRow, error) {
+func terminalRuns(ctx context.Context, reads readmodel.Reader, query StoredAttributionQuery, limit int) ([]readmodel.RunRow, error) {
 	options := readmodel.ListOptions{
 		Gaggle:   query.Gaggle,
 		Workflow: query.Workflow,
@@ -94,6 +131,9 @@ func terminalRuns(ctx context.Context, reads readmodel.Reader, query StoredAttri
 		for _, row := range page.Runs {
 			if row.Terminal {
 				rows = append(rows, row)
+				if limit > 0 && len(rows) == limit {
+					return rows, nil
+				}
 			}
 		}
 		if !page.HasMore || page.Next.Zero() {
@@ -124,6 +164,11 @@ func storedAttributionObservation(
 		Workload: record.Workload, Status: record.Status, Failure: record.Failure,
 		Attribution: record.Attribution,
 		Evidence:    append([]creditgraph.AttributionEvidenceLink(nil), record.Evidence...),
+	}
+	if row.FinishedAt != nil {
+		observation.ObservedAt = *row.FinishedAt
+	} else {
+		observation.ObservedAt = row.StartedAt
 	}
 	if record.Status == creditgraph.RecordFailed {
 		return observation, true, nil
@@ -170,11 +215,26 @@ func storedAttributionObservation(
 	}
 	attribution := record.Attribution
 	observation.Attribution = attribution
+	for _, node := range graph.Nodes {
+		if node.Kind == creditgraph.KindEnvironment && strings.TrimSpace(node.Label) != "" {
+			observation.Environments = appendUniqueString(observation.Environments, node.Label)
+		}
+	}
+	slices.Sort(observation.Environments)
 	observation.Evidence = append(
 		observation.Evidence,
 		buildAttributionEvidence(layout.Root, runDir, records, graph, attribution)...,
 	)
 	return observation, true, nil
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, current := range values {
+		if current == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 type attributionEventIndex struct {

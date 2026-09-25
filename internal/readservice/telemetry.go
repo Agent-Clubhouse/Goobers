@@ -109,6 +109,7 @@ type TelemetryStatsResult struct {
 	Models             []TelemetryModelStats           `json:"models"`
 	CreditAssignment   []NodeCredit                    `json:"creditAssignment"`
 	AttributionCohorts []creditgraph.CohortAggregation `json:"attributionCohorts,omitempty"`
+	FaultAudit         *creditgraph.FaultAuditReport   `json:"faultAudit,omitempty"`
 	CausalCredit       []readmodel.CausalNodeCredit    `json:"causalCredit"`
 	GraphAnalytics     *readmodel.GraphAnalytics       `json:"graphAnalytics,omitempty"`
 	PromotionSignals   []PromotionSignal               `json:"promotionSignals,omitempty"`
@@ -144,6 +145,7 @@ type TelemetryAttributionRequest struct {
 type TelemetryAttributionResult struct {
 	Records []creditgraph.AttributionObservation `json:"records,omitempty"`
 	Cohorts []creditgraph.CohortAggregation      `json:"cohorts,omitempty"`
+	Audit   creditgraph.FaultAuditReport         `json:"faultAudit"`
 }
 
 // AggregateAttributionObservations exposes the cohort aggregation to status and
@@ -161,6 +163,7 @@ func (s *Telemetry) TelemetryAttribution(ctx context.Context, req TelemetryAttri
 	return TelemetryAttributionResult{
 		Records: req.Observations,
 		Cohorts: AggregateAttributionObservations(req.Observations),
+		Audit:   creditgraph.AuditFaultDomains(req.Observations, creditgraph.FaultAuditConfig{Since: req.Since, Until: req.Until}),
 	}, nil
 }
 
@@ -177,7 +180,13 @@ func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributi
 		if err != nil {
 			return TelemetryAttributionResult{}, err
 		}
-		return TelemetryAttributionResult{Records: records, Cohorts: AggregateAttributionObservations(records)}, nil
+		return TelemetryAttributionResult{
+			Records: records,
+			Cohorts: AggregateAttributionObservations(records),
+			Audit: creditgraph.AuditFaultDomains(records, creditgraph.FaultAuditConfig{
+				Since: req.Since, Until: req.Until,
+			}),
+		}, nil
 	}
 	result, err := s.telemetry.TelemetryAttribution(ctx, req)
 	if err == nil {
@@ -1039,13 +1048,19 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 }
 
 func (s *Local) attachStoredAttributionCohorts(ctx context.Context, req TelemetryStatsRequest, result *TelemetryStatsResult) error {
-	cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
+	query := StoredAttributionQuery{
 		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
-	})
+	}
+	cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, query)
 	if err != nil {
 		return err
 	}
 	result.AttributionCohorts = cohorts
+	audit, err := StoredFaultAudit(ctx, s.sources.Layout.Root, s.sources.ReadModel, query, creditgraph.FaultAuditConfig{})
+	if err != nil {
+		return err
+	}
+	result.FaultAudit = &audit
 	return nil
 }
 
