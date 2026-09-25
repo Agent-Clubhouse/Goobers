@@ -140,7 +140,7 @@ func TestCILinuxJournalOTLPRaceCoverage(t *testing.T) {
 	if step.Run != "go run ./test/ci group unit" || step.Env["GOOBERS_CI_SHARD"] != "${{ matrix.shard }}" {
 		t.Fatal("Linux race job must run the real unit group with its shard matrix")
 	}
-	if !slices.Equal(job.Strategy.Matrix.Shard, []string{"1/3", "2/3", "3/3"}) {
+	if !slices.Equal(job.Strategy.Matrix.Shard, []string{"1/5", "2/5", "3/5", "4/5", "5/5"}) {
 		t.Fatalf("Linux race shard matrix is incomplete: %v", job.Strategy.Matrix.Shard)
 	}
 	env := maps.Clone(workflow.Env)

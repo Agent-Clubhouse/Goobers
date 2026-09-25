@@ -1,5 +1,6 @@
 // Command testtiming captures Go test durations, reports soft timing budgets,
-// and regenerates the unit-shard weight table from a verified CI artifact.
+// and regenerates the unit-shard weight and split tables from verified CI
+// artifacts.
 package main
 
 import (
@@ -90,6 +91,8 @@ func run(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 		return runReport(args[1:], stdout, stderr)
 	case "weights":
 		return runWeights(args[1:], stdout, stderr)
+	case "splits":
+		return runSplits(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "testtiming: unknown command %q\n", args[0])
 		printUsage(stderr)
@@ -102,6 +105,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming capture -job JOB -out FILE -- [go test flags and packages]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming report -budget FILE -current FILE [-previous FILE] [-summary FILE]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming weights -timing FILE -artifact-metadata FILE -job-metadata FILE -out FILE [-minimum-seconds N]")
+	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming splits -timing FILE [-timing FILE...] -run-metadata FILE -split PKG=PIECES [-split ...] -out FILE")
 }
 
 func runCapture(args []string, stdout, stderr io.Writer, now func() time.Time) int {

@@ -248,6 +248,7 @@
       ".github/workflows/ci.yml#unit-macos/Set up Go:github-actions",
       ".github/workflows/ci.yml#unit/Checkout:github-actions",
       ".github/workflows/ci.yml#unit/Set up Go:github-actions",
+      ".github/workflows/ci.yml#unit/Upload race shard timing:github-actions",
       ".github/workflows/ci.yml#vulnerability-scan/Checkout:github-actions",
       ".github/workflows/ci.yml#vulnerability-scan/Set up Go:github-actions",
       ".github/workflows/ci.yml#windows-smoke/Checkout:github-actions",
