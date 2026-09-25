@@ -195,10 +195,19 @@ func groupChecksOnly(all []check, group string) []check {
 //     keeps the "unit" timing job and its budget report.
 //   - GOOBERS_CI_TEST_TIMEOUT raises the per-package timeout for slower
 //     platforms without weakening the suite or changing its package set.
+//   - GOOBERS_CI_COMPILE_ONLY=1 builds, vets and links every unit test binary
+//     but runs none of them (`go test -exec /usr/bin/true`; Linux and macOS only).
+//     The race-build-cache-warm job uses it to publish a Go build cache holding
+//     exactly what the race shards compile: every other flag is the shards'
+//     own, and build flags are what the cache keys on. It is never a gate —
+//     /usr/bin/true "passes" every package.
 func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 	raceEnabled := getenv("GOOBERS_CI_RACE") != "0"
-	coverageEnabled := getenv("GOOBERS_CI_COVERAGE") != "0"
-	shard := strings.TrimSpace(getenv("GOOBERS_CI_SHARD"))
+	unit := unitTestToggles{
+		coverage:    getenv("GOOBERS_CI_COVERAGE") != "0",
+		compileOnly: getenv("GOOBERS_CI_COMPILE_ONLY") == "1",
+		shard:       strings.TrimSpace(getenv("GOOBERS_CI_SHARD")),
+	}
 	testTimeout := strings.TrimSpace(getenv("GOOBERS_CI_TEST_TIMEOUT"))
 	// GOOBERS_LINT_GOOS cross-lints for another platform (e.g. darwin) from a
 	// Linux runner. It sets GOOS for the golangci-lint *subprocess* only — never
@@ -213,12 +222,8 @@ func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 		if !raceEnabled {
 			current.args = withoutArg(current.args, "-race")
 		}
-		if !coverageEnabled && current.label == "test" {
-			current.args = withoutArg(current.args, "-covermode=atomic")
-			current.args = withoutArg(current.args, "-coverprofile=coverage.out")
-		}
-		if shard != "" && current.label == "test" {
-			current.args = shardUnitArgs(current.args, shard)
+		if current.label == "test" {
+			current.args = unit.apply(current.args)
 		}
 		if testTimeout != "" && (current.label == "test" || current.label == "shipped-workflows") {
 			current.args = replaceFlagValue(current.args, "-timeout", testTimeout)
@@ -272,6 +277,51 @@ func shardUnitArgs(args []string, shard string) []string {
 			result = append(result, shardTimingJob)
 		default:
 			result = append(result, arg)
+		}
+	}
+	return result
+}
+
+// unitTestToggles are the runtime toggles that reshape only the unit suite's
+// hermetic invocation (the check labelled "test").
+type unitTestToggles struct {
+	coverage    bool
+	compileOnly bool
+	shard       string
+}
+
+func (u unitTestToggles) apply(args []string) []string {
+	if !u.coverage {
+		args = withoutArg(args, "-covermode=atomic")
+		args = withoutArg(args, "-coverprofile=coverage.out")
+	}
+	if u.shard != "" {
+		args = shardUnitArgs(args, u.shard)
+	}
+	if u.compileOnly {
+		args = compileOnlyUnitArgs(args)
+	}
+	return args
+}
+
+// compileOnlyExec is the `go test -exec` program of a compile-only run: it
+// ignores the test binary it is handed and exits 0, so every package is built,
+// vetted and linked exactly as a real run would do it, and nothing executes.
+// -exec is not an input to any compile or vet action ID, so the cache this
+// fills is the one a real run with the same flags reads.
+const compileOnlyExec = "/usr/bin/true"
+
+// compileOnlyUnitArgs adds `-exec /usr/bin/true` as the first go-test argument, just
+// after the `--` that ends the hermetic runner's own flags: go test treats
+// everything after the first package pattern as test-binary arguments.
+func compileOnlyUnitArgs(args []string) []string {
+	result := make([]string, 0, len(args)+2)
+	separated := false
+	for _, arg := range args {
+		result = append(result, arg)
+		if arg == "--" && !separated {
+			separated = true
+			result = append(result, "-exec", compileOnlyExec)
 		}
 	}
 	return result

@@ -484,11 +484,14 @@ func TestCIWorkflowCancelsPullRequestRunOnFirstFailure(t *testing.T) {
 		}
 	}
 	for _, name := range workflowJobNames(workflow) {
-		if strings.HasPrefix(name, "cancel-on-") {
+		// race-build-cache-prune deletes superseded cache entries on main and is
+		// held to the same no-repository-code rule by
+		// TestRaceBuildCachePruneRunsNoRepositoryCode.
+		if strings.HasPrefix(name, "cancel-on-") || name == raceCachePruneJob {
 			continue
 		}
 		if strings.Contains(workflowJob(workflow, name), "\n      actions: write") {
-			t.Errorf("job %q holds actions: write; only the cancellers may", name)
+			t.Errorf("job %q holds actions: write; only the cancellers and %s may", name, raceCachePruneJob)
 		}
 	}
 
@@ -589,11 +592,13 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	// derives the push lane from the workflow itself, so a new job that lacks
 	// the `!= 'push'` guard fails here until it is either guarded or watched.
 	//
-	// dependency-cache-warm and escalate-main-failure are exempt by name:
-	// the former is push-only, continue-on-error, and gates nothing; the latter
-	// is the escalation itself.
+	// The cache warmers (and the race cache's pruner) and escalate-main-failure
+	// are exempt by name: the former are push-only, continue-on-error, and gate
+	// nothing; the latter is the escalation itself.
 	exemptFromEscalation := map[string]bool{
 		"dependency-cache-warm": true,
+		raceCacheWarmJob:        true,
+		raceCachePruneJob:       true,
 		"escalate-main-failure": true,
 	}
 	for _, job := range workflowJobNames(workflow) {

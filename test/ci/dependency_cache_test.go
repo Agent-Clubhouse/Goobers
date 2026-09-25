@@ -47,6 +47,7 @@ type ciJob struct {
 	Needs           []string          `yaml:"needs"`
 	Steps           []ciStep          `yaml:"steps"`
 	Env             map[string]string `yaml:"env"`
+	Permissions     map[string]string `yaml:"permissions"`
 	Strategy        struct {
 		Matrix struct {
 			Shard []string `yaml:"shard"`
