@@ -48,7 +48,8 @@ type ciJob struct {
 	Steps           []ciStep          `yaml:"steps"`
 	Env             map[string]string `yaml:"env"`
 	Strategy        struct {
-		Matrix struct {
+		FailFast string `yaml:"fail-fast"`
+		Matrix   struct {
 			Shard []string `yaml:"shard"`
 		} `yaml:"matrix"`
 	} `yaml:"strategy"`
