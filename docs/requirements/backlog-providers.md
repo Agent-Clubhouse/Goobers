@@ -85,6 +85,17 @@ same abstraction, whose shape is unchanged.
 - **BL-033 (MUST):** *(V1)* The ADO provider MUST reach parity (work items + PRs +
   claiming markers) behind the same abstraction, with no change to workflow or goober
   definitions.
+  - *ADO label case:* work-item tags and PR labels share one project-wide namespace
+    that matches case-insensitively, and ADO returns the casing of whoever wrote a
+    tag first. The ADO provider therefore compares tags and PR labels ignoring
+    case: `requireLabels`, label predicates, the claim label and PR-label reads
+    match a tag first written as, say, `GOOBERS:READY`. What it reads is folded to
+    the spelling the workflow asked for, and any other `goobers:` or `goobers/`
+    label to lower case; other labels keep ADO's casing. Adding a label already
+    present in another casing is a no-op.
+  - *ADO partial label add:* ADO adds one PR label per request. When some labels
+    in a multi-label add fail, the ones that applied are kept (not rolled back)
+    and the error names each label that failed.
 
 ### Triggering
 

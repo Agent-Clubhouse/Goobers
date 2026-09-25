@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -152,8 +153,13 @@ func (p *ADOProvider) UpdatePullRequestThreadComment(ctx context.Context, repo R
 // hazard-free carrier for the goobers:needs-remediation selector signal.
 // ListPullRequests already reads PR labels, so writing them here drives the
 // existing selection tiers unmodified, without any wit/workitems write (the
-// PR-as-work-item wrong-object hazard). ADO's label endpoint takes one label
-// per POST, so this issues one call per name.
+// PR-as-work-item wrong-object hazard).
+//
+// PR labels share ADO's case-insensitive tag namespace, so a label already on
+// the PR in any casing is skipped. ADO's label endpoint takes one label per
+// POST, so this issues one call per remaining name. A failed POST does not
+// stop the rest and nothing is rolled back: the labels that applied stay, and
+// the returned *PullRequestLabelAddError names each label that failed.
 func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryRef, pullID string, names []string) error {
 	if err := requireRepo(repo); err != nil {
 		return err
@@ -161,29 +167,65 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 	if pullID == "" {
 		return errPullIDRequired
 	}
-	for _, name := range names {
-		if strings.TrimSpace(name) == "" {
+	pending := adoPendingPullRequestLabels(names)
+	if len(pending) == 0 {
+		return nil
+	}
+	existing, err := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
+	if err != nil {
+		return err
+	}
+	// The PR-labels endpoint is published only under the -preview version;
+	// a plain "7.1" is rejected (VssInvalidPreviewVersionException).
+	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
+	if err != nil {
+		return err
+	}
+	var result PullRequestLabelAddError
+	for _, name := range pending {
+		if _, present := existing[strings.ToLower(name)]; present {
 			continue
 		}
-		// The PR-labels endpoint is published only under the -preview version;
-		// a plain "7.1" is rejected (VssInvalidPreviewVersionException).
-		endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
-		if err != nil {
-			return err
-		}
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]interface{}{"name": name}, nil); err != nil {
-			return err
+			result.Failed = append(result.Failed, name)
+			result.errs = append(result.errs, err)
+			continue
 		}
+		result.Applied = append(result.Applied, name)
 		p.recordMutation(ctx, "pr", pullID, "label", repo)
+	}
+	if len(result.Failed) > 0 {
+		return &result
 	}
 	return nil
 }
 
-// pullRequestLabelsWithIDs fetches a PR's labels as a lowercased-name -> id
-// map. ADO returns labels only from this dedicated sub-endpoint for a single
-// PR (the PR object and $expand=labels both omit them — verified live); the
-// id is needed to delete a label whose name contains a colon.
-func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo RepositoryRef, pullID string) (map[string]string, error) {
+// adoPendingPullRequestLabels drops blank names and case-insensitive
+// duplicates from an AddPullRequestLabels request, keeping first-seen order.
+func adoPendingPullRequestLabels(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" || adoHasLabel(out, name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// adoPullRequestLabel is one label on a pull request: its id and the name in
+// the casing ADO returned (the first writer's).
+type adoPullRequestLabel struct {
+	ID   string
+	Name string
+}
+
+// pullRequestLabelsWithIDs fetches a PR's labels keyed by lower-cased name,
+// since ADO matches label names case-insensitively. ADO returns labels only
+// from this dedicated sub-endpoint for a single PR (the PR object and
+// $expand=labels both omit them — verified live); the id is needed to delete
+// a label whose name contains a colon.
+func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo RepositoryRef, pullID string) (map[string]adoPullRequestLabel, error) {
 	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
 	if err != nil {
 		return nil, err
@@ -197,24 +239,28 @@ func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo Reposit
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
 		return nil, err
 	}
-	m := make(map[string]string, len(out.Value))
+	m := make(map[string]adoPullRequestLabel, len(out.Value))
 	for _, l := range out.Value {
-		m[strings.ToLower(l.Name)] = l.ID
+		m[strings.ToLower(l.Name)] = adoPullRequestLabel{ID: l.ID, Name: l.Name}
 	}
 	return m, nil
 }
 
 // PullRequestLabelNames returns a PR's active label names via the dedicated
-// labels sub-endpoint (the single-PR GET omits them — verified live).
+// labels sub-endpoint (the single-PR GET omits them — verified live), sorted.
+// A label keeps the casing ADO returned, except that a Goobers-namespace
+// label is folded to its canonical lower case so callers' exact compares
+// match whoever wrote it first (see ado_labelcase.go).
 func (p *ADOProvider) PullRequestLabelNames(ctx context.Context, repo RepositoryRef, pullID string) ([]string, error) {
 	labels, err := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
 	if err != nil {
 		return nil, err
 	}
 	names := make([]string, 0, len(labels))
-	for name := range labels {
-		names = append(names, name)
+	for _, label := range labels {
+		names = append(names, canonicalADOLabel(label.Name, nil))
 	}
+	sort.Strings(names)
 	return names, nil
 }
 
@@ -241,12 +287,12 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 	if err != nil {
 		return err
 	}
-	id, present := labels[strings.ToLower(name)]
+	label, present := labels[strings.ToLower(name)]
 	if !present {
 		// Already absent — benign, mirror GitHub's 404-is-not-an-error removal.
 		return nil
 	}
-	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels", id)
+	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels", label.ID)
 	if err != nil {
 		return err
 	}

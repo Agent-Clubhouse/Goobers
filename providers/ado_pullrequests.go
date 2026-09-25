@@ -156,13 +156,15 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 	return nil
 }
 
-// adoLabelNames maps ADO PR labels to their bare names.
+// adoLabelNames maps ADO PR labels to their bare names, with Goobers-namespace
+// labels folded to their canonical lower case (ADO keeps the first writer's
+// casing; see ado_labelcase.go).
 func adoLabelNames(labels []adoLabel) []string {
 	names := make([]string, 0, len(labels))
 	for _, l := range labels {
 		names = append(names, l.Name)
 	}
-	return names
+	return canonicalADOLabels(names, nil)
 }
 
 // PollPullRequest reports an Azure DevOps pull request's review decision and
