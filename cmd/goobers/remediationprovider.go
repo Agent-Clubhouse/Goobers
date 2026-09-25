@@ -91,3 +91,17 @@ func remediationStageProviderWithRecorder(root string, repo providers.Repository
 		return nil, fmt.Errorf("pr-remediation does not support repository provider %q", repo.Provider)
 	}
 }
+
+// remediationStageSurface builds a pr-remediation stage's provider through a
+// narrow surface T rather than the broad remediationProvider factory above,
+// so a stage that only names the calls it actually makes routes through
+// every registered provider — including ADO — rather than the GitHub/Gitea-
+// only default-error dispatch. newProviderForStageSurface's own type
+// assertion still fails loudly if a routed backend does not implement T, so
+// this stays as safe as the broad factory for the surfaces GitHub and Gitea
+// already satisfy. ADO-N14, N20 and N22 all reuse this helper for their own
+// narrow surfaces (PR-poll-only, review-thread-only, CI-evidence-only).
+func remediationStageSurface[T any](root string, repo providers.RepositoryRef, token string, opts ...stageProviderOption) (T, error) {
+	allOpts := append([]stageProviderOption{withStageProviderToken(token)}, opts...)
+	return newProviderForStageSurface[T](root, repo, false, allOpts...)
+}

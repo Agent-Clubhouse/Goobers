@@ -144,17 +144,42 @@ func TestGatherReviewThreadsDispatchesFromCommand(t *testing.T) {
 	})
 }
 
+// TestPRClaimDispatchesFromCommand is pr-claim's non-GitHub dispatch
+// evidence. pr-claim (ADO-N14, #5655) resolves its provider through the
+// narrow prClaimProvider surface (remediationStageSurface), not the broad
+// GitHub/Gitea-only remediationStageProvider factory, so it dispatches to
+// ADO rather than Gitea — the probe is at newADOProviderForStage, the same
+// seam assertADOBacklogStageDispatch and the other ADO dispatch probes use.
 func TestPRClaimDispatchesFromCommand(t *testing.T) {
-	assertRemediationStageDispatch(t, "pr-claim", func(t *testing.T) string {
-		const runID = "dispatch-pr-claim"
-		root := initDemo(t)
-		t.Setenv("GOOBERS_RUN_ID", runID)
-		t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-		if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
-			t.Fatalf("seed PR claim: %v", err)
+	const runID = "dispatch-pr-claim"
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Chdir(t.TempDir())
+	if _, err := claimPullRequestInOrder(root, repo, []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
+		t.Fatalf("seed PR claim: %v", err)
+	}
+
+	original := newADOProviderForStage
+	called := false
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		called = true
+		if routed.Provider != providers.ProviderADO {
+			t.Fatalf("provider = %q, want ado", routed.Provider)
 		}
-		return root
-	})
+		return nil, errors.New(dispatchProbeError)
+	}
+	t.Cleanup(func() { newADOProviderForStage = original })
+
+	code, _, stderr := runArgs(t, "pr-claim", root)
+	if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
+		t.Fatalf("code = %d, called = %v, stderr = %q; want ADO dispatch probe failure", code, called, stderr)
+	}
 }
 
 func TestPushRemediatedDispatchesFromCommand(t *testing.T) {

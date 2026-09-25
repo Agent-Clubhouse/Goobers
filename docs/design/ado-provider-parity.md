@@ -282,10 +282,14 @@ sibling fan-out and unpark machinery is gated off — each is a PR-number-as-wor
 
 ## 7. pr-remediation on ADO
 
-The remediation lane reuses the thread + label transport. Each remediation stage has an ADO
-branch that constructs the ADO provider and calls the native thread / label / single-PR
+The remediation lane reuses the thread + label transport. Most remediation stages have an
+ADO branch that constructs the ADO provider and calls the native thread / label / single-PR
 primitives directly (the GitHub/Gitea `remediationProvider` interface stays those two
-providers; ADO is a separate code path routed by provider kind):
+providers; ADO is a separate code path routed by provider kind). `pr-claim` (ADO-N14,
+#5655) is the exception: its only need is a single-PR poll, so it is built through a
+provider-neutral narrow surface (`prClaimProvider`, one `GetPullRequest` method) over the
+shared stage-provider seam, and ADO satisfies that surface through the same
+`GetPullRequest` every other provider does — no hand-written ADO branch required:
 
 - **`gather-pr-context`** recovers the verdict and finding-set by reading the PR threads
   back (`ListPullRequestThreadComments`), trusting the head/base because `apply-verdict`
@@ -300,8 +304,11 @@ providers; ADO is a separate code path routed by provider kind):
   (remove `goobers:merge-escalated`); an operator clearing `goobers:merge-escalated` is an
   explicit request for another review pass.
 - **`rebase-pr`** clears `goobers:needs-remediation` on a clean rebase.
-- **`pr-claim`** verifies the run's claimed PR is still open via `GetPullRequest`, releasing
-  the claim (and returning a terminal no-work result) if it has merged or closed.
+- **`pr-claim`** verifies the run's claimed PR is still open via `GetPullRequest` (a thin
+  adapter over `PollPullRequest`), releasing the claim (and returning a terminal no-work
+  result) if it has merged or closed. On ADO the claim also never reads as open on an empty
+  source head: `GetPullRequest`'s poll-observed `HeadSHA` must be non-empty, so the guard
+  fails closed rather than proceeding against an unverified source.
 
 The sticky remediation-state comment (carrying the pre-remediation head SHA) is a PR thread
 updated in place via the composite comment id.
