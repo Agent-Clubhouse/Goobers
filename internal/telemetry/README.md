@@ -72,7 +72,6 @@ pipeline is configured against:
 | `goobers.escalations` | counter (int64) | `{escalation}` | cumulative, monotonic | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind` |
 | `goobers.journal.redactions_total` | counter (int64) | `{event}` | cumulative, monotonic | `layer` (`registry`/`pattern`) |
 | `goobers.journal.appends_dropped` | counter (int64) | `{event}` | cumulative, monotonic | none |
-| `goobers.journal.exports_dropped` | counter (int64) | `{event}` | cumulative, monotonic | `goobers.journal.drop_cause` (`invalid_metadata`/`record_too_large`/`lock_contention`/`queue_full`/`stopping`/`shutdown`) |
 | `goobers.work.active` | up-down counter (int64) | `{span}` | cumulative, non-monotonic | `goobers.workflow`, `goobers.span.kind` (`run`/`task`/`gate`/`scheduler`) |
 | `goobers.stage.metric.value` | histogram (float64) | `1` | cumulative | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.attempt.kind`, `goobers.metric.name`, `goobers.metric.unit` |
 | `goobers.worktree.disk.usage` | gauge (int64) | `By` | current value | `goobers.storage.operation` |
@@ -83,10 +82,6 @@ pipeline is configured against:
 | `goobers.recovery.restore.failures` | counter (int64) | `{failure}` | cumulative, monotonic | `goobers.recovery.reason` (`archive_invalid`/`base_missing`/`import_failed`) |
 | `goobers.storage.free_bytes` | gauge (int64) | `By` | current value | none |
 | `goobers.storage.health.tier_changes` | counter (int64) | `{transition}` | cumulative, monotonic | `goobers.storage.tier` (`healthy`/`warning`/`admission-stopped`/`measurement-unavailable`) |
-
-The journal export drop metric and its bounded cause values remain in the
-contract, but no journal exporter is attached after the journal OTLP Logs
-revert. It produces no samples until a separate uploader restores that path.
 
 The collector-compatibility fixtures generated from the real OTLP metric
 reader/export path live at `internal/telemetry/testdata/metric_compatibility_fixtures.json`.

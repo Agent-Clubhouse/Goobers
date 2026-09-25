@@ -46,12 +46,6 @@ const (
 	// MetricJournalAppendsDropped counts explicitly best-effort instance-log
 	// appends that failed and therefore left no authoritative journal record.
 	MetricJournalAppendsDropped = "goobers.journal.appends_dropped"
-	// MetricJournalExportsDropped counts committed journal events that were
-	// never handed to the OTLP Logs exporter. The journal file remains
-	// authoritative either way — this measures the lossy export boundary, not
-	// data loss — and is labelled by MetricAttrJournalDropCause so a slow
-	// collector can be told apart from an oversized record (#5573).
-	MetricJournalExportsDropped = "goobers.journal.exports_dropped"
 	// MetricRecoverySnapshotFormat counts recovery snapshot bundle captures
 	// by the format selected (see internal/recovery's archiveFormatFull and
 	// archiveFormatDelta), so operators can watch the delta/full mix (#5028).
@@ -96,13 +90,6 @@ const (
 	// tier a transition entered: "healthy", "warning", "admission-stopped",
 	// or "measurement-unavailable" (localscheduler.StorageTier.String()).
 	MetricAttrStorageTier = "goobers.storage.tier"
-	// MetricAttrJournalDropCause labels MetricJournalExportsDropped with why a
-	// committed event was not exported. The value set is closed and defined by
-	// journalDropCause.String(): "invalid_metadata", "record_too_large",
-	// "lock_contention", "queue_full", "stopping", "shutdown". Bounded and
-	// non-sensitive, so unlike a path or an error string it belongs in a label.
-	MetricAttrJournalDropCause = "goobers.journal.drop_cause"
-
 	metricNameAttribute = "goobers.metric.name"
 
 	// metricExportInterval is the periodic reader's collect-and-push period.
@@ -156,7 +143,6 @@ type instruments struct {
 	escalations              apimetric.Int64Counter
 	redactions               apimetric.Int64Counter
 	journalDrops             apimetric.Int64Counter
-	journalExportDrops       apimetric.Int64Counter
 	activeWork               apimetric.Int64UpDownCounter
 	stageMetrics             apimetric.Float64Histogram
 	worktreeBytes            apimetric.Int64Gauge
@@ -198,8 +184,6 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	inst.redactions, err = newInt64Counter(meter, MetricRedactionsTotal)
 	record(err)
 	inst.journalDrops, err = newInt64Counter(meter, MetricJournalAppendsDropped)
-	record(err)
-	inst.journalExportDrops, err = newInt64Counter(meter, MetricJournalExportsDropped)
 	record(err)
 	inst.activeWork, err = newInt64UpDownCounter(meter, MetricWorkActive)
 	record(err)

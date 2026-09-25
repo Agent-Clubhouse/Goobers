@@ -170,15 +170,6 @@ var firstClassMetricRegistry = []metricContract{
 		Lifecycle:   stableContractLifecycle(),
 	},
 	{
-		Name:              MetricJournalExportsDropped,
-		Kind:              metricKindCounter,
-		NumberType:        metricNumberTypeInt64,
-		Unit:              "{event}",
-		Description:       "Committed journal events never handed to the OTLP Logs exporter, by cause. The journal file stays authoritative.",
-		AllowedDimensions: []string{MetricAttrJournalDropCause},
-		Lifecycle:         stableContractLifecycle(),
-	},
-	{
 		Name:              MetricWorkActive,
 		Kind:              metricKindUpDownCounter,
 		NumberType:        metricNumberTypeInt64,
