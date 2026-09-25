@@ -44,7 +44,15 @@ func (f *fakeADOWorkItemCloser) UpdateWorkItem(_ context.Context, req providers.
 
 func (f *fakeADOWorkItemCloser) UpdateWorkItemStatus(_ context.Context, req providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error) {
 	f.statusReqs = append(f.statusReqs, req)
-	return providers.WorkItem{}, nil
+	f.item.State = "closed"
+	labels := make([]string, 0, len(f.item.Labels)+1)
+	for _, label := range f.item.Labels {
+		if !strings.HasPrefix(label, "goobers/status:") {
+			labels = append(labels, label)
+		}
+	}
+	f.item.Labels = append(labels, "goobers/status:"+string(req.Status))
+	return f.item, nil
 }
 
 func (f *fakeADOWorkItemCloser) AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error) {
