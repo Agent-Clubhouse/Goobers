@@ -242,6 +242,41 @@ type AttributionCohort struct {
 	CounterEvidence      []AttributionEvidenceLink `json:"counterEvidence,omitempty"`
 }
 
+// FaultFinding is one evidence-backed failure signature and its likely owner.
+type FaultFinding struct {
+	ID                 string                    `json:"id"`
+	Signature          string                    `json:"signature"`
+	Domain             string                    `json:"domain"`
+	Confidence         float64                   `json:"confidence"`
+	RunIDs             []string                  `json:"runIds"`
+	Workflows          []string                  `json:"workflows"`
+	EffectiveVersions  []string                  `json:"effectiveVersions"`
+	Environments       []string                  `json:"environments,omitempty"`
+	NodePaths          [][]string                `json:"nodePaths,omitempty"`
+	Evidence           []AttributionEvidenceLink `json:"evidence,omitempty"`
+	CounterEvidence    []string                  `json:"counterEvidence,omitempty"`
+	Rationale          string                    `json:"rationale"`
+	AlternativeDomains []string                  `json:"alternativeDomains"`
+	RecommendedOwner   string                    `json:"recommendedOwner"`
+	RecommendedAction  string                    `json:"recommendedAction"`
+	Verification       string                    `json:"verification"`
+}
+
+// FaultAuditReport groups fault findings by ownership boundary.
+type FaultAuditReport struct {
+	Schema              string         `json:"schema"`
+	Mode                string         `json:"mode"`
+	Since               time.Time      `json:"since"`
+	Until               time.Time      `json:"until"`
+	ObservationsScanned int            `json:"observationsScanned"`
+	ProductFindings     []FaultFinding `json:"productReliabilityFindings,omitempty"`
+	ExternalFindings    []FaultFinding `json:"externalFindings,omitempty"`
+	WorkflowFindings    []FaultFinding `json:"workflowFindings,omitempty"`
+	UnknownFindings     []FaultFinding `json:"mixedOrUnknownFindings,omitempty"`
+	Suppressed          int            `json:"suppressed"`
+	Truncated           bool           `json:"truncated,omitempty"`
+}
+
 // DefectAggregateResponse is the plane's answer.
 //
 // Truncated is loud on purpose: a bounded answer that silently dropped
@@ -255,6 +290,7 @@ type DefectAggregateResponse struct {
 	Findings            []Finding           `json:"findings"`
 	CausalCredit        []CausalNodeCredit  `json:"causalCredit,omitempty"`
 	AttributionCohorts  []AttributionCohort `json:"attributionCohorts,omitempty"`
+	FaultAudit          *FaultAuditReport   `json:"faultAudit,omitempty"`
 	PromotionSignals    []PromotionSignal   `json:"promotionSignals,omitempty"`
 	PromotionCandidates []PromotionSignal   `json:"promotionCandidates"`
 	NoWork              bool                `json:"noWork,omitempty"`
