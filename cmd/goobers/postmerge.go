@@ -444,7 +444,7 @@ func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, b
 		return err
 	}
 	statusLabel := "goobers/status:" + string(providers.WorkItemStatusDone)
-	if !strings.EqualFold(item.State, "closed") || !hasAnyLabel(item.Labels, []string{statusLabel}) {
+	if !strings.EqualFold(item.State, "closed") || !hasExclusiveStatusLabel(item.Labels, statusLabel) {
 		updated, err := closer.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
 			Repository: backlogRepo,
 			ID:         id,
@@ -481,6 +481,20 @@ func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, b
 		RemoveLabels: removeLabels,
 	})
 	return err
+}
+
+func hasExclusiveStatusLabel(labels []string, want string) bool {
+	found := false
+	for _, label := range labels {
+		if !strings.HasPrefix(label, "goobers/status:") {
+			continue
+		}
+		if label != want {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 func performPostMerge(ctx context.Context, provider, issuesProvider remediationProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
