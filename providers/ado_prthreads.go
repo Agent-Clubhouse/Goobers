@@ -37,10 +37,11 @@ const adoPRThreadCommentType = "text"
 // The returned Comment.ID is the composite "<pullID>/<threadId>/<commentId>" so
 // UpdatePullRequestThreadComment can address the exact comment later with no
 // extra state — the ADO update endpoint needs all three, unlike GitHub's
-// repo-wide comment ids. The author is mapped from the thread comment's
-// displayName (ADO renders thread authors as displayName), matching what
-// AuthenticatedLogin returns so a trusted-author filter recognizes a thread we
-// posted.
+// repo-wide comment ids. Comment.Author carries the thread comment's
+// displayName for display (ADO renders thread authors as displayName), and
+// Comment.AuthorID carries its author.id; a trusted-author check compares
+// AuthorID with AuthenticatedIdentity().ID, because display names are not
+// unique.
 func (p *ADOProvider) PostPullRequestThreadComment(ctx context.Context, repo RepositoryRef, pullID, body string) (Comment, error) {
 	return p.postAttributedPullRequestThreadComment(ctx, repo, pullID, body, "pull-request-comment")
 }
@@ -264,34 +265,97 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 	return nil
 }
 
+// ADOIdentity is the Azure DevOps identity the provider's credential
+// authenticates as. ID is the stable key: it is connectionData's
+// authenticatedUser.id, the same GUID ADO records as a PR's createdBy.id (and,
+// pending live confirmation, a thread comment's author.id — see
+// docs/design/ado-provider-parity.md §4). Display names are not unique, so
+// every "is this me" check compares ID; DisplayName is for rendering and
+// UniqueName (the account UPN) for operator-facing reports.
+type ADOIdentity struct {
+	ID          string `json:"id"`
+	UniqueName  string `json:"uniqueName,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+// AuthenticatedIdentity returns the identity the provider's credential
+// authenticates as, read from the Azure DevOps connectionData endpoint. The
+// read is cached on the provider instance — one credential per instance — so
+// repeated "is this me" checks in one stage cost one round-trip. A failed read
+// is not cached. It errors when connectionData carries no authenticatedUser.id,
+// because an identity without its stable key cannot anchor a comparison.
+func (p *ADOProvider) AuthenticatedIdentity(ctx context.Context) (ADOIdentity, error) {
+	data, err := p.connectionData(ctx)
+	if err != nil {
+		return ADOIdentity{}, err
+	}
+	id := strings.TrimSpace(data.AuthenticatedUser.ID)
+	if id == "" {
+		return ADOIdentity{}, fmt.Errorf("authenticated ADO identity has no id")
+	}
+	return ADOIdentity{
+		ID:          id,
+		UniqueName:  strings.TrimSpace(data.AuthenticatedUser.Properties.Account.Value),
+		DisplayName: data.displayName(),
+	}, nil
+}
+
 // AuthenticatedLogin returns the display name of the identity the provider's
 // credential authenticates as, via the Azure DevOps connectionData endpoint. It
 // matches the GitHub AuthenticatedLogin signature so stage code can call it
 // uniformly. The display name (not the UPN) is returned deliberately: ADO PR
-// *thread* comment authors render as displayName, so this is what a trusted-
-// author filter must compare a posted thread against. (PR reviewers/authors,
-// by contrast, are keyed on UPN — a known ADO identity inconsistency.)
+// *thread* comment authors render as displayName. Display names are not
+// unique, so a check that must tell this identity apart from another compares
+// AuthenticatedIdentity().ID with Comment.AuthorID instead.
 func (p *ADOProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
-	endpoint, err := joinURL(p.BaseURL, p.Organization, "_apis", "connectionData")
+	data, err := p.connectionData(ctx)
 	if err != nil {
 		return "", err
 	}
-	endpoint, err = addQuery(endpoint, url.Values{"api-version": []string{"7.1-preview"}})
-	if err != nil {
-		return "", err
-	}
-	var data adoConnectionData
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &data); err != nil {
-		return "", err
-	}
-	login := strings.TrimSpace(data.AuthenticatedUser.ProviderDisplayName)
-	if login == "" {
-		login = strings.TrimSpace(data.AuthenticatedUser.CustomDisplayName)
-	}
+	login := data.displayName()
 	if login == "" {
 		return "", fmt.Errorf("authenticated ADO identity has no display name")
 	}
 	return login, nil
+}
+
+// connectionData reads the organization's connectionData once per provider
+// instance and caches the decoded response; a failed read is retried on the
+// next call. The lock covers only the cache check and store, never the HTTP
+// round-trip, so concurrent callers do not queue behind one slow request; two
+// callers racing on a cold cache may each read, and the identity they store is
+// the same.
+func (p *ADOProvider) connectionData(ctx context.Context) (adoConnectionData, error) {
+	if cached, ok := p.cachedConnectionData(); ok {
+		return cached, nil
+	}
+	endpoint, err := joinURL(p.BaseURL, p.Organization, "_apis", "connectionData")
+	if err != nil {
+		return adoConnectionData{}, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"api-version": []string{"7.1-preview"}})
+	if err != nil {
+		return adoConnectionData{}, err
+	}
+	var data adoConnectionData
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &data); err != nil {
+		return adoConnectionData{}, err
+	}
+	p.identityMu.Lock()
+	defer p.identityMu.Unlock()
+	if p.identity == nil {
+		p.identity = &data
+	}
+	return *p.identity, nil
+}
+
+func (p *ADOProvider) cachedConnectionData() (adoConnectionData, bool) {
+	p.identityMu.Lock()
+	defer p.identityMu.Unlock()
+	if p.identity == nil {
+		return adoConnectionData{}, false
+	}
+	return *p.identity, true
 }
 
 // GetPullRequest returns a single Azure DevOps pull request as a
@@ -352,6 +416,7 @@ func mapADOPullRequestThreadComment(pullID string, threadID int, comment adoPull
 	return Comment{
 		ID:         formatADOThreadCommentID(pullID, threadID, comment.ID),
 		Author:     author,
+		AuthorID:   strings.TrimSpace(comment.Author.ID),
 		AuthorType: "user",
 		Body:       comment.Content,
 		CreatedAt:  createdAt,
@@ -402,11 +467,26 @@ type adoPullRequestThreadComment struct {
 }
 
 // adoConnectionData is the minimal shape of the ADO connectionData response —
-// the authenticated identity's id and display names.
+// the authenticated identity's id, display names and account (UPN). The UPN
+// rides in properties.Account.$value because connectionData has no uniqueName.
 type adoConnectionData struct {
 	AuthenticatedUser struct {
 		ID                  string `json:"id"`
 		ProviderDisplayName string `json:"providerDisplayName"`
 		CustomDisplayName   string `json:"customDisplayName"`
+		Properties          struct {
+			Account struct {
+				Value string `json:"$value"`
+			} `json:"Account"`
+		} `json:"properties"`
 	} `json:"authenticatedUser"`
+}
+
+// displayName is the identity's provider display name, falling back to its
+// custom display name.
+func (d adoConnectionData) displayName() string {
+	if name := strings.TrimSpace(d.AuthenticatedUser.ProviderDisplayName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(d.AuthenticatedUser.CustomDisplayName)
 }

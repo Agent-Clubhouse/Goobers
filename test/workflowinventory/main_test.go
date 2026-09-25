@@ -59,6 +59,44 @@ func TestClassifyMarksDispatchOnlyWorkflowWithCommentedScheduleDormant(t *testin
 	}
 }
 
+// TestClassifyWorkflowMarksProvisioningGatedWorkflowDormant covers the second
+// dormant form (#5727): live triggers, but every run skips until provisioned.
+func TestClassifyWorkflowMarksProvisioningGatedWorkflowDormant(t *testing.T) {
+	t.Parallel()
+	const gated = `name: Gated
+# workflow-inventory: dormant-until-provisioned
+on:
+  schedule:
+    - cron: "43 8 * * 2"
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+jobs: {}
+`
+	triggers, err := enabledTriggers([]byte(gated))
+	if err != nil {
+		t.Fatalf("enabledTriggers: %v", err)
+	}
+	if got := classifyWorkflow(triggers, []byte(gated)); got != dormantStatus {
+		t.Fatalf("classifyWorkflow = %q, want %q", got, dormantStatus)
+	}
+	// The marker must be a top-level comment of its own; a mention inside
+	// another comment or an indented line does not make a workflow dormant.
+	for _, source := range []string{
+		strings.Replace(gated, "# workflow-inventory: dormant-until-provisioned", "# see workflow-inventory: dormant-until-provisioned", 1),
+		strings.Replace(gated, "# workflow-inventory: dormant-until-provisioned", "  # workflow-inventory: dormant-until-provisioned", 1),
+		activeWorkflow,
+	} {
+		triggers, err := enabledTriggers([]byte(source))
+		if err != nil {
+			t.Fatalf("enabledTriggers: %v", err)
+		}
+		if got := classifyWorkflow(triggers, []byte(source)); got != activeStatus {
+			t.Errorf("classifyWorkflow = %q, want %q for:\n%s", got, activeStatus, source)
+		}
+	}
+}
+
 func TestEnabledTriggersReadsSequenceAndScalarForms(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

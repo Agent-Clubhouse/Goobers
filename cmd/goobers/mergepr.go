@@ -538,11 +538,12 @@ type adoRecoveredVerdict struct {
 }
 
 // adoThreadVerdictReader is the ADO read surface the pre-lock verdict recovery
-// needs: the authenticated identity to trust a thread against, and the PR's
-// thread comments (the ADO analog of GitHub's PR comments — apply-verdict posts
-// the verdict there, ListComments would address work-item comments instead).
+// needs: the authenticated identity to trust a thread against (by GUID,
+// ADO-N5), and the PR's thread comments (the ADO analog of GitHub's PR
+// comments — apply-verdict posts the verdict there, ListComments would address
+// work-item comments instead).
 type adoThreadVerdictReader interface {
-	AuthenticatedLogin(ctx context.Context) (string, error)
+	adoIdentityReader
 	ListPullRequestThreadComments(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.Comment, error)
 }
 
@@ -567,7 +568,7 @@ func recoverADOPassVerdict(
 	if !ok {
 		return nil
 	}
-	author, err := reader.AuthenticatedLogin(ctx)
+	self, err := reader.AuthenticatedIdentity(ctx)
 	if err != nil {
 		pf(stderr, "warning: resolve merge-review verdict author for pr #%s: %v\n", pullID, err)
 		return nil
@@ -579,7 +580,9 @@ func recoverADOPassVerdict(
 	}
 	var recovered *adoRecoveredVerdict
 	for _, comment := range comments {
-		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, author) {
+		// Trust is by identity GUID: another identity sharing the display
+		// name must not be able to supply the verdict (ADO-N5).
+		if !adoCommentAuthoredBy(comment, self) || !isMergeReviewStatusComment(comment.Body) {
 			continue
 		}
 		candidate, ok := parseVerdictComment(comment.Body)
@@ -588,7 +591,7 @@ func recoverADOPassVerdict(
 		}
 		// Comments arrive oldest first, so the last trusted pass wins — the
 		// verdict from the most recent review of this pull request.
-		recovered = &adoRecoveredVerdict{Verdict: candidate, Author: author}
+		recovered = &adoRecoveredVerdict{Verdict: candidate, Author: self.DisplayName}
 	}
 	return recovered
 }

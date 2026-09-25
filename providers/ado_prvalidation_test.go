@@ -219,6 +219,34 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 	}
 }
 
+// TestADOProviderPollPullRequestURLFallsBackToRepositoryIdentity is ADO-N39:
+// a PR detail response without _links.web.href must not surface the raw
+// _apis endpoint as the PR's URL. That opaque URL 404s in a browser and, more
+// importantly, run.go's repository match can't tell it apart from any other
+// repository's PR, so a wrong-repository PR could pass as the configured
+// target. The provider must instead build the browser (_git/.../pullrequest)
+// URL from the repository/project identity the server did return.
+func TestADOProviderPollPullRequestURLFallsBackToRepositoryIdentity(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", prDetailHandler(t, nil))
+	mux.HandleFunc("/org/project/_apis/policy/evaluations", policyEvaluationsHandler(t, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		PullID:     "42",
+	})
+	if err != nil {
+		t.Fatalf("PollPullRequest returned error: %v", err)
+	}
+	want := server.URL + "/org/project/_git/repo/pullrequest/42"
+	if result.URL != want {
+		t.Fatalf("URL = %q, want %q", result.URL, want)
+	}
+}
+
 func TestADOProviderPollPullRequestProviderError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", prDetailHandler(t, nil))

@@ -82,10 +82,11 @@ var knownGroups = map[string]bool{
 	groupShipped:   true,
 }
 
-// uncoveredBuildTags names the four build tags with no coverage in any other
-// CI or Makefile command. Vet compiles their files without running the tagged
-// live-network, Docker, or authoring-capture tests (#4855).
-const uncoveredBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture"
+// uncoveredBuildTags names the build tags with no coverage in any other CI or
+// Makefile command. Vet compiles their files without running the tagged
+// live-network, Docker, or authoring-capture tests (#4855). liveadowrite is the
+// live ADO write leg (ADO-N16); its own workflow only runs once provisioned.
+const uncoveredBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture,liveadowrite"
 
 func versionLDFlags(metadata buildMetadata) string {
 	return fmt.Sprintf(

@@ -85,10 +85,28 @@ repo-wide comment ids), so encoding them into the opaque id lets a later update 
 exact comment with no extra state.
 
 Thread authors render as **displayName**, and `AuthenticatedLogin` (below) returns
-displayName, so a trusted-author filter recognizes a thread the runner itself posted. (PR
-*authors* and *reviewers*, by contrast, key on UPN — a known ADO identity inconsistency;
-the verdict/finding transport deliberately lives on the thread surface, where displayName
-is consistent end to end.)
+displayName for display. (PR *authors* and *reviewers*, by contrast, key on UPN — a known
+ADO identity inconsistency.) Display names are not unique, so the stable identity key is
+the GUID: `ListPullRequestThreadComments` maps each comment's `author.id` into
+`Comment.AuthorID`, and the "is this me" checks on threads compare it with the
+authenticated identity's id (ADO-N5, below).
+
+**Identity (ADO-N5).** `AuthenticatedIdentity` returns `{id, uniqueName, displayName}` from
+`connectionData`: `id` is `authenticatedUser.id` — the same GUID ADO records as a PR's
+`createdBy.id` — and `uniqueName` (the UPN) comes from
+`authenticatedUser.properties.Account.$value`, because `connectionData` has no
+`uniqueName`. The read is cached per provider instance, which is per credential, and backs
+`AuthenticatedLogin` too. gather-pr-context's trusted-verdict filter, merge-pr's pre-lock
+verdict recovery and the post-merge cost summary (its receipts and summary marker on PR
+threads) trust a thread only when its `author.id` equals that id; a comment with no author
+id falls back to the display-name comparison.
+
+That a thread comment's `author.id` equals `authenticatedUser.id` is **pending live
+confirmation**: the live probe (ado-parity-dsl-2-0.md §5) confirmed the equivalence for
+`AssignedTo.id`, `createdBy.id` and `autoCompleteSetBy.id`, not for thread comment authors.
+If the two ever differed, no own thread would be recognized — verdict attribution and
+verdict recovery would be dropped and the cost summary would be re-posted — so the ADO-N5
+live leg must post a thread comment and compare its `author.id` with `connectionData`.
 
 `AuthenticatedLogin` is implemented via the ADO `connectionData` endpoint (ADO had no
 authenticated-identity read before). It underpins the trusted-comment filter the
@@ -301,9 +319,11 @@ updated in place via the composite comment id.
   gate wins), branch cleanup skipped.
 - **advisoryMode misfire.** The ADO run-branch namespace must be present in the gaggle's
   head prefixes, or a goobers-authored ADO PR is misclassified and never merges (§6.1).
-- **Identity strings differ by surface.** The thread/verdict transport uses **displayName**
-  end to end (`AuthenticatedLogin` returns displayName; thread authors render as
-  displayName). PR authors/reviewers key on **UPN**, and assignee comparison uses
+- **Identity strings differ by surface.** The stable key is the identity GUID
+  (`connectionData` `authenticatedUser.id`, §4.1): thread "is this me" checks compare
+  `Comment.AuthorID` with it, because display names are not unique. `AuthenticatedLogin`
+  still returns **displayName** for display and for surfaces with no GUID. PR
+  authors/reviewers key on **UPN**, and assignee comparison uses
   displayName — so assignee-scoped PR filters and native-review vote paths are intentionally
   not used on the ADO merge path.
 - **Completion authority.** `ado:pr:complete` is required for `merge-pr` and `queue-watch`
