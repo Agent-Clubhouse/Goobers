@@ -16,6 +16,7 @@ import (
 )
 
 func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
+	const selfIdentityID = "00000000-0000-0000-0000-0000000005e1"
 	var comments []map[string]any
 	tags := "goobers:approved; goobers:ready"
 	revision := 1
@@ -27,6 +28,22 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 	mux.HandleFunc("/org/backlog/_apis/wit/workitemtypes/Issue/states", func(w http.ResponseWriter, r *http.Request) {
 		writeADOJSON(t, w, map[string]any{"value": []map[string]string{{"name": "Active", "category": "InProgress"}}})
 	})
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, r *http.Request) {
+		writeADOJSON(t, w, map[string]any{"authenticatedUser": map[string]any{
+			"id": selfIdentityID, "providerDisplayName": "Goobers Bot",
+		}})
+	})
+	mux.HandleFunc("/org/backlog/_apis/wit/workitemsbatch", func(w http.ResponseWriter, r *http.Request) {
+		writeADOJSON(t, w, map[string]any{"value": []map[string]any{{
+			"id": 42, "rev": revision,
+			"fields": map[string]any{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "ADO ready item",
+				"System.State":        "Active",
+				"System.Tags":         tags,
+			},
+		}}})
+	})
 	mux.HandleFunc("/org/backlog/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -37,8 +54,9 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 				t.Fatalf("decode comment: %v", err)
 			}
 			comments = append(comments, map[string]any{
-				"id":   len(comments) + 1,
-				"text": body["text"],
+				"id":        len(comments) + 1,
+				"text":      body["text"],
+				"createdBy": map[string]string{"id": selfIdentityID, "displayName": "Goobers Bot"},
 			})
 			writeADOJSON(t, w, comments[len(comments)-1])
 		default:
