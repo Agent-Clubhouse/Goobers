@@ -92,6 +92,26 @@ func buildADOProviderForOpenPR(root string, routed providers.RepositoryRef) (*pr
 	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }
 
+var newADOProviderForWorkItemWrite = buildADOProviderForWorkItemWrite
+
+func buildADOProviderForWorkItemWrite(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	repo, err := adoRepoRefForStage(root, routed)
+	if err != nil {
+		return nil, err
+	}
+	kind := instance.ADOAuthPAT
+	if repo.Auth != nil {
+		kind = repo.Auth.Kind
+	}
+	if kind == instance.ADOAuthPAT {
+		if _, err := providerToken(capability.ADOWorkItemsWrite); err != nil {
+			return nil, err
+		}
+		repo.Token = instance.TokenRef{Env: executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite))}
+	}
+	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
+}
+
 // backlogRepoRefForStage resolves the RepositoryRef the work-item (backlog)
 // operations of a provider-chain stage must address. On Azure DevOps the code
 // repository a run targets (gaggle.spec.project — where branches and PRs land,

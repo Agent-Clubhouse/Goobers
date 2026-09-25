@@ -39,7 +39,7 @@ func TestRequiredCapabilities(t *testing.T) {
 		{
 			name:    "provider-neutral pull request open",
 			command: "open-pr",
-			want:    []capability.Capability{capability.ProviderPRWrite},
+			want:    []capability.Capability{capability.ProviderPRWrite, capability.ADOWorkItemsWrite},
 		},
 		{
 			name:    "read-only backlog query",
