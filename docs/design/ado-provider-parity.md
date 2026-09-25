@@ -277,7 +277,11 @@ resolved.** The work-item id comes from the PR body's closing reference — *not
 ledger, whose lease was released back at `issue-close-out`; by the time post-merge runs the
 body reference is the durable id. The stage then calls `UpdateWorkItemStatus(done)` against
 the backlog project, which sets the Completed-category `System.State` and swaps the
-`goobers/status:` tag. This is what stops an ADO work item parking at in-review forever. All
+`goobers/status:` tag. The close is idempotent over server transitions (ADO-N28): an item
+Azure Boards already moved to a Completed or Removed state is left there, an item at Resolved
+stops there (with a one-time note) when its type has no Completed state or the server refuses
+Resolved→Completed, and a `test /rev` conflict re-reads and retries.
+This is what stops an ADO work item parking at in-review forever. All
 sibling fan-out and unpark machinery is gated off — each is a PR-number-as-work-item write.
 
 ## 7. pr-remediation on ADO

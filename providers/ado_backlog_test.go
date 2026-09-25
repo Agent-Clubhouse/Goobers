@@ -3,10 +3,12 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -246,5 +248,587 @@ func TestADOFindWorkItemsByMarkerPagesByID(t *testing.T) {
 	}
 	if !strings.HasSuffix(queries[1], "AND [System.Id] > 2 ORDER BY [System.Id] ASC") {
 		t.Fatalf("second query = %q, want ID cursor after first page", queries[1])
+	}
+}
+
+// adoTestStates registers a per-type work-item state table under
+// /org/project/_apis/wit/workitemtypes/<type>/states, so a test can give
+// different types different Completed/Resolved shapes.
+func adoTestStates(t *testing.T, mux *http.ServeMux, byType map[string][]map[string]string) {
+	t.Helper()
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		itemType := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitemtypes/"), "/states")
+		states, ok := byType[itemType]
+		if !ok {
+			t.Fatalf("unexpected work item type in states request: %q", itemType)
+		}
+		writeJSON(t, w, map[string]interface{}{"value": states})
+	})
+}
+
+// TestADOCloseWorkItemResolvedAdvancesToCompleted pins the middle step: a
+// Bug sitting in Resolved (as transitionWorkItems or a "Fixes #" commit link
+// would leave it) advances to the type's Completed state.
+func TestADOCloseWorkItemResolvedAdvancesToCompleted(t *testing.T) {
+	var patchBody []adoPatchOperation
+	mux := http.NewServeMux()
+	adoTestStates(t, mux, map[string][]map[string]string{
+		"Bug": {
+			{"name": "New", "category": "Proposed"},
+			{"name": "Active", "category": "InProgress"},
+			{"name": "Resolved", "category": "Resolved"},
+			{"name": "Closed", "category": "Completed"},
+		},
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/7", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, map[string]interface{}{
+				"id": 7, "rev": 2, "url": "item-url",
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Bug", "System.Title": "Crash",
+					"System.State": "Resolved", "System.Tags": "goobers/status:in-progress",
+				},
+			})
+		case http.MethodPatch:
+			decodeJSON(t, r, &patchBody)
+			writeJSON(t, w, map[string]interface{}{
+				"id": 7, "rev": 3, "url": "item-url",
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Bug", "System.Title": "Crash",
+					"System.State": "Closed", "System.Tags": "goobers/status:done",
+				},
+			})
+		default:
+			t.Fatalf("unexpected work item method %s", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	item, err := provider.UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"}, ID: "7", Status: WorkItemStatusDone,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkItemStatus: %v", err)
+	}
+	if item.State != "closed" {
+		t.Fatalf("state = %q, want closed", item.State)
+	}
+	found := false
+	for _, op := range patchBody {
+		if op.Path == "/fields/System.State" && op.Value == "Closed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("patch body = %#v, want a System.State=Closed op", patchBody)
+	}
+}
+
+// TestADOCloseWorkItemRetriesRevisionConflict pins the 412 handling: a
+// revision conflict on the first close PATCH (attempting the System.State
+// change) re-reads and retries; the re-read shows the item already Done —
+// closed by a racing external write — so the retried PATCH carries no
+// System.State op and succeeds.
+func TestADOCloseWorkItemRetriesRevisionConflict(t *testing.T) {
+	var stateOpsByAttempt []int
+	mux := http.NewServeMux()
+	adoTestStates(t, mux, map[string][]map[string]string{
+		"Issue": {
+			{"name": "New", "category": "Proposed"},
+			{"name": "Active", "category": "InProgress"},
+			{"name": "Resolved", "category": "Resolved"},
+			{"name": "Done", "category": "Completed"},
+		},
+	})
+	var gets, patches int
+	mux.HandleFunc("/org/project/_apis/wit/workitems/11", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			gets++
+			state := "Active"
+			if gets > 1 {
+				// The first PATCH's conflict means someone else closed it.
+				state = "Done"
+			}
+			writeJSON(t, w, map[string]interface{}{
+				"id": 11, "rev": gets, "url": "item-url",
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Issue", "System.Title": "Race",
+					"System.State": state, "System.Tags": "goobers/status:claimed",
+				},
+			})
+		case http.MethodPatch:
+			patches++
+			var body []adoPatchOperation
+			decodeJSON(t, r, &body)
+			stateOps := 0
+			for _, op := range body {
+				if op.Path == "/fields/System.State" {
+					stateOps++
+				}
+			}
+			stateOpsByAttempt = append(stateOpsByAttempt, stateOps)
+			if patches == 1 {
+				w.WriteHeader(http.StatusPreconditionFailed)
+				_, _ = w.Write([]byte(`{"message":"rev mismatch"}`))
+				return
+			}
+			writeJSON(t, w, map[string]interface{}{
+				"id": 11, "rev": gets + 1, "url": "item-url",
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Issue", "System.Title": "Race",
+					"System.State": "Done", "System.Tags": "goobers/status:done",
+				},
+			})
+		default:
+			t.Fatalf("unexpected work item method %s", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	item, err := provider.UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"}, ID: "11", Status: WorkItemStatusDone,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkItemStatus: %v", err)
+	}
+	if item.State != "closed" {
+		t.Fatalf("state = %q, want closed", item.State)
+	}
+	if patches != 2 {
+		t.Fatalf("patch attempts = %d, want exactly two (conflict, then a clean retry)", patches)
+	}
+	if len(stateOpsByAttempt) != 2 || stateOpsByAttempt[0] != 1 || stateOpsByAttempt[1] != 0 {
+		t.Fatalf("System.State ops per attempt = %#v, want [1 0]: the retry finds it already Done", stateOpsByAttempt)
+	}
+}
+
+// TestADOCloseWorkItemBoundedOnRepeatedConflict pins the failure mode: a
+// close that conflicts on every retry attempt returns a bounded error
+// instead of looping forever.
+func TestADOCloseWorkItemBoundedOnRepeatedConflict(t *testing.T) {
+	mux := http.NewServeMux()
+	adoTestStates(t, mux, map[string][]map[string]string{
+		"Issue": {
+			{"name": "New", "category": "Proposed"},
+			{"name": "Active", "category": "InProgress"},
+			{"name": "Resolved", "category": "Resolved"},
+			{"name": "Done", "category": "Completed"},
+		},
+	})
+	var patches int
+	mux.HandleFunc("/org/project/_apis/wit/workitems/13", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, map[string]interface{}{
+				"id": 13, "rev": 1, "url": "item-url",
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Issue", "System.Title": "Stuck",
+					"System.State": "Active", "System.Tags": "goobers/status:claimed",
+				},
+			})
+		case http.MethodPatch:
+			patches++
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = w.Write([]byte(`{"message":"rev mismatch"}`))
+		default:
+			t.Fatalf("unexpected work item method %s", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"}, ID: "13", Status: WorkItemStatusDone,
+	})
+	if err == nil {
+		t.Fatalf("UpdateWorkItemStatus: want a bounded error, got success")
+	}
+	if patches != adoClaimRetries {
+		t.Fatalf("patch attempts = %d, want %d (bounded)", patches, adoClaimRetries)
+	}
+}
+
+// adoCloseFake serves one work item, its type's state table, and its
+// comment thread for the close tests. reads[i] is the (state, tags) the
+// i-th GET returns (the last entry repeats) and the i-th read carries rev
+// i+1; patchStatus[i] is the HTTP status of the i-th PATCH (missing or 0 =
+// success, echoing the patched state and tags).
+type adoCloseFake struct {
+	t           *testing.T
+	id          string
+	itemType    string
+	states      []map[string]string
+	reads       [][2]string
+	patchStatus []int
+	patchBody   string
+	commentFail bool
+
+	mu       sync.Mutex
+	gets     int
+	patches  [][]adoPatchOperation
+	comments []string
+}
+
+func (f *adoCloseFake) server() *httptest.Server {
+	mux := http.NewServeMux()
+	adoTestStates(f.t, mux, map[string][]map[string]string{f.itemType: f.states})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/"+f.id, f.serveItem)
+	mux.HandleFunc("/org/project/_apis/wit/workItems/"+f.id+"/comments", f.serveComments)
+	return httptest.NewServer(mux)
+}
+
+func (f *adoCloseFake) item(rev int, state, tags string) map[string]interface{} {
+	id, _ := strconv.Atoi(f.id)
+	return map[string]interface{}{
+		"id": id, "rev": rev, "url": "item-url",
+		"fields": map[string]interface{}{
+			"System.WorkItemType": f.itemType, "System.Title": "Item",
+			"System.State": state, "System.Tags": tags,
+		},
+	}
+}
+
+func (f *adoCloseFake) serveItem(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch r.Method {
+	case http.MethodGet:
+		read := f.reads[min(f.gets, len(f.reads)-1)]
+		f.gets++
+		writeJSON(f.t, w, f.item(f.gets, read[0], read[1]))
+	case http.MethodPatch:
+		var body []adoPatchOperation
+		decodeJSON(f.t, r, &body)
+		f.patches = append(f.patches, body)
+		if n := len(f.patches) - 1; n < len(f.patchStatus) && f.patchStatus[n] != 0 {
+			w.WriteHeader(f.patchStatus[n])
+			_, _ = w.Write([]byte(f.patchBody))
+			return
+		}
+		read := f.reads[min(f.gets, len(f.reads))-1]
+		state, tags := read[0], read[1]
+		if v, ok := adoPatchValue(body, "/fields/System.State"); ok {
+			state = v
+		}
+		if v, ok := adoPatchValue(body, "/fields/System.Tags"); ok {
+			tags = v
+		}
+		writeJSON(f.t, w, f.item(f.gets+1, state, tags))
+	default:
+		f.t.Errorf("unexpected work item method %s", r.Method)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (f *adoCloseFake) serveComments(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch r.Method {
+	case http.MethodGet:
+		page := make([]map[string]interface{}, 0, len(f.comments))
+		for i, text := range f.comments {
+			page = append(page, map[string]interface{}{"id": i + 1, "text": text})
+		}
+		writeJSON(f.t, w, map[string]interface{}{"comments": page})
+	case http.MethodPost:
+		if f.commentFail {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"comment rejected"}`))
+			return
+		}
+		var body struct {
+			Text string `json:"text"`
+		}
+		decodeJSON(f.t, r, &body)
+		f.comments = append(f.comments, body.Text)
+		writeJSON(f.t, w, map[string]interface{}{"id": len(f.comments), "text": body.Text})
+	default:
+		f.t.Errorf("unexpected comments method %s", r.Method)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// adoPatchValue returns the string value of the op at path, if present.
+func adoPatchValue(ops []adoPatchOperation, path string) (string, bool) {
+	for _, op := range ops {
+		if op.Path == path {
+			value, _ := op.Value.(string)
+			return value, true
+		}
+	}
+	return "", false
+}
+
+var adoTestIssueStates = []map[string]string{
+	{"name": "New", "category": "Proposed"},
+	{"name": "Active", "category": "InProgress"},
+	{"name": "Resolved", "category": "Resolved"},
+	{"name": "Done", "category": "Completed"},
+	{"name": "Removed", "category": "Removed"},
+}
+
+func newADOCloseTestProvider(server *httptest.Server) *ADOProvider {
+	return NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+}
+
+var adoCloseTestRepo = RepositoryRef{Name: "repo", Project: "project"}
+
+// TestADOCloseWorkItemAlreadyClosedAfterConflictIsNoOp pins the
+// idempotent-close short circuit: the close PATCH conflicts because the
+// server moved the item on its own, the re-read shows a Removed-category
+// state, and the retry sends only the status tag with no System.State op.
+func TestADOCloseWorkItemAlreadyClosedAfterConflictIsNoOp(t *testing.T) {
+	fake := &adoCloseFake{
+		t: t, id: "42", itemType: "Issue", states: adoTestIssueStates,
+		reads: [][2]string{
+			{"Active", "goobers/status:claimed"},
+			{"Removed", "goobers/status:claimed"},
+		},
+		patchStatus: []int{http.StatusPreconditionFailed},
+		patchBody:   `{"message":"rev mismatch"}`,
+	}
+	server := fake.server()
+	defer server.Close()
+
+	item, err := newADOCloseTestProvider(server).UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: adoCloseTestRepo, ID: "42", Status: WorkItemStatusDone,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkItemStatus: %v", err)
+	}
+	if item.State != "closed" {
+		t.Fatalf("state = %q, want closed", item.State)
+	}
+	if len(fake.patches) != 2 {
+		t.Fatalf("patches = %d, want 2 (conflict, then retry)", len(fake.patches))
+	}
+	if _, ok := adoPatchValue(fake.patches[1], "/fields/System.State"); ok {
+		t.Fatalf("retry patch = %#v, want no System.State op for an already-Removed item", fake.patches[1])
+	}
+	if tags, _ := adoPatchValue(fake.patches[1], "/fields/System.Tags"); tags != "goobers/status:done" {
+		t.Fatalf("retry tags = %q, want the done status tag", tags)
+	}
+}
+
+// TestADOUpdateWorkItemCloseRetriesWithRecomputedFields pins the
+// UpdateWorkItem(State: closed) path through the close loop: the first
+// PATCH (title, labels, state) conflicts, the re-read shows the item Done
+// with a tag someone else added, and the retry carries the title and tags
+// recomputed from that re-read but no System.State op.
+func TestADOUpdateWorkItemCloseRetriesWithRecomputedFields(t *testing.T) {
+	fake := &adoCloseFake{
+		t: t, id: "21", itemType: "Issue", states: adoTestIssueStates,
+		reads: [][2]string{
+			{"Active", "goobers/status:claimed"},
+			{"Done", "goobers/status:claimed; external"},
+		},
+		patchStatus: []int{http.StatusPreconditionFailed},
+		patchBody:   `{"message":"rev mismatch"}`,
+	}
+	server := fake.server()
+	defer server.Close()
+
+	title := "Renamed"
+	item, err := newADOCloseTestProvider(server).UpdateWorkItem(context.Background(), UpdateWorkItemRequest{
+		Repository: adoCloseTestRepo, ID: "21", State: "closed", Title: &title,
+		AddLabels: []string{"shipped"}, RemoveLabels: []string{"goobers/status:claimed"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkItem: %v", err)
+	}
+	if item.State != "closed" {
+		t.Fatalf("state = %q, want closed", item.State)
+	}
+	if fake.gets != 2 {
+		t.Fatalf("item reads = %d, want 2 (the caller's read reused, then one re-read)", fake.gets)
+	}
+	if len(fake.patches) != 2 {
+		t.Fatalf("patches = %d, want 2 (conflict, then retry)", len(fake.patches))
+	}
+	if state, ok := adoPatchValue(fake.patches[0], "/fields/System.State"); !ok || state != "Done" {
+		t.Fatalf("first patch = %#v, want System.State=Done", fake.patches[0])
+	}
+	retry := fake.patches[1]
+	if _, ok := adoPatchValue(retry, "/fields/System.State"); ok {
+		t.Fatalf("retry patch = %#v, want no System.State op once the re-read shows Done", retry)
+	}
+	if got, _ := adoPatchValue(retry, "/fields/System.Title"); got != title {
+		t.Fatalf("retry title = %q, want %q", got, title)
+	}
+	if tags, _ := adoPatchValue(retry, "/fields/System.Tags"); tags != "external; shipped" {
+		t.Fatalf("retry tags = %q, want tags recomputed from the re-read", tags)
+	}
+	if rev := retry[0]; rev.Path != "/rev" || rev.Value != float64(2) {
+		t.Fatalf("retry guard = %#v, want test /rev against the re-read rev 2", rev)
+	}
+}
+
+// TestADOUpdateWorkItemCloseHonoursExpectedRevision pins that a close
+// pinned to the caller's revision does not retry over a newer edit: the
+// conflict surfaces as RevisionConflictError after one PATCH.
+func TestADOUpdateWorkItemCloseHonoursExpectedRevision(t *testing.T) {
+	fake := &adoCloseFake{
+		t: t, id: "23", itemType: "Issue", states: adoTestIssueStates,
+		reads:       [][2]string{{"Active", "goobers/status:claimed"}},
+		patchStatus: []int{http.StatusPreconditionFailed},
+		patchBody:   `{"message":"rev mismatch"}`,
+	}
+	server := fake.server()
+	defer server.Close()
+
+	_, err := newADOCloseTestProvider(server).UpdateWorkItem(context.Background(), UpdateWorkItemRequest{
+		Repository: adoCloseTestRepo, ID: "23", State: "closed", ExpectedRevision: "1",
+	})
+	var conflict *RevisionConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error = %v, want RevisionConflictError", err)
+	}
+	if conflict.Expected != "1" || conflict.Actual != "2" {
+		t.Fatalf("conflict = %#v, want expected 1, actual 2", conflict)
+	}
+	if len(fake.patches) != 1 {
+		t.Fatalf("patches = %d, want 1 (no retry over the caller's revision)", len(fake.patches))
+	}
+}
+
+// TestADOCloseWorkItemStopsAtResolvedWithoutCompletedState pins the
+// no-Completed-state case: an item at Resolved on a type without a
+// Completed state is success, left at Resolved, and the note explaining the
+// stop is posted once however often the close repeats.
+func TestADOCloseWorkItemStopsAtResolvedWithoutCompletedState(t *testing.T) {
+	fake := &adoCloseFake{
+		t: t, id: "9", itemType: "Feedback Request",
+		states: []map[string]string{
+			{"name": "New", "category": "Proposed"},
+			{"name": "Active", "category": "InProgress"},
+			{"name": "Resolved", "category": "Resolved"},
+		},
+		reads: [][2]string{{"Resolved", "goobers/status:in-progress"}},
+	}
+	server := fake.server()
+	defer server.Close()
+	provider := newADOCloseTestProvider(server)
+
+	for range 2 {
+		item, err := provider.UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+			Repository: adoCloseTestRepo, ID: "9", Status: WorkItemStatusDone,
+		})
+		if err != nil {
+			t.Fatalf("UpdateWorkItemStatus: %v", err)
+		}
+		if item.State != "open" {
+			t.Fatalf("state = %q, want open (still Resolved)", item.State)
+		}
+	}
+	for _, patch := range fake.patches {
+		if _, ok := adoPatchValue(patch, "/fields/System.State"); ok {
+			t.Fatalf("patch = %#v, want no System.State op", patch)
+		}
+	}
+	if len(fake.comments) != 1 || !strings.Contains(fake.comments[0], adoResolvedStopMarker) {
+		t.Fatalf("comments = %#v, want exactly one noting the Resolved stop", fake.comments)
+	}
+}
+
+// TestADOCloseWorkItemStopsAtResolvedWhenTransitionRefused pins the refused
+// transition: a Bug at Resolved whose type has a Completed state, but whose
+// Resolved→Completed PATCH the server rejects with a rule error, stops at
+// Resolved as success; the status tag still lands on a resend without the
+// state op, and the note is posted.
+func TestADOCloseWorkItemStopsAtResolvedWhenTransitionRefused(t *testing.T) {
+	fake := &adoCloseFake{
+		t: t, id: "7", itemType: "Bug",
+		states: []map[string]string{
+			{"name": "New", "category": "Proposed"},
+			{"name": "Active", "category": "InProgress"},
+			{"name": "Resolved", "category": "Resolved"},
+			{"name": "Closed", "category": "Completed"},
+		},
+		reads:       [][2]string{{"Resolved", "goobers/status:in-progress"}},
+		patchStatus: []int{http.StatusBadRequest},
+		patchBody:   `{"message":"The field 'State' contains the value 'Closed' that is not in the list of supported values"}`,
+	}
+	server := fake.server()
+	defer server.Close()
+
+	item, err := newADOCloseTestProvider(server).UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: adoCloseTestRepo, ID: "7", Status: WorkItemStatusDone,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkItemStatus: %v", err)
+	}
+	if item.State != "open" {
+		t.Fatalf("state = %q, want open (still Resolved)", item.State)
+	}
+	if len(fake.patches) != 2 {
+		t.Fatalf("patches = %d, want 2 (refused close, then tag-only resend)", len(fake.patches))
+	}
+	if state, ok := adoPatchValue(fake.patches[0], "/fields/System.State"); !ok || state != "Closed" {
+		t.Fatalf("first patch = %#v, want System.State=Closed", fake.patches[0])
+	}
+	resend := fake.patches[1]
+	if _, ok := adoPatchValue(resend, "/fields/System.State"); ok {
+		t.Fatalf("resend = %#v, want no System.State op", resend)
+	}
+	if tags, _ := adoPatchValue(resend, "/fields/System.Tags"); tags != "goobers/status:done" {
+		t.Fatalf("resend tags = %q, want the done status tag", tags)
+	}
+	if len(fake.comments) != 1 || !strings.Contains(fake.comments[0], adoResolvedStopMarker) {
+		t.Fatalf("comments = %#v, want one noting the Resolved stop", fake.comments)
+	}
+}
+
+// TestADOCloseWorkItemRefusedFromActiveStillFails pins the boundary of the
+// Resolved stop: a rule error on a close from an active state is not a
+// Resolved stop and still fails the close.
+func TestADOCloseWorkItemRefusedFromActiveStillFails(t *testing.T) {
+	fake := &adoCloseFake{
+		t: t, id: "8", itemType: "Issue", states: adoTestIssueStates,
+		reads:       [][2]string{{"Active", "goobers/status:in-progress"}},
+		patchStatus: []int{http.StatusBadRequest},
+		patchBody:   `{"message":"rule error"}`,
+	}
+	server := fake.server()
+	defer server.Close()
+
+	_, err := newADOCloseTestProvider(server).UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: adoCloseTestRepo, ID: "8", Status: WorkItemStatusDone,
+	})
+	if err == nil {
+		t.Fatalf("UpdateWorkItemStatus: want the rule error, got success")
+	}
+	if len(fake.patches) != 1 {
+		t.Fatalf("patches = %d, want 1", len(fake.patches))
+	}
+}
+
+// TestADOCloseWorkItemResolvedNoteFailureIsNotAnError pins that the
+// Resolved-stop note is informational: a failure to post it leaves the
+// close a success.
+func TestADOCloseWorkItemResolvedNoteFailureIsNotAnError(t *testing.T) {
+	fake := &adoCloseFake{
+		t: t, id: "10", itemType: "Feedback Request",
+		states: []map[string]string{
+			{"name": "Active", "category": "InProgress"},
+			{"name": "Resolved", "category": "Resolved"},
+		},
+		reads:       [][2]string{{"Resolved", "goobers/status:in-progress"}},
+		commentFail: true,
+	}
+	server := fake.server()
+	defer server.Close()
+
+	if _, err := newADOCloseTestProvider(server).UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: adoCloseTestRepo, ID: "10", Status: WorkItemStatusDone,
+	}); err != nil {
+		t.Fatalf("UpdateWorkItemStatus: %v, want success despite the failed note", err)
 	}
 }
