@@ -356,42 +356,46 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	if req.Status == "" {
 		return WorkItem{}, fmt.Errorf("work item status is required")
 	}
-	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
+
+	tagOps := func(_ WorkItem, raw adoWorkItem) []adoPatchOperation {
+		return []adoPatchOperation{adoTagPatch(replaceStatusLabel(adoRawTags(raw), req.Status))}
 	}
-	raw, err := rawADOWorkItem(current)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	labels := replaceStatusLabel(adoRawTags(raw), req.Status)
-	patch := []adoPatchOperation{
-		{Op: "test", Path: "/rev", Value: raw.Rev},
-		adoTagPatch(labels),
-	}
-	if (req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed) && current.State != "closed" {
-		state, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, "closed")
-		if stateErr != nil {
-			return WorkItem{}, stateErr
+
+	closing := req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed
+	var updated WorkItem
+	var resolvedOnly bool
+	if closing {
+		var err error
+		updated, resolvedOnly, _, err = p.closeADOWorkItem(ctx, req.Repository, req.ID, tagOps)
+		if err != nil {
+			return WorkItem{}, err
 		}
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: state})
+	} else {
+		current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		raw, err := rawADOWorkItem(current)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		patch := append([]adoPatchOperation{{Op: "test", Path: "/rev", Value: raw.Rev}}, tagOps(current, raw)...)
+		updated, err = p.patchADOWorkItem(ctx, req.Repository, req.ID, patch)
+		if err != nil {
+			return WorkItem{}, err
+		}
 	}
-	endpoint, err := p.workURL(p.project(req.Repository), "workitems", req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	var out adoWorkItem
-	if err := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); err != nil {
-		return WorkItem{}, err
-	}
+
 	operation := "status"
-	if req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed {
+	if closing {
 		operation = "close"
 	}
 	p.recordMutation(ctx, "issue", req.ID, operation, req.Repository)
-	updated, err := p.mapADOWorkItem(ctx, req.Repository, out)
-	if err != nil {
-		return WorkItem{}, err
+
+	if resolvedOnly {
+		if err := p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, adoResolvedStopNote(updated.Type), "close"); err != nil {
+			return updated, fmt.Errorf("work item status update committed; note Resolved stop: %w", err)
+		}
 	}
 	if req.Comment != "" {
 		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
@@ -399,6 +403,12 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 		}
 	}
 	return updated, nil
+}
+
+// adoResolvedStopNote explains, for a work item type with no Completed
+// state, why a close request left the item at Resolved instead.
+func adoResolvedStopNote(itemType string) string {
+	return fmt.Sprintf("Goobers close stopped at Resolved: work item type %q has no Completed state to advance into.", itemType)
 }
 
 // ListComments returns Azure Boards work-item comments, oldest first.
@@ -503,49 +513,64 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 			return WorkItem{}, err
 		}
 	}
-	raw, err := rawADOWorkItem(current)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	patch := []adoPatchOperation{{Op: "test", Path: "/rev", Value: raw.Rev}}
-	if req.Title != nil {
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Title", Value: *req.Title})
-	}
-	if req.Body != nil {
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Description", Value: *req.Body})
-	}
-	if req.Assignee != nil {
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
-	}
-	if labelsChanged(req) {
-		labels := applyLabelSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)
-		patch = append(patch, adoTagPatch(labels))
-	}
-	if state != "" && state != current.State {
-		nativeState, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, state)
-		if stateErr != nil {
-			return WorkItem{}, stateErr
+
+	fieldOps := func(_ WorkItem, raw adoWorkItem) []adoPatchOperation {
+		var ops []adoPatchOperation
+		if req.Title != nil {
+			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.Title", Value: *req.Title})
 		}
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: nativeState})
+		if req.Body != nil {
+			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.Description", Value: *req.Body})
+		}
+		if req.Assignee != nil {
+			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
+		}
+		if labelsChanged(req) {
+			ops = append(ops, adoTagPatch(applyLabelSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)))
+		}
+		return ops
 	}
 
 	updated := current
 	mutated := false
-	if len(patch) > 1 {
-		endpoint, err := p.workURL(p.project(req.Repository), "workitems", req.ID)
+	resolvedOnly := false
+	if state == "closed" && current.State != "closed" {
+		var patched bool
+		updated, resolvedOnly, patched, err = p.closeADOWorkItem(ctx, req.Repository, req.ID, fieldOps)
 		if err != nil {
 			return WorkItem{}, err
 		}
-		var out adoWorkItem
-		if err := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); err != nil {
-			return WorkItem{}, err
+		if patched {
+			mutated = true
+			p.recordMutation(ctx, "issue", req.ID, "update", req.Repository)
 		}
-		updated, err = p.mapADOWorkItem(ctx, req.Repository, out)
-		if err != nil {
-			return WorkItem{}, err
+	} else {
+		raw, rawErr := rawADOWorkItem(current)
+		if rawErr != nil {
+			return WorkItem{}, rawErr
 		}
-		mutated = true
-		p.recordMutation(ctx, "issue", req.ID, "update", req.Repository)
+		patch := append([]adoPatchOperation{{Op: "test", Path: "/rev", Value: raw.Rev}}, fieldOps(current, raw)...)
+		if state != "" && state != current.State {
+			nativeState, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, state)
+			if stateErr != nil {
+				return WorkItem{}, stateErr
+			}
+			patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: nativeState})
+		}
+		if len(patch) > 1 {
+			updated, err = p.patchADOWorkItem(ctx, req.Repository, req.ID, patch)
+			if err != nil {
+				return WorkItem{}, err
+			}
+			mutated = true
+			p.recordMutation(ctx, "issue", req.ID, "update", req.Repository)
+		}
+	}
+
+	if resolvedOnly {
+		if err := p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, adoResolvedStopNote(updated.Type), "update"); err != nil {
+			return updated, fmt.Errorf("work item update committed; note Resolved stop: %w", err)
+		}
 	}
 	if req.Comment != "" {
 		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
@@ -1143,6 +1168,93 @@ func findADOWorkItemState(states []adoWorkItemState, name string) (adoWorkItemSt
 		}
 	}
 	return adoWorkItemState{}, false
+}
+
+// closeADOWorkItem drives a work item toward its Completed (or Removed)
+// state inside a bounded re-read/retry loop, so Goobers' own close settles
+// on whatever the server already did rather than erroring against it. A
+// state already Completed or Removed — reached through Azure Boards' own
+// transitionWorkItems rule, a "Fixes #" commit link, or an earlier call here
+// — is success with no System.State patch. A work item type with no
+// Completed state stops at Resolved instead, also reported as success (the
+// caller notes it). A 412 on the `test /rev` guard re-reads and retries,
+// since the next read may show that external close already landed.
+//
+// extraOps is rebuilt from each re-read and rides along whenever a PATCH is
+// sent, so callers can carry their own field changes (tags, title, ...)
+// through the same retry loop instead of patching separately against a rev
+// that closeADOWorkItem may have just moved past.
+func (p *ADOProvider) closeADOWorkItem(ctx context.Context, repo RepositoryRef, id string, extraOps func(current WorkItem, raw adoWorkItem) []adoPatchOperation) (updated WorkItem, resolvedOnly bool, patched bool, err error) {
+	var conflict error
+	for range adoClaimRetries {
+		current, raw, states, snapErr := p.adoCloseSnapshot(ctx, repo, id)
+		if snapErr != nil {
+			return WorkItem{}, false, false, snapErr
+		}
+
+		var ops []adoPatchOperation
+		stopAtResolved := false
+		native, found := findADOWorkItemState(states, stringField(raw.Fields, "System.State"))
+		if !found || !(strings.EqualFold(native.Category, "Completed") || strings.EqualFold(native.Category, "Removed")) {
+			target, targetErr := p.resolveCommonWorkItemState(ctx, repo, current.Type, "closed")
+			switch {
+			case targetErr == nil:
+				ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: target})
+			case found && strings.EqualFold(native.Category, "Resolved"):
+				stopAtResolved = true
+			default:
+				return WorkItem{}, false, false, targetErr
+			}
+		}
+		if extraOps != nil {
+			ops = append(ops, extraOps(current, raw)...)
+		}
+		if len(ops) == 0 {
+			return current, stopAtResolved, false, nil
+		}
+
+		out, patchErr := p.patchADOWorkItem(ctx, repo, id, append([]adoPatchOperation{{Op: "test", Path: "/rev", Value: raw.Rev}}, ops...))
+		if patchErr != nil {
+			if isADORevisionConflict(patchErr) {
+				conflict = patchErr
+				continue
+			}
+			return WorkItem{}, false, false, patchErr
+		}
+		return out, stopAtResolved, true, nil
+	}
+	return WorkItem{}, false, false, fmt.Errorf("close work item %s after revision conflicts: %w", id, conflict)
+}
+
+// adoCloseSnapshot re-reads a work item along with the state-category table
+// for its type, the pair closeADOWorkItem needs on every retry pass.
+func (p *ADOProvider) adoCloseSnapshot(ctx context.Context, repo RepositoryRef, id string) (WorkItem, adoWorkItem, []adoWorkItemState, error) {
+	current, err := p.GetWorkItem(ctx, repo, id)
+	if err != nil {
+		return WorkItem{}, adoWorkItem{}, nil, err
+	}
+	raw, err := rawADOWorkItem(current)
+	if err != nil {
+		return WorkItem{}, adoWorkItem{}, nil, err
+	}
+	states, err := p.adoWorkItemStateCategories(ctx, repo, current.Type)
+	if err != nil {
+		return WorkItem{}, adoWorkItem{}, nil, err
+	}
+	return current, raw, states, nil
+}
+
+// patchADOWorkItem sends one work-item PATCH and maps the result.
+func (p *ADOProvider) patchADOWorkItem(ctx context.Context, repo RepositoryRef, id string, ops []adoPatchOperation) (WorkItem, error) {
+	endpoint, err := p.workURL(p.project(repo), "workitems", id)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	var out adoWorkItem
+	if err := p.doPatch(ctx, http.MethodPatch, endpoint, ops, &out); err != nil {
+		return WorkItem{}, err
+	}
+	return p.mapADOWorkItem(ctx, repo, out)
 }
 
 func commonADOStateCategory(category string) (string, WorkItemStatus, error) {
