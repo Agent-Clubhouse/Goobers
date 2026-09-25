@@ -36,6 +36,7 @@ type candidateFindingsArtifact struct {
 	Findings            []rollup.Finding                `json:"findings"`
 	CausalCredit        []readmodel.CausalNodeCredit    `json:"causalCredit,omitempty"`
 	AttributionCohorts  []creditgraph.CohortAggregation `json:"attributionCohorts,omitempty"`
+	FaultAudit          *creditgraph.FaultAuditReport   `json:"faultAudit,omitempty"`
 	PromotionSignals    []readservice.PromotionSignal   `json:"promotionSignals,omitempty"`
 	PromotionCandidates []readservice.PromotionSignal   `json:"promotionCandidates"`
 	NoWork              bool                            `json:"noWork,omitempty"`
@@ -733,6 +734,13 @@ func detectCandidateFindingsWithCausalCredit(
 			return candidateFindingsArtifact{}, fmt.Errorf("query attribution cohorts: %w", err)
 		}
 		result.AttributionCohorts = cohorts
+		audit, err := readservice.StoredFaultAudit(context.Background(), root, creditStore, readservice.StoredAttributionQuery{
+			Gaggle: gaggle, Workflow: workflowName, Since: since,
+		}, creditgraph.FaultAuditConfig{})
+		if err != nil {
+			return candidateFindingsArtifact{}, fmt.Errorf("audit attribution fault domains: %w", err)
+		}
+		result.FaultAudit = &audit
 	}
 	return result, nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // CohortKey identifies one cohort of repeated attribution evidence.
@@ -53,6 +54,8 @@ type AttributionObservation struct {
 	Workflow         string                    `json:"workflow,omitempty"`
 	EffectiveVersion string                    `json:"effectiveVersion,omitempty"`
 	Workload         string                    `json:"workload,omitempty"`
+	Environments     []string                  `json:"environments,omitempty"`
+	ObservedAt       time.Time                 `json:"observedAt,omitempty"`
 	Status           RecordStatus              `json:"status,omitempty"`
 	Failure          string                    `json:"failure,omitempty"`
 	Attribution      Attribution               `json:"attribution"`

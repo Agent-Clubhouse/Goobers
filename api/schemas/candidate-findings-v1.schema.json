@@ -40,6 +40,10 @@
         "$ref": "#/$defs/attributionCohort"
       }
     },
+    "faultAudit": {
+      "$ref": "#/$defs/faultAudit",
+      "description": "A bounded, report-only fault-domain audit over enrolled terminal attribution evidence."
+    },
     "promotionSignals": {
       "type": "array",
       "description": "All bounded promotion evidence, including ineligible correlational fallbacks.",
@@ -319,6 +323,202 @@
           "items": {
             "$ref": "#/$defs/attributionEvidenceLink"
           }
+        }
+      }
+    },
+    "faultAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "mode", "since", "until", "observationsScanned", "suppressed"],
+      "description": "The deterministic cross-workflow Backprop fault-domain report.",
+      "properties": {
+        "schema": {
+          "const": "goobers.dev/backprop/fault-audit/v1",
+          "description": "The fault-audit wire contract version."
+        },
+        "mode": {
+          "const": "report-only",
+          "description": "Confirms that the audit cannot mutate issues, workflows, or runs."
+        },
+        "since": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The inclusive audit window lower bound."
+        },
+        "until": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The inclusive audit window upper bound."
+        },
+        "observationsScanned": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The bounded number of unique enrolled run observations inspected."
+        },
+        "productReliabilityFindings": {
+          "type": "array",
+          "description": "Findings assigned to shared Goobers product or runtime behavior.",
+          "items": {
+            "$ref": "#/$defs/faultFinding"
+          }
+        },
+        "externalFindings": {
+          "type": "array",
+          "description": "Findings assigned to a shared harness, model, provider, or environment component.",
+          "items": {
+            "$ref": "#/$defs/faultFinding"
+          }
+        },
+        "workflowFindings": {
+          "type": "array",
+          "description": "Findings localized to one workflow definition, version, and node path.",
+          "items": {
+            "$ref": "#/$defs/faultFinding"
+          }
+        },
+        "mixedOrUnknownFindings": {
+          "type": "array",
+          "description": "Findings withheld from a single owner because evidence is sparse, mixed, contradictory, or incomplete.",
+          "items": {
+            "$ref": "#/$defs/faultFinding"
+          }
+        },
+        "suppressed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The number of stable findings omitted by the reporting cooldown."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when the configured finding budget omitted additional signatures."
+        }
+      }
+    },
+    "faultFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "signature",
+        "domain",
+        "confidence",
+        "runIds",
+        "workflows",
+        "effectiveVersions",
+        "rationale",
+        "alternativeDomains",
+        "recommendedOwner",
+        "recommendedAction",
+        "verification"
+      ],
+      "description": "One deduplicated stable failure signature and its smallest defensible fault domain.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^backprop-[0-9a-f]{20}$",
+          "description": "A deterministic identifier used for deduplication and cooldown tracking."
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The normalized failure signature shared by the affected runs."
+        },
+        "domain": {
+          "type": "string",
+          "enum": ["goobers-product-runtime", "harness-model-provider-environment", "workflow-definition", "mixed-or-unknown"],
+          "description": "The smallest fault domain defensible from the available evidence."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The evidence-derived confidence after sparse, contradictory, and provenance penalties."
+        },
+        "runIds": {
+          "type": "array",
+          "description": "The bounded set of affected run identifiers.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "workflows": {
+          "type": "array",
+          "description": "The affected enrolled workflow names.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "effectiveVersions": {
+          "type": "array",
+          "description": "The affected pinned EffectiveVersion hashes.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "environments": {
+          "type": "array",
+          "description": "The recorded deployment environment identities.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "nodePaths": {
+          "type": "array",
+          "description": "The distinct attributed node paths carrying this signature.",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Exact run, journal, and artifact pointers supporting the finding.",
+          "items": {
+            "$ref": "#/$defs/attributionEvidenceLink"
+          }
+        },
+        "counterEvidence": {
+          "type": "array",
+          "description": "Evidence limitations or contradictions that reduced confidence.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the selected domain is the smallest defensible assignment."
+        },
+        "alternativeDomains": {
+          "type": "array",
+          "description": "Alternative fault domains and why each was rejected or retained.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "recommendedOwner": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The product area, component owner, workflow owner, or triage lane that should review the finding."
+        },
+        "recommendedAction": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The bounded next action recommended by the read-only auditor."
+        },
+        "verification": {
+          "type": "string",
+          "enum": ["open", "verification-pending", "recovered", "repeated"],
+          "description": "Whether a held-out or post-fix cohort has verified recovery or repetition."
         }
       }
     },
