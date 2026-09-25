@@ -6,10 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -160,86 +158,22 @@ func (r connectADORepo) String() string {
 	return r.Organization + "/" + r.Project + "/" + r.Repository
 }
 
-// Azure DevOps organization names are alphanumeric with hyphens — never
-// dotted — which is what keeps a host-shaped first segment ("github.com/acme/
-// web") out of the three-part branch below. Project and repository names are
-// looser (dots and underscores are legal).
-var (
-	adoOrganizationPart = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
-	adoNamePart         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]*$`)
-)
-
 // connectADOIdentity recognizes an Azure DevOps repository in the forms an
 // operator is likely to hand `goobers connect`: the bare three-part
 // organization/project/repository slug that `goobers validate` already renders
 // in its own diagnostics, the dev.azure.com web URL, the legacy
-// <organization>.visualstudio.com URL, and the ssh.dev.azure.com remote. It
-// reports false for anything it cannot resolve to all three coordinates, so
-// the caller's generic GitHub refusal still covers gitlab.com, typos, and
-// bare owners.
+// <organization>.visualstudio.com URL, and the ssh.dev.azure.com and
+// vs-ssh.visualstudio.com remotes. It is a thin wrapper over
+// providers.ParseADORepositoryURL, the normaliser every ADO URL parser in
+// this binary shares (ADO-N35); it reports false for anything that does not
+// resolve to all three coordinates, so the caller's generic GitHub refusal
+// still covers gitlab.com, typos, and bare owners.
 func connectADOIdentity(value string) (connectADORepo, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
+	org, project, repo, ok := providers.ParseADORepositoryURL(value)
+	if !ok {
 		return connectADORepo{}, false
 	}
-	if rest, found := strings.CutPrefix(value, "git@ssh.dev.azure.com:v3/"); found {
-		return adoIdentityFromSegments(strings.Split(strings.TrimSuffix(rest, ".git"), "/"))
-	}
-	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
-		host := strings.ToLower(parsed.Hostname())
-		segments := adoPathSegments(parsed.Path)
-		switch {
-		case host == "dev.azure.com" || host == "ssh.dev.azure.com":
-			// https://dev.azure.com/<org>/<project>/_git/<repo>, and the
-			// short form ADO itself emits when project and repository share
-			// a name: https://dev.azure.com/<org>/_git/<repo>.
-			if len(segments) == 2 {
-				segments = []string{segments[0], segments[1], segments[1]}
-			}
-			return adoIdentityFromSegments(segments)
-		case strings.HasSuffix(host, ".visualstudio.com"):
-			organization := strings.TrimSuffix(host, ".visualstudio.com")
-			if len(segments) == 1 {
-				segments = []string{segments[0], segments[0]}
-			}
-			return adoIdentityFromSegments(append([]string{organization}, segments...))
-		}
-		return connectADORepo{}, false
-	}
-	return adoIdentityFromSegments(strings.Split(strings.TrimSuffix(value, ".git"), "/"))
-}
-
-// adoPathSegments splits an Azure DevOps URL path into identity segments,
-// dropping the "_git" marker and the legacy DefaultCollection.
-func adoPathSegments(path string) []string {
-	var segments []string
-	for _, segment := range strings.Split(strings.TrimSuffix(strings.Trim(path, "/"), ".git"), "/") {
-		decoded, err := url.PathUnescape(segment)
-		if err == nil {
-			segment = decoded
-		}
-		if segment == "" || segment == "_git" || strings.EqualFold(segment, "DefaultCollection") {
-			continue
-		}
-		segments = append(segments, segment)
-	}
-	return segments
-}
-
-func adoIdentityFromSegments(segments []string) (connectADORepo, bool) {
-	trimmed := make([]string, 0, len(segments))
-	for _, segment := range segments {
-		if segment = strings.TrimSpace(segment); segment != "" {
-			trimmed = append(trimmed, segment)
-		}
-	}
-	if len(trimmed) != 3 ||
-		!adoOrganizationPart.MatchString(trimmed[0]) ||
-		!adoNamePart.MatchString(trimmed[1]) ||
-		!adoNamePart.MatchString(trimmed[2]) {
-		return connectADORepo{}, false
-	}
-	return connectADORepo{Organization: trimmed[0], Project: trimmed[1], Repository: trimmed[2]}, true
+	return connectADORepo{Organization: org, Project: project, Repository: repo}, true
 }
 
 func runConnect(args []string, stdout, stderr io.Writer) int {

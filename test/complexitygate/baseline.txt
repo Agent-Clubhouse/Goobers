@@ -70,7 +70,6 @@ internal/workflow/v_3_0/features.go	addTaskFeatures	48
 internal/worktree/pinned.go	(*Manager).AcquirePinned	44
 internal/worktree/pinned.go	(*Manager).preparePinned	44
 internal/worktree/worktree.go	(*Manager).Create	50
-providers/ado_workitems.go	(*ADOProvider).ListWorkItems	47
 test/nophonehome/main.go	tokenizeScript	45
 !body-length-cap 200
 !body-length	api/validate/validate.go	(*index).checkWorkflow	240

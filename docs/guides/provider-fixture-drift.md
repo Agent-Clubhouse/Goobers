@@ -86,8 +86,8 @@ fixture and never receives live credentials or network access.
 
 The separate `provider-fixture-drift-ado.yml` workflow applies the same
 reporting-only contract and drift checks to Azure Boards. It records the
-list-open-work-items and get-work-item provider paths, including ADO's WIQL and
-work-item-state requests, and compares them with
+list-open-work-items and get-work-item provider paths, including ADO's WIQL,
+`workitemsbatch` hydration and work-item-state requests, and compares them with
 `test/providers/testdata/ado_contract.json`.
 
 The workflow remains `workflow_dispatch`-only and is not part of required CI.

@@ -153,8 +153,17 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	if err := adoCheckFetchedHead(detail, req.ExpectedHeadSHA); err != nil {
 		return EnqueuePullRequestResult{}, err
 	}
+	// autoCompleteSetBy must name the caller: ADO accepts only the
+	// credential's own identity (or omitting the field) and returns 400 for
+	// any other id (live probe F3, design ado-parity-dsl-2-0.md §5) — the PR
+	// creator's id (N5's earlier assumption) is wrong whenever some other
+	// identity opened the pull request.
+	identity, err := p.AuthenticatedIdentity(ctx)
+	if err != nil {
+		return EnqueuePullRequestResult{}, fmt.Errorf("ado: resolve authenticated identity for auto-complete: %w", err)
+	}
 	body := map[string]interface{}{
-		"autoCompleteSetBy": map[string]string{"id": detail.CreatedBy.ID},
+		"autoCompleteSetBy": map[string]string{"id": identity.ID},
 		"completionOptions": adoCompletionOptions{
 			MergeStrategy: adoMergeStrategy(req.MergeMethod),
 		},
@@ -176,7 +185,7 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	}
 	// ADO has no queue-entry ID. Record the acknowledged auto-complete
 	// mutation, but do not invent a GitHub-style admission or merge receipt.
-	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == detail.CreatedBy.ID {
+	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == identity.ID {
 		if err := recordLandingReceipt(ctx, p.mutationRecorder, ExternalRef{
 			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "enqueue", LandingIntent: intent,
 		}); err != nil {

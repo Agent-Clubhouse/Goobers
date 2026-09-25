@@ -725,6 +725,9 @@ func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
 	root := initDeterministicDemo(t)
 	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
 	replaceInFile(t, gagglePath, "provider: github\n    owner: your-org", "provider: ado\n    project: your-project\n    owner: your-org")
+	// Keep the backlog on ado too, so the only diagnostic is the CONF-6
+	// capability error and not the mixed-provider refusal (ADO-N13).
+	replaceInFile(t, gagglePath, "provider: github\n    project: your-org/your-repo", "provider: ado\n    project: your-project")
 
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	replaceInFile(t, workflowPath, "spec:\n  gaggle: example",

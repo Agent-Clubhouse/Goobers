@@ -110,7 +110,17 @@ live leg must post a thread comment and compare its `author.id` with `connection
 
 `AuthenticatedLogin` is implemented via the ADO `connectionData` endpoint (ADO had no
 authenticated-identity read before). It underpins the trusted-comment filter the
-merge-review verdict trust check needs, and closes the claim-spoof gap.
+merge-review verdict trust check needs. Display names are not unique, so the name alone
+could not close the claim-spoof gap.
+
+**Claim breadcrumbs (ADO-N10).** A work-item claim or release breadcrumb counts only when
+the comment's `createdBy.id` equals `AuthenticatedIdentity().ID`; breadcrumbs from any
+other identity are ignored before the winner is chosen, so a project member cannot take a
+claim or end another run's claim by posting the marker text. `ListComments` maps
+`createdBy.id` into `Comment.AuthorID` for this. If the identity cannot be read, the claim
+or release fails; it never falls back to an unfiltered scan. Breadcrumbs written under a
+previous identity stop counting when the credential's identity changes. The legacy
+owner-tag fallback (#1990) is unchanged.
 
 Every thread `PostPullRequestThreadComment` opens is posted with `status: "closed"`, not
 ADO's default `active`. All Goobers-authored threads are informational (verdict json,
@@ -243,7 +253,7 @@ providers use:
 | Contract step | ADO behavior |
 |---|---|
 | `DetectMergePolicy` | Any enabled, blocking, non-deleted branch policy scoped to the target ref → `MergeQueue`; otherwise `Direct`. |
-| `EnqueuePullRequest` (MergeQueue) | Arm ADO **auto-complete** (the completion job is the queue), idempotently. |
+| `EnqueuePullRequest` (MergeQueue) | Arm ADO **auto-complete** (the completion job is the queue), idempotently, with `autoCompleteSetBy` set to the caller's own `authenticatedUser.id` — ADO rejects any other id with 400 (ADO-N6). |
 | `PollMergeQueueEntry` (`queue-watch`) | completed → `Merged`; abandoned / auto-complete cleared → `Evicted`; armed → `Pending`. |
 | `MergePullRequest` (Direct) | `PATCH status=completed` with `completionOptions{mergeStrategy, mergeCommitMessage}`, SHA-pinned server-side via `lastMergeSourceCommit` (409 TF401192 → head moved; 403 policy refusal → policy not met; see §11), then await the async completion job to a terminal `mergeStatus` (conflict → `ErrMergeConflict`). |
 
@@ -277,7 +287,11 @@ resolved.** The work-item id comes from the PR body's closing reference — *not
 ledger, whose lease was released back at `issue-close-out`; by the time post-merge runs the
 body reference is the durable id. The stage then calls `UpdateWorkItemStatus(done)` against
 the backlog project, which sets the Completed-category `System.State` and swaps the
-`goobers/status:` tag. This is what stops an ADO work item parking at in-review forever. All
+`goobers/status:` tag. The close is idempotent over server transitions (ADO-N28): an item
+Azure Boards already moved to a Completed or Removed state is left there, an item at Resolved
+stops there (with a one-time note) when its type has no Completed state or the server refuses
+Resolved→Completed, and a `test /rev` conflict re-reads and retries.
+This is what stops an ADO work item parking at in-review forever. All
 sibling fan-out and unpark machinery is gated off — each is a PR-number-as-work-item write.
 
 ## 7. pr-remediation on ADO
