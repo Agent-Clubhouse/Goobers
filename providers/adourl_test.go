@@ -1,0 +1,146 @@
+package providers
+
+import "testing"
+
+// TestParseADORepositoryURL pins every Azure DevOps remote/URL shape the
+// binary accepts, plus the negatives that must fail closed (ADO-N35).
+func TestParseADORepositoryURL(t *testing.T) {
+	type want struct {
+		org, project, repo string
+	}
+	forOrg := want{org: "contoso", project: "example-project", repo: "example-repo"}
+	cases := []struct {
+		name  string
+		input string
+		want  want
+		ok    bool
+	}{
+		{"bare triple", "contoso/example-project/example-repo", forOrg, true},
+		{"bare triple with .git", "contoso/example-project/example-repo.git", forOrg, true},
+		{"bare triple with whitespace", "  contoso/example-project/example-repo  ", forOrg, true},
+		{"dev.azure.com", "https://dev.azure.com/contoso/example-project/_git/example-repo", forOrg, true},
+		{"dev.azure.com with .git", "https://dev.azure.com/contoso/example-project/_git/example-repo.git", forOrg, true},
+		{"dev.azure.com uppercase host", "https://DEV.AZURE.COM/contoso/example-project/_git/example-repo", forOrg, true},
+		{
+			"dev.azure.com userinfo",
+			"https://contoso@dev.azure.com/contoso/example-project/_git/example-repo",
+			forOrg, true,
+		},
+		{
+			"dev.azure.com short form (project == repo)",
+			"https://dev.azure.com/contoso/_git/example-repo",
+			want{org: "contoso", project: "example-repo", repo: "example-repo"}, true,
+		},
+		{
+			"dev.azure.com percent-escaped project",
+			"https://dev.azure.com/contoso/Example%20Project/_git/example-repo",
+			want{org: "contoso", project: "Example Project", repo: "example-repo"}, true,
+		},
+		{"visualstudio.com", "https://contoso.visualstudio.com/example-project/_git/example-repo", forOrg, true},
+		{
+			"visualstudio.com with DefaultCollection",
+			"https://contoso.visualstudio.com/DefaultCollection/example-project/_git/example-repo",
+			forOrg, true,
+		},
+		{
+			"visualstudio.com uppercase host",
+			"https://CONTOSO.VISUALSTUDIO.COM/example-project/_git/example-repo",
+			forOrg, true,
+		},
+		{
+			"visualstudio.com short form (project == repo)",
+			"https://contoso.visualstudio.com/_git/example-repo",
+			want{org: "contoso", project: "example-repo", repo: "example-repo"}, true,
+		},
+		{"ssh.dev.azure.com scp-like", "git@ssh.dev.azure.com:v3/contoso/example-project/example-repo", forOrg, true},
+		{
+			"vs-ssh.visualstudio.com scp-like",
+			"contoso@vs-ssh.visualstudio.com:v3/contoso/example-project/example-repo",
+			forOrg, true,
+		},
+		{
+			"ssh.dev.azure.com ssh:// form",
+			"ssh://git@ssh.dev.azure.com/v3/contoso/example-project/example-repo",
+			forOrg, true,
+		},
+		{
+			"vs-ssh.visualstudio.com ssh:// form (org not read from host)",
+			"ssh://contoso@vs-ssh.visualstudio.com/v3/contoso/example-project/example-repo",
+			forOrg, true,
+		},
+		{
+			"vs-ssh.visualstudio.com uppercase host",
+			"contoso@VS-SSH.VISUALSTUDIO.COM:v3/contoso/example-project/example-repo",
+			forOrg, true,
+		},
+
+		// Negatives.
+		{"empty", "", want{}, false},
+		{"bare owner only", "acme", want{}, false},
+		{"bare owner/name (two segments)", "acme/web", want{}, false},
+		{"bare four segments", "acme/web/extra/more", want{}, false},
+		{"github.com https", "https://github.com/acme/web", want{}, false},
+		{"github.com scp-like", "git@github.com:acme/web.git", want{}, false},
+		{"gitlab.com", "https://gitlab.com/acme/group/web", want{}, false},
+		{"gitea host", "https://gitea.example.com/acme/web", want{}, false},
+		{"double slash", "acme//web", want{}, false},
+		{"self-hosted ADO Server host", "https://ado.example-corp.internal/contoso/example-project/_git/example-repo", want{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			org, project, repo, ok := ParseADORepositoryURL(tc.input)
+			if ok != tc.ok {
+				t.Fatalf("ParseADORepositoryURL(%q) ok = %v, want %v (org=%q project=%q repo=%q)", tc.input, ok, tc.ok, org, project, repo)
+			}
+			if !ok {
+				return
+			}
+			if org != tc.want.org || project != tc.want.project || repo != tc.want.repo {
+				t.Errorf("ParseADORepositoryURL(%q) = (%q, %q, %q), want (%q, %q, %q)",
+					tc.input, org, project, repo, tc.want.org, tc.want.project, tc.want.repo)
+			}
+		})
+	}
+}
+
+// TestParseADORemoteURL pins the host-anchored normaliser the routing and
+// matching callers use: it must accept Azure DevOps project/repository names
+// outside connect's character class, and must never read a bare slug or local
+// path as ADO.
+func TestParseADORemoteURL(t *testing.T) {
+	cases := []struct {
+		name               string
+		input              string
+		org, project, repo string
+		ok                 bool
+	}{
+		{"dev.azure.com", "https://dev.azure.com/example-org/example-project/_git/example-repo", "example-org", "example-project", "example-repo", true},
+		{"non-ASCII project", "https://dev.azure.com/example-org/Caf%C3%A9/_git/example-repo", "example-org", "Café", "example-repo", true},
+		{"non-ASCII repo", "https://dev.azure.com/example-org/example-project/_git/repo_%C3%BC", "example-org", "example-project", "repo_ü", true},
+		{"ampersand project", "https://dev.azure.com/example-org/Team&Ops/_git/example-repo", "example-org", "Team&Ops", "example-repo", true},
+		{"visualstudio.com DefaultCollection", "https://example-org.visualstudio.com/DefaultCollection/example-project/_git/example-repo", "example-org", "example-project", "example-repo", true},
+		{"scp-like ssh escaped project", "git@ssh.dev.azure.com:v3/example-org/Example%20Project/example-repo", "example-org", "Example Project", "example-repo", true},
+		{"ssh:// ssh.dev.azure.com", "ssh://git@ssh.dev.azure.com/v3/example-org/example-project/example-repo", "example-org", "example-project", "example-repo", true},
+		{"ssh:// vs-ssh.visualstudio.com", "ssh://example-org@vs-ssh.visualstudio.com/v3/example-org/example-project/example-repo", "example-org", "example-project", "example-repo", true},
+
+		// Negatives: never ADO without an ADO host.
+		{"bare slug", "example-org/example-project/example-repo", "", "", "", false},
+		{"absolute local path", "/srv/acme/web", "", "", "", false},
+		{"absolute local path .git", "/srv/acme/web.git", "", "", "", false},
+		{"relative local path", "mirrors/acme/web", "", "", "", false},
+		{"file URL", "file:///srv/acme/web", "", "", "", false},
+		{"github.com", "https://github.com/acme/web", "", "", "", false},
+		{"two segments on dev.azure.com", "https://dev.azure.com/example-org", "", "", "", false},
+		{"escaped slash smuggled into a segment", "https://dev.azure.com/example-org/a%2Fb/_git/example-repo", "", "", "", false},
+		{"ssh four segments without v3", "ssh://git@ssh.dev.azure.com/extra/example-org/example-project/example-repo", "", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			org, project, repo, ok := ParseADORemoteURL(tc.input)
+			if ok != tc.ok || org != tc.org || project != tc.project || repo != tc.repo {
+				t.Fatalf("ParseADORemoteURL(%q) = (%q, %q, %q, %v), want (%q, %q, %q, %v)",
+					tc.input, org, project, repo, ok, tc.org, tc.project, tc.repo, tc.ok)
+			}
+		})
+	}
+}
