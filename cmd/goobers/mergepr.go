@@ -126,9 +126,16 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		// check on the GitHub branch), then construct the completion-authorized
 		// provider: a stage carrying only ado:pr:write must never silently
 		// acquire completion authority (merge-wiring-plan §3).
-		if _, err := providerToken(capability.ADOPRComplete); err != nil {
-			pf(stderr, "error: %v\n", err)
+		usesPAT, err := adoStageUsesPAT(root, repo)
+		if err != nil {
+			pf(stderr, "error: resolve ADO completion authentication: %v\n", err)
 			return 1
+		}
+		if usesPAT {
+			if _, err := providerToken(capability.ADOPRComplete); err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
 		}
 		providerCapability = capability.ADOPRComplete
 	}
