@@ -576,7 +576,7 @@ func TestLoadShardWeightsRequiresGeneratedAt(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(root, ".github"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			document := `{"schemaVersion": 1, "defaultSeconds": 1, "source": ` + source + `, "packages": {}}`
+			document := `{"schemaVersion": 2, "defaultSeconds": 1, "source": ` + source + `, "packages": {}}`
 			if err := os.WriteFile(filepath.Join(root, shardWeightsPath), []byte(document), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -591,22 +591,42 @@ func TestLoadShardWeightsRequiresGeneratedAt(t *testing.T) {
 	}
 }
 
+// TestLoadShardWeightsRejectsNonRaceTable pins the race-mode switch: a
+// schemaVersion 1 table (non-race coverage-job seconds) must fail loudly rather
+// than balance the race shards by times that under-weight race-heavy packages.
+func TestLoadShardWeightsRejectsNonRaceTable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".github"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	document := `{"schemaVersion": 1, "defaultSeconds": 1, "source": {"generatedAt": "2026-09-12T20:48:16Z"}, "packages": {}}`
+	if err := os.WriteFile(filepath.Join(root, shardWeightsPath), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadShardWeights(root); err == nil || !strings.Contains(err.Error(), "schemaVersion 1") {
+		t.Fatalf("loadShardWeights error = %v, want a schemaVersion rejection", err)
+	}
+}
+
 func TestValidateShardWeightSourceRequiresVerifiableProvenance(t *testing.T) {
 	valid := shardWeightsSource{
-		Run: 10, Jobs: []int64{20}, Artifact: 30, ArtifactName: "test-timings-Linux",
-		Commit: strings.Repeat("a", 40), GeneratedAt: "2026-09-12T20:48:16Z",
+		Run: 10, Branch: "main", Commit: strings.Repeat("a", 40), GeneratedAt: "2026-09-12T20:48:16Z",
+		TimingJobs: []string{"unit-shard"}, ArtifactPattern: "test-timings-race-linux-*",
 		Platform: "linux", Architecture: "amd64", MinimumRecordedSeconds: 3,
+	}
+	if err := validateShardWeightSource(valid); err != nil {
+		t.Fatalf("validateShardWeightSource rejected the valid fixture: %v", err)
 	}
 	tests := []struct {
 		name   string
 		mutate func(*shardWeightsSource)
 	}{
 		{name: "run", mutate: func(source *shardWeightsSource) { source.Run = 0 }},
-		{name: "jobs", mutate: func(source *shardWeightsSource) { source.Jobs = nil }},
-		{name: "multiple jobs", mutate: func(source *shardWeightsSource) { source.Jobs = []int64{20, 21} }},
-		{name: "zero job", mutate: func(source *shardWeightsSource) { source.Jobs = []int64{0} }},
-		{name: "artifact", mutate: func(source *shardWeightsSource) { source.Artifact = 0 }},
-		{name: "artifact name", mutate: func(source *shardWeightsSource) { source.ArtifactName = "test-timings-macOS" }},
+		{name: "branch", mutate: func(source *shardWeightsSource) { source.Branch = " " }},
+		{name: "no timing jobs", mutate: func(source *shardWeightsSource) { source.TimingJobs = nil }},
+		{name: "coverage timing job", mutate: func(source *shardWeightsSource) { source.TimingJobs = []string{"unit"} }},
+		{name: "mixed timing jobs", mutate: func(source *shardWeightsSource) { source.TimingJobs = []string{"unit", "unit-shard"} }},
+		{name: "coverage artifact", mutate: func(source *shardWeightsSource) { source.ArtifactPattern = "test-timings-Linux" }},
 		{name: "short commit", mutate: func(source *shardWeightsSource) { source.Commit = "abc123" }},
 		{name: "platform", mutate: func(source *shardWeightsSource) { source.Platform = "darwin" }},
 		{name: "architecture", mutate: func(source *shardWeightsSource) { source.Architecture = "" }},
@@ -615,7 +635,7 @@ func TestValidateShardWeightSourceRequiresVerifiableProvenance(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			source := valid
-			source.Jobs = append([]int64(nil), valid.Jobs...)
+			source.TimingJobs = append([]string(nil), valid.TimingJobs...)
 			tt.mutate(&source)
 			if err := validateShardWeightSource(source); err == nil {
 				t.Fatalf("validateShardWeightSource accepted %+v", source)

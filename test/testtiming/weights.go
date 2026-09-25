@@ -17,35 +17,20 @@ import (
 )
 
 const (
+	// shardWeightsSchemaVersion 2 is the race-mode table: package seconds come
+	// from the Linux race shards' own timing parts, not the non-race coverage
+	// job. The hermetic loader rejects any other version, so a table in the old
+	// shape fails loudly instead of balancing race shards by non-race times.
+	shardWeightsSchemaVersion  = 2
 	defaultShardSeconds        = 1.0
 	defaultMinimumShardSeconds = 3.0
-	canonicalTimingArtifact    = "test-timings-Linux"
-	canonicalTimingJob         = "unit coverage gate (linux)"
+	// raceTimingJob is the timing job every race shard part records (see
+	// test/ci's shardTimingJob), and raceTimingArtifacts names the per-shard
+	// artifacts that carry the parts.
+	raceTimingJob       = "unit-shard"
+	raceTimingArtifacts = "test-timings-race-linux-*"
+	raceTimingPlatform  = "linux"
 )
-
-type artifactMetadata struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	CreatedAt string `json:"created_at"`
-	Expired   bool   `json:"expired"`
-	Workflow  struct {
-		ID         int64  `json:"id"`
-		HeadBranch string `json:"head_branch"`
-		HeadSHA    string `json:"head_sha"`
-	} `json:"workflow_run"`
-}
-
-type jobMetadata struct {
-	ID          int64  `json:"id"`
-	RunID       int64  `json:"run_id"`
-	HeadSHA     string `json:"head_sha"`
-	HeadBranch  string `json:"head_branch"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Conclusion  string `json:"conclusion"`
-	StartedAt   string `json:"started_at"`
-	CompletedAt string `json:"completed_at"`
-}
 
 type shardWeightDocument struct {
 	SchemaVersion  int                `json:"schemaVersion"`
@@ -55,53 +40,43 @@ type shardWeightDocument struct {
 }
 
 type shardWeightSource struct {
-	Run                    int64   `json:"run"`
-	Jobs                   []int64 `json:"jobs"`
-	Artifact               int64   `json:"artifact"`
-	ArtifactName           string  `json:"artifactName"`
-	Commit                 string  `json:"commit"`
-	GeneratedAt            string  `json:"generatedAt"`
-	Platform               string  `json:"platform"`
-	Architecture           string  `json:"architecture"`
-	MinimumRecordedSeconds float64 `json:"minimumRecordedSeconds"`
+	Run                    int64    `json:"run"`
+	Branch                 string   `json:"branch"`
+	Commit                 string   `json:"commit"`
+	GeneratedAt            string   `json:"generatedAt"`
+	TimingJobs             []string `json:"timingJobs"`
+	ArtifactPattern        string   `json:"artifactPattern"`
+	Platform               string   `json:"platform"`
+	Architecture           string   `json:"architecture"`
+	MinimumRecordedSeconds float64  `json:"minimumRecordedSeconds"`
 }
 
 func runWeights(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("weights", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	timingPath := flags.String("timing", "", "unit timing artifact JSON")
-	artifactMetadataPath := flags.String("artifact-metadata", "", "GitHub Actions artifact API JSON")
-	jobMetadataPath := flags.String("job-metadata", "", "GitHub Actions job API JSON")
+	var timingPaths stringList
+	flags.Var(&timingPaths, "timing", "race shard timing part JSON (repeatable; every part of one run)")
+	splitsPath := flags.String("splits", "", "split table the run was sharded with (.github/unit-shard-splits.json)")
+	runMetadataPath := flags.String("run-metadata", "", "GitHub Actions workflow run API JSON")
 	outputPath := flags.String("out", "", "shard weights output path")
 	minimumSeconds := flags.Float64("minimum-seconds", defaultMinimumShardSeconds, "minimum package duration to record")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if *timingPath == "" || *artifactMetadataPath == "" || *jobMetadataPath == "" || *outputPath == "" || flags.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "testtiming weights: -timing, -artifact-metadata, -job-metadata, and -out are required; positional arguments are not accepted")
+	if len(timingPaths) == 0 || *splitsPath == "" || *runMetadataPath == "" || *outputPath == "" || flags.NArg() != 0 {
+		_, _ = fmt.Fprintln(stderr, "testtiming weights: -timing, -splits, -run-metadata, and -out are required; positional arguments are not accepted")
 		return 2
 	}
 	if !validPositiveSeconds(*minimumSeconds) {
 		_, _ = fmt.Fprintln(stderr, "testtiming weights: -minimum-seconds must be finite and positive")
 		return 2
 	}
-
-	var timing artifact
-	if err := readJSONFile(*timingPath, &timing); err != nil {
-		_, _ = fmt.Fprintf(stderr, "testtiming weights: read timing artifact: %v\n", err)
+	inputs, err := readWeightInputs(timingPaths, *splitsPath, *runMetadataPath)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "testtiming weights: %v\n", err)
 		return 1
 	}
-	var artifactMeta artifactMetadata
-	if err := readJSONFile(*artifactMetadataPath, &artifactMeta); err != nil {
-		_, _ = fmt.Fprintf(stderr, "testtiming weights: read artifact metadata: %v\n", err)
-		return 1
-	}
-	var jobMeta jobMetadata
-	if err := readJSONFile(*jobMetadataPath, &jobMeta); err != nil {
-		_, _ = fmt.Fprintf(stderr, "testtiming weights: read job metadata: %v\n", err)
-		return 1
-	}
-	document, err := generateShardWeights(timing, artifactMeta, jobMeta, *minimumSeconds)
+	document, err := generateShardWeights(inputs, *minimumSeconds)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "testtiming weights: %v\n", err)
 		return 1
@@ -110,101 +85,158 @@ func runWeights(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "testtiming weights: write %s: %v\n", *outputPath, err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "wrote %d package weights from artifact %d (run %d, job %d, created %s) to %s\n",
-		len(document.Packages), artifactMeta.ID, artifactMeta.Workflow.ID, jobMeta.ID, document.Source.GeneratedAt, *outputPath)
+	_, _ = fmt.Fprintf(stdout, "wrote %d package weights from %d race timing parts (run %d, %s@%s) to %s\n",
+		len(document.Packages), len(inputs.timings), inputs.run.ID, inputs.run.HeadBranch, inputs.run.HeadSHA, *outputPath)
 	return 0
 }
 
-func generateShardWeights(timing artifact, artifactMeta artifactMetadata, jobMeta jobMetadata, minimumSeconds float64) (shardWeightDocument, error) {
-	if timing.SchemaVersion != schemaVersion {
-		return shardWeightDocument{}, fmt.Errorf("timing artifact: unsupported schemaVersion %d", timing.SchemaVersion)
+// weightInputs is everything one weights generation reads: every race timing
+// part of one run, the split table that run was sharded with, and the run.
+type weightInputs struct {
+	timings []artifact
+	pieces  map[string]int
+	run     runMetadata
+}
+
+func readWeightInputs(timingPaths []string, splitsPath, runMetadataPath string) (weightInputs, error) {
+	inputs := weightInputs{timings: make([]artifact, len(timingPaths))}
+	for index, path := range timingPaths {
+		if err := readJSONFile(path, &inputs.timings[index]); err != nil {
+			return weightInputs{}, fmt.Errorf("read timing part %s: %w", path, err)
+		}
 	}
-	if timing.Job != "unit" || timing.Platform != "linux" || strings.TrimSpace(timing.Architecture) == "" {
-		return shardWeightDocument{}, fmt.Errorf("timing artifact: want unit/linux with a recorded architecture, got %q/%q/%q", timing.Job, timing.Platform, timing.Architecture)
+	var splits splitDocument
+	if err := readJSONFile(splitsPath, &splits); err != nil {
+		return weightInputs{}, fmt.Errorf("read split table %s: %w", splitsPath, err)
 	}
-	if !validPositiveSeconds(timing.ElapsedSeconds) {
-		return shardWeightDocument{}, errors.New("timing artifact: elapsedSeconds must be finite and positive")
+	inputs.pieces = make(map[string]int, len(splits.Packages))
+	for pkg, split := range splits.Packages {
+		if split.Pieces < 2 {
+			return weightInputs{}, fmt.Errorf("split table %s: %s must have at least 2 pieces", splitsPath, pkg)
+		}
+		inputs.pieces[pkg] = split.Pieces
 	}
+	if err := readJSONFile(runMetadataPath, &inputs.run); err != nil {
+		return weightInputs{}, fmt.Errorf("read run metadata: %w", err)
+	}
+	return inputs, nil
+}
+
+// generateShardWeights merges one run's race shard parts into package seconds.
+// A whole package runs in exactly one part; a split package runs once per
+// piece, and its pieces' seconds sum to the package's weight (the hermetic
+// runner divides it back by the piece count when it schedules the pieces).
+func generateShardWeights(inputs weightInputs, minimumSeconds float64) (shardWeightDocument, error) {
 	if !validPositiveSeconds(minimumSeconds) {
 		return shardWeightDocument{}, errors.New("minimum package duration must be finite and positive")
 	}
-	createdAt, err := validateWeightProvenance(artifactMeta, jobMeta)
+	generatedAt, err := validateRunProvenance(inputs.run)
 	if err != nil {
 		return shardWeightDocument{}, err
 	}
-
-	packages := make(map[string]float64)
-	seen := make(map[string]struct{}, len(timing.Packages))
-	for _, measured := range timing.Packages {
-		name := strings.TrimSpace(measured.Package)
-		if name == "" || (name != "github.com/goobers/goobers" && !strings.HasPrefix(name, "github.com/goobers/goobers/")) {
-			return shardWeightDocument{}, fmt.Errorf("timing artifact: invalid package %q", measured.Package)
-		}
-		if _, duplicate := seen[name]; duplicate {
-			return shardWeightDocument{}, fmt.Errorf("timing artifact: duplicate package %q", name)
-		}
-		seen[name] = struct{}{}
-		if measured.Status != "pass" && measured.Status != "skip" {
-			return shardWeightDocument{}, fmt.Errorf("timing artifact: package %q has non-success status %q", name, measured.Status)
-		}
-		if measured.ElapsedSeconds < 0 || math.IsInf(measured.ElapsedSeconds, 0) || math.IsNaN(measured.ElapsedSeconds) {
-			return shardWeightDocument{}, fmt.Errorf("timing artifact: package %q has invalid elapsedSeconds", name)
-		}
-		if measured.Status == "pass" && measured.ElapsedSeconds >= minimumSeconds {
-			// go test reports package elapsed time to millisecond precision. Some
-			// JSON decoders expose that decimal as a longer binary float; restore
-			// the measurement's actual precision in the checked-in document.
-			packages[name] = math.Round(measured.ElapsedSeconds*1000) / 1000
+	architecture, err := raceTimingIdentity(inputs.timings)
+	if err != nil {
+		return shardWeightDocument{}, err
+	}
+	measured, err := mergeRacePackageSeconds(inputs.timings, inputs.pieces)
+	if err != nil {
+		return shardWeightDocument{}, err
+	}
+	packages := make(map[string]float64, len(measured))
+	for name, seconds := range measured {
+		if seconds >= minimumSeconds {
+			// go test reports package elapsed time to millisecond precision;
+			// restore that precision after the float sum.
+			packages[name] = math.Round(seconds*1000) / 1000
 		}
 	}
 	if len(packages) == 0 {
-		return shardWeightDocument{}, fmt.Errorf("timing artifact: no passing package measured at least %.3g seconds", minimumSeconds)
+		return shardWeightDocument{}, fmt.Errorf("timing parts: no passing package measured at least %.3g seconds", minimumSeconds)
 	}
-
 	return shardWeightDocument{
-		SchemaVersion:  schemaVersion,
+		SchemaVersion:  shardWeightsSchemaVersion,
 		DefaultSeconds: defaultShardSeconds,
 		Source: shardWeightSource{
-			Run:                    artifactMeta.Workflow.ID,
-			Jobs:                   []int64{jobMeta.ID},
-			Artifact:               artifactMeta.ID,
-			ArtifactName:           artifactMeta.Name,
-			Commit:                 artifactMeta.Workflow.HeadSHA,
-			GeneratedAt:            createdAt.Format(time.RFC3339),
-			Platform:               timing.Platform,
-			Architecture:           timing.Architecture,
+			Run:                    inputs.run.ID,
+			Branch:                 inputs.run.HeadBranch,
+			Commit:                 inputs.run.HeadSHA,
+			GeneratedAt:            generatedAt.Format(time.RFC3339),
+			TimingJobs:             []string{raceTimingJob},
+			ArtifactPattern:        raceTimingArtifacts,
+			Platform:               raceTimingPlatform,
+			Architecture:           architecture,
 			MinimumRecordedSeconds: minimumSeconds,
 		},
 		Packages: packages,
 	}, nil
 }
 
-func validateWeightProvenance(artifactMeta artifactMetadata, jobMeta jobMetadata) (time.Time, error) {
-	if artifactMeta.ID <= 0 || artifactMeta.Name != canonicalTimingArtifact || artifactMeta.Expired {
-		return time.Time{}, fmt.Errorf("artifact metadata: want an unexpired positive-ID %q artifact", canonicalTimingArtifact)
+// raceTimingIdentity requires every part to be a current-schema race shard
+// part from one Linux architecture, and returns that architecture.
+func raceTimingIdentity(timings []artifact) (string, error) {
+	if len(timings) == 0 {
+		return "", errors.New("timing parts: at least one race shard part is required")
 	}
-	if artifactMeta.Workflow.ID <= 0 || artifactMeta.Workflow.HeadBranch != "main" || !validCommitSHA(artifactMeta.Workflow.HeadSHA) {
-		return time.Time{}, errors.New("artifact metadata: workflow run must identify main with a full commit SHA")
+	architecture := strings.TrimSpace(timings[0].Architecture)
+	for _, timing := range timings {
+		if timing.SchemaVersion != schemaVersion || timing.Job != raceTimingJob || timing.Platform != raceTimingPlatform {
+			return "", fmt.Errorf("timing parts: want current-schema %s/%s parts, got %q/%q", raceTimingJob, raceTimingPlatform, timing.Job, timing.Platform)
+		}
+		if architecture == "" || timing.Architecture != architecture {
+			return "", fmt.Errorf("timing parts: want one recorded architecture, got %q and %q", architecture, timing.Architecture)
+		}
+		if !validPositiveSeconds(timing.ElapsedSeconds) {
+			return "", errors.New("timing parts: elapsedSeconds must be finite and positive")
+		}
 	}
-	if jobMeta.ID <= 0 || jobMeta.RunID != artifactMeta.Workflow.ID || jobMeta.HeadSHA != artifactMeta.Workflow.HeadSHA || jobMeta.HeadBranch != artifactMeta.Workflow.HeadBranch {
-		return time.Time{}, errors.New("job metadata: run, branch, and commit must match the artifact metadata")
+	return architecture, nil
+}
+
+// mergeRacePackageSeconds sums each package's passing seconds across parts and
+// checks it ran exactly as often as it was scheduled: once for a whole
+// package, once per piece for a split one. A mismatch means the parts are not
+// one complete run sharded with this split table.
+func mergeRacePackageSeconds(timings []artifact, pieces map[string]int) (map[string]float64, error) {
+	seconds := make(map[string]float64)
+	runs := make(map[string]int)
+	for _, timing := range timings {
+		for _, measured := range timing.Packages {
+			name, err := validMeasuredPackage(measured)
+			if err != nil {
+				return nil, err
+			}
+			runs[name]++
+			if measured.Status == "pass" {
+				seconds[name] += measured.ElapsedSeconds
+			}
+		}
 	}
-	if jobMeta.Name != canonicalTimingJob || jobMeta.Status != "completed" || jobMeta.Conclusion != "success" {
-		return time.Time{}, fmt.Errorf("job metadata: want completed successful job %q", canonicalTimingJob)
+	for name, count := range runs {
+		want := max(pieces[name], 1)
+		if count != want {
+			return nil, fmt.Errorf("timing parts: package %q ran %d times, want %d (one per scheduled piece)", name, count, want)
+		}
 	}
-	createdAt, err := time.Parse(time.RFC3339, artifactMeta.CreatedAt)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("artifact metadata: created_at %q must be RFC 3339", artifactMeta.CreatedAt)
+	for pkg := range pieces {
+		if runs[pkg] == 0 {
+			return nil, fmt.Errorf("timing parts: split package %q was never measured", pkg)
+		}
 	}
-	startedAt, startErr := time.Parse(time.RFC3339, jobMeta.StartedAt)
-	completedAt, completeErr := time.Parse(time.RFC3339, jobMeta.CompletedAt)
-	if startErr != nil || completeErr != nil || completedAt.Before(startedAt) {
-		return time.Time{}, errors.New("job metadata: started_at and completed_at must be a valid ordered RFC 3339 window")
+	return seconds, nil
+}
+
+func validMeasuredPackage(measured packageTiming) (string, error) {
+	name := strings.TrimSpace(measured.Package)
+	if name == "" || (name != "github.com/goobers/goobers" && !strings.HasPrefix(name, "github.com/goobers/goobers/")) {
+		return "", fmt.Errorf("timing parts: invalid package %q", measured.Package)
 	}
-	if createdAt.Before(startedAt) || createdAt.After(completedAt) {
-		return time.Time{}, errors.New("artifact metadata: created_at must fall within the producing job window")
+	if measured.Status != "pass" && measured.Status != "skip" {
+		return "", fmt.Errorf("timing parts: package %q has non-success status %q", name, measured.Status)
 	}
-	return createdAt, nil
+	if !validNonNegative(measured.ElapsedSeconds) {
+		return "", fmt.Errorf("timing parts: package %q has invalid elapsedSeconds", name)
+	}
+	return name, nil
 }
 
 func validCommitSHA(value string) bool {

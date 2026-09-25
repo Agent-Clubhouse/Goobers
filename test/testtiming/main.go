@@ -104,7 +104,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage:")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming capture -job JOB -out FILE -- [go test flags and packages]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming report -budget FILE -current FILE [-previous FILE] [-summary FILE]")
-	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming weights -timing FILE -artifact-metadata FILE -job-metadata FILE -out FILE [-minimum-seconds N]")
+	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming weights -timing FILE [-timing FILE...] -splits FILE -run-metadata FILE -out FILE [-minimum-seconds N]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming splits -timing FILE [-timing FILE...] -run-metadata FILE -split PKG=PIECES [-split ...] -out FILE")
 }
 

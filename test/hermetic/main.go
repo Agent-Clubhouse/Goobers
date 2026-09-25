@@ -25,7 +25,14 @@ import (
 
 const integrationGuidance = "tag this test with //go:build integration and run it in the integration tier"
 const shardWeightsPath = ".github/unit-shard-weights.json"
-const shardWeightsArtifactName = "test-timings-Linux"
+
+// The weights table is race-mode (schemaVersion 2): package seconds merged from
+// the Linux race shards' own "unit-shard" timing parts, the runs it balances.
+// Version 1 carried the non-race coverage job's times, which under-weighted
+// race-heavy packages by up to ~30x; it is rejected rather than read.
+const shardWeightsSchemaVersion = 2
+const shardWeightsArtifactPattern = "test-timings-race-linux-*"
+const shardWeightsTimingJob = "unit-shard"
 const shardWeightsPlatform = "linux"
 
 type toolSpec struct {
@@ -70,15 +77,15 @@ type shardWeights struct {
 }
 
 type shardWeightsSource struct {
-	Run                    int64   `json:"run"`
-	Jobs                   []int64 `json:"jobs"`
-	Artifact               int64   `json:"artifact"`
-	ArtifactName           string  `json:"artifactName"`
-	Commit                 string  `json:"commit"`
-	GeneratedAt            string  `json:"generatedAt"`
-	Platform               string  `json:"platform"`
-	Architecture           string  `json:"architecture"`
-	MinimumRecordedSeconds float64 `json:"minimumRecordedSeconds"`
+	Run                    int64    `json:"run"`
+	Branch                 string   `json:"branch"`
+	Commit                 string   `json:"commit"`
+	GeneratedAt            string   `json:"generatedAt"`
+	TimingJobs             []string `json:"timingJobs"`
+	ArtifactPattern        string   `json:"artifactPattern"`
+	Platform               string   `json:"platform"`
+	Architecture           string   `json:"architecture"`
+	MinimumRecordedSeconds float64  `json:"minimumRecordedSeconds"`
 }
 
 func (w shardWeights) generatedAt() (time.Time, error) {
@@ -266,8 +273,8 @@ func loadShardWeights(root string) (shardWeights, error) {
 	if err := json.Unmarshal(data, &weights); err != nil {
 		return shardWeights{}, fmt.Errorf("parse shard weights %s: %w", path, err)
 	}
-	if weights.SchemaVersion != 1 {
-		return shardWeights{}, fmt.Errorf("shard weights %s: unsupported schemaVersion %d", path, weights.SchemaVersion)
+	if weights.SchemaVersion != shardWeightsSchemaVersion {
+		return shardWeights{}, fmt.Errorf("shard weights %s: unsupported schemaVersion %d, want %d (race-mode weights; regenerate per docs/guides/test-timing.md)", path, weights.SchemaVersion, shardWeightsSchemaVersion)
 	}
 	if !validShardWeight(weights.DefaultSeconds) {
 		return shardWeights{}, fmt.Errorf("shard weights %s: defaultSeconds must be finite and positive", path)
@@ -287,22 +294,17 @@ func loadShardWeights(root string) (shardWeights, error) {
 }
 
 func validateShardWeightSource(source shardWeightsSource) error {
-	if source.Run <= 0 || source.Artifact <= 0 {
-		return errors.New("source must identify positive run and artifact IDs")
+	if source.Run <= 0 || strings.TrimSpace(source.Branch) == "" {
+		return errors.New("source must identify a positive run ID and its branch")
 	}
-	if len(source.Jobs) != 1 || source.Jobs[0] <= 0 {
-		return errors.New("source jobs must contain exactly one positive canonical producer job ID")
+	if len(source.TimingJobs) != 1 || source.TimingJobs[0] != shardWeightsTimingJob || source.ArtifactPattern != shardWeightsArtifactPattern {
+		return fmt.Errorf("source must identify the race shards' %s timing parts (%s)", shardWeightsTimingJob, shardWeightsArtifactPattern)
 	}
-	if source.ArtifactName != shardWeightsArtifactName || source.Platform != shardWeightsPlatform || strings.TrimSpace(source.Architecture) == "" {
-		return fmt.Errorf("source must identify the canonical %s/%s artifact and a recorded architecture", shardWeightsArtifactName, shardWeightsPlatform)
+	if source.Platform != shardWeightsPlatform || strings.TrimSpace(source.Architecture) == "" {
+		return fmt.Errorf("source must identify the %s platform and a recorded architecture", shardWeightsPlatform)
 	}
-	if len(source.Commit) != 40 {
+	if !validLowerHexSHA(source.Commit) {
 		return errors.New("source commit must be a full 40-character lowercase hexadecimal SHA")
-	}
-	for _, char := range source.Commit {
-		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
-			return errors.New("source commit must be a full 40-character lowercase hexadecimal SHA")
-		}
 	}
 	if !validShardWeight(source.MinimumRecordedSeconds) {
 		return errors.New("source minimumRecordedSeconds must be finite and positive")
