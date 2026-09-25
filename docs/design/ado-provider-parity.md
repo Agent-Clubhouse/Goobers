@@ -243,7 +243,7 @@ providers use:
 | Contract step | ADO behavior |
 |---|---|
 | `DetectMergePolicy` | Any enabled, blocking, non-deleted branch policy scoped to the target ref → `MergeQueue`; otherwise `Direct`. |
-| `EnqueuePullRequest` (MergeQueue) | Arm ADO **auto-complete** (the completion job is the queue), idempotently. |
+| `EnqueuePullRequest` (MergeQueue) | Arm ADO **auto-complete** (the completion job is the queue), idempotently, with `autoCompleteSetBy` set to the caller's own `authenticatedUser.id` — ADO rejects any other id with 400 (ADO-N6). |
 | `PollMergeQueueEntry` (`queue-watch`) | completed → `Merged`; abandoned / auto-complete cleared → `Evicted`; armed → `Pending`. |
 | `MergePullRequest` (Direct) | `PATCH status=completed` with `completionOptions{mergeStrategy, mergeCommitMessage}`, SHA-pinned server-side via `lastMergeSourceCommit` (409 TF401192 → head moved; 403 policy refusal → policy not met; see §11), then await the async completion job to a terminal `mergeStatus` (conflict → `ErrMergeConflict`). |
 

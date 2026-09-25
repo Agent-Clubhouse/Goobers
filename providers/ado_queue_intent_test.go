@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -19,6 +20,13 @@ func TestADOAutoCompleteIntentAndAcknowledgement(t *testing.T) {
 			}
 			var mutations atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if strings.HasSuffix(req.URL.Path, "/connectionData") {
+					// The caller authenticates as "creator" here — distinct
+					// from the PR's createdBy, which is asserted separately
+					// via the "armed"/"different-pr" cases below.
+					writeJSON(t, w, map[string]any{"authenticatedUser": map[string]any{"id": "creator"}})
+					return
+				}
 				out := map[string]any{"pullRequestId": 42, "status": "active", "createdBy": map[string]string{"id": "creator"}, "lastMergeSourceCommit": map[string]string{"commitId": "head"}}
 				if req.Method == http.MethodPatch {
 					mutations.Add(1)
