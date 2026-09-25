@@ -40,7 +40,7 @@ export interface QueueEligibilityView extends WithReadState {
 }
 
 export type Environment = "dev" | "staging" | "prod";
-export type Provider = "github" | "ado";
+export type Provider = "github" | "ado" | "gitea";
 export type InstanceStatus = "starting" | "ready" | "degraded";
 export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
