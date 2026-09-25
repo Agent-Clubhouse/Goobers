@@ -85,7 +85,7 @@ func adoEvaluationState(ev adoPolicyEvaluation, kind adoPolicyKind) CheckState {
 // adoPolicyGate reduces the gating evaluations of one pull request to a
 // single CI state.
 type adoPolicyGate struct {
-	failing, pending, passing, sawGate, sawReviewer bool
+	failing, pending, passing, sawGate, sawReviewer, sawBlocking bool
 }
 
 func (g *adoPolicyGate) observe(state CheckState) {
@@ -101,15 +101,19 @@ func (g *adoPolicyGate) observe(state CheckState) {
 }
 
 // result is failing when any gate failed and passing once every gate passed.
-// With no gating policy at all it stays pending (fail-closed), except when
-// ADO did evaluate reviewer policies for the pull request: then the branch
-// has no CI to wait for, and the reviewer wait is reported per check as
-// AwaitingHuman instead of pinning CI to pending forever.
+// With no blocking policy at all it passes because the repository has no
+// hosted policy gate. When ADO evaluated only reviewer policies, the branch
+// likewise has no CI to wait for and the reviewer wait is reported per check
+// as AwaitingHuman instead of pinning CI to pending forever. Human-only
+// blocking policies still remain pending because no agent-fixable correctness
+// signal exists.
 func (g adoPolicyGate) result() CheckState {
 	switch {
 	case g.failing:
 		return CheckStateFailing
 	case g.sawGate && g.passing && !g.pending:
+		return CheckStatePassing
+	case !g.sawBlocking:
 		return CheckStatePassing
 	case !g.sawGate && g.sawReviewer:
 		return CheckStatePassing
@@ -129,6 +133,7 @@ func (p *ADOProvider) reducePolicyEvaluations(evals []adoPolicyEvaluation, proje
 		if !adoEvaluationBlocks(ev) {
 			continue
 		}
+		gate.sawBlocking = true
 		kind := adoPolicyKindOf(ev.Configuration.Type.ID)
 		state := adoEvaluationState(ev, kind)
 		if state == "" {
