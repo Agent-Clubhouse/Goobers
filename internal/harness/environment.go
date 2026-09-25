@@ -204,7 +204,8 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 // a GitHub repository; another provider's credential is never handed to
 // GitHub tooling. Every other variable (the command-scoped
 // GOOBERS_CRED_GITHUB_* ones) follows CredentialFitsProvider, so a github:*
-// capability's credential is exposed only on a GitHub repository. agent:model
+// capability's credential is never exposed on an Azure DevOps repository.
+// agent:model
 // is the model backend's own credential and is independent of the repository
 // provider. Agentic stages on other providers commit locally and publish
 // through a deterministic stage that authenticates against the routed
@@ -222,9 +223,13 @@ func CredentialFitsEnvAudience(capability, envVar string, provider apiv1.Provide
 // CredentialFitsProvider reports whether capability's credential may be
 // materialised for an invocation whose repository is on provider. A
 // capability in a provider's own namespace (github:*, ado:*) belongs to that
-// provider's repositories: a github:* credential fits a GitHub repository (or
-// a legacy repository reference with no provider), an ado:* credential fits
-// an Azure DevOps repository. Provider-neutral capabilities (repo:push,
+// provider's repositories: an ado:* credential fits only an Azure DevOps
+// repository, and a github:* credential fits every repository except an Azure
+// DevOps one. A GitHub repository (or a legacy repository reference with no
+// provider) is its own namespace; Gitea resolves github:* capabilities against
+// its own repository token by design (the rebinding rule of
+// docs/design/ado-parity-dsl-2-0.md §3.1), so the credential stays with the
+// Gitea repository it was granted for. Provider-neutral capabilities (repo:push,
 // provider:*) resolve against the invocation's own repository, and
 // non-repository capabilities (agent:model, telemetry:read, ...) are
 // independent of it, so both always fit.
@@ -234,7 +239,7 @@ func CredentialFitsProvider(capability string, provider apiv1.Provider) bool {
 		return true
 	}
 	if owner == apiv1.ProviderGitHub {
-		return providerIsGitHub(provider)
+		return providerIsGitHub(provider) || provider == apiv1.ProviderGitea
 	}
 	return provider == owner
 }

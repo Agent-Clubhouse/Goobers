@@ -9,18 +9,21 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 )
 
-// A repository credential is only exposed under GitHub-consumed variables, and
-// a github:* capability's command-scoped GOOBERS_CRED_GITHUB_* variable, when
-// the invocation's repository is on GitHub; the model credential is unaffected.
+// A repository credential is only exposed under GitHub-consumed variables when
+// the invocation's repository is on GitHub. A github:* capability's
+// command-scoped GOOBERS_CRED_GITHUB_* variable is withheld only on Azure
+// DevOps: Gitea rebinds github:* capabilities to its own repository token.
+// The model credential is unaffected.
 func TestCredentialEnvKeepsRepositoryCredentialsWithTheirProvider(t *testing.T) {
 	cases := []struct {
-		provider    apiv1.Provider
-		wantGHToken bool
+		provider       apiv1.Provider
+		wantGHToken    bool
+		wantCommandVar bool
 	}{
-		{provider: apiv1.ProviderGitHub, wantGHToken: true},
-		{provider: "", wantGHToken: true},
-		{provider: apiv1.ProviderADO, wantGHToken: false},
-		{provider: apiv1.ProviderGitea, wantGHToken: false},
+		{provider: apiv1.ProviderGitHub, wantGHToken: true, wantCommandVar: true},
+		{provider: "", wantGHToken: true, wantCommandVar: true},
+		{provider: apiv1.ProviderADO, wantGHToken: false, wantCommandVar: false},
+		{provider: apiv1.ProviderGitea, wantGHToken: false, wantCommandVar: true},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.provider), func(t *testing.T) {
@@ -68,9 +71,14 @@ func TestCredentialEnvKeepsRepositoryCredentialsWithTheirProvider(t *testing.T) 
 			if err != nil {
 				t.Fatalf("credentialEnv: %v", err)
 			}
-			for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GOOBERS_CRED_GITHUB_ISSUES_APPROVE", "GOOBERS_CRED_GITHUB_MILESTONES_WRITE"} {
+			for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
 				if has := containsEnv(got, name+"=repo-secret"); has != tc.wantGHToken {
 					t.Fatalf("%s injected = %v, want %v (provider %q): %v", name, has, tc.wantGHToken, tc.provider, redactedNames(got))
+				}
+			}
+			for _, name := range []string{"GOOBERS_CRED_GITHUB_ISSUES_APPROVE", "GOOBERS_CRED_GITHUB_MILESTONES_WRITE"} {
+				if has := containsEnv(got, name+"=repo-secret"); has != tc.wantCommandVar {
+					t.Fatalf("%s injected = %v, want %v (provider %q): %v", name, has, tc.wantCommandVar, tc.provider, redactedNames(got))
 				}
 			}
 			if !containsEnv(got, "COPILOT_GITHUB_TOKEN=model-secret") {

@@ -71,8 +71,11 @@ mcpServers:
 First-party references use the closed `capability` enum, and each capability
 must also be declared by the invoking stage. A first-party reference also
 follows the run's repository provider: a `github:*` capability is materialised
-only on a GitHub repository and an `ado:*` capability only on an Azure DevOps
-repository, while provider-neutral capabilities fit every provider. A reference
+on a GitHub repository (or a repository reference with no provider) and on a
+Gitea repository, which resolves `github:*` capabilities against its own
+repository token, but never on an Azure DevOps repository; an `ado:*`
+capability is materialised only on an Azure DevOps repository.
+Provider-neutral capabilities fit every provider. A reference
 that does not fit fails the stage before the harness starts, naming the server
 and the reference (#5737). Third-party servers use the
 separate `kind: byo` branch with a DNS-label-compatible `ref`. The operator

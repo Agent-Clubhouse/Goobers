@@ -15,9 +15,9 @@ func TestCredentialFitsProviderFollowsTheCapabilityNamespace(t *testing.T) {
 		capability string
 		fits       map[apiv1.Provider]bool
 	}{
-		{capability: "github:issues:write", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true}},
-		{capability: "github:issues:approve", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true}},
-		{capability: "github:milestones:write", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true}},
+		{capability: "github:issues:write", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderGitea: true}},
+		{capability: "github:issues:approve", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderGitea: true}},
+		{capability: "github:milestones:write", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderGitea: true}},
 		{capability: "ado:pr:complete", fits: map[apiv1.Provider]bool{apiv1.ProviderADO: true}},
 		{capability: "repo:push", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderADO: true, apiv1.ProviderGitea: true}},
 		{capability: "provider:pr:write", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderADO: true, apiv1.ProviderGitea: true}},
@@ -66,9 +66,10 @@ func remoteMCPServer(name string, ref apiv1.MCPCredentialRef) apiv1.MCPServer {
 	return apiv1.MCPServer{Name: name, URL: "https://" + name + ".example.test/mcp", CredentialRefs: []apiv1.MCPCredentialRef{ref}}
 }
 
-// A capability-based MCP credential is materialised only on a repository of
-// the provider the capability belongs to; a BYO credential is the operator's
-// own and is materialised on every provider.
+// A capability-based MCP credential is materialised only on a repository the
+// capability's provider namespace fits (github:* everywhere but Azure DevOps,
+// following the Gitea rebinding rule; ado:* only on Azure DevOps); a BYO
+// credential is the operator's own and is materialised on every provider.
 func TestMCPCredentialRefsFollowTheRepositoryProvider(t *testing.T) {
 	cases := []struct {
 		provider   apiv1.Provider
@@ -78,7 +79,9 @@ func TestMCPCredentialRefsFollowTheRepositoryProvider(t *testing.T) {
 		{provider: apiv1.ProviderGitHub, capability: "github:issues:write", wantFits: true},
 		{provider: "", capability: "github:issues:write", wantFits: true},
 		{provider: apiv1.ProviderADO, capability: "github:issues:write", wantFits: false},
-		{provider: apiv1.ProviderGitea, capability: "github:issues:write", wantFits: false},
+		{provider: apiv1.ProviderGitea, capability: "github:issues:write", wantFits: true},
+		{provider: "", capability: "ado:pr:complete", wantFits: false},
+		{provider: apiv1.ProviderGitea, capability: "ado:pr:complete", wantFits: false},
 		{provider: apiv1.ProviderADO, capability: "ado:pr:complete", wantFits: true},
 		{provider: apiv1.ProviderGitHub, capability: "ado:pr:complete", wantFits: false},
 		{provider: apiv1.ProviderADO, capability: "repo:push", wantFits: true},
@@ -111,6 +114,9 @@ func TestMCPCredentialRefsFollowTheRepositoryProvider(t *testing.T) {
 						if !strings.Contains(err.Error(), want) {
 							t.Fatalf("error %q does not name %s", err, want)
 						}
+					}
+					if tc.provider == "" && !strings.Contains(err.Error(), "github (no provider set)") {
+						t.Fatalf("error %q does not name the legacy empty provider", err)
 					}
 					if strings.Contains(err.Error(), "repository-mcp-secret") {
 						t.Fatalf("error carries the credential: %v", err)

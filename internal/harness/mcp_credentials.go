@@ -24,8 +24,8 @@ func resolveMCPCredential(ctx context.Context, adapter string, req RunRequest, s
 		provider := req.Envelope.RepoRef.Provider
 		if owner, ok := CapabilityProvider(key); ok && !CredentialFitsProvider(key, provider) {
 			return key, "", fmt.Errorf(
-				"harness: %s: MCP server %q credential %q is not materialised: capability %q belongs to %s repositories and this run's repository provider is %q; reference a kind: byo credential for this server, or remove the reference",
-				adapter, server, key, key, owner, provider)
+				"harness: %s: MCP server %q credential capability %q is not materialised: it belongs to %s repositories and this run's repository provider is %s; reference a kind: byo credential for this server, or remove the reference",
+				adapter, server, key, owner, providerLabel(provider))
 		}
 	}
 	if req.Credentials == nil {
@@ -36,4 +36,13 @@ func resolveMCPCredential(ctx context.Context, adapter string, req RunRequest, s
 		return key, "", fmt.Errorf("harness: %s: resolve MCP server %q credential %q: %w", adapter, server, key, err)
 	}
 	return key, token, nil
+}
+
+// providerLabel names provider for an operator-facing message, rendering the
+// legacy empty provider the way providerIsGitHub treats it.
+func providerLabel(provider apiv1.Provider) string {
+	if provider == "" {
+		return "github (no provider set)"
+	}
+	return string(provider)
 }
