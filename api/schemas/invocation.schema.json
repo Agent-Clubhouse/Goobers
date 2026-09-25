@@ -170,17 +170,17 @@
     },
     "repoRef": {
       "type": "object",
-      "description": "Provider-neutral repository identity and credential-connection reference.",
+      "description": "Provider-neutral repository identity. It carries no credential.",
       "additionalProperties": false,
       "required": ["provider", "owner", "name"],
       "properties": {
         "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Repository provider." },
         "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host." },
-        "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, or Azure DevOps organization." },
+        "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, Gitea owner, or Azure DevOps organization." },
         "project": { "type": "string", "description": "Azure DevOps project containing the repository." },
         "name": { "type": "string", "minLength": 1, "description": "Repository name." },
         "branch": { "type": "string", "description": "Default branch checked out and targeted by the run." },
-        "connectionRef": { "type": "string", "description": "Connection that supplies credentials for the repository." }
+        "connectionRef": { "type": "string", "description": "Name of a Manifest connection. Accepted but not yet used to source credentials: stage credentials come from instance.yaml repos[], credentials[] and secretStores. Connection-level credentials are planned (docs/design/provider-access-layer.md)." }
       }
     },
     "limits": {
