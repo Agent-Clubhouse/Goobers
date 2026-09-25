@@ -201,6 +201,11 @@ func TestADOProviderAddPullRequestLabels(t *testing.T) {
 	var postedNames []string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/labels", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// The present-label read that lets a case-insensitive duplicate be skipped.
+			writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{}})
+			return
+		}
 		assertMethod(t, r, http.MethodPost)
 		if got := r.URL.Query().Get("api-version"); got != "7.1-preview.1" {
 			t.Fatalf("api-version = %q, want 7.1-preview.1", got)

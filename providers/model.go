@@ -1062,8 +1062,15 @@ type ListWorkItemsRequest struct {
 	Labels         []string                  `json:"labels,omitempty"`
 	LabelPredicate *labelpredicate.Predicate `json:"-"`
 	FieldPredicate *fieldpredicate.Predicate `json:"-"`
-	State          string                    `json:"state,omitempty"`
-	Assignee       string                    `json:"assignee,omitempty"`
+	// CompareLabels lists labels the caller compares the returned items'
+	// labels against exactly, beyond Labels and LabelPredicate (for example
+	// a client-side label predicate's excluded or CEL-referenced labels). It
+	// never filters: a provider whose labels match case-insensitively (Azure
+	// DevOps) returns a read label equal to one of these ignoring case in
+	// this spelling. GitHub and Gitea ignore it.
+	CompareLabels []string `json:"-"`
+	State         string   `json:"state,omitempty"`
+	Assignee      string   `json:"assignee,omitempty"`
 	// UpdatedSince, when set, restricts results to items updated at or after it.
 	UpdatedSince *time.Time `json:"updatedSince,omitempty"`
 	Limit        int        `json:"limit,omitempty"`

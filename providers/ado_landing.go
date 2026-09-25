@@ -217,10 +217,7 @@ func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueu
 	if err != nil {
 		return PollMergeQueueEntryResult{}, err
 	}
-	labels := make([]string, 0, len(detail.Labels))
-	for _, l := range detail.Labels {
-		labels = append(labels, l.Name)
-	}
+	labels := adoLabelNames(detail.Labels)
 	switch {
 	case strings.EqualFold(detail.Status, "completed"):
 		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: detail.LastMergeCommit.CommitID, Labels: labels}, nil

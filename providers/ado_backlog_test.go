@@ -120,10 +120,34 @@ func handleADOTestConnectionData(t *testing.T, mux *http.ServeMux) {
 // adoClaimFake is an in-memory work item 42 with a comment thread. Comments the
 // provider posts are stamped with adoTestSelfID; seeded comments carry
 // whatever author the test gives them.
+//
+// Tag writes behave like ADO's shared, case-insensitive tag namespace: a tag
+// already present keeps the casing it was first written with.
 type adoClaimFake struct {
-	mu       sync.Mutex
-	comments []map[string]interface{}
-	tags     string
+	mu          sync.Mutex
+	comments    []map[string]interface{}
+	tags        string
+	patchedTags []string
+}
+
+// adoTestFirstWriterTags applies a System.Tags write the way ADO does: the
+// written set replaces the old one, but a tag matching an existing one
+// ignoring case keeps the existing casing.
+func adoTestFirstWriterTags(existing, written string) string {
+	old := adoLabels(existing)
+	var out []string
+	for _, tag := range adoLabels(written) {
+		for _, have := range old {
+			if strings.EqualFold(have, tag) {
+				tag = have
+				break
+			}
+		}
+		if !adoHasLabel(out, tag) {
+			out = append(out, tag)
+		}
+	}
+	return strings.Join(out, "; ")
 }
 
 func (f *adoClaimFake) seed(authorID, text string) {
@@ -172,7 +196,9 @@ func (f *adoClaimFake) server(t *testing.T, identity bool) *httptest.Server {
 			decodeJSON(t, r, &ops)
 			for _, op := range ops {
 				if op["path"] == "/fields/System.Tags" {
-					f.tags, _ = op["value"].(string)
+					value, _ := op["value"].(string)
+					f.patchedTags = append(f.patchedTags, value)
+					f.tags = adoTestFirstWriterTags(f.tags, value)
 				}
 			}
 		}

@@ -103,7 +103,7 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	// both providers): requestedState "open"/"closed" needs each
 	// candidate's process-specific state category read before it can be
 	// compared (not a raw WIQL-comparable value), and req.Labels'
-	// server-side WIQL CONTAINS is a substring match — hasAllLabels' exact
+	// server-side WIQL CONTAINS is a substring match — hasAllLabels' whole-tag
 	// client-side recheck can reject a CONTAINS false-positive. Neither
 	// condition is added to the shared check: GitHub's own `state`/`labels`
 	// query params filter both reliably server-side, so applying ADO's
@@ -357,7 +357,7 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	}
 
 	tagOps := func(_ WorkItem, raw adoWorkItem) []adoPatchOperation {
-		return []adoPatchOperation{adoTagPatch(replaceStatusLabel(adoRawTags(raw), req.Status))}
+		return []adoPatchOperation{adoTagPatch(replaceStatusLabel(adoDropStatusTags(adoRawTags(raw)), req.Status))}
 	}
 
 	closing := req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed
@@ -551,7 +551,7 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
 		}
 		if labelsChanged(req) {
-			ops = append(ops, adoTagPatch(applyLabelSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)))
+			ops = append(ops, adoTagPatch(applyADOTagSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)))
 		}
 		return ops
 	}
@@ -675,7 +675,7 @@ func (p *ADOProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemReques
 	if err != nil {
 		return ClaimResult{}, err
 	}
-	if !item.HasLabel(label) {
+	if !adoHasLabel(item.Labels, label) {
 		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
 	}
 	return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
@@ -695,7 +695,7 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 		if rawErr != nil {
 			return WorkItem{}, rawErr
 		}
-		labels := applyLabelSet(adoRawTags(raw), add, remove)
+		labels := applyADOTagSet(adoRawTags(raw), add, remove)
 		patch := []adoPatchOperation{
 			{Op: "test", Path: "/rev", Value: raw.Rev},
 			adoTagPatch(labels),
@@ -855,7 +855,7 @@ func (p *ADOProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 	if err != nil {
 		return WorkItem{}, err
 	}
-	if !current.HasLabel(label) {
+	if !adoHasLabel(current.Labels, label) {
 		return current, nil
 	}
 	remove := []string{label}
@@ -940,7 +940,7 @@ func (p *ADOProvider) mapADOWorkItem(ctx context.Context, repo RepositoryRef, it
 }
 
 func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) WorkItem {
-	labels := adoVisibleLabels(adoRawTags(item))
+	labels := canonicalADOLabels(adoVisibleLabels(adoRawTags(item)), nil)
 	parent, links, hierarchy := adoHierarchy(item.Relations)
 	updated := timeField(item.Fields, "System.ChangedDate")
 	return WorkItem{
@@ -1021,7 +1021,7 @@ func adoLabels(tags string) []string {
 func adoVisibleLabels(labels []string) []string {
 	visible := make([]string, 0, len(labels))
 	for _, label := range labels {
-		if !strings.HasPrefix(label, adoClaimTagPrefix) {
+		if !strings.HasPrefix(strings.ToLower(label), adoClaimTagPrefix) {
 			visible = append(visible, label)
 		}
 	}
@@ -1553,10 +1553,12 @@ func adoClaimTag(runID string) (string, error) {
 func adoClaimOwner(tags []string) (string, bool, error) {
 	owner := ""
 	for _, tag := range tags {
-		if !strings.HasPrefix(tag, adoClaimTagPrefix) {
+		// The prefix matches in any casing (ADO keeps the first writer's);
+		// the base64 payload after it stays case-sensitive.
+		if len(tag) < len(adoClaimTagPrefix) || !strings.EqualFold(tag[:len(adoClaimTagPrefix)], adoClaimTagPrefix) {
 			continue
 		}
-		encoded := strings.TrimPrefix(tag, adoClaimTagPrefix)
+		encoded := tag[len(adoClaimTagPrefix):]
 		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
 		if err != nil || len(decoded) == 0 {
 			return "", false, fmt.Errorf("invalid ADO claim owner tag")
@@ -1583,16 +1585,11 @@ func isADORevisionConflict(err error) bool {
 		(strings.Contains(body, "vs403351") || strings.Contains(body, "test operation"))
 }
 
+// hasAllLabels reports whether itemLabels holds every required label,
+// ignoring case: ADO tags match case-insensitively (see ado_labelcase.go).
 func hasAllLabels(itemLabels, required []string) bool {
-	if len(required) == 0 {
-		return true
-	}
-	item := make(map[string]struct{}, len(itemLabels))
-	for _, label := range itemLabels {
-		item[label] = struct{}{}
-	}
 	for _, label := range required {
-		if _, ok := item[label]; !ok {
+		if !adoHasLabel(itemLabels, label) {
 			return false
 		}
 	}
