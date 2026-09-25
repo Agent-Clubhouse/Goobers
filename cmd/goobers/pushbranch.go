@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -132,6 +133,16 @@ func pushBranchWithRetry(dir, branch string, env []string, stderr io.Writer) err
 		err = gitPushBranch(dir, branch, env)
 		if err == nil {
 			return nil
+		}
+		// Checked ahead of isPushRaceError: a policy-protected rejection also
+		// prints "failed to push some refs" (git's own generic trailer for
+		// ANY rejected update), which isPushRaceError alone would misread as
+		// a ref race worth a fetch-rebase-retry. Rebasing onto the same
+		// protected branch and pushing again hits the identical policy, so
+		// this returns immediately instead of spending the retry budget.
+		var policyErr *policyProtectedPushError
+		if errors.As(err, &policyErr) {
+			return err
 		}
 		if attempt >= pushRaceAttempts || !isPushRaceError(err) {
 			return err
@@ -452,10 +463,48 @@ func gitPushBranch(dir, branch string, env []string) error {
 	cmd.Env = composeGitEnv(dir, env)
 	out, err := workspaceGitCombinedOutput(cmd)
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		wrapped := fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		if isADOPolicyProtectedPush(string(out)) {
+			return &policyProtectedPushError{branch: branch, err: wrapped}
+		}
+		return wrapped
 	}
 	return nil
 }
+
+// isADOPolicyProtectedPush reports whether output — git's combined
+// stdout+stderr from a rejected push — carries the markers ADO's Git provider
+// attaches to a push refused by an enabled branch policy: TF402455 in the
+// human-readable "remote rejected" line, and
+// GitRefUpdateRejectedByPolicyException in the underlying exception name.
+// Neither ever appears in a GitHub or Gitea rejection, so this never fires
+// for those remotes.
+//
+// Design §5 ADO-N26 (F8): any enabled blocking policy makes the ref
+// PR-only — a direct push (or force-push) to it is refused outright, not
+// merely delayed by a race, so this is checked ahead of isPushRaceError
+// rather than folded into it.
+func isADOPolicyProtectedPush(output string) bool {
+	return strings.Contains(output, "TF402455") ||
+		strings.Contains(output, "GitRefUpdateRejectedByPolicyException")
+}
+
+// policyProtectedPushError reports that a push (or force-push) was refused
+// because the target branch is protected by an enabled ADO branch policy —
+// never a credential problem. Its message names the policy, not the
+// credential, so a caller does not misdiagnose it as an auth failure; see
+// classifyProviderError, which maps it to a distinct non-retryable code and
+// never sends it through an auth retry.
+type policyProtectedPushError struct {
+	branch string
+	err    error
+}
+
+func (e *policyProtectedPushError) Error() string {
+	return fmt.Sprintf("branch %q is protected by an ADO branch policy and cannot be pushed to directly (land the change through a pull request instead): %v", e.branch, e.err)
+}
+
+func (e *policyProtectedPushError) Unwrap() error { return e.err }
 
 func pushBranchEnvironment(dir string) ([]string, error) {
 	root := os.Getenv("GOOBERS_INSTANCE_ROOT")

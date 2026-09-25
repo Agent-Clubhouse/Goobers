@@ -885,7 +885,16 @@ func forcePushWithLeaseWithAuth(ctx context.Context, dir, branch, expectedSHA st
 	}
 	cmd := workspaceGitAuthEnvCommand(dir, env, "push", "--force-with-lease="+branch+":"+expectedSHA, url, branch+":"+branch)
 	if out, err := workspaceGitCombinedOutput(cmd); err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		wrapped := fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		// Same classification as gitPushBranch (ADO-N26): a force-push
+		// rejected by an enabled ADO branch policy (TF402455 /
+		// GitRefUpdateRejectedByPolicyException) is never a credential
+		// problem, so it must never surface as one to a caller deciding
+		// whether to retry.
+		if isADOPolicyProtectedPush(string(out)) {
+			return &policyProtectedPushError{branch: branch, err: wrapped}
+		}
+		return wrapped
 	}
 	return nil
 }
