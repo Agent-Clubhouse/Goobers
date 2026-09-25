@@ -205,6 +205,7 @@ func setADOCheckpointStageEnv(t *testing.T, repo providers.RepositoryRef) {
 	t.Setenv(executor.RepoNameEnvVar, repo.Name)
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "359")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 }
 
 func TestADORemediationCheckpointFeaturesUseOnlyADOInputs(t *testing.T) {
