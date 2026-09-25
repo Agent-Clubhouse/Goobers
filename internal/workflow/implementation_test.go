@@ -257,7 +257,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// gaggle's ciCommand already resolved to the same argv at config-load
 	// time, so the RUNTIME command is unchanged; only the hashed definition
 	// moved, and the example no longer reads as a Go project.
-	const wantDigest = "sha256:a8607589552819e69e8792b8f26bbde4637668b3a64e7f3ffcfdfc310faa9b55"
+	const wantDigest = "sha256:3f8efb7600f872a7a867c5cdfe4c536d718426e859792d514eecc866ff3e6c97"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
