@@ -73,6 +73,18 @@ func TestParseFlagsBadTarget(t *testing.T) {
 	}
 }
 
+func TestReplaceNormalizedWhitespaceMatchesReflowedOnboardingBlocks(t *testing.T) {
+	content := "Before you continue,\nchange into the repo then run\n  bin/goobers init --guided\n"
+	block := "Before you continue, change into the repo then run\nbin/goobers init --guided\n"
+	result := replaceNormalizedWhitespace(content, block, "goobers-v1.2.3 init --guided\n")
+	if !strings.Contains(result, "goobers-v1.2.3 init --guided") {
+		t.Fatalf("reflowed onboarding block was not rewritten: %s", result)
+	}
+	if strings.Contains(result, "bin/goobers init --guided") {
+		t.Fatalf("rewrite left a source command behind: %s", result)
+	}
+}
+
 // TestRunEndToEnd exercises the whole pipeline — cross-compile, package,
 // release metadata, and checksums — against a small in-module package (this
 // release tool itself), so it stays fast and independent of the daemon's

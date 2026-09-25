@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -630,6 +631,69 @@ func withFragment(path, fragment string, hasFragment bool) string {
 	return path
 }
 
+func normalizeWhitespaceForLayout(s string) (string, []int, []int) {
+	var out strings.Builder
+	starts := make([]int, 0, len(s))
+	ends := make([]int, 0, len(s))
+	lastSpace := false
+	for i, r := range s {
+		if unicode.IsSpace(r) {
+			if !lastSpace {
+				out.WriteRune(' ')
+				starts = append(starts, -1)
+				ends = append(ends, -1)
+				lastSpace = true
+			}
+			continue
+		}
+		out.WriteRune(r)
+		starts = append(starts, i)
+		ends = append(ends, i+len(string(r)))
+		lastSpace = false
+	}
+	text := out.String()
+	if text != "" && text[len(text)-1] == ' ' {
+		text = strings.TrimSuffix(text, " ")
+		starts = starts[:len(starts)-1]
+		ends = ends[:len(ends)-1]
+	}
+	return text, starts, ends
+}
+
+func containsNormalizedWhitespace(content, target string) bool {
+	if strings.Contains(content, target) {
+		return true
+	}
+	normalizedContent, _, _ := normalizeWhitespaceForLayout(content)
+	normalizedTarget, _, _ := normalizeWhitespaceForLayout(target)
+	return strings.Contains(normalizedContent, normalizedTarget)
+}
+
+func replaceNormalizedWhitespace(content, target, replacement string) string {
+	if strings.Contains(content, target) {
+		return strings.Replace(content, target, replacement, 1)
+	}
+	normalizedContent, starts, ends := normalizeWhitespaceForLayout(content)
+	normalizedTarget, _, _ := normalizeWhitespaceForLayout(target)
+	start := strings.Index(normalizedContent, normalizedTarget)
+	if start < 0 {
+		return content
+	}
+	end := start + len(normalizedTarget)
+	matchStart := start
+	for matchStart < len(starts) && starts[matchStart] == -1 {
+		matchStart++
+	}
+	matchEnd := end - 1
+	for matchEnd >= 0 && starts[matchEnd] == -1 {
+		matchEnd--
+	}
+	if matchStart >= len(starts) || matchEnd < 0 || starts[matchStart] < 0 || starts[matchEnd] < 0 {
+		return content
+	}
+	return content[:starts[matchStart]] + replacement + content[ends[matchEnd]:]
+}
+
 // releaseBlobURL renders the canonical GitHub blob URL for a repository path at
 // this release's tag.
 func releaseBlobURL(version, target string) string {
@@ -861,10 +925,10 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 		}
 		content := string(data)
 		for _, section := range rewrite.sections {
-			if strings.Count(content, section.source) != 1 {
+			if !containsNormalizedWhitespace(content, section.source) {
 				return fmt.Errorf("release onboarding source section drifted in %s", rewrite.path)
 			}
-			content = strings.Replace(content, section.source, section.installed, 1)
+			content = replaceNormalizedWhitespace(content, section.source, section.installed)
 		}
 		if rewrite.sourceCommandPrefix != "" {
 			content = strings.ReplaceAll(content, rewrite.sourceCommandPrefix, rewrite.installedCommandName)
