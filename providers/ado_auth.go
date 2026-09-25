@@ -24,6 +24,16 @@ const (
 	adoCredentialBearer = "bearer"
 
 	adoTokenRefreshSkew = 5 * time.Minute
+
+	// adoForceMsaPassThroughHeader and adoForceMsaPassThroughValue make a
+	// Bearer-authenticated request work against an org that is not
+	// Entra-backed (or an MSA account on one that is): without it, Azure
+	// DevOps answers a valid Entra bearer token with a 302 sign-in redirect
+	// or a 401 (TF400813), on both REST and Git. Microsoft's own `az devops`
+	// SDK sends it on every request. It is never sent for PAT/Basic
+	// credentials, which already work everywhere.
+	adoForceMsaPassThroughHeader = "X-VSS-ForceMsaPassThrough"
+	adoForceMsaPassThroughValue  = "true"
 )
 
 // ADOCredential is one authorization value returned by an ADOCredentialSource.
@@ -106,9 +116,13 @@ func (c ADOCredential) authorizationHeader() (string, error) {
 	}
 }
 
-func adoGitAuthEnv(header, remoteURL string) []string {
+// adoGitAuthEnv renders the child-process-only Git environment for one
+// authenticated request. bearer must come from the credential kind (e.g.
+// ADOCredential.Kind), not from re-parsing header, so a caller can never
+// drift from what actually minted the header.
+func adoGitAuthEnv(header, remoteURL string, bearer bool) []string {
 	scopedURL := strings.TrimRight(remoteURL, "/") + "/"
-	base := make([]string, 0, len(os.Environ())+6)
+	base := make([]string, 0, len(os.Environ())+8)
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
 		upper := strings.ToUpper(name)
@@ -118,14 +132,24 @@ func adoGitAuthEnv(header, remoteURL string) []string {
 		}
 		base = append(base, entry)
 	}
-	return append(base,
-		"GIT_CONFIG_COUNT=2",
+	count := 2
+	if bearer {
+		count = 3
+	}
+	env := append(base,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(count),
 		"GIT_CONFIG_KEY_0=credential.helper",
 		"GIT_CONFIG_VALUE_0=",
 		"GIT_CONFIG_KEY_1=http."+scopedURL+".extraheader",
 		"GIT_CONFIG_VALUE_1=AUTHORIZATION: "+header,
-		"GIT_TERMINAL_PROMPT=0",
 	)
+	if bearer {
+		env = append(env,
+			"GIT_CONFIG_KEY_2=http."+scopedURL+".extraheader",
+			"GIT_CONFIG_VALUE_2="+adoForceMsaPassThroughHeader+": "+adoForceMsaPassThroughValue,
+		)
+	}
+	return append(env, "GIT_TERMINAL_PROMPT=0")
 }
 
 // ADOGitAuthEnvironment resolves one credential into a child-process-only Git
@@ -149,7 +173,7 @@ func ADOGitAuthEnvironment(ctx context.Context, source ADOCredentialSource, regi
 		registrar.Register([]byte(credential.Secret))
 		registrar.Register([]byte(strings.TrimSpace(strings.TrimPrefix(header, "Basic "))))
 	}
-	return adoGitAuthEnv(header, remoteURL), nil
+	return adoGitAuthEnv(header, remoteURL, credential.Kind == adoCredentialBearer), nil
 }
 
 type adoBearerToken struct {

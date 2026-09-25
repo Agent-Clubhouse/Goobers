@@ -170,6 +170,11 @@ func TestADOProviderCloneUsesChildOnlyCredentialEnvironment(t *testing.T) {
 		!strings.Contains(joined, "GIT_TERMINAL_PROMPT=0") {
 		t.Fatalf("git auth environment = %#v", runner.env)
 	}
+	// PAT (Basic) never gets the MSA passthrough header: it already works on
+	// every org, and the header is undocumented and untested for Basic.
+	if strings.Contains(joined, "GIT_CONFIG_COUNT=3") || strings.Contains(joined, adoForceMsaPassThroughHeader) {
+		t.Fatalf("PAT git auth environment must not carry the passthrough header: %#v", runner.env)
+	}
 }
 
 func TestADOProviderRepositoryReachableUsesChildOnlyCredentialEnvironment(t *testing.T) {
@@ -213,6 +218,63 @@ func TestADOProviderRegistersDynamicBearerCredential(t *testing.T) {
 	}
 	if got := string(reg.Scrub([]byte("Bearer dynamic-bearer"))); strings.Contains(got, "dynamic-bearer") {
 		t.Fatalf("dynamic bearer was not scrubbed: %q", got)
+	}
+
+	// A bearer credential also gets the MSA passthrough header as a second
+	// git extraheader slot, since Bearer needs it against a non-Entra-backed
+	// org (or an MSA account) for git, not just REST.
+	runner := &adoAuthRunner{}
+	provider.Runner = runner
+	if _, err := provider.CloneRepository(context.Background(), CloneRequest{
+		Repository:  RepositoryRef{Name: "repo", Project: "project"},
+		Destination: "dest",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(runner.env, "\n")
+	if !strings.Contains(joined, "GIT_CONFIG_COUNT=3") ||
+		!strings.Contains(joined, "GIT_CONFIG_KEY_2=http.https://dev.azure.com/org/project/_git/repo/.extraheader") ||
+		!strings.Contains(joined, "GIT_CONFIG_VALUE_2="+adoForceMsaPassThroughHeader+": "+adoForceMsaPassThroughValue) {
+		t.Fatalf("bearer git auth environment missing the passthrough header slot: %#v", runner.env)
+	}
+}
+
+// ADOGitAuthEnvironment is the exported entry point for push, remediation,
+// worktree and recovery Git auth, so its slot layout is pinned directly: a
+// bearer credential gets three GIT_CONFIG slots (the third is the passthrough
+// extraheader), a PAT keeps exactly two.
+func TestADOGitAuthEnvironmentSlotLayoutByCredentialKind(t *testing.T) {
+	const remote = "https://dev.azure.com/example-org/example-project/_git/repo"
+	const scoped = "http." + remote + "/.extraheader"
+	slots := func(t *testing.T, source ADOCredentialSource) map[string]string {
+		t.Helper()
+		env, err := ADOGitAuthEnvironment(context.Background(), source, nil, remote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, entry := range env {
+			if key, value, _ := strings.Cut(entry, "="); strings.HasPrefix(key, "GIT_CONFIG_") {
+				got[key] = value
+			}
+		}
+		return got
+	}
+
+	bearer := slots(t, &rotatingADOCredentialSource{token: "bearer-token"})
+	if bearer["GIT_CONFIG_COUNT"] != "3" ||
+		bearer["GIT_CONFIG_VALUE_1"] != "AUTHORIZATION: Bearer bearer-token" ||
+		bearer["GIT_CONFIG_KEY_2"] != scoped ||
+		bearer["GIT_CONFIG_VALUE_2"] != adoForceMsaPassThroughHeader+": "+adoForceMsaPassThroughValue {
+		t.Fatalf("bearer slots = %#v", bearer)
+	}
+
+	pat := slots(t, NewADOPATCredentialSource("goobers", "pat-token"))
+	if pat["GIT_CONFIG_COUNT"] != "2" || pat["GIT_CONFIG_KEY_1"] != scoped {
+		t.Fatalf("PAT slots = %#v", pat)
+	}
+	if _, ok := pat["GIT_CONFIG_KEY_2"]; ok {
+		t.Fatalf("PAT must not carry a passthrough slot: %#v", pat)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -145,6 +146,7 @@ func TestRecoveryRestoreGitEnvironmentUsesStageScopedADOPAT(t *testing.T) {
 	if strings.Contains(joined, "host-pat-must-not-be-read") {
 		t.Fatalf("recovery forwarded the configured host PAT: %q", joined)
 	}
+	assertRecoveryFetchAcceptsCredentialEnvironment(t, env, "https://dev.azure.com/acme/widgets/_git/web")
 }
 
 func TestRecoveryRestoreGitEnvironmentPreservesADODynamicAuthentication(t *testing.T) {
@@ -185,10 +187,25 @@ func TestRecoveryRestoreGitEnvironmentPreservesADODynamicAuthentication(t *testi
 			if !strings.Contains(joined, "AUTHORIZATION: Bearer dynamic-ado-token") {
 				t.Fatalf("configured ADO dynamic auth not used: %q", joined)
 			}
+			assertRecoveryFetchAcceptsCredentialEnvironment(t, env, "https://dev.azure.com/acme/widgets/_git/web")
 			if scrubbed := string(registry.Scrub([]byte("token=dynamic-ado-token"))); strings.Contains(scrubbed, "dynamic-ado-token") {
 				t.Fatalf("ADO dynamic credential was not registered with the scrubber: %q", scrubbed)
 			}
 		})
+	}
+}
+
+// assertRecoveryFetchAcceptsCredentialEnvironment passes a resolved provider
+// credential environment through the same filter and validator that
+// recovery.FetchCurrentBase applies, so the provider's Git slot layout and
+// recovery's allowlist cannot drift apart. The empty base ref makes
+// FetchCurrentBase stop right after credential validation, before any Git
+// process runs.
+func assertRecoveryFetchAcceptsCredentialEnvironment(t *testing.T, env []string, remoteURL string) {
+	t.Helper()
+	_, err := recovery.FetchCurrentBase(context.Background(), t.TempDir(), remoteURL, "", recoveryAuthenticationEnvironment(env))
+	if err == nil || err.Error() != "invalid recovery base ref" {
+		t.Fatalf("recovery rejected the provider credential environment: %v", err)
 	}
 }
 

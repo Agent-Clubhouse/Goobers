@@ -134,6 +134,22 @@ the instance config surface documented above.
 - Credential-source failures fail closed; Goobers never falls back to another
   configured identity.
 
+### MSA passthrough header
+
+Every `azure-cli`, workload-identity, and managed-identity credential is a
+Bearer token. On an organization that is not Microsoft Entra-backed, or for a
+Microsoft account (MSA) on an Entra-backed one, a request carrying only a
+valid Bearer token gets a sign-in redirect or a `401` (`TF400813`) instead of
+a response. Goobers sends `X-VSS-ForceMsaPassThrough: true` alongside every
+Bearer `Authorization` header — on REST calls and as a second Git
+`http.<url>.extraheader` config value — so Bearer requests work the same way
+against both kinds of organization. Microsoft's own `az devops` tooling sends
+this header on every request for the same reason.
+
+A PAT (`Basic`) credential never carries this header: PAT authentication
+already succeeds on every organization, so the header would be untested and
+unnecessary there.
+
 ## Azure Boards work items
 
 The configured organization and project scope all work-item operations. Goobers

@@ -235,11 +235,11 @@ func (p *ADOProvider) CloneRepository(ctx context.Context, req CloneRequest) (Cl
 		if !ok {
 			return CloneResult{}, fmt.Errorf("authenticated ADO clone requires an environment-capable command runner")
 		}
-		header, authErr := p.authorizationHeader(ctx)
+		header, bearer, authErr := p.authorizationHeader(ctx)
 		if authErr != nil {
 			return CloneResult{}, fmt.Errorf("resolve ADO clone credential: %w", authErr)
 		}
-		out, err = runner.RunWithEnv(ctx, adoGitAuthEnv(header, cloneURL), "git", args...)
+		out, err = runner.RunWithEnv(ctx, adoGitAuthEnv(header, cloneURL, bearer), "git", args...)
 	}
 	if err != nil {
 		return CloneResult{}, fmt.Errorf("git clone: %w: %s", err, strings.TrimSpace(string(out)))
@@ -267,11 +267,11 @@ func (p *ADOProvider) RepositoryReachable(ctx context.Context, repo RepositoryRe
 	if !ok {
 		return fmt.Errorf("authenticated ADO repository preflight requires an environment-capable command runner")
 	}
-	header, err := p.authorizationHeader(ctx)
+	header, bearer, err := p.authorizationHeader(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve ADO repository credential: %w", err)
 	}
-	if _, err := runner.RunWithEnv(ctx, adoGitAuthEnv(header, p.repositoryURL(repo)), "git", args...); err != nil {
+	if _, err := runner.RunWithEnv(ctx, adoGitAuthEnv(header, p.repositoryURL(repo), bearer), "git", args...); err != nil {
 		return fmt.Errorf("git ls-remote: %w", err)
 	}
 	return nil
@@ -564,12 +564,15 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		if contentType != "" {
 			req.Header.Set("Content-Type", contentType)
 		}
-		header, err := p.authorizationHeader(ctx)
+		header, bearer, err := p.authorizationHeader(ctx)
 		if err != nil {
 			return nil, err
 		}
 		if header != "" {
 			req.Header.Set("Authorization", header)
+		}
+		if bearer {
+			req.Header.Set(adoForceMsaPassThroughHeader, adoForceMsaPassThroughValue)
 		}
 		featureusage.RecordProviderHTTP("ado")
 		resp, err := httpClientOrDefault(p.Client).Do(req)
@@ -626,23 +629,27 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 	}
 }
 
-func (p *ADOProvider) authorizationHeader(ctx context.Context) (string, error) {
+// authorizationHeader resolves the current credential's Authorization header.
+// The bearer bool comes from the credential's Kind, not from re-parsing
+// header, so callers that need to know whether the passthrough header
+// belongs on this request never have to guess from the header's shape.
+func (p *ADOProvider) authorizationHeader(ctx context.Context) (header string, bearer bool, err error) {
 	if p.credentialSource == nil {
-		return "", nil
+		return "", false, nil
 	}
 	credential, err := p.credentialSource.Credential(ctx)
 	if err != nil {
-		return "", fmt.Errorf("resolve ADO credential: %w", err)
+		return "", false, fmt.Errorf("resolve ADO credential: %w", err)
 	}
-	header, err := credential.authorizationHeader()
+	header, err = credential.authorizationHeader()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if p.secretRegistrar != nil {
 		p.secretRegistrar.Register([]byte(credential.Secret))
 		p.secretRegistrar.Register([]byte(strings.TrimSpace(strings.TrimPrefix(header, "Basic "))))
 	}
-	return header, nil
+	return header, credential.Kind == adoCredentialBearer, nil
 }
 
 func (p *ADOProvider) invalidateCredential() bool {
