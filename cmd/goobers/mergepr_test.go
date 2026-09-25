@@ -1559,27 +1559,34 @@ func TestMergePRRecordsRequiredStatusCheckPendingAsRefusal(t *testing.T) {
 	}
 }
 
-func TestMergePRKeepsUnrecognized405AsProviderFailure(t *testing.T) {
+func TestMergePRRecordsUnrecognized405AsRefusal(t *testing.T) {
 	st := &mergePRServerState{
 		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
 		mergeRefusalStatus: http.StatusMethodNotAllowed,
-		mergeRefusalBody:   `{"message":"Repository rule violations found\n\nChanges must be made through the merge queue"}`,
+		mergeRefusalBody:   `{"message":"Repository rule violations found\n\n1 review requesting changes by reviewers with write access.\n\n"}`,
 	}
 	server := newMergePRServer(t, "your-org", "your-repo", st)
 	root, dir := mergePREnv(t, server.URL, false, map[string]string{
 		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
 	})
 
-	code, _, _ := runArgs(t, "merge-pr", root)
-	if code == 0 {
-		t.Fatal("code = 0, want a provider-stage failure for an unrecognized 405")
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q; a merge-endpoint 405 is a business refusal", code, stderr)
 	}
 	result := readMergeResult(t, dir)
-	if _, ok := result["errorCode"]; !ok {
-		t.Fatalf("result = %+v, want the generic provider error envelope", result)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false", result)
 	}
-	if _, ok := result["reason"]; ok {
-		t.Fatalf("result = %+v, must not classify an unrelated 405 as a merge refusal", result)
+	wantReason := "merge-refused: Repository rule violations found 1 review requesting changes by reviewers with write access."
+	if result["reason"] != wantReason {
+		t.Fatalf("result = %+v, want reason=%q", result, wantReason)
+	}
+	if result["selectedNumber"] != "9" || result["selectedHeadSha"] != "head123" {
+		t.Fatalf("result = %+v, want refusal routing outputs", result)
+	}
+	if _, ok := result["errorCode"]; ok {
+		t.Fatalf("result = %+v, want no generic provider error envelope", result)
 	}
 }
 
