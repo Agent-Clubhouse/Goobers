@@ -264,7 +264,7 @@ func (p *ADOProvider) LinkPullRequestToWorkItem(ctx context.Context, codeRepo, w
 			}
 			return err
 		}
-		p.recordMutation(ctx, "issue", workItemID, "link-pr")
+		p.recordMutation(ctx, "issue", workItemID, "link-pr", workItemRepo)
 		return nil
 	}
 	return fmt.Errorf("link ADO work item %s to pull request %s after %d revision conflicts: %w", workItemID, pullID, adoLinkRetries, conflict)
