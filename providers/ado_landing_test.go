@@ -73,6 +73,9 @@ func TestADOProviderMergePullRequestSucceedsImmediately(t *testing.T) {
 	if !ok || opts["mergeStrategy"] != "squash" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=squash", patched["completionOptions"])
 	}
+	if opts["deleteSourceBranch"] != true {
+		t.Fatalf("completionOptions = %#v, want deleteSourceBranch=true", patched["completionOptions"])
+	}
 	// lastMergeSourceCommit is read-only on ADO's PR-update endpoint (sending
 	// it returns a 400); the head pin is enforced against the fetched detail
 	// before the PATCH, not carried in the body.
@@ -283,6 +286,9 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 	opts, ok := patched["completionOptions"].(map[string]interface{})
 	if !ok || opts["mergeStrategy"] != "noFastForward" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=noFastForward", patched["completionOptions"])
+	}
+	if opts["deleteSourceBranch"] != true {
+		t.Fatalf("completionOptions = %#v, want deleteSourceBranch=true", patched["completionOptions"])
 	}
 }
 
