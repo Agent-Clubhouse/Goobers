@@ -3849,7 +3849,7 @@ a private release mirror).
 
 ~~~console
 $ goobers self-update --policy on-release
-$ goobers self-update --policy manual --target v0.5.0
+$ goobers self-update --policy manual --target v0.5.1
 ~~~
 
 ## `goobers service`

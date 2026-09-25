@@ -269,8 +269,8 @@
       },
       {
         "capability": "ado:work-items:write",
-        "consequence": "the separately brokered Azure Boards credential is not injected, so native ADO work-item linking fails closed before pull-request creation",
-        "exact": true
+        "consequence": "the separately brokered Azure Boards credential is required at runtime only when an ADO pull request is linked to its work item",
+        "optional": true
       }
     ]
   },

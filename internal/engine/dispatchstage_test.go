@@ -1312,7 +1312,7 @@ func TestModeThreeNamesACheckoutCapabilityForRepoWorkspaces(t *testing.T) {
 			// Exactly production open-pr's shape: provider authority, a repo
 			// workspace, and no repo-shaped capability.
 			{Name: "open-pr", Type: apiv1.TaskDeterministic, Goal: "open a pr",
-				Capabilities:  []string{"provider:pr:write", "ado:work-items:write"},
+				Capabilities:  []string{"provider:pr:write"},
 				PolicyActions: []string{"open-or-update-pr"},
 				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}, Workspace: apiv1.WorkspaceRepo}},
 		},
