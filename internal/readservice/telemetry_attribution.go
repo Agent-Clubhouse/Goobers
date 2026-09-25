@@ -282,7 +282,7 @@ func RecordFaultAuditFix(ctx context.Context, root, findingID string, appliedAt 
 	})
 }
 
-func updateFaultAuditState(ctx context.Context, root string, update func(*faultAuditState)) error {
+func updateFaultAuditState(ctx context.Context, root string, update func(*faultAuditState)) (err error) {
 	path := faultAuditStatePath(root)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create fault audit state directory: %w", err)
@@ -306,7 +306,11 @@ func updateFaultAuditState(ctx context.Context, root string, update func(*faultA
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	defer held.Release()
+	defer func() {
+		if releaseErr := held.Release(); err == nil && releaseErr != nil {
+			err = fmt.Errorf("unlock fault audit state: %w", releaseErr)
+		}
+	}()
 	state, err := readFaultAuditState(root)
 	if err != nil {
 		return err

@@ -9,26 +9,38 @@ import (
 	"time"
 )
 
+// FaultAuditSchemaVersion identifies the persisted fault-audit report contract.
 const FaultAuditSchemaVersion = "goobers.dev/backprop/fault-audit/v1"
 
+// FaultDomain classifies the ownership boundary most likely responsible for a failure.
 type FaultDomain string
 
 const (
+	// FaultDomainProductRuntime identifies failures attributable to Goobers runtime behavior.
 	FaultDomainProductRuntime FaultDomain = "goobers-product-runtime"
-	FaultDomainExternal       FaultDomain = "harness-model-provider-environment"
-	FaultDomainWorkflow       FaultDomain = "workflow-definition"
-	FaultDomainUnknown        FaultDomain = "mixed-or-unknown"
+	// FaultDomainExternal identifies failures attributable to the harness, model, provider, or environment.
+	FaultDomainExternal FaultDomain = "harness-model-provider-environment"
+	// FaultDomainWorkflow identifies failures attributable to workflow definitions or instructions.
+	FaultDomainWorkflow FaultDomain = "workflow-definition"
+	// FaultDomainUnknown identifies failures without sufficient evidence for a narrower domain.
+	FaultDomainUnknown FaultDomain = "mixed-or-unknown"
 )
 
+// VerificationState describes post-fix evidence for a fault finding.
 type VerificationState string
 
 const (
-	VerificationOpen      VerificationState = "open"
-	VerificationPending   VerificationState = "verification-pending"
+	// VerificationOpen identifies a finding without a recorded fix.
+	VerificationOpen VerificationState = "open"
+	// VerificationPending identifies a fixed finding awaiting a matching held-out observation.
+	VerificationPending VerificationState = "verification-pending"
+	// VerificationRecovered identifies a fixed finding with a matching healthy observation.
 	VerificationRecovered VerificationState = "recovered"
-	VerificationRepeated  VerificationState = "repeated"
+	// VerificationRepeated identifies a fixed finding that recurred in a matching observation.
+	VerificationRepeated VerificationState = "repeated"
 )
 
+// FaultAuditConfig bounds an audit and supplies durable cooldown and fix state.
 type FaultAuditConfig struct {
 	Now               time.Time
 	Since             time.Time
@@ -43,6 +55,7 @@ type FaultAuditConfig struct {
 	FixesAppliedAt    map[string]time.Time
 }
 
+// FaultFinding describes one evidence-backed failure signature and its likely owner.
 type FaultFinding struct {
 	ID                 string                    `json:"id"`
 	Signature          string                    `json:"signature"`
@@ -62,6 +75,7 @@ type FaultFinding struct {
 	Verification       VerificationState         `json:"verification"`
 }
 
+// FaultAuditReport groups findings by ownership boundary.
 type FaultAuditReport struct {
 	Schema              string         `json:"schema"`
 	Mode                string         `json:"mode"`
@@ -86,6 +100,7 @@ type faultSignal struct {
 
 var unstableSignaturePart = regexp.MustCompile(`(?i)(?:[a-f0-9]{16,}|[0-9]+|[a-z]:\\[^\s]+|/[^\s]+)`)
 
+// AuditFaultDomains classifies stored attribution observations into actionable fault domains.
 func AuditFaultDomains(observations []AttributionObservation, config FaultAuditConfig) FaultAuditReport {
 	config = normalizeAuditConfig(config)
 	report := FaultAuditReport{
