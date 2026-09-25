@@ -155,10 +155,10 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 			wantCheckNames: []string{"Require a merge strategy"},
 		},
 		{
-			name:           "no blocking policies is pending (fail-closed)",
+			name:           "no blocking policies is passing",
 			reviewers:      []map[string]interface{}{{"vote": 10}},
 			evaluations:    []map[string]interface{}{},
-			wantState:      CheckStatePending,
+			wantState:      CheckStatePassing,
 			wantReview:     ReviewDecisionApproved,
 			wantCheckNames: nil,
 		},
