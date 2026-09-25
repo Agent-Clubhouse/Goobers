@@ -29,7 +29,8 @@ name: CI
 # (asserted by test/ci's group tests).
 #
 # Race posture: a data race is a source-level property, not OS behaviour, so the
-# full -race suite runs on Linux (sharded for wall-clock). One consolidated
+# full -race suite runs on Linux (sharded for wall-clock; the heaviest packages
+# are split by test across shards, see the `unit` job). One consolidated
 # macOS runtime job runs the same behavioural suite without race or coverage
 # instrumentation, then the macOS shipped-workflow and native Seatbelt checks.
 # That preserves macOS-specific behaviour while using one of the five hosted
@@ -448,9 +449,19 @@ jobs:
 
   # The long pole: the -race unit suite. Split into shards across Linux runners
   # (test/ci group unit + GOOBERS_CI_SHARD; the hermetic runner partitions
-  # `go list ./...` deterministically, proven disjoint + exhaustive by
-  # TestSelectShardPartitionsExactly). Full git history is required — the DSL
-  # SemVer-compatibility tests read the latest reachable tag.
+  # `go list ./...` deterministically by LPT over .github/unit-shard-weights.json).
+  # A package too heavy for any one shard (cmd/goobers, release) is listed in
+  # .github/unit-shard-splits.json and scheduled as equal pieces: the shard
+  # holding a piece enumerates the package with `go test -list`, partitions its
+  # top-level tests by the recorded per-test seconds, and runs its piece with
+  # an exact -run/-skip filter concurrently with its whole packages. Unmeasured
+  # (new) tests get the package's mean weight and are always assigned.
+  # TestSelectShardPartitionsExactly and TestSplitShardsRunEveryTestExactlyOnce
+  # prove the shards disjoint and exhaustive. Five shards: the split drops the
+  # modelled critical path from ~23 to ~10 min, and a sixth shard buys nothing
+  # (the largest single tests and per-job setup become the floor).
+  # Full git history is required — the DSL SemVer-compatibility tests read the
+  # latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
     # Not gated on preflight: the shards are the long pole, and waiting for
@@ -459,7 +470,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/3", "2/3", "3/3"]
+        shard: ["1/5", "2/5", "3/5", "4/5", "5/5"]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -535,10 +546,24 @@ jobs:
             exit 1
           fi
 
+      # The shard also records race-mode test timings (job "unit-shard", one
+      # part file per go test invocation) so the split table can be refreshed
+      # from the runs it balances: `go run ./test/testtiming splits` merges the
+      # parts. See docs/guides/test-timing.md.
       - name: Unit suite (-race, shard ${{ matrix.shard }})
         env:
           GOOBERS_CI_SHARD: ${{ matrix.shard }}
+          GOOBERS_TEST_TIMING_FILE: test-timings/unit-race.json
         run: go run ./test/ci group unit
+
+      - name: Upload race shard timing
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-timings-race-linux-${{ strategy.job-index }}
+          path: test-timings/unit-race.part*.json
+          if-no-files-found: warn
 
   # Linux runs the whole behavioural unit suite (no -race) separately from the
   # race shards so its coverage profile includes Linux-only files.

@@ -738,6 +738,21 @@ func TestChecksWrapUnitTestWhenTimingOutputIsConfigured(t *testing.T) {
 	t.Fatal("checks do not include the test step")
 }
 
+func TestShardedTimingIsFiledUnderTheShardJob(t *testing.T) {
+	t.Parallel()
+	all := checks(nil, toolchain{goCommand: "go", npmCommand: "npm", gitCommand: "git"}, buildMetadata{}, "linux", "test-timings/unit-race.json")
+	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(name string) string {
+		if name == "GOOBERS_CI_SHARD" {
+			return "4/5"
+		}
+		return ""
+	})
+	want := "run ./test/hermetic --go-command go --timing-job unit-shard --timing-output test-timings/unit-race.json --shard 4/5 -- -race -timeout 30m -count=1 ./..."
+	if args := strings.Join(labelArgs(unit, "test"), " "); args != want {
+		t.Fatalf("sharded timed test args = %q, want %q", args, want)
+	}
+}
+
 func TestExecuteChecksPrintsElapsedPerTarget(t *testing.T) {
 	t.Parallel()
 	times := []time.Time{

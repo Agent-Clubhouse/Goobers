@@ -97,6 +97,83 @@ packages, and review actual Linux shard elapsed times after a refresh. Loader
 validation refuses missing or malformed provenance, but never rejects a
 weights table for being old.
 
+## Test-level splits for heavy packages
+
+Package-level LPT cannot put one package on more than one runner, so a package
+heavier than a fair share of the suite sets the critical path however many
+shards there are (`cmd/goobers` alone ran ~20 minutes under `-race`, with
+almost no `t.Parallel()`). `.github/unit-shard-splits.json` lists those
+packages, each with a piece count and relative per-test seconds:
+
+```json
+{
+  "schemaVersion": 1,
+  "source": {"run": 1, "commit": "<sha>", "generatedAt": "...", "timingJobs": ["unit"], "platform": "linux"},
+  "packages": {
+    "github.com/goobers/goobers/cmd/goobers": {"pieces": 3, "tests": {"TestExample": 0.12}}
+  }
+}
+```
+
+The hermetic runner schedules a split package as `pieces` items, each weighing
+the package's `unit-shard-weights.json` seconds divided by `pieces`, alongside
+the whole packages. A shard that receives a piece:
+
+1. enumerates the package's top-level tests, examples, and fuzz targets with
+   `go test -list .` using the suite's own flags (so the listed binary is the
+   one the run reuses from the build cache);
+2. partitions them by LPT over the recorded per-test seconds. A test absent
+   from the table (new or renamed) weighs the package's mean measured test, so
+   it is still assigned to exactly one piece and new tests spread across
+   pieces instead of piling into one. Every test weighs at least 10ms, so the
+   long tail of near-zero tests is dealt evenly and each piece's name list
+   stays near 1/`pieces` of the package. The arithmetic is integer
+   milliseconds, so every runner derives the identical partition;
+3. runs its piece as a separate `go test` process, concurrently with the
+   shard's whole packages, filtered by an exact anchored `-run` over the
+   piece's names or `-skip` over the other pieces' names, whichever is
+   shorter. A filter over 96 KiB fails the shard loudly (Linux caps a single
+   argument at 128 KiB): raise that package's `pieces`.
+   `TestCheckedInSplitFiltersKeepHeadroom` fails at 72 KiB, while that is
+   still a routine change.
+
+Subtests always follow their top-level test. `TestMain` runs once per piece,
+so per-package guards such as the `cmd/goobers` package-directory guard run in
+every shard holding a piece. Coverage profiles are not produced by the
+sharded run (the unsharded `unit-linux-coverage` job owns them).
+`TestSplitShardsRunEveryTestExactlyOnce` and
+`TestSplitPiecesRunEveryFixtureTestExactlyOnce` (`test/hermetic`) prove every
+enumerated test runs in exactly one piece.
+
+Only proportions inside a package matter, but they differ under `-race`: the
+coverage job's non-race per-test times left the `cmd/goobers` pieces at 247s,
+682s, and 614s in their first race run. Each race shard therefore uploads its own
+race-mode timings as `test-timings-race-linux-<n>` (job `unit-shard`, one
+`unit-race.part<k>.json` per `go test` process); refresh the table from those
+so the pieces are balanced by the runs they split:
+
+```sh
+REPOSITORY=Agent-Clubhouse/Goobers
+RUN_ID=$(gh run list --repo "$REPOSITORY" --workflow CI --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+TIMING_DIR=$(mktemp -d)
+gh run download --repo "$REPOSITORY" "$RUN_ID" --pattern 'test-timings-race-linux-*' --dir "$TIMING_DIR"
+gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" > "$TIMING_DIR/run.json"
+go run ./test/testtiming splits \
+  $(find "$TIMING_DIR" -name 'unit-race.part*.json' -exec printf -- '-timing %s ' {} \;) \
+  -run-metadata "$TIMING_DIR/run.json" \
+  -split github.com/goobers/goobers/cmd/goobers=3 \
+  -split github.com/goobers/goobers/release=2 \
+  -out .github/unit-shard-splits.json
+```
+
+The generator requires a completed successful run, one platform across all
+parts, and no test measured twice, and records the run's branch. Refresh from
+`main`; a PR that changes the split itself may seed from its own run's race
+artifacts. Revisit the piece counts and the matrix's shard count together:
+splitting helps until the largest single tests and per-job setup (checkout,
+module download, and compiling the piece's test binary before it can start)
+become the floor.
+
 Timing budgets are intentionally soft, and the comparison command always
 succeeds regardless of what the timing data shows -- test failures and
 malformed timing data remain the only ordinary CI failures this step can

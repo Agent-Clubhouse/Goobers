@@ -450,7 +450,7 @@ func TestSelectShardPartitionsExactly(t *testing.T) {
 			}
 			seen := map[string]int{}
 			for index := 1; index <= total; index++ {
-				for _, pkg := range selectShard(packages, shardSpec{index: index, total: total}, weights) {
+				for _, pkg := range selectShardPackages(packages, shardSpec{index: index, total: total}, weights) {
 					seen[pkg]++
 				}
 			}
@@ -480,9 +480,9 @@ func TestSelectShardIsDeterministicRegardlessOfInputOrder(t *testing.T) {
 	reversed := []string{"e", "d", "c", "b", "a"}
 	spec := shardSpec{index: 1, total: 2}
 	weights := shardWeights{DefaultSeconds: 1}
-	if !reflect.DeepEqual(selectShard(forward, spec, weights), selectShard(reversed, spec, weights)) {
+	if !reflect.DeepEqual(selectShardPackages(forward, spec, weights), selectShardPackages(reversed, spec, weights)) {
 		t.Fatalf("selectShard depends on input order: %v vs %v",
-			selectShard(forward, spec, weights), selectShard(reversed, spec, weights))
+			selectShardPackages(forward, spec, weights), selectShardPackages(reversed, spec, weights))
 	}
 }
 
@@ -495,6 +495,10 @@ func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	splits, err := loadShardSplits(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	list := exec.Command("go", "list", "./...")
 	list.Dir = root
 	output, err := list.Output()
@@ -503,11 +507,9 @@ func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
 	}
 	packages := strings.Fields(string(output))
 
-	totals := make([]float64, 3)
-	for index := 1; index <= len(totals); index++ {
-		for _, pkg := range selectShard(packages, shardSpec{index: index, total: len(totals)}, weights) {
-			totals[index-1] += weights.packageSeconds(pkg)
-		}
+	totals := make([]float64, 0, linuxRaceShards)
+	for _, shard := range assignShards(shardItems(packages, weights, splits), linuxRaceShards) {
+		totals = append(totals, shard.seconds)
 	}
 	sort.Float64s(totals)
 	if ratio := totals[len(totals)-1] / totals[0]; ratio > 2 {
@@ -532,10 +534,17 @@ func TestLinuxShardsIncludeJournalOTLPPackages(t *testing.T) {
 		t.Fatalf("discover Linux unit packages: %v\n%s", err, output)
 	}
 	packages := strings.Fields(string(output))
+	splits, err := loadShardSplits(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	seen := make(map[string][]int)
-	for index := 1; index <= 3; index++ {
-		for _, pkg := range selectShard(packages, shardSpec{index: index, total: 3}, weights) {
-			seen[pkg] = append(seen[pkg], index)
+	for index, shard := range assignShards(shardItems(packages, weights, splits), linuxRaceShards) {
+		for _, pkg := range shard.packages {
+			seen[pkg] = append(seen[pkg], index+1)
+		}
+		for _, piece := range shard.pieces {
+			seen[piece.pkg] = append(seen[piece.pkg], index+1)
 		}
 	}
 	for _, path := range []string{
@@ -544,10 +553,14 @@ func TestLinuxShardsIncludeJournalOTLPPackages(t *testing.T) {
 		"cmd/goobers", "test/ci", "test/hermetic",
 	} {
 		pkg := "github.com/goobers/goobers/" + path
-		if len(seen[pkg]) != 1 {
-			t.Errorf("%s belongs to shards %v, want exactly one Linux race shard", pkg, seen[pkg])
+		want := 1
+		if split, ok := splits.Packages[pkg]; ok {
+			want = split.Pieces
+		}
+		if len(seen[pkg]) != want {
+			t.Errorf("%s belongs to shards %v, want %d Linux race shard item(s)", pkg, seen[pkg], want)
 		} else {
-			t.Logf("%s: Linux race shard %d/3", pkg, seen[pkg][0])
+			t.Logf("%s: Linux race shards %v of %d", pkg, seen[pkg], linuxRaceShards)
 		}
 	}
 }

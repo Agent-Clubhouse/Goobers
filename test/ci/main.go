@@ -187,8 +187,12 @@ func groupChecksOnly(all []check, group string) []check {
 //     producing a profile that no gate consumes.
 //   - GOOBERS_CI_SHARD=i/n splits the unit suite across n runners (1-based i),
 //     dropping the coverage profile (partial per shard; the coverage *gate* is
-//     the separate full-tier cover-check). Timing capture stays with the
-//     unsharded owner (it only emits when GOOBERS_TEST_TIMING_FILE is set).
+//     the separate full-tier cover-check). The hermetic runner assigns whole
+//     packages and pieces of the split packages in .github/unit-shard-splits.json.
+//     With GOOBERS_TEST_TIMING_FILE set, a shard records its timings under the
+//     "unit-shard" job (one part file per go test invocation), so race-mode
+//     measurements can refresh the split table; the unsharded coverage job
+//     keeps the "unit" timing job and its budget report.
 //   - GOOBERS_CI_TEST_TIMEOUT raises the per-package timeout for slower
 //     platforms without weakening the suite or changing its package set.
 func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
@@ -250,22 +254,31 @@ func withoutArg(args []string, drop string) []string {
 }
 
 // shardUnitArgs injects `--shard i/n` into the hermetic runner invocation
-// (before the `--` that separates hermetic flags from go-test arguments) and
-// drops the coverage profile, which is only meaningful over the whole tree.
+// (before the `--` that separates hermetic flags from go-test arguments),
+// drops the coverage profile, which is only meaningful over the whole tree,
+// and files any timing capture under the "unit-shard" job so a shard's partial
+// measurements are never read as the whole-suite "unit" timing.
 func shardUnitArgs(args []string, shard string) []string {
 	result := make([]string, 0, len(args)+2)
-	for _, arg := range args {
-		switch arg {
-		case "--":
+	separated := false
+	for index, arg := range args {
+		switch {
+		case arg == "--" && !separated:
+			separated = true
 			result = append(result, "--shard", shard, "--")
-		case "-covermode=atomic", "-coverprofile=coverage.out":
+		case arg == "-covermode=atomic" || arg == "-coverprofile=coverage.out":
 			// Partial coverage per shard is meaningless; skip it.
+		case !separated && index > 0 && args[index-1] == "--timing-job":
+			result = append(result, shardTimingJob)
 		default:
 			result = append(result, arg)
 		}
 	}
 	return result
 }
+
+// shardTimingJob names the timing a sharded unit run records.
+const shardTimingJob = "unit-shard"
 
 func configuredToolchain(getenv func(string) string) toolchain {
 	return toolchain{
