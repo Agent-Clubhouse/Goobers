@@ -325,6 +325,7 @@ var commands = map[string]Command{
 		ResultFile: "pr-result.json",
 		Capabilities: []CapabilityUse{
 			required(capability.ProviderPRWrite, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
+			requiredExact(capability.ADOWorkItemsWrite, "the separately brokered Azure Boards credential is not injected, so native ADO work-item linking fails closed before pull-request creation"),
 		},
 	},
 	"post-merge": {

@@ -32,9 +32,19 @@ type adoPullRequestWorkItemLinker interface {
 	LinkPullRequestToWorkItem(context.Context, providers.RepositoryRef, providers.RepositoryRef, string, string) error
 }
 
+func openPRWorkItemLinker(root string, repo providers.RepositoryRef, haveIssue bool, issueID string) (adoPullRequestWorkItemLinker, error) {
+	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
+		return nil, nil
+	}
+	return newProviderForStageSurface[adoPullRequestWorkItemLinker](root, repo, false,
+		withStageProviderCapability(capability.ADOWorkItemsWrite),
+		withStageProviderMutations("issue"),
+	)
+}
+
 func linkADOPullRequestToWorkItem(
 	ctx context.Context,
-	stageProvider providers.Provider,
+	linker adoPullRequestWorkItemLinker,
 	repo providers.RepositoryRef,
 	root, issueID, pullID string,
 	haveIssue bool,
@@ -43,8 +53,7 @@ func linkADOPullRequestToWorkItem(
 	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
 		return 0
 	}
-	linker, ok := stageProvider.(adoPullRequestWorkItemLinker)
-	if !ok {
+	if linker == nil {
 		pf(stderr, "error: ADO provider cannot create native work-item links\n")
 		return 1
 	}
@@ -62,7 +71,7 @@ func linkADOPullRequestToWorkItem(
 func openPullRequestWithADOLink(
 	ctx context.Context,
 	provider openPRProvider,
-	stageProvider providers.Provider,
+	linker adoPullRequestWorkItemLinker,
 	repo providers.RepositoryRef,
 	root, issueID string,
 	haveIssue bool,
@@ -80,7 +89,7 @@ func openPullRequestWithADOLink(
 		}
 		return providers.PullRequestResult{}, failProviderStage(stderr, "open pull request", err, "pr-result.json")
 	}
-	return result, linkADOPullRequestToWorkItem(ctx, stageProvider, repo, root, issueID, result.ID, haveIssue, stderr)
+	return result, linkADOPullRequestToWorkItem(ctx, linker, repo, root, issueID, result.ID, haveIssue, stderr)
 }
 
 const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
@@ -325,6 +334,12 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	workItemLinker, err := openPRWorkItemLinker(root, repo, haveIssue, issueID)
+	if err != nil {
+		pf(stderr, "error: resolve ADO work-item link authority: %v\n", err)
+		return 1
+	}
+
 	// Persist the mandatory finding before the external mutation. If the
 	// process crashes after GitHub accepts the PR, the prepared record still
 	// survives for a later exact-cohort verification pass. Repasses atomically
@@ -348,7 +363,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	result, code := openPullRequestWithADOLink(ctx, provider, stageProvider, repo, root, issueID, haveIssue, prReq, tutorHoldout, stderr)
+	result, code := openPullRequestWithADOLink(ctx, provider, workItemLinker, repo, root, issueID, haveIssue, prReq, tutorHoldout, stderr)
 	if code != 0 {
 		return code
 	}

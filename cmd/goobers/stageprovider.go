@@ -329,6 +329,9 @@ func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provid
 	if cfg.openPR {
 		return newADOProviderForOpenPR(cfg.root, cfg.repo)
 	}
+	if cfg.capability == capability.ADOWorkItemsWrite {
+		return newADOProviderForWorkItemWrite(cfg.root, cfg.repo)
+	}
 	return newADOProviderForStage(cfg.root, cfg.repo)
 }
 

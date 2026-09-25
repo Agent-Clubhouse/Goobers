@@ -72,13 +72,9 @@ func adoEvaluationSatisfied(ev adoPolicyEvaluation) bool {
 	}
 }
 
-// adoEvaluationState maps one evaluation to a check state. A broken build or
-// status policy is a CI failure; for any other kind "broken" keeps its
-// previous meaning (not reported).
-func adoEvaluationState(ev adoPolicyEvaluation, kind adoPolicyKind) CheckState {
-	if kind == adoPolicyCI && strings.EqualFold(ev.Status, "broken") {
-		return CheckStateFailing
-	}
+// adoEvaluationState maps one evaluation to a check state. Broken blocking
+// policies fail closed regardless of policy kind.
+func adoEvaluationState(ev adoPolicyEvaluation, _ adoPolicyKind) CheckState {
 	return adoPolicyCheckState(ev.Status)
 }
 
