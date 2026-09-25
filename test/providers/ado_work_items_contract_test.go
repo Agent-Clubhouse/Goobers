@@ -15,6 +15,10 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// adoContractIdentityID is the identity GUID the fake backend reports from
+// connectionData and stamps on every comment the provider posts.
+const adoContractIdentityID = "00000000-0000-0000-0000-00000000c1a1"
+
 type adoWorkItemBackend struct {
 	mu       sync.Mutex
 	revision int
@@ -47,6 +51,11 @@ func newADOWorkItemBackend() *adoWorkItemBackend {
 func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"authenticatedUser": map[string]interface{}{
+			"id": adoContractIdentityID, "providerDisplayName": "Goobers Bot",
+		}})
+	})
 	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -58,6 +67,13 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 		b.query = body["query"]
 		b.mu.Unlock()
 		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 42}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypecategories/Microsoft.RequirementCategory", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"name":                "Requirement Category",
+			"referenceName":       "Microsoft.RequirementCategory",
+			"defaultWorkItemType": map[string]string{"name": "Issue"},
+		})
 	})
 	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -138,7 +154,7 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 			}
 			comment := map[string]interface{}{
 				"id": len(b.comments) + 1, "text": body["text"],
-				"createdBy":   map[string]string{"displayName": "Goobers Bot"},
+				"createdBy":   map[string]string{"id": adoContractIdentityID, "displayName": "Goobers Bot"},
 				"createdDate": "2026-07-26T12:00:00Z",
 				"url":         "comment-url",
 			}

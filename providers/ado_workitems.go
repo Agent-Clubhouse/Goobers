@@ -22,6 +22,26 @@ const (
 	adoClaimRetries    = 4
 	adoMaxTagLength    = 400
 	adoClaimTagPrefix  = "goobers:claim-run:"
+
+	// adoRequirementCategory is the process-agnostic category ADO-N27 resolves
+	// a default create type from: its defaultWorkItemType is "User Story" on
+	// Agile, "Product Backlog Item" on Scrum, "Issue" on Basic, or whatever an
+	// inherited process renamed it to. The category's own referenceName is
+	// stable across processes even when the type name is not.
+	adoRequirementCategory = "Microsoft.RequirementCategory"
+
+	// adoDescriptionMarkdownFormat is the value CreateWorkItem and UpdateWorkItem
+	// write to a "/multilineFieldsFormat/System.Description" JSON-Patch op to
+	// opt the work item's System.Description field into Markdown rendering.
+	// It is per-field and one-way (Azure Boards does not offer a revert to
+	// HTML), so it is safe to resend on every create and every update that
+	// writes the field.
+	adoDescriptionMarkdownFormat = "Markdown"
+
+	// adoCommentFormat selects Markdown rendering for a posted comment via
+	// the documented `format` query parameter on the 7.1-preview.4 comments
+	// endpoint (Comments - Add Work Item Comment).
+	adoCommentFormat = "markdown"
 )
 
 // ListWorkItems lists Azure Boards work items as unified work items.
@@ -244,10 +264,6 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 	if err := validateADOTags(req.Labels); err != nil {
 		return WorkItem{}, err
 	}
-	itemType := req.Type
-	if itemType == "" {
-		itemType = "Issue"
-	}
 	itemBody := withRunIDFooter(req.Body, req.RunID)
 	var err error
 	itemBody, err = withAttribution(itemBody, p.attribution, "issue-create")
@@ -263,6 +279,13 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 			return existing, nil
 		}
 	}
+	itemType := req.Type
+	if itemType == "" {
+		itemType, err = p.adoDefaultRequirementType(ctx, project)
+		if err != nil {
+			return WorkItem{}, err
+		}
+	}
 	endpoint, err := p.workURL(project, "workitems", "$"+itemType)
 	if err != nil {
 		return WorkItem{}, err
@@ -271,6 +294,7 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 	patch := []adoPatchOperation{
 		{Op: "add", Path: "/fields/System.Title", Value: req.Title},
 		{Op: "add", Path: "/fields/System.Description", Value: itemBody},
+		{Op: "add", Path: "/multilineFieldsFormat/System.Description", Value: adoDescriptionMarkdownFormat},
 	}
 	if len(labels) > 0 {
 		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(labels, "; ")})
@@ -473,6 +497,10 @@ func (p *ADOProvider) CreateWorkItemComment(ctx context.Context, repo Repository
 	if err != nil {
 		return Comment{}, err
 	}
+	endpoint, err = addQuery(endpoint, url.Values{"format": []string{adoCommentFormat}})
+	if err != nil {
+		return Comment{}, err
+	}
 	var comment adoComment
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": body}, &comment); err != nil {
 		return Comment{}, err
@@ -517,6 +545,7 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 		}
 		if req.Body != nil {
 			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.Description", Value: *req.Body})
+			ops = append(ops, adoPatchOperation{Op: "add", Path: "/multilineFieldsFormat/System.Description", Value: adoDescriptionMarkdownFormat})
 		}
 		if req.Assignee != nil {
 			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
@@ -703,13 +732,11 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 // TEMPORARY — #1990 removes it (target 2026-08-14). A pre-1.0 product should
 // not carry a permanent compat path for a format only Goobers ever wrote.
 //
-// KNOWN GAP vs the GitHub provider: GitHub filters breadcrumbs to the
-// authenticated login, so a project member cannot spoof a claim by posting the
-// marker themselves. The ADO provider has no authenticated-identity lookup
-// wired, so it cannot apply the same filter and a member with comment access
-// could forge one. Tracked separately rather than silently accepted.
+// Only breadcrumbs written by the authenticated identity count (see
+// ownClaimComments), matching the GitHub provider's filter to the
+// authenticated login.
 func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
-	comments, err := p.ListComments(ctx, repo, id)
+	comments, err := p.ownClaimComments(ctx, repo, id)
 	if err != nil {
 		return "", false, err
 	}
@@ -746,6 +773,32 @@ func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id
 		return "", false, err
 	}
 	return adoClaimOwner(adoRawTags(raw))
+}
+
+// ownClaimComments lists the work item's comments written by the identity the
+// provider's credential authenticates as. Authorship is keyed on the stable
+// identity GUID (createdBy.id equals connectionData authenticatedUser.id),
+// never the display name, so a project member cannot take or end a claim by
+// posting the breadcrumb text themselves. When the identity cannot be resolved
+// the read fails; it never falls back to an unfiltered scan. Breadcrumbs
+// written under a previous credential identity stop counting once the
+// identity changes.
+func (p *ADOProvider) ownClaimComments(ctx context.Context, repo RepositoryRef, id string) ([]Comment, error) {
+	self, err := p.AuthenticatedIdentity(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve claim marker author: %w", err)
+	}
+	comments, err := p.ListComments(ctx, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	own := make([]Comment, 0, len(comments))
+	for _, comment := range comments {
+		if comment.AuthorID != "" && strings.EqualFold(comment.AuthorID, self.ID) {
+			own = append(own, comment)
+		}
+	}
+	return own, nil
 }
 
 // ReleaseWorkItemClaim ends the current ADO claim epoch: it posts a release
@@ -932,6 +985,7 @@ func mapADOComment(comment adoComment) Comment {
 	return Comment{
 		ID:         strconv.Itoa(id),
 		Author:     author,
+		AuthorID:   strings.TrimSpace(comment.CreatedBy.ID),
 		AuthorType: "user",
 		Body:       comment.Text,
 		CreatedAt:  createdAt,
@@ -1160,6 +1214,58 @@ func (p *ADOProvider) adoWorkItemStateCategories(ctx context.Context, repo Repos
 	}
 	p.stateMu.Unlock()
 	return cached, nil
+}
+
+// adoWorkItemTypeCategory is the shape of
+// GET workitemtypecategories/{category}, trimmed to the default type name
+// ADO-N27 needs to pick a process-agnostic create type.
+type adoWorkItemTypeCategory struct {
+	DefaultWorkItemType adoWorkItemTypeReference `json:"defaultWorkItemType"`
+}
+
+type adoWorkItemTypeReference struct {
+	Name string `json:"name"`
+}
+
+// adoDefaultRequirementType resolves the project's create type when the
+// caller names none: the Requirement category's default work item type
+// (ADO-N27), cached per project so repeated creates cost one GET. A
+// hard-coded "Issue" default only matches the stock Basic process; Agile
+// calls it "User Story", Scrum "Product Backlog Item", and an inherited
+// process can rename it to anything while keeping the category's own
+// referenceName stable.
+func (p *ADOProvider) adoDefaultRequirementType(ctx context.Context, project string) (string, error) {
+	p.requirementTypeMu.RLock()
+	cached, ok := p.requirementTypes[project]
+	p.requirementTypeMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	endpoint, err := p.workURL(project, "workitemtypecategories", adoRequirementCategory)
+	if err != nil {
+		return "", err
+	}
+	var category adoWorkItemTypeCategory
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &category); err != nil {
+		return "", err
+	}
+	resolved := strings.TrimSpace(category.DefaultWorkItemType.Name)
+	if resolved == "" {
+		return "", fmt.Errorf("ADO project %q has no default work item type for category %q", project, adoRequirementCategory)
+	}
+
+	p.requirementTypeMu.Lock()
+	if p.requirementTypes == nil {
+		p.requirementTypes = make(map[string]string)
+	}
+	if existing, ok := p.requirementTypes[project]; ok {
+		resolved = existing
+	} else {
+		p.requirementTypes[project] = resolved
+	}
+	p.requirementTypeMu.Unlock()
+	return resolved, nil
 }
 
 func findADOWorkItemState(states []adoWorkItemState, name string) (adoWorkItemState, bool) {
@@ -1421,6 +1527,10 @@ func (p *ADOProvider) postAttributedWorkItemComment(ctx context.Context, repo Re
 		return err
 	}
 	endpoint, err := p.workURLVersion(project, "7.1-preview.4", "workItems", id, "comments")
+	if err != nil {
+		return err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"format": []string{adoCommentFormat}})
 	if err != nil {
 		return err
 	}
