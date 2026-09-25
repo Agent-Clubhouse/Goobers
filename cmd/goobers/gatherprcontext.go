@@ -1051,10 +1051,6 @@ func checkoutExistingBranchWithAuth(ctx context.Context, dir, branch string, aut
 // (which checks out on top) and by selectRemediationCandidates' behind-base
 // probe (which only needs the SHA to compare ancestry, and must not disturb
 // dir's currently-checked-out branch while probing OTHER PRs' candidacy).
-func fetchExistingBranch(dir, branch, token string) (string, error) {
-	return fetchExistingBranchWithAuth(context.Background(), dir, branch, tokenGitAuthEnvironment(token))
-}
-
 func fetchExistingBranchWithAuth(ctx context.Context, dir, branch string, auth gitAuthEnvironmentResolver) (string, error) {
 	url, err := originURL(dir)
 	if err != nil {

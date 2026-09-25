@@ -199,16 +199,6 @@ func (t threadCommentPushTransport) ClearNeedsRemediation(ctx context.Context, p
 	return t.provider.RemovePullRequestLabel(ctx, t.repo, pullID, needsRemediationLabel)
 }
 
-func runPushRemediatedCore(
-	root string,
-	repo providers.RepositoryRef,
-	pushToken string,
-	transport remediatedPushTransport,
-	stdout, stderr io.Writer,
-) int {
-	return runPushRemediatedCoreWithAuth(root, repo, pushToken, tokenGitAuthEnvironment(pushToken), transport, stdout, stderr)
-}
-
 func runPushRemediatedCoreWithAuth(
 	root string,
 	repo providers.RepositoryRef,

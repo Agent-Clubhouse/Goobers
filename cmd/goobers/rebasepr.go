@@ -222,11 +222,6 @@ func (t threadCommentRebaseTransport) ClearNeedsRemediation(ctx context.Context,
 	return t.provider.RemovePullRequestLabel(ctx, repo, selectedNumber, needsRemediationLabel)
 }
 
-func runRebasePRCore(ctx context.Context, root string, repo providers.RepositoryRef, resultFile, selectedNumber string, selectedPRNumber int, head, base string, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap bool, remediate, pushToken string, transport rebasePRTransport, stdout, stderr io.Writer) int {
-	return runRebasePRCoreWithAuth(ctx, root, repo, resultFile, selectedNumber, selectedPRNumber, head, base,
-		hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, remediate, pushToken, tokenGitAuthEnvironment(pushToken), transport, stdout, stderr)
-}
-
 func runRebasePRCoreWithAuth(ctx context.Context, root string, repo providers.RepositoryRef, resultFile, selectedNumber string, selectedPRNumber int, head, base string, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap bool, remediate, pushToken string, gitAuth gitAuthEnvironmentResolver, transport rebasePRTransport, stdout, stderr io.Writer) int {
 	attemptedHeadSHA := ""
 	rebaseBaseSHA := ""
