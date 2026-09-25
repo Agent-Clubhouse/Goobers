@@ -445,7 +445,7 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	labels := replaceStatusLabel(adoRawTags(raw), req.Status)
 	patch := []adoPatchOperation{
 		{Op: "test", Path: "/rev", Value: raw.Rev},
-		adoTagPatch(labels),
+		adoTagPatch(raw, labels),
 	}
 	if (req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed) && current.State != "closed" {
 		state, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, "closed")
@@ -597,7 +597,7 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	}
 	if labelsChanged(req) {
 		labels := applyLabelSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)
-		patch = append(patch, adoTagPatch(labels))
+		patch = append(patch, adoTagPatch(raw, labels))
 	}
 	if state != "" && state != current.State {
 		nativeState, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, state)
@@ -725,7 +725,7 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 		labels := applyLabelSet(adoRawTags(raw), add, remove)
 		patch := []adoPatchOperation{
 			{Op: "test", Path: "/rev", Value: raw.Rev},
-			adoTagPatch(labels),
+			adoTagPatch(raw, labels),
 		}
 		endpoint, endpointErr := p.workURL(p.project(repo), "workitems", id)
 		if endpointErr != nil {
@@ -1248,8 +1248,12 @@ func adoRawTags(item adoWorkItem) []string {
 	return adoLabels(stringField(item.Fields, "System.Tags"))
 }
 
-func adoTagPatch(tags []string) adoPatchOperation {
-	return adoPatchOperation{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(uniqueStrings(tags), "; ")}
+func adoTagPatch(item adoWorkItem, tags []string) adoPatchOperation {
+	op := "add"
+	if _, exists := item.Fields["System.Tags"]; exists {
+		op = "replace"
+	}
+	return adoPatchOperation{Op: op, Path: "/fields/System.Tags", Value: strings.Join(uniqueStrings(tags), "; ")}
 }
 
 func (p *ADOProvider) postWorkItemComment(ctx context.Context, repo RepositoryRef, id, text string) error {
