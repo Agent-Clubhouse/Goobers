@@ -264,7 +264,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		t.Fatal("required-ci aggregate has no needs list")
 	}
 	for _, gate := range []string{
-		"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "unit-macos",
+		"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage",
 		"shipped", "deadcode", "windows-smoke", "vulnerability-scan",
 		"integration", "sandbox", "linux-validation",
 	} {
@@ -296,40 +296,46 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		strings.Contains(unitLinuxCoverage, "GOOBERS_CI_SHARD") {
 		t.Error("Linux coverage gate must own the unsharded whole-tree profile and timing artifact")
 	}
-	unitMacOS := workflowJob(workflow, "unit-macos")
+	// No pull-request or push job may wait on the hosted macOS queue (17-19 min
+	// per run, on top of a 21 min job). Pre-merge, macOS is the Linux
+	// cross-compile gate, built the way the release builds the darwin
+	// binaries (CGO_ENABLED=0 on Linux); the runtime moved to the nightly.
+	if strings.Contains(workflow, "runs-on: macos") || strings.Contains(workflow, "os: macos") {
+		t.Error("ci.yml must not allocate a macOS runner; the macOS runtime runs in macos-nightly.yml")
+	}
+	darwinBuild := workflowJob(workflow, "darwin-build")
+	if !strings.Contains(darwinBuild, "runs-on: ubuntu-latest") {
+		t.Error("darwin-build must cross-compile on Linux")
+	}
+	for _, arch := range []string{"arm64", "amd64"} {
+		for _, command := range []string{"build", "vet"} {
+			want := "- name: go " + command + " (darwin/" + arch + ")\n        env:\n          GOOS: darwin\n          GOARCH: " + arch +
+				"\n          CGO_ENABLED: \"0\"\n        run: go " + command + " ./..."
+			if !strings.Contains(darwinBuild, want) {
+				t.Errorf("darwin-build must run go %s for darwin/%s with cgo off, as the release builds it", command, arch)
+			}
+		}
+	}
+	nightlyData, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "macos-nightly.yml"))
+	if err != nil {
+		t.Fatalf("read macOS nightly workflow: %v", err)
+	}
+	nightly := string(nightlyData)
 	for _, required := range []string{
-		"name: macOS runtime (unit · shipped · sandbox)",
+		"schedule:",
 		"runs-on: macos-latest",
 		"GOOBERS_CI_RACE: \"0\"",
 		"GOOBERS_CI_COVERAGE: \"0\"",
-		"go run ./test/ci group unit",
-	} {
-		if !strings.Contains(unitMacOS, required) {
-			t.Errorf("consolidated macOS runtime job must contain %q", required)
-		}
-	}
-	for _, required := range []string{
+		"run: go run ./test/ci group unit",
 		"- name: Shipped-workflow contracts (macOS)\n        if: ${{ !cancelled() }}",
 		"GOOBERS_CI_TEST_TIMEOUT: \"20m\"",
 		"run: go run ./test/ci group shipped",
-		"- name: Require native Seatbelt sandbox confinement (macOS)\n        if: ${{ !cancelled() && github.event_name != 'push' }}",
+		"- name: Require native Seatbelt sandbox confinement (macOS)\n        if: ${{ !cancelled() }}",
 		"run: make sandbox-check",
 	} {
-		if !strings.Contains(unitMacOS, required) {
-			t.Errorf("consolidated macOS runtime job must preserve independent gate %q", required)
+		if !strings.Contains(nightly, required) {
+			t.Errorf("macOS nightly must keep the macOS runtime check %q", required)
 		}
-	}
-	requiredCI = workflowJob(workflow, "required-ci")
-	if !strings.Contains(requiredCI, `check "unit + shipped + sandbox runtime (macos)" "$UNIT_MACOS_RESULT"`) {
-		t.Error("required-ci must report the consolidated macOS runtime as one required gate")
-	}
-	for _, portable := range []string{"make cover-gate", "GOOBERS_TEST_TIMING_FILE", "Upload coverage profile", "Upload test timing"} {
-		if strings.Contains(unitMacOS, portable) {
-			t.Errorf("consolidated macOS runtime job must leave portable responsibility %q on Linux", portable)
-		}
-	}
-	if got := strings.Count(workflow, "runs-on: macos-latest"); got != 1 {
-		t.Errorf("CI workflow allocates %d direct macOS jobs, want exactly unit-macos", got)
 	}
 	if strings.Contains(workflowJob(workflow, "shipped"), "os: macos-latest") ||
 		strings.Contains(workflowJob(workflow, "sandbox"), "macos-latest") {
@@ -424,7 +430,7 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 	// The long-pole jobs start immediately: gating them put preflight's
 	// duration on every run's critical path. A preflight failure cancels them
 	// on pull requests instead; that canceller is what makes un-gating safe.
-	for _, job := range []string{"unit", "unit-macos"} {
+	for _, job := range []string{"unit"} {
 		header := strings.SplitN(workflowJob(workflow, job), "\n    steps:", 2)[0]
 		if strings.Contains(header, "needs:") {
 			t.Errorf("long-pole job %q must not wait for preflight; it serializes preflight in front of the critical path", job)
@@ -579,7 +585,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		header := strings.SplitN(section, "\n    steps:", 2)[0]
 		if section == "" {
@@ -589,7 +595,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 		}
 	}
 	for _, job := range []string{
-		"deadcode", "darwin-build", "integration",
+		"deadcode", "integration",
 		"vulnerability-scan", "required-ci",
 		"sandbox", "linux-validation",
 	} {
@@ -633,7 +639,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [preflight, checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]",
+		"needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
 		"issues: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",
@@ -646,7 +652,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 			t.Errorf("main failure escalation job must contain %q", want)
 		}
 	}
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'failure'"
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must detect a failed %q job", job)
@@ -691,7 +697,7 @@ func TestMainFailureEscalationClosesResolvedIssue(t *testing.T) {
 	if !found {
 		t.Fatal("escalate-main-failure must have a step that closes the resolved main failure issue")
 	}
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'success'"
 		if !strings.Contains(closeStep, want) {
 			t.Errorf("close step must require %q: only a fully-green push lane resolves the incident", want)

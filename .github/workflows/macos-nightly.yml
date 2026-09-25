@@ -1,0 +1,136 @@
+name: macOS nightly
+
+# The macOS behavioural runtime, off the pull-request critical path.
+#
+# ci.yml uses no macOS runner. Pre-merge, macOS is gated by ci.yml's
+# `darwin-build` job (a Linux cross-compile + vet of the whole tree, tests
+# included, for darwin/arm64 and darwin/amd64: how the release builds the
+# macOS binaries) and the GOOS=darwin leg of its `lint` job. What only a real
+# Mac can check runs here once a night against main:
+#
+#   - the hermetic unit suite, without race or coverage instrumentation (both
+#     are authoritative on Linux);
+#   - the shipped-workflow contract suite;
+#   - native Seatbelt sandbox confinement (`make sandbox-check`).
+#
+# The hosted macOS queue added 17-19 min of waiting to every PR on top of a
+# 21 min job, so macOS-only behaviour bugs are caught here the night after they
+# land instead of before merge. Nothing new files them: a scheduled run on the
+# default branch is scanned hourly by flake-watch.yml, which files each failing
+# test in the flake ledger, and scheduled-failure-alarm.yml (which covers every
+# workflow with a schedule) opens an alarm after consecutive red nights.
+#
+# workflow_dispatch runs the dispatched ref, or a pull request's merge ref when
+# `pr` is given, to check a macOS-sensitive change before it merges.
+
+on:
+  schedule:
+    # Off-peak, clear of Stress (04:17) and ahead of the 09:37 alarm scan.
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to run (default: the dispatched ref)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-nightly-${{ inputs.pr || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    name: macOS runtime (unit · shipped · sandbox)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || github.ref }}
+          # The DSL SemVer-compatibility tests read the latest reachable tag.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          # The only macOS job in the repository's CI, so it owns the macOS
+          # setup-go cache key.
+          cache: true
+
+      - name: Download modules
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
+      # See the identically-named step in ci.yml's `unit` job:
+      # TestFeatureRegistryAgainstLatestRelease builds the latest release tag's
+      # own go.mod/go.sum inside a temp worktree, and the hermetic runner sets
+      # GOPROXY=off before that test runs.
+      - name: Prime module cache for latest release tag
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          latest_tag=$(git tag --list 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$latest_tag" ]; then
+            echo "::warning::no version-shaped release tag found; skipping release-tag module priming"
+            exit 0
+          fi
+          echo "priming module cache for release tag: $latest_tag"
+          release_tree="$(mktemp -d)/release"
+          git worktree add --detach -q "$release_tree" "$latest_tag"
+          status=1
+          for attempt in 1 2 3; do
+            if (cd "$release_tree" && go mod download); then
+              status=0
+              break
+            fi
+            echo "::warning::go mod download (release tag $latest_tag) attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          git worktree remove --force "$release_tree"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::go mod download for release tag $latest_tag failed after 3 attempts"
+            exit 1
+          fi
+
+      - name: Unit suite (behavioral, no -race)
+        env:
+          GOOBERS_CI_RACE: "0"
+          GOOBERS_CI_COVERAGE: "0"
+          GOOBERS_TEST_TIMING_FILE: test-timings/unit-macOS.json
+        run: go run ./test/ci group unit
+
+      # Each later check runs even when an earlier one failed, so one red night
+      # reports every broken macOS check at once.
+      - name: Shipped-workflow contracts (macOS)
+        if: ${{ !cancelled() }}
+        env:
+          GOOBERS_CI_RACE: "0"
+          GOOBERS_CI_TEST_TIMEOUT: "20m"
+        run: go run ./test/ci group shipped
+
+      - name: Require native Seatbelt sandbox confinement (macOS)
+        if: ${{ !cancelled() }}
+        run: make sandbox-check
+
+      - name: Upload test timing
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-timings-macOS-nightly
+          path: test-timings/unit-macOS.json
+          if-no-files-found: warn

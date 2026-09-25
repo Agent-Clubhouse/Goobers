@@ -14,6 +14,12 @@ workflow summary, and compares with the latest successful `main` artifact when
 one is available. Capture runs inside `test/hermetic`, preserving the unit
 tier's isolated tool `PATH` and offline Go environment.
 
+The macOS nightly (`macos-nightly.yml`) records the same capture for the
+macOS unit suite (no race, no coverage) and uploads it as
+`test-timings-macOS-nightly`, containing `unit-macOS.json`. Nothing gates on
+it; it exists so macOS durations can be compared with Linux ones now that no
+pull-request job runs on macOS.
+
 For local feedback, the Go validation orchestrator prints elapsed time after
 every check. `make verify-full` uses that orchestrator to run `ci` and each
 additional Make gate serially, so integration, e2e, envtest, coverage, sandbox,

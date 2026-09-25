@@ -15,8 +15,8 @@ name: CI
 #   shipped    shipped-workflow contract suite on Linux and Windows
 #
 # dedicated jobs: darwin-build, deadcode, deploy-reference, integration,
-#   linux-validation, sandbox, unit-linux-coverage, unit-macos,
-#   vulnerability-scan, windows-smoke
+#   linux-validation, sandbox, unit-linux-coverage, vulnerability-scan,
+#   windows-smoke
 #
 # Those two lists together are exactly required-ci's `needs:` — this header is
 # not prose that can quietly drift from the workflow it describes:
@@ -30,11 +30,18 @@ name: CI
 #
 # Race posture: a data race is a source-level property, not OS behaviour, so the
 # full -race suite runs on Linux (sharded for wall-clock; the heaviest packages
-# are split by test across shards, see the `unit` job). One consolidated
-# macOS runtime job runs the same behavioural suite without race or coverage
-# instrumentation, then the macOS shipped-workflow and native Seatbelt checks.
-# That preserves macOS-specific behaviour while using one of the five hosted
-# macOS slots per PR instead of three.
+# are split by test across shards, see the `unit` job).
+#
+# macOS posture: no job in this workflow uses a macOS runner. Pre-merge, macOS
+# is gated by `darwin-build`, a Linux cross-compile + vet of the whole tree
+# (tests included) for darwin/arm64 and darwin/amd64, the same way the release
+# builds the macOS binaries, plus the GOOS=darwin leg of `lint`. The macOS
+# behavioural runtime (the unit suite without race or coverage, the
+# shipped-workflow contracts, and native Seatbelt confinement) runs nightly in
+# macos-nightly.yml. The hosted macOS queue cost PRs 17-19 min of waiting on
+# top of a 21 min job, so macOS-only behaviour bugs are caught nightly instead
+# of pre-merge: a failing test there is filed by flake-watch, and repeated
+# red nights by the scheduled failure alarm.
 #
 # Windows is gated as a REQUIRED, GREEN build+vet+runtime smoke (#633) plus the
 # shipped-workflow contract suite. The broad Windows behavioural tier is NOT
@@ -45,7 +52,7 @@ name: CI
 #
 # Pull requests and merge groups run that complete matrix. A push to main also
 # validates the exact landed SHA with checks, lint, the Linux race shards, the
-# macOS behavioral suite, shipped-workflow contracts, and the Windows gate.
+# darwin cross-compile gate, shipped-workflow contracts, and the Windows gate.
 # Failures on the landed tree are automatically escalated as critical issues.
 #
 # Every workflow in this directory — including the dormant ones, whose
@@ -114,9 +121,9 @@ jobs:
 
   # Node-free admission gate. Jobs that finish well inside the long pole do not
   # acquire runners until the fast source lint, formatting, module hygiene,
-  # repository policy, vet, command builds, and config validation pass. The two
-  # long-pole jobs (`unit`, `unit-macos`) start at once instead, because gating
-  # them put preflight's ~4.4 min on every run's critical path; on a pull
+  # repository policy, vet, command builds, and config validation pass. The
+  # long-pole job (`unit`) starts at once instead, because gating it put
+  # preflight's ~4.4 min on every run's critical path; on a pull
   # request a preflight failure cancels them (cancel-on-preflight-failure).
   #
   # Preflight is also the job that writes the shared Linux setup-go cache
@@ -402,13 +409,17 @@ jobs:
 
   # darwin build+vet gate, cross-compiled on Linux (mirrors windows-smoke).
   # Compiles and vets the whole tree — including the //go:build darwin files
-  # (internal/{sandbox,executor}) — for macOS, so a darwin-specific build or vet
-  # regression is caught without spending a macOS runner. The behavioural macOS
-  # runtime is exercised by the unit/shipped/sandbox macOS jobs.
+  # (internal/{sandbox,executor}) and every _test.go file, which vet
+  # type-checks — for both released macOS architectures, so a darwin-specific
+  # build or vet regression is caught without spending a macOS runner. This is
+  # the only pre-merge macOS gate. It is equivalent to how macOS ships: the
+  # release cross-compiles the darwin binaries on Linux with CGO_ENABLED=0
+  # (release/main.go buildReleaseBinary), and the tree has no cgo. The macOS
+  # behavioural runtime (unit suite, shipped-workflow contracts, native
+  # Seatbelt) runs nightly in macos-nightly.yml, off the PR critical path.
   darwin-build:
     name: darwin gate (build · vet)
     needs: [preflight]
-    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -439,12 +450,28 @@ jobs:
         env:
           GOOS: darwin
           GOARCH: arm64
+          CGO_ENABLED: "0"
         run: go build ./...
 
       - name: go vet (darwin/arm64)
         env:
           GOOS: darwin
           GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: go vet ./...
+
+      - name: go build (darwin/amd64)
+        env:
+          GOOS: darwin
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build ./...
+
+      - name: go vet (darwin/amd64)
+        env:
+          GOOS: darwin
+          GOARCH: amd64
+          CGO_ENABLED: "0"
         run: go vet ./...
 
   # The long pole: the -race unit suite. Split into shards across Linux runners
@@ -734,94 +761,8 @@ jobs:
           path: test-timings/unit-${{ runner.os }}.json
           if-no-files-found: warn
 
-  # One macOS allocation owns every required Darwin runtime check. The whole
-  # behavioural suite runs without race or coverage instrumentation (both are
-  # authoritative on Linux), followed on the same runner by shipped-workflow
-  # contracts and the PR-only native Seatbelt gate. Explicit !cancelled()
-  # conditions preserve independent failure evidence from the later checks.
-  unit-macos:
-    name: macOS runtime (unit · shipped · sandbox)
-    # Not gated on preflight, for the same reason as `unit`: this is the other
-    # long pole. A preflight failure cancels the run instead.
-    runs-on: macos-latest
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download modules
-        timeout-minutes: 12
-        # Explicit bash: the Windows runner defaults to PowerShell, which
-        # cannot parse this loop.
-        shell: bash
-        run: |
-          for attempt in 1 2 3; do
-            if go mod download; then exit 0; fi
-            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
-            sleep $((attempt * 5))
-          done
-          echo "::error::go mod download failed after 3 attempts"
-          exit 1
-
-      # See the identically-named step in the `unit` job for why this is
-      # needed: TestFeatureRegistryAgainstLatestRelease builds the latest
-      # release tag's own go.mod/go.sum inside a temp worktree, and this job's
-      # hermetic runner sets GOPROXY=off before that test runs.
-      - name: Prime module cache for latest release tag
-        timeout-minutes: 12
-        shell: bash
-        run: |
-          latest_tag=$(git tag --list 'v*' --sort=-v:refname \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-          if [ -z "$latest_tag" ]; then
-            echo "::warning::no version-shaped release tag found; skipping release-tag module priming"
-            exit 0
-          fi
-          echo "priming module cache for release tag: $latest_tag"
-          release_tree="$(mktemp -d)/release"
-          git worktree add --detach -q "$release_tree" "$latest_tag"
-          status=1
-          for attempt in 1 2 3; do
-            if (cd "$release_tree" && go mod download); then
-              status=0
-              break
-            fi
-            echo "::warning::go mod download (release tag $latest_tag) attempt $attempt/3 failed; retrying"
-            sleep $((attempt * 5))
-          done
-          git worktree remove --force "$release_tree"
-          if [ "$status" -ne 0 ]; then
-            echo "::error::go mod download for release tag $latest_tag failed after 3 attempts"
-            exit 1
-          fi
-
-      - name: Unit suite (behavioral, no -race)
-        env:
-          GOOBERS_CI_RACE: "0"
-          GOOBERS_CI_COVERAGE: "0"
-        run: go run ./test/ci group unit
-
-      - name: Shipped-workflow contracts (macOS)
-        if: ${{ !cancelled() }}
-        env:
-          GOOBERS_CI_RACE: "0"
-          GOOBERS_CI_TEST_TIMEOUT: "20m"
-        run: go run ./test/ci group shipped
-
-      - name: Require native Seatbelt sandbox confinement (macOS)
-        if: ${{ !cancelled() && github.event_name != 'push' }}
-        run: make sandbox-check
-
   # Shipped-workflow contract suite. Linux runs it with -race and Windows runs
-  # it without -race. The macOS leg is consolidated into unit-macos above.
+  # it without -race. The macOS leg runs nightly in macos-nightly.yml.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
     needs: [preflight]
@@ -1674,7 +1615,7 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -1687,7 +1628,6 @@ jobs:
           DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
           UNIT_RESULT: ${{ needs.unit.result }}
           UNIT_LINUX_COVERAGE_RESULT: ${{ needs.unit-linux-coverage.result }}
-          UNIT_MACOS_RESULT: ${{ needs.unit-macos.result }}
           SHIPPED_RESULT: ${{ needs.shipped.result }}
           DEADCODE_RESULT: ${{ needs.deadcode.result }}
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
@@ -1714,9 +1654,6 @@ jobs:
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
           check "unit coverage gate (linux)"         "$UNIT_LINUX_COVERAGE_RESULT"
-          # unit-macos also carries the macOS shipped-workflow and native
-          # Seatbelt validations on the same scarce runner allocation.
-          check "unit + shipped + sandbox runtime (macos)" "$UNIT_MACOS_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
           check "dead-code analysis"                 "$DEADCODE_RESULT"
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
@@ -1960,23 +1897,6 @@ jobs:
         # won), or a fork PR's read-only token cannot cancel.
         run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
 
-  cancel-on-unit-macos-failure:
-    name: cancel run on failure (unit-macos)
-    needs: [unit-macos]
-    if: ${{ !cancelled() && needs.unit-macos.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: write
-    steps:
-      - name: Cancel the rest of this run
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-        # Tolerated: the run may already be cancelling (another canceller
-        # won), or a fork PR's read-only token cannot cancel.
-        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
-
   cancel-on-shipped-failure:
     name: cancel run on failure (shipped)
     needs: [shipped]
@@ -2117,7 +2037,7 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [preflight, checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]
+    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -2133,7 +2053,7 @@ jobs:
             needs.lint.result == 'failure' ||
             needs.unit.result == 'failure' ||
             needs.unit-linux-coverage.result == 'failure' ||
-            needs.unit-macos.result == 'failure' ||
+            needs.darwin-build.result == 'failure' ||
             needs.shipped.result == 'failure' ||
             needs.windows-smoke.result == 'failure'
           }}
@@ -2193,7 +2113,7 @@ jobs:
             needs.lint.result == 'success' &&
             needs.unit.result == 'success' &&
             needs.unit-linux-coverage.result == 'success' &&
-            needs.unit-macos.result == 'success' &&
+            needs.darwin-build.result == 'success' &&
             needs.shipped.result == 'success' &&
             needs.windows-smoke.result == 'success'
           }}
