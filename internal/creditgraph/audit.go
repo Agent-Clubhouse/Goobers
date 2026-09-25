@@ -367,20 +367,36 @@ func verificationState(finding FaultFinding, signals []faultSignal, all []Attrib
 		repeatedRuns[signal.observation.RunID] = true
 	}
 	workflowFix := localizedWorkflowCohort(baseline)
-	state := VerificationPending
+	affectedWorkflows := map[string]bool{}
+	for _, signal := range baseline {
+		if signal.observation.Workflow != "" {
+			affectedWorkflows[signal.observation.Workflow] = true
+		}
+	}
+	recoveredRuns := map[string]bool{}
+	recoveredWorkflows := map[string]bool{}
 	for _, observation := range all {
 		repeated := repeatedRuns[observation.RunID]
 		if observation.ObservedAt.IsZero() || !observation.ObservedAt.After(fixedAt) ||
 			(!repeated && len(observation.Attribution.Causes) > 0) ||
-			!matchesVerificationCohort(observation, baseline, workflowFix, repeated) {
+			!matchesVerificationCohort(observation, baseline, finding.Domain, workflowFix, repeated) {
 			continue
 		}
 		if repeated {
 			return VerificationRepeated
 		}
-		state = VerificationRecovered
+		recoveredRuns[observation.RunID] = true
+		recoveredWorkflows[observation.Workflow] = true
 	}
-	return state
+	if len(recoveredRuns) < config.SampleFloor {
+		return VerificationPending
+	}
+	for workflow := range affectedWorkflows {
+		if !recoveredWorkflows[workflow] {
+			return VerificationPending
+		}
+	}
+	return VerificationRecovered
 }
 
 func localizedWorkflowCohort(signals []faultSignal) bool {
@@ -402,7 +418,12 @@ func localizedWorkflowCohort(signals []faultSignal) bool {
 	return true
 }
 
-func matchesVerificationCohort(observation AttributionObservation, baseline []faultSignal, workflowFix, repeated bool) bool {
+func matchesVerificationCohort(
+	observation AttributionObservation,
+	baseline []faultSignal,
+	domain FaultDomain,
+	workflowFix, repeated bool,
+) bool {
 	for _, signal := range baseline {
 		affected := signal.observation
 		if observation.Workflow != affected.Workflow ||
@@ -412,17 +433,49 @@ func matchesVerificationCohort(observation AttributionObservation, baseline []fa
 			continue
 		}
 		if workflowFix {
-			if observation.EffectiveVersion != "" &&
-				(repeated || observation.EffectiveVersion != affected.EffectiveVersion) {
+			if verificationVersionMatches(observation, affected, domain, repeated) {
 				return true
 			}
 			continue
 		}
-		if observation.EffectiveVersion == affected.EffectiveVersion {
+		if verificationVersionMatches(observation, affected, domain, repeated) {
 			return true
 		}
 	}
 	return false
+}
+
+func verificationVersionMatches(observation, affected AttributionObservation, domain FaultDomain, repeated bool) bool {
+	if observation.EffectiveVersion == "" || affected.EffectiveVersion == "" {
+		return false
+	}
+	if repeated {
+		return observation.EffectiveVersion == affected.EffectiveVersion
+	}
+	switch domain {
+	case FaultDomainWorkflow:
+		if observation.WorkflowDigest != "" && affected.WorkflowDigest != "" {
+			return observation.WorkflowDigest != affected.WorkflowDigest &&
+				sameOptionalValue(observation.GooberDigest, affected.GooberDigest)
+		}
+		return observation.EffectiveVersion != affected.EffectiveVersion
+	case FaultDomainProductRuntime:
+		if observation.GooberDigest != "" && affected.GooberDigest != "" {
+			return observation.GooberDigest != affected.GooberDigest &&
+				sameOptionalValue(observation.WorkflowDigest, affected.WorkflowDigest)
+		}
+		return observation.EffectiveVersion != affected.EffectiveVersion
+	case FaultDomainExternal:
+		return sameOptionalValue(observation.WorkflowDigest, affected.WorkflowDigest) &&
+			sameOptionalValue(observation.GooberDigest, affected.GooberDigest) &&
+			observation.EffectiveVersion != affected.EffectiveVersion
+	default:
+		return observation.EffectiveVersion == affected.EffectiveVersion
+	}
+}
+
+func sameOptionalValue(left, right string) bool {
+	return left == "" || right == "" || left == right
 }
 
 func observationExercisesPath(observation AttributionObservation, affectedPath []string) bool {

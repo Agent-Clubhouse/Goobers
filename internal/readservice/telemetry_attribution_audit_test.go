@@ -71,6 +71,9 @@ func TestStoredFaultAuditPersistsCooldownAndPostFixVerification(t *testing.T) {
 	if len(first.WorkflowFindings) != 1 {
 		t.Fatalf("first report = %+v, want workflow finding", first)
 	}
+	if got := first.WorkflowFindings[0].Environments; len(got) != 1 || got[0] != "windows" {
+		t.Fatalf("finding environments = %v, want stored span provenance", got)
+	}
 	id := first.WorkflowFindings[0].ID
 
 	config.Now = now.Add(time.Hour)
@@ -180,7 +183,7 @@ func writeAuditRecordForWorkflowEnvironment(
 		RunID:           runID,
 		Workflow:        workflow,
 		WorkflowVersion: 1,
-		WorkflowDigest:  "sha256:workflow",
+		WorkflowDigest:  "sha256:workflow-" + version,
 		GooberDigest:    "sha256:goober",
 		Gaggle:          "goobers",
 		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
