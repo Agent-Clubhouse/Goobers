@@ -1212,8 +1212,21 @@ function externalRefOperation(event: RunEvent): string {
   return operations[operation.toLowerCase()] ?? operation.replace(/[._-]+/g, " ");
 }
 
-function providerName(provider: string): string {
-  return provider.toLowerCase() === "github" ? "GitHub" : humanize(provider);
+// providerName maps a provider identifier to its display label. It is the
+// single source of truth for provider labels in the portal so every page
+// shows GitHub, Azure DevOps and Gitea consistently (and falls back to a
+// humanized form for anything else, rather than defaulting to "GitHub").
+export function providerName(provider: string): string {
+  switch (provider.toLowerCase()) {
+    case "github":
+      return "GitHub";
+    case "ado":
+      return "Azure DevOps";
+    case "gitea":
+      return "Gitea";
+    default:
+      return humanize(provider);
+  }
 }
 
 function stateFromStatus(

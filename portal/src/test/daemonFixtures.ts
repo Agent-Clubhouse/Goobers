@@ -71,6 +71,18 @@ function connections(gaggle: Gaggle): GaggleConnections {
             },
           ]
         : []),
+      ...(gaggle.name === "tools"
+        ? [
+            {
+              repository: {
+                provider: "gitea" as const,
+                owner: "Agent-Clubhouse",
+                name: "Scratchpad",
+              },
+              accessMode: "read-only" as const,
+            },
+          ]
+        : []),
     ],
   };
 }
