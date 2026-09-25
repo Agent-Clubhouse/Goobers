@@ -165,9 +165,23 @@ name or its stable `uniqueName` account identifier, case-insensitively.
 Close and reopen mutations select the target work-item state by the process
 state category instead of assuming one process template's state names. Numeric
 GitHub milestones have no Azure Boards equivalent and are rejected; existing
-iteration paths are left unchanged. Claims write `goobers:claimed` plus an
-internal run-owner tag in one revision-tested patch, so concurrent schedulers
-settle on one visible owner without overwriting unrelated tags.
+iteration paths are left unchanged. A claim posts a claim breadcrumb comment on
+the work item, re-reads the comment thread so concurrent schedulers settle on
+the earliest breadcrumb, and then adds the visible `goobers:claimed` tag in a
+revision-tested patch that leaves unrelated tags alone. Releasing a claim posts
+a release breadcrumb and removes the tag.
+
+Only breadcrumbs written by the identity the credential authenticates as
+count: the comment's `createdBy.id` must equal the `authenticatedUser.id` that
+`connectionData` returns for the credential. A breadcrumb posted by any other
+identity is ignored, and a claim fails if that identity cannot be read.
+
+> **Rotating the identity orphans its claims.** Claims are matched by identity
+> GUID, not by display name. If you switch the credential to a different
+> identity (for example from a PAT to a service principal), the new identity
+> does not see claims the old one made, and it cannot release them. Let
+> in-flight runs finish, or release their claims, before you rotate. Remove any
+> leftover `goobers:claimed` tags by hand afterwards.
 
 Repository and pull-request parity remains incremental. Keep human branch
 policies authoritative for ADO repo operations that the provider does not yet

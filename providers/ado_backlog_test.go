@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -63,6 +64,7 @@ func TestADOListWorkItemsFiltersByTagsInWIQL(t *testing.T) {
 func TestADOClaimFailsWhenWrittenBreadcrumbIsNotVisible(t *testing.T) {
 	mux := http.NewServeMux()
 	handleADOTestStateCategories(t, mux)
+	handleADOTestConnectionData(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -94,6 +96,153 @@ func TestADOClaimFailsWhenWrittenBreadcrumbIsNotVisible(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "not visible after write") {
 		t.Fatalf("ClaimWorkItem error = %v, want missing-breadcrumb failure", err)
+	}
+}
+
+// adoTestSelfID is the identity GUID the ADO claim fakes report from
+// connectionData; adoTestOtherID is a different project member.
+const (
+	adoTestSelfID  = "00000000-0000-0000-0000-0000000005e1"
+	adoTestOtherID = "00000000-0000-0000-0000-00000000077e"
+)
+
+func handleADOTestConnectionData(t *testing.T, mux *http.ServeMux) {
+	t.Helper()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"authenticatedUser": map[string]interface{}{
+			"id": adoTestSelfID, "providerDisplayName": "Goobers Bot",
+		}})
+	})
+}
+
+// adoClaimFake is an in-memory work item 42 with a comment thread. Comments the
+// provider posts are stamped with adoTestSelfID; seeded comments carry
+// whatever author the test gives them.
+type adoClaimFake struct {
+	mu       sync.Mutex
+	comments []map[string]interface{}
+	tags     string
+}
+
+func (f *adoClaimFake) seed(authorID, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.comments = append(f.comments, map[string]interface{}{
+		"commentId": len(f.comments) + 1,
+		"text":      text,
+		// A forger can pick any display name; only the id identifies them.
+		"createdBy": map[string]string{"id": authorID, "displayName": "Goobers Bot"},
+	})
+}
+
+func (f *adoClaimFake) server(t *testing.T, identity bool) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	if identity {
+		handleADOTestConnectionData(t, mux)
+	} else {
+		mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "unavailable", http.StatusUnauthorized)
+		})
+	}
+	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			f.mu.Lock()
+			comments := append([]map[string]interface{}(nil), f.comments...)
+			f.mu.Unlock()
+			writeJSON(t, w, map[string]interface{}{"comments": comments})
+		case http.MethodPost:
+			var body map[string]string
+			decodeJSON(t, r, &body)
+			f.seed(adoTestSelfID, body["text"])
+			writeJSON(t, w, map[string]interface{}{"commentId": 99, "text": body["text"]})
+		default:
+			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if r.Method == http.MethodPatch {
+			var ops []map[string]interface{}
+			decodeJSON(t, r, &ops)
+			for _, op := range ops {
+				if op["path"] == "/fields/System.Tags" {
+					f.tags, _ = op["value"].(string)
+				}
+			}
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": 42, "rev": 1,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.State":        "New",
+				"System.Title":        "Claim candidate",
+				"System.Tags":         f.tags,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func claimADOTestItem(t *testing.T, server *httptest.Server, runID string) (ClaimResult, error) {
+	t.Helper()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	return provider.ClaimWorkItem(context.Background(), ClaimWorkItemRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		ID:         "42",
+		RunID:      runID,
+	})
+}
+
+// TestADOClaimIgnoresBreadcrumbFromAnotherIdentity pins ADO-N10: a claim
+// breadcrumb posted by a different identity — even one sharing the bot's
+// display name and posted first — never wins the claim.
+func TestADOClaimIgnoresBreadcrumbFromAnotherIdentity(t *testing.T) {
+	fake := &adoClaimFake{}
+	fake.seed(adoTestOtherID, claimBreadcrumb("run-forged"))
+	result, err := claimADOTestItem(t, fake.server(t, true), "run-ours")
+	if err != nil {
+		t.Fatalf("ClaimWorkItem: %v", err)
+	}
+	if !result.Claimed || result.ClaimedBy != "run-ours" {
+		t.Fatalf("claim = %#v, want run-ours to win over a forged breadcrumb", result)
+	}
+}
+
+// TestADOClaimIgnoresReleaseFromAnotherIdentity pins ADO-N10: a release
+// breadcrumb from another identity cannot end the real owner's claim epoch.
+func TestADOClaimIgnoresReleaseFromAnotherIdentity(t *testing.T) {
+	fake := &adoClaimFake{}
+	fake.seed(adoTestSelfID, claimBreadcrumb("run-owner"))
+	fake.seed(adoTestOtherID, claimReleaseBreadcrumb("run-owner"))
+	result, err := claimADOTestItem(t, fake.server(t, true), "run-ours")
+	if err != nil {
+		t.Fatalf("ClaimWorkItem: %v", err)
+	}
+	if result.Claimed || result.ClaimedBy != "run-owner" {
+		t.Fatalf("claim = %#v, want run-owner to keep the claim despite a forged release", result)
+	}
+}
+
+// TestADOClaimFailsClosedWithoutIdentity pins ADO-N10: when the authenticated
+// identity cannot be read, the claim errors instead of scanning breadcrumbs
+// unfiltered, and nothing is written.
+func TestADOClaimFailsClosedWithoutIdentity(t *testing.T) {
+	fake := &adoClaimFake{}
+	_, err := claimADOTestItem(t, fake.server(t, false), "run-ours")
+	if err == nil || !strings.Contains(err.Error(), "resolve claim marker author") {
+		t.Fatalf("ClaimWorkItem error = %v, want identity resolution failure", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.comments) != 0 {
+		t.Fatalf("claim wrote %d comment(s) without a resolved identity", len(fake.comments))
 	}
 }
 

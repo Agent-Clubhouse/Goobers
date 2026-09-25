@@ -110,7 +110,17 @@ live leg must post a thread comment and compare its `author.id` with `connection
 
 `AuthenticatedLogin` is implemented via the ADO `connectionData` endpoint (ADO had no
 authenticated-identity read before). It underpins the trusted-comment filter the
-merge-review verdict trust check needs, and closes the claim-spoof gap.
+merge-review verdict trust check needs. Display names are not unique, so the name alone
+could not close the claim-spoof gap.
+
+**Claim breadcrumbs (ADO-N10).** A work-item claim or release breadcrumb counts only when
+the comment's `createdBy.id` equals `AuthenticatedIdentity().ID`; breadcrumbs from any
+other identity are ignored before the winner is chosen, so a project member cannot take a
+claim or end another run's claim by posting the marker text. `ListComments` maps
+`createdBy.id` into `Comment.AuthorID` for this. If the identity cannot be read, the claim
+or release fails; it never falls back to an unfiltered scan. Breadcrumbs written under a
+previous identity stop counting when the credential's identity changes. The legacy
+owner-tag fallback (#1990) is unchanged.
 
 Every thread `PostPullRequestThreadComment` opens is posted with `status: "closed"`, not
 ADO's default `active`. All Goobers-authored threads are informational (verdict json,

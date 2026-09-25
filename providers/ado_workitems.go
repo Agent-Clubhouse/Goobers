@@ -681,13 +681,11 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 // TEMPORARY — #1990 removes it (target 2026-08-14). A pre-1.0 product should
 // not carry a permanent compat path for a format only Goobers ever wrote.
 //
-// KNOWN GAP vs the GitHub provider: GitHub filters breadcrumbs to the
-// authenticated login, so a project member cannot spoof a claim by posting the
-// marker themselves. The ADO provider has no authenticated-identity lookup
-// wired, so it cannot apply the same filter and a member with comment access
-// could forge one. Tracked separately rather than silently accepted.
+// Only breadcrumbs written by the authenticated identity count (see
+// ownClaimComments), matching the GitHub provider's filter to the
+// authenticated login.
 func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
-	comments, err := p.ListComments(ctx, repo, id)
+	comments, err := p.ownClaimComments(ctx, repo, id)
 	if err != nil {
 		return "", false, err
 	}
@@ -724,6 +722,32 @@ func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id
 		return "", false, err
 	}
 	return adoClaimOwner(adoRawTags(raw))
+}
+
+// ownClaimComments lists the work item's comments written by the identity the
+// provider's credential authenticates as. Authorship is keyed on the stable
+// identity GUID (createdBy.id equals connectionData authenticatedUser.id),
+// never the display name, so a project member cannot take or end a claim by
+// posting the breadcrumb text themselves. When the identity cannot be resolved
+// the read fails; it never falls back to an unfiltered scan. Breadcrumbs
+// written under a previous credential identity stop counting once the
+// identity changes.
+func (p *ADOProvider) ownClaimComments(ctx context.Context, repo RepositoryRef, id string) ([]Comment, error) {
+	self, err := p.AuthenticatedIdentity(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve claim marker author: %w", err)
+	}
+	comments, err := p.ListComments(ctx, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	own := make([]Comment, 0, len(comments))
+	for _, comment := range comments {
+		if comment.AuthorID != "" && strings.EqualFold(comment.AuthorID, self.ID) {
+			own = append(own, comment)
+		}
+	}
+	return own, nil
 }
 
 // ReleaseWorkItemClaim ends the current ADO claim epoch: it posts a release
@@ -906,6 +930,7 @@ func mapADOComment(comment adoComment) Comment {
 	return Comment{
 		ID:         strconv.Itoa(id),
 		Author:     author,
+		AuthorID:   strings.TrimSpace(comment.CreatedBy.ID),
 		AuthorType: "user",
 		Body:       comment.Text,
 		CreatedAt:  createdAt,
