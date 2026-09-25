@@ -350,9 +350,6 @@ func storedAttributionObservation(
 	} else {
 		observation.ObservedAt = row.StartedAt
 	}
-	if record.Status == creditgraph.RecordFailed {
-		return observation, true, nil
-	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("open attribution journal %q: %w", row.RunID, err)
@@ -401,6 +398,9 @@ func storedAttributionObservation(
 		}
 	}
 	slices.Sort(observation.Environments)
+	if record.Status == creditgraph.RecordFailed {
+		return observation, true, nil
+	}
 	observation.Evidence = append(
 		observation.Evidence,
 		buildAttributionEvidence(layout.Root, runDir, records, graph, attribution)...,
