@@ -1,0 +1,47 @@
+name: Collect design delivery context
+description: >-
+  Write the design-delivery context (pinned PR base revision plus GitHub's
+  authoritative closingIssuesReferences) that `go run ./test/designstatus`
+  reads through GOOBERS_DESIGN_DELIVERY_CONTEXT. Shared by the CI checks job
+  and the design-delivery workflow so the two cannot drift apart.
+
+inputs:
+  pr-number:
+    description: Pull request number.
+    required: true
+  base-revision:
+    description: Full SHA of the pull request base.
+    required: true
+  github-token:
+    description: Token with pull-requests read access.
+    required: true
+
+outputs:
+  path:
+    description: Absolute path of the written context file.
+    value: ${{ steps.collect.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Query closing issue references
+      id: collect
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        BASE_REVISION: ${{ inputs.base-revision }}
+      run: |
+        set -euo pipefail
+        out="$RUNNER_TEMP/design-delivery-context.json"
+        gh api graphql \
+          -F owner="$GITHUB_REPOSITORY_OWNER" \
+          -F name="${GITHUB_REPOSITORY#*/}" \
+          -F number="$PR_NUMBER" \
+          -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number repository{nameWithOwner}} pageInfo{hasNextPage}}}}}' \
+          | jq --arg base "$BASE_REVISION" --arg repo "$GITHUB_REPOSITORY" '
+            .data.repository.pullRequest.closingIssuesReferences
+            | if . == null or .pageInfo.hasNextPage then error("closing issue references unavailable or truncated")
+              else {baseRevision: $base, closingIssues: [.nodes[] | select(.repository.nameWithOwner == $repo) | "#\(.number)"]}
+              end' > "$out"
+        echo "path=$out" >> "$GITHUB_OUTPUT"

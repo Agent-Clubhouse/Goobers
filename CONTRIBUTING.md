@@ -182,8 +182,10 @@ to `Delivered-by`, remove it from `Pending-delivery`, provide a `Scope-delta`
 (including an explicit no-delta statement when appropriate), and refresh
 `Verified`. Removing a tracking reference cannot bypass the base-tree check.
 Use `Tracking` when assigning a new design work item so this association is
-explicit. PR edits trigger CI too, because editing closing references changes
-the delivery claim without changing the code revision.
+explicit. Editing closing references changes the delivery claim without
+changing the code revision, so PR edits re-run this check in the separate
+`design-delivery.yml` workflow; they do not re-run (or cancel) the full CI
+run for an unchanged head.
 
 For local reproduction, pass `-delivery-context <file>` to
 `go run ./test/designstatus` (or set `GOOBERS_DESIGN_DELIVERY_CONTEXT` for
