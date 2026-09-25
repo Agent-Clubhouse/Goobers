@@ -23,9 +23,13 @@ API the dispatcher's pods call), [goobernetes-restrictions.md](goobernetes-restr
 running as a DISTINCT Deployment with its own ServiceAccount and minimal RBAC — NOT a mode of
 the daemon process** (decision 011). Decided here, on these grounds:
 
-- **It is control-plane, not workload.** It holds the credential-minting reach (it stamps
-  stage-scoped credentials via the write API on the pod's behalf) and the Kubernetes
-  `pods: create` authority. Per-gaggle dispatchers would replicate that authority into every
+- **It is control-plane, not workload.** It stamps stage-scoped capability NAMES (not
+  credentials) via the write API onto the pod's environment
+  (`dispatcher.EnvStageCapabilities`); the pod itself resolves those names into credentials
+  by calling the daemon's credential plane at stage start (`POST /v1/credentials/resolve`,
+  `cmd/goobers/dispatchexec.go:805-851`), and a separate checkout credential is minted the
+  same way. Even so, the component holds the Kubernetes `pods: create` authority, and
+  per-gaggle dispatchers would replicate that authority into every
   gaggle namespace — the opposite of the structural-least-privilege the RBAC design (D-RBAC)
   builds on.
 - **It shares the daemon's single-writer domain.** The dispatcher reads the resolved runner

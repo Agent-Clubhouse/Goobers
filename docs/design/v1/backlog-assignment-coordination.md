@@ -42,9 +42,19 @@ Two independent facts, confirmed against the current code (2026-07-27 review):
 1. **`Assignee` is already a real, provider-native field Goobers partially understands** —
    `providers.WorkItem.Assignee` (`providers/model.go:78`) is populated on read for both
    GitHub (`providers/github.go`, mapped from `issue.Assignees[0].Login`) and ADO
-   (`providers/ado.go:1446`, `System.AssignedTo`), and `ListWorkItemsRequest.Assignee` already
+   (`providers/ado_workitems.go:878`, `System.AssignedTo` — work-item handling now lives in
+   `ado_workitems.go`, not `ado.go`), and `ListWorkItemsRequest.Assignee` already
    filters both providers' list calls. It's even settable **at creation**
-   (`CreateWorkItemRequest.Assignee`, `providers/model.go:896`).
+   (`CreateWorkItemRequest.Assignee`, `providers/model.go:896`). Gitea has no equivalent —
+   `ListWorkItemsRequest.Assignee` is not wired for Gitea's list call, so it has no
+   assignee-based eligibility filter today (`providers/gitea_issues.go`).
+   On ADO, the assignee identity is a **display name**, not a stable identifier:
+   `System.AssignedTo` is matched by display name (`AssignedTo` comparisons compare
+   input against `displayName`), while `uniqueName` (typically an email/UPN) is
+   captured only as a secondary alias (`providers/ado_workitems.go:1000-1024`,
+   `identityAliases`). This differs from PR-author identity elsewhere in the ADO
+   provider, which is keyed on UPN. The compare-by-displayName bug this caused,
+   [#5556](https://github.com/Agent-Clubhouse/Goobers/issues/5556), is closed.
 2. **Nothing in the scheduler ever looks at it, and nothing can change it after creation.**
    `cmd/goobers/backlogquery.go` has zero references to `Assignee` — eligibility today is
    purely label/field-predicate driven, exactly as if the field didn't exist.
@@ -128,6 +138,13 @@ UNOP-7 lands a real distinct bot/App identity for a gaggle, that identity's logi
 what gets configured here — G3 doesn't need to wait on UNOP-7 to be useful (a shared PAT's own
 account name works as "self" today), but is strengthened once UNOP-7 ships. No new auth
 mechanism, no new credential — purely a string used as a filter/write value.
+
+This doc doesn't say which login form to configure per provider — it matters, because the two
+providers key different operations on different identity forms. On GitHub, "self" is the
+account login (matches both PR authorship and issue assignee). On Azure DevOps, the two axes
+diverge: PR authorship is keyed on UPN, while work-item `Assignee` (§1) matches on display
+name. Configure the account's **display name**, not its UPN, for G3's `assignedTo`/COORD-B/C
+use on ADO.
 
 The concrete fields are `instance.yaml`'s top-level `selfIdentity` default and
 `Gaggle.spec.selfIdentity` override. The effective value becomes a `backlog-query` task's
