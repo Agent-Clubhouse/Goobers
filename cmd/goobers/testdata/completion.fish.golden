@@ -46,7 +46,7 @@ complete -c goobers -n '__fish_seen_subcommand_from escalations; and test (count
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_escalations)'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from resolve; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_escalations)'
 complete -c goobers -n '__fish_seen_subcommand_from completion; and test (count (commandline -opc)) -eq 2' -f -a 'bash zsh fish powershell'
-complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'merges stats errors export prune prune-orphans compact'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'merges stats errors export mark-fix prune prune-orphans compact'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
 complete -c goobers -n '__fish_seen_subcommand_from help; and test (count (commandline -opc)) -eq 2' -f -a 'all stages instance gaggle goober workflow stage gate harness capability'
 
@@ -352,6 +352,8 @@ complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_s
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from errors' -l rebuild -d 'Rebuild telemetry from run journals before querying'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from export' -l since -r -d 'Inclusive span-start lower bound'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from export' -l until -r -d 'Exclusive span-start upper bound'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from mark-fix' -l finding -r -d 'Backprop finding ID to verify'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from mark-fix' -l applied-at -r -d 'Fix deployment time as RFC3339'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune' -l dry-run -d 'Report eligible runs without deleting them'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune-orphans' -l delete -d 'Delete eligible orphan directories (opt-in; default dry-run)'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune-orphans' -l min-age -r -d 'Minimum inactivity age (at least 24h)'

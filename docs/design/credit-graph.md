@@ -72,8 +72,11 @@ A supplied fix marker moves a finding through `verification-pending`,
 `recovered`, or `repeated` using post-fix observations; absence of a post-fix
 cohort never counts as recovery. Stored audit passes durably record report
 cooldowns and operator fix markers in `scheduler/backprop-audit/state.json`;
-this is auditor metadata only and does not mutate workflows, issues, or run
-journals.
+cooldowns are scoped by gaggle and workflow so a narrow read cannot suppress a
+broader cross-workflow classification. Operators record a deployed fix with
+`goobers telemetry mark-fix --finding=<backprop-id>` (optionally pinning its
+RFC3339 deployment time with `--applied-at`). This is auditor metadata only
+and does not mutate workflows, issues, or run journals.
 
 ## Why
 
