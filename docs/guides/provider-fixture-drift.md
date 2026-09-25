@@ -116,3 +116,40 @@ go run ./test/providerfixtures drift \
 ADO normalization replaces the organization and project, identity GUIDs and
 descriptors, revisions, timestamps, and rate-limit counters while retaining
 the seeded numeric work-item ID needed for replay.
+
+### Provision the seeded work item
+
+`go run ./test/adolive provision` creates the seeded work item this workflow
+reads (#4602). It uses the same tool that provisions the live ADO write leg's
+scratch repository (`ado-live-write.yml`, #5727). The tool is a dry run by
+default: it reads the project and prints what it would create. Pass `-apply` to
+create only what is missing. A second run finds everything and changes nothing.
+The tool never updates or deletes an object, and it reads the token only from
+`ADO_PAT`:
+
+```sh
+export ADO_PAT='<ADO PAT with code and work-item write scopes>'
+go run ./test/adolive provision \
+  -organization-url 'https://dev.azure.com/example-org' \
+  -project example-project \
+  -repository example-scratch \
+  -apply
+```
+
+The tool:
+
+- creates a blocking minimum-reviewers policy and a blocking
+  `goobers-live/live-write` status policy, each scoped **exactly** to the
+  scratch repository's `main` (`-base` overrides it);
+- exits non-zero if any blocking policy covers `refs/heads/goobers-live/`,
+  because such a policy would refuse every push the live leg makes. It never
+  creates a prefix-scoped policy itself;
+- finds or creates an open work item titled `goobers provider fixture (do not
+  close)` and tagged `goobers-fixture` (`-fixture-type` picks the type; the
+  default is `Issue`).
+
+It ends by printing the repository variables to set:
+`ADO_WRITE_REPOSITORY` for the live write leg, and
+`ADO_PROVIDER_FIXTURE_WORK_ITEM` for this workflow. A repository admin sets
+them; the tool cannot. The scratch repository must already exist, and it must
+be a different repository from the testbed repository.
