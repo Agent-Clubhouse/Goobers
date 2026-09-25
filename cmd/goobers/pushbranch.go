@@ -484,7 +484,7 @@ func pushBranchEnvironment(dir string) ([]string, error) {
 			return providers.ADOGitAuthEnvironment(ctx, source, nil, remote)
 		}
 		if isADORemote(remote) {
-			return nil, fmt.Errorf("ADO origin %q does not match any configured repository", remote)
+			return nil, adoOriginMismatchError(remote)
 		}
 	}
 	token, err := providerToken(capability.RepoPush)
@@ -494,23 +494,66 @@ func pushBranchEnvironment(dir string) ([]string, error) {
 	return gitAuthEnv(token), nil
 }
 
+// adoRepoForOrigin matches the origin remote against the instance's
+// configured ADO repositories via providers.ParseADORemoteURL (ADO-N35)
+// rather than a single canonical-string comparison, so legacy
+// *.visualstudio.com remotes, the SSH forms and a username-only userinfo
+// origin (https://<org>@dev.azure.com/...) route to the same credentials a
+// dev.azure.com remote for the same repository would. The configured
+// Owner/Project/Name are compared as-is (case-insensitively) against the
+// origin's decoded coordinates; no name character class is imposed. An origin
+// that embeds a password never matches: push-branch would otherwise place it
+// on argv (`git push <url>`) and in the scoped extraheader config key, so it
+// fails closed instead.
 func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bool) {
-	if cfg == nil {
+	if cfg == nil || remoteHasPassword(remote) {
 		return instance.RepoRef{}, false
 	}
-	normalized := strings.TrimSuffix(strings.TrimRight(remote, "/"), ".git")
+	org, project, name, ok := providers.ParseADORemoteURL(remote)
+	if !ok {
+		return instance.RepoRef{}, false
+	}
 	for i := range cfg.Repos {
 		repo := cfg.Repos[i]
 		if repo.Provider != string(providers.ProviderADO) {
 			continue
 		}
-		expected := fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s",
-			url.PathEscape(repo.Owner), url.PathEscape(repo.Project), url.PathEscape(repo.Name))
-		if strings.EqualFold(normalized, expected) {
+		if strings.EqualFold(repo.Owner, org) && strings.EqualFold(repo.Project, project) && strings.EqualFold(repo.Name, name) {
 			return repo, true
 		}
 	}
 	return instance.RepoRef{}, false
+}
+
+// remoteHasPassword reports whether a URL-form remote embeds a password in
+// its userinfo (https://user:secret@host/...).
+func remoteHasPassword(remote string) bool {
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.User == nil {
+		return false
+	}
+	_, set := parsed.User.Password()
+	return set
+}
+
+// adoOriginMismatchError is push-branch's fail-closed error for an ADO origin
+// adoRepoForOrigin did not route. The remote is rendered with any embedded
+// password masked, and a password-bearing origin gets its own explanation.
+func adoOriginMismatchError(remote string) error {
+	if remoteHasPassword(remote) {
+		return fmt.Errorf("ADO origin %q embeds a password; remove it from the remote and configure the repository's auth instead", redactedRemote(remote))
+	}
+	return fmt.Errorf("ADO origin %q does not match any configured repository", redactedRemote(remote))
+}
+
+// redactedRemote renders a remote for an error message with any embedded
+// password masked.
+func redactedRemote(remote string) string {
+	parsed, err := url.Parse(remote)
+	if err != nil {
+		return remote
+	}
+	return parsed.Redacted()
 }
 
 func isADORemote(remote string) bool {
