@@ -23,11 +23,13 @@ const (
 	adoCredentialPAT    = "pat"
 	adoCredentialBearer = "bearer"
 
-	// ADOCredentialKindPAT and ADOCredentialKindBearer are the ADOCredential
-	// kinds a source returns, exported so a caller outside this package (a
-	// test's fake source, for one) builds a credential the provider accepts
-	// without restating the kind strings.
-	ADOCredentialKindPAT    = adoCredentialPAT
+	// ADOCredentialKindPAT is the ADOCredential kind of a personal access
+	// token. It and ADOCredentialKindBearer are exported so a caller outside
+	// this package (a test's fake source, for one) builds a credential the
+	// provider accepts without restating the kind strings.
+	ADOCredentialKindPAT = adoCredentialPAT
+	// ADOCredentialKindBearer is the ADOCredential kind of a Microsoft Entra
+	// token.
 	ADOCredentialKindBearer = adoCredentialBearer
 
 	adoTokenRefreshSkew = 5 * time.Minute
