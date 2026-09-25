@@ -97,6 +97,13 @@ func TestMain(m *testing.M) {
 	if os.Getenv(docsDryRunMakeEnv) == "1" && isDocsDryRunMakeProcess() {
 		os.Exit(runDocsDryRunMake())
 	}
+	// TestCLIDocsGeneratorContract re-execs this test binary as the CLI docs
+	// generator instead of compiling ./cmd/goobers. Dispatch before any test
+	// seam is armed so the subprocess runs the hidden command through the same
+	// dispatcher the shipped binary uses.
+	if os.Getenv(docsGeneratorReexecEnv) == "1" && len(os.Args) > 1 && os.Args[1] == generateDocsCommand {
+		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	}
 	if baseURL := os.Getenv("GOOBERS_TEST_GITHUB_API_URL"); baseURL != "" {
 		newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
 			return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
