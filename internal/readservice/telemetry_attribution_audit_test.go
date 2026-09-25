@@ -164,7 +164,7 @@ func writeAuditRecordForWorkflow(t *testing.T, root, runID, workflow, version, s
 	}
 	record := creditgraph.RunRecord{
 		Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordFailed,
-		RunID: runID, Workflow: workflow, EffectiveVersion: version,
+		RunID: runID, Workflow: workflow, EffectiveVersion: version, Workload: "issue",
 	}
 	if summary != "" {
 		record.Attribution = creditgraph.Attribution{
@@ -180,6 +180,12 @@ func writeAuditRecordForWorkflow(t *testing.T, root, runID, workflow, version, s
 			RunID: runID, NodeID: "stage", Stage: "implement",
 			Source: string(creditgraph.ClassWeakInstructions), JournalSequence: 1, JournalPath: "events.jsonl",
 		}}
+	} else {
+		record.Attribution = creditgraph.Attribution{
+			Contributions: []creditgraph.Contribution{{
+				NodeID: "stage", Stage: "implement", Path: []string{"stage"}, Confidence: 0.9,
+			}},
+		}
 	}
 	data, err := json.Marshal(record)
 	if err != nil {

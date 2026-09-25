@@ -342,19 +342,113 @@ func verificationState(finding FaultFinding, signals []faultSignal, all []Attrib
 	if !ok {
 		return VerificationOpen
 	}
-	state := VerificationPending
-	for _, observation := range all {
-		if observation.ObservedAt.IsZero() || !observation.ObservedAt.After(fixedAt) || !contains(finding.Workflows, observation.Workflow) {
+	var baseline []faultSignal
+	repeatedRuns := map[string]bool{}
+	for _, signal := range signals {
+		if signal.observation.ObservedAt.IsZero() || !signal.observation.ObservedAt.After(fixedAt) {
+			baseline = append(baseline, signal)
 			continue
 		}
-		state = VerificationRecovered
-		for _, signal := range signals {
-			if signal.observation.RunID == observation.RunID {
-				return VerificationRepeated
-			}
+		repeatedRuns[signal.observation.RunID] = true
+	}
+	workflowFix := localizedWorkflowCohort(baseline)
+	state := VerificationPending
+	for _, observation := range all {
+		repeated := repeatedRuns[observation.RunID]
+		if observation.ObservedAt.IsZero() || !observation.ObservedAt.After(fixedAt) ||
+			(!repeated && len(observation.Attribution.Causes) > 0) ||
+			!matchesVerificationCohort(observation, baseline, workflowFix, repeated) {
+			continue
 		}
+		if repeated {
+			return VerificationRepeated
+		}
+		state = VerificationRecovered
 	}
 	return state
+}
+
+func localizedWorkflowCohort(signals []faultSignal) bool {
+	if len(signals) == 0 {
+		return false
+	}
+	workflow, version, path := signals[0].observation.Workflow, signals[0].observation.EffectiveVersion, strings.Join(signals[0].path, "\x00")
+	if workflow == "" || version == "" || path == "" {
+		return false
+	}
+	for _, signal := range signals {
+		if signalDomain(signal) != FaultDomainWorkflow ||
+			signal.observation.Workflow != workflow ||
+			signal.observation.EffectiveVersion != version ||
+			strings.Join(signal.path, "\x00") != path {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesVerificationCohort(observation AttributionObservation, baseline []faultSignal, workflowFix, repeated bool) bool {
+	for _, signal := range baseline {
+		affected := signal.observation
+		if observation.Workflow != affected.Workflow ||
+			affected.Workload == "" || observation.Workload != affected.Workload ||
+			!sameStringSet(observation.Environments, affected.Environments) ||
+			!observationExercisesPath(observation, signal.path) {
+			continue
+		}
+		if workflowFix {
+			if observation.EffectiveVersion != "" &&
+				(repeated || observation.EffectiveVersion != affected.EffectiveVersion) {
+				return true
+			}
+			continue
+		}
+		if observation.EffectiveVersion == affected.EffectiveVersion {
+			return true
+		}
+	}
+	return false
+}
+
+func observationExercisesPath(observation AttributionObservation, affectedPath []string) bool {
+	if len(affectedPath) == 0 {
+		return false
+	}
+	for _, contribution := range observation.Attribution.Contributions {
+		if slicesEqual(contributionPath(contribution), affectedPath) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	counts := make(map[string]int, len(left))
+	for _, value := range left {
+		counts[value]++
+	}
+	for _, value := range right {
+		if counts[value] == 0 {
+			return false
+		}
+		counts[value]--
+	}
+	return true
+}
+
+func slicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func sortedSet(values map[string]bool, limit int) []string {
@@ -383,15 +477,6 @@ func sortEvidence(evidence []AttributionEvidenceLink) {
 func containsAny(value string, needles ...string) bool {
 	for _, needle := range needles {
 		if strings.Contains(value, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
 			return true
 		}
 	}
