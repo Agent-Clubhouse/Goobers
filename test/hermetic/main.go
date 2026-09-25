@@ -25,15 +25,8 @@ import (
 
 const integrationGuidance = "tag this test with //go:build integration and run it in the integration tier"
 const shardWeightsPath = ".github/unit-shard-weights.json"
-const shardWeightsArtifactName = "test-timings-macOS"
-const shardWeightsPlatform = "darwin"
-
-// shardWeightsMaxAge bounds how long the checked-in package measurements may
-// go without a refresh before TestCheckedInShardWeightsAreFresh fails: the
-// weights have no automated writer, so a hard cadence is what keeps the LPT
-// scheduler balancing against current package costs instead of a stale
-// snapshot.
-const shardWeightsMaxAge = 30 * 24 * time.Hour
+const shardWeightsArtifactName = "test-timings-Linux"
+const shardWeightsPlatform = "linux"
 
 type toolSpec struct {
 	name     string

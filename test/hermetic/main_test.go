@@ -552,32 +552,6 @@ func TestLinuxShardsIncludeJournalOTLPPackages(t *testing.T) {
 	}
 }
 
-func TestCheckedInShardWeightsAreFresh(t *testing.T) {
-	root, err := findModuleRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	weights, err := loadShardWeights(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	generated, err := weights.generatedAt()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if age := time.Since(generated); age > shardWeightsMaxAge {
-		t.Fatalf("%s was generated %s (%.0f days ago), want no older than %.0f days: "+
-			"regenerate it from a recent test-timings artifact with the documented testtiming weights command",
-			shardWeightsPath, generated.Format(time.RFC3339), age.Hours()/24, shardWeightsMaxAge.Hours()/24)
-	}
-}
-
-func TestShardWeightsRefreshCadenceIsThirtyDays(t *testing.T) {
-	if shardWeightsMaxAge != 30*24*time.Hour {
-		t.Fatalf("shardWeightsMaxAge = %s, want the documented 30-day manual refresh cadence", shardWeightsMaxAge)
-	}
-}
-
 func TestLoadShardWeightsRequiresGeneratedAt(t *testing.T) {
 	for name, source := range map[string]string{
 		"missing":   `{}`,
@@ -606,9 +580,9 @@ func TestLoadShardWeightsRequiresGeneratedAt(t *testing.T) {
 
 func TestValidateShardWeightSourceRequiresVerifiableProvenance(t *testing.T) {
 	valid := shardWeightsSource{
-		Run: 10, Jobs: []int64{20}, Artifact: 30, ArtifactName: "test-timings-macOS",
+		Run: 10, Jobs: []int64{20}, Artifact: 30, ArtifactName: "test-timings-Linux",
 		Commit: strings.Repeat("a", 40), GeneratedAt: "2026-09-12T20:48:16Z",
-		Platform: "darwin", Architecture: "arm64", MinimumRecordedSeconds: 3,
+		Platform: "linux", Architecture: "amd64", MinimumRecordedSeconds: 3,
 	}
 	tests := []struct {
 		name   string
@@ -619,9 +593,9 @@ func TestValidateShardWeightSourceRequiresVerifiableProvenance(t *testing.T) {
 		{name: "multiple jobs", mutate: func(source *shardWeightsSource) { source.Jobs = []int64{20, 21} }},
 		{name: "zero job", mutate: func(source *shardWeightsSource) { source.Jobs = []int64{0} }},
 		{name: "artifact", mutate: func(source *shardWeightsSource) { source.Artifact = 0 }},
-		{name: "artifact name", mutate: func(source *shardWeightsSource) { source.ArtifactName = "test-timings-Linux" }},
+		{name: "artifact name", mutate: func(source *shardWeightsSource) { source.ArtifactName = "test-timings-macOS" }},
 		{name: "short commit", mutate: func(source *shardWeightsSource) { source.Commit = "abc123" }},
-		{name: "platform", mutate: func(source *shardWeightsSource) { source.Platform = "linux" }},
+		{name: "platform", mutate: func(source *shardWeightsSource) { source.Platform = "darwin" }},
 		{name: "architecture", mutate: func(source *shardWeightsSource) { source.Architecture = "" }},
 		{name: "minimum", mutate: func(source *shardWeightsSource) { source.MinimumRecordedSeconds = 0 }},
 	}

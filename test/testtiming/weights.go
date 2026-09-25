@@ -19,8 +19,8 @@ import (
 const (
 	defaultShardSeconds        = 1.0
 	defaultMinimumShardSeconds = 3.0
-	canonicalTimingArtifact    = "test-timings-macOS"
-	canonicalTimingJob         = "unit behavioral suite (macos)"
+	canonicalTimingArtifact    = "test-timings-Linux"
+	canonicalTimingJob         = "unit coverage gate (linux)"
 )
 
 type artifactMetadata struct {
@@ -119,8 +119,8 @@ func generateShardWeights(timing artifact, artifactMeta artifactMetadata, jobMet
 	if timing.SchemaVersion != schemaVersion {
 		return shardWeightDocument{}, fmt.Errorf("timing artifact: unsupported schemaVersion %d", timing.SchemaVersion)
 	}
-	if timing.Job != "unit" || timing.Platform != "darwin" || strings.TrimSpace(timing.Architecture) == "" {
-		return shardWeightDocument{}, fmt.Errorf("timing artifact: want unit/darwin with a recorded architecture, got %q/%q/%q", timing.Job, timing.Platform, timing.Architecture)
+	if timing.Job != "unit" || timing.Platform != "linux" || strings.TrimSpace(timing.Architecture) == "" {
+		return shardWeightDocument{}, fmt.Errorf("timing artifact: want unit/linux with a recorded architecture, got %q/%q/%q", timing.Job, timing.Platform, timing.Architecture)
 	}
 	if !validPositiveSeconds(timing.ElapsedSeconds) {
 		return shardWeightDocument{}, errors.New("timing artifact: elapsedSeconds must be finite and positive")

@@ -7,11 +7,11 @@
       103616462768
     ],
     "artifact": 10305996320,
-    "artifactName": "test-timings-macOS",
+    "artifactName": "test-timings-Linux",
     "commit": "5d8e9a5ef56b264e5fe7ea078be9802ce068f7c1",
     "generatedAt": "2026-09-12T20:48:16Z",
-    "platform": "darwin",
-    "architecture": "arm64",
+    "platform": "linux",
+    "architecture": "amd64",
     "minimumRecordedSeconds": 3
   },
   "packages": {
