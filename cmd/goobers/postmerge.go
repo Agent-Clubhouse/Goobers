@@ -445,13 +445,15 @@ func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, b
 	}
 	statusLabel := "goobers/status:" + string(providers.WorkItemStatusDone)
 	if !strings.EqualFold(item.State, "closed") || !hasAnyLabel(item.Labels, []string{statusLabel}) {
-		if _, err := closer.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
+		updated, err := closer.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
 			Repository: backlogRepo,
 			ID:         id,
 			Status:     providers.WorkItemStatusDone,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
+		item = updated
 	}
 
 	comments, err := closer.ListComments(ctx, backlogRepo, id)
