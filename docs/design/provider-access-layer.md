@@ -1,7 +1,7 @@
 # Design: Provider access layer — unified providers, connections and explicit credentials (DSL 3.0)
 
 > Status: **draft** — long-term direction for PO review. Nothing here ships in v0.5.0.
-> Near-term companion: `docs/design/ado-parity-dsl-2-0.md` ([#5665](https://github.com/Agent-Clubhouse/Goobers/pull/5665)) makes the
+> Near-term companion: [`ado-parity-dsl-2-0.md`](ado-parity-dsl-2-0.md) makes the
 > existing DSL 2.0 work on Azure DevOps for v0.5.0; this document is where DSL 3.0
 > goes after that.
 > Completes: [ADR 0002](../adr/0002-provider-neutral-capability-namespaces.md)
