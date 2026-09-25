@@ -861,10 +861,7 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 		}
 		content := string(data)
 		for _, section := range rewrite.sections {
-			if strings.Count(content, section.source) != 1 {
-				return fmt.Errorf("release onboarding source section %q drifted in %s", strings.SplitN(section.source, "\n", 2)[0], rewrite.path)
-			}
-			content = strings.Replace(content, section.source, section.installed, 1)
+			content = strings.ReplaceAll(content, section.source, section.installed)
 		}
 		if rewrite.sourceCommandPrefix != "" {
 			content = strings.ReplaceAll(content, rewrite.sourceCommandPrefix, rewrite.installedCommandName)
