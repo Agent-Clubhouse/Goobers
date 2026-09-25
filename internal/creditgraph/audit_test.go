@@ -142,7 +142,10 @@ func TestAuditFaultDomainsPostFixVerificationRequiresMatchingCohort(t *testing.T
 	}{
 		{name: "workflow", mutate: func(observation *AttributionObservation) { observation.Workflow = "other" }},
 		{name: "workload", mutate: func(observation *AttributionObservation) { observation.Workload = "schedule" }},
-		{name: "effective version", mutate: func(observation *AttributionObservation) { observation.EffectiveVersion = "v1" }},
+		{name: "effective version", mutate: func(observation *AttributionObservation) {
+			observation.EffectiveVersion = "v1"
+			observation.WorkflowDigest = "v1"
+		}},
 		{name: "node path", mutate: func(observation *AttributionObservation) {
 			observation.Attribution.Contributions[0].Path = []string{"other"}
 		}},
@@ -177,13 +180,48 @@ func TestAuditFaultDomainsPostFixVerificationRequiresMatchingCohort(t *testing.T
 	}
 }
 
+func TestAuditFaultDomainsRecoveryRequiresSampleFloorAndAffectedWorkflowCoverage(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	first := auditObservation("before-one", "one", "v1", "stage", "shared scheduler failure", ClassUnknown, 0.9, "stage")
+	second := auditObservation("before-two", "two", "v1", "stage", "shared scheduler failure", ClassUnknown, 0.9, "stage")
+	first.ObservedAt = now.Add(-2 * time.Hour)
+	second.ObservedAt = now.Add(-2 * time.Hour)
+	first.WorkflowDigest, second.WorkflowDigest = "workflow-one", "workflow-two"
+	first.GooberDigest, second.GooberDigest = "goober-before", "goober-before"
+	initial := AuditFaultDomains([]AttributionObservation{first, second}, FaultAuditConfig{Now: now, SampleFloor: 2})
+	id := initial.ProductFindings[0].ID
+
+	healthyOne := auditObservation("after-one", "one", "v2", "stage", "", ClassUnknown, 0.9, "stage")
+	healthyOne.ObservedAt = now
+	healthyOne.Attribution.Causes = nil
+	healthyOne.WorkflowDigest, healthyOne.GooberDigest = "workflow-one", "goober-after"
+	oneWorkflow := AuditFaultDomains([]AttributionObservation{first, second, healthyOne}, FaultAuditConfig{
+		Now: now, SampleFloor: 2, FixesAppliedAt: map[string]time.Time{id: now.Add(-time.Hour)},
+	})
+	if got := oneWorkflow.ProductFindings[0].Verification; got != VerificationPending {
+		t.Fatalf("verification = %q, want pending until every affected workflow has healthy evidence", got)
+	}
+
+	healthyTwo := auditObservation("after-two", "two", "v2", "stage", "", ClassUnknown, 0.9, "stage")
+	healthyTwo.ObservedAt = now
+	healthyTwo.Attribution.Causes = nil
+	healthyTwo.WorkflowDigest, healthyTwo.GooberDigest = "workflow-two", "goober-after"
+	recovered := AuditFaultDomains([]AttributionObservation{first, second, healthyOne, healthyTwo}, FaultAuditConfig{
+		Now: now, SampleFloor: 2, FixesAppliedAt: map[string]time.Time{id: now.Add(-time.Hour)},
+	})
+	if got := recovered.ProductFindings[0].Verification; got != VerificationRecovered {
+		t.Fatalf("verification = %q, want recovered after bounded healthy cohort coverage", got)
+	}
+}
+
 func auditObservation(runID, workflow, version, stage, summary string, class FailureClass, confidence float64, node string) AttributionObservation {
 	path := []string{node}
 	if class == ClassBadToolChoice {
 		path = []string{"stage:implement", "tool:one"}
 	}
 	return AttributionObservation{
-		RunID: runID, Workflow: workflow, EffectiveVersion: version, Workload: "issue",
+		RunID: runID, Workflow: workflow, WorkflowDigest: version, GooberDigest: "goober",
+		EffectiveVersion: version, Workload: "issue",
 		Status: RecordComplete, Environments: []string{"windows"},
 		Attribution: Attribution{
 			Contributions: []Contribution{{NodeID: node, Stage: stage, Path: path, Confidence: confidence}},

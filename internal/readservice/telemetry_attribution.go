@@ -345,7 +345,8 @@ func storedAttributionObservation(
 	}
 	observation := creditgraph.AttributionObservation{
 		RunID: record.RunID, Workflow: record.Workflow, EffectiveVersion: record.EffectiveVersion,
-		Workload: record.Workload, Status: record.Status, Failure: record.Failure,
+		WorkflowDigest: record.WorkflowDigest,
+		Workload:       record.Workload, Status: record.Status, Failure: record.Failure,
 		Attribution: record.Attribution,
 		Evidence:    append([]creditgraph.AttributionEvidenceLink(nil), record.Evidence...),
 	}
@@ -370,9 +371,11 @@ func storedAttributionObservation(
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution identity %q: %w", row.RunID, err)
 	}
+	observation.GooberDigest = identity.GooberDigest
 	spanData := map[string][]byte{}
 	for _, event := range events {
-		if event.Type != journal.EventSpanRecorded || event.Ref == nil || event.DataSchema != telemetry.GenAIEventSchema {
+		if event.Type != journal.EventSpanRecorded || event.Ref == nil ||
+			(event.DataSchema != telemetry.GenAIEventSchema && event.DataSchema != telemetry.SpanSchema) {
 			continue
 		}
 		data, err := reader.SpanBytes(*event.Ref)
