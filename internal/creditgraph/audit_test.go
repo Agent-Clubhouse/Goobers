@@ -58,6 +58,33 @@ func TestAuditFaultDomainsPreservesSparseMixedAndMissingEvidence(t *testing.T) {
 	}
 }
 
+func TestAuditFaultDomainsAggregatesConflictingClassesByStableSignature(t *testing.T) {
+	workflow := auditObservation("workflow", "implementation", "v1", "implement", "operation failed", ClassWeakInstructions, 0.9, "stage")
+	external := auditObservation("external", "review", "v2", "review", "operation failed", ClassEnvironment, 0.9, "stage")
+	product := auditObservation("product", "release", "v3", "release", "operation failed", ClassEnvironment, 0.9, "stage")
+	product.Attribution.Causes[0].Evidence = []string{"scheduler operation failed"}
+
+	report := AuditFaultDomains([]AttributionObservation{workflow, external, product}, FaultAuditConfig{SampleFloor: 3})
+	if len(report.UnknownFindings) != 1 {
+		t.Fatalf("report = %+v, want one mixed finding for the stable signature", report)
+	}
+	if finding := report.UnknownFindings[0]; finding.Signature != "operation failed" || finding.Confidence > 0.45 {
+		t.Fatalf("finding = %+v, want class-independent signature with reduced confidence", finding)
+	}
+}
+
+func TestAuditFaultDomainsCapsUnknownOnlyConfidence(t *testing.T) {
+	observations := []AttributionObservation{
+		auditObservation("one", "implementation", "v1", "stage", "unclassified failure", ClassUnknown, 0.95, "node"),
+		auditObservation("two", "implementation", "v1", "stage", "unclassified failure", ClassUnknown, 0.95, "node"),
+		auditObservation("three", "implementation", "v1", "stage", "unclassified failure", ClassUnknown, 0.95, "node"),
+	}
+	report := AuditFaultDomains(observations, FaultAuditConfig{SampleFloor: 3})
+	if len(report.UnknownFindings) != 1 || report.UnknownFindings[0].Confidence > 0.45 {
+		t.Fatalf("report = %+v, want reduced-confidence unknown finding", report)
+	}
+}
+
 func TestAuditFaultDomainsDeduplicatesRunsPassesAndBoundsOutput(t *testing.T) {
 	one := auditObservation("duplicate", "one", "v1", "stage", "weak workflow instructions", ClassWeakInstructions, 0.8, "stage")
 	two := auditObservation("second", "one", "v1", "stage", "weak workflow instructions", ClassWeakInstructions, 0.8, "stage")

@@ -108,7 +108,9 @@ func AuditFaultDomains(observations []AttributionObservation, config FaultAuditC
 	sort.Strings(signatures)
 	for _, signature := range signatures {
 		finding := classifyFaultGroup(signature, groups[signature], selected, config)
-		if reportedAt, ok := config.PreviousReports[finding.ID]; ok && config.Now.Sub(reportedAt) < config.Cooldown {
+		if reportedAt, ok := config.PreviousReports[finding.ID]; ok &&
+			finding.Verification == VerificationOpen &&
+			config.Now.Sub(reportedAt) < config.Cooldown {
 			report.Suppressed++
 			continue
 		}
@@ -189,9 +191,12 @@ func makeFaultSignal(observation AttributionObservation, cause CauseFinding) fau
 	text = strings.ToLower(unstableSignaturePart.ReplaceAllString(text, "#"))
 	text = strings.Join(strings.Fields(text), " ")
 	if text == "" {
-		text = string(cause.Class) + ":" + cause.Stage
+		text = "stage:" + cause.Stage
 	}
-	signature := string(cause.Class) + ":" + text
+	if text == "stage:" {
+		text = "unknown-failure"
+	}
+	signature := text
 	var path []string
 	if contribution, ok := observation.Attribution.Contribution(cause.NodeID); ok {
 		path = contributionPath(contribution)
@@ -275,6 +280,9 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 		finding.CounterEvidence = append(finding.CounterEvidence, "one or more observations lack exact version or journal/artifact provenance")
 	}
 	if contradictory || len(domainCounts) != 1 {
+		finding.Confidence = min(finding.Confidence, 0.45)
+	}
+	if finding.Domain == FaultDomainUnknown {
 		finding.Confidence = min(finding.Confidence, 0.45)
 	}
 	finding.Rationale, finding.AlternativeDomains, finding.RecommendedOwner, finding.RecommendedAction = explainFaultFinding(finding, len(signals))
