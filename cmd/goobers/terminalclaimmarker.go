@@ -50,39 +50,46 @@ var newTerminalClaimMarkerProvider = func(source providers.TokenSource, opts ...
 	return providers.NewGitHubProvider("", append([]func(*providers.GitHubProvider){providers.WithTokenSource(source)}, opts...)...)
 }
 
+// newTerminalADOClaimMarkerProvider is the Azure DevOps arm of the same seam.
 var newTerminalADOClaimMarkerProvider = func(repo instance.RepoRef, registrar providers.SecretRegistrar, stores credentials.StoreResolver) (workItemClaimReleaser, error) {
 	return adoauth.Provider(repo, nil, registrar, nil, nil, stores)
 }
 
-// buildTerminalClaimMarkerRelease uses each provider's existing daemon-safe
-// credential path and per-gaggle backlog routing. GitHub materializes
-// github:issues:write through the capability injector; ADO reuses adoauth so
-// PAT, Azure CLI, workload identity, and managed identity keep their configured
-// behavior without introducing a second provider factory.
+// buildTerminalClaimMarkerRelease builds the terminal claim-marker release for
+// the gaggle's backlog provider. GitHub mirrors buildTerminalRunAbortLabeler's
+// shape — the same credential/capability wiring and per-gaggle project scoping —
+// but github:issues:write (the ordinary label/comment surface, and a
+// daemon-identity capability, so the release is attributed to the same bot login
+// that wrote the claim). Azure DevOps goes through
+// buildTerminalADOClaimMarkerRelease.
 //
-// Returns a nil func for a repo-less instance (the credential-free demo) and
-// unsupported providers. The returned RepositoryRef is the backlog target, which
-// may differ from the code repository for ADO.
+// Returns a nil func for a repo-less instance (the credential-free demo) and for
+// a provider without a terminal release (Gitea keeps relying on backlog
+// curation's reconciliation pass). The returned RepositoryRef is the backlog
+// target: on GitHub the backlog and the code repo coincide, while on ADO it is
+// the gaggle's backlog project (backlogRepoRefForGaggle).
 func buildTerminalClaimMarkerRelease(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (claimMarkerReleaseFunc, providers.RepositoryRef, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, providers.RepositoryRef{}, nil
 	}
-	repo := backlogRepoRefForGaggle(l, terminalRepositoryRefForProject(cfg, project))
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderKind(cfg.Repos[0].Provider),
+		Owner:    cfg.Repos[0].Owner,
+		Name:     cfg.Repos[0].Name,
+	}
+	if project.Owner != "" && project.Name != "" {
+		repo.Owner, repo.Name = project.Owner, project.Name
+		// A gaggle project may name its repo without restating the provider
+		// (runnerwiring.go's single-repo inference); the configured repo's own
+		// provider is the fallback, never an implicit GitHub.
+		if project.Provider != "" {
+			repo.Provider = providers.ProviderKind(project.Provider)
+		}
+	}
 	switch repo.Provider {
 	case providers.ProviderADO:
-		configured, err := terminalConfiguredRepo(cfg, project)
-		if err != nil {
-			return nil, providers.RepositoryRef{}, err
-		}
-		provider, err := newTerminalADOClaimMarkerProvider(configured, registrar, stores)
-		if err != nil {
-			return nil, providers.RepositoryRef{}, fmt.Errorf("build terminal ADO claim-marker provider: %w", err)
-		}
-		release := func(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
-			item, err := provider.ReleaseWorkItemClaim(ctx, req)
-			return item, scrubTerminalError(registrar, err)
-		}
-		return release, repo, nil
+		release, backlog := buildTerminalADOClaimMarkerRelease(l, cfg, project, registrar, stores)
+		return release, backlog, nil
 	case providers.ProviderGitHub:
 	default:
 		return nil, providers.RepositoryRef{}, nil
@@ -109,6 +116,40 @@ func buildTerminalClaimMarkerRelease(l instance.Layout, cfg *instance.Config, pr
 		return item, scrubTerminalError(registrar, err)
 	}
 	return release, repo, nil
+}
+
+// buildTerminalADOClaimMarkerRelease is the Azure DevOps arm of
+// buildTerminalClaimMarkerRelease. The release addresses the gaggle's backlog
+// project — where the work item and its claim breadcrumbs live — with the
+// configured code repository's organization-scoped credential source
+// (adoauth), so PAT, Azure CLI, workload identity and managed identity keep
+// their configured behavior.
+//
+// The provider is built per release rather than at daemon start: terminal
+// cleanup is best-effort, so an ADO credential source that cannot be built
+// (an unconfigured project repo, a missing workload-identity environment) is
+// journaled as a claim_marker_release_failed event on the run that needed it
+// instead of failing runtime startup for an instance that never reaches this
+// path.
+func buildTerminalADOClaimMarkerRelease(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (claimMarkerReleaseFunc, providers.RepositoryRef) {
+	routed := terminalRepositoryRefForProject(cfg, project)
+	configured, configErr := terminalConfiguredRepo(cfg, project)
+	if configErr == nil && routed.Project == "" {
+		routed.Project = configured.Project
+	}
+	backlog := backlogRepoRefForGaggle(l, routed)
+	release := func(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+		if configErr != nil {
+			return providers.WorkItem{}, scrubTerminalError(registrar, configErr)
+		}
+		provider, err := newTerminalADOClaimMarkerProvider(configured, registrar, stores)
+		if err != nil {
+			return providers.WorkItem{}, scrubTerminalError(registrar, fmt.Errorf("build terminal ADO claim-marker provider: %w", err))
+		}
+		item, err := provider.ReleaseWorkItemClaim(ctx, req)
+		return item, scrubTerminalError(registrar, err)
+	}
+	return release, backlog
 }
 
 // releaseTerminalClaimMarkers ends the provider-visible claim epoch for every

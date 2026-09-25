@@ -1097,11 +1097,10 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 			return malformedReadyItems, 1
 		}
 		// ReadyAt is optional claim-output enrichment, not part of label
-		// eligibility. Only GitHub currently exposes the label-transition
-		// history needed to derive it. ADO must not fail an otherwise valid
-		// claim merely because the selector references the canonical ready tag.
+		// eligibility: a provider without label-transition history must not
+		// fail an otherwise valid claim because the selector names the ready tag.
 		if labelFilter.ReferencesLabel(providers.LabelReady) &&
-			session.env.issueProvider.Kind() == providers.ProviderGitHub {
+			claimReadyAtSupported(session.env.issueProvider.Kind()) {
 			for index := firstNewClaim; index < len(session.claimed); {
 				if !session.claimed[index].HasLabel(providers.LabelReady) {
 					index++
@@ -1134,6 +1133,16 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 		}
 	}
 	return malformedReadyItems, 0
+}
+
+// claimReadyAtSupported reports whether a backlog provider exposes the
+// label-transition history a claim's ReadyAt is derived from. Azure DevOps does
+// not yet (its ListWorkItemLabelTransitionsForItem fails closed until work-item
+// update history is mapped, #5554), so an ADO claim omits ReadyAt instead of
+// failing. Every other provider keeps deriving it. Once ADO derives transitions,
+// this exclusion is the one line to delete.
+func claimReadyAtSupported(kind providers.ProviderKind) bool {
+	return kind != providers.ProviderADO
 }
 
 // acquire is the claim transaction: the blocked-record reconcile and the

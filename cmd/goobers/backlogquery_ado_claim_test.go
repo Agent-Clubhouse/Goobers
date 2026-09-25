@@ -131,3 +131,19 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 		t.Fatalf("ADO tags = %q, want visible claim marker", tags)
 	}
 }
+
+// TestClaimReadyAtSupportedExcludesOnlyADO pins that dropping ReadyAt
+// enrichment is scoped to the provider that cannot derive it: GitHub and Gitea
+// both expose label-transition history and keep enriching (and fail-closing on
+// malformed history) exactly as before.
+func TestClaimReadyAtSupportedExcludesOnlyADO(t *testing.T) {
+	for kind, want := range map[providers.ProviderKind]bool{
+		providers.ProviderGitHub: true,
+		providers.ProviderGitea:  true,
+		providers.ProviderADO:    false,
+	} {
+		if got := claimReadyAtSupported(kind); got != want {
+			t.Errorf("claimReadyAtSupported(%q) = %t, want %t", kind, got, want)
+		}
+	}
+}

@@ -149,9 +149,17 @@ name or its stable `uniqueName` account identifier, case-insensitively.
 Close and reopen mutations select the target work-item state by the process
 state category instead of assuming one process template's state names. Numeric
 GitHub milestones have no Azure Boards equivalent and are rejected; existing
-iteration paths are left unchanged. Claims write `goobers:claimed` plus an
-internal run-owner tag in one revision-tested patch, so concurrent schedulers
-settle on one visible owner without overwriting unrelated tags.
+iteration paths are left unchanged. A claim records its owning run as a claim
+comment on the work item; concurrent schedulers settle on one owner by comment
+order, and only the winner adds the visible `goobers:claimed` tag, in a
+revision-tested patch that leaves unrelated tags untouched. Releasing a claim
+posts a release comment that ends that run's claim and then removes the tag.
+When a run ends without a close-out stage (for example a `no-work` outcome or
+an abort), the daemon's terminal cleanup performs the same release against the
+gaggle's backlog project before it frees the local claim, and it never ends a
+claim that a newer run now holds. Claims taken for a work item on a
+`goobers:ready` selector do not record a ready time on Azure DevOps, because
+Goobers does not yet read tag history from work-item updates.
 
 Repository and pull-request parity remains incremental. Keep human branch
 policies authoritative for ADO repo operations that the provider does not yet
