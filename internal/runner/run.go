@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -802,6 +803,7 @@ type Runner struct {
 	active               activeRunSet
 	pinnedMu             sync.Mutex
 	pinnedRuns           map[string]*worktree.PinnedLease
+	attributeRun         func(string, *journal.Event) (bool, error)
 	toolchains           ToolchainVerifier
 	lookPath             func(string) (string, error)
 }
@@ -844,6 +846,7 @@ func New(cfg Config) (*Runner, error) {
 		stalledCancelGrace:   StalledCancellationGrace,
 		stalledTerminalGrace: StalledTerminalizationGrace,
 		pinnedRuns:           make(map[string]*worktree.PinnedLease),
+		attributeRun:         creditgraph.WriteRunRecord,
 	}, nil
 }
 
@@ -4222,7 +4225,8 @@ func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, ph
 	// returned to the caller AFTER terminalization so nothing is silently
 	// swallowed.
 	prepareErr := r.prepareTerminal(runID, phase, jr)
-	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition}); err != nil {
+	terminal := journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition}
+	if err := jr.Append(terminal); err != nil {
 		return Result{}, errors.Join(pinnedOutcomeErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
@@ -4230,7 +4234,47 @@ func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, ph
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
 		return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, err)
 	}
+	r.attributeAfterTerminal(jr)
 	return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr)
+}
+
+func (r *Runner) attributeAfterTerminalIfMissing(jr *journal.Run) {
+	if r.attributeRun == nil {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(jr.Dir(), creditgraph.RecordFileName)); err == nil {
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = jr.Append(journal.Event{
+			Type: journal.EventError, Reason: "Backprop attribution inspection failed",
+			Error: &journal.ErrorDetail{Code: "backprop_attribution_inspection_failed", Message: err.Error()},
+		})
+		return
+	}
+	r.attributeAfterTerminal(jr)
+}
+
+func (r *Runner) attributeAfterTerminal(jr *journal.Run) {
+	if r.attributeRun == nil {
+		return
+	}
+	enrolled, err := creditgraph.RunEnrolled(jr.Dir())
+	if err != nil {
+		_ = jr.Append(journal.Event{
+			Type: journal.EventError, Reason: "Backprop enrollment inspection failed",
+			Error: &journal.ErrorDetail{Code: "backprop_enrollment_failed", Message: err.Error()},
+		})
+		return
+	}
+	if !enrolled {
+		return
+	}
+	if _, err := r.attributeRun(jr.Dir(), nil); err != nil {
+		_ = jr.Append(journal.Event{
+			Type: journal.EventError, Reason: "Backprop attribution failed",
+			Error: &journal.ErrorDetail{Code: "backprop_attribution_failed", Message: err.Error()},
+		})
+	}
 }
 
 func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *journal.Run) error {

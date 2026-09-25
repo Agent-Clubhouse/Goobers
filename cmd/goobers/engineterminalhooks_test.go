@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -64,6 +68,10 @@ func (r *hookRecorder) hooks(log *journal.InstanceLog) *engineTerminalHooks {
 			r.finalized = append(r.finalized, phase)
 			return r.failEvery
 		},
+		attribute: func(runDir string, terminal *journal.Event) (bool, error) {
+			r.order = append(r.order, "attribute")
+			return creditgraph.WriteRunRecord(runDir, terminal)
+		},
 	}
 }
 
@@ -115,6 +123,54 @@ func TestEngineTerminalHooksFireInTheRunnersOrder(t *testing.T) {
 		if rec.order[i] != want[i] {
 			t.Fatalf("hook order = %v, want %v", rec.order, want)
 		}
+	}
+}
+
+func TestEngineTerminalHooksWriteBackpropForEnrolledRun(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	definition, err := json.Marshal(map[string]any{
+		"Spec": map[string]any{"backprop": map[string]any{"enabled": true, "version": "v1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: "engine-backprop", Workflow: "implementation", WorkflowVersion: 1,
+		WorkflowDigest: "sha256:workflow", Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition},
+		journal.WithInputIntegrity(map[string]apiv1.Integrity{
+			journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	rec := &hookRecorder{}
+	hooks := rec.hooks(log)
+	hooks.layout = layout
+	hooks.run(context.Background(), engineTerminalOutcome{
+		RunID: "engine-backprop", Gaggle: "goobers", Workflow: "implementation",
+		Backprop: true, Phase: journal.PhaseEscalated,
+		Result: engine.RunResult{Status: engine.StatusEscalated},
+	})
+	if _, err := creditgraph.ReadRunRecord(run.Dir()); err != nil {
+		t.Fatalf("read engine attribution: %v", err)
+	}
+	wantOrder := []string{"prepare", "notify", "finalize", "attribute"}
+	if !slices.Equal(rec.order, wantOrder) {
+		t.Fatalf("hook order = %v, want %v", rec.order, wantOrder)
 	}
 }
 

@@ -668,6 +668,7 @@ export interface WorkflowSummary {
   owners: GooberReference[];
   stageCount: number;
   definition: WorkflowDefinition;
+  backprop?: { enabled: boolean; version?: string };
   warnings: ValidationWarning[];
 }
 

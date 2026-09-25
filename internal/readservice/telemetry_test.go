@@ -17,7 +17,6 @@ import (
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -46,6 +45,10 @@ type fakeTelemetryStore struct {
 	outcomeGaggle  string
 	outcomeSince   time.Time
 	invocations    map[string][]rollup.AgentInvocation
+}
+
+type telemetryStoreWithoutInvocationReader struct {
+	telemetryStore
 }
 
 func (f *fakeTelemetryStore) CostAggregates(_ context.Context, req rollup.CostQuery) (rollup.CostResult, error) {
@@ -136,6 +139,9 @@ func TestTelemetryAttributionAggregatesByEffectiveVersionAndWorkload(t *testing.
 	if len(got.Cohorts) != 3 {
 		t.Fatalf("cohorts = %d, want 3", len(got.Cohorts))
 	}
+	if len(got.Records) != len(obs) {
+		t.Fatalf("records = %d, want %d", len(got.Records), len(obs))
+	}
 	if got.Cohorts[0].EffectiveVersion != "v1" || got.Cohorts[0].Workload != "main" {
 		t.Fatalf("first cohort = %+v, want v1/main", got.Cohorts[0])
 	}
@@ -177,15 +183,16 @@ func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
 			Layout:    instance.NewLayout(root),
 			ReadModel: store,
 		},
-		telemetry: &Telemetry{store: &fakeTelemetryStore{
+		telemetry: &Telemetry{store: &telemetryStoreWithoutInvocationReader{telemetryStore: &fakeTelemetryStore{
 			invocations: map[string][]rollup.AgentInvocation{
 				runID: {{
 					SpanID: "span-1", Kind: "task", Stage: "implement",
 					Model: "gpt-5.4", HarnessVersion: "copilot-cli/1.0.0",
 				}},
 			},
-		}},
+		}}},
 	}
+
 	result, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
 		Gaggle: "core", Workflow: "implementation", Since: time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC),
 		Until: time.Date(2026, 8, 22, 13, 0, 0, 0, time.UTC),
@@ -202,6 +209,13 @@ func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
 	}
 	if cohort.EffectiveVersion == "" || len(cohort.TopContributingPaths) == 0 || len(cohort.CounterEvidence) == 0 {
 		t.Fatalf("stored attribution cohort missing real evidence: %+v", cohort)
+	}
+	record, err := creditgraph.ReadRunRecord(filepath.Join(instance.NewLayout(root).RunsDir(), runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cohort.EffectiveVersion != record.EffectiveVersion {
+		t.Fatalf("cohort effective version = %q, want persisted %q", cohort.EffectiveVersion, record.EffectiveVersion)
 	}
 	if len(cohort.TopContributingPaths[0].Nodes) < 2 {
 		t.Fatalf("stored top path = %+v, want a root-prefixed contribution path", cohort.TopContributingPaths[0])
@@ -225,30 +239,115 @@ func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
 	}
 }
 
-func TestEffectiveVersionHashPreservesSingleObservedBlankProvenanceField(t *testing.T) {
-	t.Parallel()
-
-	row := readmodel.RunRow{
-		WorkflowDigest: "sha256:workflow",
-		GooberDigest:   "sha256:goober",
+func TestLocalTelemetryAttributionReturnsEnrolledRunRecords(t *testing.T) {
+	root, store, runID := seedStoredAttributionRun(t)
+	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
+	record, err := creditgraph.ReadRunRecord(runDir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	invocations := []rollup.AgentInvocation{{
-		Model:          "gpt-5.4",
-		HarnessVersion: "",
-	}}
-
-	got := effectiveVersionHash(row, invocations)
-	want := rollup.EffectiveVersion{
-		WorkflowDigest: row.WorkflowDigest,
-		GooberDigest:   row.GooberDigest,
-		Model:          "gpt-5.4",
-		HarnessVersion: "",
-	}.Hash()
-	if got != want {
-		t.Fatalf("effectiveVersionHash() = %q, want %q", got, want)
+	record.Status = creditgraph.RecordFailed
+	record.Failure = "analysis unavailable"
+	record.EffectiveVersion = "sha256:persisted"
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got == learning.EffectiveVersion(row.WorkflowDigest, row.GooberDigest) {
-		t.Fatalf("effectiveVersionHash() = %q, unexpectedly collapsed to workflow/goober-only hash", got)
+	if err := journal.WriteFileAtomic(filepath.Join(runDir, creditgraph.RecordFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := &Local{
+		sources: LocalSources{Layout: instance.NewLayout(root), ReadModel: store},
+		telemetry: &Telemetry{store: &telemetryStoreWithoutInvocationReader{telemetryStore: &fakeTelemetryStore{
+			invocations: map[string][]rollup.AgentInvocation{runID: {{
+				SpanID: "span-1", Kind: "task", Stage: "implement",
+				Model: "gpt-5.4", HarnessVersion: "copilot-cli/1.0.0",
+			}}},
+		}}},
+	}
+	result, err := service.TelemetryAttribution(context.Background(), TelemetryAttributionRequest{
+		Gaggle: "core", Workflow: "implementation",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || result.Records[0].RunID != runID ||
+		result.Records[0].Status != creditgraph.RecordFailed ||
+		result.Records[0].EffectiveVersion != "sha256:persisted" ||
+		result.Records[0].Failure != "analysis unavailable" {
+		t.Fatalf("attribution records = %+v, want persisted failed record unchanged", result.Records)
+	}
+	if len(result.Cohorts) != 0 {
+		t.Fatalf("attribution cohorts = %+v, want failed record excluded", result.Cohorts)
+	}
+}
+
+func TestLocalTelemetryAttributionReturnsInsufficientEvidenceWhenSpanIsMissing(t *testing.T) {
+	root, store, runID := seedStoredAttributionRun(t)
+	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
+	record, err := creditgraph.ReadRunRecord(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removedDigest string
+	for _, event := range events {
+		if event.Type != journal.EventSpanRecorded || event.Ref == nil {
+			continue
+		}
+		if err := os.Remove(filepath.Join(runDir, filepath.FromSlash(event.Ref.Path))); err != nil {
+			t.Fatal(err)
+		}
+		removedDigest = event.Ref.Digest
+		break
+	}
+	if removedDigest == "" {
+		t.Fatal("seeded run has no span artifact to remove")
+	}
+	persistedEvidence := append([]creditgraph.AttributionEvidenceLink(nil), record.Evidence...)
+	foundRemovedSpanEvidence := false
+	for _, link := range persistedEvidence {
+		if link.ArtifactDigest == removedDigest {
+			foundRemovedSpanEvidence = true
+			break
+		}
+	}
+	if !foundRemovedSpanEvidence {
+		t.Fatalf("persisted evidence = %+v, want link to removed span %q", persistedEvidence, removedDigest)
+	}
+	record.Status = creditgraph.RecordInsufficientEvidence
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.WriteFileAtomic(filepath.Join(runDir, creditgraph.RecordFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	service := &Local{
+		sources:   LocalSources{Layout: instance.NewLayout(root), ReadModel: store},
+		telemetry: &Telemetry{store: &fakeTelemetryStore{}},
+	}
+	result, err := service.TelemetryAttribution(context.Background(), TelemetryAttributionRequest{
+		Gaggle: "core", Workflow: "implementation",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || result.Records[0].RunID != runID ||
+		result.Records[0].Status != creditgraph.RecordInsufficientEvidence {
+		t.Fatalf("attribution records = %+v, want persisted insufficient-evidence record", result.Records)
+	}
+	if len(result.Records[0].Evidence) < len(persistedEvidence) ||
+		!reflect.DeepEqual(result.Records[0].Evidence[:len(persistedEvidence)], persistedEvidence) {
+		t.Fatalf("attribution evidence = %+v, want persisted evidence prefix %+v", result.Records[0].Evidence, persistedEvidence)
 	}
 }
 
@@ -663,6 +762,13 @@ func seedStoredAttributionRun(t *testing.T) (string, *readmodel.Store, string) {
 
 	startedAt := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	runID := "stored-attribution-run"
+	definition, err := json.Marshal(map[string]any{
+		"Name": "implementation", "Version": 1, "dslVersion": "3.0",
+		"Spec": map[string]any{"backprop": map[string]any{"enabled": true, "version": "v1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
 		RunID:           runID,
 		Workflow:        "implementation",
@@ -672,7 +778,10 @@ func seedStoredAttributionRun(t *testing.T) (string, *readmodel.Store, string) {
 		Gaggle:          "core",
 		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
 		StartedAt:       startedAt,
-	}, nil)
+	}, map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition},
+		journal.WithInputIntegrity(map[string]apiv1.Integrity{
+			journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+		}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -735,6 +844,9 @@ func seedStoredAttributionRun(t *testing.T) (string, *readmodel.Store, string) {
 		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), Verdict: "fail", Target: "@abort",
 		Time: now.Add(2 * time.Second),
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := creditgraph.WriteRunRecord(run.Dir(), nil); err != nil {
 		t.Fatal(err)
 	}
 	finishedAt := now.Add(2 * time.Second)

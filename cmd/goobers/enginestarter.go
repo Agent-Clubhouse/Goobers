@@ -253,6 +253,7 @@ func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartReque
 		RunID:    req.RunID,
 		Gaggle:   req.Gaggle,
 		Workflow: s.def.Name,
+		Backprop: s.def.Spec.Backprop != nil && s.def.Spec.Backprop.Enabled,
 		Phase:    phase,
 		Result:   result,
 		Item:     req.Item,

@@ -726,7 +726,7 @@ func detectCandidateFindingsWithCausalCredit(
 	}
 	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
 	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
-		cohorts, err := readservice.StoredAttributionCohorts(context.Background(), root, creditStore, db, readservice.StoredAttributionQuery{
+		cohorts, err := readservice.StoredAttributionCohorts(context.Background(), root, creditStore, readservice.StoredAttributionQuery{
 			Gaggle: gaggle, Workflow: workflowName, Since: since,
 		})
 		if err != nil {

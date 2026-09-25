@@ -286,6 +286,7 @@ func newWireFixtures() wireFixtures {
 			Version: 7,
 			Digest:  "sha256:workflow",
 		},
+		Backprop: readservice.WorkflowBackprop{Enabled: true, Version: "v1"},
 		Warnings: []validate.CodedWarning{warning},
 	}
 	runSummary := readservice.RunSummary{

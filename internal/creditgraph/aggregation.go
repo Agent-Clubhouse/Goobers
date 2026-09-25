@@ -50,8 +50,11 @@ type CohortAggregation struct {
 // AttributionObservation is one run's attribution record placed in a cohort.
 type AttributionObservation struct {
 	RunID            string                    `json:"runId"`
+	Workflow         string                    `json:"workflow,omitempty"`
 	EffectiveVersion string                    `json:"effectiveVersion,omitempty"`
 	Workload         string                    `json:"workload,omitempty"`
+	Status           RecordStatus              `json:"status,omitempty"`
+	Failure          string                    `json:"failure,omitempty"`
 	Attribution      Attribution               `json:"attribution"`
 	Evidence         []AttributionEvidenceLink `json:"evidence,omitempty"`
 }
@@ -64,6 +67,9 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 	byCohort := map[CohortKey][]AttributionObservation{}
 	keys := make([]CohortKey, 0, len(observations))
 	for _, observation := range observations {
+		if observation.Status == RecordFailed || strings.TrimSpace(observation.EffectiveVersion) == "" {
+			continue
+		}
 		key := CohortKey{EffectiveVersion: observation.EffectiveVersion, Workload: observation.Workload}
 		if _, exists := byCohort[key]; !exists {
 			keys = append(keys, key)

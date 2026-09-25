@@ -66,6 +66,11 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 	if version == "" {
 		version = supportmatrix.V1DSLVersion
 	}
+	if def.Spec.Backprop != nil {
+		problems = append(problems, fmt.Sprintf(
+			"workflow declares backprop, which requires dslVersion %q (this workflow pins %q); migrate with `goobers fix --to %s`",
+			supportmatrix.V3DSLVersion, version, supportmatrix.V3DSLVersion))
+	}
 	for _, task := range def.Spec.Tasks {
 		if task.RunsOn != nil {
 			problems = append(problems, fmt.Sprintf(
@@ -317,6 +322,9 @@ func WithPreviewFeatures(enabled bool) Option {
 func Compile(def Definition, opts ...Option) (*Machine, error) {
 	if problems := CheckOutbox(def); len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
+	if def.Spec.Backprop != nil && def.Spec.Backprop.Version != "v1" {
+		return nil, fmt.Errorf("invalid workflow %q: backprop.version must be %q", def.Name, "v1")
 	}
 	def.Spec.Tasks = append([]apiv1.Task(nil), def.Spec.Tasks...)
 	for i := range def.Spec.Tasks {

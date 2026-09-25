@@ -49,6 +49,25 @@ spec:
               WorkflowSpec defines a process as a deterministic state machine of Tasks and
               Gates, started by the scheduler on trigger + readiness (WF-001..016).
             properties:
+              backprop:
+                description: |-
+                  Backprop explicitly enrolls terminal runs in provenance-aware credit
+                  attribution. Omitted and enabled=false both preserve legacy execution
+                  without attribution work.
+                properties:
+                  enabled:
+                    description: Enabled opts terminal runs into attribution.
+                    type: boolean
+                  version:
+                    description: Version pins the attribution contract interpreted
+                      for the run.
+                    enum:
+                    - v1
+                    type: string
+                required:
+                - enabled
+                - version
+                type: object
               displayName:
                 description: DisplayName is the human-facing name shown on the portal.
                 type: string
