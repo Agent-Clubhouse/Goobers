@@ -183,11 +183,11 @@ test("run associations link event refs with summary titles", () => {
                 provider: "github",
                 kind: "issue",
                 id: "159",
-                url: "https://github.com/odsp-microsoft/ai-intentsity/issues/159",
+                url: "https://github.com/example-org/example-repo/issues/159",
             },
         ],
     });
-    assert.match(html, /href="https:\/\/github\.com\/odsp-microsoft\/ai-intentsity\/issues\/159"/);
+    assert.match(html, /href="https:\/\/github\.com\/example-org\/example-repo\/issues\/159"/);
     assert.match(html, /Issue #159: Classifier proposal/);
 });
 

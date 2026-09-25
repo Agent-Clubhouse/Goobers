@@ -180,7 +180,7 @@ const (
 		"2. Create a fine-grained GitHub PAT in\n" +
 		"   [GitHub's token settings](https://github.com/settings/personal-access-tokens/new).\n" +
 		"   **Set Resource owner to the account or organization that owns\n" +
-		"   `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal\n" +
+		"   `<owner>/<repo>` (for example, `your-org`); keep the default personal\n" +
 		"   account when it owns the repository.** Choose **Only select repositories**\n" +
 		"   and select exactly the disposable repository. Grant only **Contents: Read\n" +
 		"   and write**, **Issues: Read and write**, and **Pull requests: Read and\n" +
