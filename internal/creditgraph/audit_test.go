@@ -106,7 +106,10 @@ func TestAuditFaultDomainsCooldownAndPostFixVerification(t *testing.T) {
 	id := report.WorkflowFindings[0].ID
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	before.ObservedAt = now.Add(-2 * time.Hour)
-	healthy := AttributionObservation{RunID: "after", Workflow: "one", EffectiveVersion: "v2", ObservedAt: now}
+	healthy := auditObservation("after", "one", "v2", "stage", "", ClassUnknown, 0.8, "stage")
+	healthy.ObservedAt = now
+	healthy.Attribution.Causes = nil
+	healthy.Evidence = nil
 	verified := AuditFaultDomains([]AttributionObservation{before, healthy}, FaultAuditConfig{
 		Now: now, SampleFloor: 1, FixesAppliedAt: map[string]time.Time{id: now.Add(-time.Hour)},
 	})
@@ -118,6 +121,59 @@ func TestAuditFaultDomainsCooldownAndPostFixVerification(t *testing.T) {
 	})
 	if suppressed.Suppressed != 1 || len(suppressed.WorkflowFindings) != 0 {
 		t.Fatalf("cooldown report = %+v, want one suppressed finding", suppressed)
+	}
+}
+
+func TestAuditFaultDomainsPostFixVerificationRequiresMatchingCohort(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	fixedAt := now.Add(-time.Hour)
+	before := auditObservation("before", "one", "v1", "stage", "weak workflow instructions", ClassWeakInstructions, 0.8, "stage")
+	before.ObservedAt = now.Add(-2 * time.Hour)
+	initial := AuditFaultDomains([]AttributionObservation{before}, FaultAuditConfig{Now: now, SampleFloor: 1})
+	id := initial.WorkflowFindings[0].ID
+
+	matching := auditObservation("after", "one", "v2", "stage", "", ClassUnknown, 0.8, "stage")
+	matching.ObservedAt = now
+	matching.Attribution.Causes = nil
+	matching.Evidence = nil
+	tests := []struct {
+		name   string
+		mutate func(*AttributionObservation)
+	}{
+		{name: "workflow", mutate: func(observation *AttributionObservation) { observation.Workflow = "other" }},
+		{name: "workload", mutate: func(observation *AttributionObservation) { observation.Workload = "schedule" }},
+		{name: "effective version", mutate: func(observation *AttributionObservation) { observation.EffectiveVersion = "v1" }},
+		{name: "node path", mutate: func(observation *AttributionObservation) {
+			observation.Attribution.Contributions[0].Path = []string{"other"}
+		}},
+		{name: "environment", mutate: func(observation *AttributionObservation) { observation.Environments = []string{"linux"} }},
+		{name: "failure signature", mutate: func(observation *AttributionObservation) {
+			observation.Attribution.Causes = []CauseFinding{{
+				NodeID: "stage", Stage: "stage", Class: ClassWeakInstructions,
+				Confidence: 0.8, Summary: "unrelated workflow failure",
+			}}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			unrelated := matching
+			unrelated.Attribution.Contributions = append([]Contribution(nil), matching.Attribution.Contributions...)
+			unrelated.Environments = append([]string(nil), matching.Environments...)
+			test.mutate(&unrelated)
+			report := AuditFaultDomains([]AttributionObservation{before, unrelated}, FaultAuditConfig{
+				Now: now, SampleFloor: 1, FixesAppliedAt: map[string]time.Time{id: fixedAt},
+			})
+			if got := report.WorkflowFindings[0].Verification; got != VerificationPending {
+				t.Fatalf("verification = %q, want pending for unrelated %s cohort", got, test.name)
+			}
+		})
+	}
+
+	report := AuditFaultDomains([]AttributionObservation{before, matching}, FaultAuditConfig{
+		Now: now, SampleFloor: 1, FixesAppliedAt: map[string]time.Time{id: fixedAt},
+	})
+	if got := report.WorkflowFindings[0].Verification; got != VerificationRecovered {
+		t.Fatalf("verification = %q, want recovered for matching held-out cohort", got)
 	}
 }
 
