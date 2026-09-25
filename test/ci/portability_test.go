@@ -406,14 +406,99 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 		t.Error("platform lint matrix must retain Linux, macOS, and Windows build-tag coverage")
 	}
 
+	// Jobs that finish well inside the long pole wait for preflight: gating
+	// them costs no wall clock and saves their minutes when preflight fails.
+	// It also keeps preflight the first Linux job to save the shared setup-go
+	// cache key (a short un-gated job would win that race with a near-empty
+	// cache).
 	for _, job := range []string{
 		"deadcode", "checks", "deploy-reference", "lint", "darwin-build",
-		"unit", "unit-linux-coverage", "unit-macos", "shipped", "integration",
+		"unit-linux-coverage", "shipped", "integration",
 		"windows-smoke", "vulnerability-scan", "sandbox", "linux-validation",
 	} {
 		section := workflowJob(workflow, job)
 		if !strings.Contains(section, "needs: [preflight]") {
-			t.Errorf("expensive job %q must wait for preflight admission", job)
+			t.Errorf("job %q must wait for preflight admission", job)
+		}
+	}
+	// The long-pole jobs start immediately: gating them put preflight's
+	// duration on every run's critical path. A preflight failure cancels them
+	// on pull requests instead; that canceller is what makes un-gating safe.
+	for _, job := range []string{"unit", "unit-macos"} {
+		header := strings.SplitN(workflowJob(workflow, job), "\n    steps:", 2)[0]
+		if strings.Contains(header, "needs:") {
+			t.Errorf("long-pole job %q must not wait for preflight; it serializes preflight in front of the critical path", job)
+		}
+	}
+	if workflowJob(workflow, "cancel-on-preflight-failure") == "" {
+		t.Error("un-gated long-pole jobs need cancel-on-preflight-failure, or a preflight red leaves them burning minutes")
+	}
+}
+
+// Nothing stops a pull-request run after one job fails, so the rest of the
+// run keeps burning runner-minutes on a result that is already red. Every
+// required job gets a canceller. It must be per job: a `needs` list waits for
+// ALL of its jobs, so a shared canceller would fire only after the slowest one.
+// It must hold the only actions: write token and run no repository code, and
+// it must never fire on main pushes, where the full failure signal is wanted.
+func TestCIWorkflowCancelsPullRequestRunOnFirstFailure(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+
+	required := loadCIWorkflow(t).Jobs["required-ci"].Needs
+	if len(required) == 0 {
+		t.Fatal("required-ci has no needs; the canceller invariant would pass vacuously")
+	}
+	for _, job := range required {
+		canceller := "cancel-on-" + job + "-failure"
+		section := workflowJob(workflow, canceller)
+		if section == "" {
+			t.Errorf("required job %q has no %s job", job, canceller)
+			continue
+		}
+		for _, want := range []string{
+			"    needs: [" + job + "]\n",
+			"!cancelled() && needs." + job + ".result == 'failure'",
+			"github.event_name != 'push'",
+			"github.event_name != 'merge_group'",
+			"    permissions:\n      actions: write\n    steps:",
+			`gh run cancel "$RUN_ID"`,
+			"RUN_ID: ${{ github.run_id }}",
+		} {
+			if !strings.Contains(section, want) {
+				t.Errorf("%s must contain %q", canceller, want)
+			}
+		}
+		// failure() is also true when an ANCESTOR failed, which would start
+		// every downstream canceller after one preflight red.
+		if strings.Contains(section, "failure()") {
+			t.Errorf("%s must test its own job's result, not failure()", canceller)
+		}
+		if strings.Contains(section, "actions/checkout") {
+			t.Errorf("%s holds actions: write and must not check out or run repository code", canceller)
+		}
+	}
+	for _, name := range workflowJobNames(workflow) {
+		if strings.HasPrefix(name, "cancel-on-") {
+			continue
+		}
+		if strings.Contains(workflowJob(workflow, name), "\n      actions: write") {
+			t.Errorf("job %q holds actions: write; only the cancellers may", name)
+		}
+	}
+
+	// The aggregate must read a job cancelled by a canceller as failure. Its
+	// check() is fail-closed on any non-success result, and it must still run
+	// after the run is cancelled, which is what always() guarantees.
+	requiredCI := workflowJob(workflow, "required-ci")
+	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' }}", `if [ "$2" != "success" ]; then`} {
+		if !strings.Contains(requiredCI, want) {
+			t.Errorf("required-ci must contain %q so a cancelled job reds the required check", want)
 		}
 	}
 }
