@@ -148,17 +148,23 @@ DSL 2.0 routes to the Azure DevOps repository, unless a `credentials:` entry
 or `daemonIdentity` sources a capability from its own token. A stage receives a credential only
 for the capabilities it declares:
 
-- A local stage receives `GOOBERS_CRED_<CAPABILITY>`. A `goobers` CLI stage
-  routed to the repository also receives `GOOBERS_REPO_AUTH_SCHEME` (`basic` or
-  `bearer`) beside `GOOBERS_REPO_PROVIDER`, so it never infers the scheme from
-  the token's shape.
+- A local stage receives `GOOBERS_CRED_<CAPABILITY>`.
 - A stage pod resolves the same values from the daemon's credential plane at
-  stage start. The response carries each Entra token's expiry and the
-  scheme, which the pod sets as `GOOBERS_REPO_AUTH_SCHEME`.
+  stage start.
+- A deterministic stage that received at least one credential, local or in a
+  pod, also receives `GOOBERS_REPO_AUTH_SCHEME` (`basic` or `bearer`), so it
+  never infers the scheme from the token's shape. Agentic stages do not
+  receive it.
 
-The workload and managed identity sources are built on first use. A host
-without the identity can still run read-only commands such as `goobers status`;
-the missing identity is reported when a grant is first resolved.
+The daemon tracks each Entra token's expiry and refreshes it shortly before it
+lapses, but the stage does not receive the expiry. A delivered token can
+therefore have only a few minutes left.
+
+The workload and managed identity sources that back grants are built on first
+use, so a host without the identity can still run read-only commands such as
+`goobers status`. The daemon's gaggle runtime still builds the identity at
+startup to authenticate its worktree git operations, so a daemon whose
+workload-identity projection is missing fails to start.
 
 A reference repository (`additionalRepos`) that authenticates as a Microsoft
 Entra identity keeps using the gaggle's own repository source for its checkout.

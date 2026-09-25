@@ -110,9 +110,9 @@ const (
 	// daemon delivers as GOOBERS_CRED_<capability>, so a stage builds the
 	// right Authorization header without inferring it from the token's shape
 	// (docs/design/ado-parity-dsl-2-0.md §4.1). Set only for an Azure DevOps
-	// repository: beside the routed repository variables for a local goobers
-	// CLI stage, and with the credentials the credential plane returns for a
-	// stage pod.
+	// repository, on one rule local and in a pod: a deterministic stage that
+	// received at least one GOOBERS_CRED_<capability> gets it. Agentic stages
+	// do not receive it.
 	RepoAuthSchemeEnvVar = "GOOBERS_REPO_AUTH_SCHEME"
 
 	// NeedsHumanAssigneeEnvVar carries the daemon-resolved needs-human

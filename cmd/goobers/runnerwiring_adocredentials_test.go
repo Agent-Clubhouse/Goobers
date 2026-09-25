@@ -93,7 +93,7 @@ func TestBuildCredentialsADOEveryKindBacksRepoGrants(t *testing.T) {
 	}
 	identity := func(token string) func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
 		return func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
-			return adoTestIdentitySource{credential: providers.ADOCredential{Kind: adoauth.SchemeBearer, Secret: token, ExpiresAt: expires}}, nil
+			return adoTestIdentitySource{credential: providers.ADOCredential{Kind: providers.ADOCredentialKindBearer, Secret: token, ExpiresAt: expires}}, nil
 		}
 	}
 	azure := &adoTestAzureRunner{token: "entra-cli-token-0123456789", expires: expires}
@@ -255,7 +255,7 @@ func TestADORepositoryTokenSourceRetriesAFailedConstruction(t *testing.T) {
 			return nil, errors.New("identity environment not ready")
 		}
 		return adoTestIdentitySource{credential: providers.ADOCredential{
-			Kind: adoauth.SchemeBearer, Secret: "entra-late-token-0123456789", ExpiresAt: time.Now().Add(time.Hour),
+			Kind: providers.ADOCredentialKindBearer, Secret: "entra-late-token-0123456789", ExpiresAt: time.Now().Add(time.Hour),
 		}}, nil
 	})
 	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthManagedIdentity}, instance.TokenRef{}), nil, nil)

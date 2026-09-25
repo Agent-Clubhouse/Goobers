@@ -370,9 +370,10 @@ here) and on any worker that runs self-placed stages for that gaggle
    than `AZURE_CLIENT_ID`.
 
 If an overlay restricts these pods' egress, allow the Microsoft Entra token
-endpoint as well as Azure DevOps. The daemon builds the identity on first use,
-so a missing projection is reported when a stage first resolves a repository
-credential, not at startup.
+endpoint as well as Azure DevOps. Display commands such as `goobers status`
+tolerate a missing identity, but the daemon's gaggle runtime builds the
+identity at startup to authenticate worktree git operations, so a daemon whose
+projection is missing fails to start.
 
 ### Egress allowlist: name hosts, not domain suffixes
 

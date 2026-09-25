@@ -339,8 +339,10 @@ func TestADOCredentialScrubFormsCoverEveryWireForm(t *testing.T) {
 	}
 }
 
-// TestADOGitAuthEnvironmentRegistersTheBasicHeader proves a PAT's Basic
-// Authorization value is registered, so a captured git header is redacted.
+// TestADOGitAuthEnvironmentRegistersTheBasicHeader pins existing behaviour
+// rather than covering new code: ADOGitAuthEnvironment already registered a
+// PAT's Basic Authorization value, so a captured git header is redacted. It
+// guards that registration now that ScrubForms states the same forms.
 func TestADOGitAuthEnvironmentRegistersTheBasicHeader(t *testing.T) {
 	reg := journal.NewRegistryScrubber()
 	source := NewADOPATCredentialSource("", "pat-secret-value")

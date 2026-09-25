@@ -276,10 +276,11 @@ the other repository capabilities have a credential for `azure-cli`,
 `workload-identity`, `managed-identity` and `pat` alike. With an Azure DevOps
 credential the stage also receives the non-secret `GOOBERS_REPO_AUTH_SCHEME`
 (`basic` for a PAT, `bearer` for an Entra token), so it builds the right
-Authorization header without inferring it from the token. A `goobers` CLI
-stage receives it beside `GOOBERS_REPO_PROVIDER`; a stage pod receives it with
-the credentials the plane returns. See
-[Azure DevOps authentication](guides/ado-authentication.md#where-the-credential-resolves).
+Authorization header without inferring it from the token. The rule is the same
+for a local stage and a stage pod: a deterministic stage that received at least
+one `GOOBERS_CRED_<CAPABILITY>` also receives the scheme. Agentic stages do not
+receive it. The stage does not receive the token's expiry. See "Where the
+credential resolves" in `docs/guides/ado-authentication.md`.
 
 ## Where a stage writes its output
 

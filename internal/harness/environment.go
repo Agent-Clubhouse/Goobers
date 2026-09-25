@@ -161,15 +161,12 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 		if err != nil {
 			// A missing grant is tolerated in two cases: an explicitly optional
 			// capability (the CLI can fall back to an existing user session,
-			// e.g. agent:model), or an Azure DevOps repo. ADO repo credentials
-			// are provisioned dynamically per stage through adoauth (azure-cli/
-			// workload/managed-identity shell out to `az`), NOT through the
-			// static capability→token grant map, so azure-cli auth deliberately
-			// configures no repo:push grant. The agent commits locally under the
-			// modify-repository policy action; the deterministic push-branch
-			// stage publishes the branch with an az-derived credential. A
-			// PAT-configured ADO repo still has a grant and injects normally —
-			// only the absence of one is tolerated, so GitHub stays fail-closed.
+			// e.g. agent:model), or an Azure DevOps repo. Since ADO-N17 every
+			// ADO auth kind backs the repository's grants in the daemon, so an
+			// ADO grant normally exists and injects like any other. The ADO
+			// tolerance stays only until ADO-N18 moves ADO stages onto the
+			// delivered credential and removes it. Only the absence of a grant
+			// is tolerated, so GitHub stays fail-closed.
 			if errors.Is(err, credentials.ErrNoCredentialForCapability) &&
 				(cfg.optionalCredentialCapabilities[capability] ||
 					req.Envelope.RepoRef.Provider == apiv1.ProviderADO) {

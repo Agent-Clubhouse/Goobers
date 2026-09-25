@@ -830,7 +830,10 @@ func resolveStageCredentialsWithScheme(ctx context.Context) ([]dispatcher.Minted
 // GOOBERS_CRED_<capability> variables the local executor sets, plus
 // GOOBERS_REPO_AUTH_SCHEME when the plane stated the scheme of an Azure DevOps
 // repository credential. The scheme is not a secret; it tells the stage which
-// Authorization header the delivered token belongs in.
+// Authorization header the delivered token belongs in. The rule matches the
+// local executor's (executor.ShellExecutor.appendRepoEnv): the scheme travels
+// only with at least one credential. cred.ExpiresAt is not exported yet; the
+// consumer that raises a clear "credential expired" error lands with ADO-N18.
 func stageCredentialEnv(creds []dispatcher.MintedCredential, repoAuthScheme string) []string {
 	env := make([]string, 0, len(creds)+1)
 	for _, cred := range creds {
