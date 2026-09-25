@@ -30,7 +30,7 @@ func handleADOTestStateCategories(t *testing.T, mux *http.ServeMux) {
 // TestADOProviderSendsMsaPassThroughOnlyForBearer verifies the ADO-N4 fix:
 // a Bearer-authenticated REST request carries X-VSS-ForceMsaPassThrough
 // (required against a non-Entra-backed org or an MSA account, live probe
-// F1 in docs/design/ado-parity-dsl-2-0.md §8.4), while a PAT (Basic)
+// F1 in docs/design/ado-parity-dsl-2-0.md Appendix A), while a PAT (Basic)
 // request never does — PAT already works everywhere, and the header is
 // untested for Basic.
 func TestADOProviderSendsMsaPassThroughOnlyForBearer(t *testing.T) {

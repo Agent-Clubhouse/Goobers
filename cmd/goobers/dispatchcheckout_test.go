@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // `git clone <url> .` refuses a non-empty destination, so NOTHING the checkout
@@ -676,22 +677,20 @@ func TestComposedGitEnvPreservesTwoSlotADOAuthentication(t *testing.T) {
 }
 
 // TestComposedGitEnvPreservesThreeSlotADOAuthentication covers a bearer ADO
-// credential (ADO-N4): adoGitAuthEnv adds a second extraheader slot for
-// X-VSS-ForceMsaPassThrough, so composeGitEnv must extend past slot 2, not
-// slot 1, when it appends safe.directory.
+// credential (ADO-N4): providers.ADOGitAuthEnvironment adds a second
+// extraheader slot for X-VSS-ForceMsaPassThrough, so composeGitEnv must extend
+// past slot 2, not slot 1, when it appends safe.directory. The auth
+// environment comes from the provider, not a literal, so the provider's slot
+// layout and composeGitEnv cannot drift apart.
 func TestComposedGitEnvPreservesThreeSlotADOAuthentication(t *testing.T) {
 	ws := t.TempDir()
-	const scopedHeader = "http.https://dev.azure.com/acme/project/_git/repo/.extraheader"
-	auth := []string{
-		"PATH=/usr/bin",
-		"GIT_CONFIG_COUNT=3",
-		"GIT_CONFIG_KEY_0=credential.helper",
-		"GIT_CONFIG_VALUE_0=",
-		"GIT_CONFIG_KEY_1=" + scopedHeader,
-		"GIT_CONFIG_VALUE_1=AUTHORIZATION: Bearer test-token",
-		"GIT_CONFIG_KEY_2=" + scopedHeader,
-		"GIT_CONFIG_VALUE_2=X-VSS-ForceMsaPassThrough: true",
-		"GIT_TERMINAL_PROMPT=0",
+	const remoteURL = "https://dev.azure.com/acme/project/_git/repo"
+	const scopedHeader = "http." + remoteURL + "/.extraheader"
+	auth, err := providers.ADOGitAuthEnvironment(context.Background(), recoveryTestADOCredentialSource{
+		credential: providers.ADOCredential{Kind: "bearer", Secret: "test-token"},
+	}, nil, remoteURL)
+	if err != nil {
+		t.Fatalf("ADOGitAuthEnvironment: %v", err)
 	}
 	env := composeGitEnv(ws, auth)
 

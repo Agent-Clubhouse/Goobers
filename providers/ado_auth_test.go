@@ -239,6 +239,45 @@ func TestADOProviderRegistersDynamicBearerCredential(t *testing.T) {
 	}
 }
 
+// ADOGitAuthEnvironment is the exported entry point for push, remediation,
+// worktree and recovery Git auth, so its slot layout is pinned directly: a
+// bearer credential gets three GIT_CONFIG slots (the third is the passthrough
+// extraheader), a PAT keeps exactly two.
+func TestADOGitAuthEnvironmentSlotLayoutByCredentialKind(t *testing.T) {
+	const remote = "https://dev.azure.com/example-org/example-project/_git/repo"
+	const scoped = "http." + remote + "/.extraheader"
+	slots := func(t *testing.T, source ADOCredentialSource) map[string]string {
+		t.Helper()
+		env, err := ADOGitAuthEnvironment(context.Background(), source, nil, remote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, entry := range env {
+			if key, value, _ := strings.Cut(entry, "="); strings.HasPrefix(key, "GIT_CONFIG_") {
+				got[key] = value
+			}
+		}
+		return got
+	}
+
+	bearer := slots(t, &rotatingADOCredentialSource{token: "bearer-token"})
+	if bearer["GIT_CONFIG_COUNT"] != "3" ||
+		bearer["GIT_CONFIG_VALUE_1"] != "AUTHORIZATION: Bearer bearer-token" ||
+		bearer["GIT_CONFIG_KEY_2"] != scoped ||
+		bearer["GIT_CONFIG_VALUE_2"] != adoForceMsaPassThroughHeader+": "+adoForceMsaPassThroughValue {
+		t.Fatalf("bearer slots = %#v", bearer)
+	}
+
+	pat := slots(t, NewADOPATCredentialSource("goobers", "pat-token"))
+	if pat["GIT_CONFIG_COUNT"] != "2" || pat["GIT_CONFIG_KEY_1"] != scoped {
+		t.Fatalf("PAT slots = %#v", pat)
+	}
+	if _, ok := pat["GIT_CONFIG_KEY_2"]; ok {
+		t.Fatalf("PAT must not carry a passthrough slot: %#v", pat)
+	}
+}
+
 type fakeAzureTokenCredential struct {
 	scope string
 }
