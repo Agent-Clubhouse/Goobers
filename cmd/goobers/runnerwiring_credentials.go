@@ -48,9 +48,10 @@ import (
 // A github-app repo (#686) contributes a minting dynamic source under the same
 // ref name a static token would use, so every consumer that resolves the repo
 // ref — capability grants, ci-poll, the open-PR lister, worktree git auth —
-// receives short-lived installation tokens with no further wiring. registrar
-// receives every minted token (and the App key) at mint time; nil is only for
-// display-path callers that never write journals.
+// receives short-lived installation tokens with no further wiring. An Azure
+// DevOps repo does the same for every auth kind (registerRepoCredentialSource).
+// registrar receives every minted token (and the App key) at mint time; nil is
+// only for display-path callers that never write journals.
 //
 // additionalRepos are the gaggle's read-only reference repos (MGV-10, #1285):
 // each gains only a repo-qualified contents:read grant from its own token, never
@@ -65,30 +66,11 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 			owner += "/" + r.Project
 		}
 		ref := owner + "/" + r.Name
-		tokenRef := ""
-		if r.GitHubAppAuth() {
-			// Fail closed on a duplicate owner/name (as a static-token repo does
-			// at NewResolverWith's duplicate-ref check): silently overwriting the
-			// minting source would let a second entry hijack the first's grants.
-			if _, dup := sources[ref]; dup {
-				return nil, nil, fmt.Errorf("build credentials: repo %s: duplicate repository reference", ref)
-			}
-			mint, err := newGitHubAppTokenSource(r, registrar, stores)
-			if err != nil {
-				return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)
-			}
-			if sources == nil {
-				sources = make(map[string]credentials.ExpiringResolveFunc)
-			}
-			sources[ref] = mint
-			tokenRef = ref
-		} else if r.Token.Configured() {
-			// The full token ref (env|file|store) is appended; a store-backed ref
-			// resolves through stores below (#683) and fails closed there if no
-			// store resolver is configured.
-			tokenRef = ref
-			refs = append(refs, r.Token.CredentialTokenRef(ref))
+		tokenRef, nextRefs, nextSources, err := registerRepoCredentialSource(r, ref, refs, sources, registrar, stores)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)
 		}
+		refs, sources = nextRefs, nextSources
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
 	}
 	// Daemon identity (#1780/#1295): when configured, sources a single named
@@ -165,8 +147,55 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		}
 		additionalBindings = append(additionalBindings, credentials.RepoBinding{Owner: owner, Name: r.Name})
 	}
-	grants = append(grants, credentials.AdditionalReadGrants(bindings, additionalBindings, string(capability.ContentsRead))...)
+	grants = append(grants, credentials.AdditionalReadGrants(referenceReadBindings(cfg.Repos, bindings), additionalBindings, string(capability.ContentsRead))...)
 	return resolver, grants, nil
+}
+
+// registerRepoCredentialSource registers the credential source that backs one
+// configured repository under ref, and returns the token ref the repository's
+// grants bind to ("" when it has no credential).
+//
+// Two kinds of repository mint rather than read a static value, and register
+// an expiry-stating source under the same ref a static token would use:
+//   - a github-app repository (#686) mints installation tokens;
+//   - an Azure DevOps repository resolves its configured credential in the
+//     daemon, for every auth kind (docs/design/ado-parity-dsl-2-0.md §4.1):
+//     an Entra token for azure-cli, workload-identity and managed-identity,
+//     and the PAT (env, file, keychain or secret store) for pat.
+//
+// Every consumer that resolves the ref through the resolver — capability
+// grants, the Injector and the credential plane — then receives the minted
+// value with no further wiring. Any other repository with a configured token
+// appends its static token ref; a store-backed ref resolves through stores
+// (#683) and fails closed at resolver construction when no store resolver is
+// configured.
+func registerRepoCredentialSource(r instance.RepoRef, ref string, refs []credentials.TokenRef, sources map[string]credentials.ExpiringResolveFunc, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (string, []credentials.TokenRef, map[string]credentials.ExpiringResolveFunc, error) {
+	var build func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error)
+	switch {
+	case r.GitHubAppAuth():
+		build = newGitHubAppTokenSource
+	case adoRepositoryMintsCredential(r):
+		build = newADORepositoryTokenSource
+	case r.Token.Configured():
+		return ref, append(refs, r.Token.CredentialTokenRef(ref)), sources, nil
+	default:
+		return "", refs, sources, nil
+	}
+	// Fail closed on a duplicate owner/name (as a static-token repo does at
+	// NewResolverWith's duplicate-ref check): silently overwriting the minting
+	// source would let a second entry hijack the first's grants.
+	if _, dup := sources[ref]; dup {
+		return "", refs, sources, errors.New("duplicate repository reference")
+	}
+	mint, err := build(r, registrar, stores)
+	if err != nil {
+		return "", refs, sources, err
+	}
+	if sources == nil {
+		sources = make(map[string]credentials.ExpiringResolveFunc)
+	}
+	sources[ref] = mint
+	return ref, refs, sources, nil
 }
 
 // gooberCredentialRefs is one base capability's runner-owned sources: at most

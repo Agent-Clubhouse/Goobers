@@ -342,6 +342,38 @@ On Windows the same control is expressed through ACLs rather than mode bits, and
 a copied file inherits a grant to `S-1-5-11` (Authenticated Users). Break
 inheritance: `icacls <file> /inheritance:r /grant:r '<principal>:F'`.
 
+### Azure DevOps workload identity for the daemon
+
+An Azure DevOps repository with `auth.kind: workload-identity` is resolved by
+the daemon, not by the stage
+([ADO authentication](../../docs/guides/ado-authentication.md#where-the-credential-resolves)).
+The daemon mints the Microsoft Entra token, backs the repository's grants with
+it, and gives stage pods the token through the credential plane. The federated
+identity therefore belongs on the pod that runs `goobers up` (`goobers-api`
+here) and on any worker that runs self-placed stages for that gaggle
+(`goobers-worker`). Stage pods need none.
+
+1. Create a user-assigned identity and add it to the Azure DevOps organization
+   at **Basic** access. Give it Contribute, Contribute to pull requests and
+   Create branch on the repository. Do not grant either "Bypass policies"
+   permission.
+2. Add a federated credential for the cluster's OIDC issuer whose subject is
+   `system:serviceaccount:goobers-system:goobers-api`, plus
+   `system:serviceaccount:goobers-system:goobers-worker` when a worker runs
+   self-placed stages.
+3. Annotate each ServiceAccount with `azure.workload.identity/client-id:
+   <client-id>` and label its pod template `azure.workload.identity/use:
+   "true"`, so the webhook projects `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
+   `AZURE_FEDERATED_TOKEN_FILE` into the container.
+4. Set the repository's `auth.clientId` only when one projected token is
+   trusted by several identities and this repository must use a different one
+   than `AZURE_CLIENT_ID`.
+
+If an overlay restricts these pods' egress, allow the Microsoft Entra token
+endpoint as well as Azure DevOps. The daemon builds the identity on first use,
+so a missing projection is reported when a stage first resolves a repository
+credential, not at startup.
+
 ### Egress allowlist: name hosts, not domain suffixes
 
 This is the **HTTP proxy's** host allowlist (the `egress-allowlist` ConfigMap a

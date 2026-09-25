@@ -1782,7 +1782,11 @@ func TestBuildCredentialsStoreBackedRepoToken(t *testing.T) {
 	}
 }
 
-func TestBuildCredentialsAllowsTokenlessADOIdentity(t *testing.T) {
+// TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants pins ADO-N17
+// (#5656): a tokenless Azure DevOps identity repo backs every credentialed
+// capability from its own daemon-side source, and a sibling GitHub repo's
+// token never crosses into the ADO gaggle's grants.
+func TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants(t *testing.T) {
 	t.Setenv("GH_TOKEN", "must-not-cross-gaggle-boundary")
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "other", Name: "repo", Token: instance.TokenRef{Env: "GH_TOKEN"}},
@@ -1798,8 +1802,13 @@ func TestBuildCredentialsAllowsTokenlessADOIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != 0 {
-		t.Fatalf("tokenless ADO grants = %#v, want none", grants)
+	if len(grants) != len(credentialedCapabilities) {
+		t.Fatalf("ADO identity grants = %#v, want one per credentialed capability", grants)
+	}
+	for _, grant := range grants {
+		if grant.Ref != "acme/widgets/web" {
+			t.Fatalf("grant %+v is not backed by the ADO repo's own source", grant)
+		}
 	}
 }
 
@@ -3177,7 +3186,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil, nil)
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -3200,7 +3209,7 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 		t.Fatalf("NewInjector: %v", err)
 	}
 	giteaRepo := &instance.RepoRef{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "CI_POLL_TOKEN"}}
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil, nil)
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -3234,7 +3243,7 @@ func TestBuildCIPollExecutorWiresADOQuotaState(t *testing.T) {
 		t.Fatalf("NewInjector: %v", err)
 	}
 	quota := localscheduler.NewProviderQuotaState()
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, quota)
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, quota, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}

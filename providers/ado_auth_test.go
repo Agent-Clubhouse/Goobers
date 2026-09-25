@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -295,5 +296,60 @@ func TestAzureIdentityCredentialUsesAzureDevOpsScope(t *testing.T) {
 	}
 	if got.Secret != "identity-token" || credential.scope != AzureDevOpsResourceID+"/.default" {
 		t.Fatalf("credential = %#v, scope = %q", got, credential.scope)
+	}
+}
+
+// TestADOCredentialScrubFormsCoverEveryWireForm pins the strings a registrar
+// receives for one ADO credential: the raw secret and the Authorization value
+// built from it, so a captured header is redacted as well as the bare token.
+func TestADOCredentialScrubFormsCoverEveryWireForm(t *testing.T) {
+	basic := base64.StdEncoding.EncodeToString([]byte("goobers:pat-secret-value"))
+	for _, tc := range []struct {
+		name       string
+		credential ADOCredential
+		want       []string
+	}{
+		{
+			name:       "bearer",
+			credential: ADOCredential{Kind: adoCredentialBearer, Secret: "entra-secret-value"},
+			want:       []string{"entra-secret-value", "Bearer entra-secret-value"},
+		},
+		{
+			name:       "pat",
+			credential: ADOCredential{Kind: adoCredentialPAT, Secret: "pat-secret-value"},
+			want:       []string{"pat-secret-value", basic, "Basic " + basic},
+		},
+		{
+			name:       "unknown kind keeps the raw secret",
+			credential: ADOCredential{Kind: "other", Secret: "opaque-secret-value"},
+			want:       []string{"opaque-secret-value"},
+		},
+		{
+			name:       "empty secret",
+			credential: ADOCredential{Kind: adoCredentialBearer},
+			want:       nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.credential.ScrubForms()
+			if strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+				t.Fatalf("ScrubForms() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestADOGitAuthEnvironmentRegistersTheBasicHeader proves a PAT's Basic
+// Authorization value is registered, so a captured git header is redacted.
+func TestADOGitAuthEnvironmentRegistersTheBasicHeader(t *testing.T) {
+	reg := journal.NewRegistryScrubber()
+	source := NewADOPATCredentialSource("", "pat-secret-value")
+	if _, err := ADOGitAuthEnvironment(context.Background(), source, reg, "https://dev.azure.com/example-org/example-project/_git/example-repo"); err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:pat-secret-value"))
+	got := string(reg.Scrub([]byte("AUTHORIZATION: Basic " + encoded)))
+	if strings.Contains(got, encoded) {
+		t.Fatalf("Basic header was not scrubbed: %q", got)
 	}
 }

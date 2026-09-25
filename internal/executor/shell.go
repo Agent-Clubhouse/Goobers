@@ -273,6 +273,12 @@ type ShellExecutor struct {
 	// SEC-049 for the documented boundary. Empty by default: an unset caller
 	// (e.g. an existing test) gets unchanged behavior.
 	GuardedCredentialPaths []string
+	// RepoAuthScheme is the non-secret authorization scheme ("basic" or
+	// "bearer") of the Azure DevOps credential this executor's grants carry.
+	// A goobers CLI stage routed to an Azure DevOps repository receives it as
+	// RepoAuthSchemeEnvVar beside GOOBERS_REPO_PROVIDER. Empty for every other
+	// provider, and by default, which stamps nothing.
+	RepoAuthScheme string
 }
 
 type builtinErrorReport struct {
@@ -830,15 +836,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
-	if injectRunContext && env.RepoRef.Provider != "" {
-		stageEnv = append(stageEnv,
-			RepoProviderEnvVar+"="+string(env.RepoRef.Provider),
-			RepoOwnerEnvVar+"="+env.RepoRef.Owner,
-			RepoNameEnvVar+"="+env.RepoRef.Name,
-		)
-		if env.RepoRef.Project != "" {
-			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+env.RepoRef.Project)
-		}
+	if injectRunContext {
+		stageEnv = append(stageEnv, e.routedRepoEnv(env.RepoRef)...)
 	}
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)
@@ -1715,6 +1714,30 @@ func (d *diagBuffer) Bytes() []byte {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]byte(nil), d.buf.Bytes()...)
+}
+
+// routedRepoEnv returns the scheduler-routed repository variables a goobers
+// CLI stage reads (GOOBERS_REPO_PROVIDER and its siblings), and nothing for an
+// envelope with no routed provider. An Azure DevOps repository also gets
+// RepoAuthSchemeEnvVar when the executor knows the scheme of the credential
+// its grants carry. Extracted from Run for the same complexity-gate reason as
+// runContextEnv below.
+func (e *ShellExecutor) routedRepoEnv(repo apiv1.RepoRef) []string {
+	if repo.Provider == "" {
+		return nil
+	}
+	env := []string{
+		RepoProviderEnvVar + "=" + string(repo.Provider),
+		RepoOwnerEnvVar + "=" + repo.Owner,
+		RepoNameEnvVar + "=" + repo.Name,
+	}
+	if repo.Project != "" {
+		env = append(env, RepoProjectEnvVar+"="+repo.Project)
+	}
+	if e.RepoAuthScheme != "" && repo.Provider == apiv1.ProviderADO {
+		env = append(env, RepoAuthSchemeEnvVar+"="+e.RepoAuthScheme)
+	}
+	return env
 }
 
 // runContextEnv is the run-identity block injected into a stage that opts into

@@ -652,8 +652,9 @@ func (p *ADOProvider) authorizationHeader(ctx context.Context) (header string, b
 		return "", false, err
 	}
 	if p.secretRegistrar != nil {
-		p.secretRegistrar.Register([]byte(credential.Secret))
-		p.secretRegistrar.Register([]byte(strings.TrimSpace(strings.TrimPrefix(header, "Basic "))))
+		for _, form := range credential.ScrubForms() {
+			p.secretRegistrar.Register([]byte(form))
+		}
 	}
 	return header, credential.Kind == adoCredentialBearer, nil
 }

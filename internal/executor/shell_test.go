@@ -383,6 +383,52 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	}
 }
 
+// TestShellExecutor_StampsADORepoAuthSchemeBesideTheRoutedRepo proves the
+// non-secret authorization scheme of an Azure DevOps credential reaches a
+// goobers CLI stage beside GOOBERS_REPO_PROVIDER, and that a stage routed to
+// any other provider never receives it.
+func TestShellExecutor_StampsADORepoAuthSchemeBesideTheRoutedRepo(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "goobers")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s|%s' \"$GOOBERS_REPO_PROVIDER\" \"$GOOBERS_REPO_PROJECT\" \"${GOOBERS_REPO_AUTH_SCHEME-unset}\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		repo apiv1.RepoRef
+		want string
+	}{
+		{
+			name: "azure devops",
+			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "example-repo"},
+			want: "ado|example-project|bearer",
+		},
+		{
+			name: "github",
+			repo: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example-org", Name: "example-repo"},
+			want: "github||unset",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, rec := newTestExecutor(t, nil)
+			exec.SelfBin = stub
+			exec.RepoAuthScheme = "bearer"
+			env := baseEnvelope(t)
+			env.RepoRef = tc.repo
+
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"goobers", "env-check"}})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success", result.Status)
+			}
+			if got := string(rec.recorded["task-1/stdout.log"]); got != tc.want {
+				t.Fatalf("stdout = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestShellExecutor_BuiltinErrorFileHonorsScratchDir is the direct
 // regression test for #3342: a read-only-root deployment with nothing
 // writable at the OS default temp directory previously failed every

@@ -396,6 +396,10 @@ type deterministicExecutorInput struct {
 	// error file never depends on the OS default temp directory being
 	// writable under a read-only-root deployment.
 	ScratchDir string
+	// CredentialStores resolves store-backed token refs (#683) for the
+	// daemon-side ci-poll provider an Azure DevOps gaggle builds from its
+	// configured credential.
+	CredentialStores credentials.StoreResolver
 }
 
 func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Deterministic, error) {
@@ -462,12 +466,13 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	var adoRepo *instance.RepoRef
 	if repo, ok := adoRepoForGaggle(input.Config, input.GaggleProject); ok {
 		adoRepo = &repo
+		shell.RepoAuthScheme = adoauth.AuthScheme(repo)
 	}
 	var giteaRepo *instance.RepoRef
 	if repo, ok := giteaRepoForGaggle(input.Config, input.GaggleProject); ok {
 		giteaRepo = &repo
 	}
-	ciPoll, err := buildCIPollExecutor(input.Config, injector, input.ArtifactRecorder, adoRepo, giteaRepo, reg, input.ProviderQuota)
+	ciPoll, err := buildCIPollExecutor(input.Config, injector, input.ArtifactRecorder, adoRepo, giteaRepo, reg, input.ProviderQuota, input.CredentialStores)
 	if err != nil {
 		return nil, err
 	}
@@ -600,6 +605,8 @@ type ciPollKindExecutor struct {
 	giteaRepo *instance.RepoRef
 	registrar providers.SecretRegistrar
 	quota     providers.QuotaObserver
+	// stores resolves a store-backed ADO PAT (#683) for adoRepo's provider.
+	stores credentials.StoreResolver
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -610,7 +617,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	var poller executor.PRPoller
 	switch {
 	case e.adoRepo != nil:
-		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, e.quota, nil)
+		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, e.quota, e.stores)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("build ADO ci-poll provider: %w", err)
 		}
@@ -656,7 +663,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 // When adoRepo is non-nil the gaggle's repo is Azure DevOps, and ci-poll
 // resolves its poller from instance config (adoauth.Provider shells out to
 // `az` for the token) instead of a GitHub capability token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar, quota *localscheduler.ProviderQuotaState) (executor.KindExecutor, error) {
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar, quota *localscheduler.ProviderQuotaState, stores credentials.StoreResolver) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
 		return executor.NewCIPollKindExecutor(nil), nil
 	}
@@ -670,7 +677,7 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 	if quota != nil {
 		quotaObserver = &providerQuotaAccounting{state: quota}
 	}
-	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar, quota: quotaObserver}, nil
+	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar, quota: quotaObserver, stores: stores}, nil
 }
 
 // buildExternalTelemetryExecutor validates every registered plugin
