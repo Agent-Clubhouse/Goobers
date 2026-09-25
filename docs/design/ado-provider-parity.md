@@ -176,6 +176,10 @@ of a GitHub handoff channel:
    status-check branch policy gates the merge on it. **Pass → `succeeded`; both
    needs-changes and fail → `failed`** (the PR must not land until reworked, and a status
    genre cannot carry the needs-changes/fail split — the label below is the routing signal).
+   The status is posted against the **latest PR iteration**, not the PR itself: a status
+   policy with `invalidateOnSourceUpdate: true` (reset-on-push) rejects a PR-level status
+   with 403, and an iteration-scoped status satisfies it and re-queues on the next push
+   (ADO-N7).
 2. **The routing label, by decision**, mirroring the GitHub `verdictLabel` contract:
    - **fail →** add `goobers:merge-escalated`, clear `goobers:needs-remediation`. An
      escalation is *never* burned on the remediation budget; clearing needs-remediation and

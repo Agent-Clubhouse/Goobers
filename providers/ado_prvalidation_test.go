@@ -246,7 +246,14 @@ func TestADOProviderPollPullRequestProviderError(t *testing.T) {
 func TestADOProviderPublishPullRequestStatus(t *testing.T) {
 	var captured map[string]interface{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/statuses", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/iterations", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]int{{"id": 1}, {"id": 3}, {"id": 2}}})
+	})
+	// Statuses must be posted against the latest iteration, not the PR
+	// itself: a status policy with reset-on-push rejects PR-level statuses
+	// with 403 (ADO-N7).
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/iterations/3/statuses", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -284,6 +291,28 @@ func TestADOProviderPublishPullRequestStatus(t *testing.T) {
 	ctx, ok := captured["context"].(map[string]interface{})
 	if !ok || ctx["genre"] != "goobers" || ctx["name"] != "review" {
 		t.Fatalf("context = %#v, want genre=goobers name=review", captured["context"])
+	}
+}
+
+func TestADOProviderPublishPullRequestStatusNoIterationsErrors(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/iterations", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]int{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.PublishPullRequestStatus(context.Background(), PullRequestStatusRequest{
+		Repository:  RepositoryRef{Name: "repo", Project: "project"},
+		PullID:      "42",
+		Name:        "review",
+		State:       CheckStatePassing,
+		Description: "reviewer approved",
+	})
+	if err == nil {
+		t.Fatal("PublishPullRequestStatus returned nil error for a pull request with no iterations")
 	}
 }
 
