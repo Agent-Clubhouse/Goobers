@@ -46,7 +46,10 @@ enrolled workflows. Its default seven-day window, sample floor, observation
 cap, finding budget, evidence/run caps, and cooldown make every pass bounded;
 the output is always `report-only` and never files an issue, edits a workflow,
 or rolls back a run. Operators can select a narrower gaggle, workflow, or time
-window through the existing telemetry query scope.
+window through the existing telemetry query scope. The observation cap counts
+enrolled records, not terminal rows: readers continue through unenrolled rows
+under a separate finite scan budget so sparse enrollment cannot hide later
+evidence.
 
 One stable signature produces one deterministic finding across duplicate runs
 and repeated passes. Shared daemon, worktree, scheduler, journal, claim,
@@ -64,10 +67,13 @@ Each finding carries exact run/journal/artifact links, affected workflows and
 versions, node paths, environments, counter-evidence, rejected or retained
 alternative domains, and a recommended owner/action. Product reliability,
 external-component, workflow remediation, and mixed/unknown findings are
-separate fields on the telemetry read surfaces and candidate-findings artifact. A supplied fix marker
-moves a finding through `verification-pending`, `recovered`, or `repeated`
-using post-fix observations; absence of a post-fix cohort never counts as
-recovery.
+separate fields on the telemetry read surfaces and candidate-findings artifact.
+A supplied fix marker moves a finding through `verification-pending`,
+`recovered`, or `repeated` using post-fix observations; absence of a post-fix
+cohort never counts as recovery. Stored audit passes durably record report
+cooldowns and operator fix markers in `scheduler/backprop-audit/state.json`;
+this is auditor metadata only and does not mutate workflows, issues, or run
+journals.
 
 ## Why
 
