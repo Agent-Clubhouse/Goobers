@@ -202,3 +202,33 @@ func TestClassifyProviderError_UnknownErrorFallsBackToProviderError(t *testing.T
 		t.Fatalf("extra = %v, want nil", extra)
 	}
 }
+
+// TestClassifyProviderError_LandingRefusals proves ADO-N9's distinct codes:
+// a head-moved refusal and a branch-policy refusal each classify as their own
+// non-retryable code, and the policy refusal is never read as auth_failed.
+func TestClassifyProviderError_LandingRefusals(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"head moved", providers.PullRequestHeadMovedError{Expected: "head1", Actual: "head2"}, errorCodeHeadMoved},
+		{"head moved wrapped", fmt.Errorf("merge: %w", providers.PullRequestHeadMovedError{Expected: "head1"}), errorCodeHeadMoved},
+		{"policy not met", providers.PullRequestPolicyNotMetError{PullID: "42", Message: "required policies are not satisfied"}, errorCodePolicyNotMet},
+		{"policy not met wrapped", fmt.Errorf("merge: %w", providers.PullRequestPolicyNotMetError{PullID: "42"}), errorCodePolicyNotMet},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, retryable, extra := classifyProviderError(tc.err)
+			if code != tc.want {
+				t.Fatalf("code = %q, want %q", code, tc.want)
+			}
+			if retryable {
+				t.Fatal("retryable = true, want false")
+			}
+			if extra != nil {
+				t.Fatalf("extra = %v, want nil", extra)
+			}
+		})
+	}
+}

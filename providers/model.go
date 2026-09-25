@@ -501,7 +501,31 @@ type PullRequestHeadMovedError struct {
 }
 
 func (e PullRequestHeadMovedError) Error() string {
-	return fmt.Sprintf("pull request head moved from %s to %s", e.Expected, e.Actual)
+	actual := e.Actual
+	if actual == "" {
+		// A server-side head pin (ADO's TF401192) refuses the mutation without
+		// naming the new head.
+		actual = "a newer commit"
+	}
+	return fmt.Sprintf("pull request head moved from %s to %s", e.Expected, actual)
+}
+
+// PullRequestPolicyNotMetError reports that the forge refused to complete a
+// pull request because a required branch policy is not yet satisfied (ADO's
+// GitPullRequestUpdateRejectedByPolicyException, returned as 403). It is a
+// business refusal, not a credential failure: the same identity succeeds
+// once the policy is met, and Goobers never retries with a policy bypass.
+type PullRequestPolicyNotMetError struct {
+	PullID  string
+	Message string
+}
+
+func (e PullRequestPolicyNotMetError) Error() string {
+	msg := fmt.Sprintf("pull request %s completion refused: branch policy not met", e.PullID)
+	if e.Message != "" {
+		msg += ": " + e.Message
+	}
+	return msg
 }
 
 // MergeableStateUnstable is GitHub's mergeable_state value meaning the PR is

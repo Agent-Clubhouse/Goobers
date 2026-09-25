@@ -209,7 +209,7 @@ providers use:
 | `DetectMergePolicy` | Any enabled, blocking, non-deleted branch policy scoped to the target ref → `MergeQueue`; otherwise `Direct`. |
 | `EnqueuePullRequest` (MergeQueue) | Arm ADO **auto-complete** (the completion job is the queue), idempotently. |
 | `PollMergeQueueEntry` (`queue-watch`) | completed → `Merged`; abandoned / auto-complete cleared → `Evicted`; armed → `Pending`. |
-| `MergePullRequest` (Direct) | `PATCH status=completed` with `completionOptions{mergeStrategy, mergeCommitMessage}`, SHA-pinned via `lastMergeSourceCommit`, then await the async completion job to a terminal `mergeStatus` (conflict → `ErrMergeConflict`). |
+| `MergePullRequest` (Direct) | `PATCH status=completed` with `completionOptions{mergeStrategy, mergeCommitMessage}`, SHA-pinned server-side via `lastMergeSourceCommit` (409 TF401192 → head moved; 403 policy refusal → policy not met; see §11), then await the async completion job to a terminal `mergeStatus` (conflict → `ErrMergeConflict`). |
 
 **Landed** is defined solely by the poll reporting the PR merged with a resolvable merge
 commit — auto-complete *set* is not landed, *enqueued* is not landed. **Eviction is a
@@ -370,3 +370,28 @@ through the capability seam and, because ADO does not declare `ci.cancel`,
 degrades to an `unsupported` status without disturbing the published verdict —
 correct behaviour that was undocumented. ADO PR thread comments also carry
 attribution now (#3984).
+
+## 11. Merge review on Azure DevOps
+
+The branch policies of the target repository decide when a pull request may
+land. Goobers does not relax them, and it does not supply the approval they ask
+for. These rules come from `docs/design/ado-parity-dsl-2-0.md` §5 (ADO-N9).
+
+- **No bypass.** No request Goobers sends asks ADO to skip a branch policy.
+  If a direct completion is refused because a required policy is not met (403
+  `GitPullRequestUpdateRejectedByPolicyException`), `merge-pr` fails the stage
+  with `provider_policy_not_met`. It does not retry, and it does not report the
+  refusal as an authentication failure. The pull request waits for a human, or
+  for its policies to pass.
+- **No approval.** Goobers never casts a reviewer vote other than 0 ("no
+  vote"). ADO lets an identity vote on its own pull request, and on some
+  configurations that vote would count toward a required-reviewer policy.
+- **Head pin.** A direct completion sends the reviewed head as
+  `lastMergeSourceCommit`. If the source branch moved after review, ADO refuses
+  the completion with 409 TF401192, and `merge-pr` fails the stage with
+  `provider_head_moved`. The stale verdict is not landed. Auto-complete cannot
+  be pinned (ADO rejects the field with 400), so the queued path keeps a
+  client-side compare of the freshly fetched source commit instead.
+
+`providers/ado_conformance_test.go` scans the provider sources and fails if a
+policy bypass or a non-zero vote appears, so the first two rules stay true.
