@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -588,13 +589,35 @@ func composeGitEnv(dir string, authEnv []string) []string {
 			"GIT_CONFIG_VALUE_0="+safe.path,
 		)
 	}
-	// With auth: keep GitAuthEnvironment's slot 0 (credential.helper) and take
-	// slot 1, raising the count. Later entries win, so the new count replaces
-	// the one it set.
+	// With auth, append safe.directory after every slot the complete credential
+	// environment already owns. GitHub/Gitea currently use one slot, while ADO
+	// uses two (credential.helper plus a URL-scoped authorization header).
+	// Assuming slot 1 is free drops ADO's header and makes Git prompt for a
+	// username despite a valid Azure CLI login (#5555).
+	count := 0
+	for _, entry := range authEnv {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(name, "GIT_CONFIG_COUNT") {
+			if parsed, err := strconv.Atoi(value); err == nil && parsed > count {
+				count = parsed
+			}
+			continue
+		}
+		const keyPrefix = "GIT_CONFIG_KEY_"
+		if len(name) <= len(keyPrefix) || !strings.EqualFold(name[:len(keyPrefix)], keyPrefix) {
+			continue
+		}
+		if slot, err := strconv.Atoi(name[len(keyPrefix):]); err == nil && slot >= count {
+			count = slot + 1
+		}
+	}
 	return append(append(append([]string{}, authEnv...), gitIdentityEnv()...),
-		"GIT_CONFIG_COUNT=2",
-		"GIT_CONFIG_KEY_1=safe.directory",
-		"GIT_CONFIG_VALUE_1="+safe.path,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(count+1),
+		"GIT_CONFIG_KEY_"+strconv.Itoa(count)+"=safe.directory",
+		"GIT_CONFIG_VALUE_"+strconv.Itoa(count)+"="+safe.path,
 	)
 }
 

@@ -130,10 +130,10 @@ func TestManagedWorktreeRebaseLeavesNothingWritingInTheMirror(t *testing.T) {
 	for _, mirror := range mirrorGitDirs(t, root) {
 		configureDetachedMaintenanceIn(t, mirror)
 	}
-	if _, err := checkoutExistingBranch(wt.Path, "goobers/impl/run-3330", "test-token"); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), wt.Path, "goobers/impl/run-3330", tokenGitAuthEnvironment("test-token")); err != nil {
 		t.Fatalf("checkoutExistingBranch: %v", err)
 	}
-	if _, _, _, err := attemptRebase(wt.Path, "main", "test-token"); err != nil {
+	if _, _, _, err := attemptRebaseWithAuth(t.Context(), wt.Path, "main", tokenGitAuthEnvironment("test-token")); err != nil {
 		t.Fatalf("attemptRebase: %v", err)
 	}
 	if err := os.RemoveAll(root); err != nil {

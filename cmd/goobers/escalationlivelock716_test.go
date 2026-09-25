@@ -407,7 +407,7 @@ func TestGatherPRContextDigestShortCircuitsOnClearedLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := checkoutExistingBranch(wt.Path, prBranch, ""); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), wt.Path, prBranch, tokenGitAuthEnvironment("")); err != nil {
 		t.Fatalf("checkout probe branch: %v", err)
 	}
 	actualDigest, err := diffDigest(wt.Path, baseSHA)

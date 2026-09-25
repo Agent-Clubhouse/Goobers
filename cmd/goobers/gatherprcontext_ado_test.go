@@ -51,6 +51,7 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 	})
 
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	azureCLISource := useAzureCLIRemediationAuth(t, root)
 	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
 	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
 	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
@@ -136,9 +137,10 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 
 	t.Setenv("GOOBERS_RUN_ID", "run-ado-362")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-	// Only repo:push is needed on ADO — the git checkout credential. No github:*
-	// token is resolved; the ADO provider draws its auth from instance config.
-	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	// No repo:push token is materialized for tokenless Azure CLI auth. Git uses
+	// the configured ADO credential source directly, while the provider keeps
+	// drawing its REST authentication from instance config.
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "")
 	t.Chdir(wt.Path)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", root)
@@ -150,6 +152,9 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 	}
 	if !connectionDataRead {
 		t.Fatal("connectionData (AuthenticatedLogin) was never read — the thread author could not be trusted")
+	}
+	if azureCLISource.callCount() == 0 {
+		t.Fatal("the configured Azure CLI credential source was not used for the branch checkout")
 	}
 	if !strings.Contains(stdout, "PR #359") {
 		t.Fatalf("stdout = %q, want a mention of PR #359", stdout)
@@ -217,7 +222,7 @@ func TestGatherPRContextADOParksRepeatedEscalatedDigest(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
-	if _, err := checkoutExistingBranch(wt.Path, prBranch, "test-token"); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), wt.Path, prBranch, tokenGitAuthEnvironment("test-token")); err != nil {
 		t.Fatalf("checkout PR branch: %v", err)
 	}
 	digest, err := diffDigest(wt.Path, baseSHA)
