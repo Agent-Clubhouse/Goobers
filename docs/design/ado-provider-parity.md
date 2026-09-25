@@ -308,7 +308,9 @@ shared stage-provider seam, and ADO satisfies that surface through the same
   adapter over `PollPullRequest`), releasing the claim (and returning a terminal no-work
   result) if it has merged or closed. On ADO the claim also never reads as open on an empty
   source head: `GetPullRequest`'s poll-observed `HeadSHA` must be non-empty, so the guard
-  fails closed rather than proceeding against an unverified source.
+  fails closed rather than proceeding against an unverified source. Like the other ADO
+  remediation stages, it does not require the `github:pr:write` grant on ADO: the ADO
+  provider resolves its own credential from `repos[].auth`, so non-PAT auth kinds work.
 
 The sticky remediation-state comment (carrying the pre-remediation head SHA) is a PR thread
 updated in place via the composite comment id.

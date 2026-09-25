@@ -28,7 +28,10 @@ func prClaimADOFixture(t *testing.T, status, headSHA string) (root string, repo 
 
 	t.Setenv("GOOBERS_RUN_ID", "run-364-ado")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "ado-test-token")
+	// No GitHub-capability credential: ADO resolves its own credential from
+	// repos[].auth, so pr-claim must reach the poll without one (an ADO repo
+	// on azure-cli / workload- / managed-identity auth never receives it).
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "")
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), prRemediationLifecycleResultFile))
 	if _, err := claimPullRequestInOrder(root, repo, []providers.PullRequestSummary{{Number: 77}}, "run-364-ado", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)

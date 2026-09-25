@@ -82,7 +82,7 @@ func runPRRemediationLifecycle(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "load remediation repository", err, prRemediationLifecycleResultFile)
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	token, err := prClaimProviderToken(repo)
 	if err != nil {
 		return failProviderStage(stderr, "load remediation credential", err, prRemediationLifecycleResultFile)
 	}
@@ -167,4 +167,17 @@ func writePRRemediationLifecycleResult(result prRemediationLifecycleResult, stdo
 	}
 	pf(stdout, "claimed PR #%s is still open\n", result.SelectedNumber)
 	return 0
+}
+
+// prClaimProviderToken loads the GitHub-capability credential pr-claim hands
+// to the GitHub and Gitea providers. ADO resolves its own credential from
+// repos[].auth inside the stage factory (newRegisteredADOProviderForStage)
+// and ignores this token, so ADO skips it — mirroring rebase-pr and
+// push-remediated — and an ADO repository whose auth is not a PAT still
+// reaches the PR poll.
+func prClaimProviderToken(repo providers.RepositoryRef) (string, error) {
+	if repo.Provider == providers.ProviderADO {
+		return "", nil
+	}
+	return providerToken(capability.GitHubPRWrite)
 }
