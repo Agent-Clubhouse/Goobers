@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -530,6 +531,67 @@ func (p *ADOProvider) workURLVersion(project, version string, elems ...string) (
 	return addQuery(endpoint, url.Values{"api-version": []string{version}})
 }
 
+// adoIdentityGUID matches an Azure DevOps identity descriptor's id shape (a
+// bare GUID), so resolveIdentityID can pass one through untouched instead of
+// spending a lookup round-trip resolving a GUID to itself.
+var adoIdentityGUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// adoIdentitiesLookup is the minimal shape of the ADO identities API response
+// (vssps.dev.azure.com/{org}/_apis/identities).
+type adoIdentitiesLookup struct {
+	Value []struct {
+		ID string `json:"id"`
+	} `json:"value"`
+}
+
+// identitiesBaseURL resolves the host that serves the Azure DevOps identities
+// API. On the standard dev.azure.com topology, identities live on a separate
+// vssps.dev.azure.com host rather than under BaseURL/Organization like every
+// other ADO REST call, so it is derived rather than reused directly. Any other
+// BaseURL — an on-prem Azure DevOps Server or a test double — has no such
+// split host, and reusing BaseURL as-is both keeps on-prem out of scope (per
+// the ADO-N37 ruling) and lets tests redirect the identities call to the same
+// fixture server as everything else.
+func (p *ADOProvider) identitiesBaseURL() string {
+	u, err := url.Parse(p.BaseURL)
+	if err != nil || !strings.EqualFold(u.Hostname(), "dev.azure.com") {
+		return p.BaseURL
+	}
+	u.Host = "vssps." + u.Host
+	return strings.TrimRight(u.String(), "/")
+}
+
+// resolveIdentityID resolves a reviewer string (a UPN, an email, or a
+// display name) to the Azure DevOps identity GUID RequestReview's reviewers
+// endpoint requires. A reviewer that already looks like a GUID passes through
+// untouched, skipping the lookup. It errors — rather than silently skipping
+// the reviewer — when nothing resolves.
+func (p *ADOProvider) resolveIdentityID(ctx context.Context, reviewer string) (string, error) {
+	if adoIdentityGUID.MatchString(reviewer) {
+		return reviewer, nil
+	}
+	endpoint, err := joinURL(p.identitiesBaseURL(), p.Organization, "_apis", "identities")
+	if err != nil {
+		return "", err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{
+		"searchFilter": []string{"General"},
+		"filterValue":  []string{reviewer},
+		"api-version":  []string{"7.1"},
+	})
+	if err != nil {
+		return "", err
+	}
+	var out adoIdentitiesLookup
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return "", err
+	}
+	if len(out.Value) == 0 || strings.TrimSpace(out.Value[0].ID) == "" {
+		return "", fmt.Errorf("ado: reviewer %q did not resolve to an identity", reviewer)
+	}
+	return out.Value[0].ID, nil
+}
+
 func (p *ADOProvider) project(repo RepositoryRef) string {
 	if repo.Project != "" {
 		return repo.Project
@@ -589,7 +651,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			// response was lost, and ADO has no transport-level dedup marker
 			// (unlike GitHub issue creation's footer check, #140) to make a
 			// blind retry safe for those.
-			if isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
+			if adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
 					return nil, serr
 				}
@@ -604,7 +666,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			authRetried = true
 			continue
 		}
-		if resp.StatusCode >= 500 && isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
+		if resp.StatusCode >= 500 && adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
 			_ = resp.Body.Close()
 			if err := p.sleep(ctx, backoffDuration(transientAttempt)); err != nil {
 				return nil, err

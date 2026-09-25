@@ -51,6 +51,18 @@ func TestRefreshADONormalizesAndUsesProviderRequestShape(t *testing.T) {
 				t.Errorf("$expand = %q, want Relations", got)
 			}
 			writeADOJSON(t, w, liveADOWorkItem(round))
+		case "/acme/Widgets/_apis/wit/workitemsbatch":
+			var request struct {
+				IDs    []int  `json:"ids"`
+				Expand string `json:"$expand"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode workitemsbatch request: %v", err)
+			}
+			if r.Method != http.MethodPost || len(request.IDs) != 1 || request.IDs[0] != 7 || request.Expand != "Relations" {
+				t.Errorf("workitemsbatch = %s %+v, want POST ids [7] with $expand Relations", r.Method, request)
+			}
+			writeADOJSON(t, w, map[string]any{"count": 1, "value": []any{liveADOWorkItem(round)}})
 		case "/acme/Widgets/_apis/wit/workitemtypes/Issue/states":
 			writeADOJSON(t, w, map[string]any{"value": []map[string]string{
 				{"name": "Active", "category": "InProgress"},

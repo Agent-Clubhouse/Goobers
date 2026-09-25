@@ -164,7 +164,7 @@ func TestADODecompositionMarkerAndCommentMutations(t *testing.T) {
 		decodeJSON(t, r, &body)
 		writeJSON(t, w, map[string]interface{}{"commentId": 9, "text": body["text"]})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
@@ -224,7 +224,7 @@ func TestADOFindWorkItemsByMarkerPagesByID(t *testing.T) {
 			})
 		})
 	}
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
