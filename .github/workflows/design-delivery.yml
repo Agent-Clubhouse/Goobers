@@ -1,0 +1,68 @@
+name: Design Delivery
+
+# Re-evaluates the design-delivery claim when a pull request's closing issue
+# references change without a code change: a title or body edit.
+#
+# The claim a PR makes is GitHub's `closingIssuesReferences`, which a body edit
+# changes without moving the head SHA (#4599). CI (ci.yml) evaluates it on every
+# code event as part of the required `make ci` check, but CI no longer triggers
+# on `edited`: every body edit used to start a full CI run that cancelled the
+# in-flight run on the identical SHA. This workflow is the edit-time path. It
+# runs the same `go run ./test/designstatus` check with the same context
+# (.github/actions/design-delivery-context), on a single runner in about a
+# minute.
+#
+# It runs on the code events too, not just `edited`, so the check name exists
+# on every PR head and can be made a required check without leaving unedited
+# PRs waiting on a check that never reports.
+#
+# It never produces the `make ci` check, so a body edit cannot turn the
+# required check green, or skipped, for a SHA the code jobs have not validated.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Every run re-reads the current PR body and head, so only the newest one
+# per PR matters.
+concurrency:
+  group: design-delivery-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  design-delivery:
+    name: design delivery (closing issue references)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The delivery check compares against the pinned PR base documents.
+          fetch-depth: 0
+
+      - name: Collect design delivery context
+        id: context
+        uses: ./.github/actions/design-delivery-context
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          base-revision: ${{ github.event.pull_request.base.sha }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          # test/designstatus is standard-library only; a build cache is not
+          # worth a save that could pin the shared setup-go key.
+          cache: false
+
+      - name: Verify design delivery metadata
+        env:
+          GOOBERS_DESIGN_DELIVERY_CONTEXT: ${{ steps.context.outputs.path }}
+        run: go run ./test/designstatus
