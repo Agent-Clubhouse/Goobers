@@ -178,8 +178,12 @@ of a GitHub handoff channel:
    genre cannot carry the needs-changes/fail split — the label below is the routing signal).
    The status is posted against the **latest PR iteration**, not the PR itself: a status
    policy with `invalidateOnSourceUpdate: true` (reset-on-push) rejects a PR-level status
-   with 403, and an iteration-scoped status satisfies it and re-queues on the next push
-   (ADO-N7).
+   with 403, and an iteration-scoped status satisfies it; a new push creates a new
+   iteration, which resets the policy until a fresh status is posted against it (ADO-N7).
+   The latest iteration is resolved when the status is posted, not when the head was
+   reviewed: a push that lands between review and apply-verdict attaches the verdict to
+   the newer iteration. PR-level statuses had the same window; binding the status to the
+   reviewed head SHA is a follow-up.
 2. **The routing label, by decision**, mirroring the GitHub `verdictLabel` contract:
    - **fail →** add `goobers:merge-escalated`, clear `goobers:needs-remediation`. An
      escalation is *never* burned on the remediation budget; clearing needs-remediation and

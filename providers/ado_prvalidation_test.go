@@ -300,6 +300,12 @@ func TestADOProviderPublishPullRequestStatusNoIterationsErrors(t *testing.T) {
 		assertMethod(t, r, http.MethodGet)
 		writeJSON(t, w, map[string]interface{}{"value": []map[string]int{}})
 	})
+	// Any other request — in particular a status POST at the PR or an
+	// iteration — means the no-iterations guard did not fire.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request %s %s: no status may be posted without an iteration", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -311,8 +317,8 @@ func TestADOProviderPublishPullRequestStatusNoIterationsErrors(t *testing.T) {
 		State:       CheckStatePassing,
 		Description: "reviewer approved",
 	})
-	if err == nil {
-		t.Fatal("PublishPullRequestStatus returned nil error for a pull request with no iterations")
+	if err == nil || !strings.Contains(err.Error(), "returned no iterations") {
+		t.Fatalf("PublishPullRequestStatus error = %v, want the no-iterations guard", err)
 	}
 }
 
