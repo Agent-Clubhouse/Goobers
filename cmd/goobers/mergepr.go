@@ -791,10 +791,6 @@ func reportLandingError(stdout, stderr io.Writer, path, number, head string, lan
 		reason = mergeConflictReason
 	case providers.IsRequiredStatusCheckPendingError(mergeErr):
 		reason = requiredStatusPendingReason
-	default:
-		if detail, refused := providers.MergeRefusalReason(mergeErr); refused {
-			reason = "merge-refused: " + detail
-		}
 	}
 	if reason == "" {
 		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")

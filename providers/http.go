@@ -211,27 +211,6 @@ func IsRequiredStatusCheckPendingError(err error) bool {
 		strings.Contains(message, " is expected")
 }
 
-// MergeRefusalReason returns the provider message when GitHub's merge endpoint
-// rejected a pull request with HTTP 405. GitHub uses that status for multiple
-// business refusals whose wording evolves independently of Goobers; callers
-// must record the refusal rather than turn an unfamiliar message into an
-// infrastructure failure that leaves downstream refusal outputs missing.
-func MergeRefusalReason(err error) (string, bool) {
-	var responseErr *providerResponseError
-	if !errors.As(err, &responseErr) || responseErr.statusCode != http.StatusMethodNotAllowed {
-		return "", false
-	}
-	var response struct {
-		Message string `json:"message"`
-	}
-	if json.Unmarshal([]byte(responseErr.body), &response) == nil {
-		if message := strings.Join(strings.Fields(response.Message), " "); message != "" {
-			return message, true
-		}
-	}
-	return "provider rejected the merge request", true
-}
-
 // mentionsMergeConflict reports whether a provider response body names a
 // merge-conflict refusal. GitHub's merge endpoint phrases this as
 // "Pull Request is not mergeable"; the explicit "merge conflict" wording is
