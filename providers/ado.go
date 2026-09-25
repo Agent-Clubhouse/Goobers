@@ -48,6 +48,14 @@ type ADOProvider struct {
 	stateMu         sync.RWMutex
 	stateCategories map[string][]adoWorkItemState
 
+	// requirementTypeMu guards requirementTypes, the per-project cache of the
+	// Requirement category's default work item type (ADO-N27): the create
+	// type CreateWorkItem uses when the caller names none, resolved from
+	// GET workitemtypecategories/Microsoft.RequirementCategory instead of a
+	// process assumed to call it "Issue".
+	requirementTypeMu sync.RWMutex
+	requirementTypes  map[string]string
+
 	// identityMu guards identity, the cached connectionData read behind
 	// AuthenticatedIdentity and AuthenticatedLogin. A provider holds one
 	// credential, so the cache is per credential.
