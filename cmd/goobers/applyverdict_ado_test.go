@@ -89,7 +89,8 @@ func TestPublishADOPassVerdictPublishesValidationStatus(t *testing.T) {
 		threadBody   map[string]interface{}
 	)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/statuses", func(w http.ResponseWriter, r *http.Request) {
+	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359")
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/iterations/2/statuses", func(w http.ResponseWriter, r *http.Request) {
 		statusMethod = r.Method
 		_ = json.NewDecoder(r.Body).Decode(&statusBody)
 		_, _ = w.Write([]byte(`{"id":7}`))
@@ -257,7 +258,8 @@ func adoMergeReviewMux(t *testing.T, repo providers.RepositoryRef, prNumber int,
 	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 	})
-	mux.HandleFunc(prBase+"/"+strconv.Itoa(prNumber)+"/statuses", func(w http.ResponseWriter, r *http.Request) {
+	serveADOPullRequestIterations(t, mux, prBase+"/"+strconv.Itoa(prNumber))
+	mux.HandleFunc(prBase+"/"+strconv.Itoa(prNumber)+"/iterations/2/statuses", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("statuses method = %s, want POST", r.Method)
 		}
@@ -277,6 +279,20 @@ func adoMergeReviewMux(t *testing.T, repo providers.RepositoryRef, prNumber int,
 		})
 	})
 	return mux
+}
+
+// serveADOPullRequestIterations serves the PR iterations list with ids out of
+// order (latest = 2): ADO statuses are posted against the latest iteration,
+// not the PR itself (ADO-N7), so fakes register the status handler at
+// <pr>/iterations/2/statuses.
+func serveADOPullRequestIterations(t *testing.T, mux *http.ServeMux, pr string) {
+	t.Helper()
+	mux.HandleFunc(pr+"/iterations", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("iterations method = %s, want GET", r.Method)
+		}
+		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{map[string]int{"id": 2}, map[string]int{"id": 1}}})
+	})
 }
 
 func writeJSONResp(t *testing.T, w http.ResponseWriter, v interface{}) {
@@ -305,7 +321,8 @@ func TestPublishADONonPassVerdictPublishesFailedStatusLabelAndThread(t *testing.
 		threadContent string
 	)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/statuses", func(w http.ResponseWriter, r *http.Request) {
+	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359")
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/iterations/2/statuses", func(w http.ResponseWriter, r *http.Request) {
 		statusMethod = r.Method
 		_ = json.NewDecoder(r.Body).Decode(&statusBody)
 		_, _ = w.Write([]byte(`{"id":7}`))
@@ -408,7 +425,8 @@ func TestPublishADOFailVerdictEscalatesAndClearsRemediation(t *testing.T) {
 	)
 	const nrID = "nr-label-guid"
 	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/statuses", func(w http.ResponseWriter, r *http.Request) {
+	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359")
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/iterations/2/statuses", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		statusState, _ = body["state"].(string)
@@ -593,7 +611,7 @@ func adoNeedsChangesMux(t *testing.T, repo providers.RepositoryRef, prNumber int
 			"nextSkip": 0,
 		})
 	})
-	mux.HandleFunc(pr+"/statuses", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(pr+"/iterations/1/statuses", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("statuses method = %s, want POST", r.Method)
 		}

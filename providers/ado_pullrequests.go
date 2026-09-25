@@ -319,10 +319,37 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	}, nil
 }
 
+// latestPullRequestIteration returns the highest iteration ID for the given
+// pull request. ADO iteration IDs are monotonically increasing but the
+// iterations list is not guaranteed to be sorted, so callers must scan for
+// the max rather than take the last entry.
+func (p *ADOProvider) latestPullRequestIteration(ctx context.Context, repo RepositoryRef, pullID string) (int, error) {
+	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
+	if err != nil {
+		return 0, err
+	}
+	var iterations adoPullRequestIterationsResponse
+	if err := p.do(ctx, http.MethodGet, iterationsEndpoint, nil, &iterations); err != nil {
+		return 0, err
+	}
+	latestIteration := 0
+	for _, iteration := range iterations.Value {
+		if iteration.ID > latestIteration {
+			latestIteration = iteration.ID
+		}
+	}
+	if latestIteration == 0 {
+		return 0, fmt.Errorf("ado pull request %s returned no iterations", pullID)
+	}
+	return latestIteration, nil
+}
+
 // PublishPullRequestStatus posts an Azure DevOps pull-request status so a
 // status-check branch policy can gate on goobers-supplied evidence — a reviewer
 // verdict or local-CI result — making ADO's policy engine the source of truth
-// for PR correctness (#772).
+// for PR correctness (#772). Statuses are posted against the latest PR
+// iteration rather than the PR itself: a status policy with reset-on-push
+// rejects PR-level statuses with 403, and iteration-scoped statuses satisfy it.
 func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequestStatusRequest) (PullRequestStatusResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestStatusResult{}, err
@@ -333,7 +360,11 @@ func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequ
 	if req.Name == "" {
 		return PullRequestStatusResult{}, fmt.Errorf("status name is required")
 	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "statuses")
+	latestIteration, err := p.latestPullRequestIteration(ctx, req.Repository, req.PullID)
+	if err != nil {
+		return PullRequestStatusResult{}, err
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "iterations", strconv.Itoa(latestIteration), "statuses")
 	if err != nil {
 		return PullRequestStatusResult{}, err
 	}
@@ -451,22 +482,9 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 	if pullID == "" {
 		return nil, errPullIDRequired
 	}
-	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
+	latestIteration, err := p.latestPullRequestIteration(ctx, repo, pullID)
 	if err != nil {
 		return nil, err
-	}
-	var iterations adoPullRequestIterationsResponse
-	if err := p.do(ctx, http.MethodGet, iterationsEndpoint, nil, &iterations); err != nil {
-		return nil, err
-	}
-	latestIteration := 0
-	for _, iteration := range iterations.Value {
-		if iteration.ID > latestIteration {
-			latestIteration = iteration.ID
-		}
-	}
-	if latestIteration == 0 {
-		return nil, fmt.Errorf("ado pull request %s returned no iterations", pullID)
 	}
 
 	changesEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations", strconv.Itoa(latestIteration), "changes")
