@@ -36,7 +36,7 @@ func TestGenerateSplitsRecordsTopLevelTestsAndProvenance(t *testing.T) {
 	want := splitDocument{
 		SchemaVersion: schemaVersion,
 		Source: splitSource{
-			Run: 42, Commit: strings.Repeat("c", 40), GeneratedAt: "2026-09-25T00:19:09Z",
+			Run: 42, Branch: "main", Commit: strings.Repeat("c", 40), GeneratedAt: "2026-09-25T00:19:09Z",
 			TimingJobs: []string{"unit"}, Platform: "linux",
 		},
 		Packages: map[string]splitPackage{
@@ -72,7 +72,7 @@ func TestGenerateSplitsRejectsUnverifiableInputs(t *testing.T) {
 		split  string
 		want   string
 	}{
-		{name: "branch", mutate: func(_ *[]artifact, run *runMetadata) { run.HeadBranch = "feature" }, want: "on main"},
+		{name: "branch", mutate: func(_ *[]artifact, run *runMetadata) { run.HeadBranch = "" }, want: "its branch"},
 		{name: "conclusion", mutate: func(_ *[]artifact, run *runMetadata) { run.Conclusion = "failure" }, want: "successful"},
 		{name: "timestamp", mutate: func(_ *[]artifact, run *runMetadata) { run.UpdatedAt = "yesterday" }, want: "RFC 3339"},
 		{name: "failed test", split: "example/other", want: "non-success"},

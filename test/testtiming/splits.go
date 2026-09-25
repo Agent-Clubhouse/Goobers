@@ -23,6 +23,7 @@ type splitDocument struct {
 
 type splitSource struct {
 	Run         int64    `json:"run"`
+	Branch      string   `json:"branch"`
 	Commit      string   `json:"commit"`
 	GeneratedAt string   `json:"generatedAt"`
 	TimingJobs  []string `json:"timingJobs"`
@@ -140,6 +141,7 @@ func generateSplits(timings []artifact, run runMetadata, pieces map[string]int) 
 		SchemaVersion: schemaVersion,
 		Source: splitSource{
 			Run:         run.ID,
+			Branch:      run.HeadBranch,
 			Commit:      run.HeadSHA,
 			GeneratedAt: updatedAt.Format(time.RFC3339),
 			TimingJobs:  jobs,
@@ -150,8 +152,11 @@ func generateSplits(timings []artifact, run runMetadata, pieces map[string]int) 
 }
 
 func validateRunProvenance(run runMetadata) (time.Time, error) {
-	if run.ID <= 0 || run.HeadBranch != "main" || !validCommitSHA(run.HeadSHA) {
-		return time.Time{}, errors.New("run metadata: want a positive run ID on main with a full commit SHA")
+	// Any branch is accepted and recorded: the table only balances pieces
+	// against one another, and a PR that changes the split needs race-mode
+	// measurements from its own run before it can land on main.
+	if run.ID <= 0 || strings.TrimSpace(run.HeadBranch) == "" || !validCommitSHA(run.HeadSHA) {
+		return time.Time{}, errors.New("run metadata: want a positive run ID, its branch, and a full commit SHA")
 	}
 	if run.Status != "completed" || run.Conclusion != "success" {
 		return time.Time{}, errors.New("run metadata: want a completed successful run")

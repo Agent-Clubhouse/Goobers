@@ -284,6 +284,38 @@ func TestCheckedInSplitsNameRealPackages(t *testing.T) {
 	}
 }
 
+// TestCheckedInSplitFiltersKeepHeadroom fails well before a piece's filter
+// reaches maxRunPatternBytes in CI, while raising the piece count is still a
+// routine change rather than a red merge gate.
+func TestCheckedInSplitFiltersKeepHeadroom(t *testing.T) {
+	root, err := findModuleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	splits, err := loadShardSplits(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const headroomBytes = maxRunPatternBytes * 3 / 4
+	for pkg, split := range splits.Packages {
+		names := make([]string, 0, len(split.Tests))
+		for name := range split.Tests {
+			names = append(names, name)
+		}
+		groups := partitionTests(names, split)
+		for index, group := range groups {
+			args, err := pieceArgs([]string{"./..."}, pkg, group, groupsUnion(groups))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if size := len(args[1]); size > headroomBytes {
+				t.Errorf("%s piece %d/%d filter is %d bytes (headroom limit %d, hard limit %d): raise its pieces in %s",
+					pkg, index+1, split.Pieces, size, headroomBytes, maxRunPatternBytes, shardSplitsPath)
+			}
+		}
+	}
+}
+
 func TestAssignTimingOutputsNamesOnePartPerPlan(t *testing.T) {
 	t.Parallel()
 	plans := []testPlan{{}, {}}

@@ -125,12 +125,17 @@ the whole packages. A shard that receives a piece:
 2. partitions them by LPT over the recorded per-test seconds. A test absent
    from the table (new or renamed) weighs the package's mean measured test, so
    it is still assigned to exactly one piece and new tests spread across
-   pieces instead of piling into one;
+   pieces instead of piling into one. Every test weighs at least 10ms, so the
+   long tail of near-zero tests is dealt evenly and each piece's name list
+   stays near 1/`pieces` of the package. The arithmetic is integer
+   milliseconds, so every runner derives the identical partition;
 3. runs its piece as a separate `go test` process, concurrently with the
    shard's whole packages, filtered by an exact anchored `-run` over the
    piece's names or `-skip` over the other pieces' names, whichever is
    shorter. A filter over 96 KiB fails the shard loudly (Linux caps a single
    argument at 128 KiB): raise that package's `pieces`.
+   `TestCheckedInSplitFiltersKeepHeadroom` fails at 72 KiB, while that is
+   still a routine change.
 
 Subtests always follow their top-level test. `TestMain` runs once per piece,
 so per-package guards such as the `cmd/goobers` package-directory guard run in
@@ -140,8 +145,9 @@ sharded run (the unsharded `unit-linux-coverage` job owns them).
 `TestSplitPiecesRunEveryFixtureTestExactlyOnce` (`test/hermetic`) prove every
 enumerated test runs in exactly one piece.
 
-Only proportions inside a package matter, so the table can be seeded from the
-Linux coverage job's `unit` timings. Each race shard also uploads its own
+Only proportions inside a package matter, but they differ under `-race`: the
+coverage job's non-race per-test times left the `cmd/goobers` pieces at 247s,
+682s, and 614s in their first race run. Each race shard therefore uploads its own
 race-mode timings as `test-timings-race-linux-<n>` (job `unit-shard`, one
 `unit-race.part<k>.json` per `go test` process); refresh the table from those
 so the pieces are balanced by the runs they split:
@@ -160,10 +166,13 @@ go run ./test/testtiming splits \
   -out .github/unit-shard-splits.json
 ```
 
-The generator requires a completed successful `main` run, one platform across
-all parts, and no test measured twice. Revisit the piece counts and the
-matrix's shard count together: splitting helps until the largest single tests
-and per-job setup become the floor.
+The generator requires a completed successful run, one platform across all
+parts, and no test measured twice, and records the run's branch. Refresh from
+`main`; a PR that changes the split itself may seed from its own run's race
+artifacts. Revisit the piece counts and the matrix's shard count together:
+splitting helps until the largest single tests and per-job setup (checkout,
+module download, and compiling the piece's test binary before it can start)
+become the floor.
 
 Timing budgets are intentionally soft, and the comparison command always
 succeeds regardless of what the timing data shows -- test failures and

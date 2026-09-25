@@ -38,6 +38,7 @@ type shardSplits struct {
 
 type shardSplitsSource struct {
 	Run         int64    `json:"run"`
+	Branch      string   `json:"branch"`
 	Commit      string   `json:"commit"`
 	GeneratedAt string   `json:"generatedAt"`
 	TimingJobs  []string `json:"timingJobs"`
@@ -95,15 +96,24 @@ func (p splitPackage) defaultTestMillis() int64 {
 }
 
 // weigher returns the millisecond weight of any test name in the package.
+//
+// Every test weighs at least minTestMillis. Most tests round to zero, and
+// without a floor LPT would drop all of them into whichever piece is lightest
+// at the end, making that piece's name filter most of the package; with it,
+// the tail of tiny tests is dealt across the pieces and each filter stays
+// near 1/pieces of the names.
 func (p splitPackage) weigher() func(string) int64 {
-	fallback := p.defaultTestMillis()
+	fallback := max(p.defaultTestMillis(), minTestMillis)
 	return func(name string) int64 {
 		if seconds, ok := p.Tests[name]; ok {
-			return testMillis(seconds)
+			return max(testMillis(seconds), minTestMillis)
 		}
 		return fallback
 	}
 }
+
+// minTestMillis matches the split table's 10ms recording precision.
+const minTestMillis = 10
 
 func (p splitPackage) sumSeconds(names []string) float64 {
 	weigh := p.weigher()
