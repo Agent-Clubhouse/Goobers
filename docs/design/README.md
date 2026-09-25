@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 12 |
+| `draft` | 13 |
 | `approved` | 19 |
 | `implemented` | 27 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **68** |
+| **Total** | **69** |
 
 ## `docs/adr/`
 
@@ -32,6 +32,7 @@ word — read the page, not this table, before depending on it.
 
 | Document | Status | Owner / area | Tracking | Delivered by | Remaining | Superseded by | Verified |
 |---|---|---|---|---|---|---|---|
+| [Design: ADO parity on DSL 2.0 — near-term plan for v0.5.0](ado-parity-dsl-2-0.md) | `draft` | — | #2061 | — | — | — | 47de1f0d6 (2026-09-25) |
 | [Azure DevOps Provider Parity — the PR lifecycle on ADO](ado-provider-parity.md) | `implemented` | — | — | #2745 | — | — | — |
 | [Agentic mutation-capability audit](agentic-mutation-capability-audit.md) | `historical` | — | — | — | — | — | — |
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `implemented` | — | — | #983, #1003 | — | — | 09db115bb (2026-09-06) |
