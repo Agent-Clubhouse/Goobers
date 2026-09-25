@@ -11,7 +11,7 @@ Open GitHub's [fine-grained personal access token settings](https://github.com/s
 and complete these fields before generating the token:
 
 1. **Resource owner:** select the account or organization that owns the target
-   repository — for example, `odsp-microsoft` when the repository is under that
+   repository — for example, `your-org` when the repository is under that
    organization. Keep the default personal account when it owns the target;
    otherwise change it. A token created under the wrong resource owner cannot
    access the target repository, even when its permissions look correct.
@@ -131,7 +131,7 @@ daemonIdentity:
   installations:
     - owner: Agent-Clubhouse
       installationId: 1111111
-    - owner: masra91
+    - owner: example-user
       installationId: 2222222
 ```
 
