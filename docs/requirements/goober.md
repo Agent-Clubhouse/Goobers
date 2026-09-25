@@ -69,7 +69,12 @@ mcpServers:
 ```
 
 First-party references use the closed `capability` enum, and each capability
-must also be declared by the invoking stage. Third-party servers use the
+must also be declared by the invoking stage. A first-party reference also
+follows the run's repository provider: a `github:*` capability is materialised
+only on a GitHub repository and an `ado:*` capability only on an Azure DevOps
+repository, while provider-neutral capabilities fit every provider. A reference
+that does not fit fails the stage before the harness starts, naming the server
+and the reference (#5737). Third-party servers use the
 separate `kind: byo` branch with a DNS-label-compatible `ref`. The operator
 provides that named credential declaratively in `instance.yaml`:
 

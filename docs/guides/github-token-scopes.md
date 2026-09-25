@@ -311,6 +311,28 @@ run with: stage environments are built from a default-deny allowlist that
 carries none of those three variables, so a probe that preferred the ambient one
 would validate an account no stage ever uses.
 
+### Which repository credentials each harness variable may carry
+
+An agentic stage's repository credentials follow the provider of the run's
+repository (#5664, #5737). A credential is exposed to a harness subprocess
+only where the tooling that reads it talks to that provider:
+
+| Harness variable | Carries | Exposed when the run's repository is on |
+|---|---|---|
+| `GH_TOKEN` / `GITHUB_TOKEN` | the repository credential of a declared repository capability (`repo:push`, `provider:*`, `github:*` other than the two command-scoped ones below, `ado:pr:complete`) | GitHub only (a repository reference without a provider counts as GitHub) |
+| `GOOBERS_CRED_GITHUB_ISSUES_APPROVE`, `GOOBERS_CRED_GITHUB_MILESTONES_WRITE` | the command-scoped `github:issues:approve` / `github:milestones:write` credential | GitHub only |
+| `COPILOT_GITHUB_TOKEN` (and each harness's other model variable) | the `agent:model` credential | every provider — it authenticates the model backend, not the repository |
+| an external MCP server's `credentialRefs` entry with `capability:` | that capability's credential | the provider the capability belongs to: `github:*` on GitHub, `ado:*` on Azure DevOps; provider-neutral capabilities (`repo:push`, `provider:*`, `contents:read`) on every provider |
+| an external MCP server's `credentialRefs` entry with `kind: byo` | the operator's named credential | every provider |
+
+A variable that does not fit is simply not set, and the stage runs without it.
+Agentic stages on Azure DevOps and Gitea commit locally and publish through a
+deterministic stage that authenticates against the routed provider, so nothing
+they need is withheld. An MCP server is different: it declared that it needs
+the credential, so a `capability:` reference that does not fit the run's
+provider fails the stage before the harness starts, and the error names the
+server and the reference. Give such a server a `kind: byo` credential instead.
+
 ### Mixed-harness instances: scoping `agent:model` per harness
 
 `agent:model` is the one capability every agentic goober must declare,
