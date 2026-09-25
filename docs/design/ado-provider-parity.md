@@ -94,6 +94,16 @@ is consistent end to end.)
 authenticated-identity read before). It underpins the trusted-comment filter the
 merge-review verdict trust check needs, and closes the claim-spoof gap.
 
+Every thread `PostPullRequestThreadComment` opens is posted with `status: "closed"`, not
+ADO's default `active`. All Goobers-authored threads are informational (verdict json,
+finding-set history, the sticky remediation-state comment, close/escalation notes, rebase
+transport) — none of them need to block anything on their own, and an `active` thread trips
+a repo's comment-resolution branch policy, which `closed` does not. Escalations are
+surfaced through the `goobers:merge-escalated` label (§4.2), not by leaving a thread open
+to draw human attention. Threads stay editable after being closed, so
+`UpdatePullRequestThreadComment`'s sticky updates are unaffected, and
+`ListPullRequestThreadComments` still reads closed threads normally.
+
 ### 4.2 Native PR labels carry the routing signals
 
 ADO PRs support native labels. Two routing markers ride there — and only there:
@@ -176,6 +186,14 @@ of a GitHub handoff channel:
    status-check branch policy gates the merge on it. **Pass → `succeeded`; both
    needs-changes and fail → `failed`** (the PR must not land until reworked, and a status
    genre cannot carry the needs-changes/fail split — the label below is the routing signal).
+   The status is posted against the **latest PR iteration**, not the PR itself: a status
+   policy with `invalidateOnSourceUpdate: true` (reset-on-push) rejects a PR-level status
+   with 403, and an iteration-scoped status satisfies it; a new push creates a new
+   iteration, which resets the policy until a fresh status is posted against it (ADO-N7).
+   The latest iteration is resolved when the status is posted, not when the head was
+   reviewed: a push that lands between review and apply-verdict attaches the verdict to
+   the newer iteration. PR-level statuses had the same window; binding the status to the
+   reviewed head SHA is a follow-up.
 2. **The routing label, by decision**, mirroring the GitHub `verdictLabel` contract:
    - **fail →** add `goobers:merge-escalated`, clear `goobers:needs-remediation`. An
      escalation is *never* burned on the remediation budget; clearing needs-remediation and
