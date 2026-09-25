@@ -365,11 +365,11 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	var updated WorkItem
 	var resolvedOnly bool
 	if closing {
-		var err error
-		updated, resolvedOnly, _, err = p.closeADOWorkItem(ctx, req.Repository, req.ID, tagOps)
+		result, err := p.closeADOWorkItem(ctx, adoCloseRequest{repo: req.Repository, id: req.ID, extraOps: tagOps})
 		if err != nil {
 			return WorkItem{}, err
 		}
+		updated, resolvedOnly = result.updated, result.resolvedOnly
 	} else {
 		current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 		if err != nil {
@@ -393,9 +393,7 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	p.recordMutation(ctx, "issue", req.ID, operation, req.Repository)
 
 	if resolvedOnly {
-		if err := p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, adoResolvedStopNote(updated.Type), "close"); err != nil {
-			return updated, fmt.Errorf("work item status update committed; note Resolved stop: %w", err)
-		}
+		p.noteADOResolvedStop(ctx, req.Repository, req.ID, updated.Type, "close")
 	}
 	if req.Comment != "" {
 		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
@@ -405,10 +403,33 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	return updated, nil
 }
 
-// adoResolvedStopNote explains, for a work item type with no Completed
-// state, why a close request left the item at Resolved instead.
+// adoResolvedStopMarker opens the note a close leaves when it stops at
+// Resolved; it also identifies an earlier note so repeated closes of the
+// same item do not post it again.
+const adoResolvedStopMarker = "Goobers close stopped at Resolved"
+
+// adoResolvedStopNote explains why a close request left the item at
+// Resolved: its type has no Completed state, or Azure Boards refused the
+// Resolved→Completed transition.
 func adoResolvedStopNote(itemType string) string {
-	return fmt.Sprintf("Goobers close stopped at Resolved: work item type %q has no Completed state to advance into.", itemType)
+	return fmt.Sprintf("%s: work item type %q has no Completed state reachable from Resolved.", adoResolvedStopMarker, itemType)
+}
+
+// noteADOResolvedStop records a Resolved stop on the item once. The note is
+// informational: the close already succeeded, so a failure to read the
+// thread or post the note leaves the outcome unchanged. An existing note
+// (from an earlier close of the same item) is not repeated.
+func (p *ADOProvider) noteADOResolvedStop(ctx context.Context, repo RepositoryRef, id, itemType, action string) {
+	comments, err := p.ListComments(ctx, repo, id)
+	if err != nil {
+		return
+	}
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, adoResolvedStopMarker) {
+			return
+		}
+	}
+	_ = p.postAttributedWorkItemComment(ctx, repo, id, adoResolvedStopNote(itemType), action)
 }
 
 // ListComments returns Azure Boards work-item comments, oldest first.
@@ -535,12 +556,15 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	mutated := false
 	resolvedOnly := false
 	if state == "closed" && current.State != "closed" {
-		var patched bool
-		updated, resolvedOnly, patched, err = p.closeADOWorkItem(ctx, req.Repository, req.ID, fieldOps)
-		if err != nil {
-			return WorkItem{}, err
+		result, closeErr := p.closeADOWorkItem(ctx, adoCloseRequest{
+			repo: req.Repository, id: req.ID, snapshot: &current,
+			expectedRevision: req.ExpectedRevision, extraOps: fieldOps,
+		})
+		if closeErr != nil {
+			return WorkItem{}, closeErr
 		}
-		if patched {
+		updated, resolvedOnly = result.updated, result.resolvedOnly
+		if result.patched {
 			mutated = true
 			p.recordMutation(ctx, "issue", req.ID, "update", req.Repository)
 		}
@@ -568,9 +592,7 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	}
 
 	if resolvedOnly {
-		if err := p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, adoResolvedStopNote(updated.Type), "update"); err != nil {
-			return updated, fmt.Errorf("work item update committed; note Resolved stop: %w", err)
-		}
+		p.noteADOResolvedStop(ctx, req.Repository, req.ID, updated.Type, "update")
 	}
 	if req.Comment != "" {
 		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
@@ -1170,78 +1192,195 @@ func findADOWorkItemState(states []adoWorkItemState, name string) (adoWorkItemSt
 	return adoWorkItemState{}, false
 }
 
+// adoCloseRequest is one close driven by closeADOWorkItem.
+type adoCloseRequest struct {
+	repo RepositoryRef
+	id   string
+	// snapshot, when set, is the caller's own fresh read of the item; the
+	// first pass reuses it instead of fetching the item again.
+	snapshot *WorkItem
+	// expectedRevision, when set, pins the close to the caller's read: a
+	// revision conflict returns RevisionConflictError instead of retrying
+	// against a newer revision the caller never saw.
+	expectedRevision string
+	// extraOps is rebuilt from each re-read and rides along whenever a PATCH
+	// is sent, so callers carry their own field changes (tags, title, ...)
+	// through the same retry loop instead of patching separately against a
+	// rev that closeADOWorkItem may have just moved past.
+	extraOps func(current WorkItem, raw adoWorkItem) []adoPatchOperation
+}
+
+// adoCloseResult reports how a close settled.
+type adoCloseResult struct {
+	updated WorkItem
+	// resolvedOnly is set when the item was left at Resolved because its
+	// type has no Completed state or the server refused the transition.
+	resolvedOnly bool
+	// patched is set when any PATCH landed.
+	patched bool
+}
+
+// adoCloseSnapshot is one read of the item plus its type's state table.
+type adoCloseSnapshot struct {
+	current WorkItem
+	raw     adoWorkItem
+	states  []adoWorkItemState
+}
+
+// adoClosePlan is the System.State part of one close attempt.
+type adoClosePlan struct {
+	stateOps   []adoPatchOperation
+	atResolved bool
+	// stopAtResolved is set when the item sits at Resolved and its type has
+	// no Completed state to move into.
+	stopAtResolved bool
+}
+
 // closeADOWorkItem drives a work item toward its Completed (or Removed)
 // state inside a bounded re-read/retry loop, so Goobers' own close settles
 // on whatever the server already did rather than erroring against it. A
 // state already Completed or Removed — reached through Azure Boards' own
 // transitionWorkItems rule, a "Fixes #" commit link, or an earlier call here
-// — is success with no System.State patch. A work item type with no
-// Completed state stops at Resolved instead, also reported as success (the
-// caller notes it). A 412 on the `test /rev` guard re-reads and retries,
-// since the next read may show that external close already landed.
-//
-// extraOps is rebuilt from each re-read and rides along whenever a PATCH is
-// sent, so callers can carry their own field changes (tags, title, ...)
-// through the same retry loop instead of patching separately against a rev
-// that closeADOWorkItem may have just moved past.
-func (p *ADOProvider) closeADOWorkItem(ctx context.Context, repo RepositoryRef, id string, extraOps func(current WorkItem, raw adoWorkItem) []adoPatchOperation) (updated WorkItem, resolvedOnly bool, patched bool, err error) {
+// — is success with no System.State patch. An item at Resolved whose type
+// has no Completed state, or whose Resolved→Completed transition the server
+// refuses, stops at Resolved, also reported as success (the caller notes
+// it). A 412 on the `test /rev` guard re-reads and retries, since the next
+// read may show that an external close already landed.
+func (p *ADOProvider) closeADOWorkItem(ctx context.Context, req adoCloseRequest) (adoCloseResult, error) {
 	var conflict error
-	for range adoClaimRetries {
-		current, raw, states, snapErr := p.adoCloseSnapshot(ctx, repo, id)
-		if snapErr != nil {
-			return WorkItem{}, false, false, snapErr
+	for attempt := range adoClaimRetries {
+		snap, err := p.readADOCloseSnapshot(ctx, req, attempt)
+		if err != nil {
+			return adoCloseResult{}, err
 		}
-
-		var ops []adoPatchOperation
-		stopAtResolved := false
-		native, found := findADOWorkItemState(states, stringField(raw.Fields, "System.State"))
-		if !found || !(strings.EqualFold(native.Category, "Completed") || strings.EqualFold(native.Category, "Removed")) {
-			target, targetErr := p.resolveCommonWorkItemState(ctx, repo, current.Type, "closed")
-			switch {
-			case targetErr == nil:
-				ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: target})
-			case found && strings.EqualFold(native.Category, "Resolved"):
-				stopAtResolved = true
-			default:
-				return WorkItem{}, false, false, targetErr
-			}
+		result, err := p.closeADOWorkItemOnce(ctx, req, snap)
+		if err == nil {
+			return result, nil
 		}
-		if extraOps != nil {
-			ops = append(ops, extraOps(current, raw)...)
+		if !isADORevisionConflict(err) {
+			return adoCloseResult{}, err
 		}
-		if len(ops) == 0 {
-			return current, stopAtResolved, false, nil
+		if req.expectedRevision != "" {
+			return adoCloseResult{}, p.adoRevisionConflict(ctx, req)
 		}
-
-		out, patchErr := p.patchADOWorkItem(ctx, repo, id, append([]adoPatchOperation{{Op: "test", Path: "/rev", Value: raw.Rev}}, ops...))
-		if patchErr != nil {
-			if isADORevisionConflict(patchErr) {
-				conflict = patchErr
-				continue
-			}
-			return WorkItem{}, false, false, patchErr
-		}
-		return out, stopAtResolved, true, nil
+		conflict = err
 	}
-	return WorkItem{}, false, false, fmt.Errorf("close work item %s after revision conflicts: %w", id, conflict)
+	return adoCloseResult{}, fmt.Errorf("close work item %s after revision conflicts: %w", req.id, conflict)
 }
 
-// adoCloseSnapshot re-reads a work item along with the state-category table
-// for its type, the pair closeADOWorkItem needs on every retry pass.
-func (p *ADOProvider) adoCloseSnapshot(ctx context.Context, repo RepositoryRef, id string) (WorkItem, adoWorkItem, []adoWorkItemState, error) {
-	current, err := p.GetWorkItem(ctx, repo, id)
+// closeADOWorkItemOnce makes one close attempt against one snapshot.
+func (p *ADOProvider) closeADOWorkItemOnce(ctx context.Context, req adoCloseRequest, snap adoCloseSnapshot) (adoCloseResult, error) {
+	plan, err := p.planADOClose(ctx, req.repo, snap)
 	if err != nil {
-		return WorkItem{}, adoWorkItem{}, nil, err
+		return adoCloseResult{}, err
+	}
+	var extra []adoPatchOperation
+	if req.extraOps != nil {
+		extra = req.extraOps(snap.current, snap.raw)
+	}
+	ops := append(append([]adoPatchOperation{}, plan.stateOps...), extra...)
+	if len(ops) == 0 {
+		return adoCloseResult{updated: snap.current, resolvedOnly: plan.stopAtResolved}, nil
+	}
+	out, err := p.patchADOWorkItem(ctx, req.repo, req.id, adoRevGuarded(snap.raw.Rev, ops))
+	if err == nil {
+		return adoCloseResult{updated: out, resolvedOnly: plan.stopAtResolved, patched: true}, nil
+	}
+	if plan.atResolved && len(plan.stateOps) > 0 && isADOTransitionRefusal(err) {
+		return p.stopADOCloseAtResolved(ctx, req, snap, extra)
+	}
+	return adoCloseResult{}, err
+}
+
+// stopADOCloseAtResolved settles a close whose Resolved→Completed
+// transition the server refused (a workflow without that transition, or a
+// rule such as a field required on the Completed state): the item stays at
+// Resolved, and the caller's own ops are resent without the state change
+// against the same revision, so a tag or field error still surfaces.
+func (p *ADOProvider) stopADOCloseAtResolved(ctx context.Context, req adoCloseRequest, snap adoCloseSnapshot, extra []adoPatchOperation) (adoCloseResult, error) {
+	if len(extra) == 0 {
+		return adoCloseResult{updated: snap.current, resolvedOnly: true}, nil
+	}
+	out, err := p.patchADOWorkItem(ctx, req.repo, req.id, adoRevGuarded(snap.raw.Rev, extra))
+	if err != nil {
+		return adoCloseResult{}, err
+	}
+	return adoCloseResult{updated: out, resolvedOnly: true, patched: true}, nil
+}
+
+// planADOClose decides the System.State op for one close attempt from the
+// item's current state category.
+func (p *ADOProvider) planADOClose(ctx context.Context, repo RepositoryRef, snap adoCloseSnapshot) (adoClosePlan, error) {
+	native, found := findADOWorkItemState(snap.states, stringField(snap.raw.Fields, "System.State"))
+	if found && isADOTerminalCategory(native.Category) {
+		return adoClosePlan{}, nil
+	}
+	atResolved := found && strings.EqualFold(native.Category, "Resolved")
+	target, err := p.resolveCommonWorkItemState(ctx, repo, snap.current.Type, "closed")
+	if err != nil {
+		if atResolved {
+			return adoClosePlan{atResolved: true, stopAtResolved: true}, nil
+		}
+		return adoClosePlan{}, err
+	}
+	stateOp := adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: target}
+	return adoClosePlan{stateOps: []adoPatchOperation{stateOp}, atResolved: atResolved}, nil
+}
+
+// isADOTerminalCategory reports whether a state category already counts as
+// closed.
+func isADOTerminalCategory(category string) bool {
+	return strings.EqualFold(category, "Completed") || strings.EqualFold(category, "Removed")
+}
+
+// isADOTransitionRefusal reports whether a PATCH failed because the server
+// rejected its content (HTTP 400, e.g. a disallowed state transition or a
+// work item rule), as opposed to a revision conflict.
+func isADOTransitionRefusal(err error) bool {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+	return responseErr.statusCode == http.StatusBadRequest && !isADORevisionConflict(err)
+}
+
+// adoRevGuarded prefixes ops with the `test /rev` guard.
+func adoRevGuarded(rev int, ops []adoPatchOperation) []adoPatchOperation {
+	return append([]adoPatchOperation{{Op: "test", Path: "/rev", Value: rev}}, ops...)
+}
+
+// adoRevisionConflict builds the RevisionConflictError for a close pinned
+// to the caller's revision, reading the revision the item moved to.
+func (p *ADOProvider) adoRevisionConflict(ctx context.Context, req adoCloseRequest) error {
+	conflict := &RevisionConflictError{ItemID: req.id, Expected: req.expectedRevision}
+	if latest, err := p.GetWorkItem(ctx, req.repo, req.id); err == nil {
+		conflict.Actual = latest.Revision
+	}
+	return conflict
+}
+
+// readADOCloseSnapshot reads a work item along with the state-category
+// table for its type, the pair closeADOWorkItem needs on every retry pass.
+// The first pass reuses the caller's snapshot when it has one.
+func (p *ADOProvider) readADOCloseSnapshot(ctx context.Context, req adoCloseRequest, attempt int) (adoCloseSnapshot, error) {
+	var current WorkItem
+	if attempt == 0 && req.snapshot != nil {
+		current = *req.snapshot
+	} else {
+		var err error
+		if current, err = p.GetWorkItem(ctx, req.repo, req.id); err != nil {
+			return adoCloseSnapshot{}, err
+		}
 	}
 	raw, err := rawADOWorkItem(current)
 	if err != nil {
-		return WorkItem{}, adoWorkItem{}, nil, err
+		return adoCloseSnapshot{}, err
 	}
-	states, err := p.adoWorkItemStateCategories(ctx, repo, current.Type)
+	states, err := p.adoWorkItemStateCategories(ctx, req.repo, current.Type)
 	if err != nil {
-		return WorkItem{}, adoWorkItem{}, nil, err
+		return adoCloseSnapshot{}, err
 	}
-	return current, raw, states, nil
+	return adoCloseSnapshot{current: current, raw: raw, states: states}, nil
 }
 
 // patchADOWorkItem sends one work-item PATCH and maps the result.
