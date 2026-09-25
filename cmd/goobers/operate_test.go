@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -167,15 +166,6 @@ spec:
 }
 
 func TestRunNoWaitReturnsAfterStandaloneDispatch(t *testing.T) {
-	for _, mode := range []string{"in-process", "detached-worker"} {
-		t.Run(mode, func(t *testing.T) {
-			testRunNoWaitCompletes(t, mode == "detached-worker")
-		})
-	}
-}
-
-func testRunNoWaitCompletes(t *testing.T, worker bool) {
-	t.Helper()
 	root := initDeterministicDemo(t)
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	workflow := strings.Replace(deterministicWorkflowYAML, `command: ["true"]`, `script: echo no-wait-completed`, 1)
@@ -183,17 +173,7 @@ func testRunNoWaitCompletes(t *testing.T, worker bool) {
 		t.Fatal(err)
 	}
 
-	var code int
-	var stdout, stderr string
-	if worker {
-		var out, errOut bytes.Buffer
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		code = runDetachedWorkerContext(ctx, []string{"default-implement", root}, &out, &errOut)
-		stdout, stderr = out.String(), errOut.String()
-	} else {
-		code, stdout, stderr = runArgs(t, "run", "default-implement", "--no-wait", root)
-	}
+	code, stdout, stderr := runArgs(t, "run", "default-implement", "--no-wait", root)
 	if code != 0 {
 		t.Fatalf("run --no-wait: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}

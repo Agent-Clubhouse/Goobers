@@ -613,6 +613,24 @@ telemetry:
 	})
 }
 
+func TestInstanceSchemaRejectsRevertedJournalLogsSetting(t *testing.T) {
+	schema := compileInstanceSchema(t)
+	document := `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+telemetry:
+  otlp:
+    endpoint: localhost:4317
+`
+	if err := validateInstanceYAML(t, schema, document); err != nil {
+		t.Fatalf("trace and metric endpoint rejected: %v", err)
+	}
+	if err := validateInstanceYAML(t, schema, document+"    journalLogs: true\n"); err == nil {
+		t.Fatal("removed journalLogs setting was accepted")
+	}
+}
+
 // The cold-start walkthroughs read instance.yaml guidance out of scattered
 // prose because the schema carried none. These are the three traps that cost
 // the most time; a description that stops naming the consequence stops being

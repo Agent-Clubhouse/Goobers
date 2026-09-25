@@ -84,6 +84,10 @@ pipeline is configured against:
 | `goobers.storage.free_bytes` | gauge (int64) | `By` | current value | none |
 | `goobers.storage.health.tier_changes` | counter (int64) | `{transition}` | cumulative, monotonic | `goobers.storage.tier` (`healthy`/`warning`/`admission-stopped`/`measurement-unavailable`) |
 
+The journal export drop metric and its bounded cause values remain in the
+contract, but no journal exporter is attached after the journal OTLP Logs
+revert. It produces no samples until a separate uploader restores that path.
+
 The collector-compatibility fixtures generated from the real OTLP metric
 reader/export path live at `internal/telemetry/testdata/metric_compatibility_fixtures.json`.
 

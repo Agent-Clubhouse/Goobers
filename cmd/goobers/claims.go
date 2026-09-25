@@ -245,8 +245,6 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 
 	// Tier 1 local filesystem access is the authorization boundary. Route this
 	// mutation through the tier-2 access-control seam when #172/#469 lands.
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(root), stderr)
-	defer stopTelemetry()
 	resp, err := runClaimAdmin(root, claimAdminRequest{
 		Operation:         claimAdminOperationRelease,
 		ItemID:            fs.Arg(0),

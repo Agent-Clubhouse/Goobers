@@ -121,6 +121,45 @@ const (
 	outcomeUnset = "unset"
 )
 
+// journalDropCause is the bounded label set for journal export failures.
+type journalDropCause int
+
+const (
+	dropInvalidMetadata journalDropCause = iota
+	dropRecordTooLarge
+	dropLockContention
+	dropQueueFull
+	dropStopping
+	dropShutdown
+)
+
+func (c journalDropCause) String() string {
+	switch c {
+	case dropInvalidMetadata:
+		return "invalid_metadata"
+	case dropRecordTooLarge:
+		return "record_too_large"
+	case dropLockContention:
+		return "lock_contention"
+	case dropQueueFull:
+		return "queue_full"
+	case dropStopping:
+		return "stopping"
+	case dropShutdown:
+		return "shutdown"
+	}
+	return "unknown"
+}
+
+// journalExportDropped records a counted failure outside journal write locks.
+func (c *Client) journalExportDropped(cause journalDropCause, delta uint64) {
+	if c == nil || c.instruments == nil || delta == 0 {
+		return
+	}
+	c.instruments.journalExportDrops.Add(context.Background(), int64(delta),
+		apimetric.WithAttributes(attribute.String(MetricAttrJournalDropCause, cause.String())))
+}
+
 // metricAttributeAllowlist is the closed set of span attribute keys allowed to
 // become metric dimensions. Everything absent here — run ids, item ids and
 // URLs, gaggle (a repository name), worktree ids, digests, branch indexes,

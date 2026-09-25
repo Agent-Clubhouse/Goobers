@@ -96,20 +96,15 @@ func journalPlaneSelected() bool {
 // openFileAnnotator is the type-1/type-2 path, byte-for-byte what the
 // claiming path did inline before this seam existed.
 func openFileAnnotator(l instance.Layout) (stageAnnotator, error) {
-	stopTelemetry := startCommandJournalTelemetry(l, os.Stderr)
 	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
 	if err != nil {
-		stopTelemetry()
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
-	return &fileAnnotator{log: log, stopTelemetry: stopTelemetry}, nil
+	return &fileAnnotator{log: log}, nil
 }
 
 // fileAnnotator writes straight to the instance log on this host.
-type fileAnnotator struct {
-	log           *journal.InstanceLog
-	stopTelemetry func()
-}
+type fileAnnotator struct{ log *journal.InstanceLog }
 
 func (a *fileAnnotator) Append(ev journal.Event) error {
 	if a == nil || a.log == nil {
@@ -121,9 +116,6 @@ func (a *fileAnnotator) Append(ev journal.Event) error {
 func (a *fileAnnotator) Close() error {
 	if a == nil || a.log == nil {
 		return nil
-	}
-	if a.stopTelemetry != nil {
-		defer a.stopTelemetry()
 	}
 	return a.log.Close()
 }

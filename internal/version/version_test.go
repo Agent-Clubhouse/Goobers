@@ -7,13 +7,13 @@ import (
 	"testing"
 )
 
-func TestJournalOTLPCapability(t *testing.T) {
+func TestRevertedJournalOTLPCapability(t *testing.T) {
 	data, err := json.Marshal(Get())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"capabilities":["journal-otlp-v1"]`) {
-		t.Fatalf("missing journal OTLP capability: %s", data)
+	if !strings.Contains(string(data), `"capabilities":[]`) {
+		t.Fatalf("advertises unsupported capabilities: %s", data)
 	}
 }
 

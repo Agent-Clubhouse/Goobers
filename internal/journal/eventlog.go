@@ -7,17 +7,12 @@ import (
 	"time"
 )
 
-type eventFile interface {
-	Write([]byte) (int, error)
-	Sync() error
-}
-
 // appendEvent marshals, scrubs, writes, and fsyncs one event line to f, assigning
 // seq (the next value of *seq), schema, and time. It is the shared durability
 // core both Run and InstanceLog use, so a run's events.jsonl and the instance's
 // scheduler/events.jsonl honor the identical contract: one line, one fsync,
 // before the call returns (§4).
-func appendEvent(f eventFile, seq *uint64, scrubber Scrubber, now func() time.Time, ev Event, targets ...*commitTarget) (Event, error) {
+func appendEvent(f *os.File, seq *uint64, scrubber Scrubber, now func() time.Time, ev Event) (Event, error) {
 	*seq++
 	ev.Seq = *seq
 	ev.Schema = EventSchema
@@ -48,9 +43,6 @@ func appendEvent(f eventFile, seq *uint64, scrubber Scrubber, now func() time.Ti
 	}
 	if err := syncFile(f); err != nil {
 		return Event{}, fmt.Errorf("journal: fsync event: %w", err)
-	}
-	for _, target := range targets {
-		target.notify(ev, line[:len(line)-1])
 	}
 	return ev, nil
 }

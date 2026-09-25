@@ -517,54 +517,6 @@ func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
 	}
 }
 
-func TestLinuxShardsIncludeJournalOTLPPackages(t *testing.T) {
-	root, err := findModuleRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	weights, err := loadShardWeights(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list := exec.Command("go", "list", "./...")
-	list.Dir = root
-	list.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=1")
-	output, err := list.CombinedOutput()
-	if err != nil {
-		t.Fatalf("discover Linux unit packages: %v\n%s", err, output)
-	}
-	packages := strings.Fields(string(output))
-	splits, err := loadShardSplits(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	seen := make(map[string][]int)
-	for index, shard := range assignShards(shardItems(packages, weights, splits), linuxRaceShards) {
-		for _, pkg := range shard.packages {
-			seen[pkg] = append(seen[pkg], index+1)
-		}
-		for _, piece := range shard.pieces {
-			seen[piece.pkg] = append(seen[piece.pkg], index+1)
-		}
-	}
-	for _, path := range []string{
-		"internal/journal", "internal/livejournal", "internal/telemetry",
-		"internal/instance", "api/schemas", "internal/engine", "internal/version",
-		"cmd/goobers", "test/ci", "test/hermetic",
-	} {
-		pkg := "github.com/goobers/goobers/" + path
-		want := 1
-		if split, ok := splits.Packages[pkg]; ok {
-			want = split.Pieces
-		}
-		if len(seen[pkg]) != want {
-			t.Errorf("%s belongs to shards %v, want %d Linux race shard item(s)", pkg, seen[pkg], want)
-		} else {
-			t.Logf("%s: Linux race shards %v of %d", pkg, seen[pkg], linuxRaceShards)
-		}
-	}
-}
-
 func TestLoadShardWeightsRequiresGeneratedAt(t *testing.T) {
 	for name, source := range map[string]string{
 		"missing":   `{}`,

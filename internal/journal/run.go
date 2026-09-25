@@ -35,7 +35,6 @@ type Run struct {
 	scrubber Scrubber
 	now      func() time.Time
 	observer func(runID string, seq uint64)
-	commits  *commitTarget
 
 	mu           sync.Mutex
 	events       *os.File
@@ -89,24 +88,17 @@ func releaseRunLock(held *journalLock) {
 
 // config holds constructor options.
 type config struct {
-	disableCommittedExport bool
-	tryRecoveryLocks       bool
-	scrubber               Scrubber
-	now                    func() time.Time
-	inputIntegrity         map[string]apiv1.Integrity
-	inputSource            map[string]string
-	appendObserver         func(runID string, seq uint64)
-	instanceDropObserver   InstanceAppendDropObserver
+	tryRecoveryLocks     bool
+	scrubber             Scrubber
+	now                  func() time.Time
+	inputIntegrity       map[string]apiv1.Integrity
+	inputSource          map[string]string
+	appendObserver       func(runID string, seq uint64)
+	instanceDropObserver InstanceAppendDropObserver
 }
 
 // Option configures a Run at creation/open.
 type Option func(*config)
-
-// WithoutCommittedEventExport suppresses live export for historical
-// reconstruction. It does not change journal files or the root's live sink.
-func WithoutCommittedEventExport() Option {
-	return func(c *config) { c.disableCommittedExport = true }
-}
 
 // WithScrubber sets the boundary scrubber applied to every event, snapshot, and
 // artifact before write and before digesting. Defaults to the pattern net; pass
@@ -341,12 +333,6 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		lock:     lock,
 		phase:    PhaseRunning,
 	}
-	if !cfg.disableCommittedExport {
-		r.commits = runCommitTarget(dir, id)
-	}
-	if r.commits != nil {
-		r.commits.staged = true
-	}
 	if err := r.append(Event{
 		Type: EventRunStarted, Status: string(PhaseRunning),
 		SourceRunID: id.ContinuedFromRunID, SourceTerminalSeq: id.SourceTerminalSeq,
@@ -395,7 +381,6 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	if published.observer != nil {
 		published.observer(published.id.RunID, published.seq)
 	}
-	r.commits.publish()
 	return published, nil
 }
 
@@ -702,7 +687,7 @@ func (r *Run) append(ev Event) error {
 			return err
 		}
 	}
-	stamped, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev, r.commits)
+	stamped, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
 	if err != nil {
 		r.appendErr = err
 	} else {
