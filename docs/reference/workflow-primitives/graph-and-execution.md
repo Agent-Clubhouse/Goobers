@@ -171,6 +171,12 @@ narrower scope overriding the broader one.
 | `stalledRunTimeout` | Positive Go duration after which a silent running journal is escalated. |
 | `maxRunDuration` | Positive Go duration bounding total run age; empty disables this bound. |
 
+`maxRunDuration` requires daemon-backed execution. Without a live daemon,
+`goobers run` rejects the selected workflow before dispatch if its effective
+limit is set, including inherited limits and `--no-wait` runs. Start
+`goobers up` for the instance and submit through the daemon instead.
+`--no-api` file delegation to a live daemon remains supported.
+
 Readiness fields (`maxConcurrentRuns`, `desiredConcurrentRuns`,
 `maxRunsPerHour`, `maxRunsPerDay`, `maxChainDepth`, and `maxOpenPRs`) govern
 admission rather than stage execution. `maxOpenPRs` counts the open pull
