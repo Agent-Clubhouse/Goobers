@@ -37,6 +37,7 @@ type codexConfig struct {
 	effort                     string
 	auth                       CodexAuthMode
 	allowFileBackedCredentials bool
+	sandbox                    string
 }
 
 // CodexAdapter drives the OpenAI Codex CLI in non-interactive exec mode.
@@ -79,7 +80,7 @@ func normalizeCodexConfig(model string, options map[string]apiextensionsv1.JSON)
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	normalized := codexConfig{auth: CodexAuthAPIKey}
+	normalized := codexConfig{auth: CodexAuthAPIKey, sandbox: "workspace-write"}
 	for _, name := range names {
 		switch name {
 		case "effort":
@@ -106,9 +107,19 @@ func normalizeCodexConfig(model string, options map[string]apiextensionsv1.JSON)
 			if err := json.Unmarshal(options[name].Raw, &normalized.allowFileBackedCredentials); err != nil {
 				return codexConfig{}, fmt.Errorf("harness option %q must be a boolean: %w", name, err)
 			}
+		case "sandbox":
+			if err := json.Unmarshal(options[name].Raw, &normalized.sandbox); err != nil {
+				return codexConfig{}, fmt.Errorf("harness option %q must be a string: %w", name, err)
+			}
+			if normalized.sandbox != "workspace-write" && normalized.sandbox != "danger-full-access" {
+				return codexConfig{}, fmt.Errorf("invalid sandbox value %q", normalized.sandbox)
+			}
 		default:
 			return codexConfig{}, fmt.Errorf("unknown harness option %q", name)
 		}
+	}
+	if normalized.sandbox == "danger-full-access" && normalized.auth != CodexAuthAmbientChatGPT {
+		return codexConfig{}, fmt.Errorf("sandbox %q is permitted only with auth %q for trusted local execution", normalized.sandbox, CodexAuthAmbientChatGPT)
 	}
 	return normalized, nil
 }
@@ -239,7 +250,7 @@ func isOpenAIAPIKey(value string) bool {
 	return strings.HasPrefix(value, "sk-")
 }
 
-func buildCodexArgv(baseCommand []string, model, effort, workspace string, shellEnv map[string]string, configOverrides []string, ignoreUserConfig bool) []string {
+func buildCodexArgv(baseCommand []string, model, effort, sandbox, workspace string, shellEnv map[string]string, configOverrides []string, ignoreUserConfig bool) []string {
 	trustedPath := filepath.Clean(workspace)
 	argv := append([]string(nil), baseCommand...)
 	argv = append(argv,
@@ -247,17 +258,19 @@ func buildCodexArgv(baseCommand []string, model, effort, workspace string, shell
 		"--json",
 		"--ignore-rules",
 		"--disable", "hooks",
-		"--sandbox", "workspace-write",
+		"--sandbox", sandbox,
 		"--skip-git-repo-check",
 		"-C", workspace,
 		"-c", `projects.`+tomlQuote(trustedPath)+`.trust_level="untrusted"`,
 		"-c", "project_root_markers=[]",
 		"-c", `web_search="disabled"`,
-		"-c", "sandbox_workspace_write.network_access=false",
 		"-c", `shell_environment_policy.inherit="none"`,
 		"-c", "shell_environment_policy.ignore_default_excludes=false",
 		"-c", "shell_environment_policy.set="+tomlStringMap(shellEnv),
 	)
+	if sandbox == "workspace-write" {
+		argv = append(argv, "-c", "sandbox_workspace_write.network_access=false")
+	}
 	if model != "" && model != "auto" {
 		argv = append(argv, "--model", model)
 	}
@@ -491,7 +504,7 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 	shellEnv := codexExecutionContextShellEnvironment(ctx, req, codexShellEnvironment(env, secretEnv), c.InstanceRoot)
 	baseCommand := resolveStdioHarnessCommand(c.Command)
 	execIndex := len(baseCommand)
-	argv := buildCodexArgv(baseCommand, req.Model, options.effort, req.Workspace, shellEnv, mcpOverrides, options.auth == CodexAuthAmbientChatGPT)
+	argv := buildCodexArgv(baseCommand, req.Model, options.effort, options.sandbox, req.Workspace, shellEnv, mcpOverrides, options.auth == CodexAuthAmbientChatGPT)
 	if req.Sandbox != nil {
 		writableRoots, err := gitWritableRoots(req.Workspace)
 		if err != nil {
