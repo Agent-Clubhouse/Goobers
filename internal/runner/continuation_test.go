@@ -194,6 +194,26 @@ func TestResumeFreshContinuationStartsAtRequestedTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("journal.Create: %v", err)
 	}
+	if err := source.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "finish", Attempt: 1, AttemptClass: journal.AttemptPolicy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "finish", Attempt: 1, Status: string(apiv1.ResultFailure),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "finish", Attempt: 2, AttemptClass: journal.AttemptInfra,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "finish", Attempt: 2, Status: string(apiv1.ResultFailure),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := source.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
 		t.Fatal(err)
 	}

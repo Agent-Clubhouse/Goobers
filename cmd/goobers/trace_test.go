@@ -73,6 +73,28 @@ func TestFormatEventShowsLearningEpisodeAndFindingOutcomes(t *testing.T) {
 	}
 }
 
+func TestPrintRunLineageShowsBothDirectionsAndInputs(t *testing.T) {
+	var output bytes.Buffer
+	printRunLineage(&output, &readservice.RunLineage{
+		Source:                &readservice.LineageRun{ID: "source-run", Phase: journal.PhaseEscalated},
+		Continuations:         []readservice.LineageRun{{ID: "next-run", Phase: journal.PhaseFailed}},
+		ResumeTarget:          "implement",
+		WorkspaceBranch:       "goobers/implementation/source",
+		HistoricalRepassCount: 2,
+		InjectedInputs:        []journal.InputRef{{Name: "operator-note"}},
+	})
+	for _, want := range []string{
+		"source:   source-run (escalated)",
+		"target=implement branch=goobers/implementation/source historicalRepasses=2",
+		"inputs:   operator-note",
+		"continued by: next-run (failed)",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("lineage output %q does not contain %q", output.String(), want)
+		}
+	}
+}
+
 func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)
