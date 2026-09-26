@@ -95,6 +95,88 @@ func TestPrintRunLineageShowsBothDirectionsAndInputs(t *testing.T) {
 	}
 }
 
+func TestTraceDefaultTextShowsContinuationLineage(t *testing.T) {
+	root := t.TempDir()
+	const (
+		sourceID       = "trace-lineage-source"
+		continuationID = "trace-lineage-continuation"
+		branch         = "goobers/implementation/source"
+		sha            = "abc123"
+	)
+
+	source := newTraceTestRun(t, root, sourceID)
+	for _, event := range []journal.Event{
+		{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{
+			Provider: "github", Kind: "branch", ID: branch, CommitSHA: sha,
+		}},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	} {
+		if err := source.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	terminalSeq := source.Seq()
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	continuation, err := journal.CreateContinuation(instance.NewLayout(root).RunsDir(), journal.ContinuationRequest{
+		RunID:               continuationID,
+		SourceRunID:         sourceID,
+		ExpectedTerminalSeq: terminalSeq,
+		Operator:            "operator",
+		Target:              "implement",
+		SourceBranch:        branch,
+		ExpectedSourceSHA:   sha,
+		Inputs:              map[string][]byte{"operator-note": []byte("retry with context")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := continuation.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := continuation.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		runID string
+		want  []string
+	}{
+		{
+			runID: sourceID,
+			want:  []string{"continued by: " + continuationID + " (failed)"},
+		},
+		{
+			runID: continuationID,
+			want: []string{
+				"source:   " + sourceID + " (escalated)",
+				"resume:   target=implement branch=" + branch + " historicalRepasses=1",
+				"inputs:   operator-note",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.runID, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := runTrace([]string{tt.runID, root}, &stdout, &stderr); code != 0 {
+				t.Fatalf("trace code = %d, stderr = %q", code, stderr.String())
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("trace output %q does not contain %q", stdout.String(), want)
+				}
+			}
+		})
+	}
+}
+
 func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)
