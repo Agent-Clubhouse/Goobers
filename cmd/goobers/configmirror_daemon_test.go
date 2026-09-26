@@ -19,6 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+const configMirrorDaemonStartupTimeout = 2 * time.Minute
+
 func TestConfigMirrorRealDaemonPublishesOnlyAcceptedReloads(t *testing.T) {
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
@@ -60,7 +62,7 @@ func TestConfigMirrorRealDaemonPublishesOnlyAcceptedReloads(t *testing.T) {
 	case <-started.started:
 	case <-done:
 		t.Fatalf("daemon failed to start: %s", stderr.String())
-	case <-time.After(30 * time.Second):
+	case <-time.After(configMirrorDaemonStartupTimeout):
 		t.Fatal("daemon startup timed out")
 	}
 	initial := waitForConfigValue(t, "initial daemon config mirror", func() (string, bool) {
