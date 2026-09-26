@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -19,6 +21,7 @@ func TestRestoreClaimVerificationPersistsAndReportsMismatch(t *testing.T) {
 		if mismatch {
 			name = "ownership-mismatch"
 		}
+
 		t.Run(name, func(t *testing.T) {
 			t.Chdir(t.TempDir())
 			t.Setenv("GOOBERS_GAGGLE", "goobers")
@@ -69,7 +72,65 @@ func TestRestoreClaimVerificationPersistsAndReportsMismatch(t *testing.T) {
 				if fact.ErrorCode != "provider_ledger_ownership_mismatch" || fact.RunID != "ledger-owner" || fact.ProviderRunID != "provider-owner" || fact.Outcome != "conflict" {
 					t.Fatalf("mismatch lacks structured owners: %+v", fact)
 				}
+				observedAt := entry.Verification.ObservedAt
+				// The seeded lease is one hour, longer than DefaultClaimLease.
+				// Reconciliation must honor that configured duration.
+				now = observedAt.Add(DefaultClaimLease + time.Minute)
+				var retryStderr strings.Builder
+				if _, err := restoreInvisibleClaims(context.Background(), layoutFor(root), server.newGitHubProvider("token"), repo, now, &retryStderr); err != nil {
+					t.Fatal(err)
+				}
+				ledger, err = localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+				if err != nil {
+					t.Fatal(err)
+				}
+				retriedEntry, _ := ledger.LookupScoped(localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "41"})
+				if !retriedEntry.Verification.ObservedAt.Equal(observedAt) || !strings.Contains(retryStderr.String(), "delaying claim-visibility retry") {
+					t.Fatalf("recent ownership drift retried immediately: verification=%+v stderr=%q", retriedEntry.Verification, retryStderr.String())
+				}
 			}
 		})
+	}
+}
+
+func TestRepeatedProviderContentionIsTypedOwnershipDrift(t *testing.T) {
+	ledgerPath := filepath.Join(t.TempDir(), "claims.json")
+	now := time.Now().Add(-3 * time.Hour)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath, localscheduler.WithLedgerClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "7"}
+	if ok, _, err := ledger.ClaimScoped(key, "ledger-owner", "implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed ledger claim: ok=%v err=%v", ok, err)
+	}
+	entry, _ := ledger.LookupScoped(key)
+	now = now.Add(time.Minute)
+	if ok, err := ledger.RecordClaimVerification(entry, localscheduler.ClaimVerification{
+		State: "contended", ObservedAt: now, ProviderRunID: "provider-owner",
+	}); err != nil || !ok {
+		t.Fatalf("record provider contention: ok=%v err=%v", ok, err)
+	}
+	if err := ledger.ReleaseScoped(key, "ledger-owner"); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: ledgerPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := backlogClaimSession{
+		ledger: client, gaggle: "goobers", leaseDuration: time.Hour,
+		env: backlogQueryEnv{repo: providers.RepositoryRef{Provider: providers.ProviderGitHub}},
+	}
+	drift, err := session.repeatedProviderContention(context.Background(), providers.WorkItem{ID: "7"}, "provider-owner")
+	if err != nil || drift == nil {
+		t.Fatalf("repeated contention = %v, %v; want persistent owner disagreement", drift, err)
+	}
+
+	var coded interface{ Code() string }
+	if !errors.As(drift, &coded) || coded.Code() != "provider_ledger_ownership_mismatch" ||
+		!strings.Contains(drift.Error(), "item 7") || !strings.Contains(drift.Error(), "provider-owner") {
+		t.Fatalf("typed drift is not actionable: %v", drift)
 	}
 }

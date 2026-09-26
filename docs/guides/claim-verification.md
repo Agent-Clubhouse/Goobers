@@ -9,6 +9,7 @@ renew a lease. Each entry includes `verification`:
 | `unverified` | No recorded provider observation for this ownership period. |
 | `verified` | The provider confirmed the ledger owner's claim. |
 | `missing` | Reconciliation found the provider claim marker absent. |
+| `contended` | Another provider owner holds the marker; the claim was not reconciled. |
 | `ownership-mismatch` | The provider reported another owner; `providerRunId` names it. |
 | `unavailable` | The attempted provider operation could not establish ownership. |
 
@@ -35,17 +36,22 @@ history. This endpoint records stage-reported observations; it is not an
 independent provider probe or an ownership authority.
 
 Provider claim and release attempts carry the active claim run ID and a
-success, failure, or conflict outcome. Stage sidecars carry these facts to the
+success, failure, or contention outcome. Expected contention is journaled as a
+runner annotation rather than an error. Stage sidecars carry these facts to the
 owning local runner or engine, which journals failed/conflicting attempts as
 `error` events, not successful `ref.touched` mutations. Raw provider error text
 and credentials are not copied into this telemetry.
 
-Ledger/provider ownership mismatches additionally produce error code
-`provider_ledger_ownership_mismatch`, with `runner.claimRunId` naming the ledger
-owner and `runner.providerRunId` naming the observed provider owner. The enclosing
-journal remains attributed to the executing stage's run. Alert on this code and
-inspect both ownership histories; do not force-release a live lease merely
-because its provider marker differs.
+Expected provider contention is recorded separately from ownership drift. A
+contention observation names the provider owner and is held off for one claim
+lease duration before another provider attempt. Claim-visibility reconciliation
+uses the same bounded interval for recorded ownership drift. If the same owner
+still wins after that interval, reconciliation records
+`provider_ledger_ownership_mismatch` with `runner.claimRunId` naming the ledger
+owner and `runner.providerRunId` naming the observed provider owner. The
+enclosing journal remains attributed to the executing stage's run. Inspect both
+ownership histories; do not force-release a live lease merely because its
+provider marker differs.
 
 Legacy unscoped reconciliation remains explicitly skipped when no gaggle can be
 resolved. It does not claim to have checked an inaccessible namespace.

@@ -98,13 +98,17 @@ func recoveryEvent(fact Fact) journal.Event {
 func mutationFingerprint(event journal.Event) (string, error) {
 	// Custody copies and normal projection prove the same semantic receipt.
 	if event.Type == journal.EventRunnerMutationRecovered {
-		event.Type = journal.EventRefTouched
-		if outcome, _ := event.Runner["outcome"].(string); outcome == "failure" || outcome == "conflict" {
+		switch outcome, _ := event.Runner["outcome"].(string); outcome {
+		case "failure", "conflict":
 			event.Type = journal.EventError
+		case "contention":
+			event.Type = journal.EventRunnerAnnotation
+		default:
+			event.Type = journal.EventRefTouched
 		}
 	}
 	fields := map[string]any{}
-	for _, key := range []string{"operation", "mergeConfirmation", "queueAdmission", "landingIntent", "claimRunId", "outcome", "providerRunId"} {
+	for _, key := range []string{"operation", "mergeConfirmation", "queueAdmission", "landingIntent", "claimRunId", "outcome", "providerRunId", "provider", "kind", "itemId", "annotation"} {
 		if value, ok := event.Runner[key]; ok {
 			fields[key] = value
 		}
@@ -154,7 +158,11 @@ func comparisonFingerprint(event journal.Event) (string, error) {
 func missingRecoveryEvents(facts []Fact, recorded []journal.Event, worktreeID string) ([]journal.Event, error) {
 	receipts := map[string]string{}
 	for _, event := range recorded {
-		if event.ExternalRef == nil || (event.Type != journal.EventRefTouched && event.Type != journal.EventError && event.Type != journal.EventRunnerMutationRecovered) {
+		outcome, _ := event.Runner["outcome"].(string)
+		isContentionReceipt := outcome == "contention" &&
+			(event.Type == journal.EventRunnerAnnotation || event.Type == journal.EventRunnerMutationRecovered)
+		if !isContentionReceipt &&
+			(event.ExternalRef == nil || (event.Type != journal.EventRefTouched && event.Type != journal.EventError && event.Type != journal.EventRunnerMutationRecovered)) {
 			continue
 		}
 		id, _ := event.Runner["mutationReceiptId"].(string)

@@ -11,6 +11,24 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+type providerClaimOwnershipError struct {
+	provider      string
+	itemID        string
+	claimRunID    string
+	providerRunID string
+}
+
+func (e *providerClaimOwnershipError) Error() string {
+	return fmt.Sprintf(
+		"provider claim ownership mismatch for %s item %s: ledger owner %s, provider owner %s",
+		e.provider, e.itemID, e.claimRunID, e.providerRunID,
+	)
+}
+
+func (e *providerClaimOwnershipError) Code() string {
+	return "provider_ledger_ownership_mismatch"
+}
+
 func recordClaimObservation(ctx context.Context, ledger claimsclient.Ledger, entry claimsclient.Entry, observation localscheduler.ClaimVerification, stderr io.Writer) {
 	recorder, ok := ledger.(claimsclient.VerificationRecorder)
 	if !ok {
@@ -43,9 +61,14 @@ func recordProviderClaimObservation(ctx context.Context, ledger claimsclient.Led
 	recordClaimObservation(ctx, ledger, entry, observation, stderr)
 }
 
-// confirmProviderClaim snapshots the lease before provider IO so a delayed
-// response cannot annotate a replacement lease. Reporting is best-effort and
-// does not change the existing claim arbitration or rollback result.
+func recordProviderClaimContention(ctx context.Context, ledger claimsclient.Ledger, entry claimsclient.Entry, providerRunID string, stderr io.Writer) {
+	recordClaimObservation(ctx, ledger, entry, localscheduler.ClaimVerification{
+		State: "contended", ObservedAt: time.Now(), ProviderRunID: providerRunID,
+	}, stderr)
+}
+
+// confirmProviderClaim snapshots the lease before provider IO so the caller
+// can bind its final, post-reconciliation observation to the same lease.
 func (session *backlogClaimSession) confirmProviderClaim(ctx context.Context, item providers.WorkItem) (providers.ClaimResult, error) {
 	entries, listErr := session.ledger.ForRunAll(ctx, session.runID)
 	if listErr != nil {
@@ -63,7 +86,6 @@ func (session *backlogClaimSession) confirmProviderClaim(ctx context.Context, it
 		if !entry.SharedDeadline.IsZero() {
 			labels := providers.GitHubSharedClaimVisibility{Provider: session.env.ghIssueProvider, Repository: session.env.backlogRepo}
 			result, err := confirmSharedClaimVisibility(ctx, entry, stageSharedClaimResolver(session.env.layout), labels, session.env.stderr)
-			recordProviderClaimObservation(ctx, session.ledger, entry, session.env.backlogRepo, result, err, session.env.stderr)
 			return result, err
 		}
 	}
@@ -73,11 +95,5 @@ func (session *backlogClaimSession) confirmProviderClaim(ctx context.Context, it
 	result, err := session.env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
 		Repository: session.env.backlogRepo, ID: item.ID, RunID: session.runID,
 	})
-	for _, entry := range entries {
-		if claimsclient.KeyForEntry(entry) == key {
-			recordProviderClaimObservation(ctx, session.ledger, entry, session.env.backlogRepo, result, err, session.env.stderr)
-			break
-		}
-	}
 	return result, err
 }

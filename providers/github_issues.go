@@ -835,13 +835,14 @@ func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id
 	if claimed && !item.HasLabel(label) {
 		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
 	}
+	providerRunID := ""
+	if !claimed {
+		providerRunID = winner
+	}
 	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(repo, id),
-		URL:       item.URL,
-		Operation: "claim",
-		Outcome:   claimAttemptOutcome(claimed),
-		RunID:     runID,
+		Provider: ProviderGitHub, Ref: issueRef(repo, id), URL: item.URL,
+		Operation: "claim", Outcome: claimAttemptOutcome(claimed),
+		RunID: runID, ProviderRunID: providerRunID,
 		Fields: map[string]FieldDigest{
 			"claim": {After: digestString("run=" + winner)},
 		},
