@@ -1007,6 +1007,27 @@ func TestGitHubClaimIdempotentAndAlreadyClaimed(t *testing.T) {
 	}
 }
 
+func TestGitHubClaimContentionRecordsProviderOwner(t *testing.T) {
+	m := newIssueMock()
+	recorder := &recordingRecorder{}
+	p, repo := newIssueProvider(t, m)
+	p.recorder = recorder
+	if err := p.postComment(context.Background(), repo, "7", claimBreadcrumb("provider-owner")); err != nil {
+		t.Fatalf("seed provider owner: %v", err)
+	}
+
+	result, err := p.ClaimWorkItem(context.Background(), ClaimWorkItemRequest{
+		Repository: repo, ID: "7", RunID: "ledger-owner",
+	})
+	if err != nil || result.Claimed || result.ClaimedBy != "provider-owner" {
+		t.Fatalf("claim result = %+v, %v", result, err)
+	}
+	ref, ok := recorder.last()
+	if !ok || ref.Outcome != "contention" || ref.RunID != "ledger-owner" || ref.ProviderRunID != "provider-owner" || ref.Ref != issueRef(repo, "7") {
+		t.Fatalf("contention telemetry lost an owner or issue identity: %+v", ref)
+	}
+}
+
 func TestGitHubClaimCanBeReacquiredAfterRelease(t *testing.T) {
 	m := newIssueMock()
 	p, repo := newIssueProvider(t, m)

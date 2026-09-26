@@ -79,7 +79,7 @@ func TestRecoveryRecognizesNormalProjectionWhileWriterIsHeld(t *testing.T) {
 }
 
 func TestRecoveredReceiptsDoNotDuplicateWorkflowConformance(t *testing.T) {
-	for _, outcome := range []string{"", "failure", "conflict"} {
+	for _, outcome := range []string{"", "failure", "conflict", "contention"} {
 		fact := Fact{ReceiptID: "receipt", Provider: "github", Kind: "pr", ID: "9", Operation: "merge", Outcome: outcome}
 		normal := recoveryEvent(fact)
 		recovered, err := missingRecoveryEvents([]Fact{fact}, nil, "worker-stage")
@@ -89,7 +89,15 @@ func TestRecoveredReceiptsDoNotDuplicateWorkflowConformance(t *testing.T) {
 		if recovered[0].Type != journal.EventRunnerMutationRecovered || recovered[0].IsConformanceNormative() {
 			t.Fatal("custody copy appeared as a second workflow outcome")
 		}
-		if got := journal.ConformanceView(append(recovered, normal)); len(got) != 1 || got[0].Type != normal.Type {
+		wantConformanceEvents := 1
+		if outcome == "contention" {
+			wantConformanceEvents = 0
+			if normal.IsReferenceTouch() || recovered[0].IsReferenceTouch() {
+				t.Fatal("provider contention was recorded as a successful external mutation")
+			}
+		}
+		if got := journal.ConformanceView(append(recovered, normal)); len(got) != wantConformanceEvents ||
+			(wantConformanceEvents == 1 && got[0].Type != normal.Type) {
 			t.Fatalf("normal projection changed conformance: %+v", got)
 		}
 		if pending, err := missingRecoveryEvents([]Fact{fact}, recovered, "worker-stage"); err != nil || len(pending) != 0 {

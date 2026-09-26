@@ -477,11 +477,11 @@ func costWorkItemIdentity(ev journalEvent) (string, string) {
 	return repository, itemURL
 }
 
-// Recovered failed/conflicting operations remain journal evidence, not
+// Recovered failed/conflicting/contended operations remain journal evidence, not
 // successful external mutations for attribution or KPI purposes.
 func recoveredMutationFailed(ev journalEvent) bool {
 	outcome, _ := ev.Runner["outcome"].(string)
-	return ev.Type == eventMutationRecovered && (outcome == "failure" || outcome == "conflict")
+	return ev.Type == eventMutationRecovered && (outcome == "failure" || outcome == "conflict" || outcome == "contention")
 }
 
 type ciChecksArtifact struct {

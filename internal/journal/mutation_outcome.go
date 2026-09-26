@@ -1,8 +1,8 @@
 package journal
 
 // IsReferenceTouch includes successful receipt custody copies wherever a
-// reader needs external-reference evidence. Failed/conflicting recovery facts
-// remain diagnostics, matching the normal projection's EventError behavior.
+// reader needs external-reference evidence. Failed, conflicting, and
+// contended recovery facts remain diagnostics, not successful touches.
 func (e Event) IsReferenceTouch() bool {
 	if e.ExternalRef == nil {
 		return false
@@ -14,7 +14,7 @@ func (e Event) IsReferenceTouch() bool {
 		return false
 	}
 	outcome, _ := e.Runner["outcome"].(string)
-	return outcome != "failure" && outcome != "conflict"
+	return outcome != "failure" && outcome != "conflict" && outcome != "contention"
 }
 
 // WithMutationOutcome preserves the enclosing run identity and records the
@@ -32,6 +32,18 @@ func WithMutationOutcome(event Event, claimRunID, outcome, errorCode, providerRu
 	}
 	if providerRunID != "" {
 		event.Runner["providerRunId"] = providerRunID
+	}
+	if outcome == "contention" {
+		if event.ExternalRef != nil {
+			event.Runner["provider"] = event.ExternalRef.Provider
+			event.Runner["kind"] = event.ExternalRef.Kind
+			event.Runner["itemId"] = event.ExternalRef.ID
+			event.ExternalRef = nil
+		}
+		event.Type = EventRunnerAnnotation
+		event.Reason = "provider claim contention"
+		event.Runner["annotation"] = "provider-claim-contention"
+		return event
 	}
 	if outcome == "failure" || outcome == "conflict" {
 		event.Type = EventError

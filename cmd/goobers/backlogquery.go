@@ -1086,6 +1086,7 @@ type backlogClaimSession struct {
 	maxItems            int
 	nextClaimIndex      int
 	claimSetPrepared    bool
+	driftBackoffChecked bool
 }
 
 func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *labelpredicate.Predicate) (int, int) {
@@ -1165,6 +1166,12 @@ func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger cl
 	}
 	if err := session.rememberPreexistingClaims(ctx, ledger); err != nil {
 		return err
+	}
+	if !session.driftBackoffChecked {
+		if err := session.filterRecentClaimDisagreements(ctx, ledger); err != nil {
+			return err
+		}
+		session.driftBackoffChecked = true
 	}
 	for session.nextClaimIndex < len(session.eligible) && len(session.claimed) < session.maxItems {
 		item := session.eligible[session.nextClaimIndex]
@@ -1277,11 +1284,17 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		item := session.claimed[index]
 		result, err := session.confirmProviderClaim(ctx, item)
 		if err != nil {
+			session.recordCurrentClaimObservation(ctx, item, result, err)
 			return fmt.Errorf("%s: %w", item.ID, err)
 		}
 		if result.Claimed {
+			session.recordCurrentClaimObservation(ctx, item, result, nil)
 			index++
 			continue
+		}
+		if result.ClaimedBy == "" {
+			session.recordCurrentClaimObservation(ctx, item, result, fmt.Errorf("provider returned no claim owner"))
+			return fmt.Errorf("provider claim for item %s returned no owner", item.ID)
 		}
 
 		retired, retireErr := session.retireSurrenderedProviderClaim(ctx, item, result.ClaimedBy)
@@ -1291,15 +1304,26 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			retiredHolder := result.ClaimedBy
 			result, err = session.confirmProviderClaim(ctx, item)
 			if err != nil {
+				session.recordCurrentClaimObservation(ctx, item, result, err)
 				return fmt.Errorf("%s: %w", item.ID, err)
 			}
 			if result.Claimed {
+				session.recordCurrentClaimObservation(ctx, item, result, nil)
 				pf(session.env.stderr, "notice: retired the surrendered provider claim on item %s left by run %s and claimed it\n", item.ID, retiredHolder)
 				index++
 				continue
 			}
 		}
 
+		drift, err := session.repeatedProviderContention(ctx, item, result.ClaimedBy)
+		if err != nil {
+			return fmt.Errorf("read provider claim history for item %s: %w", item.ID, err)
+		}
+		if drift != nil {
+			session.recordCurrentClaimObservation(ctx, item, result, nil)
+			return drift
+		}
+		session.recordCurrentContention(ctx, item, result.ClaimedBy)
 		if err := session.releaseLedger(ctx, item); err != nil {
 			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
 		}
@@ -1307,6 +1331,107 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
 		pf(session.env.stderr, "warning: claim race lost for item %s to run %s; released local claim and stopped this run from processing it\n", item.ID, result.ClaimedBy)
 	}
+	return nil
+}
+
+func (session *backlogClaimSession) recordCurrentClaimObservation(ctx context.Context, item providers.WorkItem, result providers.ClaimResult, claimErr error) {
+	entries, err := session.ledger.ForRunAll(ctx, session.runID)
+	if err != nil {
+		pf(session.env.stderr, "warning: could not read claim lease for item %s observation: %v\n", item.ID, err)
+		return
+	}
+	key := session.claimKey(item)
+	for _, entry := range entries {
+		if claimsclient.KeyForEntry(entry) == key {
+			recordProviderClaimObservation(ctx, session.ledger, entry, session.env.backlogRepo, result, claimErr, session.env.stderr)
+			return
+		}
+	}
+}
+
+func (session *backlogClaimSession) recordCurrentContention(ctx context.Context, item providers.WorkItem, providerRunID string) {
+	entries, err := session.ledger.ForRunAll(ctx, session.runID)
+	if err != nil {
+		pf(session.env.stderr, "warning: could not read claim lease for item %s contention: %v\n", item.ID, err)
+		return
+	}
+	key := session.claimKey(item)
+	for _, entry := range entries {
+		if claimsclient.KeyForEntry(entry) == key {
+			recordProviderClaimContention(ctx, session.ledger, entry, providerRunID, session.env.stderr)
+			return
+		}
+	}
+}
+
+func (session *backlogClaimSession) repeatedProviderContention(ctx context.Context, item providers.WorkItem, providerRunID string) (*providerClaimOwnershipError, error) {
+	if session.gaggle == "" || providerRunID == "" {
+		return nil, nil
+	}
+	listing, err := session.ledger.ListNamespace(ctx, session.gaggle, string(session.env.repo.Provider))
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-session.leaseDuration)
+	for _, entry := range listing.HistoryForItem(item.ID) {
+		if entry.Verification.State == "contended" &&
+			entry.Verification.ProviderRunID == providerRunID &&
+			entry.Verification.ObservedAt.Before(cutoff) {
+			return &providerClaimOwnershipError{
+				provider: string(session.env.repo.Provider), itemID: item.ID,
+				claimRunID: session.runID, providerRunID: providerRunID,
+			}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (session *backlogClaimSession) filterRecentClaimDisagreements(ctx context.Context, ledger claimsclient.Ledger) error {
+	if session.gaggle == "" || len(session.eligible) == 0 {
+		return nil
+	}
+	listing, err := ledger.ListNamespace(ctx, session.gaggle, string(session.env.repo.Provider))
+	if err != nil {
+		return fmt.Errorf("read claim namespace for provider disagreement backoff: %w", err)
+	}
+	now := time.Now()
+	eligible := session.eligible[:0]
+	for _, item := range session.eligible {
+		var observation localscheduler.ClaimVerification
+		var claimRunID string
+		for _, entry := range listing.HistoryForItem(item.ID) {
+			if entry.Verification.State != "contended" && entry.Verification.State != "ownership-mismatch" {
+				continue
+			}
+			if entry.Verification.ProviderRunID == "" || entry.Verification.ObservedAt.IsZero() ||
+				!now.Before(entry.Verification.ObservedAt.Add(session.leaseDuration)) {
+				continue
+			}
+			observation = entry.Verification
+			claimRunID = entry.RunID
+			break
+		}
+		if observation.State == "" {
+			eligible = append(eligible, item)
+			continue
+		}
+		retryAt := observation.ObservedAt.Add(session.leaseDuration)
+		pf(session.env.stderr, "warning: delaying provider claim for item %s; owner %s disagreed with the ledger, retry after %s\n",
+			item.ID, observation.ProviderRunID, retryAt.UTC().Format(time.RFC3339))
+		if err := session.annotations.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Workflow: session.workflow, RunID: session.runID,
+			Reason: "provider claim disagreement backoff",
+			Runner: map[string]any{
+				"annotation": "provider-claim-disagreement-backoff",
+				"provider":   string(session.env.repo.Provider), "itemId": item.ID,
+				"claimRunId": claimRunID, "providerRunId": observation.ProviderRunID,
+				"retryAfter": retryAt.UTC().Format(time.RFC3339Nano),
+			},
+		}); err != nil {
+			return fmt.Errorf("journal provider claim backoff for item %s: %w", item.ID, err)
+		}
+	}
+	session.eligible = eligible
 	return nil
 }
 

@@ -26,7 +26,7 @@ func TestEngineClaimOutcomesAreStructuredJournalErrors(t *testing.T) {
 	env := temporaltest.NewWorkflowEnvironment(&suite)
 	env.ExecuteWorkflow(func(ctx workflow.Context) (JournalProjection, error) {
 		recorder := &runJournal{}
-		for _, outcome := range []string{"success", "conflict", "failure"} {
+		for _, outcome := range []string{"success", "contention", "conflict", "failure"} {
 			recorder.mutations(ctx, "reconcile", 2, journal.AttemptPolicy,
 				surrenderedMutationFacts([]dispatcher.SurrenderedMutation{{
 					Provider: "github", Kind: "issue", ID: "7", Operation: "claim",
@@ -42,7 +42,7 @@ func TestEngineClaimOutcomesAreStructuredJournalErrors(t *testing.T) {
 	if err := env.GetWorkflowResult(&projection); err != nil {
 		t.Fatal(err)
 	}
-	if len(projection.Ops) != 3 {
+	if len(projection.Ops) != 4 {
 		t.Fatalf("outcomes lost: %+v", projection)
 	}
 	for i, operation := range projection.Ops {
@@ -50,12 +50,18 @@ func TestEngineClaimOutcomesAreStructuredJournalErrors(t *testing.T) {
 		if event == nil || event.Runner["providerRunId"] != "provider-owner" {
 			t.Fatalf("provider owner lost: %+v", event)
 		}
-		if event == nil || event.ExternalRef == nil || event.ExternalRef.ID != "7" || event.Stage != "reconcile" || event.Attempt != 2 || event.AttemptClass != journal.AttemptPolicy || event.Runner["claimRunId"] != "lease-owner" {
+		if event == nil || event.Stage != "reconcile" || event.Attempt != 2 || event.AttemptClass != journal.AttemptPolicy || event.Runner["claimRunId"] != "lease-owner" {
 			t.Fatalf("claim attribution lost: %+v", event)
 		}
 		if i == 0 {
-			if event.Type != journal.EventRefTouched || event.Error != nil {
+			if event.Type != journal.EventRefTouched || event.Error != nil || event.ExternalRef == nil || event.ExternalRef.ID != "7" {
 				t.Fatalf("successful mutation misclassified: %+v", event)
+			}
+		} else if i == 1 {
+			if event.Type != journal.EventRunnerAnnotation || event.Error != nil || event.ExternalRef != nil ||
+				event.Runner["annotation"] != "provider-claim-contention" || event.Runner["itemId"] != "7" ||
+				event.Runner["providerRunId"] != "provider-owner" {
+				t.Fatalf("provider contention misclassified: %+v", event)
 			}
 		} else if event.Type != journal.EventError || event.Error == nil || event.Error.Code == "" {
 			t.Fatalf("unsuccessful attempt counted as a mutation: %+v", event)

@@ -245,6 +245,7 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 
 func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
 	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Raced item", "goobers:approved")
 	server.addComment(7, "goobers-claim: run=other-instance-run\n\nClaimed by another instance.")
@@ -264,8 +265,23 @@ func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry, held := ledger.Lookup("7"); held {
+	key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "7"}
+	if entry, held := ledger.LookupScoped(key); held {
 		t.Fatalf("losing run retained ledger claim: %+v", entry)
+	}
+	history := ledger.HistoryForItem("7")
+	if len(history) != 1 || history[0].Verification.State != "contended" || history[0].Verification.ProviderRunID != "other-instance-run" {
+		t.Fatalf("provider contention was not retained as a distinct observation: %+v", history)
+	}
+
+	secondWorkdir := t.TempDir()
+	t.Chdir(secondWorkdir)
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "no work:") || !strings.Contains(stderr, "delaying provider claim for item 7") {
+		t.Fatalf("backoff pass: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(secondWorkdir, mutationsSidecarFile)); !os.IsNotExist(err) {
+		t.Fatalf("backoff retried provider mutation: stat err=%v", err)
 	}
 }
 
@@ -294,7 +310,8 @@ func TestBacklogQueryRetiresSurrenderedProviderClaim(t *testing.T) {
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recovering-run")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
-	t.Chdir(t.TempDir())
+	workdir := t.TempDir()
+	t.Chdir(workdir)
 
 	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
 	if code != 0 || !strings.Contains(stdout, "claimed 7") {
@@ -309,6 +326,16 @@ func TestBacklogQueryRetiresSurrenderedProviderClaim(t *testing.T) {
 	}
 	if entry, held := ledger.Lookup("7"); !held || entry.RunID != "recovering-run" {
 		t.Fatalf("ledger entry for item 7 = %+v, held=%v, want held by recovering-run", entry, held)
+	}
+	data, err := os.ReadFile(filepath.Join(workdir, mutationsSidecarFile))
+	if err != nil {
+		t.Fatalf("read provider mutation telemetry: %v", err)
+	}
+	if strings.Contains(string(data), "provider_ledger_ownership_mismatch") {
+		t.Fatalf("successfully reconciled stale claim was reported as ownership drift: %s", data)
+	}
+	if !strings.Contains(string(data), `"outcome":"contention"`) || !strings.Contains(string(data), `"outcome":"success"`) {
+		t.Fatalf("claim lifecycle telemetry did not distinguish contention and reconciliation: %s", data)
 	}
 }
 
