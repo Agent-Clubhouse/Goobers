@@ -70,9 +70,22 @@ var stageProviderCapabilities = map[string][]providers.Capability{
 // (correctly) does not declare, so config load REFUSED the shipped merge-review
 // workflow on an ADO gaggle — rejecting a lane the code implements and
 // ado-provider-parity.md documents. #2061/#2179.
+// update-behind-pr is a second override case, and an empty one: on Azure
+// DevOps the stage makes no provider call at all (ADO-N15,
+// docs/design/ado-parity-dsl-2-0.md §3.4) — it reports not-applicable and
+// hands off to full remediation without touching pr.update-branch or
+// pr.compare. ADO computes its PR mergeStatus against the current target
+// branch on every read, so it has no GitHub-shaped "up to date with base"
+// policy for a behind-but-clean PR to satisfy via API update; a PR ADO
+// reports as conflicting routes to rebase-pr through the same
+// full-remediation chain every other non-trivial candidate takes. A present
+// key with an empty slice REPLACES stageProviderCapabilities["update-behind-pr"]
+// (unlike an absent key, which would fall through to the GitHub-shaped
+// default and wrongly require pr.update-branch on ADO too).
 var stageProviderCapabilityOverrides = map[providers.ProviderKind]map[string][]providers.Capability{
 	providers.ProviderADO: {
-		"apply-verdict": {providers.CapPRStatusPublish},
+		"apply-verdict":    {providers.CapPRStatusPublish},
+		"update-behind-pr": {},
 	},
 }
 

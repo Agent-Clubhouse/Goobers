@@ -119,6 +119,7 @@ func (p *ADOProvider) listWorkItemsBatch(ctx context.Context, repo RepositoryRef
 func (p *ADOProvider) scanWorkItemCandidates(ctx context.Context, req ListWorkItemsRequest, requestedState string, refs []adoWorkItemRef) ([]WorkItem, int, error) {
 	items := make([]WorkItem, 0, min(len(refs), adoWorkItemsBatchSize))
 	lastScanned := -1
+	requested := adoRequestedLabels(req)
 	for start := 0; start < len(refs); start += adoWorkItemsBatchSize {
 		chunk := refs[start:min(start+adoWorkItemsBatchSize, len(refs))]
 		hydrated, err := p.getWorkItemRefsBatch(ctx, req.Repository, chunk)
@@ -135,6 +136,7 @@ func (p *ADOProvider) scanWorkItemCandidates(ctx context.Context, req ListWorkIt
 			if err != nil {
 				return nil, lastScanned, err
 			}
+			item.Labels = canonicalADOLabels(item.Labels, requested)
 			matched, err := adoListCandidateMatches(req, requestedState, item)
 			if err != nil {
 				return nil, lastScanned, err
@@ -153,7 +155,9 @@ func (p *ADOProvider) scanWorkItemCandidates(ctx context.Context, req ListWorkIt
 
 // adoListCandidateMatches applies ListWorkItems' client-side filters: the
 // common open/closed state, the label and field predicates, and the exact
-// label recheck behind WIQL's substring CONTAINS.
+// label recheck behind WIQL's substring CONTAINS. The caller has already
+// folded item.Labels onto the requested spellings (canonicalADOLabels), so
+// the exact label predicate matches a tag whatever casing ADO returned.
 func adoListCandidateMatches(req ListWorkItemsRequest, requestedState string, item WorkItem) (bool, error) {
 	if (requestedState == "open" || requestedState == "closed") && item.State != requestedState {
 		return false, nil

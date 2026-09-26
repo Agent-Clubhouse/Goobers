@@ -402,6 +402,16 @@ const (
 	// ADO, the 403 GitPullRequestUpdateRejectedByPolicyException). It is not
 	// an auth failure, and is never retried with a policy bypass.
 	errorCodePolicyNotMet = "provider_policy_not_met"
+	// errorCodeBranchPolicyProtected is a direct push (or force-push)
+	// refused because the target branch is protected by an enabled ADO
+	// branch policy (policyProtectedPushError, from git's own TF402455 /
+	// GitRefUpdateRejectedByPolicyException rejection of the raw `git
+	// push`, ADO-N26). Distinct from errorCodePolicyNotMet, which is the
+	// REST completion API's own 403 refusal of a pull request that is
+	// already open — this is the git-protocol refusal of a push that never
+	// became a PR at all. Never an auth failure and never retried: retrying
+	// (as a ref race or with a fresh credential) hits the identical policy.
+	errorCodeBranchPolicyProtected = "branch_policy_protected"
 	// errorCodeProvider is the fallback for a provider-originated failure
 	// that doesn't classify into any of the above (e.g. a non-401/403/5xx
 	// status such as a 422 validation error). Still typed and diagnosable —
@@ -457,6 +467,14 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	}
 	if code, ok := classifyLandingRefusal(err); ok {
 		return code, false, nil
+	}
+	// Checked ahead of IsAuthenticationError (ADO-N26): a policy-protected
+	// push's underlying git failure carries no HTTP status a credential
+	// classifier could recognize, but its message text alone must never be
+	// misread as a credential problem either.
+	var policyPush *policyProtectedPushError
+	if errors.As(err, &policyPush) {
+		return errorCodeBranchPolicyProtected, false, nil
 	}
 	if providers.IsAuthenticationError(err) {
 		return errorCodeAuthFailed, false, nil

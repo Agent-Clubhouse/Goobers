@@ -297,7 +297,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
-				ScratchDir: deterministicScratchDir,
+				ScratchDir: deterministicScratchDir, CredentialStores: stores,
 			})
 			if err != nil {
 				return nil, err

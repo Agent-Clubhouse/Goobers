@@ -412,6 +412,11 @@ func mergeQueuePollNeedsRemediation(ctx context.Context, repo providers.Reposito
 // branchCleanupError (after a merge) — the same flat-scalar convention
 // writeMergeResult already follows.
 func writeQueueResult(path, selectedNumber, queueOutcome, mergeSHA string, cleanup *mergeBranchCleanup, reason string) error {
+	return writeQueueResultFields(path, queueResultFields(selectedNumber, queueOutcome, mergeSHA, cleanup, reason))
+}
+
+// queueResultFields builds writeQueueResult's flat result map.
+func queueResultFields(selectedNumber, queueOutcome, mergeSHA string, cleanup *mergeBranchCleanup, reason string) map[string]interface{} {
 	out := map[string]interface{}{"selectedNumber": selectedNumber, "queueOutcome": queueOutcome}
 	if mergeSHA != "" {
 		out["mergeSha"] = mergeSHA
@@ -426,6 +431,11 @@ func writeQueueResult(path, selectedNumber, queueOutcome, mergeSHA string, clean
 			out["branchCleanupError"] = cleanup.Error
 		}
 	}
+	return out
+}
+
+// writeQueueResultFields marshals and writes a flat queue result map.
+func writeQueueResultFields(path string, out map[string]interface{}) error {
 	data, err := json.Marshal(out)
 	if err != nil {
 		return fmt.Errorf("marshal queue result: %w", err)
@@ -532,9 +542,16 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 	// Completion authority is a distinct capability from ordinary
 	// ado:pr:write. Resolve the grant before constructing the provider so an
 	// un-granted stage fails closed rather than completing a pull request.
-	if _, err := providerToken(capability.ADOPRComplete); err != nil {
-		pf(stderr, "error: %v\n", err)
+	usesPAT, err := adoStageUsesPAT(root, repo)
+	if err != nil {
+		pf(stderr, "error: resolve ADO completion authentication: %v\n", err)
 		return 1
+	}
+	if usesPAT {
+		if _, err := providerToken(capability.ADOPRComplete); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
@@ -542,13 +559,30 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 		return 1
 	}
 	dispatcher := providers.NewDispatcher(adoProvider)
-	return runMergeQueuePollCore(repo, adoMergeQueuePollTransport{provider: dispatcher}, stdout, stderr)
+	return runMergeQueuePollCore(repo, &adoMergeQueuePollTransport{provider: dispatcher, stdout: stdout}, stdout, stderr)
 }
 
-type adoMergeQueuePollTransport struct{ provider providers.MergeQueuePoller }
+// adoMergeQueuePollTransport remembers whether the latest pending read was
+// held only by a human approval (design ado-parity-dsl-2-0.md §5.1), so a
+// poll that runs out of time reports "awaiting human approval" rather than a
+// bare timeout. The core loop stays provider-neutral.
+type adoMergeQueuePollTransport struct {
+	provider      providers.MergeQueuePoller
+	stdout        io.Writer
+	awaitingHuman bool
+}
 
-func (t adoMergeQueuePollTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PollMergeQueueEntryResult, error) {
-	return t.provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
+func (t *adoMergeQueuePollTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PollMergeQueueEntryResult, error) {
+	result, err := t.provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
+	if err != nil {
+		return result, err
+	}
+	awaiting := result.State == providers.MergeQueueEntryPending && result.AwaitingHuman
+	if awaiting && !t.awaitingHuman && t.stdout != nil {
+		pf(t.stdout, "pr #%s: auto-complete armed, awaiting human approval\n", pullNumber)
+	}
+	t.awaitingHuman = awaiting
+	return result, nil
 }
 
 func (adoMergeQueuePollTransport) Merge(_ context.Context, _ providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
@@ -559,7 +593,10 @@ func (adoMergeQueuePollTransport) Evict(_ context.Context, _ providers.Repositor
 	return mergeQueuePollEvictedADO(pullNumber, resultFile, stdout, stderr)
 }
 
-func (adoMergeQueuePollTransport) Timeout(_ context.Context, _ providers.RepositoryRef, pullNumber string, timeout time.Duration, resultFile string, stdout, stderr io.Writer) int {
+func (t *adoMergeQueuePollTransport) Timeout(_ context.Context, _ providers.RepositoryRef, pullNumber string, timeout time.Duration, resultFile string, stdout, stderr io.Writer) int {
+	if t.awaitingHuman {
+		return mergeQueuePollAwaitingHumanADO(pullNumber, timeout, resultFile, stdout, stderr)
+	}
 	return mergeQueuePollTimedOutADO(pullNumber, timeout, resultFile, stdout, stderr)
 }
 
@@ -619,5 +656,25 @@ func mergeQueuePollTimedOutADO(pullNumber string, timeout time.Duration, resultF
 		return 1
 	}
 	pf(stdout, "merge queue poll for pr #%s timed out; remediation labeling skipped on ado (pr-as-work-item hazard)\n", pullNumber)
+	return 0
+}
+
+// mergeQueuePollAwaitingHumanADO reports an auto-complete-armed pull request
+// that is held only by reviewer policies when the poll budget runs out
+// (design ado-parity-dsl-2-0.md §5.1, live probe F4). It is neither an
+// eviction nor a CI stall: ADO lands the pull request itself once a person
+// approves. queueOutcome stays "timeout" so queue-gate routes it exactly as
+// before; awaitingHuman and the reason say why. Like mergeQueuePollTimedOutADO
+// it writes no remediation label, since a human wait is never a remediation
+// trigger.
+func mergeQueuePollAwaitingHumanADO(pullNumber string, timeout time.Duration, resultFile string, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("awaiting human approval: pull request #%s has auto-complete armed and only reviewer policies are unmet after %s; azure devops completes it once a reviewer approves", pullNumber, timeout)
+	out := queueResultFields(pullNumber, "timeout", "", nil, reason)
+	out["awaitingHuman"] = true
+	if err := writeQueueResultFields(resultFile, out); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "merge queue poll for pr #%s: awaiting human approval (auto-complete armed)\n", pullNumber)
 	return 0
 }

@@ -105,6 +105,15 @@ const (
 	// and set to the Azure DevOps project for ADO-routed repositories, which
 	// need organization/project/repo to address a repo.
 	RepoProjectEnvVar = "GOOBERS_REPO_PROJECT"
+	// RepoAuthSchemeEnvVar carries the non-secret authorization scheme
+	// ("basic" or "bearer") of the Azure DevOps repository credential the
+	// daemon delivers as GOOBERS_CRED_<capability>, so a stage builds the
+	// right Authorization header without inferring it from the token's shape
+	// (docs/design/ado-parity-dsl-2-0.md §4.1). Set only for an Azure DevOps
+	// repository, on one rule local and in a pod: a deterministic stage that
+	// received at least one GOOBERS_CRED_<capability> gets it. Agentic stages
+	// do not receive it.
+	RepoAuthSchemeEnvVar = "GOOBERS_REPO_AUTH_SCHEME"
 
 	// NeedsHumanAssigneeEnvVar carries the daemon-resolved needs-human
 	// routing identity to the close-out CLI stage without exposing instance
