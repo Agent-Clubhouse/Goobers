@@ -1731,6 +1731,10 @@ func TestRenderStatusShowsContinuationLineage(t *testing.T) {
 			ResumeTarget:          "implement",
 			WorkspaceBranch:       "goobers/implementation/source",
 			HistoricalRepassCount: 2,
+			InjectedInputs: []journal.InputRef{
+				{Name: "operator-note"},
+				{Name: "failure-context"},
+			},
 		},
 		Operator: readservice.OperatorRunSummary{
 			Trajectory: "terminal", Liveness: "terminal",
@@ -1740,7 +1744,7 @@ func TestRenderStatusShowsContinuationLineage(t *testing.T) {
 	var output strings.Builder
 	renderStatus(&output, runs, now)
 	if !strings.Contains(output.String(),
-		"continuation: source source-run (escalated); target implement; branch goobers/implementation/source; historical repasses 2") {
+		"continuation: source source-run (escalated); target implement; branch goobers/implementation/source; historical repasses 2; injected inputs failure-context, operator-note") {
 		t.Fatalf("status output = %q", output.String())
 	}
 }
