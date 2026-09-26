@@ -891,9 +891,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	timeoutTimer := activetime.NewTimer(resolvedTimeout.Duration)
-	defer timeoutTimer.Stop()
-	runCtx := ctx
+	runCtx, cancel := activetime.WithTimeout(ctx, resolvedTimeout.Duration)
+	defer cancel()
 
 	// Substitute the running daemon's own binary for a bare "goobers" token: the
 	// stage's cwd is a fresh worktree clone that never contains the goobers
@@ -971,10 +970,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	var waitErr error
 	select {
 	case waitErr = <-waitDone:
-	case <-timeoutTimer.C:
-		timedOut = true
 	case <-runCtx.Done():
-		canceled = true
+		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
+			timedOut = true
+		} else {
+			canceled = true
+		}
 		// On a TIMEOUT, first SIGQUIT the whole process group so every Go
 		// process in it dumps its full goroutine trace to the captured
 		// stdout/stderr before dying — a stage that blew its timeout is exactly
