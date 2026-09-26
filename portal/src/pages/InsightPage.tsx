@@ -113,7 +113,6 @@ export function InsightPage({
   return (
     <>
       <header className="page-heading">
-        <p className="page-kicker">Telemetry</p>
         <h1>Insight</h1>
         <p>
           Success, backlog health, failure-reason, AI usage, and latency diagnostics for
