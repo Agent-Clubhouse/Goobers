@@ -1525,9 +1525,18 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 			r.Gaggle, r.Workflow, r.StartedAt.Format(time.RFC3339), formatLastActivity(now, r.LastActivityAt))
 		if r.Lineage != nil {
 			if r.Lineage.Source != nil {
-				pf(stdout, "  continuation: source %s (%s); target %s; branch %s; historical repasses %d\n",
+				detail := fmt.Sprintf("  continuation: source %s (%s); target %s; branch %s; historical repasses %d",
 					r.Lineage.Source.ID, r.Lineage.Source.Phase, r.Lineage.ResumeTarget,
 					r.Lineage.WorkspaceBranch, r.Lineage.HistoricalRepassCount)
+				if len(r.Lineage.InjectedInputs) > 0 {
+					names := make([]string, len(r.Lineage.InjectedInputs))
+					for i, input := range r.Lineage.InjectedInputs {
+						names[i] = input.Name
+					}
+					sort.Strings(names)
+					detail += "; injected inputs " + strings.Join(names, ", ")
+				}
+				pf(stdout, "%s\n", detail)
 			}
 			if len(r.Lineage.Continuations) > 0 {
 				related := make([]string, len(r.Lineage.Continuations))
