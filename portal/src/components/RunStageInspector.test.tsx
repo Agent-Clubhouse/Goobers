@@ -221,7 +221,11 @@ describe("run stage inspector", () => {
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     expect(await screen.findByText("success")).toBeInTheDocument();
-    expect(screen.getByText("approve")).toBeInTheDocument();
+    const outputs = screen.getByRole("table", { name: "Attempt outputs" });
+    expect(within(outputs).getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
+    expect(within(outputs).getByRole("columnheader", { name: "Value" })).toBeInTheDocument();
+    expect(within(outputs).getByRole("rowheader", { name: "verdict" })).toBeInTheDocument();
+    expect(within(outputs).getByText("approve")).toBeInTheDocument();
     expect(screen.getByText("rationale.md")).toBeInTheDocument();
     expect(screen.getByText("sha256:abc")).toBeInTheDocument();
     expect(client.listStageAttempts).toHaveBeenCalledWith("run-1", "review", expect.anything());

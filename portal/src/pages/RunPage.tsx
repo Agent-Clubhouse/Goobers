@@ -6,6 +6,7 @@ import type {
   ExternalRef,
   RunDetail,
   RunEvent,
+  WorkflowGraph,
 } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
@@ -23,6 +24,7 @@ import {
   evidenceDecision,
   eventHeading,
   eventNodeAtSequence,
+  eventNodeId,
   eventSummary,
   formatDuration,
   formatElapsed,
@@ -47,7 +49,7 @@ import {
   type RunNodeState,
   useRunDetail,
 } from "../runDetailData";
-import { routeHash, type Navigate } from "../routing";
+import { routeHash, type Navigate, type RunDetailTab } from "../routing";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -55,16 +57,24 @@ import { useCobrand } from "../cobrand";
 
 export function RunPage({
   client,
+  eventDetail,
   navigate,
+  nodeId,
   revealRun,
   runId,
+  sequence,
   standalone,
+  tab,
 }: {
   client: DaemonClient;
+  eventDetail?: boolean;
   navigate: Navigate;
+  nodeId?: string;
   revealRun: (runId: string) => Promise<void>;
   runId: string;
+  sequence?: number;
   standalone: boolean;
+  tab?: RunDetailTab;
 }) {
   const query = useRunDetail(client, runId);
 
@@ -129,8 +139,12 @@ export function RunPage({
       <RunDetailWorkspace
         client={client}
         events={query.state.data.events}
+        eventDetail={eventDetail}
         key={query.state.data.run.id}
         navigate={navigate}
+        routeNodeId={nodeId}
+        routeSequence={sequence}
+        routeTab={tab}
         revealRun={revealRun}
         run={query.state.data.run}
         runId={runId}
@@ -142,14 +156,22 @@ export function RunPage({
 function RunDetailWorkspace({
   client,
   events,
+  eventDetail,
   navigate,
+  routeNodeId,
+  routeSequence,
+  routeTab,
   revealRun,
   run,
   runId,
 }: {
   client: DaemonClient;
   events: RunEvent[];
+  eventDetail?: boolean;
   navigate: Navigate;
+  routeNodeId?: string;
+  routeSequence?: number;
+  routeTab?: RunDetailTab;
   revealRun: (runId: string) => Promise<void>;
   run: RunDetail;
   runId: string;
@@ -161,19 +183,28 @@ function RunDetailWorkspace({
       branch: latestEvent?.branch,
       runId,
     }) ?? run.currentStage;
-  const [selectedSeq, setSelectedSeq] = useState(initialSeq);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(latestNodeId);
-  const [followingLatest, setFollowingLatest] = useState(true);
-  const [selectedEvidenceSeq, setSelectedEvidenceSeq] = useState<number>();
+  const routedEvent = events.find((event) => event.seq === routeSequence);
+  const startingSeq = routedEvent?.seq ?? initialSeq;
+  const startingNodeId =
+    routeNodeId ??
+    eventNodeAtSequence(events, startingSeq, {
+      branch: routedEvent?.branch ?? latestEvent?.branch,
+      runId,
+    }) ??
+    latestNodeId;
+  const [selectedSeq, setSelectedSeq] = useState(startingSeq);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(startingNodeId);
+  const [followingLatest, setFollowingLatest] = useState(routedEvent === undefined);
+  const [selectedEvidenceSeq, setSelectedEvidenceSeq] = useState<number | undefined>(
+    routedEvent && isInspectableEvidenceEvent(routedEvent) ? routedEvent.seq : undefined,
+  );
   const [revealPending, setRevealPending] = useState(false);
   const [revealError, setRevealError] = useState<string>();
   const [runIdCopied, setRunIdCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<RunDetailTab>("overview");
+  const [activeTab, setActiveTab] = useState<RunDetailTab>(routeTab ?? "overview");
   const [pendingInspectorFocus, setPendingInspectorFocus] = useState(false);
-  const [pendingSelectedEventFocus, setPendingSelectedEventFocus] = useState(false);
   const { config: portalConfig, loading: portalConfigLoading } = useCobrand();
   const inspectorRef = useRef<HTMLElement>(null);
-  const selectedEventDetailsRef = useRef<HTMLElement>(null);
   const fullscreenRootRef = useRef<HTMLDivElement>(null);
   const [fullscreenMode, setFullscreenMode] =
     useState<WorkflowGraphFullscreenMode>("none");
@@ -187,6 +218,18 @@ function RunDetailWorkspace({
   const selectedEvidenceVisit = selectedEvidence
     ? evidenceVisit(events, selectedEvidence, runId)
     : undefined;
+  const orderedEvents = orderRunEvents(events);
+  const selectedEventIndex = orderedEvents.findIndex(
+    (event) => event.seq === selectedSeq,
+  );
+  const selectedEvent =
+    selectedEventIndex >= 0 ? orderedEvents[selectedEventIndex] : undefined;
+  const previousEvent =
+    selectedEventIndex > 0 ? orderedEvents[selectedEventIndex - 1] : undefined;
+  const nextEvent =
+    selectedEventIndex >= 0 && selectedEventIndex < orderedEvents.length - 1
+      ? orderedEvents[selectedEventIndex + 1]
+      : undefined;
 
   const revealInspector = () => {
     const inspector = inspectorRef.current;
@@ -206,17 +249,35 @@ function RunDetailWorkspace({
   }, [activeTab, pendingInspectorFocus]);
 
   useEffect(() => {
-    if (activeTab !== "diagnostics" || !pendingSelectedEventFocus) {
-      return;
-    }
-    const details = selectedEventDetailsRef.current;
-    if (!details) {
-      return;
-    }
-    details.scrollIntoView?.({ block: "start", inline: "nearest" });
-    details.focus({ preventScroll: true });
-    setPendingSelectedEventFocus(false);
-  }, [activeTab, pendingSelectedEventFocus]);
+    const event =
+      routeSequence === undefined
+        ? latestEvent
+        : events.find((candidate) => candidate.seq === routeSequence);
+    const nextSeq = event?.seq ?? initialSeq;
+    setActiveTab(routeTab ?? "overview");
+    setSelectedSeq(nextSeq);
+    setSelectedNodeId(
+      routeNodeId ??
+        eventNodeAtSequence(events, nextSeq, {
+          branch: event?.branch ?? latestEvent?.branch,
+          runId,
+        }) ??
+        latestNodeId,
+    );
+    setSelectedEvidenceSeq(
+      event && isInspectableEvidenceEvent(event) ? event.seq : undefined,
+    );
+    setFollowingLatest(routeSequence === undefined);
+  }, [
+    events,
+    initialSeq,
+    latestEvent,
+    latestNodeId,
+    routeNodeId,
+    routeSequence,
+    routeTab,
+    runId,
+  ]);
 
   useEffect(() => {
     if (!followingLatest) {
@@ -229,41 +290,82 @@ function RunDetailWorkspace({
     );
   }, [events, followingLatest, initialSeq, latestEvent, latestNodeId, runId]);
 
-  const selectNode = (nodeId: string, shouldRevealInspector = false) => {
-    setSelectedNodeId(nodeId);
-    setSelectedEvidenceSeq(undefined);
-    setFollowingLatest(nodeId === latestNodeId);
-    if (shouldRevealInspector) {
-      revealInspector();
+  const navigateRun = (
+    nextTab: RunDetailTab = "overview",
+    seq?: number,
+    node?: string,
+    showEventDetail = false,
+  ) => {
+    const event =
+      seq === undefined ? undefined : events.find((candidate) => candidate.seq === seq);
+    setActiveTab(nextTab);
+    if (event) {
+      const eventSeq = event.seq ?? seq;
+      setSelectedSeq(eventSeq);
+      setSelectedNodeId(
+        node ??
+          eventNodeAtSequence(events, eventSeq, {
+            branch: event.branch,
+            runId,
+          }),
+      );
+      setSelectedEvidenceSeq(
+        isInspectableEvidenceEvent(event) ? eventSeq : undefined,
+      );
+      setFollowingLatest(false);
+    } else if (node) {
+      setSelectedNodeId(node);
+      setSelectedEvidenceSeq(undefined);
+      const followsLatest = node === latestNodeId;
+      if (followsLatest) {
+        setSelectedSeq(initialSeq);
+      }
+      setFollowingLatest(followsLatest);
+    } else if (nextTab === "overview") {
+      setSelectedSeq(initialSeq);
+      setSelectedNodeId(latestNodeId);
+      setSelectedEvidenceSeq(
+        latestEvent && isInspectableEvidenceEvent(latestEvent)
+          ? latestEvent.seq
+          : undefined,
+      );
+      setFollowingLatest(true);
     }
+    navigate({
+      page: "run",
+      id: runId,
+      tab: nextTab === "overview" ? undefined : nextTab,
+      seq,
+      node,
+      event: showEventDetail || undefined,
+    });
   };
 
-  const selectEvent = (event: RunEvent, shouldRevealInspector = false) => {
-    setSelectedSeq(event.seq);
-    setSelectedNodeId(
-      eventNodeAtSequence(events, event.seq, { branch: event.branch, runId }),
+  const selectNode = (nodeId: string) => {
+    const nodeEvent =
+      [...orderedEvents]
+        .reverse()
+        .find(
+          (event) =>
+            event.seq <= selectedSeq && eventNodeId(event, runId) === nodeId,
+        ) ??
+      [...orderedEvents]
+        .reverse()
+        .find((event) => eventNodeId(event, runId) === nodeId);
+    navigateRun(
+      "diagnostics",
+      nodeId === latestNodeId ? undefined : nodeEvent?.seq ?? selectedSeq,
+      nodeId,
+      nodeEvent !== undefined,
     );
-    setSelectedEvidenceSeq(isInspectableEvidenceEvent(event) ? event.seq : undefined);
-    setFollowingLatest(event.seq === initialSeq);
-    if (shouldRevealInspector) {
-      revealInspector();
-    }
   };
 
-  const revealSelectedEvent = (event: RunEvent) => {
-    selectEvent(event);
-    setPendingSelectedEventFocus(true);
-    setActiveTab("diagnostics");
+  const selectEvent = (event: RunEvent) => {
+    navigateRun(activeTab, event.seq, undefined, true);
   };
 
-  const replaySeek = (seq: number) => {
-    const event = events.find((candidate) => candidate.seq === seq);
-    setSelectedSeq(seq);
-    setSelectedNodeId(
-      eventNodeAtSequence(events, seq, { branch: event?.branch, runId }),
-    );
-    setSelectedEvidenceSeq(undefined);
-    setFollowingLatest(seq === initialSeq);
+  const replaySeek = (seq: number, showEventDetail = false) => {
+    navigateRun(activeTab, seq, undefined, showEventDetail);
   };
 
   const causalEventSeq = run.escalation?.causalEventSeq;
@@ -277,7 +379,9 @@ function RunDetailWorkspace({
           runId,
         });
   const focusCausalEvent =
-    causalEvent === undefined ? undefined : () => revealSelectedEvent(causalEvent);
+    causalEventSeq === undefined
+      ? undefined
+      : () => navigateRun(activeTab, causalEventSeq, undefined, true);
 
   const failure = runFailure(run, events);
   const failureCausalEvent =
@@ -309,12 +413,19 @@ function RunDetailWorkspace({
   const stageVisits = semanticStageVisits(events, runId);
   const artifacts = logicalArtifacts(events, runId);
   const inspectSequence = (seq: number, tab: RunDetailTab = "diagnostics") => {
-    const event = events.find((candidate) => candidate.seq === seq);
-    if (event) {
-      selectEvent(event);
-    }
     setPendingInspectorFocus(tab === "diagnostics");
-    setActiveTab(tab);
+    navigateRun(tab, seq, undefined, true);
+  };
+  const closeEventDetail = () => {
+    const nextHash = routeHash({
+      page: "run",
+      id: runId,
+      tab: activeTab === "overview" ? undefined : activeTab,
+      seq: followingLatest ? undefined : selectedSeq,
+      node: activeTab === "diagnostics" ? selectedNodeId : undefined,
+    });
+    window.history.replaceState(window.history.state, "", nextHash);
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
   };
 
   return (
@@ -447,13 +558,22 @@ function RunDetailWorkspace({
           onFocusCausalEvent={
             failureCausalEvent === undefined
               ? undefined
-              : () => revealSelectedEvent(failureCausalEvent)
+              : () => navigateRun(activeTab, failureCausalEvent.seq, undefined, true)
           }
           phase={run.phase}
         />
       )}
 
-      <RunDetailTabs activeTab={activeTab} onSelect={setActiveTab} />
+      <RunDetailTabs
+        activeTab={activeTab}
+        onSelect={(nextTab) =>
+          navigateRun(
+            nextTab,
+            nextTab === "overview" || followingLatest ? undefined : selectedSeq,
+            nextTab === "diagnostics" ? routeNodeId : undefined,
+          )
+        }
+      />
 
       {activeTab === "overview" && (
         <>
@@ -461,7 +581,7 @@ function RunDetailWorkspace({
           <RunOverview
             events={events}
             onInspectSequence={inspectSequence}
-            onOpenArtifacts={() => setActiveTab("artifacts")}
+            onOpenArtifacts={() => navigateRun("artifacts")}
             run={run}
             visits={stageVisits}
           />
@@ -541,12 +661,11 @@ function RunDetailWorkspace({
               <ReplayScrubber
                 events={events}
                 graph={run.graph}
+                onInspect={(seq) => replaySeek(seq, true)}
                 onSeek={replaySeek}
                 runId={runId}
                 selectedSeq={selectedSeq}
-                selectedEventDetailsRef={selectedEventDetailsRef}
                 terminal={run.finishedAt != null}
-                workflow={run.workflow}
               />
             )}
 
@@ -581,24 +700,33 @@ function RunDetailWorkspace({
           <div className="run-journal-column">
             <EventLedger
               events={events}
-              onSelect={(event, shouldRevealInspector) => {
-                selectEvent(event);
-                if (shouldRevealInspector) {
-                  setPendingInspectorFocus(true);
-                  setActiveTab("diagnostics");
-                }
-              }}
+              onSelect={selectEvent}
               run={run}
               selectedSeq={selectedSeq}
             />
           </div>
         </section>
       )}
+
+      {eventDetail && selectedEvent && (
+        <EventDetailDialog
+          associatedDecision={evidenceDecision(events, selectedEvent, runId)}
+          event={selectedEvent}
+          graph={run.graph}
+          nextEvent={nextEvent}
+          onClose={closeEventDetail}
+          onNext={() => nextEvent && navigateRun(activeTab, nextEvent.seq, undefined, true)}
+          onPrevious={() =>
+            previousEvent && navigateRun(activeTab, previousEvent.seq, undefined, true)
+          }
+          previousEvent={previousEvent}
+          runId={runId}
+          workflow={run.workflow}
+        />
+      )}
     </>
   );
 }
-
-type RunDetailTab = "overview" | "artifacts" | "diagnostics" | "journal";
 
 const RUN_DETAIL_TABS: Array<{ id: RunDetailTab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -879,6 +1007,150 @@ function RunArtifacts({
 
 function semanticStatusLabel(status: string): string {
   return humanizeLedgerValue(status);
+}
+
+function EventDetailDialog({
+  associatedDecision,
+  event,
+  graph,
+  nextEvent,
+  onClose,
+  onNext,
+  onPrevious,
+  previousEvent,
+  runId,
+  workflow,
+}: {
+  associatedDecision?: RunEvent;
+  event: RunEvent;
+  graph?: WorkflowGraph;
+  nextEvent?: RunEvent;
+  onClose: () => void;
+  onNext: () => void;
+  onPrevious: () => void;
+  previousEvent?: RunEvent;
+  runId: string;
+  workflow?: string;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const stageId = eventNodeId(event, runId);
+  const node = graph?.nodes.find((candidate) => candidate.id === stageId);
+  const owner = nodeOwner(graph, stageId);
+  const summary = eventSummary(event, associatedDecision, runId).replace(
+    / Select this event to inspect (?:the artifact|the evidence)\.$/,
+    "",
+  );
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const onKeyDown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key === "Escape") {
+        keyEvent.preventDefault();
+        onCloseRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  return (
+    <div
+      className="event-detail-backdrop"
+      onMouseDown={(mouseEvent) => {
+        if (mouseEvent.target === mouseEvent.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section
+        aria-labelledby="event-detail-title"
+        aria-modal="true"
+        className="event-detail-dialog"
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <header>
+          <div>
+            <p className="section-kicker">Sequence {event.seq}</p>
+            <h2 id="event-detail-title">Event detail</h2>
+          </div>
+          <button
+            aria-label="Close event detail"
+            className="dialog-close"
+            onClick={onClose}
+            type="button"
+          >
+            <Icon name="close" size={16} />
+          </button>
+        </header>
+        <dl className="event-detail-meta">
+          <div>
+            <dt>Time</dt>
+            <dd>{formatTimestamp(event.time)}</dd>
+          </div>
+          <div>
+            <dt>Type</dt>
+            <dd><code>{event.type}</code></dd>
+          </div>
+          {workflow && (
+            <div>
+              <dt>Workflow</dt>
+              <dd>{workflow}</dd>
+            </div>
+          )}
+          {stageId && (
+            <div>
+              <dt>Stage</dt>
+              <dd>{humanizeLedgerValue(stageId)}</dd>
+            </div>
+          )}
+          {node && (
+            <div>
+              <dt>Kind</dt>
+              <dd>{humanizeLedgerValue(node.kind)}</dd>
+            </div>
+          )}
+          {owner && (
+            <div>
+              <dt>Goober</dt>
+              <dd>{owner}</dd>
+            </div>
+          )}
+          {event.attempt !== undefined && (
+            <div>
+              <dt>Attempt</dt>
+              <dd>{event.attempt}</dd>
+            </div>
+          )}
+        </dl>
+        <div className="event-detail-summary">
+          <strong>{eventHeading(event)}</strong>
+          <p>{summary}</p>
+        </div>
+        <footer>
+          <button
+            className="scope-pivot-link run-heading-action"
+            disabled={!previousEvent}
+            onClick={onPrevious}
+            type="button"
+          >
+            Previous event
+          </button>
+          <button
+            className="scope-pivot-link run-heading-action"
+            disabled={!nextEvent}
+            onClick={onNext}
+            type="button"
+          >
+            Next event
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
 }
 
 function repassKindLabel(kind: "correction" | "infrastructure" | "retry"): string {

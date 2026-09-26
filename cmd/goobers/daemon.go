@@ -1392,7 +1392,7 @@ func buildRuntimeRunner(
 	// issue-close-out (the `no-work` outcome short-circuits straight to
 	// completed) cannot leave claims.json and the provider disagreeing until
 	// the next backlog-curation cycle.
-	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(cfg, gaggleProject, sharedReg, stores)
+	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
 		return nil, nil, nil, err
 	}
