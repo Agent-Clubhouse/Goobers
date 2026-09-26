@@ -647,6 +647,22 @@ export const goWireFixtures = {
         "retryCount": 2,
         "policyRetryCount": 1,
         "infraRetryCount": 1,
+        "lineage": {
+          "source": {
+            "id": "run-122",
+            "phase": "failed"
+          },
+          "continuations": [
+            {
+              "id": "run-124",
+              "phase": "running"
+            }
+          ],
+          "resumeTarget": "implement",
+          "workspaceBranch": "goobers/implementation/run-122",
+          "workspaceBranchSha": "abc123",
+          "historicalRepassCount": 2
+        },
         "noWork": false,
         "operator": {
           "issue": {
@@ -723,6 +739,22 @@ export const goWireFixtures = {
     "retryCount": 2,
     "policyRetryCount": 1,
     "infraRetryCount": 1,
+    "lineage": {
+      "source": {
+        "id": "run-122",
+        "phase": "failed"
+      },
+      "continuations": [
+        {
+          "id": "run-124",
+          "phase": "running"
+        }
+      ],
+      "resumeTarget": "implement",
+      "workspaceBranch": "goobers/implementation/run-122",
+      "workspaceBranchSha": "abc123",
+      "historicalRepassCount": 2
+    },
     "noWork": false,
     "operator": {
       "issue": {

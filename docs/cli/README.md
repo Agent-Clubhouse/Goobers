@@ -4217,6 +4217,8 @@ runs/ directory with their current phase, newest first (default path ".").
 Normal and daemon status identify the root path, durable instance ID, and owning PID,
 and warn when the root is marked historical or its identity cannot be verified.
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
+Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;
+source runs identify each continuation and its independent phase.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
@@ -4488,7 +4490,9 @@ its trace spans. Use --transcripts to show all recorded agent transcripts,
 or --transcript to select one stage. Use --summary for run metadata and
 review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's
 events until it finishes; --json --follow emits JSON Lines (default path
-"."). Remediation escalations include the typed outcome, attempted flag,
+"."). Continuation traces include source/continuation links, resume target,
+reused branch, injected input names, and historical repass accounting.
+Remediation escalations include the typed outcome, attempted flag,
 and attempted causes in the text summary and JSON `escalation.remediation`
 object. Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO
 error, 130 = interrupted while following.

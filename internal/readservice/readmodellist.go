@@ -104,6 +104,16 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 // Every field comes from the row. If one had to be filled from a journal, the
 // cutover would not have removed the per-row open — it would have moved it.
 func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary {
+	var lineage *RunLineage
+	if row.Operator.ContinuedFromRunID != "" {
+		lineage = &RunLineage{
+			Source:             &LineageRun{ID: row.Operator.ContinuedFromRunID},
+			ResumeTarget:       row.Operator.ContinuationTarget,
+			WorkspaceBranch:    row.Operator.WorkspaceBranch,
+			WorkspaceBranchSHA: row.Operator.WorkspaceBranchSHA,
+			InjectedInputs:     append([]journal.InputRef(nil), row.Operator.InjectedInputs...),
+		}
+	}
 	return RunSummary{
 		EngineFallback:    row.Operator.EngineFallback,
 		RequiredMCP:       row.Operator.RequiredMCP,
@@ -134,6 +144,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		RetryCount:       row.RetryCount,
 		PolicyRetryCount: row.PolicyRetryCount,
 		InfraRetryCount:  row.InfraRetryCount,
+		Lineage:          lineage,
 		NoWork:           row.Disposition == readmodel.DispositionNoWork,
 		TerminalReason:   terminalReasonFromReadModel(row),
 		Operator:         operatorFromReadModel(row, observedAt),
