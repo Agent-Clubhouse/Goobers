@@ -85,6 +85,10 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "PR #%d: merge-review opt-out, not a real merge refusal — not recording demotion\n", selectedNumber)
 		return 0
 	}
+	if reason == mergeProviderErrorReason {
+		pf(stdout, "PR #%d: provider failure, not a pull request refusal — not recording demotion\n", selectedNumber)
+		return 0
+	}
 
 	repo, err := providerRepo(root)
 	if err != nil {

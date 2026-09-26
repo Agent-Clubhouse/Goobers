@@ -89,6 +89,22 @@ func TestRecordMergeRefusalKeepsTransientRefusalVisibleAndReselectable(t *testin
 	}
 }
 
+func TestRecordMergeRefusalSkipsProviderError(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "78")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "sha-transient")
+	t.Setenv("GOOBERS_INPUT_REASON", mergeProviderErrorReason)
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "record-merge-refusal", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "provider failure") {
+		t.Fatalf("stdout = %q, want provider-failure skip", stdout)
+	}
+}
+
 // TestRecordMergeRefusalSkipsAdvisory proves an advisory-mode "refusal" (no real
 // merge attempted) never accrues toward demotion — otherwise advisory mode would
 // demote every lander every cycle.

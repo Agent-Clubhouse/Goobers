@@ -1578,7 +1578,10 @@ func TestMergePRKeepsUnrecognized405AsProviderFailure(t *testing.T) {
 	if _, ok := result["errorCode"]; !ok {
 		t.Fatalf("result = %+v, want the generic provider error envelope", result)
 	}
-	if _, ok := result["reason"]; ok {
-		t.Fatalf("result = %+v, must not classify an unrelated 405 as a merge refusal", result)
+	if result["reason"] != mergeProviderErrorReason {
+		t.Fatalf("result = %+v, want reason=%s so the fail-branch handoff remains complete", result, mergeProviderErrorReason)
+	}
+	if result["selectedNumber"] != "9" || result["selectedHeadSha"] != "head123" {
+		t.Fatalf("result = %+v, want selected PR identity preserved for the fail-branch handoff", result)
 	}
 }
