@@ -6,8 +6,7 @@ import (
 	"strings"
 )
 
-// ContinuationRuns returns direct continuations grouped by source run. The
-// trigger reference is the immutable source ID for continuation-created runs.
+// ContinuationRuns returns direct continuations grouped by source run.
 func (s *Store) ContinuationRuns(ctx context.Context, sourceRunIDs []string) (map[string][]RunRow, error) {
 	out := make(map[string][]RunRow)
 	if len(sourceRunIDs) == 0 {
