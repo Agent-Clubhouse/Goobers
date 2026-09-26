@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestTerminalSharedClaimsNeverUseLegacyMarkerRelease(t *testing.T) {
 	if ok, _, err := ledger.ClaimScopedUntil(key, owner.Run, "claim", time.Now().Add(time.Minute), owner); err != nil || !ok {
 		t.Fatalf("seed shared claim: %v %v", ok, err)
 	}
-	entries, err := terminalClaimMarkerEntries(l, owner.Run)
+	entries, err := terminalClaimMarkerEntries(l, owner.Run, providers.ProviderGitHub)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("shared claim reached legacy marker cleanup: %+v %v", entries, err)
 	}
@@ -225,6 +226,47 @@ func TestTerminalCleanupSkipsClaimMarkerWhenAlreadyReleased(t *testing.T) {
 	}
 }
 
+func TestADOTerminalAbortReleasesProviderBeforeLedger(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const runID = "ado-aborted-run"
+	newStaleTerminalRun(t, l, runID, "default-implement", journal.PhaseAborted, "implement")
+	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	ledger := openTestClaimLedger(t, ledgerPath)
+	if ok, _, err := ledger.ClaimScoped(localscheduler.ClaimKey{
+		Gaggle: "example", Provider: "ado", ExternalID: "5648",
+	}, runID, "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed ADO claim: ok=%v err=%v", ok, err)
+	}
+
+	manager, err := worktree.NewManager(l.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeClaimMarkerRelease{ledgerPath: ledgerPath, runID: runID}
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderADO,
+		Owner:    "org",
+		Project:  "backlog-project",
+		Name:     "repo",
+	}
+	if err := finalizeTerminalRunWithClaimMarkers(l, nil, manager, runID, repo, fake.release); err != nil {
+		t.Fatalf("finalize aborted ADO run: %v", err)
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("ADO provider releases = %+v, want one", fake.requests)
+	}
+	if got := fake.requests[0]; got.Repository != repo || got.ID != "5648" || got.RunID != runID || got.LedgerAuthorized {
+		t.Fatalf("ADO release request = %+v, want routed ownership-checked release", got)
+	}
+	if len(fake.heldAtCall) != 1 || !fake.heldAtCall[0] {
+		t.Fatalf("ADO ledger held at provider call = %v, want true", fake.heldAtCall)
+	}
+	if entries := openTestClaimLedger(t, ledgerPath).ForRunAll(runID); len(entries) != 0 {
+		t.Fatalf("aborted ADO run still holds claims: %+v", entries)
+	}
+}
+
 // TestTerminalCleanupClaimMarkerFailureStillReleasesLedger pins the best-effort
 // contract: the ledger is the truth, so a provider hiccup must neither hold the
 // lease nor fail the terminal transition — it degrades to exactly the
@@ -274,6 +316,93 @@ func TestTerminalCleanupClaimMarkerFailureStillReleasesLedger(t *testing.T) {
 	}
 	if recorded != 1 {
 		t.Fatalf("%s events = %d, want 1 (events: %+v)", claimMarkerReleaseErrorCode, recorded, events)
+	}
+}
+
+// TestBuildTerminalClaimMarkerReleaseRoutesADOToGaggleBacklog pins the ADO
+// routing split: the release addresses the gaggle's backlog project (where the
+// work item and its claim breadcrumbs live), while the provider is built from
+// the configured code repository whose organization-scoped auth serves it.
+func TestBuildTerminalClaimMarkerReleaseRoutesADOToGaggleBacklog(t *testing.T) {
+	const (
+		codeProject    = "code-project"
+		backlogProject = "backlog-project"
+	)
+	root := initDemo(t)
+	adoBacklogProjectFixture(t, root, "example", codeProject, backlogProject)
+	l := layoutFor(root).ForGaggle("example")
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	var built []instance.RepoRef
+	var released []providers.ClaimWorkItemRequest
+	previous := newTerminalADOClaimMarkerProvider
+	newTerminalADOClaimMarkerProvider = func(repo instance.RepoRef, _ providers.SecretRegistrar, _ credentials.StoreResolver) (workItemClaimReleaser, error) {
+		built = append(built, repo)
+		return claimReleaserFunc(func(_ context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+			released = append(released, req)
+			return providers.WorkItem{}, nil
+		}), nil
+	}
+	t.Cleanup(func() { newTerminalADOClaimMarkerProvider = previous })
+
+	registrar, _ := journal.DefaultScrubber()
+	release, repo, err := buildTerminalClaimMarkerRelease(l, cfg, apiv1.RepoRef{}, registrar, nil)
+	if err != nil {
+		t.Fatalf("build terminal claim-marker release: %v", err)
+	}
+	if release == nil {
+		t.Fatal("ADO terminal claim-marker release is nil, want the provider release")
+	}
+	want := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "acme", Project: backlogProject, Name: "web"}
+	if repo != want {
+		t.Fatalf("ADO release target = %+v, want gaggle backlog project %+v", repo, want)
+	}
+	if len(built) != 0 {
+		t.Fatalf("ADO provider built at runtime construction (%+v), want per release", built)
+	}
+	req := providers.ClaimWorkItemRequest{Repository: repo, ID: "42", RunID: "run-42"}
+	if _, err := release(context.Background(), req); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(built) != 1 || built[0].Project != codeProject || built[0].Token.Env != "ADO_OPEN_PR_STALENESS_PAT" {
+		t.Fatalf("ADO provider built from %+v, want the configured code repo and its credential", built)
+	}
+	if len(released) != 1 || released[0] != req {
+		t.Fatalf("ADO releases = %+v, want %+v", released, req)
+	}
+}
+
+// TestBuildTerminalADOClaimMarkerReleaseDefersCredentialFailure pins the
+// best-effort contract at construction time: an ADO credential source that
+// cannot be built must not fail runtime startup — it surfaces as the release
+// error that terminal cleanup journals, with any secret scrubbed.
+func TestBuildTerminalADOClaimMarkerReleaseDefersCredentialFailure(t *testing.T) {
+	const secret = "terminal-ado-secret-value"
+	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "ado", Owner: "org", Project: "proj", Name: "repo"}}}
+	previous := newTerminalADOClaimMarkerProvider
+	newTerminalADOClaimMarkerProvider = func(instance.RepoRef, providers.SecretRegistrar, credentials.StoreResolver) (workItemClaimReleaser, error) {
+		return nil, errors.New("credential source unavailable: " + secret)
+	}
+	t.Cleanup(func() { newTerminalADOClaimMarkerProvider = previous })
+
+	registrar, _ := journal.DefaultScrubber()
+	registrar.Register([]byte(secret))
+	release, _, err := buildTerminalClaimMarkerRelease(instance.Layout{}, cfg, apiv1.RepoRef{}, registrar, nil)
+	if err != nil {
+		t.Fatalf("ADO credential failure failed runtime construction: %v", err)
+	}
+	if release == nil {
+		t.Fatal("ADO terminal claim-marker release is nil, want the provider release")
+	}
+	_, err = release(context.Background(), providers.ClaimWorkItemRequest{ID: "42", RunID: "run-42"})
+	if err == nil {
+		t.Fatal("release with an unbuildable credential source succeeded, want an error to journal")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("release error leaked a registered secret: %v", err)
 	}
 }
 
@@ -327,7 +456,7 @@ func TestBuildTerminalClaimMarkerReleaseForwardsConfiguredLogin(t *testing.T) {
 	t.Cleanup(func() { newTerminalClaimMarkerProvider = previous })
 
 	registrar, _ := journal.DefaultScrubber()
-	release, _, err := buildTerminalClaimMarkerRelease(cfg, apiv1.RepoRef{}, registrar, nil)
+	release, _, err := buildTerminalClaimMarkerRelease(instance.Layout{}, cfg, apiv1.RepoRef{}, registrar, nil)
 	if err != nil {
 		t.Fatalf("build terminal claim-marker release: %v", err)
 	}
@@ -351,6 +480,7 @@ func TestBuildTerminalClaimMarkerReleaseForwardsConfiguredLogin(t *testing.T) {
 func TestBuildTerminalClaimMarkerReleaseScope(t *testing.T) {
 	githubRepo := instance.RepoRef{Provider: "github", Owner: "your-org", Name: "your-repo"}
 	adoRepo := instance.RepoRef{Provider: "ado", Owner: "org", Project: "proj", Name: "repo"}
+	giteaRepo := instance.RepoRef{Provider: "gitea", Owner: "your-org", Name: "your-repo", BaseURL: "https://gitea.example.com"}
 	tests := []struct {
 		name     string
 		cfg      *instance.Config
@@ -377,15 +507,29 @@ func TestBuildTerminalClaimMarkerReleaseScope(t *testing.T) {
 			wantRepo: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "gaggle-org", Name: "gaggle-repo"},
 		},
 		{
-			name:     "ado keeps deferring to curation reconciliation",
+			name:     "ado targets the configured backlog",
 			cfg:      &instance.Config{Repos: []instance.RepoRef{adoRepo}},
+			wantFunc: true,
+			wantRepo: providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "proj", Name: "repo"},
+		},
+		{
+			name:     "gitea keeps deferring to curation reconciliation",
+			cfg:      &instance.Config{Repos: []instance.RepoRef{giteaRepo}},
 			wantFunc: false,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			registrar, _ := journal.DefaultScrubber()
-			release, repo, err := buildTerminalClaimMarkerRelease(tc.cfg, tc.project, registrar, nil)
+			previousADO := newTerminalADOClaimMarkerProvider
+			newTerminalADOClaimMarkerProvider = func(instance.RepoRef, providers.SecretRegistrar, credentials.StoreResolver) (workItemClaimReleaser, error) {
+				return claimReleaserFunc(func(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+					return providers.WorkItem{}, nil
+				}), nil
+			}
+			t.Cleanup(func() { newTerminalADOClaimMarkerProvider = previousADO })
+
+			release, repo, err := buildTerminalClaimMarkerRelease(instance.Layout{}, tc.cfg, tc.project, registrar, nil)
 			if err != nil {
 				t.Fatalf("build terminal claim-marker release: %v", err)
 			}

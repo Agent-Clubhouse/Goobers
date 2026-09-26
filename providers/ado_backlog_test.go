@@ -273,6 +273,91 @@ func TestADOClaimFailsClosedWithoutIdentity(t *testing.T) {
 	}
 }
 
+// TestADOReleaseWorkItemClaimRetiresEpochAndVisibleMarker pins ADO-N29:
+// releasing an ADO claim posts a release breadcrumb and clears the visible
+// claim label, ending the epoch so a later claimant is not stuck behind it.
+func TestADOReleaseWorkItemClaimRetiresEpochAndVisibleMarker(t *testing.T) {
+	fake := &adoClaimFake{tags: "goobers:approved; " + LabelClaimed}
+	fake.seed(adoTestSelfID, claimBreadcrumb("run-42"))
+	server := fake.server(t, true)
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Provider: ProviderADO, Name: "repo", Project: "project"}
+	released, err := provider.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "42",
+		RunID:      "run-42",
+	})
+	if err != nil {
+		t.Fatalf("ReleaseWorkItemClaim: %v", err)
+	}
+	fake.mu.Lock()
+	tags := fake.tags
+	fake.mu.Unlock()
+	if released.HasLabel(LabelClaimed) || strings.Contains(tags, LabelClaimed) {
+		t.Fatalf("released ADO item still has %q: item=%v raw tags=%q", LabelClaimed, released.Labels, tags)
+	}
+	winner, claimed, err := provider.adoClaimWinner(context.Background(), repo, "42")
+	if err != nil {
+		t.Fatalf("adoClaimWinner after release: %v", err)
+	}
+	if claimed || winner != "" {
+		t.Fatalf("ADO claim winner after release = (%q, %v), want no active epoch", winner, claimed)
+	}
+}
+
+// TestADOReleaseWorkItemClaimPreservesNewerOwner pins ADO-N29: a stale
+// terminal-cleanup release for a run that no longer owns the item must not
+// clobber a newer claimant's ownership, and must not write anything while
+// refusing.
+func TestADOReleaseWorkItemClaimPreservesNewerOwner(t *testing.T) {
+	comments := []map[string]interface{}{
+		{"commentId": 1, "text": claimBreadcrumb("old-run"), "createdBy": map[string]string{"id": adoTestSelfID}},
+		{"commentId": 2, "text": claimReleaseBreadcrumb("old-run"), "createdBy": map[string]string{"id": adoTestSelfID}},
+		{"commentId": 3, "text": claimBreadcrumb("new-run"), "createdBy": map[string]string{"id": adoTestSelfID}},
+	}
+	var mutations int
+
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	handleADOTestConnectionData(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations++
+		}
+		writeJSON(t, w, map[string]interface{}{"comments": comments})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations++
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": 42, "rev": 3,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "Reclaimed ADO item",
+				"System.State":        "Active",
+				"System.Tags":         LabelClaimed,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository: RepositoryRef{Provider: ProviderADO, Name: "repo", Project: "project"},
+		ID:         "42",
+		RunID:      "old-run",
+	})
+	if err == nil || !strings.Contains(err.Error(), `held by run "new-run"`) {
+		t.Fatalf("ReleaseWorkItemClaim error = %v, want newer-owner refusal", err)
+	}
+	if mutations != 0 {
+		t.Fatalf("newer-owner refusal performed %d provider mutation(s), want none", mutations)
+	}
+}
+
 // TestADOClaimIgnoresLegacyOwnerTag pins ADO-N38: a stray
 // goobers:claim-run:<b64> tag left on an item from before the claim-tag
 // fallback was removed no longer confers a claim when there is no breadcrumb
