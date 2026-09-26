@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -273,6 +274,13 @@ type ShellExecutor struct {
 	// SEC-049 for the documented boundary. Empty by default: an unset caller
 	// (e.g. an existing test) gets unchanged behavior.
 	GuardedCredentialPaths []string
+	// RepoAuthScheme is the non-secret authorization scheme ("basic" or
+	// "bearer") of the Azure DevOps credential this executor's grants carry.
+	// Any stage that receives at least one of its declared credentials gets
+	// it as RepoAuthSchemeEnvVar, the same rule the credential plane applies
+	// to a stage pod. Empty for every other provider, and by default, which
+	// stamps nothing.
+	RepoAuthScheme string
 }
 
 type builtinErrorReport struct {
@@ -830,16 +838,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
-	if injectRunContext && env.RepoRef.Provider != "" {
-		stageEnv = append(stageEnv,
-			RepoProviderEnvVar+"="+string(env.RepoRef.Provider),
-			RepoOwnerEnvVar+"="+env.RepoRef.Owner,
-			RepoNameEnvVar+"="+env.RepoRef.Name,
-		)
-		if env.RepoRef.Project != "" {
-			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+env.RepoRef.Project)
-		}
-	}
+	stageEnv = e.appendRepoEnv(stageEnv, env, injectRunContext)
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)
 	}
@@ -1715,6 +1714,45 @@ func (d *diagBuffer) Bytes() []byte {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]byte(nil), d.buf.Bytes()...)
+}
+
+// appendRepoEnv appends the scheduler-routed repository variables a goobers
+// CLI stage reads (GOOBERS_REPO_PROVIDER and its siblings) when
+// injectRunContext is set, and RepoAuthSchemeEnvVar when the executor knows
+// the scheme of its Azure DevOps grants and the stage received at least one
+// of its declared GOOBERS_CRED_<capability> variables. The scheme follows the
+// credentials, not the CLI gate, so a local stage gets it on the same rule a
+// stage pod does (stageCredentialEnv in cmd/goobers/dispatchexec.go).
+// Extracted from Run for the same complexity-gate reason as runContextEnv
+// below.
+func (e *ShellExecutor) appendRepoEnv(stageEnv []string, env apiv1.InvocationEnvelope, injectRunContext bool) []string {
+	repo := env.RepoRef
+	if injectRunContext && repo.Provider != "" {
+		stageEnv = append(stageEnv,
+			RepoProviderEnvVar+"="+string(repo.Provider),
+			RepoOwnerEnvVar+"="+repo.Owner,
+			RepoNameEnvVar+"="+repo.Name,
+		)
+		if repo.Project != "" {
+			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+repo.Project)
+		}
+	}
+	if e.RepoAuthScheme != "" && receivedCredential(stageEnv, env.Capabilities) {
+		stageEnv = append(stageEnv, RepoAuthSchemeEnvVar+"="+e.RepoAuthScheme)
+	}
+	return stageEnv
+}
+
+// receivedCredential reports whether stageEnv carries the GOOBERS_CRED_
+// variable of at least one declared capability.
+func receivedCredential(stageEnv, declared []string) bool {
+	for _, capability := range declared {
+		prefix := CredentialEnvVar(capability) + "="
+		if slices.ContainsFunc(stageEnv, func(entry string) bool { return strings.HasPrefix(entry, prefix) }) {
+			return true
+		}
+	}
+	return false
 }
 
 // runContextEnv is the run-identity block injected into a stage that opts into

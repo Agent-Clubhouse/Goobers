@@ -156,13 +156,15 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 	return nil
 }
 
-// adoLabelNames maps ADO PR labels to their bare names.
+// adoLabelNames maps ADO PR labels to their bare names, with the labels
+// Goobers owns folded to Goobers' spelling (ADO keeps the first writer's
+// casing; see ado_labelcase.go).
 func adoLabelNames(labels []adoLabel) []string {
 	names := make([]string, 0, len(labels))
 	for _, l := range labels {
 		names = append(names, l.Name)
 	}
-	return names
+	return canonicalADOLabels(names, nil)
 }
 
 // PollPullRequest reports an Azure DevOps pull request's review decision and
@@ -249,56 +251,30 @@ func (p *ADOProvider) policyEvaluations(ctx context.Context, projectName, projec
 // per-policy detail.
 //
 // The returned CheckState gates on the set of policies the agent loop can act
-// on — every required blocking policy EXCEPT those whose configuration id is in
-// humanOnly. Human/merge-time policies (merge strategy, proof-of-presence,
-// required/minimum reviewers, comment resolution) can never be satisfied by
-// re-implementing; reducing on them would peg the state to failing forever and
-// starve the fix loop, so a loop declares their configuration ids as human-only
-// and they are recorded in the detail list for transparency but never drive the
-// gate. When no gating policy has concluded green yet (none applies, or one is
-// still queued/running) the state is pending — fail-closed: correctness is
-// unproven until a gating policy passes.
+// on. Evaluations are classified by policy type id (design
+// ado-parity-dsl-2-0.md §5.1, ADO-N19): minimum- and required-reviewer
+// policies never gate — an unmet one is a wait on a human, reported per check
+// as AwaitingHuman, never CI pending and never a remediation trigger. Every
+// other required blocking policy gates EXCEPT those whose configuration id is
+// in humanOnly: other human/merge-time policies (merge strategy,
+// proof-of-presence, …) can never be satisfied by re-implementing, so a loop
+// declares their configuration ids as human-only and they are recorded in the
+// detail list for transparency but never drive the gate. When no gating policy
+// has concluded green yet (none applies, or one is still queued/running) the
+// state is pending — fail-closed: correctness is unproven until a gating
+// policy passes — unless ADO evaluated only reviewer policies, in which case
+// there is no CI to wait for. A successful authoritative query that returns
+// no blocking policies is also passing: the repository has no hosted policy
+// gate. A not-applicable blocking evaluation is omitted from details but still
+// distinguishes an unresolved hosted gate from a true zero-policy repository,
+// while a broken gate fails closed.
 func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, projectID, pullID string, humanOnly map[string]bool) (CheckState, []CheckDetail, error) {
 	evals, err := p.policyEvaluations(ctx, projectName, projectID, pullID)
 	if err != nil {
 		return "", nil, err
 	}
-	checks := make([]CheckDetail, 0, len(evals))
-	gateFailing, gatePending, gatePassing, sawGate := false, false, false, false
-	for _, ev := range evals {
-		if !ev.Configuration.IsEnabled || !ev.Configuration.IsBlocking {
-			continue
-		}
-		state := adoPolicyCheckState(ev.Status)
-		if state == "" {
-			continue
-		}
-		checks = append(checks, CheckDetail{
-			Name:       adoPolicyName(ev),
-			State:      state,
-			Conclusion: ev.Status,
-		})
-		if humanOnly[ev.Configuration.ID.String()] {
-			continue
-		}
-		sawGate = true
-		switch state {
-		case CheckStateFailing:
-			gateFailing = true
-		case CheckStatePending:
-			gatePending = true
-		case CheckStatePassing:
-			gatePassing = true
-		}
-	}
-	switch {
-	case gateFailing:
-		return CheckStateFailing, checks, nil
-	case sawGate && gatePassing && !gatePending:
-		return CheckStatePassing, checks, nil
-	default:
-		return CheckStatePending, checks, nil
-	}
+	state, checks := p.reducePolicyEvaluations(evals, projectName, humanOnly)
+	return state, checks, nil
 }
 
 // ClosePullRequest abandons an Azure DevOps pull request — the ADO equivalent of
@@ -657,9 +633,17 @@ type adoPolicyEvaluation struct {
 		IsEnabled  bool        `json:"isEnabled"`
 		IsBlocking bool        `json:"isBlocking"`
 		Type       struct {
+			// ID is the well-known policy type id that classifies the
+			// evaluation (build, status, reviewers, …); see adoPolicyKindOf.
+			ID          string `json:"id"`
 			DisplayName string `json:"displayName"`
 		} `json:"type"`
 	} `json:"configuration"`
+	// Context carries type-specific evaluation detail. For a build policy,
+	// BuildID names the build that was evaluated.
+	Context struct {
+		BuildID json.Number `json:"buildId"`
+	} `json:"context"`
 }
 
 // stringSet builds a lookup set from a slice, ignoring empty entries.
@@ -692,13 +676,16 @@ func adoPullRequestState(status string) string {
 }
 
 // adoPolicyCheckState maps an Azure DevOps policy-evaluation status to a
-// provider-neutral check state. An empty return means the evaluation is not
-// applicable and should be ignored.
+// provider-neutral check state. An empty return omits a not-applicable
+// evaluation from check details; pollPullRequestPolicies still records that a
+// blocking evaluation exists so it cannot be mistaken for a zero-policy repo.
 func adoPolicyCheckState(status string) CheckState {
 	switch strings.ToLower(status) {
 	case "approved":
 		return CheckStatePassing
 	case "rejected":
+		return CheckStateFailing
+	case "broken":
 		return CheckStateFailing
 	case "queued", "running":
 		return CheckStatePending

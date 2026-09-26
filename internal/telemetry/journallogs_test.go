@@ -661,6 +661,16 @@ func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
 	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
 	defer close(exporter.release)
 
+	// Park the worker inside Export before anything else. The worker takes the
+	// queue lock whenever it is woken (every drop wakes it), so a commit racing
+	// it loses TryLock and is charged to lock_contention; filling while it was
+	// live let enough of those losses eat the small overflow margin that
+	// queue_full never fired. The constructor returns with the worker idle and
+	// unlocked, and once parked it holds no lock, so only this goroutine
+	// touches the queue from here on.
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	<-exporter.started
+
 	// Missing identity.
 	client.Commit(journal.CommittedEvent{Body: []byte("{}")})
 	// Oversized record, which must not be charged to queue_full.
@@ -668,12 +678,12 @@ func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
 		JournalID: "test-journal",
 		Body:      make([]byte, journalLogRecordLimit+1),
 	})
-	// Fill the queue: one record parks the worker inside Export, the rest fill
-	// the ring, and everything past the bound is a genuine queue_full drop.
-	for range journalLogQueueLimit + 5 {
+	// The parked record still counts as pending, so the ring accepts
+	// journalLogQueueLimit-1 more and everything past that is queue_full.
+	const overflow = 5
+	for range journalLogQueueLimit - 1 + overflow {
 		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	}
-	<-exporter.started
 
 	stats := client.JournalExportStats()
 	if stats.InvalidMetadata != 1 {
@@ -682,8 +692,13 @@ func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
 	if stats.DroppedRecordTooLarge != 1 {
 		t.Errorf("DroppedRecordTooLarge = %d; want 1", stats.DroppedRecordTooLarge)
 	}
-	if stats.DroppedQueueFull == 0 {
-		t.Error("DroppedQueueFull = 0; want the overflow charged to queue_full, not folded into a single total")
+	if stats.DroppedQueueFull != overflow {
+		t.Errorf("DroppedQueueFull = %d; want %d: the overflow is charged to queue_full, not folded into a single total",
+			stats.DroppedQueueFull, overflow)
+	}
+	if stats.DroppedLockContention != 0 {
+		t.Errorf("DroppedLockContention = %d; want 0 with the worker parked outside the queue lock",
+			stats.DroppedLockContention)
 	}
 	// An oversized record is not overload, and overload is not bad metadata.
 	sum := stats.InvalidMetadata + stats.DroppedRecordTooLarge + stats.DroppedLockContention +

@@ -372,7 +372,7 @@ cover-check: test
 
 ## cover-gate: Enforce COVERAGE_THRESHOLD against an ALREADY-WRITTEN coverage.out.
 # Same gate as cover-check, minus the `test` prerequisite. CI uses this from the
-# unit-macos job, which runs the whole-tree suite unsharded and therefore already
+# unit-linux-coverage job, which runs the whole-tree suite unsharded and therefore already
 # emits a complete profile — so the threshold is enforced without paying for a
 # second full run, and the number stays single-sourced here rather than being
 # duplicated into the workflow. Refuses a missing profile rather than passing

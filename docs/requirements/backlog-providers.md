@@ -90,6 +90,27 @@ same abstraction, whose shape is unchanged.
   Scrum and inherited processes alike. Descriptions and comments are written as
   Markdown (`multilineFieldsFormat` on create/update, `format=markdown` on comments)
   rather than left to fall back to HTML-escaped plain text (`ADO-N27`).
+  - *ADO label case:* work-item tags and PR labels share one project-wide namespace
+    that matches case-insensitively, and ADO returns the casing of whoever wrote a
+    tag first. The ADO provider therefore compares tags and PR labels ignoring
+    case, and folds a label it reads back to the spelling Goobers compares
+    exactly: a label Goobers itself writes (its `goobers:` markers, status
+    labels, `stale` and `tracking`), and, on the backlog selection scan, the
+    trust label, `requireLabels`, `excludeLabels` and the labels a
+    `labelPredicate` names. So a tag first written as, say, `GOOBERS:READY` or
+    `Needs-Design` matches those. Any other label keeps ADO's casing and is
+    compared exactly, as before. The claim label is compared ignoring case, and
+    adding a label already present in another casing is a no-op.
+  - *ADO ready-label timing:* a label's add/remove history (for example when
+    `goobers:ready` was added, which a claim records as `readyAt`) is read from
+    the work item's update history (`workItems/{id}/updates`, paged with
+    `$top`/`$skip`): each update that changes `System.Tags` is diffed old against
+    new, matching the label ignoring case, and timed by that update's
+    `System.ChangedDate`. A work item whose history reaches ADO's 10,000-revision
+    cap fails closed rather than returning a truncated history (`ADO-N21`).
+  - *ADO partial label add:* ADO adds one PR label per request. When some labels
+    in a multi-label add fail, the ones that applied are kept (not rolled back)
+    and the error names each label that failed.
 
 ### Triggering
 

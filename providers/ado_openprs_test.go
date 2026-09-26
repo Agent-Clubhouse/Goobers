@@ -65,7 +65,9 @@ func TestADOProviderListOpenPullRequestsPagesAndKeepsLabels(t *testing.T) {
 		t.Fatalf("first head = %q", prs[0].Head)
 	}
 	last := prs[len(prs)-1]
-	if last.Head != "feature/human" || len(last.Labels) != 1 || last.Labels[0] != "Goobers:Merge-Escalated" {
+	// ADO keeps the first writer's casing; a Goobers-namespace label is folded
+	// to its canonical lower case (ADO-N11) so exact compares downstream match.
+	if last.Head != "feature/human" || len(last.Labels) != 1 || last.Labels[0] != "goobers:merge-escalated" {
 		t.Fatalf("last summary = %#v", last)
 	}
 }

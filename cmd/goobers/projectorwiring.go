@@ -94,14 +94,10 @@ func startProjector(
 	// serialized loop as live ones. Running it before would mean two writers
 	// existed briefly, which is the one thing the commit loop exists to prevent.
 	restartComplete := false
-	if result, err := p.Restart(ctx); err != nil {
+	if _, err := p.Restart(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: projector restart pass: %v\n", err)
 	} else {
 		restartComplete = true
-		if result.Drained > 0 || result.Reprojected > 0 || result.Missing > 0 {
-			fmt.Fprintf(os.Stderr, "projector restart: drained %d, reprojected %d, missing %d\n",
-				result.Drained, result.Reprojected, result.Missing)
-		}
 	}
 	return func() {
 		stopSweep()

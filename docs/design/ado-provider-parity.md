@@ -252,9 +252,9 @@ providers use:
 
 | Contract step | ADO behavior |
 |---|---|
-| `DetectMergePolicy` | Any enabled, blocking, non-deleted branch policy scoped to the target ref → `MergeQueue`; otherwise `Direct`. |
+| `DetectMergePolicy` | Decided from the pull request's **policy evaluations** (§11): any enabled, blocking evaluation that is not `approved` or `notApplicable` → `MergeQueue`; otherwise `Direct`. With no blocking evaluation yet, falls back to scanning every page of the policy configurations (Exact scopes by ref, Prefix scopes by ref folder, an empty scope repo-wide). The per-PR decision is never served from `merge-pr`'s branch-keyed policy cache. |
 | `EnqueuePullRequest` (MergeQueue) | Arm ADO **auto-complete** (the completion job is the queue), idempotently, with `autoCompleteSetBy` set to the caller's own `authenticatedUser.id` — ADO rejects any other id with 400 (ADO-N6). |
-| `PollMergeQueueEntry` (`queue-watch`) | completed → `Merged`; abandoned / auto-complete cleared → `Evicted`; armed → `Pending`. |
+| `PollMergeQueueEntry` (`queue-watch`) | completed → `Merged`; abandoned / auto-complete cleared → `Evicted`; armed → `Pending`, flagged `AwaitingHuman` when only reviewer policies are unmet (§11). |
 | `MergePullRequest` (Direct) | `PATCH status=completed` with `completionOptions{mergeStrategy, mergeCommitMessage}`, SHA-pinned server-side via `lastMergeSourceCommit` (409 TF401192 → head moved; 403 policy refusal → policy not met; see §11), then await the async completion job to a terminal `mergeStatus` (conflict → `ErrMergeConflict`). |
 
 **Landed** is defined solely by the poll reporting the PR merged with a resolvable merge
@@ -301,6 +301,15 @@ branch that constructs the ADO provider and calls the native thread / label / si
 primitives directly (the GitHub/Gitea `remediationProvider` interface stays those two
 providers; ADO is a separate code path routed by provider kind):
 
+- **`update-behind-pr`** is **not applicable** on ADO (ADO-N15): ADO always computes a
+  PR's `mergeStatus` against its current target, so there is no "branch must be up to
+  date" policy for a behind-but-clean PR to satisfy via API update. The stage's ADO
+  branch makes no provider call — it reports `not-applicable` and hands off to full
+  remediation, which reselects a candidate itself; a genuinely conflicting PR still
+  reaches `rebase-pr` through that same chain. The derived-capabilities table
+  (`stageProviderCapabilityOverrides`, `providercapability.go`) carries a matching
+  present-but-empty override so config load never requires `pr.update-branch` on ADO
+  for this stage.
 - **`gather-pr-context`** recovers the verdict and finding-set by reading the PR threads
   back (`ListPullRequestThreadComments`), trusting the head/base because `apply-verdict`
   SHA-pinned them, and computes the remediation priority from the PR's native labels plus
@@ -447,3 +456,49 @@ for. These rules come from `docs/design/ado-parity-dsl-2-0.md` §5 (ADO-N9).
 
 `providers/ado_conformance_test.go` scans the provider sources and fails if a
 policy bypass or a non-zero vote appears, so the first two rules stay true.
+
+### 11.1 Policy evaluations decide readiness
+
+The policy evaluations of the pull request
+(`_apis/policy/evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/{projectId}/{prId}`,
+pinned to `7.1-preview.1`) are the per-PR truth (ADO-N19, design
+`ado-parity-dsl-2-0.md` §5.1). They already apply prefix scopes, path filters
+and lazy evaluation, which a client-side match on the configuration list does
+not.
+
+- **Enqueue or merge.** `merge-pr` passes the pull request to
+  `DetectMergePolicy`. If any enabled, blocking evaluation is not `approved`
+  or `notApplicable`, Goobers arms auto-complete. Otherwise it completes the
+  pull request directly with a head pin. A policy added after the pull
+  request was opened may be evaluated late, so when there is no blocking
+  evaluation yet the configurations are scanned instead: every page, following
+  `x-ms-continuationtoken`; `Prefix` scopes matched by ref folder; a policy
+  with an empty scope treated as repo-wide.
+- **Classification.** Evaluations are classified by the well-known policy
+  type id, not by display name:
+
+| Policy type | Evaluation | What Goobers reports |
+|---|---|---|
+| Build, status | `queued` / `running` | CI pending |
+| Build, status | `rejected` / `broken` | CI failing. The check links the build from `context.buildId`. |
+| Minimum reviewers, required reviewers | not `approved` | A wait on a human (`CheckDetail.AwaitingHuman`). Never CI pending or failing, and never a remediation trigger. |
+| Comment requirements | `rejected` | Failing, "unresolved comment threads" |
+| Work item linking | `rejected` | Failing, "no linked work item" |
+| Any other type | as before | Gates CI unless listed in `humanPolicyConfigurationIds` |
+
+When ADO evaluated only reviewer policies for a pull request, the branch has
+no CI to wait for and `ci-poll` sees passing. With no evaluations at all it
+stays fail-closed pending.
+
+### 11.2 The human wait
+
+With auto-complete armed and a reviewer approval still missing, ADO keeps the
+pull request `active` (live probe F4). A reviewer policy stays `queued` even
+after the author votes for their own pull request, and Goobers never votes.
+`PollMergeQueueEntry` reports the entry pending with `AwaitingHuman` set, and
+`merge-queue-poll` prints "awaiting human approval" instead of treating the
+pull request as evicted. If the poll budget runs out while only a person can
+unblock it, the result file carries `queueOutcome: timeout` (so `queue-gate`
+routes it exactly as before), `awaitingHuman: true` and a reason that says
+"awaiting human approval". No remediation label is written: ADO completes the
+pull request itself once a reviewer approves.

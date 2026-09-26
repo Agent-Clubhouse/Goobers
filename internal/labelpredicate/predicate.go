@@ -4,6 +4,7 @@ package labelpredicate
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -82,6 +83,29 @@ func (p *Predicate) ReferencesLabel(label string) bool {
 	}
 	_, ok := p.referenced[label]
 	return ok
+}
+
+// Labels returns every label the predicate names — its required, excluded
+// and CEL-referenced labels — sorted and de-duplicated. A provider whose
+// labels are case-insensitive (Azure DevOps tags) uses it to fold a read
+// label onto the spelling the predicate compares against exactly.
+func (p *Predicate) Labels() []string {
+	if p == nil {
+		return nil
+	}
+	set := make(map[string]struct{}, len(p.referenced)+len(p.excluded))
+	for label := range p.referenced {
+		set[label] = struct{}{}
+	}
+	for _, label := range p.excluded {
+		set[label] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for label := range set {
+		out = append(out, label)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // IsZero reports whether p represents no actual filter — a nil pointer, or

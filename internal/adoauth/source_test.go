@@ -134,3 +134,32 @@ func TestSourceWorkloadIdentityAcceptsClientID(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestAuthSchemeFollowsTheConfiguredKind pins the non-secret scheme the daemon
+// delivers beside an ADO credential: a PAT is Basic (including the default
+// kind a repo without an auth block uses), every Entra identity kind is
+// Bearer, and anything that is not a supported ADO kind states none.
+func TestAuthSchemeFollowsTheConfiguredKind(t *testing.T) {
+	ado := func(auth *instance.RepoAuthConfig) instance.RepoRef {
+		return instance.RepoRef{Provider: "ado", Owner: "example-org", Project: "example-project", Name: "example-repo", Auth: auth}
+	}
+	for _, tc := range []struct {
+		name string
+		repo instance.RepoRef
+		want string
+	}{
+		{"default kind is a PAT", ado(nil), SchemeBasic},
+		{"pat", ado(&instance.RepoAuthConfig{Kind: instance.ADOAuthPAT}), SchemeBasic},
+		{"azure-cli", ado(&instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI}), SchemeBearer},
+		{"workload-identity", ado(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}), SchemeBearer},
+		{"managed-identity", ado(&instance.RepoAuthConfig{Kind: instance.ADOAuthManagedIdentity}), SchemeBearer},
+		{"unsupported kind", ado(&instance.RepoAuthConfig{Kind: "unknown"}), ""},
+		{"github repository", instance.RepoRef{Provider: "github", Owner: "example-org", Name: "example-repo"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AuthScheme(tc.repo); got != tc.want {
+				t.Fatalf("AuthScheme() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

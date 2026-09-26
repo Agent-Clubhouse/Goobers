@@ -273,6 +273,7 @@ func TestBacklogQueryListWorkItemsRefreshesWeakETag(t *testing.T) {
 			newProvider(snapshotID),
 			providers.RepositoryRef{Owner: "acme", Name: "app"},
 			[]string{readyLabel},
+			nil,
 			"",
 			nil,
 			backlogScanPageSize,

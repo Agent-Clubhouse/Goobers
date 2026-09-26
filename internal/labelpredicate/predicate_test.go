@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+func TestPredicateLabelsListsEveryNamedLabel(t *testing.T) {
+	predicate, err := Compile(`"b" in labels || !("c" in labels)`, []string{"a"}, []string{"d"})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if got := strings.Join(predicate.Labels(), ","); got != "a,b,c,d" {
+		t.Fatalf("Labels() = %s, want a,b,c,d", got)
+	}
+	var nilPredicate *Predicate
+	if labels := nilPredicate.Labels(); labels != nil {
+		t.Fatalf("nil Labels() = %v, want nil", labels)
+	}
+}
+
 func TestPredicateGroupedBooleanComposition(t *testing.T) {
 	predicate, err := Compile(
 		`("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,

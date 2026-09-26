@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -883,6 +884,10 @@ type adoPRDetailState struct {
 	autoComplete bool
 	detailCalls  int
 	workItemHits []string
+	// projectID, when set, is reported on the detail so the provider can
+	// address the pull request's policy evaluations, which serve evaluations.
+	projectID   string
+	evaluations []map[string]interface{}
 }
 
 func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *adoPRDetailState) *httptest.Server {
@@ -900,8 +905,20 @@ func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *a
 		if st.autoComplete {
 			body["autoCompleteSetBy"] = map[string]string{"uniqueName": "goobers"}
 		}
+		if st.projectID != "" {
+			body["repository"] = map[string]interface{}{
+				"name":    name,
+				"project": map[string]string{"id": st.projectID, "name": project},
+			}
+		}
 		st.mu.Unlock()
 		writeFakeJSON(w, body)
+	})
+	mux.HandleFunc("/"+owner+"/"+project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
+		st.mu.Lock()
+		evals := st.evaluations
+		st.mu.Unlock()
+		writeFakeJSON(w, map[string]interface{}{"value": evals})
 	})
 	// Catch-all: a work-item touch is the PR-as-work-item hazard this stage
 	// must never trigger on ADO; record it so the assertions can prove it did
@@ -920,8 +937,29 @@ func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *a
 }
 
 func adoMergeQueuePollEnv(t *testing.T, serverURL, owner, project, name string, grantComplete bool, inputs map[string]string) (root, workDir string) {
+	return adoMergeQueuePollEnvWithAuth(t, serverURL, owner, project, name, grantComplete, instance.ADOAuthPAT, inputs)
+}
+
+func adoMergeQueuePollEnvWithAuth(t *testing.T, serverURL, owner, project, name string, grantComplete bool, authKind string, inputs map[string]string) (root, workDir string) {
 	t.Helper()
 	root = initDemo(t)
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Repos = []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    owner,
+		Project:  project,
+		Name:     name,
+		Auth:     &instance.RepoAuthConfig{Kind: authKind},
+	}}
+	if authKind == instance.ADOAuthPAT {
+		cfg.Repos[0].Token = instance.TokenRef{Env: "TEST_ADO_PAT"}
+	}
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	prev := newADOProviderForStage
 	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
@@ -994,6 +1032,23 @@ func TestMergeQueuePollADORequiresCompleteCapability(t *testing.T) {
 	}
 	if st.detailCalls != 0 {
 		t.Fatalf("detail calls = %d, want 0 — completion authority must be resolved before the provider polls", st.detailCalls)
+	}
+}
+
+func TestMergeQueuePollADOAzureCLIUsesConfiguredAuthenticationWithoutTokenGrant(t *testing.T) {
+	st := &adoPRDetailState{status: "completed", mergeCommit: "adomergesha"}
+	server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
+	root, dir := adoMergeQueuePollEnvWithAuth(t, server.URL, "acme", "proj", "svc", false, instance.ADOAuthAzureCLI, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "merged" {
+		t.Fatalf("result = %+v, want queueOutcome=merged", result)
 	}
 }
 
@@ -1103,5 +1158,89 @@ func TestMergeQueuePollRefusesUnsupportedGiteaProviderBeforeGitHubDispatch(t *te
 	}
 	if !strings.Contains(stderr, `does not support repository provider "gitea"`) {
 		t.Fatalf("stderr = %q, want explicit unsupported-provider error", stderr)
+	}
+}
+
+// adoTestEvaluation builds one enabled, blocking ADO policy evaluation of the
+// given policy type id.
+func adoTestEvaluation(typeID, displayName, status string) map[string]interface{} {
+	return map[string]interface{}{"status": status, "configuration": map[string]interface{}{
+		"isEnabled": true, "isBlocking": true,
+		"type": map[string]string{"id": typeID, "displayName": displayName},
+	}}
+}
+
+const (
+	adoTestBuildPolicyType    = "0609b952-1397-4640-95ec-e00a01b2c241"
+	adoTestReviewerPolicyType = "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"
+)
+
+// TestMergeQueuePollADOReportsAwaitingHumanApproval is ADO-N19: auto-complete
+// is armed and the only unmet policy is a minimum-reviewer policy, so the pull
+// request stays active (live probe F4). merge-queue-poll must neither evict it
+// nor report a bare CI timeout: it reports "awaiting human approval", keeps
+// queueOutcome=timeout so queue-gate routes it as before, and writes no
+// remediation label.
+func TestMergeQueuePollADOReportsAwaitingHumanApproval(t *testing.T) {
+	st := &adoPRDetailState{
+		status: "active", autoComplete: true, projectID: "proj-guid",
+		evaluations: []map[string]interface{}{
+			adoTestEvaluation(adoTestBuildPolicyType, "Build", "approved"),
+			adoTestEvaluation(adoTestReviewerPolicyType, "Minimum number of reviewers", "queued"),
+		},
+	}
+	server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
+	root, dir := adoMergeQueuePollEnv(t, server.URL, "acme", "proj", "svc", true, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "50ms",
+	})
+
+	code, stdout, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "timeout" {
+		t.Fatalf("result = %+v, want queueOutcome=timeout (queue-gate routing unchanged)", result)
+	}
+	if result["awaitingHuman"] != true {
+		t.Fatalf("result = %+v, want awaitingHuman=true", result)
+	}
+	if reason, _ := result["reason"].(string); !strings.Contains(reason, "awaiting human approval") {
+		t.Fatalf("reason = %q, want it to say awaiting human approval", reason)
+	}
+	if !strings.Contains(stdout, "awaiting human approval") {
+		t.Fatalf("stdout = %q, want an awaiting-human report", stdout)
+	}
+	if len(st.workItemHits) != 0 {
+		t.Fatalf("work-item writes = %v, want none — a human wait is never a remediation trigger", st.workItemHits)
+	}
+}
+
+// TestMergeQueuePollADOPendingCIIsAPlainTimeout proves the awaiting-human
+// report is reserved for a reviewer-only hold: a build still running is an
+// ordinary timeout with no awaitingHuman field.
+func TestMergeQueuePollADOPendingCIIsAPlainTimeout(t *testing.T) {
+	st := &adoPRDetailState{
+		status: "active", autoComplete: true, projectID: "proj-guid",
+		evaluations: []map[string]interface{}{
+			adoTestEvaluation(adoTestBuildPolicyType, "Build", "running"),
+			adoTestEvaluation(adoTestReviewerPolicyType, "Minimum number of reviewers", "queued"),
+		},
+	}
+	server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
+	root, dir := adoMergeQueuePollEnv(t, server.URL, "acme", "proj", "svc", true, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "50ms",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "timeout" {
+		t.Fatalf("result = %+v, want queueOutcome=timeout", result)
+	}
+	if _, ok := result["awaitingHuman"]; ok {
+		t.Fatalf("result = %+v, want no awaitingHuman while CI is still running", result)
 	}
 }

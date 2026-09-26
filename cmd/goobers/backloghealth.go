@@ -1043,7 +1043,7 @@ func annotateBacklogReadyTimes(
 		if !items[i].HasLabel(readyLabel) {
 			continue
 		}
-		// ADO does not expose tag history. ChangedDate is only a conservative
+		// Health skips ADO's per-item update walk; ChangedDate is a conservative
 		// timestamp for the current ready cohort, not a provider transition.
 		if items[i].UpdatedAt == nil {
 			return fmt.Errorf("ADO work item %s has %q but no ChangedDate", items[i].ID, readyLabel)

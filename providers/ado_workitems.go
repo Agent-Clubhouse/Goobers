@@ -2,7 +2,6 @@ package providers
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -20,6 +19,7 @@ const (
 	adoCommentPageSize = 200
 	adoWIQLPageSize    = 20000
 	adoClaimRetries    = 4
+	adoLinkRetries     = 4
 	adoMaxTagLength    = 400
 	adoClaimTagPrefix  = "goobers:claim-run:"
 
@@ -103,7 +103,7 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	// both providers): requestedState "open"/"closed" needs each
 	// candidate's process-specific state category read before it can be
 	// compared (not a raw WIQL-comparable value), and req.Labels'
-	// server-side WIQL CONTAINS is a substring match — hasAllLabels' exact
+	// server-side WIQL CONTAINS is a substring match — hasAllLabels' whole-tag
 	// client-side recheck can reject a CONTAINS false-positive. Neither
 	// condition is added to the shared check: GitHub's own `state`/`labels`
 	// query params filter both reliably server-side, so applying ADO's
@@ -186,6 +186,88 @@ func (p *ADOProvider) GetWorkItem(ctx context.Context, repo RepositoryRef, id st
 		return WorkItem{}, err
 	}
 	return p.mapADOWorkItem(ctx, repo, out)
+}
+
+// LinkPullRequestToWorkItem adds ADO's native Pull Request artifact relation
+// to a work item. The relation is the source of both the work item's
+// Development link and the PR's workItemRefs projection.
+func (p *ADOProvider) LinkPullRequestToWorkItem(ctx context.Context, codeRepo, workItemRepo RepositoryRef, workItemID, pullID string) error {
+	if err := requireRepo(codeRepo); err != nil {
+		return err
+	}
+	if err := p.requireWorkItemScope(p.project(workItemRepo)); err != nil {
+		return err
+	}
+	if err := validateADOWorkItemID(workItemID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(pullID) == "" {
+		return errPullIDRequired
+	}
+
+	prEndpoint, err := p.repoURL(codeRepo, "pullrequests", pullID)
+	if err != nil {
+		return err
+	}
+	var pr adoPullRequestDetail
+	if err := p.do(ctx, http.MethodGet, prEndpoint, nil, &pr); err != nil {
+		return err
+	}
+	if pr.Repository.Project.ID == "" || pr.Repository.ID == "" {
+		return fmt.Errorf("ado pull request %s: project and repository ids are required for native work-item linking", pullID)
+	}
+	artifactURL := fmt.Sprintf(
+		"vstfs:///Git/PullRequestId/%s%%2F%s%%2F%d",
+		pr.Repository.Project.ID,
+		pr.Repository.ID,
+		pr.PullRequestID,
+	)
+
+	workItemEndpoint, err := p.workURL(p.project(workItemRepo), "workitems", workItemID)
+	if err != nil {
+		return err
+	}
+	expandedEndpoint, err := addQuery(workItemEndpoint, url.Values{"$expand": []string{"Relations"}})
+	if err != nil {
+		return err
+	}
+	var conflict error
+	for attempt := 0; attempt < adoLinkRetries; attempt++ {
+		var current adoWorkItem
+		if err := p.do(ctx, http.MethodGet, expandedEndpoint, nil, &current); err != nil {
+			return err
+		}
+		for _, relation := range current.Relations {
+			if relation.Rel == "ArtifactLink" && strings.EqualFold(relation.URL, artifactURL) {
+				return nil
+			}
+		}
+		patch := []adoPatchOperation{
+			{Op: "test", Path: "/rev", Value: current.Rev},
+			{
+				Op:   "add",
+				Path: "/relations/-",
+				Value: map[string]interface{}{
+					"rel": "ArtifactLink",
+					"url": artifactURL,
+					"attributes": map[string]string{
+						"name": "Pull Request",
+					},
+				},
+			},
+		}
+		var out adoWorkItem
+		if err := p.doPatch(ctx, http.MethodPatch, workItemEndpoint, patch, &out); err != nil {
+			if isADORevisionConflict(err) {
+				conflict = err
+				continue
+			}
+			return err
+		}
+		p.recordMutation(ctx, "issue", workItemID, "link-pr", workItemRepo)
+		return nil
+	}
+	return fmt.Errorf("link ADO work item %s to pull request %s after %d revision conflicts: %w", workItemID, pullID, adoLinkRetries, conflict)
 }
 
 // FindWorkItemsByMarker reads the project's authoritative work-item IDs and
@@ -357,7 +439,7 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	}
 
 	tagOps := func(_ WorkItem, raw adoWorkItem) []adoPatchOperation {
-		return []adoPatchOperation{adoTagPatch(replaceStatusLabel(adoRawTags(raw), req.Status))}
+		return []adoPatchOperation{adoTagPatch(raw, replaceStatusLabel(adoDropStatusTags(adoRawTags(raw)), req.Status))}
 	}
 
 	closing := req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed
@@ -537,7 +619,6 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 			return WorkItem{}, err
 		}
 	}
-
 	fieldOps := func(_ WorkItem, raw adoWorkItem) []adoPatchOperation {
 		var ops []adoPatchOperation
 		if req.Title != nil {
@@ -551,7 +632,7 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
 		}
 		if labelsChanged(req) {
-			ops = append(ops, adoTagPatch(applyLabelSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)))
+			ops = append(ops, adoTagPatch(raw, applyADOTagSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)))
 		}
 		return ops
 	}
@@ -675,7 +756,7 @@ func (p *ADOProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemReques
 	if err != nil {
 		return ClaimResult{}, err
 	}
-	if !item.HasLabel(label) {
+	if !adoHasLabel(item.Labels, label) {
 		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
 	}
 	return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
@@ -695,10 +776,10 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 		if rawErr != nil {
 			return WorkItem{}, rawErr
 		}
-		labels := applyLabelSet(adoRawTags(raw), add, remove)
+		labels := applyADOTagSet(adoRawTags(raw), add, remove)
 		patch := []adoPatchOperation{
 			{Op: "test", Path: "/rev", Value: raw.Rev},
-			adoTagPatch(labels),
+			adoTagPatch(raw, labels),
 		}
 		endpoint, endpointErr := p.workURL(p.project(repo), "workitems", id)
 		if endpointErr != nil {
@@ -718,19 +799,16 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 	return WorkItem{}, fmt.Errorf("update claim label on work item %s after revision conflicts: %w", id, conflict)
 }
 
-// adoClaimWinner resolves the current claim owner from the work item's comment
-// thread, falling back to a legacy owner tag.
+// adoClaimWinner resolves the current claim owner from the work item's
+// comment thread.
 //
 // Ownership used to live in a tag encoding the run id, which minted a unique,
 // never-reused entry in the project-global tag namespace on every claim — one
 // per run, forever, with a 100% garbage rate (#1979). Comments carry the same
 // information without a shared namespace, and match the GitHub provider's
-// protocol exactly so the two backends do not drift.
-//
-// The legacy tag is still READ so items claimed before this change are not
-// orphaned; it is never written again, and release clears it. That fallback is
-// TEMPORARY — #1990 removes it (target 2026-08-14). A pre-1.0 product should
-// not carry a permanent compat path for a format only Goobers ever wrote.
+// protocol exactly so the two backends do not drift. The legacy tag fallback
+// was removed in #1990; a stray goobers:claim-run:* tag on an old item no
+// longer confers a claim.
 //
 // Only breadcrumbs written by the authenticated identity count (see
 // ownClaimComments), matching the GitHub provider's filter to the
@@ -760,19 +838,7 @@ func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id
 			winner = claimRunID(comment.Body)
 		}
 	}
-	if winner != "" {
-		return winner, true, nil
-	}
-
-	current, err := p.GetWorkItem(ctx, repo, id)
-	if err != nil {
-		return "", false, err
-	}
-	raw, err := rawADOWorkItem(current)
-	if err != nil {
-		return "", false, err
-	}
-	return adoClaimOwner(adoRawTags(raw))
+	return winner, winner != "", nil
 }
 
 // ownClaimComments lists the work item's comments written by the identity the
@@ -802,8 +868,7 @@ func (p *ADOProvider) ownClaimComments(ctx context.Context, repo RepositoryRef, 
 }
 
 // ReleaseWorkItemClaim ends the current ADO claim epoch: it posts a release
-// breadcrumb, drops the visible claim label, and clears any legacy owner tag
-// left by a claim taken before ownership moved into the comment thread (#1979).
+// breadcrumb and drops the visible claim label.
 func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
 	result, err := p.releaseWorkItemClaim(ctx, req)
 	p.recordClaimAttempt(ctx, req, "claim-release", "success", err)
@@ -855,24 +920,11 @@ func (p *ADOProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 	if err != nil {
 		return WorkItem{}, err
 	}
-	if !current.HasLabel(label) {
+	if !adoHasLabel(current.Labels, label) {
 		return current, nil
 	}
 	remove := []string{label}
-	// Legacy owner-tag cleanup; removed with the rest of the fallback in #1990.
-	if legacy, tagErr := adoClaimTag(winner); tagErr == nil {
-		remove = append(remove, legacy)
-	}
 	return p.setADOClaimLabel(ctx, req.Repository, req.ID, nil, remove)
-}
-
-// ListWorkItemLabelTransitionsForItem reaches parity in V1: ADO's work-item
-// update history maps to label-transition events differently than GitHub's
-// timeline. Only reached when a workflow gates claiming on a ready label's age
-// (requireLabels contains a ready label), which the ADO backlog workload does
-// not use.
-func (p *ADOProvider) ListWorkItemLabelTransitionsForItem(context.Context, RepositoryRef, string, string) ([]WorkItemLabelTransition, error) {
-	return nil, fmt.Errorf("ADO work-item label transitions reach parity in V1")
 }
 
 // Subscribe emits Azure Boards backlog item availability events.
@@ -940,7 +992,7 @@ func (p *ADOProvider) mapADOWorkItem(ctx context.Context, repo RepositoryRef, it
 }
 
 func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) WorkItem {
-	labels := adoVisibleLabels(adoRawTags(item))
+	labels := canonicalADOLabels(adoVisibleLabels(adoRawTags(item)), nil)
 	parent, links, hierarchy := adoHierarchy(item.Relations)
 	updated := timeField(item.Fields, "System.ChangedDate")
 	return WorkItem{
@@ -1018,10 +1070,16 @@ func adoLabels(tags string) []string {
 	return uniqueStrings(strings.Split(tags, ";"))
 }
 
+// adoVisibleLabels drops legacy goobers:claim-run:* tags from the labels a
+// work item reports. The claim-tag fallback that read and cleared these tags
+// was removed in #1990, but items claimed before that change may still carry
+// a stale tag until it is naturally overwritten or the item is next released;
+// hiding the prefix keeps that garbage from surfacing as a routing label in
+// the meantime. Safe to drop this filter once no pre-#1990 tags remain.
 func adoVisibleLabels(labels []string) []string {
 	visible := make([]string, 0, len(labels))
 	for _, label := range labels {
-		if !strings.HasPrefix(label, adoClaimTagPrefix) {
+		if !strings.HasPrefix(strings.ToLower(label), adoClaimTagPrefix) {
 			visible = append(visible, label)
 		}
 	}
@@ -1506,8 +1564,12 @@ func adoRawTags(item adoWorkItem) []string {
 	return adoLabels(stringField(item.Fields, "System.Tags"))
 }
 
-func adoTagPatch(tags []string) adoPatchOperation {
-	return adoPatchOperation{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(uniqueStrings(tags), "; ")}
+func adoTagPatch(item adoWorkItem, tags []string) adoPatchOperation {
+	op := "add"
+	if _, exists := item.Fields["System.Tags"]; exists {
+		op = "replace"
+	}
+	return adoPatchOperation{Op: op, Path: "/fields/System.Tags", Value: strings.Join(uniqueStrings(tags), "; ")}
 }
 
 func (p *ADOProvider) postWorkItemComment(ctx context.Context, repo RepositoryRef, id, text string) error {
@@ -1539,36 +1601,6 @@ func (p *ADOProvider) postAttributedWorkItemComment(ctx context.Context, repo Re
 	return err
 }
 
-// adoClaimTag renders the LEGACY owner tag. Retained only to recognize and
-// clear claims taken before ownership moved into the comment thread (#1979) —
-// never written by a new claim. Deleted by #1990 (target 2026-08-14).
-func adoClaimTag(runID string) (string, error) {
-	tag := adoClaimTagPrefix + base64.RawURLEncoding.EncodeToString([]byte(runID))
-	if err := validateADOTags([]string{tag}); err != nil {
-		return "", fmt.Errorf("encode ADO claim owner: %w", err)
-	}
-	return tag, nil
-}
-
-func adoClaimOwner(tags []string) (string, bool, error) {
-	owner := ""
-	for _, tag := range tags {
-		if !strings.HasPrefix(tag, adoClaimTagPrefix) {
-			continue
-		}
-		encoded := strings.TrimPrefix(tag, adoClaimTagPrefix)
-		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
-		if err != nil || len(decoded) == 0 {
-			return "", false, fmt.Errorf("invalid ADO claim owner tag")
-		}
-		if owner != "" && owner != string(decoded) {
-			return "", false, fmt.Errorf("ADO work item has multiple claim owners")
-		}
-		owner = string(decoded)
-	}
-	return owner, owner != "", nil
-}
-
 func isADORevisionConflict(err error) bool {
 	var responseErr *providerResponseError
 	if !errors.As(err, &responseErr) {
@@ -1583,16 +1615,11 @@ func isADORevisionConflict(err error) bool {
 		(strings.Contains(body, "vs403351") || strings.Contains(body, "test operation"))
 }
 
+// hasAllLabels reports whether itemLabels holds every required label,
+// ignoring case: ADO tags match case-insensitively (see ado_labelcase.go).
 func hasAllLabels(itemLabels, required []string) bool {
-	if len(required) == 0 {
-		return true
-	}
-	item := make(map[string]struct{}, len(itemLabels))
-	for _, label := range itemLabels {
-		item[label] = struct{}{}
-	}
 	for _, label := range required {
-		if _, ok := item[label]; !ok {
+		if !adoHasLabel(itemLabels, label) {
 			return false
 		}
 	}

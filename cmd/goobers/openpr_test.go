@@ -284,6 +284,63 @@ func TestOpenPRRoutesADOThroughExecutorInjectedAuthentication(t *testing.T) {
 	}
 }
 
+func TestOpenPRADOWorkItemLinkRequiresDedicatedCapability(t *testing.T) {
+	root := initDemo(t)
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Repos = []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "org",
+		Project:  "project",
+		Name:     "repo",
+		Token:    instance.TokenRef{Env: "ADO_OPEN_PR_PAT"},
+	}}
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "project", Name: "repo"}
+	t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "pr-only-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "")
+
+	if _, err := openPRWorkItemLinker(root, repo, true, "42"); err == nil ||
+		!strings.Contains(err.Error(), string(capability.ADOWorkItemsWrite)) {
+		t.Fatalf("openPRWorkItemLinker error = %v, want missing dedicated work-item capability", err)
+	}
+
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "work-item-token")
+	linker, err := openPRWorkItemLinker(root, repo, true, "42")
+	if err != nil {
+		t.Fatalf("openPRWorkItemLinker with dedicated capability: %v", err)
+	}
+	if linker == nil {
+		t.Fatal("openPRWorkItemLinker returned nil linker")
+	}
+}
+
+func TestOpenPRGitHubDoesNotResolveADOWorkItemAuthority(t *testing.T) {
+	previous := newADOProviderForWorkItemWrite
+	called := false
+	newADOProviderForWorkItemWrite = func(string, providers.RepositoryRef) (*providers.ADOProvider, error) {
+		called = true
+		return nil, fmt.Errorf("unexpected ADO provider construction")
+	}
+	t.Cleanup(func() { newADOProviderForWorkItemWrite = previous })
+
+	linker, err := openPRWorkItemLinker("", providers.RepositoryRef{Provider: providers.ProviderGitHub}, true, "42")
+	if err != nil {
+		t.Fatalf("openPRWorkItemLinker for GitHub: %v", err)
+	}
+	if linker != nil {
+		t.Fatal("GitHub open-pr received an ADO work-item linker")
+	}
+	if called {
+		t.Fatal("GitHub open-pr resolved ADO work-item authority")
+	}
+}
+
 func TestOpenPRADOStageHelperProcess(t *testing.T) {
 	if os.Getenv("GOOBERS_TEST_ADO_OPEN_PR_HELPER") != "1" {
 		return

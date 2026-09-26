@@ -53,10 +53,6 @@ var expectedFailures = map[finding]string{
 		Subject: "reference-workflows", Provider: apiv1.ProviderADO,
 		Object: "goobers/pr-remediation", Diagnostic: "capability pr.review.threads",
 	}: "ADO-N20: implement ADO review threads (gather-review-threads, resolve-review-threads)",
-	{
-		Subject: "reference-workflows", Provider: apiv1.ProviderADO,
-		Object: "goobers/pr-remediation", Diagnostic: "capability pr.update-branch",
-	}: "ADO-N15: update-behind-pr is not-applicable on ADO",
 }
 
 // TestShippedWorkflowsCompileOnEveryProvider is the compile-matrix gate.
