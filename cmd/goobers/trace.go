@@ -275,6 +275,7 @@ func runTraceWithFactories(
 		pf(stdout, "outcome:  gate=%s verdict=%s target=%s\n", detail.Outcome.Gate, detail.Outcome.Verdict, detail.Outcome.Target)
 	}
 	pf(stdout, "repasses: %d\n", repasses)
+	printRunLineage(stdout, detail.Lineage)
 	pln(stdout, "\nevents:")
 	for _, event := range ledger.Events {
 		pln(stdout, "  "+formatEvent(traceJournalEvent(event)))
