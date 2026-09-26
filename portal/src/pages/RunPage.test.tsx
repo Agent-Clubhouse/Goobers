@@ -161,6 +161,18 @@ describe("run detail", () => {
     expect(screen.getByText("Decision · model")).toBeInTheDocument();
     expect(screen.getByText("Patch the parser branch.")).toBeInTheDocument();
     expect(screen.getAllByText("Evidence: failing test").length).toBeGreaterThan(0);
+    const workerCard = screen.getByText("worker-1").closest(".agent-progress-card");
+    if (!(workerCard instanceof HTMLElement)) {
+      throw new Error("Expected worker progress card.");
+    }
+    expect(
+      within(workerCard)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual([
+      expect.stringContaining("seq 6"),
+      expect.stringContaining("seq 5"),
+    ]);
   });
 
   it("keeps attempt-scoped cards separate for repeated agent ids", async () => {
@@ -265,6 +277,31 @@ describe("run detail", () => {
     expect(
       within(secondVisit).getByText("Review returned needs-changes."),
     ).toBeInTheDocument();
+    const actualPath = screen
+      .getByRole("heading", { name: "What this run did" })
+      .closest("section");
+    const progress = screen
+      .getByRole("heading", { name: "Progress and transitions" })
+      .closest("section");
+    if (!actualPath || !progress) {
+      throw new Error("Expected run path and progress sections.");
+    }
+    expect(
+      within(actualPath)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent?.replace(/\s+/g, " ").trim()),
+    ).toEqual(["Query", "Implement", "Review", "Implement · Visit 2", "Review · Visit 2"]);
+    expect(
+      within(progress)
+        .getAllByRole("button")
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual([
+      "Open review, visit 2, Escalated",
+      "Open implement, visit 2, Completed",
+      "Open review, visit 1, Completed",
+      "Open implement, visit 1, Failed",
+      "Open query, visit 1, Completed",
+    ]);
   });
 
   it("groups transcript checkpoints as one logical artifact", async () => {
@@ -304,6 +341,67 @@ describe("run detail", () => {
     const transcript = screen.getByRole("button", { name: /Implement transcript/ });
     expect(within(transcript).getByText("Implement · 2 checkpoints")).toBeInTheDocument();
     expect(screen.getAllByText("Implement transcript")).toHaveLength(1);
+  });
+
+  it("shows artifact histories newest-first and opens the selected record", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const fixtures = populatedDaemonFixtures();
+    const eventList = fixtures.runEvents?.[runId];
+    const detail = fixtures.runDetails?.[runId];
+    if (!eventList || !detail) {
+      throw new Error("Expected active run fixtures.");
+    }
+    eventList.events.push(
+      {
+        schema: "v1",
+        seq: 7,
+        type: "artifact.recorded",
+        branch: 0,
+        time: "2026-07-18T06:00:07Z",
+        knownSchema: true,
+        category: "evidence",
+        artifact: {
+          name: "older-report.txt",
+          digest: "sha256:older",
+          size: 12,
+          mediaType: "text/plain",
+          stage: "implement",
+        },
+      },
+      {
+        schema: "v1",
+        seq: 8,
+        type: "artifact.recorded",
+        branch: 0,
+        time: "2026-07-18T06:00:08Z",
+        knownSchema: true,
+        category: "evidence",
+        artifact: {
+          name: "newer-report.txt",
+          digest: "sha256:newer",
+          size: 12,
+          mediaType: "text/plain",
+          stage: "implement",
+        },
+      },
+    );
+    detail.lastSeq = 8;
+    renderRun(runId, new FixtureDaemonClient(fixtures));
+
+    await openRunTab("Artifacts");
+    const artifactList = document.querySelector(".run-artifact-list");
+    if (!(artifactList instanceof HTMLElement)) {
+      throw new Error("Expected artifact list.");
+    }
+    const artifactButtons = within(artifactList).getAllByRole("button");
+    expect(artifactButtons.map((button) => button.textContent)).toEqual([
+      expect.stringContaining("newer report"),
+      expect.stringContaining("older report"),
+    ]);
+
+    fireEvent.click(artifactButtons[1]);
+    const dialog = await screen.findByRole("dialog", { name: "Event detail" });
+    expect(within(dialog).getByText("Sequence 7")).toBeInTheDocument();
   });
 
   it("supports arrow-key navigation between run detail tabs", async () => {
