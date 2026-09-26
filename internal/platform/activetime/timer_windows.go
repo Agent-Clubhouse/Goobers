@@ -20,6 +20,8 @@ type timer struct {
 	stop func() bool
 }
 
+type wallTimerFactory func(time.Duration) (<-chan time.Time, func() bool)
+
 func (t *timer) Stop() bool {
 	if t == nil || t.stop == nil {
 		return false
@@ -60,6 +62,25 @@ func WithTimeout(parent context.Context, timeout time.Duration) (context.Context
 }
 
 func newTimer(timeout time.Duration) *timer {
+	newWallTimer := func(timeout time.Duration) (<-chan time.Time, func() bool) {
+		timer := time.NewTimer(timeout)
+		return timer.C, timer.Stop
+	}
+	if timeout <= 0 {
+		return newTimerWithSources(timeout, unbiasedUptime, nil, func() {}, newWallTimer)
+	}
+	interval := min(timeout, activeTimePollInterval)
+	ticker := time.NewTicker(interval)
+	return newTimerWithSources(timeout, unbiasedUptime, ticker.C, ticker.Stop, newWallTimer)
+}
+
+func newTimerWithSources(
+	timeout time.Duration,
+	uptime func() (time.Duration, error),
+	polls <-chan time.Time,
+	stopPolls func(),
+	newWallTimer wallTimerFactory,
+) *timer {
 	fired := make(chan time.Time, 1)
 	stop := make(chan struct{})
 	var once sync.Once
@@ -72,25 +93,42 @@ func newTimer(timeout time.Duration) *timer {
 		return stopped
 	}
 
-	start, err := unbiasedUptime()
+	start, err := uptime()
 	if err != nil {
-		fallback := time.NewTimer(timeout)
-		return &timer{C: fallback.C, stop: fallback.Stop}
+		stopPolls()
+		fallback, stopFallback := newWallTimer(timeout)
+		return &timer{C: fallback, stop: stopFallback}
 	}
 	if timeout <= 0 {
+		stopPolls()
 		once.Do(func() { fired <- time.Now() })
 		return &timer{C: fired, stop: stopTimer}
 	}
 
-	interval := min(timeout, activeTimePollInterval)
 	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		defer stopPolls()
+		last := start
 		for {
 			select {
-			case now := <-ticker.C:
-				uptime, err := unbiasedUptime()
-				if err != nil || uptime-start >= timeout {
+			case now := <-polls:
+				current, err := uptime()
+				if err != nil {
+					remaining := timeout - (last - start)
+					if remaining <= 0 {
+						once.Do(func() { fired <- now })
+						return
+					}
+					fallback, stopFallback := newWallTimer(remaining)
+					select {
+					case fallbackNow := <-fallback:
+						once.Do(func() { fired <- fallbackNow })
+					case <-stop:
+						stopFallback()
+					}
+					return
+				}
+				last = current
+				if current-start >= timeout {
 					once.Do(func() { fired <- now })
 					return
 				}
