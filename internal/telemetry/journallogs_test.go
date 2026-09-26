@@ -160,16 +160,17 @@ func journalWireAttrs(attrs []*commonpb.KeyValue) map[string]*commonpb.AnyValue 
 }
 
 type journalTestExporter struct {
-	mu          sync.Mutex
-	records     []sdklog.Record
-	started     chan struct{}
-	release     chan struct{}
-	startOnce   sync.Once
-	exportErr   error
-	flushErr    error
-	shutdownErr error
-	flushes     int
-	shutdowns   int
+	mu                  sync.Mutex
+	records             []sdklog.Record
+	started             chan struct{}
+	release             chan struct{}
+	startOnce           sync.Once
+	ignoreExportContext bool
+	exportErr           error
+	flushErr            error
+	shutdownErr         error
+	flushes             int
+	shutdowns           int
 }
 
 func (e *journalTestExporter) Export(ctx context.Context, records []sdklog.Record) error {
@@ -177,10 +178,14 @@ func (e *journalTestExporter) Export(ctx context.Context, records []sdklog.Recor
 		e.startOnce.Do(func() { close(e.started) })
 	}
 	if e.release != nil {
-		select {
-		case <-e.release:
-		case <-ctx.Done():
-			return ctx.Err()
+		if e.ignoreExportContext {
+			<-e.release
+		} else {
+			select {
+			case <-e.release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 	e.mu.Lock()
@@ -655,8 +660,9 @@ func TestJournalLogsShutdownDeadlineAccountsAbandonedBacklog(t *testing.T) {
 // "this record is too big", and those have different fixes.
 func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
 	exporter := &journalTestExporter{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
+		ignoreExportContext: true,
 	}
 	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
 	defer close(exporter.release)
@@ -667,9 +673,10 @@ func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
 	// live let enough of those losses eat the small overflow margin that
 	// queue_full never fired. The constructor returns with the worker idle and
 	// unlocked, and once parked it holds no lock, so only this goroutine
-	// touches the queue from here on.
+	// touches the queue from here on. The test exporter ignores its context so
+	// a slow stress runner cannot release it during the bounded-queue check.
 	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
-	<-exporter.started
+	waitJournalStarted(t, exporter.started)
 
 	// Missing identity.
 	client.Commit(journal.CommittedEvent{Body: []byte("{}")})
