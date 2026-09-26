@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1131,6 +1132,33 @@ func TestShellExecutor_ResultFileLiftedToArtifact(t *testing.T) {
 	}
 }
 
+func TestShellExecutor_ResultFilePromotesWorkspaceRevision(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "out.json"}
+	sha := strings.Repeat("a", 40)
+	command := fmt.Sprintf(`echo '{"legacy":"kept","workspaceRevision":{"repository":{"provider":"github","url":"https://github.com","owner":"org","name":"repo"},"commitSha":"%s"}}' > out.json`, sha)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", command},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs["legacy"] != "kept" {
+		t.Fatalf("legacy scalar output = %#v, want kept", result.Outputs["legacy"])
+	}
+	if _, ok := result.Outputs["workspaceRevision"]; ok {
+		t.Fatal("workspaceRevision was promoted as a scalar output")
+	}
+	if result.WorkspaceRevision == nil || result.WorkspaceRevision.CommitSHA != sha {
+		t.Fatalf("workspace revision = %+v, want commit %s", result.WorkspaceRevision, sha)
+	}
+}
+
 func TestShellExecutor_ProviderResultPreservesWeakestIntegrity(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1285,6 +1313,37 @@ func TestShellExecutor_ResultFileJSONMergedIntoOutputs(t *testing.T) {
 	}
 	if result.Outputs["draft"] != false {
 		t.Fatalf("outputs[draft] = %v, want false", result.Outputs["draft"])
+	}
+}
+
+func TestShellExecutor_ResultFileNonObjectJSONPreservesLegacySuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+	}{
+		{name: "array", json: `[1,2,3]`},
+		{name: "scalar", json: `true`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, _ := newTestExecutor(t, nil)
+			env := baseEnvelope(t)
+			env.Inputs = map[string]interface{}{InputResultFile: "result.json"}
+
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+				Command: []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' > result.json", tc.json)},
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success", result.Status)
+			}
+			delete(result.Outputs, OutputTimeoutSeconds)
+			delete(result.Outputs, OutputTimeoutSource)
+			if len(result.Outputs) != 0 {
+				t.Fatalf("result-file outputs = %#v, want no scalar outputs", result.Outputs)
+			}
+		})
 	}
 }
 

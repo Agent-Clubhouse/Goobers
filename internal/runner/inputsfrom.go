@@ -7,6 +7,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // stageOutput is one completed stage's journaled Outputs together with the
@@ -301,6 +302,35 @@ func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) 
 		return nil
 	}
 	return out
+}
+
+func reconstructWorkspaceRevision(events []journal.Event, machine *workflow.Machine) (*apiv1.WorkspaceRevision, error) {
+	var revision *apiv1.WorkspaceRevision
+	for _, event := range events {
+		if event.WorkspaceRevision == nil {
+			continue
+		}
+		if event.Type != journal.EventStageFinished || event.Status != string(apiv1.ResultSuccess) {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "journal workspace revision requires a successful stage.finished event"}
+		}
+		if machine == nil {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "journal workspace revision requires a pinned workflow"}
+		}
+		task, ok := machine.Task(event.Stage)
+		if !ok {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeUnauthorized, Message: "journal workspace revision producer is not a pinned task"}
+		}
+		result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, WorkspaceRevision: event.WorkspaceRevision}
+		if err := workspacerevision.NormalizeResult(&result, task.Type == apiv1.TaskDeterministic); err != nil {
+			return nil, err
+		}
+		var err error
+		revision, err = workspacerevision.Accept(revision, result.WorkspaceRevision)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return revision, nil
 }
 
 // resolvedInputGrades maps each of a task's inputsFrom entries to the provenance

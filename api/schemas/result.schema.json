@@ -62,6 +62,10 @@
         "derived"
       ],
       "description": "Provenance of the content this stage produced: the weakest grade among the inputs it was admitted with. Downstream stages resolving inputsFrom grade against this, because outputs are bare scalars that carry no label of their own."
+    },
+    "workspaceRevision": {
+      "description": "Optional immutable repository and exact-object authority. It is established only by a successful deterministic result and is absent for legacy workflows.",
+      "$ref": "workspace-revision.schema.json"
     }
   },
   "allOf": [

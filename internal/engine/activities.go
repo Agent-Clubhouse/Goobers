@@ -361,6 +361,9 @@ func classifySeamError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if rejection := workspaceRevisionRejection(err); rejection != nil {
+		return temporal.NewNonRetryableApplicationError(rejection.Message, rejection.Code, err)
+	}
 	if invoke.IsInfrastructureFailure(err) {
 		options := temporal.ApplicationErrorOptions{}
 		if retryAt, ok := invoke.InfrastructureRetryAt(err); ok {
@@ -396,6 +399,9 @@ func classifySeamError(err error) error {
 // read-only stage reads the pinned base by definition (the same gate the pod
 // arm applies in dispatchstage.go).
 func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch, workspaceDelta string) (Workspace, error) {
+	if err := refuseSelectedRevisionDispatch(*env); err != nil {
+		return nil, err
+	}
 	if a.Workspaces == nil {
 		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
 	}
@@ -587,6 +593,9 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	// the blob plane an activity can read and workflow code cannot. The walk
 	// routes on the rejection (contextNotInspectedRedispatch); this only
 	// decides whether there is one.
+	if rejection := admitDistributedRevision(&res, false); rejection != nil {
+		return stageActivityResult{}, classifySeamError(rejection)
+	}
 	res = a.validateDependencyResult(ctx, env, res)
 	result := stageActivityResult{ResultEnvelope: res}
 	// #3366: capture what the workspace is about to take to the grave. Taken
@@ -865,6 +874,9 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 	res, err := a.Det.Run(ctx, env, run)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
+	}
+	if rejection := admitDistributedRevision(&res, true); rejection != nil {
+		return stageActivityResult{}, classifySeamError(rejection)
 	}
 	mutations, issues := readMutationSidecar(ws.Path())
 	result := stageActivityResult{ResultEnvelope: res, Mutations: mutations, MutationIssues: issues}

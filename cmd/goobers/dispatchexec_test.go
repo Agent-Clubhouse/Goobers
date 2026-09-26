@@ -392,7 +392,11 @@ func TestDispatchExecLiftsResultFileIntoOutputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	mergeResultFileOutputs(outputs, data)
+	result := apiv1.ResultEnvelope{Outputs: outputs}
+	applyDeclaredStageResultFile(&result, "r.json", data, nil, true)
+	if result.Error != nil {
+		t.Fatalf("result file: %+v", result.Error)
+	}
 
 	if outputs["verdict"] != "pass" {
 		t.Fatalf("verdict = %v, want pass — a gate reading this key is the reason it matters", outputs["verdict"])
@@ -415,9 +419,46 @@ func TestDispatchExecLiftsResultFileIntoOutputs(t *testing.T) {
 // exit status.
 func TestDispatchExecIgnoresUnparseableResultFile(t *testing.T) {
 	outputs := map[string]interface{}{}
-	mergeResultFileOutputs(outputs, []byte("not json at all"))
+	result := apiv1.ResultEnvelope{Outputs: outputs}
+	applyDeclaredStageResultFile(&result, "r.json", []byte("not json at all"), nil, true)
+	if result.Error != nil {
+		t.Fatalf("legacy non-JSON result file: %+v", result.Error)
+	}
 	if len(outputs) != 0 {
 		t.Fatalf("unparseable result file must contribute nothing, got %v", outputs)
+	}
+}
+
+func TestApplyDeclaredStageResultFilePreservesDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name, data, code string
+		readErr          error
+		completed        bool
+	}{
+		{name: "invalid-control", data: `{"workspaceRevision":null}`, code: "workspace_revision_invalid"},
+		{name: "missing-after-success", readErr: os.ErrNotExist, completed: true, code: "missing_result_file"},
+		{name: "missing-after-failure", readErr: os.ErrNotExist},
+		{name: "unreadable", readErr: os.ErrPermission, code: "result_file_unreadable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			artifact := apiv1.ArtifactPointer{Path: "artifacts/stage/stderr", Digest: apiv1.Digest([]byte("diagnostic"))}
+			result := apiv1.ResultEnvelope{
+				Outputs:   map[string]interface{}{"stderr": "diagnostic"},
+				Artifacts: []apiv1.ArtifactPointer{artifact},
+				Metrics:   map[string]float64{"exitCode": 3},
+			}
+			applyDeclaredStageResultFile(&result, "out.json", []byte(tc.data), tc.readErr, tc.completed)
+			if tc.code == "" {
+				if result.Error != nil || result.Status != "" {
+					t.Fatalf("file absence overrode the stage failure: %+v", result)
+				}
+			} else if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != tc.code || result.Error.Retryable || result.Summary == "" {
+				t.Fatalf("result = %+v, want nonretryable failure %s", result, tc.code)
+			}
+			if result.Outputs["stderr"] != "diagnostic" || result.Metrics["exitCode"] != 3 || len(result.Artifacts) != 1 || result.Artifacts[0] != artifact {
+				t.Fatalf("failure diagnostics were lost: %+v", result)
+			}
+		})
 	}
 }
 

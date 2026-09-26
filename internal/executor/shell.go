@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -788,7 +789,8 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 // minimum a caller of that helper can add.
 //
 //complexitygate:allow #4273 guarded-credential-path refusal, see above
-func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (outcome apiv1.ResultEnvelope, retErr error) {
+	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	if env.Workspace == "" {
 		// exec.Cmd treats Dir == "" as "run in the daemon's own working
 		// directory" — a silent, surprising fallback (#122) rather than the
@@ -1180,7 +1182,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 					}
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-					mergeResultFileOutputs(&result, data)
+					if err := MergeResultFileOutputs(&result, data); err != nil {
+						result.Status = apiv1.ResultFailure
+						result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
+						result.Summary = "declared result file contains an invalid workspace revision"
+						return result, nil
+					}
 					code, message, retryable := consumeErrorOutputs(result.Outputs)
 					if code != "" {
 						if message == "" {
@@ -1243,7 +1250,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 				}
 				result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-				mergeResultFileOutputs(&result, data)
+				if err := MergeResultFileOutputs(&result, data); err != nil {
+					result.Status = apiv1.ResultFailure
+					result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
+					result.Summary = "declared result file contains an invalid workspace revision"
+					return result, nil
+				}
 			case os.IsNotExist(rerr):
 				result.Status = apiv1.ResultFailure
 				result.Error = missingResultFileError(resultFile, exitCode, waitErr, errBytes)
@@ -1401,23 +1413,39 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 	return s
 }
 
-// mergeResultFileOutputs best-effort-parses a declared result file's bytes as
+// MergeResultFileOutputs best-effort-parses a declared result file's bytes as
 // a flat JSON object and merges its string/number/bool fields into
-// result.Outputs — see InputResultFile's doc comment. data that isn't JSON,
-// or isn't a flat object, is silently left alone: the artifact/presence-check
-// contract InputResultFile already provides holds either way, and not every
-// declared result file is meant to carry structured outputs.
-func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) {
+// result.Outputs — see InputResultFile's doc comment. Invalid JSON remains
+// legacy-compatible, while a declared workspaceRevision is decoded strictly
+// and validated because it is a control, not a scalar output.
+func MergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
+	if first := bytes.TrimSpace(data); len(first) == 0 || first[0] != '{' {
+		return nil
+	}
 	var m map[string]interface{}
 	if err := json.Unmarshal(data, &m); err != nil {
-		return
+		return nil
+	}
+	revision, err := apiv1.DecodeWorkspaceRevisionField(data)
+	if err != nil {
+		return err
+	}
+	if revision != nil {
+		result.WorkspaceRevision = revision
 	}
 	for k, v := range m {
+		if k == "workspaceRevision" {
+			continue
+		}
 		switch v.(type) {
 		case string, float64, bool:
+			if result.Outputs == nil {
+				result.Outputs = make(map[string]interface{})
+			}
 			result.Outputs[k] = v
 		}
 	}
+	return nil
 }
 
 func exitCodeOf(err error) int {

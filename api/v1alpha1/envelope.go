@@ -24,7 +24,8 @@ import "fmt"
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
 // v1alpha9 adds runner-authored nested-agent authority and ownership fields.
-const StageContractVersion = "v1alpha9"
+// v1alpha10 adds immutable workspace-revision authority.
+const StageContractVersion = "v1alpha10"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -179,6 +180,9 @@ type InvocationEnvelope struct {
 	// It is carried in the mandatory execution envelope so adapters cannot
 	// implement nested-agent behavior from prompt text alone.
 	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty"`
+	// WorkspaceRevision is optional immutable authority established by a
+	// successful deterministic predecessor.
+	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
 }
 
 // ContinuationRequest creates a new run journal linked to a terminal source
@@ -331,6 +335,9 @@ type ResultEnvelope struct {
 	// producer's artifact via contextFrom and still import that producer's
 	// provider-authored text through inputsFrom (TBH-4).
 	Integrity Integrity `json:"integrity,omitempty"`
+	// WorkspaceRevision is promoted only from the top-level deterministic
+	// result control; it is never represented as a scalar output.
+	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
 }
 
 // ErrorInfo describes a stage failure.
@@ -671,6 +678,11 @@ func (r ResultEnvelope) Validate() error {
 	}
 	if r.Integrity != "" && !r.Integrity.Valid() {
 		return fmt.Errorf("result integrity %q is unknown", r.Integrity)
+	}
+	if r.WorkspaceRevision != nil {
+		if err := r.WorkspaceRevision.Validate(); err != nil {
+			return fmt.Errorf("result workspaceRevision: %w", err)
+		}
 	}
 	for i, a := range r.Artifacts {
 		if err := a.Validate(); err != nil {

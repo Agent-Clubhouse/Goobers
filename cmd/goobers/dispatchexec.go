@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -256,7 +257,8 @@ func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 // returns a ResultEnvelope — success, failure, or an infra-shaped failure
 // for a malformed declaration — never an error, because the caller's only
 // job past this point is to surrender whatever envelope comes back.
-func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.ResultEnvelope {
+func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome apiv1.ResultEnvelope) {
+	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	// THE INVARIANT THAT MAKES THE REST OF THIS FUNCTION SAFE, stated because
 	// it is currently enforced by an ABSENCE and an absence is invisible to the
 	// next change: only the agentic branch (runStage) materializes this stage's
@@ -522,43 +524,11 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		}
 	}
 	stageArtifacts := recordStageArtifactsTyped(ctx, stderr, streams, mediaTypes)
-	// Lift the declared result file into Outputs, exactly as the local
-	// executor does. WITHOUT THIS a pod-executed stage surrenders only stdout,
-	// so a gate reading an output key finds nothing and evaluates its FAILURE
-	// branch — measured on a live cluster: a stage emitted {"verdict":"pass"},
-	// the gate read no `verdict` key, and the run took the fail path three
-	// times before exhausting its repass budget. The run "completed" with the
-	// wrong control flow and nothing reported an error.
+	result := apiv1.ResultEnvelope{Outputs: outputs, Artifacts: stageArtifacts, Metrics: stageMetrics}
 	if resultFile != "" {
-		data, rerr := resultData, resultErr
-		switch {
-		case rerr == nil:
-			mergeResultFileOutputs(outputs, data)
-		case os.IsNotExist(rerr) && runErr == nil && !timedOut:
-			// A stage that succeeded but did not write its declared result
-			// file is a FAILURE, same as locally: the declaration is a
-			// contract, and honouring the exit code alone would report a
-			// success whose outputs the workflow cannot read.
-			return apiv1.ResultEnvelope{
-				Status:    apiv1.ResultFailure,
-				Outputs:   outputs,
-				Artifacts: stageArtifacts,
-				Metrics:   stageMetrics,
-				Summary:   "declared result file missing",
-				Error: &apiv1.ErrorInfo{
-					Code:    "missing_result_file",
-					Message: fmt.Sprintf("stage declared result file %q and exited 0 without writing it", resultFile),
-				},
-			}
-		case rerr != nil && !os.IsNotExist(rerr):
-			return apiv1.ResultEnvelope{
-				Status:    apiv1.ResultFailure,
-				Outputs:   outputs,
-				Artifacts: stageArtifacts,
-				Metrics:   stageMetrics,
-				Summary:   "declared result file unreadable",
-				Error:     &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", resultFile, rerr)},
-			}
+		applyDeclaredStageResultFile(&result, resultFile, resultData, resultErr, runErr == nil && !timedOut)
+		if result.Error != nil {
+			return result
 		}
 	}
 
@@ -569,21 +539,13 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		// the workflow would take the did-work path on a pod and the no-work
 		// path on a self runner, from the same stage and the same outputs.
 		if v, ok := outputs[executor.OutputNoWork].(bool); ok && v {
-			return apiv1.ResultEnvelope{
-				Status:    apiv1.ResultNoWork,
-				Outputs:   outputs,
-				Artifacts: stageArtifacts,
-				Metrics:   stageMetrics,
-				Summary:   "stage found no work to do",
-			}
+			result.Status = apiv1.ResultNoWork
+			result.Summary = "stage found no work to do"
+		} else {
+			result.Status = apiv1.ResultSuccess
+			result.Summary = "stage completed"
 		}
-		return apiv1.ResultEnvelope{
-			Status:    apiv1.ResultSuccess,
-			Outputs:   outputs,
-			Artifacts: stageArtifacts,
-			Metrics:   stageMetrics,
-			Summary:   "stage completed",
-		}
+		return result
 	}
 
 	code, message := "stage_failed", "stage exited with an error"
@@ -615,22 +577,37 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		if typedMessage == "" {
 			typedMessage = message
 		}
-		return apiv1.ResultEnvelope{
-			Status:    apiv1.ResultFailure,
-			Outputs:   outputs,
-			Artifacts: stageArtifacts,
-			Metrics:   stageMetrics,
-			Summary:   typedMessage,
-			Error:     &apiv1.ErrorInfo{Code: typedCode, Message: typedMessage, Retryable: retryable},
-		}
+		result.Status = apiv1.ResultFailure
+		result.Summary = typedMessage
+		result.Error = &apiv1.ErrorInfo{Code: typedCode, Message: typedMessage, Retryable: retryable}
+		return result
 	}
-	return apiv1.ResultEnvelope{
-		Status:    apiv1.ResultFailure,
-		Outputs:   outputs,
-		Artifacts: stageArtifacts,
-		Metrics:   stageMetrics,
-		Summary:   message,
-		Error:     &apiv1.ErrorInfo{Code: code, Message: message},
+	result.Status = apiv1.ResultFailure
+	result.Summary = message
+	result.Error = &apiv1.ErrorInfo{Code: code, Message: message}
+	return result
+}
+
+func applyDeclaredStageResultFile(result *apiv1.ResultEnvelope, path string, data []byte, readErr error, completed bool) {
+	switch {
+	case readErr == nil:
+		if err := executor.MergeResultFileOutputs(result, data); err != nil {
+			result.Summary = "declared result file contains an invalid workspace revision"
+			result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
+		}
+	case os.IsNotExist(readErr) && completed:
+		result.Summary = "declared result file missing"
+		result.Error = &apiv1.ErrorInfo{
+			Code:    "missing_result_file",
+			Message: fmt.Sprintf("stage declared result file %q and exited 0 without writing it", path),
+		}
+	case !os.IsNotExist(readErr):
+		result.Summary = "declared result file unreadable"
+		result.Error = &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", path, readErr)}
+	}
+	if result.Error != nil {
+		result.Status = apiv1.ResultFailure
+		result.WorkspaceRevision = nil
 	}
 }
 
@@ -679,24 +656,6 @@ func (b *boundedCapture) Write(p []byte) (int, error) {
 func (b *boundedCapture) Len() int { return len(b.buf) }
 
 func (b *boundedCapture) String() string { return string(b.buf) }
-
-// mergeResultFileOutputs merges a stage's declared result file into Outputs.
-// Mirrors executor.mergeResultFileOutputs deliberately, INCLUDING its rules:
-// invalid JSON is ignored rather than failing the stage, and only scalar
-// values are lifted. Any divergence here reappears as a gate that evaluates
-// differently depending on which substrate ran the stage.
-func mergeResultFileOutputs(outputs map[string]interface{}, data []byte) {
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return
-	}
-	for key, value := range parsed {
-		switch value.(type) {
-		case string, float64, bool:
-			outputs[key] = value
-		}
-	}
-}
 
 // stageEnvironment builds the environment a stage command actually receives.
 //
