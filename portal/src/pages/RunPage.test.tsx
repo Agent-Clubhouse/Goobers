@@ -413,6 +413,34 @@ describe("run detail", () => {
     );
   });
 
+  it("navigates adjacent events and preserves the selected event in the URL", async () => {
+    const user = userEvent.setup();
+    const runId = "01JZ441DAEMONAPI";
+    renderRun(runId);
+
+    await openRunTab("Journal");
+    await user.click(screen.getByRole("button", { name: /^All events/ }));
+    await user.click(screen.getByRole("button", { name: /^Select sequence 2:/ }));
+
+    let dialog = await screen.findByRole("dialog", { name: "Event detail" });
+    expect(within(dialog).getByText("Sequence 2")).toBeInTheDocument();
+    expect(window.location.hash).toBe(
+      `#/run/${runId}?tab=journal&seq=2&event=1`,
+    );
+
+    await user.click(within(dialog).getByRole("button", { name: "Next event" }));
+    dialog = await screen.findByRole("dialog", { name: "Event detail" });
+    expect(within(dialog).getByText("Sequence 3")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Previous event" }));
+    dialog = await screen.findByRole("dialog", { name: "Event detail" });
+    expect(within(dialog).getByText("Sequence 2")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Close event detail" }));
+    expect(screen.queryByRole("dialog", { name: "Event detail" })).not.toBeInTheDocument();
+    expect(window.location.hash).toBe(`#/run/${runId}?tab=journal&seq=2`);
+  });
+
   it("opens exact causal event details without moving them into the timeline page", async () => {
     const user = userEvent.setup();
     const fixtures = populatedDaemonFixtures();

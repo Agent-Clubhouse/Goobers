@@ -1254,7 +1254,7 @@ function stateFromStatus(
   }
 }
 
-function humanize(value: string): string {
+export function humanize(value: string): string {
   const words = value.replace(/[._-]+/g, " ").trim().split(/\s+/);
   if (!words[0]) {
     return "Event";
