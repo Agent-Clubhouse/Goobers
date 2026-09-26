@@ -63,6 +63,8 @@ func startProjector(
 	// same instance, so a projector commit wakes the subscribers that are
 	// actually waiting.
 	feed := store.Feed()
+	// Resolve roots on each pass so hot-added gaggles' runs appear without a restart.
+	// Repair needs the same discovery to avoid treating their journals as missing.
 	p := projector.New(store, watermarks, projector.Options{
 		ResolveRunsDirs: l.RunDirsContext, Feed: feed,
 	})
