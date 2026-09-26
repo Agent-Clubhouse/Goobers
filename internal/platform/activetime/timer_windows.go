@@ -15,6 +15,18 @@ const activeTimePollInterval = time.Second
 
 var queryUnbiasedInterruptTime = windows.NewLazySystemDLL("kernel32.dll").NewProc("QueryUnbiasedInterruptTime")
 
+type timer struct {
+	C    <-chan time.Time
+	stop func() bool
+}
+
+func (t *timer) Stop() bool {
+	if t == nil || t.stop == nil {
+		return false
+	}
+	return t.stop()
+}
+
 type deadlineContext struct {
 	context.Context
 	deadline time.Time
@@ -32,7 +44,7 @@ func (c deadlineContext) Deadline() (time.Time, bool) {
 func WithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	base, cancelCause := context.WithCancelCause(parent)
 	ctx := deadlineContext{Context: base, deadline: time.Now().Add(timeout)}
-	timer := NewTimer(timeout)
+	timer := newTimer(timeout)
 	go func() {
 		defer timer.Stop()
 		select {
@@ -47,7 +59,7 @@ func WithTimeout(parent context.Context, timeout time.Duration) (context.Context
 	}
 }
 
-func newTimer(timeout time.Duration) *Timer {
+func newTimer(timeout time.Duration) *timer {
 	fired := make(chan time.Time, 1)
 	stop := make(chan struct{})
 	var once sync.Once
@@ -62,12 +74,12 @@ func newTimer(timeout time.Duration) *Timer {
 
 	start, err := unbiasedUptime()
 	if err != nil {
-		timer := time.NewTimer(timeout)
-		return &Timer{C: timer.C, stop: timer.Stop}
+		fallback := time.NewTimer(timeout)
+		return &timer{C: fallback.C, stop: fallback.Stop}
 	}
 	if timeout <= 0 {
 		once.Do(func() { fired <- time.Now() })
-		return &Timer{C: fired, stop: stopTimer}
+		return &timer{C: fired, stop: stopTimer}
 	}
 
 	interval := min(timeout, activeTimePollInterval)
@@ -87,7 +99,7 @@ func newTimer(timeout time.Duration) *Timer {
 			}
 		}
 	}()
-	return &Timer{C: fired, stop: stopTimer}
+	return &timer{C: fired, stop: stopTimer}
 }
 
 func unbiasedUptime() (time.Duration, error) {
