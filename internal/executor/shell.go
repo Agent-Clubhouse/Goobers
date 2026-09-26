@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/activetime"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/providers"
@@ -890,8 +891,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, resolvedTimeout.Duration)
-	defer cancel()
+	timeoutTimer := activetime.NewTimer(resolvedTimeout.Duration)
+	defer timeoutTimer.Stop()
+	runCtx := ctx
 
 	// Substitute the running daemon's own binary for a bare "goobers" token: the
 	// stage's cwd is a fresh worktree clone that never contains the goobers
@@ -969,18 +971,10 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	var waitErr error
 	select {
 	case waitErr = <-waitDone:
+	case <-timeoutTimer.C:
+		timedOut = true
 	case <-runCtx.Done():
-		// runCtx.Done() fires both when its own timeout elapses and when the
-		// caller's ctx is canceled out from under it — distinguishing the two
-		// via context.Cause matters even though only the timeout path is
-		// reachable today (internal/runner's dispatch always uses
-		// context.WithoutCancel): a future hard-shutdown path that DOES
-		// cancel ctx must not be mislabeled as a retryable timeout (#122).
-		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
-			timedOut = true
-		} else {
-			canceled = true
-		}
+		canceled = true
 		// On a TIMEOUT, first SIGQUIT the whole process group so every Go
 		// process in it dumps its full goroutine trace to the captured
 		// stdout/stderr before dying — a stage that blew its timeout is exactly
