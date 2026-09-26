@@ -129,6 +129,45 @@ func TestLatestReleasedFeatureRegistryComesFromTag(t *testing.T) {
 	}
 }
 
+func TestLatestReleaseTagFetchesReleasePublishedAfterCheckout(t *testing.T) {
+	publisher := t.TempDir()
+	writeFile(t, filepath.Join(publisher, "README.md"), "initial\n")
+	runGit(t, publisher, "init", "-q")
+	runGit(t, publisher, "config", "user.email", "test@example.com")
+	runGit(t, publisher, "config", "user.name", "Test")
+	runGit(t, publisher, "config", "commit.gpgSign", "false")
+	runGit(t, publisher, "config", "tag.gpgSign", "false")
+	runGit(t, publisher, "add", ".")
+	runGit(t, publisher, "commit", "-q", "-m", "initial")
+
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, publisher, "init", "--bare", "-q", remote)
+	runGit(t, publisher, "remote", "add", "origin", remote)
+	runGit(t, publisher, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	runGit(t, publisher, "clone", "-q", remote, checkout)
+
+	writeFile(t, filepath.Join(publisher, "README.md"), "released\n")
+	runGit(t, publisher, "add", ".")
+	runGit(t, publisher, "commit", "-q", "-m", "release")
+	runGit(t, publisher, "tag", "-a", "v1.1.0", "-m", "v1.1.0")
+	runGit(t, publisher, "push", "-q", "origin", "refs/tags/v1.1.0")
+
+	tag, revision := latestReleaseTag(t, checkout)
+	if tag != "v1.1.0" {
+		t.Fatalf("latest release tag = %q, want v1.1.0", tag)
+	}
+	if _, err := testgit.Command("-C", checkout, "cat-file", "-e", revision+"^{commit}").CombinedOutput(); err == nil {
+		t.Fatal("release revision unexpectedly existed before fetching the newly published tag")
+	}
+
+	fetchReleaseRevision(t, checkout, tag)
+	runGit(t, checkout, "cat-file", "-e", revision+"^{commit}")
+	releaseTree := filepath.Join(t.TempDir(), "release")
+	runGit(t, checkout, "worktree", "add", "--detach", "-q", releaseTree, revision)
+}
+
 // TestReleaseBaselineGateFailsLoudlyWithoutTag proves the empty-baseline guard
 // in loadLatestReleasedFeatureRegistry actually fires. It re-runs the real gate
 // in a subprocess whose repository origin has no version-shaped tag — the exact
@@ -201,6 +240,7 @@ func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (Feature
 	// Name the baseline so CI output shows which release the gate compared
 	// against (asserted by TestReleaseBaselineTagIsEchoed).
 	t.Logf("feature registry baseline: release %s (%s)", tag, revision)
+	fetchReleaseRevision(t, repository, tag)
 
 	releaseTree := filepath.Join(t.TempDir(), "release")
 	runGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, revision)
@@ -282,6 +322,11 @@ func latestReleaseTag(t *testing.T, repository string) (string, string) {
 		}
 	}
 	return latestTag, latestRevision
+}
+
+func fetchReleaseRevision(t *testing.T, repository, tag string) {
+	t.Helper()
+	runGit(t, repository, "fetch", "--no-tags", "--no-write-fetch-head", "origin", "refs/tags/"+tag)
 }
 
 func writeFixtureFeatureRegistry(
