@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -20,6 +21,7 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 	var comments []map[string]any
 	tags := "goobers:approved; goobers:ready"
 	revision := 1
+	readyAt := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/backlog/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +45,14 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 				"System.Tags":         tags,
 			},
 		}}})
+	})
+	mux.HandleFunc("/org/backlog/_apis/wit/workItems/42/updates", func(w http.ResponseWriter, r *http.Request) {
+		writeADOJSON(t, w, map[string]any{"count": 1, "value": []map[string]any{
+			{"id": 1, "fields": map[string]any{
+				"System.Tags":        map[string]any{"oldValue": "goobers:approved", "newValue": tags},
+				"System.ChangedDate": map[string]any{"newValue": readyAt.Format(time.RFC3339)},
+			}},
+		}})
 	})
 	mux.HandleFunc("/org/backlog/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -133,8 +143,17 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read claimed item: %v", err)
 	}
-	if strings.Contains(string(data), `"readyAt"`) {
-		t.Fatalf("ADO claim invented unsupported ready transition time: %s", data)
+	// ADO derives ReadyAt from work-item update history since ADO-N21 (#5799),
+	// so a claim whose selector names the ready tag records when that tag was
+	// added rather than omitting the field.
+	var claimed struct {
+		ReadyAt *time.Time `json:"readyAt"`
+	}
+	if err := json.Unmarshal(data, &claimed); err != nil {
+		t.Fatalf("decode claimed item: %v\n%s", err, data)
+	}
+	if claimed.ReadyAt == nil || !claimed.ReadyAt.Equal(readyAt) {
+		t.Fatalf("ADO claim readyAt = %v, want %s: %s", claimed.ReadyAt, readyAt.Format(time.RFC3339), data)
 	}
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
 	if err != nil {
@@ -147,21 +166,5 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 	}
 	if !strings.Contains(tags, providers.LabelClaimed) {
 		t.Fatalf("ADO tags = %q, want visible claim marker", tags)
-	}
-}
-
-// TestClaimReadyAtSupportedExcludesOnlyADO pins that dropping ReadyAt
-// enrichment is scoped to the provider that cannot derive it: GitHub and Gitea
-// both expose label-transition history and keep enriching (and fail-closing on
-// malformed history) exactly as before.
-func TestClaimReadyAtSupportedExcludesOnlyADO(t *testing.T) {
-	for kind, want := range map[providers.ProviderKind]bool{
-		providers.ProviderGitHub: true,
-		providers.ProviderGitea:  true,
-		providers.ProviderADO:    false,
-	} {
-		if got := claimReadyAtSupported(kind); got != want {
-			t.Errorf("claimReadyAtSupported(%q) = %t, want %t", kind, got, want)
-		}
 	}
 }
