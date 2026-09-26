@@ -4111,6 +4111,34 @@ code,
   opacity: 0.6;
 }
 
+.run-lineage {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin: 18px 0;
+  padding: 16px 18px;
+}
+
+.run-lineage h2 {
+  font-size: var(--font-ui);
+  margin: 0 0 8px;
+}
+
+.run-lineage p {
+  color: var(--muted-strong);
+  margin: 4px 0;
+}
+
+.run-lineage button {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
 .run-heading-actions [role="alert"] {
   color: var(--danger);
   font-size: var(--font-meta);

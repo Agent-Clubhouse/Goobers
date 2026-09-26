@@ -1721,6 +1721,30 @@ func TestRenderStatusSeparatesReaderLimitationsFromRunBlockers(t *testing.T) {
 	}
 }
 
+func TestRenderStatusShowsContinuationLineage(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	runs := []runSummary{{
+		RunID: "continued-run", Workflow: "implementation", Gaggle: "goobers",
+		Phase: journal.PhaseFailed, StartedAt: now, LastActivityAt: now,
+		Lineage: &readservice.RunLineage{
+			Source:                &readservice.LineageRun{ID: "source-run", Phase: journal.PhaseEscalated},
+			ResumeTarget:          "implement",
+			WorkspaceBranch:       "goobers/implementation/source",
+			HistoricalRepassCount: 2,
+		},
+		Operator: readservice.OperatorRunSummary{
+			Trajectory: "terminal", Liveness: "terminal",
+			Claim: readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
+		},
+	}}
+	var output strings.Builder
+	renderStatus(&output, runs, now)
+	if !strings.Contains(output.String(),
+		"continuation: source source-run (escalated); target implement; branch goobers/implementation/source; historical repasses 2") {
+		t.Fatalf("status output = %q", output.String())
+	}
+}
+
 func TestTruncateStatusCellPreservesUTF8(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

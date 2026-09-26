@@ -354,6 +354,7 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 type statusJSONSummary struct {
 	Recovery       *recoveryView                  `json:"recovery,omitempty"`
 	EngineFallback *readmodel.EngineFallback      `json:"engineFallback,omitempty"`
+	Lineage        *readservice.RunLineage        `json:"lineage,omitempty"`
 	RunID          string                         `json:"runId"`
 	Workflow       string                         `json:"workflow"`
 	Gaggle         string                         `json:"gaggle"`
@@ -595,6 +596,7 @@ func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
 	for i, r := range runs {
 		summaries[i] = statusJSONSummary{
 			EngineFallback: r.EngineFallback,
+			Lineage:        r.Lineage,
 			RunID:          r.RunID,
 			Workflow:       r.Workflow,
 			Gaggle:         r.Gaggle,
@@ -957,6 +959,7 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader, options
 	for i, run := range summaries {
 		runs[i] = runSummary{
 			EngineFallback: run.EngineFallback,
+			Lineage:        run.Lineage,
 			RunID:          run.ID,
 			Workflow:       run.Workflow,
 			Gaggle:         run.Gaggle,
@@ -1000,6 +1003,8 @@ const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--all]
 	"Normal and daemon status identify the root path, durable instance ID, and owning PID,\n" +
 	"and warn when the root is marked historical or its identity cannot be verified.\n" +
 	"Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.\n" +
+	"Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;\n" +
+	"source runs identify each continuation and its independent phase.\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
 	"PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,\n" +
 	"and next steps from the existing daemon projection, never current claim authority.\n" +
@@ -1518,6 +1523,20 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 			heartbeat, pr, claim, r.Operator.NextTransition)
 		pf(stdout, "  workflow: %s / %s; started %s; last activity %s\n",
 			r.Gaggle, r.Workflow, r.StartedAt.Format(time.RFC3339), formatLastActivity(now, r.LastActivityAt))
+		if r.Lineage != nil {
+			if r.Lineage.Source != nil {
+				pf(stdout, "  continuation: source %s (%s); target %s; branch %s; historical repasses %d\n",
+					r.Lineage.Source.ID, r.Lineage.Source.Phase, r.Lineage.ResumeTarget,
+					r.Lineage.WorkspaceBranch, r.Lineage.HistoricalRepassCount)
+			}
+			if len(r.Lineage.Continuations) > 0 {
+				related := make([]string, len(r.Lineage.Continuations))
+				for i, continuation := range r.Lineage.Continuations {
+					related[i] = fmt.Sprintf("%s (%s)", continuation.ID, continuation.Phase)
+				}
+				pf(stdout, "  continued by: %s\n", strings.Join(related, ", "))
+			}
+		}
 		if r.Operator.Issue != nil && r.Operator.Issue.Title != "" {
 			pf(stdout, "  work: #%s %s\n", r.Operator.Issue.Number, r.Operator.Issue.Title)
 		}

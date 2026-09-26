@@ -220,10 +220,22 @@ type WorkItemLookup func(context.Context, string, string) (providers.WorkItem, e
 // model is attached, scope and limit are pushed into its indexed query instead
 // of being applied after an exhaustive projection read (#4863).
 func (s *Local) ListStatusRuns(ctx context.Context, options StatusRunOptions) ([]RunSummary, error) {
+	var (
+		runs []RunSummary
+		err  error
+	)
 	if s.readModelReads && s.sources.ReadModel != nil {
-		return s.listStatusRunsFromReadModel(ctx, options)
+		runs, err = s.listStatusRunsFromReadModel(ctx, options)
+	} else {
+		runs, err = s.runSummaries(ctx, true)
 	}
-	return s.runSummaries(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.decorateRunLineage(ctx, runs); err != nil {
+		return nil, err
+	}
+	return runs, nil
 }
 
 type statusRunQuery struct {

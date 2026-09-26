@@ -1316,6 +1316,88 @@ func TestRunDetailProjectsExecutedTransitions(t *testing.T) {
 	}
 }
 
+func TestContinuationLineageIsCanonicalAcrossSourceAndContinuation(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	source, clock := createFixtureRun(
+		t, layout, machine, "run-lineage-source", machine.Def.Name, "goobers",
+		time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	if err := source.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{
+		Provider: "github", Kind: "branch", ID: "goobers/implementation/source", CommitSHA: "abc123",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, source, clock, journal.PhaseEscalated)
+
+	sourceReader, err := journal.OpenRead(filepath.Join(layout.RunsDir(), "run-lineage-source"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := sourceReader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := journal.CreateContinuation(layout.RunsDir(), journal.ContinuationRequest{
+		RunID:               "run-lineage-continuation",
+		SourceRunID:         "run-lineage-source",
+		ExpectedTerminalSeq: events[len(events)-1].Seq,
+		Operator:            "operator",
+		Target:              "implement",
+		SourceBranch:        "goobers/implementation/source",
+		ExpectedSourceSHA:   "abc123",
+		Inputs:              map[string][]byte{"operator-note": []byte("retry with context")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := continuation.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := continuation.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceDetail, err := service.GetRun(context.Background(), "run-lineage-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceDetail.Lineage == nil || len(sourceDetail.Lineage.Continuations) != 1 ||
+		sourceDetail.Lineage.Continuations[0].ID != "run-lineage-continuation" ||
+		sourceDetail.Lineage.Continuations[0].Phase != journal.PhaseFailed {
+		t.Fatalf("source lineage = %+v", sourceDetail.Lineage)
+	}
+
+	continuedDetail, err := service.GetRun(context.Background(), "run-lineage-continuation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineage := continuedDetail.Lineage
+	if lineage == nil || lineage.Source == nil ||
+		lineage.Source.ID != "run-lineage-source" ||
+		lineage.Source.Phase != journal.PhaseEscalated ||
+		lineage.ResumeTarget != "implement" ||
+		lineage.WorkspaceBranch != "goobers/implementation/source" ||
+		lineage.HistoricalRepassCount != 1 ||
+		len(lineage.InjectedInputs) != 1 || lineage.InjectedInputs[0].Name != "operator-note" {
+		t.Fatalf("continuation lineage = %+v", lineage)
+	}
+	if continuedDetail.RepassCount != 0 {
+		t.Fatalf("continuation repasses = %d, want fresh budget accounting", continuedDetail.RepassCount)
+	}
+}
+
 func TestUnknownSchemaFailsClosedDespiteTornTail(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, _ := createFixtureRun(

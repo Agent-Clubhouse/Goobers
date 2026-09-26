@@ -728,4 +728,10 @@ WHERE root <> '';
 CREATE INDEX IF NOT EXISTS idx_run_gaggle_workflow_phase_recency
 	ON run(gaggle, workflow, phase, started_at DESC, run_id ASC);
 `,
+	// Continuation source lookup uses the immutable manual trigger reference
+	// written at continuation creation. Keeping it indexed makes reverse
+	// lineage navigation independent of total run history.
+	`CREATE INDEX IF NOT EXISTS idx_run_continuation_source
+	ON run(trigger_ref, run_id)
+	WHERE trigger_kind = 'manual' AND trigger_ref <> '';`,
 }

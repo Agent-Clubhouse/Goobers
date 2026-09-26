@@ -181,12 +181,13 @@ type RunSummary struct {
 	LastActivityAt    time.Time                   `json:"lastActivityAt"`
 	// Stale is true only for a running run when both its last activity and the
 	// daemon scheduler heartbeat are older than runner.livenessTimeout.
-	Stale            bool   `json:"stale"`
-	LastSeq          uint64 `json:"lastSeq"`
-	RepassCount      int    `json:"repassCount"`
-	RetryCount       int    `json:"retryCount"`
-	PolicyRetryCount int    `json:"policyRetryCount"`
-	InfraRetryCount  int    `json:"infraRetryCount"`
+	Stale            bool        `json:"stale"`
+	LastSeq          uint64      `json:"lastSeq"`
+	RepassCount      int         `json:"repassCount"`
+	RetryCount       int         `json:"retryCount"`
+	PolicyRetryCount int         `json:"policyRetryCount"`
+	InfraRetryCount  int         `json:"infraRetryCount"`
+	Lineage          *RunLineage `json:"lineage,omitempty"`
 	// NoWork is true for a completed run that touched exactly one stage and
 	// that stage's terminal status was apiv1.ResultNoWork (#2188) — a routine
 	// schedule tick that found nothing to do, as opposed to a genuine
@@ -200,6 +201,26 @@ type RunSummary struct {
 	Operator       OperatorRunSummary `json:"operator"`
 	Stages         []string           `json:"-"`
 	stageAttempts  map[string][]StageAttempt
+}
+
+// RunLineage is the canonical continuation projection shared by every read
+// surface. RunSummary counters remain scoped to this run; historical repasses
+// are informational and never consume the continuation's fresh budget.
+type RunLineage struct {
+	Source                *LineageRun        `json:"source,omitempty"`
+	Continuations         []LineageRun       `json:"continuations,omitempty"`
+	ResumeTarget          string             `json:"resumeTarget,omitempty"`
+	WorkspaceBranch       string             `json:"workspaceBranch,omitempty"`
+	WorkspaceBranchSHA    string             `json:"workspaceBranchSha,omitempty"`
+	InjectedInputs        []journal.InputRef `json:"injectedInputs,omitempty"`
+	HistoricalRepassCount int                `json:"historicalRepassCount"`
+}
+
+// LineageRun identifies a directly related run without conflating its outcome
+// with the outcome of the run being viewed.
+type LineageRun struct {
+	ID    string           `json:"id"`
+	Phase journal.RunPhase `json:"phase,omitempty"`
 }
 
 // OperatorRunSummary answers the operational questions that otherwise require
@@ -1126,6 +1147,7 @@ func (s *Local) runSummariesForStage(
 	if err := s.decorateOperatorClaims(ctx, summaries, observedAt); err != nil {
 		return nil, err
 	}
+	decorateRunLineageFromSummaries(summaries)
 	return summaries, nil
 }
 
@@ -1872,6 +1894,16 @@ func summarizeRunForStage(
 		return RunSummary{}, err
 	}
 
+	var lineage *RunLineage
+	if run.identity.ContinuedFromRunID != "" {
+		lineage = &RunLineage{
+			Source:             &LineageRun{ID: run.identity.ContinuedFromRunID},
+			ResumeTarget:       run.identity.RequestedTarget,
+			WorkspaceBranch:    run.identity.WorkspaceBranch,
+			WorkspaceBranchSHA: run.identity.WorkspaceBranchSHA,
+			InjectedInputs:     append([]journal.InputRef(nil), run.identity.Inputs...),
+		}
+	}
 	return withRunActivity(RunSummary{
 		ID:               run.identity.RunID,
 		Workflow:         run.identity.Workflow,
@@ -1891,6 +1923,7 @@ func summarizeRunForStage(
 		RetryCount:       retries,
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
+		Lineage:          lineage,
 		NoWork:           noWork,
 		TerminalReason:   terminalReason,
 		Operator:         operator,
@@ -3104,6 +3137,9 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 	if err := s.annotateRunStaleness(out.Runs); err != nil {
 		return RunList{}, err
 	}
+	if err := s.decorateRunLineage(ctx, out.Runs); err != nil {
+		return RunList{}, err
+	}
 	return annotated[RunList](ctx, s, out), nil
 }
 
@@ -3124,7 +3160,150 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 		}
 		out.Stale = runIsStale(out.RunSummary, s.now().UTC(), lastTickAt, s.sources.LivenessTimeout)
 	}
+	summaries := []RunSummary{out.RunSummary}
+	if err := s.decorateRunLineage(ctx, summaries); err != nil {
+		return RunDetail{}, err
+	}
+	if !s.readModelReads {
+		lineage, err := s.offlineRunLineage(ctx, runID)
+		if err != nil {
+			return RunDetail{}, err
+		}
+		summaries[0].Lineage = lineage
+	}
+	out.RunSummary = summaries[0]
 	return annotated[RunDetail](ctx, s, out), nil
+}
+
+func (s *Local) offlineRunLineage(ctx context.Context, target string) (*RunLineage, error) {
+	ids, err := s.RunIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]RunSummary, 0, len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		run, err := s.openRun(id)
+		if err != nil {
+			continue
+		}
+		summary, err := summarizeRun(run, s.now().UTC())
+		if err != nil {
+			continue
+		}
+		summaries = append(summaries, summary)
+	}
+	decorateRunLineageFromSummaries(summaries)
+	for _, summary := range summaries {
+		if summary.ID == target {
+			return summary.Lineage, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *Local) decorateRunLineage(ctx context.Context, runs []RunSummary) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	type continuationReader interface {
+		GetRun(context.Context, string) (readmodel.RunRow, bool, error)
+		ContinuationRuns(context.Context, []string) (map[string][]readmodel.RunRow, error)
+	}
+	if projected, ok := s.sources.ReadModel.(continuationReader); ok && s.readModelReads {
+		sourceIDs := make([]string, len(runs))
+		for i := range runs {
+			sourceIDs[i] = runs[i].ID
+		}
+		children, err := projected.ContinuationRuns(ctx, sourceIDs)
+		if err != nil {
+			return err
+		}
+		for i := range runs {
+			if rows := children[runs[i].ID]; len(rows) > 0 {
+				if runs[i].Lineage == nil {
+					runs[i].Lineage = &RunLineage{}
+				}
+				for _, row := range rows {
+					runs[i].Lineage.Continuations = append(runs[i].Lineage.Continuations,
+						LineageRun{ID: row.RunID, Phase: row.Phase})
+				}
+			}
+			if runs[i].Lineage == nil || runs[i].Lineage.Source == nil {
+				continue
+			}
+			sourceID := runs[i].Lineage.Source.ID
+			seen := make(map[string]struct{})
+			for sourceID != "" {
+				if _, duplicate := seen[sourceID]; duplicate {
+					break
+				}
+				seen[sourceID] = struct{}{}
+				row, found, err := projected.GetRun(ctx, sourceID)
+				if err != nil {
+					return err
+				}
+				if !found {
+					break
+				}
+				if sourceID == runs[i].Lineage.Source.ID {
+					runs[i].Lineage.Source.Phase = row.Phase
+				}
+				runs[i].Lineage.HistoricalRepassCount += row.RepassCount
+				sourceID = row.Operator.ContinuedFromRunID
+			}
+		}
+		return nil
+	}
+
+	return nil
+}
+
+func decorateRunLineageFromSummaries(runs []RunSummary) {
+	byID := make(map[string]*RunSummary, len(runs))
+	for i := range runs {
+		byID[runs[i].ID] = &runs[i]
+	}
+	for i := range runs {
+		lineage := runs[i].Lineage
+		if lineage == nil || lineage.Source == nil {
+			continue
+		}
+		sourceID := lineage.Source.ID
+		if source := byID[sourceID]; source != nil {
+			lineage.Source.Phase = source.Phase
+			if source.Lineage == nil {
+				source.Lineage = &RunLineage{}
+			}
+			source.Lineage.Continuations = append(source.Lineage.Continuations,
+				LineageRun{ID: runs[i].ID, Phase: runs[i].Phase})
+		}
+		seen := make(map[string]struct{})
+		for sourceID != "" {
+			if _, duplicate := seen[sourceID]; duplicate {
+				break
+			}
+			seen[sourceID] = struct{}{}
+			source := byID[sourceID]
+			if source == nil {
+				break
+			}
+			lineage.HistoricalRepassCount += source.RepassCount
+			if source.Lineage == nil || source.Lineage.Source == nil {
+				break
+			}
+			sourceID = source.Lineage.Source.ID
+		}
+	}
+	for i := range runs {
+		if runs[i].Lineage != nil {
+			sort.Slice(runs[i].Lineage.Continuations, func(a, b int) bool {
+				return runs[i].Lineage.Continuations[a].ID < runs[i].Lineage.Continuations[b].ID
+			})
+		}
+	}
 }
 
 func (s *Local) annotateRunStaleness(runs []RunSummary) error {
