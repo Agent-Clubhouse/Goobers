@@ -49,8 +49,7 @@ func startProjector(
 	l instance.Layout,
 	cfg *instance.Config,
 ) (func(), func() readmodel.RetentionStats, func() projector.Stats, bool) {
-	runsDirs, err := l.RunDirs()
-	if err != nil {
+	if _, err := l.RunDirsContext(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: resolve runs directories for projector: %v\n", err)
 		return func() {}, nil, nil, false
 	}
@@ -64,7 +63,11 @@ func startProjector(
 	// same instance, so a projector commit wakes the subscribers that are
 	// actually waiting.
 	feed := store.Feed()
-	p := projector.New(store, watermarks, projector.Options{RunsDirs: runsDirs, Feed: feed})
+	// Resolve roots on each pass so hot-added gaggles' runs appear without a restart.
+	// Repair needs the same discovery to avoid treating their journals as missing.
+	p := projector.New(store, watermarks, projector.Options{
+		ResolveRunsDirs: l.RunDirsContext, Feed: feed,
+	})
 	stop := p.Start(ctx)
 
 	// The repair sweep (#1924). It runs continuously at a fixed I/O budget,
@@ -87,7 +90,7 @@ func startProjector(
 
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	go retention.Run(sweepCtx)
-	sweeper := newRepairSweeper(store, p, watermarks, repair.Options{RunsDirs: runsDirs})
+	sweeper := newRepairSweeper(store, p, watermarks, repair.Options{ResolveRunsDirs: l.RunDirsContext})
 	go sweeper.Run(sweepCtx)
 
 	// The restart pass runs after Start, so its commits go through the same
