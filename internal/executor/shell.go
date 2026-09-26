@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/activetime"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/providers"
@@ -890,7 +891,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, resolvedTimeout.Duration)
+	runCtx, cancel := activetime.WithTimeout(ctx, resolvedTimeout.Duration)
 	defer cancel()
 
 	// Substitute the running daemon's own binary for a bare "goobers" token: the
@@ -970,12 +971,6 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	select {
 	case waitErr = <-waitDone:
 	case <-runCtx.Done():
-		// runCtx.Done() fires both when its own timeout elapses and when the
-		// caller's ctx is canceled out from under it — distinguishing the two
-		// via context.Cause matters even though only the timeout path is
-		// reachable today (internal/runner's dispatch always uses
-		// context.WithoutCancel): a future hard-shutdown path that DOES
-		// cancel ctx must not be mislabeled as a retryable timeout (#122).
 		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
 			timedOut = true
 		} else {
