@@ -91,6 +91,9 @@ type Watermarks interface {
 type Options struct {
 	// RunsDirs are the roots to walk.
 	RunsDirs []string
+	// ResolveRunsDirs, when set, replaces RunsDirs with the current journal
+	// roots. A discovery error must stop the sweep, not imply missing journals.
+	ResolveRunsDirs func(context.Context) ([]string, error)
 	// EntriesPerSecond is the I/O budget. This is the bound: cost per unit time
 	// is fixed, and cycle time is what varies with history.
 	EntriesPerSecond int
@@ -178,6 +181,10 @@ func (s *Sweeper) Run(ctx context.Context) {
 // waiting on a ticker — a rate-bounded loop asserted with sleeps would be both
 // slow and flaky.
 func (s *Sweeper) Step(ctx context.Context) error {
+	runsDirs, err := s.runsDirs(ctx)
+	if err != nil {
+		return err
+	}
 	cursor, err := s.store.SweepCursor(ctx)
 	if err != nil {
 		return err
@@ -199,7 +206,7 @@ func (s *Sweeper) Step(ctx context.Context) error {
 	}
 	reverseExamined := 0
 	if reverseLimit > 0 {
-		reverseExamined, err = s.sweepReverse(ctx, &cursor, reverseLimit)
+		reverseExamined, err = s.sweepReverse(ctx, &cursor, reverseLimit, runsDirs)
 		if err != nil {
 			return err
 		}
@@ -208,10 +215,10 @@ func (s *Sweeper) Step(ctx context.Context) error {
 		cursor.ForwardNext = !cursor.ForwardNext
 	}
 	forwardLimit := s.options.BatchSize - reverseExamined
-	if err := s.sweepForward(ctx, &cursor, byRoot, forwardLimit); err != nil {
+	if err := s.sweepForward(ctx, &cursor, byRoot, forwardLimit, runsDirs); err != nil {
 		return err
 	}
-	s.updateAggregateCursor(&cursor, byRoot)
+	s.updateAggregateCursor(&cursor, byRoot, runsDirs)
 	return s.writer.SaveSweepCursor(ctx, cursor)
 }
 
@@ -224,17 +231,18 @@ func (s *Sweeper) sweepForward(
 	cursor *readmodel.SweepCursor,
 	byRoot map[string]readmodel.SweepRootCursor,
 	limit int,
+	runsDirs []string,
 ) error {
-	if limit <= 0 || len(s.options.RunsDirs) == 0 {
+	if limit <= 0 || len(runsDirs) == 0 {
 		return nil
 	}
-	rootIndex := s.rootIndex(cursor.Root)
+	rootIndex := s.rootIndex(cursor.Root, runsDirs)
 	if rootIndex < 0 {
 		rootIndex = 0
 	}
 	remaining := limit
-	for visited := 0; visited < len(s.options.RunsDirs) && remaining > 0; visited++ {
-		root := s.options.RunsDirs[rootIndex]
+	for visited := 0; visited < len(runsDirs) && remaining > 0; visited++ {
+		root := runsDirs[rootIndex]
 		rootCursor, ok := byRoot[root]
 		if !ok {
 			rootCursor = readmodel.SweepRootCursor{Root: root}
@@ -248,8 +256,8 @@ func (s *Sweeper) sweepForward(
 		}
 		byRoot[root] = rootCursor
 		remaining -= examined
-		rootIndex = (rootIndex + 1) % len(s.options.RunsDirs)
-		cursor.Root = s.options.RunsDirs[rootIndex]
+		rootIndex = (rootIndex + 1) % len(runsDirs)
+		cursor.Root = runsDirs[rootIndex]
 		// Filling the available budget is the normal case. Stop here so the
 		// next Step begins at the next root instead of letting the first large
 		// gaggle monopolize every tick.
@@ -303,13 +311,14 @@ func (s *Sweeper) sweepForwardRoot(
 func (s *Sweeper) updateAggregateCursor(
 	cursor *readmodel.SweepCursor,
 	byRoot map[string]readmodel.SweepRootCursor,
+	runsDirs []string,
 ) {
 	cursor.AfterName = ""
 	cursor.CycleStartedAt = time.Time{}
 	cursor.EntriesThisCycle = 0
-	allCompleted := len(s.options.RunsDirs) > 0
+	allCompleted := len(runsDirs) > 0
 	var completedAt time.Time
-	for _, root := range s.options.RunsDirs {
+	for _, root := range runsDirs {
 		rootCursor, ok := byRoot[root]
 		if !ok {
 			allCompleted = false
@@ -513,6 +522,7 @@ func (s *Sweeper) sweepReverse(
 	ctx context.Context,
 	cursor *readmodel.SweepCursor,
 	limit int,
+	runsDirs []string,
 ) (int, error) {
 	if cursor.ReverseCycleBefore.IsZero() {
 		cursor.ReverseCycleBefore = s.options.Now().UTC()
@@ -528,13 +538,25 @@ func (s *Sweeper) sweepReverse(
 		return 0, err
 	}
 	examined := 0
+	refreshedRoots := false
 	for _, row := range rows {
 		if err := ctx.Err(); err != nil {
 			return examined, err
 		}
 		s.stats.EntriesExamined++
 		examined++
-		if _, ok := s.locate(row.RunID); ok {
+		_, found := s.locate(row.RunID, runsDirs)
+		if !found && !refreshedRoots && s.options.ResolveRunsDirs != nil {
+			// A new root may have been projected after Step's snapshot.
+			// Refresh after selecting candidates before declaring a journal gone.
+			runsDirs, err = s.runsDirs(ctx)
+			if err != nil {
+				return examined, err
+			}
+			refreshedRoots = true
+			_, found = s.locate(row.RunID, runsDirs)
+		}
+		if found {
 			cursor.ReverseAfterStartedAt = row.StartedAt
 			cursor.ReverseAfterRunID = row.RunID
 			continue
@@ -590,14 +612,25 @@ func (s *Sweeper) hasMarker(ctx context.Context, runID string) (bool, error) {
 }
 
 // locate finds a run directory across the roots.
-func (s *Sweeper) locate(runID string) (string, bool) {
-	for _, root := range s.options.RunsDirs {
+func (s *Sweeper) locate(runID string, runsDirs []string) (string, bool) {
+	for _, root := range runsDirs {
 		candidate := filepath.Join(root, runID)
 		if info, err := s.stat(candidate); err == nil && info.IsDir() {
 			return candidate, true
 		}
 	}
 	return "", false
+}
+
+func (s *Sweeper) runsDirs(ctx context.Context) ([]string, error) {
+	if s.options.ResolveRunsDirs == nil {
+		return s.options.RunsDirs, nil
+	}
+	dirs, err := s.options.ResolveRunsDirs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("repair: resolve runs directories: %w", err)
+	}
+	return dirs, nil
 }
 
 // readBatch lists up to limit entries after a name, in lexicographic order.
@@ -629,8 +662,8 @@ func (s *Sweeper) readBatch(root, after string, limit int) ([]string, error) {
 // rootIndex resolves the durable round-robin position against the currently
 // configured roots. A removed root returns -1 and the caller restarts at the
 // first current root; its old per-root cursor is harmless retained history.
-func (s *Sweeper) rootIndex(target string) int {
-	for i, root := range s.options.RunsDirs {
+func (s *Sweeper) rootIndex(target string, runsDirs []string) int {
+	for i, root := range runsDirs {
 		if root == target {
 			return i
 		}
