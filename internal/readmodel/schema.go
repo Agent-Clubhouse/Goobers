@@ -734,4 +734,9 @@ CREATE INDEX IF NOT EXISTS idx_run_gaggle_workflow_phase_recency
 	`CREATE INDEX IF NOT EXISTS idx_run_continuation_source
 	ON run(trigger_ref, run_id)
 	WHERE trigger_kind = 'manual' AND trigger_ref <> '';`,
+	// v25: replay existing journals so continuation identity fields are
+	// projected into operator_json for rows created by earlier binaries.
+	`
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+`,
 }
