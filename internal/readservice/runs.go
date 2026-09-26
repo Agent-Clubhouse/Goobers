@@ -1654,6 +1654,19 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	return summarizeRunForStage(run, observedAt, "")
 }
 
+func continuationLineageFromIdentity(identity journal.RunIdentity) *RunLineage {
+	if identity.ContinuedFromRunID == "" {
+		return nil
+	}
+	return &RunLineage{
+		Source:             &LineageRun{ID: identity.ContinuedFromRunID},
+		ResumeTarget:       identity.RequestedTarget,
+		WorkspaceBranch:    identity.WorkspaceBranch,
+		WorkspaceBranchSHA: identity.WorkspaceBranchSHA,
+		InjectedInputs:     append([]journal.InputRef(nil), identity.Inputs...),
+	}
+}
+
 func summarizeRunForStage(
 	run runRead,
 	observedAt time.Time,
@@ -1894,16 +1907,6 @@ func summarizeRunForStage(
 		return RunSummary{}, err
 	}
 
-	var lineage *RunLineage
-	if run.identity.ContinuedFromRunID != "" {
-		lineage = &RunLineage{
-			Source:             &LineageRun{ID: run.identity.ContinuedFromRunID},
-			ResumeTarget:       run.identity.RequestedTarget,
-			WorkspaceBranch:    run.identity.WorkspaceBranch,
-			WorkspaceBranchSHA: run.identity.WorkspaceBranchSHA,
-			InjectedInputs:     append([]journal.InputRef(nil), run.identity.Inputs...),
-		}
-	}
 	return withRunActivity(RunSummary{
 		ID:               run.identity.RunID,
 		Workflow:         run.identity.Workflow,
@@ -1923,7 +1926,7 @@ func summarizeRunForStage(
 		RetryCount:       retries,
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
-		Lineage:          lineage,
+		Lineage:          continuationLineageFromIdentity(run.identity),
 		NoWork:           noWork,
 		TerminalReason:   terminalReason,
 		Operator:         operator,
