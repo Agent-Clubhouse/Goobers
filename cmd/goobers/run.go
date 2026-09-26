@@ -361,6 +361,14 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	if noWait && !worker {
 		triggerCtx = context.WithoutCancel(ctx)
 	}
+	triggerCtx, cancelTrigger := context.WithCancel(triggerCtx)
+	defer func() {
+		if shutdownOnReturn {
+			cancelTrigger()
+			sched.Wait()
+			wg.Wait()
+		}
+	}()
 	var runID string
 	if target.Gaggle != "" || target.PR > 0 {
 		identity := localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}
@@ -393,6 +401,8 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		releaseOnReturn = false
 		cleanup := func() {
 			sched.Wait()
+			wg.Wait()
+			cancelTrigger()
 			_ = shutdownSetup()
 			release()
 		}
