@@ -1368,6 +1368,17 @@ func TestContinuationLineageIsCanonicalAcrossSourceAndContinuation(t *testing.T)
 	if err := continuation.Close(); err != nil {
 		t.Fatal(err)
 	}
+	telemetryDB, err := rollup.Open(filepath.Join(t.TempDir(), "telemetry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = telemetryDB.Close() })
+	for _, runID := range []string{"run-lineage-source", "run-lineage-continuation"} {
+		if err := telemetryDB.IngestRun(context.Background(), filepath.Join(layout.RunsDir(), runID)); err != nil {
+			t.Fatalf("ingest %s: %v", runID, err)
+		}
+	}
+	service.sources.Telemetry = telemetryDB
 
 	sourceDetail, err := service.GetRun(context.Background(), "run-lineage-source")
 	if err != nil {

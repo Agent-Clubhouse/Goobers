@@ -3168,7 +3168,7 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 		return RunDetail{}, err
 	}
 	if !s.readModelReads {
-		lineage, err := s.offlineRunLineage(ctx, runID)
+		lineage, err := s.offlineRunLineage(ctx, summaries[0])
 		if err != nil {
 			return RunDetail{}, err
 		}
@@ -3178,7 +3178,10 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	return annotated[RunDetail](ctx, s, out), nil
 }
 
-func (s *Local) offlineRunLineage(ctx context.Context, target string) (*RunLineage, error) {
+func (s *Local) offlineRunLineage(ctx context.Context, target RunSummary) (*RunLineage, error) {
+	if s.sources.Telemetry != nil {
+		return s.telemetryRunLineage(ctx, target)
+	}
 	ids, err := s.RunIDs(ctx)
 	if err != nil {
 		return nil, err
@@ -3200,11 +3203,59 @@ func (s *Local) offlineRunLineage(ctx context.Context, target string) (*RunLinea
 	}
 	decorateRunLineageFromSummaries(summaries)
 	for _, summary := range summaries {
-		if summary.ID == target {
+		if summary.ID == target.ID {
 			return summary.Lineage, nil
 		}
 	}
 	return nil, nil
+}
+
+func (s *Local) telemetryRunLineage(ctx context.Context, target RunSummary) (*RunLineage, error) {
+	children, err := s.sources.Telemetry.ContinuationRuns(ctx, []string{target.ID})
+	if err != nil {
+		return nil, err
+	}
+	lineage := target.Lineage
+	for _, child := range children[target.ID] {
+		if lineage == nil {
+			lineage = &RunLineage{}
+		}
+		lineage.Continuations = append(lineage.Continuations, LineageRun{
+			ID: child.RunID, Phase: journal.RunPhase(child.Status),
+		})
+	}
+	if lineage == nil || lineage.Source == nil {
+		return lineage, nil
+	}
+
+	sourceID := lineage.Source.ID
+	seen := make(map[string]struct{})
+	for sourceID != "" {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[sourceID]; duplicate {
+			break
+		}
+		seen[sourceID] = struct{}{}
+		run, err := s.openRun(sourceID)
+		if err != nil {
+			break
+		}
+		summary, err := summarizeRun(run, s.now().UTC())
+		if err != nil {
+			break
+		}
+		if sourceID == lineage.Source.ID {
+			lineage.Source.Phase = summary.Phase
+		}
+		lineage.HistoricalRepassCount += summary.RepassCount
+		if summary.Lineage == nil || summary.Lineage.Source == nil {
+			break
+		}
+		sourceID = summary.Lineage.Source.ID
+	}
+	return lineage, nil
 }
 
 func (s *Local) decorateRunLineage(ctx context.Context, runs []RunSummary) error {
