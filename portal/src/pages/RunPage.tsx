@@ -199,6 +199,7 @@ function RunDetailWorkspace({
   const [selectedEvidenceSeq, setSelectedEvidenceSeq] = useState<number | undefined>(
     routedEvent && isInspectableEvidenceEvent(routedEvent) ? routedEvent.seq : undefined,
   );
+  const routeTargetRef = useRef({ runId, routeNodeId, routeSequence });
   const [revealPending, setRevealPending] = useState(false);
   const [revealError, setRevealError] = useState<string>();
   const [runIdCopied, setRunIdCopied] = useState(false);
@@ -250,6 +251,12 @@ function RunDetailWorkspace({
   }, [activeTab, pendingInspectorFocus]);
 
   useEffect(() => {
+    const previousRouteTarget = routeTargetRef.current;
+    const routeTargetChanged =
+      previousRouteTarget.runId !== runId ||
+      previousRouteTarget.routeNodeId !== routeNodeId ||
+      previousRouteTarget.routeSequence !== routeSequence;
+    routeTargetRef.current = { runId, routeNodeId, routeSequence };
     const event =
       routeSequence === undefined
         ? latestEvent
@@ -268,7 +275,9 @@ function RunDetailWorkspace({
     setSelectedEvidenceSeq(
       event && isInspectableEvidenceEvent(event) ? event.seq : undefined,
     );
-    setFollowingLatest(routeSequence === undefined);
+    setFollowingLatest((current) =>
+      routeTargetChanged ? routeSequence === undefined : current,
+    );
   }, [
     events,
     initialSeq,
