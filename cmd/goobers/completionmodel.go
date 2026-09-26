@@ -546,6 +546,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "since", takesArg: true, desc: "Inclusive span-start lower bound"},
 		{name: "until", takesArg: true, desc: "Exclusive span-start upper bound"},
 	},
+	"telemetry mark-fix": {
+		{name: "finding", takesArg: true, desc: "Backprop finding ID to verify"},
+		{name: "applied-at", takesArg: true, desc: "Fix deployment time as RFC3339"},
+	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
 	},

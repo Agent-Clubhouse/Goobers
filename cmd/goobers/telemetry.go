@@ -21,14 +21,65 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryHelp = "Usage: goobers telemetry <stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]\n\n" +
+const telemetryHelp = "Usage: goobers telemetry <stats|merges|errors|export|mark-fix|prune|prune-orphans|compact> [flags] [path]\n\n" +
 	"merges: confirmed PR landings and daily counts by originating instance\n" +
 	"stats:  run/stage outcomes, curation actions, and ready-pool health\n" +
 	"errors: recent errors across runs, by class, with run/stage refs\n" +
 	"export: re-emit a span-start-time window from journaled OTLP/JSON\n" +
+	"mark-fix: mark a Backprop finding for post-fix verification\n" +
 	"prune:   remove terminal runs outside the configured retention bounds\n" +
 	"prune-orphans: report or delete old run directories that lack run.yaml\n" +
 	"compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)\n"
+
+const telemetryMarkFixHelp = "Usage: goobers telemetry mark-fix --finding=<backprop-id> [--applied-at=RFC3339] [path]\n\n" +
+	"Record when an operator-deployed fix for a Backprop fault-audit finding was\n" +
+	"applied. Subsequent report-only audit passes compare held-out runs after this\n" +
+	"time and show verification-pending, recovered, or repeated. --applied-at\n" +
+	"defaults to the current time. Exit codes: 0 = recorded, 1 = state error,\n" +
+	"2 = usage/config error.\n"
+
+func runTelemetryMarkFix(args []string, stdout, stderr io.Writer) int {
+	return runTelemetryMarkFixAt(args, stdout, stderr, time.Now().UTC())
+}
+
+func runTelemetryMarkFixAt(args []string, stdout, stderr io.Writer, now time.Time) int {
+	fs := newCLIFlagSet("telemetry mark-fix", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	findingID := fs.String("finding", "", "Backprop finding ID to verify (required)")
+	appliedAtValue := fs.String("applied-at", "", "fix deployment time as RFC3339 (default now)")
+	fs.Usage = helpUsage(stderr, "telemetry mark-fix")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 || strings.TrimSpace(*findingID) == "" {
+		fs.Usage()
+		return 2
+	}
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+	layout := instance.NewLayout(root)
+	if _, err := os.Stat(layout.ConfigFile()); err != nil {
+		pf(stderr, "error: %s not found (not an instance root - run `goobers init` first)\n", layout.ConfigFile())
+		return 2
+	}
+	appliedAt := now
+	if strings.TrimSpace(*appliedAtValue) != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, *appliedAtValue)
+		if err != nil {
+			pf(stderr, "error: --applied-at must be an RFC3339 timestamp\n")
+			return 2
+		}
+		appliedAt = parsed
+	}
+	if err := readservice.RecordFaultAuditFix(context.Background(), root, *findingID, appliedAt.UTC()); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "marked finding=%q fixedAt=%s\n", strings.TrimSpace(*findingID), appliedAt.UTC().Format(time.RFC3339Nano))
+	return 0
+}
 
 func runTelemetry(args []string, stdout, stderr io.Writer) int {
 	usage := func(w io.Writer) { pf(w, "%s", telemetryHelp) }

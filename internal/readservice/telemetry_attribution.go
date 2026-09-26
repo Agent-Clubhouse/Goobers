@@ -2,24 +2,35 @@ package readservice
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
-const attributionListPageSize = 200
+const (
+	attributionListPageSize        = 200
+	faultAuditScanBudgetMultiplier = 10
+	faultAuditStateSchema          = "goobers.dev/backprop/fault-audit-state/v1"
+)
 
-var interventionEvidencePattern = regexp.MustCompile(`^intervention: stage (.+) attempt ([0-9]+) failed and attempt ([0-9]+) succeeded$`)
+var (
+	interventionEvidencePattern = regexp.MustCompile(`^intervention: stage (.+) attempt ([0-9]+) failed and attempt ([0-9]+) succeeded$`)
+	faultAuditFindingIDPattern  = regexp.MustCompile(`^backprop-[0-9a-f]{20}$`)
+)
 
 // StoredAttributionQuery scopes the stored run evidence to aggregate.
 type StoredAttributionQuery struct {
@@ -44,45 +55,77 @@ func StoredAttributionCohorts(
 	return creditgraph.AggregateAttributionEvidence(observations), nil
 }
 
+// StoredFaultAudit classifies enrolled terminal evidence without mutating
+// workflows, issues, or runs.
+func StoredFaultAudit(
+	ctx context.Context,
+	root string,
+	reads readmodel.Reader,
+	query StoredAttributionQuery,
+	config creditgraph.FaultAuditConfig,
+) (creditgraph.FaultAuditReport, error) {
+	maxObservations := config.MaxObservations
+	if maxObservations < 1 {
+		maxObservations = 500
+	}
+	observations, err := storedAttributionObservationsLimit(ctx, root, reads, query, maxObservations)
+	if err != nil {
+		return creditgraph.FaultAuditReport{}, err
+	}
+	if config.Since.IsZero() {
+		config.Since = query.Since
+	}
+	if config.Until.IsZero() {
+		config.Until = query.Until
+	}
+	if config.Now.IsZero() {
+		config.Now = time.Now().UTC()
+	}
+	state, err := readFaultAuditState(root)
+	if err != nil {
+		return creditgraph.FaultAuditReport{}, err
+	}
+	config.PreviousReports = mergeAuditTimes(previousReportsForScope(state.PreviousReports, query), config.PreviousReports)
+	config.FixesAppliedAt = mergeAuditTimes(state.FixesAppliedAt, config.FixesAppliedAt)
+	report := creditgraph.AuditFaultDomains(observations, config)
+	if err := recordFaultAuditReports(ctx, root, query, config.Now, report); err != nil {
+		return creditgraph.FaultAuditReport{}, err
+	}
+	return report, nil
+}
+
 func storedAttributionObservations(
 	ctx context.Context,
 	root string,
 	reads readmodel.Reader,
 	query StoredAttributionQuery,
 ) ([]creditgraph.AttributionObservation, error) {
+	return storedAttributionObservationsLimit(ctx, root, reads, query, 0)
+}
+
+func storedAttributionObservationsLimit(
+	ctx context.Context,
+	root string,
+	reads readmodel.Reader,
+	query StoredAttributionQuery,
+	limit int,
+) ([]creditgraph.AttributionObservation, error) {
 	if reads == nil || strings.TrimSpace(root) == "" {
 		return nil, nil
 	}
 	layout := instance.NewLayout(root)
-	rows, err := terminalRuns(ctx, reads, query)
-	if err != nil {
-		return nil, err
-	}
-	observations := make([]creditgraph.AttributionObservation, 0, len(rows))
-	for _, row := range rows {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		observation, ok, err := storedAttributionObservation(ctx, layout, row)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			observations = append(observations, observation)
-		}
-	}
-	return observations, nil
-}
-
-func terminalRuns(ctx context.Context, reads readmodel.Reader, query StoredAttributionQuery) ([]readmodel.RunRow, error) {
 	options := readmodel.ListOptions{
-		Gaggle:   query.Gaggle,
-		Workflow: query.Workflow,
-		Since:    query.Since,
-		Until:    query.Until,
-		Limit:    attributionListPageSize,
+		Gaggle: query.Gaggle, Workflow: query.Workflow,
+		Since: query.Since, Until: query.Until, Limit: attributionListPageSize,
 	}
-	var rows []readmodel.RunRow
+	capacity := attributionListPageSize
+	scanBudget := 0
+	if limit > 0 {
+		capacity = limit
+		scanBudget = max(attributionListPageSize, limit*faultAuditScanBudgetMultiplier)
+	}
+	observations := make([]creditgraph.AttributionObservation, 0, capacity)
+	terminalScanned := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -92,15 +135,196 @@ func terminalRuns(ctx context.Context, reads readmodel.Reader, query StoredAttri
 			return nil, fmt.Errorf("list attribution runs: %w", err)
 		}
 		for _, row := range page.Runs {
-			if row.Terminal {
-				rows = append(rows, row)
+			if !row.Terminal {
+				continue
+			}
+			if scanBudget > 0 && terminalScanned >= scanBudget {
+				return observations, nil
+			}
+			terminalScanned++
+			observation, ok, err := storedAttributionObservation(ctx, layout, row)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				observations = append(observations, observation)
+				if limit > 0 && len(observations) == limit {
+					return observations, nil
+				}
 			}
 		}
 		if !page.HasMore || page.Next.Zero() {
-			return rows, nil
+			return observations, nil
 		}
 		options.Cursor = page.Next
 	}
+}
+
+type faultAuditState struct {
+	Schema          string               `json:"schema"`
+	PreviousReports map[string]time.Time `json:"previousReports,omitempty"`
+	FixesAppliedAt  map[string]time.Time `json:"fixesAppliedAt,omitempty"`
+}
+
+func faultAuditStatePath(root string) string {
+	return filepath.Join(instance.NewLayout(root).SchedulerDir(), "backprop-audit", "state.json")
+}
+
+func readFaultAuditState(root string) (faultAuditState, error) {
+	state := faultAuditState{
+		Schema: faultAuditStateSchema, PreviousReports: map[string]time.Time{}, FixesAppliedAt: map[string]time.Time{},
+	}
+	data, err := os.ReadFile(faultAuditStatePath(root))
+	if errors.Is(err, os.ErrNotExist) {
+		return state, nil
+	}
+	if err != nil {
+		return faultAuditState{}, fmt.Errorf("read fault audit state: %w", err)
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return faultAuditState{}, fmt.Errorf("decode fault audit state: %w", err)
+	}
+	if state.Schema != faultAuditStateSchema {
+		return faultAuditState{}, fmt.Errorf("decode fault audit state: unsupported schema %q", state.Schema)
+	}
+	if state.PreviousReports == nil {
+		state.PreviousReports = map[string]time.Time{}
+	}
+	if state.FixesAppliedAt == nil {
+		state.FixesAppliedAt = map[string]time.Time{}
+	}
+	return state, nil
+}
+
+func mergeAuditTimes(stored, supplied map[string]time.Time) map[string]time.Time {
+	merged := make(map[string]time.Time, len(stored)+len(supplied))
+	for id, at := range stored {
+		merged[id] = at
+	}
+	for id, at := range supplied {
+		merged[id] = at
+	}
+	return merged
+}
+
+func previousReportsForScope(stored map[string]time.Time, query StoredAttributionQuery) map[string]time.Time {
+	if strings.TrimSpace(query.Gaggle) == "" && strings.TrimSpace(query.Workflow) == "" {
+		reports := map[string]time.Time{}
+		for key, at := range stored {
+			if strings.HasPrefix(key, "backprop-") {
+				reports[key] = at
+			}
+		}
+		return reports
+	}
+	prefix := faultAuditScopePrefix(query)
+	reports := map[string]time.Time{}
+	for key, at := range stored {
+		if strings.HasPrefix(key, prefix) {
+			reports[strings.TrimPrefix(key, prefix)] = at
+		}
+	}
+	return reports
+}
+
+func faultAuditScopePrefix(query StoredAttributionQuery) string {
+	scope := strings.TrimSpace(query.Gaggle) + "\x00" + strings.TrimSpace(query.Workflow)
+	return fmt.Sprintf("scope-%x:", sha256.Sum256([]byte(scope)))
+}
+
+func faultAuditReportKey(query StoredAttributionQuery, findingID string) string {
+	if strings.TrimSpace(query.Gaggle) == "" && strings.TrimSpace(query.Workflow) == "" {
+		return findingID
+	}
+	return faultAuditScopePrefix(query) + findingID
+}
+
+func recordFaultAuditReports(ctx context.Context, root string, query StoredAttributionQuery, now time.Time, report creditgraph.FaultAuditReport) error {
+	ids := make([]string, 0, len(report.ProductFindings)+len(report.ExternalFindings)+len(report.WorkflowFindings)+len(report.UnknownFindings))
+	for _, findings := range [][]creditgraph.FaultFinding{report.ProductFindings, report.ExternalFindings, report.WorkflowFindings, report.UnknownFindings} {
+		for _, finding := range findings {
+			ids = append(ids, finding.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return updateFaultAuditState(ctx, root, func(state *faultAuditState) {
+		for _, id := range ids {
+			state.PreviousReports[faultAuditReportKey(query, id)] = now
+		}
+	})
+}
+
+// RecordFaultAuditFix marks a finding for held-out verification by subsequent
+// report-only audit passes.
+func RecordFaultAuditFix(ctx context.Context, root, findingID string, appliedAt time.Time) error {
+	findingID = strings.TrimSpace(findingID)
+	if !faultAuditFindingIDPattern.MatchString(findingID) || appliedAt.IsZero() {
+		return fmt.Errorf("record fault audit fix: a valid Backprop finding ID and applied time are required")
+	}
+	state, err := readFaultAuditState(root)
+	if err != nil {
+		return err
+	}
+	known := false
+	for key := range state.PreviousReports {
+		if key == findingID || strings.HasSuffix(key, ":"+findingID) {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return fmt.Errorf("record fault audit fix: finding %q has not been reported", findingID)
+	}
+	return updateFaultAuditState(ctx, root, func(state *faultAuditState) {
+		state.FixesAppliedAt[findingID] = appliedAt
+	})
+}
+
+func updateFaultAuditState(ctx context.Context, root string, update func(*faultAuditState)) (err error) {
+	path := faultAuditStatePath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create fault audit state directory: %w", err)
+	}
+	var held *platformlock.Handle
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		held, err = platformlock.TryAcquire(path + ".lock")
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, platformlock.ErrHeld) {
+			return fmt.Errorf("lock fault audit state: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	defer func() {
+		if releaseErr := held.Release(); err == nil && releaseErr != nil {
+			err = fmt.Errorf("unlock fault audit state: %w", releaseErr)
+		}
+	}()
+	state, err := readFaultAuditState(root)
+	if err != nil {
+		return err
+	}
+	update(&state)
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("encode fault audit state: %w", err)
+	}
+	data = append(data, '\n')
+	if err := journal.WriteFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("write fault audit state: %w", err)
+	}
+	return nil
 }
 
 func storedAttributionObservation(
@@ -121,12 +345,16 @@ func storedAttributionObservation(
 	}
 	observation := creditgraph.AttributionObservation{
 		RunID: record.RunID, Workflow: record.Workflow, EffectiveVersion: record.EffectiveVersion,
-		Workload: record.Workload, Status: record.Status, Failure: record.Failure,
+		WorkflowDigest: record.WorkflowDigest,
+		Workload:       record.Workload, Status: record.Status, Failure: record.Failure,
+		RunPhase:    row.Phase,
 		Attribution: record.Attribution,
 		Evidence:    append([]creditgraph.AttributionEvidenceLink(nil), record.Evidence...),
 	}
-	if record.Status == creditgraph.RecordFailed {
-		return observation, true, nil
+	if row.FinishedAt != nil {
+		observation.ObservedAt = *row.FinishedAt
+	} else {
+		observation.ObservedAt = row.StartedAt
 	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
@@ -144,9 +372,11 @@ func storedAttributionObservation(
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution identity %q: %w", row.RunID, err)
 	}
+	observation.GooberDigest = identity.GooberDigest
 	spanData := map[string][]byte{}
 	for _, event := range events {
-		if event.Type != journal.EventSpanRecorded || event.Ref == nil || event.DataSchema != telemetry.GenAIEventSchema {
+		if event.Type != journal.EventSpanRecorded || event.Ref == nil ||
+			(event.DataSchema != telemetry.GenAIEventSchema && event.DataSchema != telemetry.SpanSchema) {
 			continue
 		}
 		data, err := reader.SpanBytes(*event.Ref)
@@ -170,11 +400,29 @@ func storedAttributionObservation(
 	}
 	attribution := record.Attribution
 	observation.Attribution = attribution
+	for _, node := range graph.Nodes {
+		if node.Kind == creditgraph.KindEnvironment && strings.TrimSpace(node.Label) != "" {
+			observation.Environments = appendUniqueString(observation.Environments, node.Label)
+		}
+	}
+	slices.Sort(observation.Environments)
+	if record.Status == creditgraph.RecordFailed {
+		return observation, true, nil
+	}
 	observation.Evidence = append(
 		observation.Evidence,
 		buildAttributionEvidence(layout.Root, runDir, records, graph, attribution)...,
 	)
 	return observation, true, nil
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, current := range values {
+		if current == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 type attributionEventIndex struct {

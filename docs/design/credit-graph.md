@@ -39,6 +39,45 @@ for every analysis status so incompatible runs cannot enter the same cohort.
 Runs containing more than one model/harness pair have no defined
 EffectiveVersion and are excluded from cohort aggregation.
 
+## Cross-workflow fault audit
+
+The read-only Backprop fault auditor consumes only persisted records from
+enrolled workflows. Its default seven-day window, sample floor, observation
+cap, finding budget, evidence/run caps, and cooldown make every pass bounded;
+the output is always `report-only` and never files an issue, edits a workflow,
+or rolls back a run. Operators can select a narrower gaggle, workflow, or time
+window through the existing telemetry query scope. The observation cap counts
+enrolled records, not terminal rows: readers continue through unenrolled rows
+under a separate finite scan budget so sparse enrollment cannot hide later
+evidence.
+
+One stable signature produces one deterministic finding across duplicate runs
+and repeated passes. Shared daemon, worktree, scheduler, journal, claim,
+admission, publication, recovery, or shared-CI failures must cross unrelated
+workflow boundaries before they are assigned to Goobers product reliability.
+Harness, model, provider, credential, network, filesystem, operating-system,
+and similar shared failures route to the external component owner. A
+workflow-definition finding must remain localized to one workflow,
+EffectiveVersion, and attributed node path. Sparse samples, missing exact
+provenance, contradictory evidence, mixed candidate domains, and failures that
+do not cross the required boundary remain `mixed-or-unknown` with reduced
+confidence.
+
+Each finding carries exact run/journal/artifact links, affected workflows and
+versions, node paths, environments, counter-evidence, rejected or retained
+alternative domains, and a recommended owner/action. Product reliability,
+external-component, workflow remediation, and mixed/unknown findings are
+separate fields on the telemetry read surfaces and candidate-findings artifact.
+A supplied fix marker moves a finding through `verification-pending`,
+`recovered`, or `repeated` using post-fix observations; absence of a post-fix
+cohort never counts as recovery. Stored audit passes durably record report
+cooldowns and operator fix markers in `scheduler/backprop-audit/state.json`;
+cooldowns are scoped by gaggle and workflow so a narrow read cannot suppress a
+broader cross-workflow classification. Operators record a deployed fix with
+`goobers telemetry mark-fix --finding=<backprop-id>` (optionally pinning its
+RFC3339 deployment time with `--applied-at`). This is auditor metadata only
+and does not mutate workflows, issues, or run journals.
+
 ## Why
 
 Credit assignment needs one shared answer to "what produced this outcome, and

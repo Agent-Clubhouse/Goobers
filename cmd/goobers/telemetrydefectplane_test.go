@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -52,6 +53,40 @@ func decodeCandidateFindings(t *testing.T, stdout string) candidateFindingsArtif
 		t.Fatalf("output is not parseable JSON: %v\n%s", err, stdout)
 	}
 	return artifact
+}
+
+func TestDefectAggregateResponsePreservesFaultAudit(t *testing.T) {
+	now := time.Date(2026, time.September, 25, 7, 0, 0, 0, time.UTC)
+	audit := &creditgraph.FaultAuditReport{
+		Schema: creditgraph.FaultAuditSchemaVersion, Mode: "report-only",
+		Since: now.Add(-time.Hour), Until: now, ObservationsScanned: 3,
+		ProductFindings: []creditgraph.FaultFinding{{
+			ID: "backprop-00000000000000000000", Signature: "runtime-failure",
+			Domain: creditgraph.FaultDomainProductRuntime, Confidence: 0.9,
+			RunIDs: []string{"run-1"}, Workflows: []string{"implementation"},
+			EffectiveVersions: []string{"version-1"}, Environments: []string{"windows"},
+			NodePaths: [][]string{{"stage:implement", "node:runtime"}},
+			Evidence:  []creditgraph.AttributionEvidenceLink{{RunID: "run-1", JournalSequence: 12}},
+			Rationale: "repeated runtime failure", AlternativeDomains: []string{string(creditgraph.FaultDomainUnknown)},
+			RecommendedOwner: "product", RecommendedAction: "investigate",
+			Verification: creditgraph.VerificationPending,
+		}},
+		Suppressed: 1, Truncated: true,
+	}
+
+	wire := defectAggregateResponse(candidateFindingsArtifact{FaultAudit: audit})
+	roundTrip := candidateFindingsFromPlane(time.Hour, audit.Since, wire)
+	got, err := json.Marshal(roundTrip.FaultAudit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("fault audit drifted across defect plane\n got: %s\nwant: %s", got, want)
+	}
 }
 
 // TestTelemetryQueryPlaneMatchesTheLocalResult is the parity check. Same
