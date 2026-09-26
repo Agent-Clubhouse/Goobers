@@ -497,15 +497,22 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   label and its claim breadcrumb are a projection of it, never an input to
   eligibility. The projection is retired at the same moment the lease is —
   a stage does it on the paths that have one (`issue-close-out`,
-  `backlog-query --release`), and the instance's terminal cleanup does it for
-  every run that reaches a terminal phase still holding a lease. The `no-work`
-  outcome is the case that makes the second path necessary rather than
-  defensive: it short-circuits to `completed` from whatever stage reported it,
-  so no close-out stage runs. Backlog curation's reconciliation of markers with
-  no backing lease remains the backstop for a projection that could not be
-  written (a forge outage, a credential-less instance, a non-GitHub provider),
-  not the primary mechanism — so the window in which the ledger and the forge
-  disagree is bounded by one provider call, not by one curation interval.
+  `backlog-query --release`), and on GitHub and Azure DevOps the instance's
+  terminal cleanup does it for every run that reaches a terminal phase still
+  holding a lease. On Azure DevOps the release targets the gaggle's backlog
+  project and retires both the provider claim epoch and the visible
+  `goobers:claimed` tag before the local lease is released. On Gitea, terminal
+  cleanup skips the release entirely — for that provider, backlog curation's
+  reconciliation of markers with no backing lease is the *only* mechanism that
+  repairs a leftover marker, not a backstop for the rare miss. The `no-work`
+  outcome is the case that makes the terminal-cleanup path necessary rather
+  than defensive: it short-circuits to `completed` from whatever stage
+  reported it, so no close-out stage runs. On GitHub and Azure DevOps,
+  curation's reconciliation remains the backstop for a projection that could
+  not be written (a forge outage, a credential-less instance), so the window in
+  which the ledger and the forge disagree is bounded by one provider call, not
+  by one curation interval; on Gitea that window is bounded by the curation
+  interval instead.
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and
