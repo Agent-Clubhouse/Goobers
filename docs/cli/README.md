@@ -3465,6 +3465,9 @@ Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
 back to files. --no-api explicitly selects local execution/file delegation
 and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.
+Without a live daemon, workflows with an effective runControls.maxRunDuration
+are rejected before dispatch, including inherited limits and --no-wait runs.
+Start `goobers up` for that instance and submit through the daemon instead.
 Targeted --pr runs currently require --no-api from the instance root.
 --github-progress publishes the versioned hosted-progress contract to one
 GitHub Check Run whenever the journal sequence advances. It requires

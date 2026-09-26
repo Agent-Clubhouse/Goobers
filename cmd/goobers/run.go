@@ -73,6 +73,9 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"for the run's terminal journal phase. API failures never silently fall\n" +
 	"back to files. --no-api explicitly selects local execution/file delegation\n" +
 	"and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.\n" +
+	"Without a live daemon, workflows with an effective runControls.maxRunDuration\n" +
+	"are rejected before dispatch, including inherited limits and --no-wait runs.\n" +
+	"Start `goobers up` for that instance and submit through the daemon instead.\n" +
 	"Targeted --pr runs currently require --no-api from the instance root.\n" +
 	"--github-progress publishes the versioned hosted-progress contract to one\n" +
 	"GitHub Check Run whenever the journal sequence advances. It requires\n" +
@@ -344,6 +347,14 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		pf(stderr, "error: --pr requires a workflow subscribed to the pull_request event\n")
 		return 1
 	}
+	// Agent-Clubhouse/Goobers#5557: reject duration-limited standalone runs
+	// before dispatch because this path has no watchdog.
+	if matches == 1 {
+		if err := validateStandaloneRunDuration(setup, localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
 
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
@@ -446,6 +457,28 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	pf(stdout, "finished: phase=%s\n", phase)
 	pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
 	return exitForPhase(phase)
+}
+
+func validateStandaloneRunDuration(setup *schedulerSetup, identity localscheduler.WorkflowIdentity) error {
+	machine := setup.Machines[identity]
+	if machine == nil {
+		return fmt.Errorf("workflow %q in gaggle %q has no compiled definition", identity.Workflow, identity.Gaggle)
+	}
+	for _, gaggle := range setup.Definitions.Gaggles {
+		if gaggle.Name != identity.Gaggle {
+			continue
+		}
+		controls, err := resolveWorkflowRunControls(setup.Config, setup.RepoRefs[identity], gaggle, apiv1.Workflow{Spec: machine.Def.Spec})
+		if err != nil {
+			return fmt.Errorf("workflow %q run controls: %w", identity.Workflow, err)
+		}
+		if controls.MaxRunDuration > 0 {
+			return fmt.Errorf("workflow %s/%s sets runControls.maxRunDuration=%s, which standalone execution cannot enforce; start `goobers up` for this instance and submit the run through the daemon",
+				identity.Gaggle, identity.Workflow, controls.MaxRunDuration)
+		}
+		return nil
+	}
+	return fmt.Errorf("no gaggle named %q for workflow %q", identity.Gaggle, identity.Workflow)
 }
 
 func flagWasSet(args []string, name string) bool {

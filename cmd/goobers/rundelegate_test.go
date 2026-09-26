@@ -727,16 +727,23 @@ func (w *daemonStartedWriter) Write(p []byte) (int, error) {
 // dispatched run shows up identically to a daemon-native dispatch, per the
 // issue's own literal test plan.
 func TestRunDelegatesToLiveDaemon(t *testing.T) {
-	t.Run("automatic API", func(t *testing.T) { testRunDelegatesToLiveDaemon(t, false) })
-	t.Run("explicit file fallback", func(t *testing.T) { testRunDelegatesToLiveDaemon(t, true) })
+	for _, duration := range []string{"", "1h"} {
+		t.Run("maxRunDuration="+duration, func(t *testing.T) {
+			t.Run("automatic API", func(t *testing.T) { testRunDelegatesToLiveDaemon(t, false, duration) })
+			t.Run("explicit file fallback", func(t *testing.T) { testRunDelegatesToLiveDaemon(t, true, duration) })
+		})
+	}
 }
 
-func testRunDelegatesToLiveDaemon(t *testing.T, noAPI bool) {
+func testRunDelegatesToLiveDaemon(t *testing.T, noAPI bool, maxRunDuration string) {
 	prevInterval := delegationSweepInterval
 	delegationSweepInterval = 20 * time.Millisecond
 	t.Cleanup(func() { delegationSweepInterval = prevInterval })
 
 	root := initDeterministicDemo(t)
+	if maxRunDuration != "" {
+		setRunDurationLimit(t, root, "workflow", maxRunDuration)
+	}
 	l := instance.NewLayout(root)
 
 	ctx, cancel := context.WithCancel(context.Background())
