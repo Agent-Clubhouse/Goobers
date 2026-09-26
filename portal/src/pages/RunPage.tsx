@@ -8,6 +8,7 @@ import type {
   RunEvent,
   WorkflowGraph,
 } from "../api/types";
+import { newestFirst } from "../chronology";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
@@ -411,7 +412,10 @@ function RunDetailWorkspace({
   const displayedRunId = shortenIdentifier(run.id);
   const relatedReferences = collectRelatedReferences(run, events);
   const stageVisits = semanticStageVisits(events, runId);
-  const artifacts = logicalArtifacts(events, runId);
+  const artifacts = newestFirst(
+    logicalArtifacts(events, runId),
+    (artifact) => artifact.events.at(-1)?.seq,
+  );
   const inspectSequence = (seq: number, tab: RunDetailTab = "diagnostics") => {
     setPendingInspectorFocus(tab === "diagnostics");
     navigateRun(tab, seq, undefined, true);
@@ -806,6 +810,7 @@ function RunOverview({
     current?.repass?.reason ||
     (current?.status === "running" ? run.operator?.nextTransition : current?.result);
   const lastActivity = events.at(-1)?.time ?? run.lastActivityAt;
+  const newestVisits = newestFirst(visits, (visit) => visit.startedSeq);
 
   return (
     <section
@@ -899,7 +904,7 @@ function RunOverview({
           <span className="graph-legend">One row per visit</span>
         </div>
         <ol className="run-stage-list">
-          {visits.map((visit) => (
+          {newestVisits.map((visit) => (
             <li className={`run-stage-row run-stage-row-${visit.status}`} key={visit.id}>
               <button
                 aria-label={`Open ${visit.stage}, visit ${visit.visit}, ${semanticStatusLabel(visit.status)}`}
@@ -1198,7 +1203,7 @@ function AgentProgressPanel({ summaries }: { summaries: AgentProgressSummary[] }
         <span className="graph-legend">Attempt-scoped lifecycle and structured progress</span>
       </div>
       <div className="agent-progress-list">
-        {summaries.map((summary) => (
+        {newestFirst(summaries, agentProgressSequence).map((summary) => (
           <AgentProgressCard key={agentProgressCardKey(summary)} summary={summary} />
         ))}
       </div>
@@ -1208,7 +1213,7 @@ function AgentProgressPanel({ summaries }: { summaries: AgentProgressSummary[] }
 
 function AgentProgressCard({ summary }: { summary: AgentProgressSummary }) {
   const current = summary.currentStatus;
-  const history = summary.history ?? [];
+  const history = newestFirst(summary.history ?? [], (record) => record.sequence);
   const currentLabel = current ? agentCurrentLabel(current) : "Unknown";
   const currentSummary = current?.summary?.trim() || "No current status summary recorded.";
 
@@ -1271,7 +1276,7 @@ function AgentProgressCard({ summary }: { summary: AgentProgressSummary }) {
 
       {summary.children && summary.children.length > 0 && (
         <div className="agent-progress-children">
-          {summary.children.map((child) => (
+          {newestFirst(summary.children, agentProgressSequence).map((child) => (
             <AgentProgressCard key={agentProgressCardKey(child)} summary={child} />
           ))}
         </div>
@@ -1282,6 +1287,10 @@ function AgentProgressCard({ summary }: { summary: AgentProgressSummary }) {
 
 function agentProgressCardKey(summary: AgentProgressSummary): string {
   return `${summary.stage}:${summary.agentId}:${summary.attempt}`;
+}
+
+function agentProgressSequence(summary: AgentProgressSummary): number | undefined {
+  return summary.currentStatus?.sequence ?? summary.latest?.sequence;
 }
 
 function agentCurrentLabel(summary: NonNullable<AgentProgressSummary["currentStatus"]>): string {
