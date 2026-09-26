@@ -3,6 +3,7 @@
 package activetime
 
 import (
+	"context"
 	"sync"
 	"time"
 	"unsafe"
@@ -13,6 +14,38 @@ import (
 const activeTimePollInterval = time.Second
 
 var queryUnbiasedInterruptTime = windows.NewLazySystemDLL("kernel32.dll").NewProc("QueryUnbiasedInterruptTime")
+
+type deadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c deadlineContext) Deadline() (time.Time, bool) {
+	if parentDeadline, ok := c.Context.Deadline(); ok && parentDeadline.Before(c.deadline) {
+		return parentDeadline, true
+	}
+	return c.deadline, true
+}
+
+// WithTimeout cancels after timeout has elapsed on Windows' unbiased interrupt
+// clock, which excludes time while the guest is suspended.
+func WithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	base, cancelCause := context.WithCancelCause(parent)
+	ctx := deadlineContext{Context: base, deadline: time.Now().Add(timeout)}
+	timer := NewTimer(timeout)
+	go func() {
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			cancelCause(context.DeadlineExceeded)
+		case <-base.Done():
+		}
+	}()
+	return ctx, func() {
+		timer.Stop()
+		cancelCause(context.Canceled)
+	}
+}
 
 func newTimer(timeout time.Duration) *Timer {
 	fired := make(chan time.Time, 1)
