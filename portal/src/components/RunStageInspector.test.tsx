@@ -387,6 +387,34 @@ describe("run stage inspector", () => {
     }
   });
 
+  it("orders and selects finish-only legacy attempts by their finish sequence", async () => {
+    const client = stubClient([
+      attempt({ visit: 1, number: 1, startedSeq: 1, finishedSeq: 2 }),
+      attempt({ visit: 2, number: 1, startedSeq: 5, finishedSeq: 6 }),
+      attempt({ visit: 2, number: 2, startedSeq: undefined, finishedSeq: 8 }),
+    ]);
+    renderInspector(
+      <RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />,
+    );
+
+    const visits = await screen.findByRole("group", { name: "Stage visits" });
+    expect(
+      within(visits).getAllByRole("button").map((button) => button.textContent),
+    ).toEqual(["Visit 2", "Visit 1"]);
+    expect(within(visits).getByRole("button", { name: "Visit 2" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    const attempts = screen.getByRole("group", { name: "Visit 2 attempts" });
+    expect(
+      within(attempts).getAllByRole("button").map((button) => button.textContent),
+    ).toEqual(["Attempt 2", "Attempt 1"]);
+    expect(
+      within(attempts).getByRole("button", { name: "Visit 2 · Attempt 2" }),
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("shows the newest attempt artifact first", async () => {
     const client = stubClient([
       attempt({

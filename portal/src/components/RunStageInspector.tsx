@@ -84,7 +84,8 @@ function groupAttemptsByVisit(attempts: StageAttempt[]): StageVisit[] {
   const byOrdinal = new Map<number, StageVisit>();
   const ordered = [...attempts].sort(
     (left, right) =>
-      (left.startedSeq ?? 0) - (right.startedSeq ?? 0) ||
+      (left.startedSeq ?? left.finishedSeq ?? 0) -
+        (right.startedSeq ?? right.finishedSeq ?? 0) ||
       left.visit - right.visit ||
       left.number - right.number,
   );
