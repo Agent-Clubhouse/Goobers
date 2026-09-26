@@ -156,6 +156,21 @@ func openPRIssue(root, runID string) (id, title string, ok bool, err error) {
 	return id, title, ok, nil
 }
 
+func openPRTitle(root, runID string) (title, issueID, issueTitle string, haveIssue bool, err error) {
+	issueID, issueTitle, haveIssue, err = openPRIssue(root, runID)
+	if err != nil {
+		return "", "", "", false, err
+	}
+	title = providerInput("title", "")
+	if title == "" && haveIssue {
+		title = issueTitle
+	}
+	if title == "" {
+		title = "Automated implementation"
+	}
+	return title, issueID, issueTitle, haveIssue, nil
+}
+
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("open-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -199,18 +214,10 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// both sides. Recovered from the run journal (resume-safe), so this holds on
 	// a repass too. Falls back to the generic title/body when the run claimed no
 	// issue (other workflows) or an explicit title/body input is set.
-	issueID, issueTitle, haveIssue, err := openPRIssue(root, runID)
+	title, issueID, issueTitle, haveIssue, err := openPRTitle(root, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
-	}
-	title := providerInput("title", "")
-	if title == "" {
-		if haveIssue && issueTitle != "" {
-			title = issueTitle
-		} else {
-			title = "Automated implementation"
-		}
 	}
 	body := providerInput("body", "")
 	structuredBody := false
