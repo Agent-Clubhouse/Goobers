@@ -258,7 +258,7 @@ func harnessEnvironmentPolicy(cfg instance.RunnerConfig) harness.EnvironmentConf
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
 func buildHarnessRegistry(envCaps map[string]string, environment harness.EnvironmentConfig, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), ephemeralTmp bool) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
-	copilotCommand := harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"})
+	copilotCommand := harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot", "--no-remote-export"})
 	customLauncher := requiresCopilotLauncherContract(harnessCommand)
 	sessionArgs := environment.SessionArgs[string(apiv1.HarnessCopilot)]
 	preflightArgs := slices.Clone(environment.PreflightArgs[string(apiv1.HarnessCopilot)])
