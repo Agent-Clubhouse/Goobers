@@ -34,7 +34,7 @@ func TestContinuationRunsReturnsDirectChildren(t *testing.T) {
 	}
 }
 
-func TestContinuationLineageUpgradeReplaysExistingRows(t *testing.T) {
+func TestContinuationProjectionUpgradeReplaysExistingRows(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), FileName)
 	db, err := sql.Open("sqlite", path+dsnParams)
@@ -46,7 +46,7 @@ func TestContinuationLineageUpgradeReplaysExistingRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	for i, migration := range migrations[:len(migrations)-1] {
+	for i, migration := range migrations {
 		if _, err := tx.ExecContext(ctx, migration); err != nil {
 			t.Fatalf("apply migration %d: %v", i+1, err)
 		}
@@ -95,7 +95,7 @@ func TestContinuationLineageUpgradeReplaysExistingRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if state.Ready {
-		t.Fatal("continuation lineage migration did not request a journal replay")
+		t.Fatal("continuation projection upgrade did not request a journal replay")
 	}
 	if err := store.UpsertRun(ctx, projection); err != nil {
 		t.Fatal(err)
