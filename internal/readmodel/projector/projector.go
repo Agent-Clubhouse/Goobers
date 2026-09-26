@@ -93,6 +93,10 @@ type Options struct {
 	Feed Notifier
 	// RunsDirs are the roots holding run directories.
 	RunsDirs []string
+	// ResolveRunsDirs, when set, replaces RunsDirs with a fresh snapshot for
+	// each intake or restart pass. Discovery errors leave intake unacknowledged.
+	// The resolver must be safe for concurrent calls.
+	ResolveRunsDirs func(context.Context) ([]string, error)
 	// Workers bounds concurrent journal reading and projection preparation. The
 	// COMMIT is serialized regardless; this only widens the expensive part,
 	// which is parsing event tails.
@@ -388,6 +392,10 @@ func (p *Projector) Drain(ctx context.Context) (int, error) {
 		p.recordDrain()
 		return 0, nil
 	}
+	runsDirs, err := p.runsDirs(ctx)
+	if err != nil {
+		return 0, err
+	}
 
 	var (
 		wg        sync.WaitGroup
@@ -406,7 +414,7 @@ func (p *Projector) Drain(ctx context.Context) (int, error) {
 		go func(marker intake.Marker) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
-			if err := p.applyMarker(ctx, marker); err != nil {
+			if err := p.applyMarker(ctx, marker, runsDirs); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return
 				}
@@ -430,12 +438,12 @@ func (p *Projector) Drain(ctx context.Context) (int, error) {
 }
 
 // applyMarker projects (or removes) one run and acknowledges it.
-func (p *Projector) applyMarker(ctx context.Context, marker intake.Marker) error {
+func (p *Projector) applyMarker(ctx context.Context, marker intake.Marker, runsDirs []string) error {
 	if marker.Removing {
 		return p.applyRemoval(ctx, marker)
 	}
 
-	projection, found, err := p.prepare(ctx, marker.RunID)
+	projection, found, err := p.prepare(ctx, marker.RunID, runsDirs)
 	if err != nil {
 		return err
 	}
@@ -496,14 +504,14 @@ func (p *Projector) applyRemoval(ctx context.Context, marker intake.Marker) erro
 // This is the expensive part, and it is what runs concurrently. It touches only
 // the filesystem and pure functions — no read.db handle — so widening it cannot
 // affect commit order.
-func (p *Projector) prepare(ctx context.Context, runID string) (Projection, bool, error) {
+func (p *Projector) prepare(ctx context.Context, runID string, runsDirs []string) (Projection, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Projection{}, false, err
 	}
 	if p.prepareForTest != nil {
 		return p.prepareForTest(ctx, runID)
 	}
-	dir, found, err := p.locate(runID)
+	dir, found, err := p.locate(runID, runsDirs)
 	if err != nil {
 		return Projection{}, false, err
 	}
@@ -539,8 +547,8 @@ func (p *Projector) prepare(ctx context.Context, runID string) (Projection, bool
 }
 
 // locate finds a run's directory across the configured roots.
-func (p *Projector) locate(runID string) (string, bool, error) {
-	for _, root := range p.options.RunsDirs {
+func (p *Projector) locate(runID string, runsDirs []string) (string, bool, error) {
+	for _, root := range runsDirs {
 		candidate := filepath.Join(root, runID)
 		info, err := os.Stat(candidate)
 		if err == nil {
@@ -561,6 +569,17 @@ func (p *Projector) locate(runID string) (string, bool, error) {
 		}
 	}
 	return "", false, nil
+}
+
+func (p *Projector) runsDirs(ctx context.Context) ([]string, error) {
+	if p.options.ResolveRunsDirs == nil {
+		return p.options.RunsDirs, nil
+	}
+	dirs, err := p.options.ResolveRunsDirs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("projector: resolve runs directories: %w", err)
+	}
+	return dirs, nil
 }
 
 // Restart performs the bounded startup pass: drain intake, then reproject the
@@ -590,11 +609,18 @@ func (p *Projector) Restart(ctx context.Context) (RestartResult, error) {
 	if err != nil {
 		return result, err
 	}
+	if len(nonTerminal) == 0 {
+		return result, nil
+	}
+	runsDirs, err := p.runsDirs(ctx)
+	if err != nil {
+		return result, err
+	}
 	for _, row := range nonTerminal {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		projection, found, err := p.prepare(ctx, row.RunID)
+		projection, found, err := p.prepare(ctx, row.RunID, runsDirs)
 		if err != nil {
 			p.options.Logger.Warn("restart reprojection failed",
 				"run_id", row.RunID, "error", err)
