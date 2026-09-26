@@ -70,6 +70,10 @@ type adoPATCredentialSource struct {
 	resolve  func(context.Context) (string, error)
 }
 
+type adoBearerCredentialSource struct {
+	resolve func(context.Context) (string, error)
+}
+
 // NewADOPATCredentialSource returns a static PAT source. The provider preserves
 // the historical "goobers" username when username is empty.
 func NewADOPATCredentialSource(username, token string) ADOCredentialSource {
@@ -87,6 +91,21 @@ func NewResolvingADOPATCredentialSource(username string, resolve func(context.Co
 	return &adoPATCredentialSource{username: username, resolve: resolve}
 }
 
+// NewADOBearerCredentialSource returns a static Microsoft Entra bearer-token
+// source. It is used when the daemon has already minted and capability-scoped
+// the credential before dispatching a stage.
+func NewADOBearerCredentialSource(token string) ADOCredentialSource {
+	return NewResolvingADOBearerCredentialSource(func(context.Context) (string, error) {
+		return token, nil
+	})
+}
+
+// NewResolvingADOBearerCredentialSource returns a bearer source that resolves
+// its value for every operation.
+func NewResolvingADOBearerCredentialSource(resolve func(context.Context) (string, error)) ADOCredentialSource {
+	return &adoBearerCredentialSource{resolve: resolve}
+}
+
 func (s *adoPATCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
 	if err := ctx.Err(); err != nil {
 		return ADOCredential{}, err
@@ -102,6 +121,23 @@ func (s *adoPATCredentialSource) Credential(ctx context.Context) (ADOCredential,
 		return ADOCredential{}, fmt.Errorf("ado PAT credential is empty")
 	}
 	return ADOCredential{Kind: adoCredentialPAT, Secret: token, Username: s.username}, nil
+}
+
+func (s *adoBearerCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
+	if err := ctx.Err(); err != nil {
+		return ADOCredential{}, err
+	}
+	if s.resolve == nil {
+		return ADOCredential{}, fmt.Errorf("ado bearer credential resolver is nil")
+	}
+	token, err := s.resolve(ctx)
+	if err != nil {
+		return ADOCredential{}, err
+	}
+	if strings.TrimSpace(token) == "" {
+		return ADOCredential{}, fmt.Errorf("ado bearer credential is empty")
+	}
+	return ADOCredential{Kind: adoCredentialBearer, Secret: token}, nil
 }
 
 func (c ADOCredential) authorizationHeader() (string, error) {

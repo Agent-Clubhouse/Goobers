@@ -326,6 +326,9 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 }
 
 func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
+	if provider, ok, err := newBrokeredADOProviderForStage(cfg); ok || err != nil {
+		return provider, err
+	}
 	if cfg.openPR {
 		return newADOProviderForOpenPR(cfg.root, cfg.repo)
 	}
@@ -333,6 +336,32 @@ func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provid
 		return newADOProviderForWorkItemWrite(cfg.root, cfg.repo)
 	}
 	return newADOProviderForStage(cfg.root, cfg.repo)
+}
+
+func newBrokeredADOProviderForStage(cfg stageProviderConfig) (*providers.ADOProvider, bool, error) {
+	scheme := strings.TrimSpace(os.Getenv(executor.RepoAuthSchemeEnvVar))
+	if scheme == "" {
+		return nil, false, nil
+	}
+	token, err := stageProviderToken(cfg)
+	if err != nil {
+		return nil, true, err
+	}
+	var source providers.ADOCredentialSource
+	switch scheme {
+	case "basic":
+		source = providers.NewADOPATCredentialSource("goobers", token)
+	case "bearer":
+		source = providers.NewADOBearerCredentialSource(token)
+	default:
+		return nil, true, fmt.Errorf("unsupported brokered ADO authorization scheme %q", scheme)
+	}
+	return providers.NewADOProvider(
+		cfg.repo.Owner,
+		cfg.repo.Project,
+		"",
+		providers.WithADOCredentialSource(source),
+	), true, nil
 }
 
 func newRegisteredGiteaProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
