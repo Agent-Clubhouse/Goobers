@@ -160,16 +160,17 @@ func journalWireAttrs(attrs []*commonpb.KeyValue) map[string]*commonpb.AnyValue 
 }
 
 type journalTestExporter struct {
-	mu          sync.Mutex
-	records     []sdklog.Record
-	started     chan struct{}
-	release     chan struct{}
-	startOnce   sync.Once
-	exportErr   error
-	flushErr    error
-	shutdownErr error
-	flushes     int
-	shutdowns   int
+	mu                sync.Mutex
+	records           []sdklog.Record
+	started           chan struct{}
+	release           chan struct{}
+	startOnce         sync.Once
+	holdUntilReleased bool
+	exportErr         error
+	flushErr          error
+	shutdownErr       error
+	flushes           int
+	shutdowns         int
 }
 
 func (e *journalTestExporter) Export(ctx context.Context, records []sdklog.Record) error {
@@ -177,10 +178,14 @@ func (e *journalTestExporter) Export(ctx context.Context, records []sdklog.Recor
 		e.startOnce.Do(func() { close(e.started) })
 	}
 	if e.release != nil {
-		select {
-		case <-e.release:
-		case <-ctx.Done():
-			return ctx.Err()
+		if e.holdUntilReleased {
+			<-e.release
+		} else {
+			select {
+			case <-e.release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 	e.mu.Lock()
@@ -655,19 +660,19 @@ func TestJournalLogsShutdownDeadlineAccountsAbandonedBacklog(t *testing.T) {
 // "this record is too big", and those have different fixes.
 func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
 	exporter := &journalTestExporter{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+		started:           make(chan struct{}),
+		release:           make(chan struct{}),
+		holdUntilReleased: true,
 	}
 	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
 	defer close(exporter.release)
 
-	// Park the worker inside Export before anything else. The worker takes the
-	// queue lock whenever it is woken (every drop wakes it), so a commit racing
-	// it loses TryLock and is charged to lock_contention; filling while it was
-	// live let enough of those losses eat the small overflow margin that
-	// queue_full never fired. The constructor returns with the worker idle and
-	// unlocked, and once parked it holds no lock, so only this goroutine
-	// touches the queue from here on.
+	// Keep Export parked through the queue fill; the normal export timeout
+	// could otherwise turn instrumentation delays into lock-contention drops.
+	// The worker takes the queue lock whenever it is woken (every drop wakes
+	// it), so a commit racing it loses TryLock and is charged to
+	// lock_contention. Once parked, it holds no lock, so only this goroutine
+	// touches the queue.
 	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	<-exporter.started
 
