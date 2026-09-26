@@ -58,6 +58,7 @@ func TestClaimVerificationRejectsContradictoryAndStaleObservations(t *testing.T)
 	now = now.Add(time.Minute)
 	for _, observation := range []ClaimVerification{
 		{State: "verified", ObservedAt: now, ProviderRunID: "other"},
+		{State: "contended", ObservedAt: now, ProviderRunID: "owner"},
 		{State: "ownership-mismatch", ObservedAt: now, ProviderRunID: "owner"},
 		{State: "ownership-mismatch", ObservedAt: now},
 		{State: "missing", ObservedAt: now, ProviderRunID: "owner"},
@@ -74,6 +75,11 @@ func TestClaimVerificationRejectsContradictoryAndStaleObservations(t *testing.T)
 	}
 	if history := ledger.HistorySnapshot(); len(history) != 1 || history[0].Verification != observation {
 		t.Fatalf("history missed verification: %+v", history)
+	}
+	now = now.Add(time.Second)
+	contention := ClaimVerification{State: "contended", ObservedAt: now, ProviderRunID: "provider-owner"}
+	if ok, err := ledger.RecordClaimVerification(entry, contention); err != nil || !ok {
+		t.Fatalf("valid contention: %v %v", ok, err)
 	}
 	for _, at := range []time.Time{now, now.Add(-time.Second)} {
 		if ok, err := ledger.RecordClaimVerification(entry, ClaimVerification{State: "missing", ObservedAt: at}); err != nil || ok {

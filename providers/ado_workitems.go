@@ -694,7 +694,7 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 // The /rev test makes concurrent read-modify-write attempts settle on one winner.
 func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
 	result, err := p.claimWorkItem(ctx, req)
-	p.recordClaimAttempt(ctx, req, "claim", claimAttemptOutcome(result.Claimed), err)
+	p.recordClaimAttempt(ctx, req, "claim", claimAttemptOutcome(result.Claimed), result.ClaimedBy, err)
 	return result, err
 }
 
@@ -871,15 +871,15 @@ func (p *ADOProvider) ownClaimComments(ctx context.Context, repo RepositoryRef, 
 // breadcrumb and drops the visible claim label.
 func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
 	result, err := p.releaseWorkItemClaim(ctx, req)
-	p.recordClaimAttempt(ctx, req, "claim-release", "success", err)
+	p.recordClaimAttempt(ctx, req, "claim-release", "success", "", err)
 	return result, err
 }
 
-func (p *ADOProvider) recordClaimAttempt(ctx context.Context, req ClaimWorkItemRequest, operation, outcome string, err error) {
+func (p *ADOProvider) recordClaimAttempt(ctx context.Context, req ClaimWorkItemRequest, operation, outcome, providerRunID string, err error) {
 	if p.mutationRecorder == nil {
 		return
 	}
-	ref := ExternalRef{Provider: ProviderADO, Ref: "ado#" + req.ID, RunID: req.RunID, Operation: operation, Outcome: outcome}
+	ref := ExternalRef{Provider: ProviderADO, Ref: "ado#" + req.ID, RunID: req.RunID, Operation: operation, Outcome: outcome, ProviderRunID: providerRunID}
 	if err != nil {
 		ref.Outcome, ref.ErrorCode = "failure", "provider_claim_failed"
 	}

@@ -4,11 +4,11 @@ import "testing"
 
 func TestRecoveredReferencePreservesNormalOutcomeSemantics(t *testing.T) {
 	ref := &ExternalRef{Provider: "github", Kind: "pr", ID: "42"}
-	for _, outcome := range []string{"", "success", "failure", "conflict"} {
+	for _, outcome := range []string{"", "success", "failure", "conflict", "contention"} {
 		normal := WithMutationOutcome(Event{Type: EventRefTouched, ExternalRef: ref}, "", outcome, "", "")
 		recovered := normal
 		recovered.Type = EventRunnerMutationRecovered
-		want := outcome != "failure" && outcome != "conflict"
+		want := outcome != "failure" && outcome != "conflict" && outcome != "contention"
 		if normal.IsReferenceTouch() != want || recovered.IsReferenceTouch() != want {
 			t.Fatalf("outcome %q: normal=%v recovered=%v", outcome, normal.IsReferenceTouch(), recovered.IsReferenceTouch())
 		}

@@ -753,13 +753,14 @@ func (p *GiteaProvider) finishClaim(ctx context.Context, repo RepositoryRef, id,
 		return ClaimResult{}, err
 	}
 	claimed := winner == runID
+	providerRunID := ""
+	if !claimed {
+		providerRunID = winner
+	}
 	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(repo, id),
-		URL:       item.URL,
-		Operation: "claim",
-		Outcome:   claimAttemptOutcome(claimed),
-		RunID:     runID,
+		Provider: ProviderGitea, Ref: issueRef(repo, id), URL: item.URL,
+		Operation: "claim", Outcome: claimAttemptOutcome(claimed),
+		RunID: runID, ProviderRunID: providerRunID,
 		Fields: map[string]FieldDigest{
 			"claim": {After: digestString("run=" + winner)},
 		},
