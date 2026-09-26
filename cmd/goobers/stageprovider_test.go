@@ -303,6 +303,56 @@ func TestNewProviderForStageUsesRequestedCapability(t *testing.T) {
 	}
 }
 
+func TestNewProviderForStageUsesBrokeredADOCredentialWithoutInstanceRoot(t *testing.T) {
+	tests := []struct {
+		name              string
+		scheme            string
+		wantAuthorization string
+		wantMSAHeader     string
+	}{
+		{name: "pat", scheme: "basic", wantAuthorization: "Basic Z29vYmVyczpzdGFnZS10b2tlbg=="},
+		{name: "entra", scheme: "bearer", wantAuthorization: "Bearer stage-token", wantMSAHeader: "true"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(executor.RepoAuthSchemeEnvVar, tc.scheme)
+			t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "stage-token")
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Authorization"); got != tc.wantAuthorization {
+					t.Fatalf("Authorization = %q, want %q", got, tc.wantAuthorization)
+				}
+				if got := r.Header.Get("X-VSS-ForceMsaPassThrough"); got != tc.wantMSAHeader {
+					t.Fatalf("X-VSS-ForceMsaPassThrough = %q, want %q", got, tc.wantMSAHeader)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":7,"comments":[{"id":1,"content":"ok","commentType":"text","author":{"displayName":"Goobers Bot","uniqueName":"bot@example.com","id":"author-guid"},"publishedDate":"2026-08-08T10:00:00Z"}]}`))
+			}))
+			defer server.Close()
+
+			provider, err := newProviderForStage(
+				filepath.Join(t.TempDir(), "missing-instance-root"),
+				providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "project", Name: "repo"},
+				false,
+				withStageProviderCapability(capability.ProviderPRWrite),
+			)
+			if err != nil {
+				t.Fatalf("newProviderForStage: %v", err)
+			}
+			ado := provider.(*providers.ADOProvider)
+			ado.BaseURL = server.URL
+			if _, err := ado.PostPullRequestThreadComment(
+				context.Background(),
+				providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "project", Name: "repo"},
+				"42",
+				"ok",
+			); err != nil {
+				t.Fatalf("PostPullRequestThreadComment: %v", err)
+			}
+		})
+	}
+}
+
 func TestNewProviderForStageObservesResolvedToken(t *testing.T) {
 	const token = "branch-token"
 	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), token)

@@ -68,6 +68,23 @@ func TestAzureCLICredentialSourceDoesNotEchoFailedOutput(t *testing.T) {
 	}
 }
 
+func TestStaticADOBearerCredentialSource(t *testing.T) {
+	credential, err := NewADOBearerCredentialSource("entra-token").Credential(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.Kind != ADOCredentialKindBearer || credential.Secret != "entra-token" || credential.Username != "" {
+		t.Fatalf("credential = %#v", credential)
+	}
+}
+
+func TestStaticADOBearerCredentialSourceRejectsEmptyToken(t *testing.T) {
+	_, err := NewADOBearerCredentialSource(" ").Credential(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "bearer credential is empty") {
+		t.Fatalf("Credential() error = %v, want empty-token error", err)
+	}
+}
+
 func TestParseAzureCLIExpiryTreatsNaiveTimestampAsLocalTime(t *testing.T) {
 	original := time.Local
 	local := time.FixedZone("test-local", 9*60*60)
