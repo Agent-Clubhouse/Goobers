@@ -63,17 +63,9 @@ telemetry:
   #   firstEnable: gracePeriod
   # Collector push is disabled unless an endpoint is configured here or with
   # GOOBERS_OTLP_ENDPOINT. See docs/guides/jaeger-quickstart.md.
-  #
-  # Configuring an endpoint also exports committed journal events as OTLP Logs:
-  # one record per committed run and scheduler event, carrying the same scrubbed
-  # JSON already written to the journal on disk. That is a larger egress surface
-  # than traces and metrics alone, and it goes to this same endpoint, so point it
-  # at a collector that accepts Logs. Set journalLogs: false to keep the endpoint
-  # for traces and metrics only. See docs/guides/journal-otlp.md.
   # otlp:
   #   endpoint: http://127.0.0.1:4317
   #   insecure: true
-  #   journalLogs: true
 # Optional tier-3 Temporal engine. Declaring this block also enables the
 # daemon's completed-run projection loop. The GOOBERS_TEMPORAL_HOSTPORT,
 # GOOBERS_TEMPORAL_NAMESPACE, and GOOBERS_TASK_QUEUE environment variables are

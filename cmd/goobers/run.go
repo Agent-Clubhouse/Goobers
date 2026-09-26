@@ -365,8 +365,6 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	defer func() {
 		if shutdownOnReturn {
 			cancelTrigger()
-			// Journal writers must finish before telemetry unregisters its sink,
-			// including a canceled wait or a journal-read error.
 			sched.Wait()
 			wg.Wait()
 		}
@@ -402,8 +400,6 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		shutdownOnReturn = false
 		releaseOnReturn = false
 		cleanup := func() {
-			// --no-wait detaches the caller, not the admitted work. Wait only
-			// for dispatches and their bookkeeping, not a scheduler Run loop.
 			sched.Wait()
 			wg.Wait()
 			cancelTrigger()
@@ -845,8 +841,6 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		runLayout = l.ForGaggle(identity.Gaggle)
 	}
 	cfg := &instance.Config{}
-	stopTelemetry := startCommandJournalTelemetry(l, stderr)
-	defer stopTelemetry()
 	if loaded, loadErr := instance.LoadConfig(l.ConfigFile()); loadErr == nil {
 		cfg = loaded
 	} else if !errors.Is(loadErr, iofs.ErrNotExist) {

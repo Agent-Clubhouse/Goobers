@@ -233,7 +233,6 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 	clock.set(proj.Ops[0].Time)
 	jr, err := journal.Create(
 		runsDir, id, inputs, journal.WithClock(clock.now), journal.WithInputIntegrity(inputIntegrity),
-		journal.WithoutCommittedEventExport(),
 	)
 	if err != nil {
 		return "", fmt.Errorf("engine: create projected journal for run %q: %w", id.RunID, err)
@@ -539,7 +538,7 @@ func ProjectSchedulerEvents(schedulerDir string, proj JournalProjection) error {
 		return nil
 	}
 	clock := &projectionClock{}
-	log, _, err := journal.OpenInstanceLog(schedulerDir, journal.WithClock(clock.now), journal.WithoutCommittedEventExport())
+	log, _, err := journal.OpenInstanceLog(schedulerDir, journal.WithClock(clock.now))
 	if err != nil {
 		return fmt.Errorf("engine: open projected scheduler journal: %w", err)
 	}

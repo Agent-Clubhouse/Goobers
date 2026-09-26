@@ -169,8 +169,6 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: create continuation run id: %v\n", err)
 		return 2
 	}
-	stopTelemetry := startCommandJournalTelemetry(layoutFor(root), stderr)
-	defer stopTelemetry()
 	request := journal.ContinuationRequest{
 		RunID: runID, SourceRunID: sourceID, ExpectedTerminalSeq: *terminalSeq,
 		Operator: *operator, Target: *target, Inputs: inputs,

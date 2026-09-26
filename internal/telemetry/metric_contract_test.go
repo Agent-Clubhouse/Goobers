@@ -162,7 +162,6 @@ func TestMetricContractMatchesRuntimeEmission(t *testing.T) {
 	schedulerSpan.Succeed("claimed")
 
 	client.InstanceJournalAppendDropped()
-	client.journalExportDropped(dropQueueFull, 1)
 	client.SnapshotCaptured("delta", 123)
 	client.SnapshotCaptured("full", 456)
 	client.SnapshotFallback("no_base_ref")

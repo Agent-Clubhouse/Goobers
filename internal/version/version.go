@@ -42,7 +42,7 @@ func Get() Info {
 		Date:         Date,
 		GoVersion:    runtime.Version(),
 		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
-		Capabilities: []string{"journal-otlp-v1"},
+		Capabilities: []string{},
 	}
 }
 

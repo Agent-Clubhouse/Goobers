@@ -50,16 +50,11 @@ func claimLedgerJournal(l instance.Layout) (*journal.InstanceLog, func(), error)
 	if claimsPlaneSelected() {
 		return nil, func() {}, nil
 	}
-	stopTelemetry := startCommandJournalTelemetry(l, os.Stderr)
 	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
 	if err != nil {
-		stopTelemetry()
 		return nil, func() {}, fmt.Errorf("open instance log: %w", err)
 	}
-	return log, func() {
-		_ = log.Close()
-		stopTelemetry()
-	}, nil
+	return log, func() { _ = log.Close() }, nil
 }
 
 // claimsPlaneSelected reports whether the stage's environment names the

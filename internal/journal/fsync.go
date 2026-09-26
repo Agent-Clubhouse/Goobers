@@ -39,7 +39,7 @@ func FsyncDisabled() bool {
 }
 
 // syncFile fsyncs f unless fsync is disabled for this process.
-func syncFile(f interface{ Sync() error }) error {
+func syncFile(f *os.File) error {
 	if fsyncDisabled() {
 		return nil
 	}

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"reflect"
-	"slices"
 	"testing"
 
 	"github.com/goobers/goobers/internal/version"
@@ -29,8 +28,8 @@ func TestVersionJSON(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("got %+v, want %+v", got, want)
 			}
-			if !slices.Contains(got.Capabilities, "journal-otlp-v1") {
-				t.Fatalf("missing native journal logs capability: %+v", got.Capabilities)
+			if len(got.Capabilities) != 0 {
+				t.Fatalf("advertises unsupported capabilities: %+v", got.Capabilities)
 			}
 			if stderr != "" {
 				t.Fatalf("stderr = %q, want empty", stderr)

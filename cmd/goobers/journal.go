@@ -142,8 +142,6 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 	}
 	reg, scrub := journal.DefaultScrubber()
 	reg.Register(secret)
-	stopTelemetry := startCommandJournalTelemetry(l, stderr)
-	defer stopTelemetry()
 	run, _, err := journal.Recover(runDir, journal.WithScrubber(scrub))
 	if err != nil {
 		pf(stderr, "error: open run %q: %v\n", resolvedRunID, err)
