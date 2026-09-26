@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/providers"
 )
 
 // hookRecorder captures the terminal-hook frame's calls in order, so the
@@ -288,6 +289,43 @@ func TestEngineTerminalHooksRecordBlockedReasonAndBlockers(t *testing.T) {
 	}
 	if len(got.Blockers) != 1 || got.Blockers[0] != "41" {
 		t.Errorf("blockers = %v, want [41]", got.Blockers)
+	}
+}
+
+func TestEngineTerminalHooksRestoreRunAttributionForProviderWrites(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	const runID = "engine-attribution"
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: runID, Gaggle: "web", Workflow: "implementation",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create run journal: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close run journal: %v", err)
+	}
+
+	var got providers.Attribution
+	hooks := &engineTerminalHooks{
+		layout:  layout,
+		repoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		blocked: func(ctx context.Context, _ runner.BlockedOutcome) error {
+			var ok bool
+			got, ok = providers.AttributionFromContext(ctx)
+			if !ok {
+				t.Fatal("blocked provider write context has no attribution")
+			}
+			return nil
+		},
+	}
+	hooks.run(context.Background(), engineTerminalOutcome{
+		RunID: runID, Phase: journal.PhaseEscalated, Item: &apiv1.BacklogItem{ID: "42"},
+		Result: engine.RunResult{FinalState: "implement", Outputs: map[string]apiv1.ResultEnvelope{
+			"implement": {Status: apiv1.ResultBlocked, Summary: "needs a measurable gate"},
+		}},
+	})
+	if got.Run != runID || got.Gaggle != "web" || got.Workflow != "implementation" || got.Task != "implement" {
+		t.Fatalf("attribution = %+v, want run identity and terminal stage", got)
 	}
 }
 
