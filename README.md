@@ -106,6 +106,12 @@ places `goobers` in `$HOME/.local/bin`. See
 prerequisites, version pinning, install-directory overrides, pre-releases, and
 the Windows path.
 
+Confirm the installed release before initializing an instance:
+
+```sh
+goobers version
+```
+
 ## Quick start
 
 Tour the full workflow locally without credentials or network writes:
