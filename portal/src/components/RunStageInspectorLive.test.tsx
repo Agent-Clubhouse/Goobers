@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { act } from "react";
 import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -136,6 +136,11 @@ describe("run stage inspector live refresh", () => {
     await waitFor(() =>
       expect(client.listStageAttempts.mock.calls.length).toBeGreaterThan(before),
     );
+    expect(
+      within(screen.getByRole("group", { name: "Visit 1 attempts" }))
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["Attempt 2", "Attempt 1"]);
   });
 
   // Scoping matters: an event for a DIFFERENT run must not refetch this one's

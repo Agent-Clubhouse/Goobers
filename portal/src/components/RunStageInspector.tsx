@@ -82,7 +82,13 @@ interface StageVisit {
 function groupAttemptsByVisit(attempts: StageAttempt[]): StageVisit[] {
   const visits: StageVisit[] = [];
   const byOrdinal = new Map<number, StageVisit>();
-  for (const attempt of attempts) {
+  const ordered = [...attempts].sort(
+    (left, right) =>
+      (left.startedSeq ?? 0) - (right.startedSeq ?? 0) ||
+      left.visit - right.visit ||
+      left.number - right.number,
+  );
+  for (const attempt of ordered) {
     let visit = byOrdinal.get(attempt.visit);
     if (!visit) {
       visit = { id: attempt.id, ordinal: attempt.visit, attempts: [] };
@@ -259,6 +265,7 @@ export function RunStageInspector({
     (attempt) => attempt.startedSeq === undefined || attempt.startedSeq <= selectedSeq,
   );
   const visits = groupAttemptsByVisit(visible);
+  const chronologicalVisits = [...visits].reverse();
   const selected =
     visible.find((attempt) => attempt.id === selectedId) ?? visible[visible.length - 1];
   const selectedVisitIndex = visits.findIndex((visit) => visit.ordinal === selected?.visit);
@@ -281,7 +288,7 @@ export function RunStageInspector({
   };
 
   const moveVisitSelection = (index: number) => {
-    const visit = visits[index];
+    const visit = chronologicalVisits[index];
     if (!visit) {
       return;
     }
@@ -291,15 +298,20 @@ export function RunStageInspector({
   const onVisitKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
       event.preventDefault();
-      moveVisitSelection((index + 1) % visits.length);
+      moveVisitSelection((index + 1) % chronologicalVisits.length);
     } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
       event.preventDefault();
-      moveVisitSelection((index - 1 + visits.length) % visits.length);
+      moveVisitSelection(
+        (index - 1 + chronologicalVisits.length) % chronologicalVisits.length,
+      );
     }
   };
 
+  const chronologicalAttempts = selectedVisit
+    ? [...selectedVisit.attempts].reverse()
+    : [];
   const moveAttemptSelection = (index: number) => {
-    const attempt = selectedVisit?.attempts[index];
+    const attempt = chronologicalAttempts[index];
     if (!attempt) {
       return;
     }
@@ -307,7 +319,7 @@ export function RunStageInspector({
     attemptButtons.current[index]?.focus();
   };
   const onAttemptKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const count = selectedVisit?.attempts.length ?? 0;
+    const count = chronologicalAttempts.length;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
       event.preventDefault();
       moveAttemptSelection((index + 1) % count);
@@ -373,7 +385,7 @@ export function RunStageInspector({
                 {visible.length > 1 && (
                   <>
                     <div aria-label="Stage visits" className="attempt-switcher" role="group">
-                      {visits.map((visit, index) => (
+                      {chronologicalVisits.map((visit, index) => (
                         <button
                           aria-pressed={selectedVisit?.ordinal === visit.ordinal}
                           className={
@@ -400,7 +412,7 @@ export function RunStageInspector({
                         className="retry-switcher"
                         role="group"
                       >
-                        {selectedVisit.attempts.map((attempt, index) => (
+                        {chronologicalAttempts.map((attempt, index) => (
                           <button
                             aria-label={`Visit ${selectedVisit.ordinal} · ${attemptLabel(attempt)}`}
                             aria-pressed={selected?.id === attempt.id}
@@ -826,16 +838,23 @@ function AttemptDetail({
         <p className="empty-detail">No artifacts recorded.</p>
       ) : (
         <div className="artifact-list">
-          {attempt.artifacts.map((artifact) => (
-            <ArtifactRow
-              artifact={artifact}
-              attemptNumber={attempt.number}
-              attemptVisit={attempt.visit}
-              client={client}
-              key={artifact.digest}
-              runId={runId}
-            />
-          ))}
+          {attempt.artifacts
+            .map((artifact, index) => ({ artifact, index }))
+            .sort(
+              (left, right) =>
+                (right.artifact.recordedSeq ?? right.index) -
+                (left.artifact.recordedSeq ?? left.index),
+            )
+            .map(({ artifact }) => (
+              <ArtifactRow
+                artifact={artifact}
+                attemptNumber={attempt.number}
+                attemptVisit={attempt.visit}
+                client={client}
+                key={artifact.digest}
+                runId={runId}
+              />
+            ))}
         </div>
       )}
     </div>

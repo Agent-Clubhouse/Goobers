@@ -161,6 +161,12 @@ describe("run detail", () => {
     expect(screen.getByText("Decision · model")).toBeInTheDocument();
     expect(screen.getByText("Patch the parser branch.")).toBeInTheDocument();
     expect(screen.getAllByText("Evidence: failing test").length).toBeGreaterThan(0);
+    expect(
+      Array.from(
+        document.querySelectorAll(".agent-progress-history ol li .mono"),
+        (item) => item.textContent,
+      ),
+    ).toEqual(["seq 6", "seq 5"]);
   });
 
   it("keeps attempt-scoped cards separate for repeated agent ids", async () => {
@@ -265,6 +271,18 @@ describe("run detail", () => {
     expect(
       within(secondVisit).getByText("Review returned needs-changes."),
     ).toBeInTheDocument();
+    expect(
+      Array.from(
+        document.querySelectorAll(".run-path-step"),
+        (item) => item.textContent?.trim(),
+      ),
+    ).toEqual(["Query", "Implement", "Review", "Implement · Visit 2", "Review · Visit 2"]);
+    expect(
+      Array.from(
+        document.querySelectorAll(".run-stage-row .run-stage-name strong"),
+        (item) => item.textContent,
+      ),
+    ).toEqual(["Review", "Implement", "Review", "Implement", "Query"]);
   });
 
   it("groups transcript checkpoints as one logical artifact", async () => {
@@ -297,6 +315,22 @@ describe("run detail", () => {
         stage: `${runId}:implement`,
         name: "reviewer.transcript",
       },
+      {
+        schema: "v1",
+        seq: 9,
+        type: "artifact.recorded",
+        branch: 0,
+        time: "2026-07-18T06:00:09Z",
+        knownSchema: true,
+        category: "evidence",
+        stage: `${runId}:review`,
+        artifact: {
+          name: "latest-report.json",
+          digest: "sha256:latest-report",
+          size: 42,
+          mediaType: "application/json",
+        },
+      },
     );
     renderRun(runId, new FixtureDaemonClient(fixtures));
 
@@ -304,6 +338,15 @@ describe("run detail", () => {
     const transcript = screen.getByRole("button", { name: /Implement transcript/ });
     expect(within(transcript).getByText("Implement · 2 checkpoints")).toBeInTheDocument();
     expect(screen.getAllByText("Implement transcript")).toHaveLength(1);
+    expect(
+      Array.from(
+        document.querySelectorAll(".run-artifact-list button"),
+        (item) => item.textContent?.replace(/\s+/g, " ").trim(),
+      ),
+    ).toEqual([
+      "artifactlatest reportReview · 1 recordOpen details",
+      "transcriptImplement transcriptImplement · 2 checkpointsOpen details",
+    ]);
   });
 
   it("supports arrow-key navigation between run detail tabs", async () => {

@@ -335,6 +335,9 @@ describe("run stage inspector", () => {
       const visit1 = within(visits).getByRole("button", { name: "Visit 1" });
       const visit2 = within(visits).getByRole("button", { name: "Visit 2" });
       expect(visit2).toHaveAttribute("aria-pressed", "true");
+      expect(
+        within(visits).getAllByRole("button").map((button) => button.textContent),
+      ).toEqual(["Visit 2", "Visit 1"]);
 
       let retries = screen.getByRole("group", { name: "Visit 2 attempts" });
       const repassAttempt = within(retries).getByRole("button", {
@@ -344,6 +347,9 @@ describe("run stage inspector", () => {
         name: "Visit 2 · Attempt 2 (infra retry)",
       });
       expect(infraRetry).toHaveAttribute("aria-pressed", "true");
+      expect(
+        within(retries).getAllByRole("button").map((button) => button.textContent),
+      ).toEqual(["Attempt 2 (infra retry)", "Attempt 1"]);
       expect(screen.getByText("2m 0s")).toBeInTheDocument();
       expect(screen.getByText("success")).toBeInTheDocument();
       expect(screen.getByText("Review returned needs-changes and selected implement.")).toBeInTheDocument();
@@ -379,6 +385,40 @@ describe("run stage inspector", () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it("shows the newest attempt artifact first", async () => {
+    const client = stubClient([
+      attempt({
+        artifacts: [
+          {
+            name: "older.txt",
+            digest: "sha256:older",
+            size: 10,
+            mediaType: "text/plain",
+            recordedSeq: 3,
+          },
+          {
+            name: "newer.txt",
+            digest: "sha256:newer",
+            size: 12,
+            mediaType: "text/plain",
+            recordedSeq: 7,
+          },
+        ],
+      }),
+    ]);
+    renderInspector(
+      <RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />,
+    );
+
+    await screen.findByText("newer.txt");
+    expect(
+      Array.from(
+        document.querySelectorAll(".artifact-list .artifact-row strong"),
+        (item) => item.textContent,
+      ),
+    ).toEqual(["newer.txt", "older.txt"]);
   });
 
   it("reveals a repass visit only after its traversal starts", async () => {

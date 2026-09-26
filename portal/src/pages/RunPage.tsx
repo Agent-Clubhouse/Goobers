@@ -806,6 +806,11 @@ function RunOverview({
     current?.repass?.reason ||
     (current?.status === "running" ? run.operator?.nextTransition : current?.result);
   const lastActivity = events.at(-1)?.time ?? run.lastActivityAt;
+  const chronologicalVisits = [...visits].sort(
+    (left, right) =>
+      (right.finishedSeq ?? right.startedSeq) -
+      (left.finishedSeq ?? left.startedSeq),
+  );
 
   return (
     <section
@@ -899,7 +904,7 @@ function RunOverview({
           <span className="graph-legend">One row per visit</span>
         </div>
         <ol className="run-stage-list">
-          {visits.map((visit) => (
+          {chronologicalVisits.map((visit) => (
             <li className={`run-stage-row run-stage-row-${visit.status}`} key={visit.id}>
               <button
                 aria-label={`Open ${visit.stage}, visit ${visit.visit}, ${semanticStatusLabel(visit.status)}`}
@@ -973,29 +978,34 @@ function RunArtifacts({
         </div>
       ) : (
         <ol className="run-artifact-list">
-          {artifacts.map((artifact) => {
-            const latest = artifact.events.at(-1)!;
-            return (
-              <li key={artifact.id}>
-                <button
-                  onClick={() => onInspectSequence(latest.seq)}
-                  type="button"
-                >
-                  <span className={`run-artifact-kind run-artifact-kind-${artifact.kind}`}>
-                    {artifact.kind}
-                  </span>
-                  <span className="run-artifact-copy">
-                    <strong>{artifact.label}</strong>
-                    <small>
-                      {artifact.stage ? `${humanizeLedgerValue(artifact.stage)} · ` : ""}
-                      {artifact.events.length} {artifact.events.length === 1 ? "record" : "checkpoints"}
-                    </small>
-                  </span>
-                  <span className="run-stage-action">Open details</span>
-                </button>
-              </li>
-            );
-          })}
+          {[...artifacts]
+            .sort(
+              (left, right) =>
+                right.events.at(-1)!.seq - left.events.at(-1)!.seq,
+            )
+            .map((artifact) => {
+              const latest = artifact.events.at(-1)!;
+              return (
+                <li key={artifact.id}>
+                  <button
+                    onClick={() => onInspectSequence(latest.seq)}
+                    type="button"
+                  >
+                    <span className={`run-artifact-kind run-artifact-kind-${artifact.kind}`}>
+                      {artifact.kind}
+                    </span>
+                    <span className="run-artifact-copy">
+                      <strong>{artifact.label}</strong>
+                      <small>
+                        {artifact.stage ? `${humanizeLedgerValue(artifact.stage)} · ` : ""}
+                        {artifact.events.length} {artifact.events.length === 1 ? "record" : "checkpoints"}
+                      </small>
+                    </span>
+                    <span className="run-stage-action">Open details</span>
+                  </button>
+                </li>
+              );
+            })}
         </ol>
       )}
       <p className="run-artifact-technical-note">
@@ -1208,7 +1218,9 @@ function AgentProgressPanel({ summaries }: { summaries: AgentProgressSummary[] }
 
 function AgentProgressCard({ summary }: { summary: AgentProgressSummary }) {
   const current = summary.currentStatus;
-  const history = summary.history ?? [];
+  const history = [...(summary.history ?? [])].sort(
+    (left, right) => right.sequence - left.sequence,
+  );
   const currentLabel = current ? agentCurrentLabel(current) : "Unknown";
   const currentSummary = current?.summary?.trim() || "No current status summary recorded.";
 
