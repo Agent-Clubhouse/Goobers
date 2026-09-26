@@ -73,7 +73,9 @@ func TestRestoreClaimVerificationPersistsAndReportsMismatch(t *testing.T) {
 					t.Fatalf("mismatch lacks structured owners: %+v", fact)
 				}
 				observedAt := entry.Verification.ObservedAt
-				now = now.Add(time.Minute)
+				// The seeded lease is one hour, longer than DefaultClaimLease.
+				// Reconciliation must honor that configured duration.
+				now = observedAt.Add(DefaultClaimLease + time.Minute)
 				var retryStderr strings.Builder
 				if _, err := restoreInvisibleClaims(context.Background(), layoutFor(root), server.newGitHubProvider("token"), repo, now, &retryStderr); err != nil {
 					t.Fatal(err)
