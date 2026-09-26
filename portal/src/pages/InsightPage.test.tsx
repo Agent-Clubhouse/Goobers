@@ -50,7 +50,10 @@ describe("Insight page", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+    const heading = await screen.findByRole("heading", { name: "Insight" });
+    expect(heading).toBeInTheDocument();
+    expect(heading.closest("header")?.firstElementChild).toBe(heading);
+    expect(screen.queryByText("Telemetry", { selector: ".page-kicker" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Insight" })).toHaveAttribute(
       "aria-current",
       "page",
