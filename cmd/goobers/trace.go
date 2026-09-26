@@ -58,7 +58,9 @@ const traceHelp = "Usage: goobers trace [--json] [--follow] [--summary | --verdi
 	"or --transcript to select one stage. Use --summary for run metadata and\n" +
 	"review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's\n" +
 	"events until it finishes; --json --follow emits JSON Lines (default path\n" +
-	"\".\"). Remediation escalations include the typed outcome, attempted flag,\n" +
+	"\".\"). Continuation traces include source/continuation links, resume target,\n" +
+	"reused branch, injected input names, and historical repass accounting.\n" +
+	"Remediation escalations include the typed outcome, attempted flag,\n" +
 	"and attempted causes in the text summary and JSON `escalation.remediation`\n" +
 	"object. Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO\n" +
 	"error, 130 = interrupted while following.\n"
@@ -229,6 +231,7 @@ func runTraceWithFactories(
 			Attribution:   loadTraceAttribution(l, runID),
 			Recovery:      recoveryState,
 			AgentProgress: agentProgress,
+			Lineage:       detail.Lineage,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			pf(stderr, "error: encode trace: %v\n", err)
@@ -272,6 +275,7 @@ func runTraceWithFactories(
 		pf(stdout, "outcome:  gate=%s verdict=%s target=%s\n", detail.Outcome.Gate, detail.Outcome.Verdict, detail.Outcome.Target)
 	}
 	pf(stdout, "repasses: %d\n", repasses)
+	printRunLineage(stdout, detail.Lineage)
 	pln(stdout, "\nevents:")
 	for _, event := range ledger.Events {
 		pln(stdout, "  "+formatEvent(traceJournalEvent(event)))
@@ -446,6 +450,7 @@ type traceJSONResult struct {
 	Verdicts      []verdictView                      `json:"verdicts"`
 	AgentProgress []readservice.AgentProgressSummary `json:"agentProgress,omitempty"`
 	Attribution   *creditgraph.RunRecord             `json:"attribution,omitempty"`
+	Lineage       *readservice.RunLineage            `json:"lineage,omitempty"`
 }
 
 func loadTraceAttribution(layout instance.Layout, runID string) *creditgraph.RunRecord {
@@ -493,6 +498,32 @@ func printTraceRunSummary(stdout io.Writer, detail readservice.RunDetail, state 
 		pf(stdout, "last activity: %s (%s)\n", formatLastActivity(now, state.UpdatedAt), state.UpdatedAt.Format(time.RFC3339))
 	}
 	pf(stdout, "repasses: %d\n", repasses)
+	printRunLineage(stdout, detail.Lineage)
+}
+
+func printRunLineage(stdout io.Writer, lineage *readservice.RunLineage) {
+	if lineage == nil {
+		return
+	}
+	if lineage.Source != nil {
+		pf(stdout, "source:   %s (%s)\n", lineage.Source.ID, lineage.Source.Phase)
+		pf(stdout, "resume:   target=%s branch=%s historicalRepasses=%d\n",
+			lineage.ResumeTarget, lineage.WorkspaceBranch, lineage.HistoricalRepassCount)
+		if len(lineage.InjectedInputs) > 0 {
+			names := make([]string, len(lineage.InjectedInputs))
+			for i, input := range lineage.InjectedInputs {
+				names[i] = input.Name
+			}
+			pf(stdout, "inputs:   %s\n", strings.Join(names, ", "))
+		}
+	}
+	if len(lineage.Continuations) > 0 {
+		continuations := make([]string, len(lineage.Continuations))
+		for i, continuation := range lineage.Continuations {
+			continuations[i] = fmt.Sprintf("%s (%s)", continuation.ID, continuation.Phase)
+		}
+		pf(stdout, "continued by: %s\n", strings.Join(continuations, ", "))
+	}
 }
 
 type traceJSONEvent struct {

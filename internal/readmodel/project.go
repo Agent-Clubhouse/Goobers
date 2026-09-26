@@ -125,6 +125,11 @@ type OperatorFacts struct {
 	ReviewFindings        []apiv1.Finding
 	ReviewProblem         string
 	PROpenerStage         string
+	ContinuedFromRunID    string
+	ContinuationTarget    string
+	WorkspaceBranch       string
+	WorkspaceBranchSHA    string
+	InjectedInputs        []journal.InputRef
 }
 
 // StageRow is one projected (run, stage) pair.
@@ -309,6 +314,11 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	row.TriggerKind = string(identity.Trigger.Kind)
 	row.TriggerRef = identity.Trigger.Ref
 	row.StartedAt = identity.StartedAt
+	row.Operator.ContinuedFromRunID = identity.ContinuedFromRunID
+	row.Operator.ContinuationTarget = identity.RequestedTarget
+	row.Operator.WorkspaceBranch = identity.WorkspaceBranch
+	row.Operator.WorkspaceBranchSHA = identity.WorkspaceBranchSHA
+	row.Operator.InjectedInputs = append([]journal.InputRef(nil), identity.Inputs...)
 	if identity.Trigger.Kind == journal.TriggerItem && row.Operator.IssueTitle == "" {
 		row.Operator.IssueNumber = identity.Trigger.Ref
 	}
