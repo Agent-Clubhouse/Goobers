@@ -98,8 +98,9 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"across repasses, providers.BranchName). Writes prNumber/pull-request-url\n" +
 	"to the declared result file for a downstream stage's Task.InputsFrom.\n\n" +
 	"Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's\n" +
-	"stable branch), base (default GOOBERS_BASE_BRANCH, else \"main\"),\n" +
-	"resultFile, timeout. PR metadata is configured through these workflow\n" +
+	"stable branch), base (default GOOBERS_BASE_BRANCH, else \"main\"), itemID,\n" +
+	"itemTitle, resultFile, timeout. PR metadata is configured through these\n" +
+	"workflow\n" +
 	"inputs — there are no --title/--body flags — and a stage may bind them\n" +
 	"from an upstream stage's declared output with inputsFrom rather than a\n" +
 	"static value:\n\n" +
@@ -116,6 +117,10 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"claimed item's title, recovered from the run journal (so it survives a\n" +
 	"resume or repass); otherwise the generic \"Automated implementation\". An\n" +
 	"empty value is not an override — every empty input falls back.\n\n" +
+	"itemID explicitly identifies a selected backlog item when the workflow\n" +
+	"read it without claiming. If a claimed item also exists, the IDs must\n" +
+	"match. On ADO, native work-item linking separately requires the\n" +
+	"ado:work-items:write capability; GitHub never resolves that capability.\n\n" +
 	"Body precedence: an explicitly set non-empty body is used as given and\n" +
 	"bypasses structured rendering; otherwise a structured body is rendered\n" +
 	"from the run journal's recorded review and local-CI evidence; otherwise a\n" +
@@ -127,6 +132,29 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"review/local-CI evidence, therefore gets generic metadata unless it sets\n" +
 	"these inputs. That is the fallback working, not a missing feature.\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
+
+func openPRIssue(root, runID string) (id, title string, ok bool, err error) {
+	id, title, ok = claimedIssueFromJournal(root, runID)
+	explicitID := strings.TrimSpace(providerInput("itemID", ""))
+	explicitTitle := strings.TrimSpace(providerInput("itemTitle", ""))
+	if explicitID == "" {
+		if explicitTitle != "" && !ok {
+			return "", "", false, fmt.Errorf("open-pr input itemTitle requires itemID when the run has no claimed item")
+		}
+		if explicitTitle != "" {
+			title = explicitTitle
+		}
+		return id, title, ok, nil
+	}
+	if ok && id != explicitID {
+		return "", "", false, fmt.Errorf("open-pr input itemID %q conflicts with claimed item %q", explicitID, id)
+	}
+	id, ok = explicitID, true
+	if explicitTitle != "" {
+		title = explicitTitle
+	}
+	return id, title, ok, nil
+}
 
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("open-pr", flag.ContinueOnError)
@@ -171,7 +199,11 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// both sides. Recovered from the run journal (resume-safe), so this holds on
 	// a repass too. Falls back to the generic title/body when the run claimed no
 	// issue (other workflows) or an explicit title/body input is set.
-	issueID, issueTitle, haveIssue := claimedIssueFromJournal(root, runID)
+	issueID, issueTitle, haveIssue, err := openPRIssue(root, runID)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	title := providerInput("title", "")
 	if title == "" {
 		if haveIssue && issueTitle != "" {

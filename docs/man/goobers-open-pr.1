@@ -14,8 +14,9 @@ across repasses, providers.BranchName). Writes prNumber/pull-request-url
 to the declared result file for a downstream stage's Task.InputsFrom.
 
 Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's
-stable branch), base (default GOOBERS_BASE_BRANCH, else "main"),
-resultFile, timeout. PR metadata is configured through these workflow
+stable branch), base (default GOOBERS_BASE_BRANCH, else "main"), itemID,
+itemTitle, resultFile, timeout. PR metadata is configured through these
+workflow
 inputs — there are no --title/--body flags — and a stage may bind them
 from an upstream stage's declared output with inputsFrom rather than a
 static value:
@@ -34,6 +35,11 @@ Title precedence: an explicitly set non-empty title wins; otherwise the
 claimed item's title, recovered from the run journal (so it survives a
 resume or repass); otherwise the generic "Automated implementation". An
 empty value is not an override — every empty input falls back.
+
+itemID explicitly identifies a selected backlog item when the workflow
+read it without claiming. If a claimed item also exists, the IDs must
+match. On ADO, native work-item linking separately requires the
+ado:work-items:write capability; GitHub never resolves that capability.
 
 Body precedence: an explicitly set non-empty body is used as given and
 bypasses structured rendering; otherwise a structured body is rendered
