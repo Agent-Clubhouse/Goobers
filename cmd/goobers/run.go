@@ -347,6 +347,8 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		pf(stderr, "error: --pr requires a workflow subscribed to the pull_request event\n")
 		return 1
 	}
+	// Agent-Clubhouse/Goobers#5557: reject duration-limited standalone runs
+	// before dispatch because this path has no watchdog.
 	if matches == 1 {
 		if err := validateStandaloneRunDuration(setup, localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}); err != nil {
 			pf(stderr, "error: %v\n", err)
