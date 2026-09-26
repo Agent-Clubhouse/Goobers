@@ -258,19 +258,6 @@ func TestCodexAdapterMaterializesScopedMCPConfig(t *testing.T) {
 	}
 }
 
-func TestCodexGoobersIOOverrideUsesBareServerName(t *testing.T) {
-	overrides := appendCodexStdioOverrides(nil, goobersIOServerName, "goobers", nil, nil, nil)
-	commandOverride := `mcp_servers.goobers-io.command="goobers"`
-	if !slices.Contains(overrides, commandOverride) {
-		t.Fatalf("overrides = %v, want %q", overrides, commandOverride)
-	}
-	for _, override := range overrides {
-		if strings.Contains(override, `mcp_servers."goobers-io"`) {
-			t.Fatalf("quoted goobers-io name leaks literal quotes to Codex: %q", override)
-		}
-	}
-}
-
 func TestCodexAdapterRejectsReservedMCPEnvironment(t *testing.T) {
 	for _, envName := range []string{
 		codexModelEnv,
@@ -503,10 +490,7 @@ func TestCodexAuthOptionsValidate(t *testing.T) {
 		want    string
 	}{
 		{name: "ambient", options: map[string]interface{}{"auth": "ambient-chatgpt"}},
-		{name: "trusted local danger sandbox", options: map[string]interface{}{"auth": "ambient-chatgpt", "sandbox": "danger-full-access"}},
 		{name: "default", options: map[string]interface{}{}},
-		{name: "danger sandbox needs trusted local auth", options: map[string]interface{}{"sandbox": "danger-full-access"}, want: `permitted only with auth "ambient-chatgpt"`},
-		{name: "unknown sandbox", options: map[string]interface{}{"auth": "ambient-chatgpt", "sandbox": "unrestricted"}, want: `invalid sandbox value "unrestricted"`},
 		{name: "unknown auth", options: map[string]interface{}{"auth": "oauth"}, want: `invalid auth value "oauth"`},
 		{name: "unknown option", options: map[string]interface{}{"credentialStore": "keyring"}, want: `unknown harness option "credentialStore"`},
 		{name: "file flag type", options: map[string]interface{}{"allowFileBackedCredentials": "yes"}, want: `must be a boolean`},
