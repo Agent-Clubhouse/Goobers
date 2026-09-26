@@ -79,10 +79,10 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
-| [`goobers fleet`](#goobers-fleet) | associate this instance with a Fleet service |
-| [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service |
-| [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets |
-| [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state |
+| [`goobers fleet`](#goobers-fleet) | associate this instance with a Fleet service (experimental; superseded) |
+| [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service (experimental; superseded) |
+| [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets (experimental; superseded) |
+| [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state (experimental; superseded) |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
@@ -1929,10 +1929,15 @@ $ goobers fix --instance-schema --write ./instance
 
 ## `goobers fleet`
 
-associate this instance with a Fleet service
+associate this instance with a Fleet service (experimental; superseded)
 
 ~~~text
 Usage: goobers fleet <join|status|leave> [flags] [path]
+
+Experimental and superseded embedded Fleet connector: opt-in and locally
+operable, but not the supported production path. This connector remains
+provider-neutral and preserves Fleetless local operation; it does not add a
+hosted Fleet transport or Fleet-owned authorization to the repository.
 
 Associate a local Goobers instance with a Fleet service, inspect its durable
 connection state, or remove the association. Fleet identity and credentials
@@ -1950,15 +1955,16 @@ $ goobers fleet leave
 
 ## `goobers fleet join`
 
-discover and enroll this instance with a Fleet service
+discover and enroll this instance with a Fleet service (experimental; superseded)
 
 ~~~text
 Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
 
-Discover and enroll an instance with a Fleet service. By default the one-time
-enrollment grant is read from a protected terminal prompt and never accepted
-as a command-line value. --enrollment-token-file supports automation and is
-accepted only when the file is private to its owner.
+Experimental and superseded embedded Fleet connector. Discover and enroll an
+instance with a Fleet service. By default the one-time enrollment grant is read
+from a protected terminal prompt and never accepted as a command-line value.
+--enrollment-token-file supports automation and is accepted only when the file
+is private to its owner.
 
 When discovery advertises a local administrator principal, interactive use
 offers an explicit instance:read self-grant. Noninteractive use must choose
@@ -1975,13 +1981,14 @@ $ goobers fleet join --url https://fleet.example --enrollment-token-file ./grant
 
 ## `goobers fleet leave`
 
-remove this instance's Fleet association and protected secrets
+remove this instance's Fleet association and protected secrets (experimental; superseded)
 
 ~~~text
 Usage: goobers fleet leave [path]
 
-Remove the Fleet association, private key, and bearer credential. A running
-daemon observes the removal and stops reconnecting.
+Experimental and superseded embedded Fleet connector. Remove the Fleet
+association, private key, and bearer credential. A running daemon observes the
+removal and stops reconnecting.
 ~~~
 
 **Examples**
@@ -1992,14 +1999,14 @@ $ goobers fleet leave
 
 ## `goobers fleet status`
 
-show durable Fleet registration and connection state
+show durable Fleet registration and connection state (experimental; superseded)
 
 ~~~text
 Usage: goobers fleet status [--json] [path]
 
-Show the durable Fleet registration, connection, heartbeat, ACL version, and
-credential expiry state. Private key and bearer credential material are never
-printed.
+Experimental and superseded embedded Fleet connector. Show the durable Fleet
+registration, connection, heartbeat, ACL version, and credential expiry state.
+Private key and bearer credential material are never printed.
 ~~~
 
 **Examples**

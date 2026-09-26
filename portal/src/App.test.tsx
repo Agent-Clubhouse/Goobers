@@ -251,6 +251,10 @@ describe("portal foundation", () => {
       screen.getByRole("button", { name: /^Select sequence 4:/ }),
     );
 
+    const dialog = await screen.findByRole("dialog", { name: "Event detail" });
+    expect(within(dialog).getByText("Sequence 4")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Close event detail" }));
+    await user.click(screen.getByRole("tab", { name: "Diagnostics" }));
     expect(
       screen.getByRole("button", {
         name: "implement, agentic, Running at sequence 4",

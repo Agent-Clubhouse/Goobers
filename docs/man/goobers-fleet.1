@@ -1,12 +1,17 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS FLEET" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers fleet \- associate this instance with a Fleet service
+goobers fleet \- associate this instance with a Fleet service (experimental; superseded)
 .SH SYNOPSIS
 \fBgoobers fleet\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
 Usage: goobers fleet <join|status|leave> [flags] [path]
+
+Experimental and superseded embedded Fleet connector: opt-in and locally
+operable, but not the supported production path. This connector remains
+provider-neutral and preserves Fleetless local operation; it does not add a
+hosted Fleet transport or Fleet-owned authorization to the repository.
 
 Associate a local Goobers instance with a Fleet service, inspect its durable
 connection state, or remove the association. Fleet identity and credentials

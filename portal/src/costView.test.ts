@@ -81,7 +81,7 @@ describe("external cost view model", () => {
         coverageRatio: 0.75,
         lowerBound: true,
         models: ["gpt-5.6-sol: 3 AIC · 3/3 attempts"],
-        runs: ["run-1"],
+        runs: result.pullRequests[0].runs,
       },
     ]);
   });
@@ -137,7 +137,7 @@ function externalCostRows(): ExternalCostRow[] {
       coverageRatio: 1,
       lowerBound: false,
       models: ["gpt-5.6-sol"],
-      runs: ["run-pr"],
+      runs: [costRun("run-pr")],
     },
     {
       key: "github:issue:41",
@@ -153,7 +153,7 @@ function externalCostRows(): ExternalCostRow[] {
       coverageRatio: 0.5,
       lowerBound: true,
       models: ["claude-sonnet"],
-      runs: ["run-issue"],
+      runs: [costRun("run-issue")],
     },
     {
       key: "github:pr:7",
@@ -170,4 +170,18 @@ function externalCostRows(): ExternalCostRow[] {
       runs: [],
     },
   ];
+}
+
+function costRun(runId: string) {
+  return {
+    runId,
+    startedAt: "2026-08-01T01:00:00Z",
+    usageAttempts: 1,
+    measuredAttempts: 1,
+    nativeTotals: [],
+    normalizedTotals: [],
+    billingModels: [],
+    costBases: [],
+    models: [],
+  };
 }

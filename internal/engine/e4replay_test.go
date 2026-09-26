@@ -422,6 +422,9 @@ func TestE4WalkHistoryReplays(t *testing.T) {
 
 	for i, fx := range e4Fixtures() {
 		t.Run(fx.name, func(t *testing.T) {
+			workflowCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+
 			taskQueue := "e4-replay"
 			exec := newScriptedExec(fx.script)
 			exec.verdicts = fx.verdicts
@@ -438,7 +441,7 @@ func TestE4WalkHistoryReplays(t *testing.T) {
 			in := runInput("e4-replay", fx.spec)
 			in.RunID = "e4-replay-" + strconv.Itoa(i)
 			in.TriggerKind = string(journal.TriggerManual)
-			run, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+			run, err := temporalClient.ExecuteWorkflow(workflowCtx, client.StartWorkflowOptions{
 				ID:        "e4-replay-" + strconv.Itoa(i),
 				TaskQueue: taskQueue,
 			}, Run, in)
@@ -449,9 +452,9 @@ func TestE4WalkHistoryReplays(t *testing.T) {
 			// A fixture that ends at @abort or @escalate fails the workflow;
 			// the history is recorded either way, and the history is the
 			// subject of this test.
-			_ = run.Get(ctx, &result)
+			_ = run.Get(workflowCtx, &result)
 
-			iter := temporalClient.GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), false,
+			iter := temporalClient.GetWorkflowHistory(workflowCtx, run.GetID(), run.GetRunID(), false,
 				enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 			history := &historypb.History{}
 			for iter.HasNext() {

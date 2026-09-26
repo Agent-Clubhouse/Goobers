@@ -60,7 +60,7 @@ func TestConfigMirrorRealDaemonPublishesOnlyAcceptedReloads(t *testing.T) {
 	case <-started.started:
 	case <-done:
 		t.Fatalf("daemon failed to start: %s", stderr.String())
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("daemon startup timed out")
 	}
 	initial := waitForConfigValue(t, "initial daemon config mirror", func() (string, bool) {

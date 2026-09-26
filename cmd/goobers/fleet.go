@@ -23,6 +23,11 @@ import (
 
 const fleetHelp = `Usage: goobers fleet <join|status|leave> [flags] [path]
 
+Experimental and superseded embedded Fleet connector: opt-in and locally
+operable, but not the supported production path. This connector remains
+provider-neutral and preserves Fleetless local operation; it does not add a
+hosted Fleet transport or Fleet-owned authorization to the repository.
+
 Associate a local Goobers instance with a Fleet service, inspect its durable
 connection state, or remove the association. Fleet identity and credentials
 are stored outside the instance root so copying an instance does not clone its
@@ -31,10 +36,11 @@ identity.
 
 const fleetJoinHelp = `Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
 
-Discover and enroll an instance with a Fleet service. By default the one-time
-enrollment grant is read from a protected terminal prompt and never accepted
-as a command-line value. --enrollment-token-file supports automation and is
-accepted only when the file is private to its owner.
+Experimental and superseded embedded Fleet connector. Discover and enroll an
+instance with a Fleet service. By default the one-time enrollment grant is read
+from a protected terminal prompt and never accepted as a command-line value.
+--enrollment-token-file supports automation and is accepted only when the file
+is private to its owner.
 
 When discovery advertises a local administrator principal, interactive use
 offers an explicit instance:read self-grant. Noninteractive use must choose
@@ -44,15 +50,16 @@ explicit opt-out or interactive confirmation.
 
 const fleetStatusHelp = `Usage: goobers fleet status [--json] [path]
 
-Show the durable Fleet registration, connection, heartbeat, ACL version, and
-credential expiry state. Private key and bearer credential material are never
-printed.
+Experimental and superseded embedded Fleet connector. Show the durable Fleet
+registration, connection, heartbeat, ACL version, and credential expiry state.
+Private key and bearer credential material are never printed.
 `
 
 const fleetLeaveHelp = `Usage: goobers fleet leave [path]
 
-Remove the Fleet association, private key, and bearer credential. A running
-daemon observes the removal and stops reconnecting.
+Experimental and superseded embedded Fleet connector. Remove the Fleet
+association, private key, and bearer credential. A running daemon observes the
+removal and stops reconnecting.
 `
 
 var (

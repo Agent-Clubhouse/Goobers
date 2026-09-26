@@ -289,7 +289,13 @@ iteration paths are left unchanged. A claim posts a claim breadcrumb comment on
 the work item, re-reads the comment thread so concurrent schedulers settle on
 the earliest breadcrumb, and then adds the visible `goobers:claimed` tag in a
 revision-tested patch that leaves unrelated tags alone. Releasing a claim posts
-a release breadcrumb and removes the tag.
+a release breadcrumb and removes the tag. When a run ends without a close-out
+stage (for example a `no-work` outcome or an abort), the daemon's terminal
+cleanup performs the same release against the gaggle's backlog project before
+it frees the local claim, and it never ends a claim that a newer run now
+holds. Claims taken for a work item on a `goobers:ready` selector do not
+record a ready time on Azure DevOps, because Goobers does not yet read tag
+history from work-item updates.
 
 Only breadcrumbs written by the identity the credential authenticates as
 count: the comment's `createdBy.id` must equal the `authenticatedUser.id` that
