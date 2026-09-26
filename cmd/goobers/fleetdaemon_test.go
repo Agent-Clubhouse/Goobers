@@ -37,7 +37,7 @@ func (c *blockingFleetConnector) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func TestDaemonFleetConnectorIsOptional(t *testing.T) {
+func TestDaemonFleetlessInstanceRemainsOptional(t *testing.T) {
 	store := &fleetMemoryStorage{}
 	originalStorage := newFleetStorage
 	newFleetStorage = func() (fleet.Storage, error) { return store, nil }
