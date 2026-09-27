@@ -505,6 +505,18 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
 	},
+	"telemetry configure": {
+		{name: "connection-string-env", takesArg: true, desc: "Environment variable containing the Application Insights connection string"},
+		{name: "connection-string-file", takesArg: true, desc: "Protected file containing the Application Insights connection string"},
+		{name: "connection-string-store", takesArg: true, desc: "Declared secret-store reference in STORE/SECRET form"},
+		{name: "profile", takesArg: true, values: []string{"health", "journal", "standard", "diagnostic"}, desc: "Telemetry collection profile"},
+		{name: "disable", desc: "Remove the direct Azure Monitor destination"},
+		{name: "json", desc: "Emit JSON"},
+	},
+	"telemetry test": {
+		{name: "json", desc: "Emit JSON"},
+		{name: "timeout", takesArg: true, desc: "Connectivity deadline"},
+	},
 	"telemetry merges": {
 		{name: "compare-github", takesArg: true, desc: "Compare an explicit GitHub owner/repository"},
 		{name: "shared-identities", takesArg: true, desc: "Comma-separated shared merger logins"},

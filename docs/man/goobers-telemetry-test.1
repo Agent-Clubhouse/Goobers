@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY TEST" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry test \- send one secret-safe Application Insights connectivity probe
+.SH SYNOPSIS
+\fBgoobers telemetry test\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry test [--json] [--timeout DURATION] [path]
+
+Resolve the configured connection-string reference and send one fixed,
+identity-free connectivity record directly to Application Insights. The probe
+bypasses disk replay: success means Azure acknowledged this request now. No
+connection-string value is printed, logged, journaled, or persisted.
+
+Exit codes: 0 = accepted, 1 = resolution/connection/rejection failure,
+2 = usage or invalid configuration.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry test ./instance
+goobers telemetry test --json ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

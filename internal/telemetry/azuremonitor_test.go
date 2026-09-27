@@ -59,6 +59,50 @@ func TestParseAzureMonitorConnectionString(t *testing.T) {
 	}
 }
 
+func TestAzureMonitorConnectivityProbeIsAcceptedAndIdentityFree(t *testing.T) {
+	payloads, server := azureMonitorTestServer(t)
+	defer server.Close()
+
+	result, err := TestAzureMonitorConnectivity(
+		context.Background(),
+		"InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint="+server.URL,
+		server.Client(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted || result.RecordID == "" || result.Schema != "goobers.dev/telemetry/connectivity/v1" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	body := waitAzureMonitorPayload(t, payloads)
+	for _, want := range []string{"goobers.telemetry.connectivity", "connectivity_test", result.RecordID} {
+		if !strings.Contains(body, want) {
+			t.Errorf("payload missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"goobers.instance.id", "goobers.gaggle", "goobers.run.id", "cloud.roleInstance", "ai.device.id"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("identity-free probe contains %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestAzureMonitorConnectivityProbeReportsRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	_, err := TestAzureMonitorConnectivity(
+		context.Background(),
+		"InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint="+server.URL,
+		server.Client(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("error = %v, want HTTP 403", err)
+	}
+}
+
 func TestAzureMonitorHostIdentityRequiresExplicitConsent(t *testing.T) {
 	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
 	hostname, err := os.Hostname()

@@ -127,14 +127,16 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
 | [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
 | [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
-| [`goobers telemetry`](#goobers-telemetry) | query, export, prune, or compact run telemetry |
+| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, prune, or compact telemetry |
 | [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
+| [`goobers telemetry configure`](#goobers-telemetry-configure) | configure customer-owned Application Insights export from a secret reference |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
 | [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
+| [`goobers telemetry test`](#goobers-telemetry-test) | send one secret-safe Application Insights connectivity probe |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
@@ -4281,11 +4283,13 @@ $ goobers status --agents --json
 
 ## `goobers telemetry`
 
-query, export, prune, or compact run telemetry
+configure, test, query, export, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
 
+configure: enable or disable customer-owned Application Insights export
+test:    send one secret-safe direct-ingestion connectivity probe
 merges: confirmed PR landings and daily counts by originating instance
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
@@ -4298,10 +4302,10 @@ compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
 **Examples**
 
 ~~~console
+$ goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance
+$ goobers telemetry test ./instance
 $ goobers telemetry stats
 $ goobers telemetry errors
-$ goobers telemetry export --since=2026-07-01T00:00:00Z
-$ goobers telemetry prune --dry-run
 ~~~
 
 ## `goobers telemetry compact`
@@ -4326,6 +4330,29 @@ default 90d window applies when none is configured. Exit codes: 0 = OK,
 ~~~console
 $ goobers telemetry compact --dry-run
 $ goobers telemetry compact
+~~~
+
+## `goobers telemetry configure`
+
+configure customer-owned Application Insights export from a secret reference
+
+~~~text
+Usage: goobers telemetry configure (--connection-string-env NAME | --connection-string-file PATH | --connection-string-store STORE/SECRET | --disable) [--profile health|journal|standard|diagnostic] [--json] [path]
+
+Configure the customer-owned Application Insights destination in one atomic
+instance.yaml update. Only the reference is stored; this command never accepts
+or writes an inline connection-string value. The profile defaults to standard,
+and bounded 72-hour replay defaults on. Stop a live daemon before changing its
+configuration. --disable removes only the direct Azure destination.
+
+Exit codes: 0 = configured, 1 = refused/invalid config, 2 = usage or I/O error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance
+$ goobers telemetry configure --connection-string-file C:\ProgramData\Goobers\secrets\application-insights.txt C:\ProgramData\Goobers\instance
 ~~~
 
 ## `goobers telemetry errors`
@@ -4457,6 +4484,29 @@ Exit codes: 0 = OK, 2 = usage/IO error.
 ~~~console
 $ goobers telemetry stats
 $ goobers telemetry stats --json
+~~~
+
+## `goobers telemetry test`
+
+send one secret-safe Application Insights connectivity probe
+
+~~~text
+Usage: goobers telemetry test [--json] [--timeout DURATION] [path]
+
+Resolve the configured connection-string reference and send one fixed,
+identity-free connectivity record directly to Application Insights. The probe
+bypasses disk replay: success means Azure acknowledged this request now. No
+connection-string value is printed, logged, journaled, or persisted.
+
+Exit codes: 0 = accepted, 1 = resolution/connection/rejection failure,
+2 = usage or invalid configuration.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry test ./instance
+$ goobers telemetry test --json ./instance
 ~~~
 
 ## `goobers telemetry-query`
