@@ -260,6 +260,34 @@ func providerToken(cap capability.Capability) (string, error) {
 	return token, nil
 }
 
+// landingAuthority names the capability whose credential authorizes landing a
+// pull request on repo, the one rule merge-pr and merge-queue-poll share
+// (docs/design/ado-parity-dsl-2-0.md §3.3). github:pr:merge is the landing
+// authority on every provider in DSL 2.0. On Azure DevOps, ado:pr:complete is
+// accepted and never required: when the stage declared it (its credential was
+// delivered) it is used, otherwise github:pr:merge is.
+//
+// On Azure DevOps the chosen name is resolved here, through providerToken, so
+// the config-generation revocation fence runs for it and a stage holding
+// neither name fails closed before any provider is built. A PR-write grant
+// (github:pr:write, ado:pr:write) never satisfies this check (SEC-053). A
+// revoked ado:pr:complete fails closed rather than falling back to
+// github:pr:merge. GitHub and Gitea keep resolving github:pr:merge in the
+// stage provider factory, as before.
+func landingAuthority(repo providers.RepositoryRef) (capability.Capability, error) {
+	if repo.Provider != providers.ProviderADO {
+		return capability.GitHubPRMerge, nil
+	}
+	authority := capability.GitHubPRMerge
+	if os.Getenv(executor.CredentialEnvVar(string(capability.ADOPRComplete))) != "" {
+		authority = capability.ADOPRComplete
+	}
+	if _, err := providerToken(authority); err != nil {
+		return "", fmt.Errorf("landing on Azure DevOps needs %s (or %s): %w", capability.GitHubPRMerge, capability.ADOPRComplete, err)
+	}
+	return authority, nil
+}
+
 // providerInput reads a declared Task.Inputs value the runner passed through
 // as a GOOBERS_INPUT_* env var (executor/env.go's buildStageEnv,
 // executor.InputEnvVar), falling back to def when unset.

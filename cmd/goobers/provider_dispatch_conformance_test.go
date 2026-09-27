@@ -576,8 +576,11 @@ func installADOCredentialProbe(t *testing.T) *[]string {
 // pull-request work on the project provider from github:pr:write (or
 // provider:pr:write), backlog work items from github:issues:*.
 //
-// merge-pr and merge-queue-poll consume ado:pr:complete for completion today;
-// ADO-N2 moves landing authority onto github:pr:merge through this seam.
+// merge-pr and merge-queue-poll land with github:pr:merge, or with
+// ado:pr:complete when it was delivered, as it is here
+// (docs/design/ado-parity-dsl-2-0.md §3.3; the full matrix is
+// TestMergePRADOLandingAuthorityMatrix and
+// TestMergeQueuePollADOLandingAuthorityMatrix).
 // apply-verdict and elect-lander read a journaled verdict before they build a
 // provider, so their end-to-end ADO tests (TestRunApplyVerdictADO*,
 // TestElectLanderDispatchesADOAndElectsCandidate) assert the same rule.

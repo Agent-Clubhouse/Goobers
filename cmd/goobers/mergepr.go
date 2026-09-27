@@ -92,20 +92,6 @@ func ciReadyForMerge(poll providers.PullRequestPollResult) bool {
 	return poll.MergeableState == providers.MergeableStateUnstable
 }
 
-// mergePRProviderCapability names the capability merge-pr's provider is
-// built from. On Azure DevOps completion authority is ado:pr:complete, and its
-// delivered credential must be present before anything is constructed, so a
-// stage granted only ado:pr:write fails closed (merge-wiring-plan §3).
-func mergePRProviderCapability(repo providers.RepositoryRef) (capability.Capability, error) {
-	if repo.Provider != providers.ProviderADO {
-		return capability.GitHubPRMerge, nil
-	}
-	if _, err := providerToken(capability.ADOPRComplete); err != nil {
-		return "", err
-	}
-	return capability.ADOPRComplete, nil
-}
-
 func runMergePR(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("merge-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -123,10 +109,12 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Azure DevOps merge/completion authority rides on its dedicated capability;
-	// provider construction still goes through the shared stage factory. The
-	// GitHub-only helpers below (tutor classification, branch cleanup) stay
-	// unreachable while every conjunct check between here and the land is shared.
+	// github:pr:merge is the landing authority on every provider; on Azure
+	// DevOps a declared ado:pr:complete is used instead (landingAuthority).
+	// PR-write grants never satisfy it (SEC-053). Provider construction still
+	// goes through the shared stage factory. The GitHub-only helpers below
+	// (tutor classification, branch cleanup) stay unreachable on ADO while
+	// every conjunct check between here and the land is shared.
 	isADO := repo.Provider == providers.ProviderADO
 	isGitHub := repo.Provider == providers.ProviderGitHub
 
@@ -134,7 +122,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// require. dispatcher is the provider-neutral landing seam (CONF-1 #2074)
 	// every poll/compare/detect/enqueue/merge call flows through, so every
 	// registered provider runs one shared code path.
-	providerCapability, err := mergePRProviderCapability(repo)
+	providerCapability, err := landingAuthority(repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
