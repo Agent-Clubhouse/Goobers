@@ -39,6 +39,7 @@ telemetry:
   # to a customer-owned Application Insights resource. The connection string is
   # always indirect; never put its resolved value in this file. See
   # docs/guides/azure-monitor.md.
+  # collectionProfile: standard # health | journal | standard | diagnostic
   # azureMonitor:
   #   connectionString:
   #     env: APPLICATIONINSIGHTS_CONNECTION_STRING

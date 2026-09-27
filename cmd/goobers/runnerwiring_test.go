@@ -322,18 +322,48 @@ func TestConfigureAzureMonitorResolvesAndRegistersConnectionString(t *testing.T)
 	var cfg telemetry.Config
 	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
 		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_APPLICATIONINSIGHTS_CONNECTION_STRING"},
-	}, registry, nil)
+	}, instance.TelemetryProfileStandard, registry, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.AzureMonitorConnectionString != connectionString {
 		t.Fatal("resolved connection string was not passed to telemetry config")
 	}
-	if !cfg.JournalLogs {
+	if !cfg.AzureMonitorJournalLogs || !cfg.AzureMonitorTraces || cfg.AzureMonitorHostIdentity {
 		t.Fatal("one Azure Monitor destination did not enable the standard journal stream")
 	}
 	if scrubbed := string(registry.Scrub([]byte("prefix " + connectionString + " suffix"))); strings.Contains(scrubbed, connectionString) {
 		t.Fatalf("connection string was not registered with scrubber: %q", scrubbed)
+	}
+}
+
+func TestConfigureAzureMonitorCollectionProfiles(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("GOOBERS_TEST_PROFILE_CONNECTION", connectionString)
+	for _, tc := range []struct {
+		profile                   instance.TelemetryCollectionProfile
+		journal, traces, identity bool
+	}{
+		{instance.TelemetryProfileHealth, false, false, false},
+		{instance.TelemetryProfileJournal, true, false, false},
+		{instance.TelemetryProfileStandard, true, true, false},
+		{instance.TelemetryProfileDiagnostic, true, true, true},
+	} {
+		t.Run(string(tc.profile), func(t *testing.T) {
+			var cfg telemetry.Config
+			err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+				ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_PROFILE_CONNECTION"},
+			}, tc.profile, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.AzureMonitorJournalLogs != tc.journal || cfg.AzureMonitorTraces != tc.traces || cfg.AzureMonitorHostIdentity != tc.identity {
+				t.Fatalf("routing = journal:%v traces:%v identity:%v", cfg.AzureMonitorJournalLogs, cfg.AzureMonitorTraces, cfg.AzureMonitorHostIdentity)
+			}
+			if len(cfg.ResourceAttributes) != 1 || string(cfg.ResourceAttributes[0].Key) != "goobers.telemetry.profile" || cfg.ResourceAttributes[0].Value.AsString() != string(tc.profile) {
+				t.Fatalf("profile resource attributes = %+v", cfg.ResourceAttributes)
+			}
+		})
 	}
 }
 

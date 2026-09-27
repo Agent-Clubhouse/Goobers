@@ -60,15 +60,15 @@ type azureMonitorSpanExporter struct {
 	closed atomic.Bool
 }
 
-func newAzureMonitorSpanExporter(connectionString string, httpClient *http.Client) (*azureMonitorSpanExporter, error) {
-	client, err := newAzureMonitorClient(connectionString, httpClient)
+func newAzureMonitorSpanExporter(connectionString string, httpClient *http.Client, includeHostIdentity bool) (*azureMonitorSpanExporter, error) {
+	client, err := newAzureMonitorClient(connectionString, httpClient, includeHostIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("create Azure Monitor telemetry exporter: %w", err)
 	}
 	return &azureMonitorSpanExporter{client: client}, nil
 }
 
-func newAzureMonitorClient(connectionString string, httpClient *http.Client) (*azureMonitorClient, error) {
+func newAzureMonitorClient(connectionString string, httpClient *http.Client, includeHostIdentity bool) (*azureMonitorClient, error) {
 	connection, err := parseAzureMonitorConnectionString(connectionString)
 	if err != nil {
 		return nil, err
@@ -80,9 +80,11 @@ func newAzureMonitorClient(connectionString string, httpClient *http.Client) (*a
 		contracts.DeviceOSVersion:    runtime.GOOS,
 		contracts.InternalSdkVersion: "goobers:" + appinsights.Version,
 	}
-	if hostname, err := os.Hostname(); err == nil {
-		tags[contracts.DeviceId] = hostname
-		tags[contracts.CloudRoleInstance] = hostname
+	if includeHostIdentity {
+		if hostname, err := os.Hostname(); err == nil {
+			tags[contracts.DeviceId] = hostname
+			tags[contracts.CloudRoleInstance] = hostname
+		}
 	}
 	return &azureMonitorClient{
 		instrumentationKey: connection.instrumentationKey,
@@ -330,8 +332,8 @@ type azureMonitorLogExporter struct {
 	closed atomic.Bool
 }
 
-func newAzureMonitorLogExporter(connectionString string, httpClient *http.Client) (*azureMonitorLogExporter, error) {
-	client, err := newAzureMonitorClient(connectionString, httpClient)
+func newAzureMonitorLogExporter(connectionString string, httpClient *http.Client, includeHostIdentity bool) (*azureMonitorLogExporter, error) {
+	client, err := newAzureMonitorClient(connectionString, httpClient, includeHostIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("create Azure Monitor log exporter: %w", err)
 	}

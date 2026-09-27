@@ -172,7 +172,7 @@ func runRoutingCase(t *testing.T, tc routingCase) {
 		}
 		span.End()
 	}
-	if diagnostic != nil && !diagnostic.Emit(serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{"schemaVersion": 1, "instanceId": "routing-diagnostic-instance"}})) {
+	if diagnostic != nil && !diagnostic.Emit(serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{"schemaVersion": 1, "instanceId": "routing-diagnostic-instance"}}, false)) {
 		t.Fatal("diagnostic observation rejected")
 	}
 	journalDone, diagnosticDone := make(chan error, 1), make(chan error, 1)

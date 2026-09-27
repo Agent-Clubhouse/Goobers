@@ -72,11 +72,17 @@ func TestServiceHealthExportProductionWiring(t *testing.T) {
 }
 func TestServiceHealthExportWhitelist(t *testing.T) {
 	record := serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{
-		"instanceId": "known", "prompt": "private prompt", "rawConfig": "private config",
+		"instanceId": "known", "machineName": "workstation-7", "accountName": "alice", "prompt": "private prompt", "rawConfig": "private config",
 		"recoveryInventory": map[string]any{"state": "healthy", "used": 1, "inventoryRoot": "private path", "error": "private raw error"},
-	}})
+	}}, false)
 	if len(record.Attributes) != 3 || record.Attributes["instanceId"] != "known" || record.Attributes["recoveryInventory.used"] != 1 {
 		t.Fatalf("unexpected public fields: %+v", record.Attributes)
+	}
+	diagnostic := serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{
+		"instanceId": "known", "machineName": "workstation-7", "accountName": "alice",
+	}}, true)
+	if diagnostic.Attributes["machineName"] != "workstation-7" || diagnostic.Attributes["accountName"] != "alice" {
+		t.Fatalf("diagnostic consent did not include host identity: %+v", diagnostic.Attributes)
 	}
 }
 func TestServiceHealthDisabledExportDoesNotResolveSecrets(t *testing.T) {

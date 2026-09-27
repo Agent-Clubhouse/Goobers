@@ -7,9 +7,9 @@ path. Export is disabled unless the instance explicitly configures a
 connection-string secret reference; Goobers has no built-in or maintainer-owned
 telemetry destination.
 
-The tenant telemetry program tracked by #5909 still adds configurable collection
-profiles, durable replay, and one-step Windows/Kubernetes onboarding without
-changing the signal schemas introduced here.
+The tenant telemetry program tracked by #5909 still adds durable replay and
+one-step Windows/Kubernetes onboarding without changing the signal schemas
+introduced here.
 
 ## Configure the destination
 
@@ -19,10 +19,32 @@ page. Store it outside `instance.yaml`, then reference it from the instance:
 ```yaml
 telemetry:
   enabled: true
+  collectionProfile: standard
   azureMonitor:
     connectionString:
       env: APPLICATIONINSIGHTS_CONNECTION_STRING
 ```
+
+`collectionProfile` is optional and defaults to `standard`. Its v1 contract is:
+
+| Profile | Service/fleet health | Committed journals | Run/stage traces | Machine/account identity |
+| --- | --- | --- | --- | --- |
+| `health` | yes | no | no | no |
+| `journal` | yes | yes | no | no |
+| `standard` | yes | yes | yes | no |
+| `diagnostic` | yes | yes | yes | yes |
+
+Use `standard` for routine fleet visibility and execution reconstruction. Use
+`diagnostic` only when the tenant explicitly consents to exporting hostname and
+runtime-account fields. Unknown profile names fail configuration validation;
+changing a profile never deletes or reduces the authoritative local journal,
+rollup, or diagnostic history. The generated machine-readable contract is
+[`telemetry-collection-profiles-v1.json`](../reference/telemetry-collection-profiles-v1.json).
+Exported resources carry the effective choice as
+`goobers.telemetry.profile`, so queries and audits do not have to infer it.
+
+Records remain structured JSON. Goobers does not base64-wrap workflow bodies,
+prompts, credentials, or arbitrary raw payloads as a telemetry escape hatch.
 
 Set the environment variable in the account/environment of the Goobers daemon
 and restart the service. A private file or declared secret store is also valid:
@@ -49,7 +71,8 @@ connection strings fail configuration before normal daemon work begins.
 `azureMonitor` can run alongside `telemetry.otlp`; traces and committed journal
 Logs fan out to each explicitly configured destination. A separately configured
 `telemetry.diagnostics.otlp` destination also continues to receive diagnostic
-Logs while Azure Monitor receives the same whitelisted records.
+Logs while Azure Monitor receives the same whitelisted records. Profile routing
+does not enable, redirect, or replace either explicit OTLP destination.
 
 ## Delivery and trust
 
