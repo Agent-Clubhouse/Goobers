@@ -150,6 +150,29 @@ func (p *ADOProvider) UpdatePullRequestThreadComment(ctx context.Context, repo R
 	return nil
 }
 
+// DeletePullRequestThreadComment deletes one pull-request thread comment — the
+// ADO analog of GitHub's DeleteComment, used to drop a duplicate of a
+// run-scoped comment a retry posted. commentID is the composite
+// "<pullID>/<threadId>/<commentId>" a prior Post/List returned.
+func (p *ADOProvider) DeletePullRequestThreadComment(ctx context.Context, repo RepositoryRef, commentID string) error {
+	if err := requireRepo(repo); err != nil {
+		return err
+	}
+	pullID, threadID, cID, err := parseADOThreadCommentID(commentID)
+	if err != nil {
+		return err
+	}
+	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads", threadID, "comments", cID)
+	if err != nil {
+		return err
+	}
+	if err := p.do(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
+		return err
+	}
+	p.recordMutation(ctx, "pr", pullID, "comment", repo)
+	return nil
+}
+
 // AddPullRequestLabels applies one or more native Azure DevOps PR labels — the
 // hazard-free carrier for the goobers:needs-remediation selector signal.
 // ListPullRequests already reads PR labels, so writing them here drives the
