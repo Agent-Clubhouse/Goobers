@@ -144,7 +144,9 @@ so a numeric milestone does not map onto them cleanly.
 The `file-issues` stage files GitHub issues only, so the `work-nomination`
 workflow does not run on ADO. `goobers init --provider=ado` refuses
 `--workflows=work-nomination` with that reason, and its default modules are
-`implementation`, `backlog-curation` and `merge-review`.
+`implementation`, `backlog-curation` and `merge-review`. The browser wizard
+uses the same defaults for an Azure DevOps repository and does not offer
+work nomination.
 
 ## Other non-goals for DSL 2.0
 

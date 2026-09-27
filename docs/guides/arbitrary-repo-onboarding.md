@@ -19,7 +19,9 @@ Finish the single-repository path before adding another gaggle.
 `goobers init --guided` follows the
 same convention: it loads the canonical work-nomination, backlog-curation, and
 implementation modules from
-`config-examples/gaggles/acme-web`, then adapts repository identity, branch,
+`config-examples/gaggles/acme-web` (on Azure DevOps it offers merge-review
+instead of work-nomination, whose `file-issues` stage files GitHub issues
+only; guided merge-review is Azure DevOps-only), then adapts repository identity, branch,
 issue scope, harness, CI command, and required capabilities from the choices
 and evidence collected by the wizard. It does not reuse the deliberately
 simplified `quickstart@v1` tutorial workflow.

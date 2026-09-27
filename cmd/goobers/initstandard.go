@@ -91,8 +91,13 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 		PullRequestCI: input.PullRequestCI, CICommand: argv, RequiredCapabilities: splitLabelList(input.Capabilities),
 	}
 	if provider == "ado" {
+		kind, err := standardADORepoAuthKind(input)
+		if err != nil {
+			return nil, err
+		}
 		// An unset or empty kind defaults to azure-cli (normalizeGuidedOptions);
 		// only PAT auth names a token variable.
+		opts.RepoAuthKind = kind
 		opts.RepoTokenEnv = ""
 		if strings.TrimSpace(opts.RepoAuthKind) == instance.ADOAuthPAT {
 			opts.RepoTokenEnv = "GOOBERS_ADO_TOKEN"
@@ -117,6 +122,27 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 		opts.CopilotTokenEnv = input.ModelTokenEnv
 	}
 	return opts, nil
+}
+
+// standardADORepoAuthKind resolves the Azure DevOps repository auth kind.
+// Only PAT auth reads a token variable, so naming one with --repo-token-env
+// and no kind selects pat (as scripted ADO onboarding did before azure-cli
+// became the default); naming one with any other kind is a usage error
+// instead of a silently ignored flag. An empty --repo-token-env names nothing.
+func standardADORepoAuthKind(input standardInitInput) (string, error) {
+	kind := strings.TrimSpace(input.RepoAuthKind)
+	if !input.RepoTokenEnvSet || strings.TrimSpace(input.RepoTokenEnv) == "" {
+		return kind, nil
+	}
+	switch kind {
+	case "":
+		return instance.ADOAuthPAT, nil
+	case instance.ADOAuthPAT:
+		return kind, nil
+	default:
+		return "", fmt.Errorf("--repo-token-env is read only by --repo-auth-kind=%s on Azure DevOps; drop --repo-token-env or use --repo-auth-kind=%s instead of %q",
+			instance.ADOAuthPAT, instance.ADOAuthPAT, kind)
+	}
 }
 
 // standardDefaultWorkflows is the module set `init --template=standard` seeds

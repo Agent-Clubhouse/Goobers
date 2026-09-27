@@ -7,8 +7,10 @@ still authorize each operation.
 `goobers init --template=standard --provider=ado` writes `azure-cli`
 authentication by default, with no token variable. Pass `--repo-auth-kind`
 with `workload-identity`, `managed-identity` or `pat` to choose another source;
-only `pat` records a token variable, `GOOBERS_ADO_TOKEN`. `goobers connect`
-records PAT authentication.
+only `pat` records a token variable, `GOOBERS_ADO_TOKEN`. Passing
+`--repo-token-env=NAME` without `--repo-auth-kind` selects `pat` reading `NAME`;
+with any other kind it is refused, because only `pat` reads a token variable.
+`goobers connect` records PAT authentication.
 
 ## Local interactive authentication
 
