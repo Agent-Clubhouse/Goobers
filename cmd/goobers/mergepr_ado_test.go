@@ -246,6 +246,61 @@ func TestMergePRDispatchesToADOAndLandsWithoutVerdictComment(t *testing.T) {
 	}
 }
 
+// TestMergePRADOSetsDeleteSourceBranchWithGrant proves ADO-N25: the
+// completion PATCH's completionOptions.deleteSourceBranch is set only when
+// the stage holds github:branch:delete — the same grant GitHub's
+// post-merge cleanup requires — and left unset (omitted) otherwise, so a
+// stage that never asked for branch cleanup does not get it as a side
+// effect of landing on ADO.
+func TestMergePRADOSetsDeleteSourceBranchWithGrant(t *testing.T) {
+	t.Run("with grant", func(t *testing.T) {
+		server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+		root, _ := adoMergePREnv(t, server.URL, false, map[string]string{
+			"pullNumber": "359",
+			"verdict":    "pass",
+			"headSha":    "headsha1",
+			"baseSha":    "basesha1",
+		})
+		t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), "branch-delete-token")
+
+		code, stdout, stderr := runArgs(t, "merge-pr", root)
+		if code != 0 {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		body, _ := state.patchBody.Load().(map[string]interface{})
+		opts, _ := body["completionOptions"].(map[string]interface{})
+		if opts == nil {
+			t.Fatalf("PATCH body = %+v, want completionOptions", body)
+		}
+		if opts["deleteSourceBranch"] != true {
+			t.Fatalf("completionOptions = %#v, want deleteSourceBranch=true with the github:branch:delete grant", opts)
+		}
+	})
+
+	t.Run("without grant", func(t *testing.T) {
+		server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+		root, _ := adoMergePREnv(t, server.URL, false, map[string]string{
+			"pullNumber": "359",
+			"verdict":    "pass",
+			"headSha":    "headsha1",
+			"baseSha":    "basesha1",
+		})
+
+		code, stdout, stderr := runArgs(t, "merge-pr", root)
+		if code != 0 {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		body, _ := state.patchBody.Load().(map[string]interface{})
+		opts, _ := body["completionOptions"].(map[string]interface{})
+		if opts == nil {
+			t.Fatalf("PATCH body = %+v, want completionOptions", body)
+		}
+		if _, present := opts["deleteSourceBranch"]; present {
+			t.Fatalf("completionOptions = %#v, want deleteSourceBranch omitted without the github:branch:delete grant", opts)
+		}
+	})
+}
+
 // landingGrantTokens gives every grant a landing matrix case can deliver a
 // distinct value, so the credential a provider was built from names the
 // capability it came from.
