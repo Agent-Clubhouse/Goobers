@@ -279,7 +279,7 @@ func PrepareImport(layout instance.Layout, target string, bundle apiv1.GaggleBun
 		return nil, err
 	}
 	if _, stagedReport, err := instance.LoadConfigDir(stagedConfig); err != nil {
-		return nil, fmt.Errorf("%w: imported configuration failed validation: %v (%s)", ErrInvalidBundle, err, reportSummary(stagedReport))
+		return nil, fmt.Errorf("%w: imported configuration failed validation: %w (%s)", ErrInvalidBundle, err, reportSummary(stagedReport))
 	}
 	swap, err := prepareConfigDirSwap(layout, stagedConfig)
 	if err != nil {
