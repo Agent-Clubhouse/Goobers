@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -46,9 +47,16 @@ func TestTopologyBColumnIsReallyMixed(t *testing.T) {
 	subjects := matrixSubjects(t)
 	dir := subjects[0].build(t, apiv1.ProviderADO)
 	moveBacklogsToGitHub(t, dir)
-	set, _, err := instance.LoadConfigDir(dir)
+	set, report, err := instance.LoadConfigDir(dir)
 	if err != nil {
 		t.Fatalf("load %s in topology (b): %v", subjects[0].name, err)
+	}
+	if report != nil {
+		for _, issue := range report.Issues {
+			if issue.Severity == validate.Error {
+				t.Errorf("load %s in topology (b): validation error %s: %s", subjects[0].name, issue.Code, issue.Message)
+			}
+		}
 	}
 	if len(set.Gaggles) == 0 {
 		t.Fatal("no gaggles loaded")
