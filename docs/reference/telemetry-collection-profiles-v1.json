@@ -7,9 +7,16 @@
     "goobers.instance.id",
     "goobers.gaggle",
     "goobers.workflow",
+    "goobers.workflow.version",
+    "goobers.workflow.digest",
+    "goobers.config.generation",
+    "goobers.trigger.kind",
     "goobers.run.id",
+    "goobers.stage",
+    "goobers.attempt.n",
     "trace_id",
-    "span_id"
+    "span_id",
+    "goobers.telemetry.record_id"
   ],
   "consentGatedIdentity": [
     "machineName",

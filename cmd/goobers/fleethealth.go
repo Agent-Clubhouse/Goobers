@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"runtime"
+	"strings"
 	"time"
 
 	"golang.org/x/mod/semver"
@@ -18,7 +20,16 @@ import (
 	"github.com/goobers/goobers/internal/version"
 )
 
-const fleetInventoryLimit = 100
+const (
+	fleetInventoryPageLimit = 100
+	// A single instance is expected to carry only a handful of gaggles and
+	// workflows. Keep an explicit ceiling for corrupt or adversarial inventory,
+	// while following ordinary read-service cursors instead of silently treating
+	// the first page as the whole fleet.
+	fleetInventoryObservationLimit = 1000
+	fleetRunObservationLimit       = 100
+	fleetGaggleSnapshotInterval    = time.Minute
+)
 
 type fleetHealthReader interface {
 	Gaggles(context.Context, readservice.PageRequest) (readservice.GagglePage, error)
@@ -38,6 +49,12 @@ type fleetHealthObserver struct {
 	workers            *fleetWorkerHealthObserver
 	scheduler          *readservice.SchedulerStatus
 	ready              func() bool
+	lastGaggleEmission map[string]fleetGaggleEmission
+}
+
+type fleetGaggleEmission struct {
+	signature string
+	at        time.Time
 }
 
 func newFleetHealthSampler(root string, identity *daemonIdentity, config *instance.DiagnosticsConfig, reader fleetHealthReader, workers *fleetWorkerHealthObserver, readiness ...func() bool) fleetHealthSample {
@@ -46,7 +63,7 @@ func newFleetHealthSampler(root string, identity *daemonIdentity, config *instan
 	if identity != nil && !identity.StartedAt.IsZero() {
 		started = identity.StartedAt.UTC()
 	}
-	observer := &fleetHealthObserver{workers: workers, reader: reader, config: config, instanceID: id, bootID: rand.Text(), startedAt: started, eligibleSince: make(map[string]time.Time)}
+	observer := &fleetHealthObserver{workers: workers, reader: reader, config: config, instanceID: id, bootID: rand.Text(), startedAt: started, eligibleSince: make(map[string]time.Time), lastGaggleEmission: make(map[string]fleetGaggleEmission)}
 	if len(readiness) > 0 {
 		observer.ready = readiness[0]
 	}
@@ -68,10 +85,10 @@ func (o *fleetHealthObserver) sample(ctx context.Context, now time.Time) []telem
 			o.scheduler = &status
 		}
 	}
-	page, err := o.reader.Gaggles(ctx, readservice.PageRequest{Limit: fleetInventoryLimit})
+	gaggles, complete, err := o.gaggles(ctx)
 	attrs := o.identity("", now)
 	attrs["state"], attrs["reasonCode"], attrs["windowCoverage"] = "unknown", "observation_incomplete", "partial"
-	if err == nil && !page.Page.HasMore && fleetReadComplete(page.ReadStateEnvelope) {
+	if err == nil && complete {
 		attrs["windowCoverage"] = "complete"
 		attrs["reasonCode"] = "progress_unconfirmed"
 	}
@@ -85,18 +102,83 @@ func (o *fleetHealthObserver) sample(ctx context.Context, now time.Time) []telem
 		return records
 	}
 	retained := make(map[string]time.Time)
-	for _, gaggle := range page.Items {
-		if len(records) > fleetInventoryLimit || ctx.Err() != nil {
+	seen := make(map[string]bool, len(gaggles))
+	for _, gaggle := range gaggles {
+		if ctx.Err() != nil {
 			break
 		}
 		record := o.gaggle(ctx, gaggle, now)
-		records = append(records, record)
+		seen[gaggle.Name] = true
+		if o.shouldEmitGaggle(gaggle.Name, record.Attributes, now) {
+			records = append(records, record)
+		}
 		if since, ok := o.eligibleSince[gaggle.Name]; ok {
 			retained[gaggle.Name] = since
 		}
 	}
 	o.eligibleSince = retained
+	if complete {
+		for gaggle := range o.lastGaggleEmission {
+			if !seen[gaggle] {
+				delete(o.lastGaggleEmission, gaggle)
+			}
+		}
+	}
 	return records
+}
+
+func (o *fleetHealthObserver) shouldEmitGaggle(gaggle string, attrs map[string]any, now time.Time) bool {
+	if o.lastGaggleEmission == nil {
+		o.lastGaggleEmission = make(map[string]fleetGaggleEmission)
+	}
+	keys := []string{
+		"state", "reasonCode", "windowCoverage",
+		"workerState", "workerReasonCode", "workerCoverage",
+		"backlogState", "backlogReasonCode", "backlogCoverage",
+		"requiredMcpState", "requiredMcpReason", "requiredMcpCoverage",
+	}
+	var signature strings.Builder
+	for _, key := range keys {
+		_, _ = fmt.Fprintf(&signature, "%s=%v\x00", key, attrs[key])
+	}
+	previous, ok := o.lastGaggleEmission[gaggle]
+	changed := !ok || previous.signature != signature.String()
+	periodic := ok && (now.Before(previous.at) || now.Sub(previous.at) >= fleetGaggleSnapshotInterval)
+	if !changed && !periodic {
+		return false
+	}
+	o.lastGaggleEmission[gaggle] = fleetGaggleEmission{signature: signature.String(), at: now}
+	return true
+}
+
+func (o *fleetHealthObserver) gaggles(ctx context.Context) ([]readservice.Gaggle, bool, error) {
+	items := make([]readservice.Gaggle, 0, fleetInventoryPageLimit)
+	cursor := ""
+	complete := true
+	for len(items) < fleetInventoryObservationLimit {
+		page, err := o.reader.Gaggles(ctx, readservice.PageRequest{Limit: fleetInventoryPageLimit, Cursor: cursor})
+		if err != nil {
+			return items, false, err
+		}
+		complete = complete && fleetReadComplete(page.ReadStateEnvelope)
+		remaining := fleetInventoryObservationLimit - len(items)
+		if len(page.Items) > remaining {
+			items = append(items, page.Items[:remaining]...)
+			return items, false, nil
+		}
+		items = append(items, page.Items...)
+		if !page.Page.HasMore {
+			if page.Page.Total > 0 && len(items) != page.Page.Total {
+				complete = false
+			}
+			return items, complete, nil
+		}
+		if page.Page.NextCursor == "" || page.Page.NextCursor == cursor {
+			return items, false, nil
+		}
+		cursor = page.Page.NextCursor
+	}
+	return items, false, nil
 }
 
 func (o *fleetHealthObserver) identity(gaggle string, now time.Time) map[string]any {
@@ -119,11 +201,14 @@ func (o *fleetHealthObserver) identity(gaggle string, now time.Time) map[string]
 func (o *fleetHealthObserver) gaggle(ctx context.Context, gaggle readservice.Gaggle, now time.Time) telemetry.DiagnosticRecord {
 	attrs := o.identity(gaggle.Name, now)
 	observation := fleetstate.Observation{ObservedAt: now, Paused: !gaggle.Enabled, Complete: true}
-	runs, err := o.reader.ListStatusRuns(ctx, readservice.StatusRunOptions{Gaggle: gaggle.Name, Limit: fleetInventoryLimit})
-	if err != nil || len(runs) >= fleetInventoryLimit {
+	runs, err := o.reader.ListStatusRuns(ctx, readservice.StatusRunOptions{Gaggle: gaggle.Name, Limit: fleetRunObservationLimit + 1})
+	if err != nil || len(runs) > fleetRunObservationLimit {
 		observation.Complete = false
 	}
 	if err == nil {
+		if len(runs) > fleetRunObservationLimit {
+			runs = runs[:fleetRunObservationLimit]
+		}
 		observeFleetRuns(&observation, runs, attrs, o.startedAt, gaggle.Name)
 	}
 	fleetMCPAttributes(attrs, fleetMCPHealth(runs, gaggle.Name, observation.Complete, now))
@@ -205,13 +290,13 @@ func (o *fleetHealthObserver) observeEligibility(ctx context.Context, gaggle str
 			delete(o.eligibleSince, gaggle)
 		}
 	}()
-	workflows, err := o.reader.Workflows(ctx, gaggle, readservice.PageRequest{Limit: fleetInventoryLimit})
-	if err != nil || workflows.Page.HasMore || !fleetReadComplete(workflows.ReadStateEnvelope) {
+	workflows, complete, err := o.workflows(ctx, gaggle)
+	if err != nil || !complete {
 		observation.Complete = false
 		return
 	}
 	count := 0
-	for _, wf := range workflows.Items {
+	for _, wf := range workflows {
 		if !wf.Enabled {
 			continue
 		}
@@ -240,6 +325,36 @@ func (o *fleetHealthObserver) observeEligibility(ctx context.Context, gaggle str
 		o.eligibleSince[gaggle] = since
 	}
 	observation.OldestEligibleAt = since
+}
+
+func (o *fleetHealthObserver) workflows(ctx context.Context, gaggle string) ([]readservice.WorkflowSummary, bool, error) {
+	items := make([]readservice.WorkflowSummary, 0, fleetInventoryPageLimit)
+	cursor := ""
+	complete := true
+	for len(items) < fleetInventoryObservationLimit {
+		page, err := o.reader.Workflows(ctx, gaggle, readservice.PageRequest{Limit: fleetInventoryPageLimit, Cursor: cursor})
+		if err != nil {
+			return items, false, err
+		}
+		complete = complete && fleetReadComplete(page.ReadStateEnvelope)
+		remaining := fleetInventoryObservationLimit - len(items)
+		if len(page.Items) > remaining {
+			items = append(items, page.Items[:remaining]...)
+			return items, false, nil
+		}
+		items = append(items, page.Items...)
+		if !page.Page.HasMore {
+			if page.Page.Total > 0 && len(items) != page.Page.Total {
+				complete = false
+			}
+			return items, complete, nil
+		}
+		if page.Page.NextCursor == "" || page.Page.NextCursor == cursor {
+			return items, false, nil
+		}
+		cursor = page.Page.NextCursor
+	}
+	return items, false, nil
 }
 
 func fleetReadComplete(envelope readservice.ReadStateEnvelope) bool {

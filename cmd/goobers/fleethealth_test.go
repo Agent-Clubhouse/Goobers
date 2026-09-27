@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -19,6 +21,117 @@ type fleetTestReader struct {
 	stale    bool
 	runs     []readservice.RunSummary
 	paused   bool
+}
+
+type pagedFleetTestReader struct {
+	fleetTestReader
+	gaggleCount     int
+	workflowCount   int
+	eligibilityRead int
+}
+
+func (r *pagedFleetTestReader) Gaggles(_ context.Context, request readservice.PageRequest) (readservice.GagglePage, error) {
+	start, _ := strconv.Atoi(request.Cursor)
+	end := min(start+request.Limit, r.gaggleCount)
+	items := make([]readservice.Gaggle, 0, end-start)
+	for i := start; i < end; i++ {
+		items = append(items, readservice.Gaggle{Name: fmt.Sprintf("gaggle-%03d", i), Enabled: true})
+	}
+	next := ""
+	if end < r.gaggleCount {
+		next = strconv.Itoa(end)
+	}
+	return readservice.GagglePage{
+		ReadStateEnvelope: fleetTestEnvelope(), Items: items,
+		Page: readservice.PageInfo{Limit: request.Limit, Total: r.gaggleCount, HasMore: end < r.gaggleCount, NextCursor: next},
+	}, nil
+}
+
+func (r *pagedFleetTestReader) Workflows(_ context.Context, _ string, request readservice.PageRequest) (readservice.WorkflowPage, error) {
+	start, _ := strconv.Atoi(request.Cursor)
+	end := min(start+request.Limit, r.workflowCount)
+	items := make([]readservice.WorkflowSummary, 0, end-start)
+	for i := start; i < end; i++ {
+		items = append(items, readservice.WorkflowSummary{Identity: readservice.WorkflowReference{Name: fmt.Sprintf("workflow-%03d", i)}, Enabled: true})
+	}
+	next := ""
+	if end < r.workflowCount {
+		next = strconv.Itoa(end)
+	}
+	return readservice.WorkflowPage{
+		ReadStateEnvelope: fleetTestEnvelope(), Items: items,
+		Page: readservice.PageInfo{Limit: request.Limit, Total: r.workflowCount, HasMore: end < r.workflowCount, NextCursor: next},
+	}, nil
+}
+
+func (r *pagedFleetTestReader) QueueEligibility(context.Context, string, string) (readservice.QueueEligibilityView, error) {
+	r.eligibilityRead++
+	return readservice.QueueEligibilityView{
+		ReadStateEnvelope: fleetTestEnvelope(),
+		Report:            &prqueue.Report{ObservedAt: r.now, CompleteSnapshot: true},
+	}, nil
+}
+
+func TestFleetHealthPaginatesGagglesAndWorkflows(t *testing.T) {
+	now := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
+	reader := &pagedFleetTestReader{fleetTestReader: fleetTestReader{now: now}, gaggleCount: 101, workflowCount: 101}
+	observer := &fleetHealthObserver{
+		reader: reader, config: &instance.DiagnosticsConfig{}, instanceID: "instance", bootID: "boot",
+		startedAt: now, eligibleSince: map[string]time.Time{},
+	}
+	records := observer.sample(context.Background(), now)
+	if len(records) != 102 {
+		t.Fatalf("records = %d, want deployment plus 101 gaggles", len(records))
+	}
+	if records[0].Attributes["windowCoverage"] != "complete" {
+		t.Fatalf("deployment coverage = %+v", records[0].Attributes)
+	}
+	last := records[len(records)-1].Attributes
+	if last["gaggleId"] != "gaggle-100" || last["windowCoverage"] != "complete" {
+		t.Fatalf("last paginated gaggle = %+v", last)
+	}
+	if reader.eligibilityRead != 101*101 {
+		t.Fatalf("eligibility reads = %d, want every workflow on every page", reader.eligibilityRead)
+	}
+}
+
+func TestFleetHealthEmitsTransitionsImmediatelyAndStableGagglesPeriodically(t *testing.T) {
+	now := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
+	reader := &fleetTestReader{now: now}
+	observer := &fleetHealthObserver{reader: reader, config: &instance.DiagnosticsConfig{}, startedAt: now, eligibleSince: map[string]time.Time{}}
+	if records := observer.sample(context.Background(), now); len(records) != 2 {
+		t.Fatalf("initial records = %d, want deployment and gaggle", len(records))
+	}
+	reader.now = now.Add(time.Minute)
+	if records := observer.sample(context.Background(), reader.now); len(records) != 2 {
+		t.Fatalf("stable one-minute records = %d, want deployment and gaggle", len(records))
+	}
+	reader.eligible = true
+	reader.now = now.Add(2 * time.Minute)
+	if records := observer.sample(context.Background(), reader.now); len(records) != 2 || records[1].Attributes["reasonCode"] != "eligible_within_threshold" {
+		t.Fatalf("state transition was not immediate: %+v", records)
+	}
+	reader.now = now.Add(3 * time.Minute)
+	if records := observer.sample(context.Background(), reader.now); len(records) != 2 {
+		t.Fatalf("one-minute stable snapshot records = %d, want deployment and gaggle", len(records))
+	}
+}
+
+func TestFleetHealthMoreThanRunLimitCannotReportCompleteOrHealthy(t *testing.T) {
+	now := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
+	runs := make([]readservice.RunSummary, fleetRunObservationLimit+1)
+	for i := range runs {
+		runs[i] = readservice.RunSummary{Gaggle: "alpha", StartedAt: now.Add(-time.Duration(i) * time.Second)}
+	}
+	reader := &fleetTestReader{now: now, runs: runs}
+	observer := &fleetHealthObserver{reader: reader, config: &instance.DiagnosticsConfig{}, startedAt: now, eligibleSince: map[string]time.Time{}}
+	attrs := observer.sample(context.Background(), now)[1].Attributes
+	if attrs["windowCoverage"] != "partial" || attrs["state"] != "unknown" || attrs["reasonCode"] != "observation_incomplete" {
+		t.Fatalf("truncated run population claimed complete health: %+v", attrs)
+	}
+	if attrs["inflightCount"] != fleetRunObservationLimit {
+		t.Fatalf("partial positive evidence = %+v", attrs)
+	}
 }
 
 func fleetTestEnvelope() readservice.ReadStateEnvelope {

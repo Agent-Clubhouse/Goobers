@@ -105,7 +105,9 @@ func TelemetryCollectionContract() TelemetryCollectionProfileContract {
 		StructuredPayloadEncoding: "json",
 		CorrelationFields: []string{
 			"goobers.instance.id", "goobers.gaggle", "goobers.workflow",
-			"goobers.run.id", "trace_id", "span_id",
+			"goobers.workflow.version", "goobers.workflow.digest", "goobers.config.generation",
+			"goobers.trigger.kind", "goobers.run.id", "goobers.stage", "goobers.attempt.n",
+			"trace_id", "span_id", "goobers.telemetry.record_id",
 		},
 		ConsentGatedIdentity: []string{"machineName", "accountName", "ai.device.id", "ai.cloud.roleInstance"},
 		Profiles:             TelemetryCollectionProfiles(),

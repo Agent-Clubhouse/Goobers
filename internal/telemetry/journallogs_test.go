@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -41,6 +42,116 @@ func (s *journalLogsReceiver) Export(ctx context.Context, req *collectorlogspb.E
 func TestJournalLogsOTLPWireContract(t *testing.T) {
 	t.Run("full-client", func(t *testing.T) { testJournalLogsOTLPWireContract(t, false) })
 	t.Run("logs-only", func(t *testing.T) { testJournalLogsOTLPWireContract(t, true) })
+}
+
+func TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun(t *testing.T) {
+	exporter := &journalTestExporter{}
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte("pat-fixture-must-not-leave"))
+	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), scrubber)}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = client.journalLogs.shutdown(ctx)
+	})
+
+	root := t.TempDir()
+	unregister, err := journal.RegisterCommittedEventSink(root, "instance-fixture", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unregister()
+	clockAt := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time {
+		clockAt = clockAt.Add(time.Second)
+		return clockAt
+	}
+	scheduler, _, err := journal.OpenInstanceLog(filepath.Join(root, "scheduler"), journal.WithClock(clock), journal.WithScrubber(scrubber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Append(journal.Event{Type: journal.EventDaemonStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Append(journal.Event{Type: journal.EventTriggerFired, Gaggle: "production", Workflow: "poll-and-fix", Reason: "scheduled"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const runID = "0123456789abcdef0123456789abcdef"
+	run, err := journal.Create(filepath.Join(root, "runs"), journal.RunIdentity{
+		RunID: runID, Gaggle: "production", Workflow: "poll-and-fix", WorkflowVersion: 5,
+		WorkflowDigest:   journal.Digest([]byte("workflow-definition")),
+		ConfigGeneration: "generation-17", Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil, journal.WithClock(clock), journal.WithScrubber(scrubber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "poll", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "poll", Attempt: 1, Status: "success", Reason: "pat-fixture-must-not-leave"},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.journalLogs.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	exporter.mu.Lock()
+	records := append([]sdklog.Record(nil), exporter.records...)
+	exporter.mu.Unlock()
+	want := []journal.EventType{
+		journal.EventDaemonStarted, journal.EventTriggerFired, journal.EventRunStarted,
+		journal.EventStageStarted, journal.EventStageFinished, journal.EventRunFinished,
+	}
+	if len(records) != len(want) {
+		t.Fatalf("exported timeline length = %d, want %d", len(records), len(want))
+	}
+	for i, record := range records {
+		var event journal.Event
+		if err := json.Unmarshal([]byte(record.Body().AsString()), &event); err != nil {
+			t.Fatalf("timeline[%d] body: %v", i, err)
+		}
+		if event.Type != want[i] {
+			t.Fatalf("timeline[%d] = %s, want %s", i, event.Type, want[i])
+		}
+		body := record.Body().AsString()
+		if strings.Contains(body, "pat-fixture-must-not-leave") {
+			t.Fatalf("timeline[%d] leaked registered credential: %s", i, body)
+		}
+		attrs := make(map[string]any)
+		record.WalkAttributes(func(kv attribute.KeyValue) bool {
+			attrs[string(kv.Key)] = kv.Value.AsInterface()
+			return true
+		})
+		if attrs["goobers.instance.id"] != "instance-fixture" {
+			t.Fatalf("timeline[%d] missing instance correlation: %v", i, attrs)
+		}
+		if i >= 2 {
+			if attrs["goobers.gaggle"] != "production" || attrs["goobers.run.id"] != runID ||
+				attrs[AttrWorkflow] != "poll-and-fix" || attrs[AttrWorkflowVersion] != int64(5) ||
+				attrs[AttrWorkflowDigest] == "" || attrs[AttrConfigGeneration] != "generation-17" ||
+				attrs[AttrTriggerKind] != "schedule" ||
+				record.TraceID().String() != runID {
+				t.Fatalf("timeline[%d] missing run correlation: attrs=%v trace=%s", i, attrs, record.TraceID())
+			}
+		}
+		if i == 3 || i == 4 {
+			if attrs[AttrStage] != "poll" || attrs[AttrAttemptNumber] != int64(1) {
+				t.Fatalf("timeline[%d] missing stage correlation: %v", i, attrs)
+			}
+		}
+	}
 }
 
 func testJournalLogsOTLPWireContract(t *testing.T, logsOnly bool) {
@@ -84,6 +195,8 @@ func testJournalLogsOTLPWireContract(t *testing.T, logsOnly bool) {
 	body := []byte(`{"seq":18446744073709551615,"message":"[REDACTED]","data":{"integer":9007199254740993}}`)
 	event := journal.CommittedEvent{
 		Kind: "run", JournalID: "stable-journal", InstanceID: "instance", Gaggle: "gaggle",
+		Workflow: "workflow", WorkflowVersion: 7, WorkflowDigest: "sha256:digest",
+		ConfigGeneration: "config-42", TriggerKind: "schedule", Stage: "build", Attempt: 2,
 		RunID: "0123456789abcdef0123456789abcdef", Seq: math.MaxUint64,
 		Time: time.Unix(1700000000, 123), ObservedTime: time.Unix(1700000001, 456), Body: body,
 	}
@@ -132,13 +245,22 @@ func testJournalLogsOTLPWireContract(t *testing.T, logsOnly bool) {
 		attrs["goobers.journal.id"].GetStringValue() != event.JournalID ||
 		attrs["goobers.instance.id"].GetStringValue() != event.InstanceID ||
 		attrs["goobers.gaggle"].GetStringValue() != event.Gaggle ||
-		attrs["goobers.run.id"].GetStringValue() != event.RunID || len(attrs) != 8 {
+		attrs[AttrWorkflow].GetStringValue() != event.Workflow ||
+		attrs[AttrWorkflowVersion].GetIntValue() != int64(event.WorkflowVersion) ||
+		attrs[AttrWorkflowDigest].GetStringValue() != event.WorkflowDigest ||
+		attrs[AttrConfigGeneration].GetStringValue() != event.ConfigGeneration ||
+		attrs[AttrTriggerKind].GetStringValue() != event.TriggerKind ||
+		attrs["goobers.run.id"].GetStringValue() != event.RunID ||
+		attrs[AttrStage].GetStringValue() != event.Stage ||
+		attrs[AttrAttemptNumber].GetIntValue() != int64(event.Attempt) || len(attrs) != 15 {
 		t.Fatalf("attributes = %v", attrs)
 	}
 	if got := (<-receiver.headers).Get("x-journal-test"); len(got) != 1 || got[0] != "present" {
 		t.Fatalf("headers = %v", got)
 	}
 	event.Kind, event.RunID, event.InstanceID, event.Gaggle = "scheduler", "", "", ""
+	event.Workflow, event.WorkflowDigest, event.ConfigGeneration, event.TriggerKind, event.Stage = "", "", "", "", ""
+	event.WorkflowVersion, event.Attempt = 0, 0
 	client.Commit(event)
 	if err := client.journalLogs.flush(ctx); err != nil {
 		t.Fatal(err)
