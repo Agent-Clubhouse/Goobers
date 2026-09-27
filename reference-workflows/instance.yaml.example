@@ -35,9 +35,10 @@ credentials:
       env: GOOBERS_GITHUB_REVIEW_TOKEN
 telemetry:
   enabled: true
-  # Optional direct trace export to a customer-owned Application Insights
-  # resource. The connection string is always indirect; never put its resolved
-  # value in this file. See docs/guides/azure-monitor.md.
+  # Optional direct trace, committed-journal, and whitelisted diagnostic export
+  # to a customer-owned Application Insights resource. The connection string is
+  # always indirect; never put its resolved value in this file. See
+  # docs/guides/azure-monitor.md.
   # azureMonitor:
   #   connectionString:
   #     env: APPLICATIONINSIGHTS_CONNECTION_STRING

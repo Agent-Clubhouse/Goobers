@@ -90,6 +90,30 @@ func TestServiceHealthDisabledExportDoesNotResolveSecrets(t *testing.T) {
 	}
 }
 
+func TestServiceHealthUsesUnifiedAzureMonitorDestination(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("SERVICE_HEALTH_AZURE_MONITOR", connectionString)
+	registry := journal.NewRegistryScrubber()
+	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{AzureMonitor: &instance.AzureMonitorConfig{
+		ConnectionString: instance.TokenRef{Env: "SERVICE_HEALTH_AZURE_MONITOR"},
+	}}}
+	exporter, err := buildDiagnosticExporterWithStores(context.Background(), &schedulerSetup{Config: cfg, SharedRegistry: registry}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exporter == nil {
+		t.Fatal("unified Azure Monitor destination did not enable diagnostics")
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := exporter.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(registry.Scrub([]byte(connectionString))); strings.Contains(got, connectionString) {
+		t.Fatalf("connection string not registered with diagnostic scrubber: %q", got)
+	}
+}
+
 type blockedDiagnosticStore struct{ entered chan struct{} }
 
 func (s blockedDiagnosticStore) FetchSecret(ctx context.Context, _ string) (string, error) {

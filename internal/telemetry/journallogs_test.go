@@ -126,12 +126,13 @@ func testJournalLogsOTLPWireContract(t *testing.T, logsOnly bool) {
 	}
 	attrs := journalWireAttrs(record.Attributes)
 	if attrs["goobers.journal.schema_version"].GetIntValue() != 1 ||
+		attrs["goobers.telemetry.stream"].GetStringValue() != "journal" ||
 		attrs["goobers.journal.seq"].GetStringValue() != "18446744073709551615" ||
 		attrs["goobers.journal.kind"].GetStringValue() != "run" ||
 		attrs["goobers.journal.id"].GetStringValue() != event.JournalID ||
 		attrs["goobers.instance.id"].GetStringValue() != event.InstanceID ||
 		attrs["goobers.gaggle"].GetStringValue() != event.Gaggle ||
-		attrs["goobers.run.id"].GetStringValue() != event.RunID || len(attrs) != 7 {
+		attrs["goobers.run.id"].GetStringValue() != event.RunID || len(attrs) != 8 {
 		t.Fatalf("attributes = %v", attrs)
 	}
 	if got := (<-receiver.headers).Get("x-journal-test"); len(got) != 1 || got[0] != "present" {
@@ -143,7 +144,7 @@ func testJournalLogsOTLPWireContract(t *testing.T, logsOnly bool) {
 		t.Fatal(err)
 	}
 	record = (<-receiver.requests).ResourceLogs[0].ScopeLogs[0].LogRecords[0]
-	if len(record.TraceId) != 0 || len(record.SpanId) != 0 || len(record.Attributes) != 4 {
+	if len(record.TraceId) != 0 || len(record.SpanId) != 0 || len(record.Attributes) != 5 {
 		t.Fatalf("scheduler metadata = %v", record)
 	}
 	if stats := client.JournalExportStats(); stats.Accepted != 2 || stats.Dropped != 0 || stats.ExportFailures != 0 {

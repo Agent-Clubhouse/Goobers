@@ -329,6 +329,9 @@ func TestConfigureAzureMonitorResolvesAndRegistersConnectionString(t *testing.T)
 	if cfg.AzureMonitorConnectionString != connectionString {
 		t.Fatal("resolved connection string was not passed to telemetry config")
 	}
+	if !cfg.JournalLogs {
+		t.Fatal("one Azure Monitor destination did not enable the standard journal stream")
+	}
 	if scrubbed := string(registry.Scrub([]byte("prefix " + connectionString + " suffix"))); strings.Contains(scrubbed, connectionString) {
 		t.Fatalf("connection string was not registered with scrubber: %q", scrubbed)
 	}

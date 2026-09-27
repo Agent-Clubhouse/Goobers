@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -118,12 +119,36 @@ type JournalExportStats struct {
 var _ journal.CommittedEventSink = (*Client)(nil)
 
 func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *resource.Resource) error {
-	if !cfg.JournalLogs || cfg.Exporter != ExporterOTLP || strings.TrimSpace(cfg.OTLPEndpoint) == "" {
+	if !cfg.JournalLogs {
 		return nil
 	}
-	exporter, err := newJournalLogExporter(ctx, cfg)
-	if err != nil {
-		return fmt.Errorf("%w: create journal logs exporter: %w", ErrOTLPUnavailable, err)
+	exporters := make([]sdklog.Exporter, 0, 2)
+	var degraded error
+	if cfg.Exporter == ExporterOTLP && strings.TrimSpace(cfg.OTLPEndpoint) != "" {
+		exporter, err := newJournalLogExporter(ctx, cfg)
+		if err != nil {
+			degraded = fmt.Errorf("%w: create journal logs exporter: %w", ErrOTLPUnavailable, err)
+		} else {
+			exporters = append(exporters, exporter)
+		}
+	}
+	if cfg.AzureMonitorConnectionString != "" {
+		exporter, err := newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient)
+		if err != nil {
+			if len(exporters) == 0 {
+				return err
+			}
+			degraded = errors.Join(degraded, err)
+		} else {
+			exporters = append(exporters, exporter)
+		}
+	}
+	if len(exporters) == 0 {
+		return degraded
+	}
+	exporter := exporters[0]
+	if len(exporters) > 1 {
+		exporter = journalLogFanoutExporter(exporters)
 	}
 	c.journalLogs = newJournalLogPipeline(exporter, res, c.scrubber)
 	// Called from the pipeline worker, never from Commit: recording a metric is
@@ -142,7 +167,33 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 		return fmt.Errorf("%w: register journal logs: %w", ErrOTLPUnavailable, err)
 	}
 	c.unregisterJournal = unregister
-	return nil
+	return degraded
+}
+
+type journalLogFanoutExporter []sdklog.Exporter
+
+func (e journalLogFanoutExporter) Export(ctx context.Context, records []sdklog.Record) error {
+	var errs []error
+	for _, exporter := range e {
+		errs = append(errs, exporter.Export(ctx, records))
+	}
+	return errors.Join(errs...)
+}
+
+func (e journalLogFanoutExporter) ForceFlush(ctx context.Context) error {
+	var errs []error
+	for _, exporter := range e {
+		errs = append(errs, exporter.ForceFlush(ctx))
+	}
+	return errors.Join(errs...)
+}
+
+func (e journalLogFanoutExporter) Shutdown(ctx context.Context) error {
+	var errs []error
+	for _, exporter := range e {
+		errs = append(errs, exporter.Shutdown(ctx))
+	}
+	return errors.Join(errs...)
 }
 
 // Commit only copies into a bounded queue. It never exports or logs while the
@@ -472,6 +523,7 @@ func (p *journalLogPipeline) emit(e journal.CommittedEvent) {
 	record.SetBody(attribute.StringValue(string(e.Body)))
 	record.AddAttributes(
 		attribute.Int("goobers.journal.schema_version", 1),
+		attribute.String("goobers.telemetry.stream", "journal"),
 		attribute.String("goobers.journal.kind", e.Kind),
 		attribute.String("goobers.journal.id", e.JournalID),
 		attribute.String("goobers.journal.seq", strconv.FormatUint(e.Seq, 10)),
