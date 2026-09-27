@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfigAzureMonitorConnectionStringReference(t *testing.T) {
@@ -15,6 +16,9 @@ func TestLoadConfigAzureMonitorConnectionStringReference(t *testing.T) {
   azureMonitor:
     connectionString:
       env: APPLICATIONINSIGHTS_CONNECTION_STRING
+    replay:
+      maxAge: 96h
+      maxBytes: 1073741824
 `)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
@@ -28,6 +32,9 @@ func TestLoadConfigAzureMonitorConnectionStringReference(t *testing.T) {
 	}
 	if cfg.Telemetry.EffectiveCollectionProfile() != TelemetryProfileDiagnostic {
 		t.Fatalf("collection profile = %q", cfg.Telemetry.EffectiveCollectionProfile())
+	}
+	if cfg.Telemetry.AzureMonitor.Replay.MaxAgeDuration() != 96*time.Hour || cfg.Telemetry.AzureMonitor.Replay.MaxBytesEffective() != 1<<30 {
+		t.Fatalf("replay config = %+v", cfg.Telemetry.AzureMonitor.Replay)
 	}
 }
 
@@ -56,6 +63,16 @@ func TestAzureMonitorConnectionStringMustBeIndirectAndEnabled(t *testing.T) {
 			name: "unknown collection profile",
 			raw:  "telemetry:\n  collectionProfile: everything\n",
 			want: "collectionProfile",
+		},
+		{
+			name: "replay age below bound",
+			raw:  "telemetry:\n  azureMonitor:\n    connectionString:\n      env: APPLICATIONINSIGHTS_CONNECTION_STRING\n    replay:\n      maxAge: 30m\n",
+			want: "replay.maxAge",
+		},
+		{
+			name: "replay bytes below bound",
+			raw:  "telemetry:\n  azureMonitor:\n    connectionString:\n      env: APPLICATIONINSIGHTS_CONNECTION_STRING\n    replay:\n      maxBytes: 1024\n",
+			want: "replay.maxBytes",
 		},
 	}
 	for _, tc := range tests {

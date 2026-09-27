@@ -220,6 +220,9 @@ func (c TelemetryConfig) validate(stores map[string]bool, telemetryEnabled bool)
 		return err
 	}
 	if c.AzureMonitor != nil {
+		if err := c.AzureMonitor.Replay.validate(); err != nil {
+			return err
+		}
 		if c.AzureMonitor.ConnectionString.sourceCount() != 1 {
 			return fmt.Errorf("telemetry.azureMonitor.connectionString must reference exactly one of env, file, keychain, or store; inline values are not permitted")
 		}

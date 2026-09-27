@@ -68,6 +68,11 @@ type Config struct {
 	// AzureMonitorHostIdentity permits hostname context tags. It must only be
 	// set by an explicit diagnostic collection profile.
 	AzureMonitorHostIdentity bool
+	// AzureMonitorReplayRoot enables the bounded disk-backed replay spool.
+	// Age and bytes must be positive when the root is set.
+	AzureMonitorReplayRoot     string
+	AzureMonitorReplayMaxAge   time.Duration
+	AzureMonitorReplayMaxBytes int64
 	// JournalLogs enables live export of committed journal events as OTLP Logs.
 	// It has no effect without ExporterOTLP and an explicit endpoint.
 	JournalLogs bool
@@ -512,14 +517,14 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		if cfg.AzureMonitorConnectionString == "" || !cfg.AzureMonitorTraces {
 			return exporters, nil
 		}
-		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("traces"))
 		if err != nil {
 			return exporters, err
 		}
 		return append(exporters, azure), nil
 	}
 	if cfg.Exporter == "" && cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
-		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("traces"))
 		if err != nil {
 			return nil, err
 		}
@@ -584,7 +589,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 	}
 	exporters = append(exporters, exporter)
 	if cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
-		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("traces"))
 		if err != nil {
 			return exporters, err
 		}

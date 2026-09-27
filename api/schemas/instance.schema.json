@@ -1111,6 +1111,16 @@
             "connectionString": {
               "$ref": "#/$defs/tokenRef",
               "description": "Indirect Application Insights connection-string reference. The resolved value is never written to config, logs, journals, or telemetry."
+            },
+            "replay": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Bounded per-instance disk replay for direct export; enabled by default.",
+              "properties": {
+                "enabled": { "type": "boolean", "default": true, "description": "Persist and retry direct-export batches across transient failures and process restarts." },
+                "maxAge": { "type": "string", "default": "72h", "description": "Pending-record age bound from 1h through 720h." },
+                "maxBytes": { "type": "integer", "minimum": 1048576, "maximum": 10737418240, "default": 536870912, "description": "Aggregate spool byte bound." }
+              }
             }
           }
         },

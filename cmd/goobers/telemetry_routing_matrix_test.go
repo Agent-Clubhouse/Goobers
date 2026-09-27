@@ -153,7 +153,7 @@ func runRoutingCase(t *testing.T, tc routingCase) {
 			_ = client.Shutdown(ctx)
 		})
 	}
-	diagnostic, err := buildDiagnosticExporterWithStores(context.Background(), &schedulerSetup{Config: cfg, SharedRegistry: registry}, nil)
+	diagnostic, err := buildDiagnosticExporterWithStores(context.Background(), t.TempDir(), &schedulerSetup{Config: cfg, SharedRegistry: registry}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

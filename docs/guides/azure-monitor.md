@@ -7,9 +7,9 @@ path. Export is disabled unless the instance explicitly configures a
 connection-string secret reference; Goobers has no built-in or maintainer-owned
 telemetry destination.
 
-The tenant telemetry program tracked by #5909 still adds durable replay and
-one-step Windows/Kubernetes onboarding without changing the signal schemas
-introduced here.
+Direct export includes bounded on-disk replay. Windows, macOS, Linux, and
+Kubernetes use the same configuration; the Kubernetes instance root must be on
+a persistent volume if pending records must survive pod replacement.
 
 ## Configure the destination
 
@@ -24,6 +24,26 @@ telemetry:
     connectionString:
       env: APPLICATIONINSIGHTS_CONNECTION_STRING
 ```
+
+That connection-string reference is the only required destination setting.
+Replay is enabled automatically with a 72-hour age limit and a 512 MiB
+per-instance limit. An operator can change the bounds, or deliberately disable
+replay, without changing the destination:
+
+```yaml
+telemetry:
+  azureMonitor:
+    connectionString:
+      env: APPLICATIONINSIGHTS_CONNECTION_STRING
+    replay:
+      maxAge: 168h
+      maxBytes: 1073741824
+```
+
+`maxAge` accepts 1h through 720h; `maxBytes` accepts 1 MiB through 10 GiB.
+When either bound is reached, the oldest batches are removed first and the
+pruned-record counters make that loss visible. Set `replay.enabled: false` only
+when live-forward-only delivery is intentional.
 
 `collectionProfile` is optional and defaults to `standard`. Its v1 contract is:
 
@@ -78,11 +98,31 @@ does not enable, redirect, or replace either explicit OTLP destination.
 
 Delivery is asynchronous and bounded by the existing trace, journal, and
 diagnostic queues. A slow or unavailable Azure endpoint cannot block a workflow
-stage or journal commit; local journals and diagnostic history remain
-authoritative. This path is live-forward only and does not replay records after
-an outage. Each background export checks Azure's HTTP ingestion result; rejected
-or timed-out journal and diagnostic batches increment their existing failure/loss
-counters. Durable bounded replay is tracked by #5910.
+stage or journal commit. The export workers first write already-scrubbed,
+export-ready batches beneath
+`<instance-root>/telemetry-export/azure-monitor/{traces,journal,diagnostics}` and
+then send them. Failed batches retry with bounded backoff and replay on the next
+process start without waiting for a new workflow. Local journals and diagnostic
+history remain authoritative.
+
+Delivery is **at least once**: a process can stop after Azure accepts a batch
+but before its local acknowledgement is removed. Every envelope therefore has
+a stable `goobers.telemetry.record_id` custom dimension that survives retries.
+Queries which count unique events should deduplicate on that value. Service and
+fleet health records expose pending record/byte counts, oldest pending age,
+retry attempts, age/byte pruning, and malformed-file losses. Spool files are
+private, atomically published, bounded, and contain the same scrubbed envelopes
+sent to Azure—not connection strings or an unsanitized copy of the journal.
+
+The directory is relative to the configured instance root on every operating
+system. For example, an instance at `C:\goobers` uses
+`C:\goobers\telemetry-export\azure-monitor`; an instance at
+`/var/lib/goobers` uses `/var/lib/goobers/telemetry-export/azure-monitor`.
+On Kubernetes, mount the whole instance root (or at minimum this directory) on
+a persistent volume. An `emptyDir` preserves retries across a container restart
+in the same pod but loses them when the pod is replaced. Budget disk capacity
+per replica from `replay.maxBytes`; 150 instances at the default cap have a
+worst-case configured ceiling of 75 GiB, before filesystem overhead.
 
 An Application Insights connection string identifies the destination. When
 the resource permits local authentication, ingestion uses the instrumentation
@@ -126,11 +166,18 @@ traces
 | where timestamp > ago(30m)
 | where cloud_RoleName == "goobers"
 | extend stream=tostring(customDimensions["goobers.telemetry.stream"]),
+         recordId=tostring(customDimensions["goobers.telemetry.record_id"]),
          instanceId=coalesce(
              tostring(customDimensions["goobers.instance.id"]),
              tostring(customDimensions["instanceId"])),
          runId=tostring(customDimensions["goobers.run.id"]),
          gaggle=tostring(customDimensions["goobers.gaggle"])
-| project timestamp, stream, instanceId, gaggle, runId, message, customDimensions
+| where isnotempty(recordId)
+| summarize arg_max(timestamp, *) by recordId
+| project timestamp, recordId, stream, instanceId, gaggle, runId, message, customDimensions
 | order by timestamp asc
 ```
+
+Use the same `recordId` projection and `summarize arg_max(timestamp, *) by
+recordId` pattern for `dependencies` when a query must count logical spans
+rather than ingestion attempts.

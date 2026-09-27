@@ -90,7 +90,7 @@ func TestServiceHealthDisabledExportDoesNotResolveSecrets(t *testing.T) {
 	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{Diagnostics: &instance.DiagnosticsConfig{OTLP: &instance.OTLPConfig{
 		Endpoint: "disabled.invalid:4317", ExportEnabled: &disabled, Headers: map[string]instance.TokenRef{"authorization": {File: "/nonexistent/diagnostic-secret"}},
 	}}}}
-	exporter, err := buildDiagnosticExporterWithStores(context.Background(), &schedulerSetup{Config: cfg}, nil)
+	exporter, err := buildDiagnosticExporterWithStores(context.Background(), t.TempDir(), &schedulerSetup{Config: cfg}, nil)
 	if err != nil || exporter != nil {
 		t.Fatalf("disabled export resolved credentials: %v %v", exporter, err)
 	}
@@ -103,7 +103,7 @@ func TestServiceHealthUsesUnifiedAzureMonitorDestination(t *testing.T) {
 	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{AzureMonitor: &instance.AzureMonitorConfig{
 		ConnectionString: instance.TokenRef{Env: "SERVICE_HEALTH_AZURE_MONITOR"},
 	}}}
-	exporter, err := buildDiagnosticExporterWithStores(context.Background(), &schedulerSetup{Config: cfg, SharedRegistry: registry}, nil)
+	exporter, err := buildDiagnosticExporterWithStores(context.Background(), t.TempDir(), &schedulerSetup{Config: cfg, SharedRegistry: registry}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestFleetExportReportsDroppedRecordsBeforeShutdown(t *testing.T) {
 	sample := func(context.Context, time.Time) []telemetry.DiagnosticRecord {
 		return []telemetry.DiagnosticRecord{rootRecord, gaggleRecord}
 	}
-	if err := emitFleetHealth(context.Background(), nil, exporter, []fleetHealthSample{sample}, rootRecord.Time); err != nil {
+	if err := emitFleetHealth(context.Background(), t.TempDir(), nil, exporter, []fleetHealthSample{sample}, rootRecord.Time); err != nil {
 		t.Fatal(err)
 	}
 	if rootRecord.Attributes["diagnosticsDroppedRecords"] != int64(1) {
@@ -229,7 +229,7 @@ func TestFleetExportReportsDroppedRecordsBeforeShutdown(t *testing.T) {
 		t.Fatal("no heartbeat delivered")
 	}
 	disabled := telemetry.DiagnosticRecord{Time: rootRecord.Time, Name: rootRecord.Name, Attributes: map[string]any{"gaggleId": ""}}
-	if err := emitFleetHealth(context.Background(), nil, nil, []fleetHealthSample{func(context.Context, time.Time) []telemetry.DiagnosticRecord {
+	if err := emitFleetHealth(context.Background(), t.TempDir(), nil, nil, []fleetHealthSample{func(context.Context, time.Time) []telemetry.DiagnosticRecord {
 		return []telemetry.DiagnosticRecord{disabled}
 	}}, rootRecord.Time); err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -53,7 +54,7 @@ func buildTelemetryClient(
 		}
 	}
 	if telemetryConfig.AzureMonitor != nil {
-		if err := configureAzureMonitor(ctx, &cfg, *telemetryConfig.AzureMonitor, telemetryConfig.EffectiveCollectionProfile(), registry, stores); err != nil {
+		if err := configureAzureMonitor(ctx, &cfg, *telemetryConfig.AzureMonitor, telemetryConfig.EffectiveCollectionProfile(), l.Root, registry, stores); err != nil {
 			return nil, err
 		}
 	}
@@ -70,6 +71,7 @@ func configureAzureMonitor(
 	cfg *telemetry.Config,
 	azure instance.AzureMonitorConfig,
 	profile instance.TelemetryCollectionProfile,
+	instanceRoot string,
 	registry *journal.RegistryScrubber,
 	stores credentials.StoreResolver,
 ) error {
@@ -89,6 +91,11 @@ func configureAzureMonitor(
 	cfg.AzureMonitorTraces = profile.IncludesTraces()
 	cfg.AzureMonitorJournalLogs = profile.IncludesJournal()
 	cfg.AzureMonitorHostIdentity = profile.IncludesHostIdentity()
+	if azure.Replay.EnabledEffective() && instanceRoot != "" {
+		cfg.AzureMonitorReplayRoot = filepath.Join(instanceRoot, "telemetry-export", "azure-monitor")
+		cfg.AzureMonitorReplayMaxAge = azure.Replay.MaxAgeDuration()
+		cfg.AzureMonitorReplayMaxBytes = azure.Replay.MaxBytesEffective()
+	}
 	cfg.ResourceAttributes = append(cfg.ResourceAttributes,
 		attribute.String("goobers.telemetry.profile", string(profile)))
 	return nil

@@ -84,7 +84,7 @@ func startCommandJournalTelemetry(l instance.Layout, stderr io.Writer) func() {
 		}
 	}
 	if cfg.Telemetry.AzureMonitor != nil {
-		if err := configureAzureMonitor(initialize, &export, *cfg.Telemetry.AzureMonitor, cfg.Telemetry.EffectiveCollectionProfile(), registry, stores); err != nil {
+		if err := configureAzureMonitor(initialize, &export, *cfg.Telemetry.AzureMonitor, cfg.Telemetry.EffectiveCollectionProfile(), l.Root, registry, stores); err != nil {
 			cancel()
 			pf(stderr, "warning: journal telemetry unavailable: %v\n", err)
 			return noop

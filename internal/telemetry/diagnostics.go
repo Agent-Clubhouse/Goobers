@@ -42,10 +42,11 @@ type DiagnosticRecord struct {
 
 // DiagnosticExportStats explicitly reports best-effort transport losses.
 type DiagnosticExportStats struct {
-	Accepted  uint64 `json:"accepted"`
-	Delivered uint64 `json:"delivered"`
-	Dropped   uint64 `json:"dropped"`
-	Failures  uint64 `json:"failures"` // Failed or partially rejected export RPCs.
+	Accepted    uint64           `json:"accepted"`
+	Delivered   uint64           `json:"delivered"`
+	Dropped     uint64           `json:"dropped"`
+	Failures    uint64           `json:"failures"` // Failed or partially rejected export RPCs.
+	AzureReplay AzureReplayStats `json:"azureReplay"`
 }
 
 // DiagnosticExporter owns an independent, bounded OTLP Logs transport. A slow
@@ -106,7 +107,7 @@ func NewDiagnosticExporter(cfg Config) (*DiagnosticExporter, error) {
 	var azure *azureMonitorLogExporter
 	if cfg.AzureMonitorConnectionString != "" {
 		var err error
-		azure, err = newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
+		azure, err = newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("diagnostics"))
 		if err != nil {
 			if conn != nil {
 				_ = conn.Close()
@@ -212,7 +213,11 @@ func (d *DiagnosticExporter) Stats() DiagnosticExportStats {
 	if d == nil {
 		return DiagnosticExportStats{}
 	}
-	return DiagnosticExportStats{Accepted: d.accepted.Load(), Delivered: d.delivered.Load(), Dropped: d.dropped.Load(), Failures: d.failures.Load()}
+	replay := AzureReplayStats{}
+	if d.azure != nil {
+		replay = d.azure.ReplayStats()
+	}
+	return DiagnosticExportStats{Accepted: d.accepted.Load(), Delivered: d.delivered.Load(), Dropped: d.dropped.Load(), Failures: d.failures.Load(), AzureReplay: replay}
 }
 
 // Shutdown drains within the caller's deadline, then cancels the outstanding
