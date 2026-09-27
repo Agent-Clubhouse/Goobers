@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -19,11 +20,16 @@ func TestADOPullRequestCIFailuresReportsRejectedCIPolicies(t *testing.T) {
 	status["configuration"].(map[string]interface{})["settings"] = map[string]interface{}{
 		"statusGenre": "example-ci", "statusName": "lint",
 	}
+	unnamed := buildPolicy("rejected", 315)
+	unnamed["configuration"].(map[string]interface{})["id"] = 27
+	other := typedPolicy("00000000-0000-0000-0000-00000000abcd", "Custom policy", "rejected")
 	advisory := buildPolicy("rejected", 99)
 	advisory["configuration"].(map[string]interface{})["isBlocking"] = false
 	evaluations := []map[string]interface{}{
 		build,
 		status,
+		unnamed,
+		other,
 		typedPolicy(adoPolicyTypeMinimumReviewers, "Minimum number of reviewers", "queued"),
 		typedPolicy(adoPolicyTypeRequiredReviewers, "Required reviewers", "rejected"),
 		typedPolicy(adoPolicyTypeCommentRequirements, "Comment requirements", "rejected"),
@@ -65,10 +71,10 @@ func TestADOPullRequestCIFailuresReportsRejectedCIPolicies(t *testing.T) {
 			t.Errorf("request %q: CI evidence collection must be read-only", req)
 		}
 	}
-	if len(got.Failures) != 2 {
-		t.Fatalf("failures = %+v, want the rejected build and the broken status policy only", got.Failures)
+	if len(got.Failures) != 4 {
+		t.Fatalf("failures = %+v, want the two rejected builds, the broken status and the unclassified policy only", got.Failures)
 	}
-	b, s := got.Failures[0], got.Failures[1]
+	b, s, u, o := got.Failures[0], got.Failures[1], got.Failures[2], got.Failures[3]
 	if b.Name != "Build: ci-validate" || b.Conclusion != "rejected" || b.State != CheckStateFailing {
 		t.Errorf("build failure = %+v", b)
 	}
@@ -80,5 +86,21 @@ func TestADOPullRequestCIFailuresReportsRejectedCIPolicies(t *testing.T) {
 	}
 	if s.Name != "Status: example-ci/lint" || s.Conclusion != "broken" || s.URL != "" {
 		t.Errorf("status failure = %+v, want the named broken status with no build link", s)
+	}
+	// An unnamed build policy is told apart by its configuration id.
+	if u.Name != "Build #27" {
+		t.Errorf("unnamed build failure name = %q, want %q", u.Name, "Build #27")
+	}
+	// Only build policies mention build logs.
+	if !strings.Contains(b.Summary, "build logs") {
+		t.Errorf("build summary = %q, want it to say build logs are not fetched", b.Summary)
+	}
+	for _, f := range []CIFailureDetail{s, o} {
+		if strings.Contains(f.Summary, "build logs") {
+			t.Errorf("%s summary = %q, want no mention of build logs for a non-build policy", f.Name, f.Summary)
+		}
+	}
+	if o.Name != "Custom policy" || o.Summary != "blocking policy rejected by Azure DevOps" {
+		t.Errorf("unclassified failure = %+v, want a neutral rejected summary", o)
 	}
 }

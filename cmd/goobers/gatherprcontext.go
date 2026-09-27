@@ -202,7 +202,10 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 	if err != nil {
 		return gatherPRContextAdapter{}, err
 	}
-	return gatherPRContextAdapter{gitAuth: gitAuth, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
+	return gatherPRContextAdapter{features: gatherPRContextFeatures{checkState: true}, gitAuth: gitAuth, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
+		resolveCheck: func(ctx context.Context, pr *providers.PullRequestSummary) error {
+			return resolveADOSelectedCheckState(ctx, provider, repo, pr)
+		},
 		prepare: func(_ context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 			eligible := make([]providers.PullRequestSummary, 0, len(prs))
 			for _, pr := range prs {
@@ -229,6 +232,21 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 			return nil
 		},
 	}, nil
+}
+
+// resolveADOSelectedCheckState sets the selected pull request's CI state from
+// its blocking policy evaluations (the ADO-N19 reducer behind PollPullRequest).
+// ListPullRequests cannot report it, so without this read hasFailingCI would
+// always be false on Azure DevOps and gather-ci-failures would never run.
+// Human-only policy ids are a CI-poll gate input this stage does not receive,
+// so every blocking build, status or unclassified policy counts here.
+func resolveADOSelectedCheckState(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) error {
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: strconv.Itoa(pr.Number)})
+	if err != nil {
+		return err
+	}
+	pr.CheckState = poll.CheckState
+	return nil
 }
 
 // adoSelfAttributedThreadComments lists a PR's thread comments with their

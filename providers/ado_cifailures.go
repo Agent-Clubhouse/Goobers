@@ -52,8 +52,11 @@ func (p *ADOProvider) PullRequestCIFailures(ctx context.Context, repo Repository
 }
 
 // ciFailuresFromEvaluations keeps the failing, blocking evaluations that
-// report CI: build, status and unclassified policies, the same set that
-// drives a failing CI state in reducePolicyEvaluations.
+// report CI: build, status and unclassified policies. Unlike
+// reducePolicyEvaluations it takes no human-only configuration ids (a CI-poll
+// gate input gather-ci-failures does not receive), so a rejected blocking
+// policy a loop declares human-only (merge strategy, proof-of-presence) is
+// still reported here, labelled by its policy type.
 func (p *ADOProvider) ciFailuresFromEvaluations(evals []adoPolicyEvaluation, projectName string) []CIFailureDetail {
 	failures := make([]CIFailureDetail, 0, len(evals))
 	for _, ev := range evals {
@@ -81,7 +84,8 @@ func (p *ADOProvider) ciFailuresFromEvaluations(evals []adoPolicyEvaluation, pro
 
 // adoCIPolicyName labels a CI policy by what it requires when ADO says so
 // (the build policy's display name, or the genre/name of a status policy),
-// and otherwise by its policy type.
+// and otherwise by its policy type and configuration id, so several unnamed
+// policies of one type stay distinguishable.
 func adoCIPolicyName(ev adoPolicyEvaluation) string {
 	settings := ev.Configuration.Settings
 	typeName := adoPolicyName(ev)
@@ -90,6 +94,9 @@ func adoCIPolicyName(ev adoPolicyEvaluation) string {
 	}
 	status := strings.TrimSpace(settings.StatusName)
 	if status == "" {
+		if id := ev.Configuration.ID.String(); id != "" {
+			return typeName + " #" + id
+		}
 		return typeName
 	}
 	if genre := strings.TrimSpace(settings.StatusGenre); genre != "" {
@@ -99,9 +106,14 @@ func adoCIPolicyName(ev adoPolicyEvaluation) string {
 }
 
 // adoCIPolicySummary says what ADO reported. Minimal evidence: no log fetch.
+// Only a build policy mentions build logs; other policies have none.
 func adoCIPolicySummary(ev adoPolicyEvaluation) string {
+	summary := "blocking policy rejected by Azure DevOps"
 	if strings.EqualFold(ev.Status, "broken") {
-		return "Azure DevOps could not evaluate this blocking policy (broken); build logs are not fetched"
+		summary = "Azure DevOps could not evaluate this blocking policy (broken)"
 	}
-	return "blocking policy rejected by Azure DevOps; build logs are not fetched"
+	if strings.EqualFold(strings.TrimSpace(ev.Configuration.Type.ID), adoPolicyTypeBuild) {
+		summary += "; build logs are not fetched"
+	}
+	return summary
 }

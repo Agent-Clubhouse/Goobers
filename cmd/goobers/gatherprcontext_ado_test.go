@@ -103,6 +103,9 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 			},
 		}})
 	})
+	// PR detail + policy evaluations: the selected PR's CI state (ADO-N22). A
+	// rejected blocking build policy must surface as hasFailingCI.
+	handleADOSelectedPRRejectedBuild(t, mux, repo, prNumber, headSHA, baseSHA)
 	// connectionData: the authenticated identity whose displayName matches the
 	// thread author, so gatherPRVerdict's trusted-author filter recognizes the
 	// thread we posted.
@@ -200,6 +203,53 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 	if len(got.GatherPRContext.Comments) != 1 {
 		t.Fatalf("comments = %+v, want only the non-system verdict thread comment", got.GatherPRContext.Comments)
 	}
+	// ADO-N22: the rejected blocking build policy makes the selected PR's CI
+	// failing, so the brief routes to gather-ci-failures ...
+	if got.HasFailingCI != "true" {
+		t.Fatalf("hasFailingCI = %q, want \"true\" (a blocking build policy is rejected)", got.HasFailingCI)
+	}
+	// ... which, fed this very brief, records the rejected policy as evidence.
+	ci := runGatherCIFailuresOnBrief(t, root, "run-ado-362-ci", got)
+	if ci.GatherCIFailures == nil || len(ci.GatherCIFailures.Checks) != 1 || ci.GatherCIFailures.Checks[0].Conclusion != "rejected" {
+		t.Fatalf("CI failures = %#v, want the rejected build policy", ci.GatherCIFailures)
+	}
+}
+
+// handleADOSelectedPRRejectedBuild serves the selected PR's detail and its
+// policy evaluations: one rejected blocking build policy and a queued
+// reviewer policy, which is a human wait and never CI.
+func handleADOSelectedPRRejectedBuild(t *testing.T, mux *http.ServeMux, repo providers.RepositoryRef, prNumber int, headSHA, baseSHA string) {
+	t.Helper()
+	prPath := "/" + repo.Owner + "/" + repo.Project + "/_apis/git/repositories/" + repo.Name + "/pullrequests/" + strconv.Itoa(prNumber)
+	mux.HandleFunc(prPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("PR detail request method = %s, want GET", r.Method)
+		}
+		writeJSONResp(t, w, map[string]interface{}{
+			"pullRequestId": prNumber, "status": "active", "title": "t",
+			"sourceRefName": "refs/heads/goobers/impl/run-ado-362", "targetRefName": "refs/heads/main",
+			"lastMergeSourceCommit": map[string]string{"commitId": headSHA},
+			"lastMergeTargetCommit": map[string]string{"commitId": baseSHA},
+			"repository": map[string]interface{}{
+				"id": "repo-guid", "name": repo.Name,
+				"project": map[string]string{"id": "proj-guid", "name": repo.Project},
+			},
+		})
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
+		policy := func(typeID, name, status string) map[string]interface{} {
+			return map[string]interface{}{"status": status, "configuration": map[string]interface{}{
+				"id": 5, "isEnabled": true, "isBlocking": true,
+				"type": map[string]string{"id": typeID, "displayName": name},
+			}}
+		}
+		build := policy("0609b952-1397-4640-95ec-e00a01b2c241", "Build", "rejected")
+		build["context"] = map[string]interface{}{"buildId": 314}
+		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{
+			build,
+			policy("fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", "Minimum number of reviewers", "queued"),
+		}})
+	})
 }
 
 func TestGatherPRContextADOParksRepeatedEscalatedDigest(t *testing.T) {

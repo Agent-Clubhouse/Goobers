@@ -130,6 +130,11 @@ func gatherADOCIFailures(ctx context.Context, root string, repo providers.Reposi
 		return evidence.Failures, "", nil
 	}
 	stale := fmt.Sprintf("STALE: Azure DevOps evaluated head %s, not this brief's head %s", evidence.HeadSHA, want)
+	if len(evidence.Failures) == 0 {
+		// No rejected CI policy at the new head (a re-queued build, say) is
+		// not evidence that the brief's head is clean: say so visibly.
+		return []providers.CIFailureDetail{staleADOCIEvidence(stale)}, "", nil
+	}
 	for i := range evidence.Failures {
 		summary := stale
 		if evidence.Failures[i].Summary != "" {
@@ -138,6 +143,21 @@ func gatherADOCIFailures(ctx context.Context, root string, repo providers.Reposi
 		evidence.Failures[i].Summary = summary
 	}
 	return evidence.Failures, "", nil
+}
+
+// staleADOCIEvidence is the single marker check recorded when the pull
+// request moved and ADO reports no rejected CI policy at its new head, so the
+// empty evidence is not read as current.
+func staleADOCIEvidence(stale string) providers.CIFailureDetail {
+	return providers.CIFailureDetail{
+		CheckDetail: providers.CheckDetail{
+			Name:       "Azure DevOps policy evidence",
+			State:      providers.CheckStatePending,
+			Conclusion: "stale",
+			Summary:    stale + "; no rejected CI policy is reported at the evaluated head",
+		},
+		Annotations: []providers.CheckAnnotation{},
+	}
 }
 
 // remediationCIFailureChecks maps provider CI evidence to the brief's shape.

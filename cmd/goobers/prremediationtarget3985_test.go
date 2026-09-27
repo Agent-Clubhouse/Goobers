@@ -565,11 +565,24 @@ func setupTargetedGatherPRContextADO(t *testing.T, runID string) (root, workDir 
 			adoPR(359, lowerBranch), adoPR(360, upperBranch),
 		}})
 	})
-	for _, id := range []int{359, 360} {
+	for id, branch := range map[int]string{359: lowerBranch, 360: upperBranch} {
 		mux.HandleFunc(prBase+"/"+strconv.Itoa(id)+"/threads", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 		})
+		// PR detail: the selected PR's CI state is read from its policy
+		// evaluations (ADO-N22), which need the project id.
+		mux.HandleFunc(prBase+"/"+strconv.Itoa(id), func(w http.ResponseWriter, _ *http.Request) {
+			detail := adoPR(id, branch)
+			detail["repository"] = map[string]interface{}{
+				"id": "repo-guid", "name": repo.Name,
+				"project": map[string]string{"id": "proj-guid", "name": repo.Project},
+			}
+			writeJSONResp(t, w, detail)
+		})
 	}
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+	})
 	mux.HandleFunc("/"+repo.Owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{
 			"authenticatedUser": map[string]string{"id": "merge-review-bot-guid", "providerDisplayName": "merge-review-bot"},
