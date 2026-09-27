@@ -102,16 +102,20 @@ func TestFleetHealthEmitsTransitionsImmediatelyAndStableGagglesPeriodically(t *t
 	if records := observer.sample(context.Background(), now); len(records) != 2 {
 		t.Fatalf("initial records = %d, want deployment and gaggle", len(records))
 	}
-	reader.now = now.Add(time.Minute)
-	if records := observer.sample(context.Background(), reader.now); len(records) != 2 {
-		t.Fatalf("stable one-minute records = %d, want deployment and gaggle", len(records))
+	reader.now = now.Add(30 * time.Second)
+	if records := observer.sample(context.Background(), reader.now); len(records) != 1 {
+		t.Fatalf("stable sub-minute records = %d, want deployment aggregate only", len(records))
 	}
 	reader.eligible = true
-	reader.now = now.Add(2 * time.Minute)
+	reader.now = now.Add(45 * time.Second)
 	if records := observer.sample(context.Background(), reader.now); len(records) != 2 || records[1].Attributes["reasonCode"] != "eligible_within_threshold" {
 		t.Fatalf("state transition was not immediate: %+v", records)
 	}
-	reader.now = now.Add(3 * time.Minute)
+	reader.now = now.Add(75 * time.Second)
+	if records := observer.sample(context.Background(), reader.now); len(records) != 1 {
+		t.Fatalf("stable sub-minute records after transition = %d, want deployment aggregate only", len(records))
+	}
+	reader.now = now.Add(105 * time.Second)
 	if records := observer.sample(context.Background(), reader.now); len(records) != 2 {
 		t.Fatalf("one-minute stable snapshot records = %d, want deployment and gaggle", len(records))
 	}
