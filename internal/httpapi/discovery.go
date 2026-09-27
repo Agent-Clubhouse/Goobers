@@ -248,6 +248,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.interventions != nil
 	case apicontract.RouteWorkflowEnabled:
 		available = config.workflowMutations != nil
+	case apicontract.RouteGaggleBundleExport, apicontract.RouteGaggleBundleImport:
+		available = config.gaggleBundles != nil
 	case apicontract.RouteClaimAcquire, apicontract.RouteClaimRenew, apicontract.RouteClaimRelease,
 		apicontract.RouteClaimSettle, apicontract.RouteClaimList,
 		apicontract.RouteClaimRecover:

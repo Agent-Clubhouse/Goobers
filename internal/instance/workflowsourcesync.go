@@ -54,16 +54,17 @@ func PrepareGitWorkflowSourceIfChanged(ctx context.Context, root string, source 
 	if err := copyGuidedSourceDefinitions(stagedConfigDir, snapshot); err != nil {
 		return "", false, nil, nil, fmt.Errorf("stage git workflow source: %w", err)
 	}
-	swap, err = prepareSyncedConfigDir(layout, stagedConfigDir)
+	swap, err = PrepareConfigDirSwap(layout, stagedConfigDir)
 	if err != nil {
 		return "", false, nil, nil, err
 	}
 	return revision, true, warnings, swap, nil
 }
 
-// prepareSyncedConfigDir atomically replaces layout.ConfigDir() while retaining
-// the previous directory for an explicit commit or rollback decision.
-func prepareSyncedConfigDir(layout Layout, stagedConfigDir string) (*PreparedConfigSwap, error) {
+// PrepareConfigDirSwap atomically replaces layout.ConfigDir() with a fully
+// prepared candidate while retaining the previous directory for an explicit
+// commit or rollback decision.
+func PrepareConfigDirSwap(layout Layout, stagedConfigDir string) (*PreparedConfigSwap, error) {
 	release, err := gaggletemplate.LockConfig(layout.ConfigDir(), stagedConfigDir)
 	if err != nil {
 		return nil, err
@@ -99,6 +100,10 @@ func prepareSyncedConfigDir(layout Layout, stagedConfigDir string) (*PreparedCon
 	}
 	transferred = true
 	return &PreparedConfigSwap{layout: layout, backupRoot: backupRoot, backupConfig: backupConfigDir, release: release}, nil
+}
+
+func prepareSyncedConfigDir(layout Layout, stagedConfigDir string) (*PreparedConfigSwap, error) {
+	return PrepareConfigDirSwap(layout, stagedConfigDir)
 }
 
 // Commit accepts the installed candidate and removes its prior-tree backup.

@@ -17,6 +17,7 @@ _goobers_completion()
             'connect:connect an instance to your own GitHub repository'
             'examples:browse canonical workflow examples embedded in the binary'
             'scaffold:scaffold a goober, workflow, or gaggle'
+            'gaggle:export or import sanitized portable gaggle bundles'
             'validate:validate an instance or checked-in config source tree'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'down:request a live daemon'\''s graceful drain-shutdown from a separate terminal'
@@ -75,6 +76,12 @@ _goobers_completion()
                 goober) flags+=(--force) ;;
                 workflow) flags+=(--force) ;;
                 gaggle) flags+=(--force --from) ;;
+            esac
+            ;;
+        gaggle)
+            case "${words[3]:-}" in
+                export) flags+=(--output) ;;
+                import) flags+=(--name) ;;
             esac
             ;;
         diagnostics)
@@ -343,6 +350,13 @@ _goobers_completion()
         scaffold)
             if (( CURRENT == 3 )); then
                 candidates=(goober workflow gaggle)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        gaggle)
+            if (( CURRENT == 3 )); then
+                candidates=(export import)
                 _describe -V 'command' candidates
                 return
             fi

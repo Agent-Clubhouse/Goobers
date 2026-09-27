@@ -997,6 +997,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// 503/workflow_mutations_unavailable envelope.
 	workflowMutations := newWorkflowMutationService(l)
 	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithWorkflowMutations(workflowMutations))
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithGaggleBundles(workflowMutations))
 	// The telemetry read plane's containment (decision 005 R4 / finding 002
 	// C3). Wired unconditionally: without it every pod telemetry read is
 	// refused, so this is what OPENS the plane, and a daemon that serves stage

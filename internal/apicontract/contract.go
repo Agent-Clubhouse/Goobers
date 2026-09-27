@@ -41,6 +41,8 @@ const (
 	GaggleGoobersPath            = V1Prefix + "/gaggles/{gaggle}/goobers"
 	GaggleWorkflowsPath          = V1Prefix + "/gaggles/{gaggle}/workflows"
 	GaggleConnectionsPath        = V1Prefix + "/gaggles/{gaggle}/connections"
+	GaggleBundleExportPath       = V1Prefix + "/gaggles/{gaggle}/bundle"
+	GaggleBundleImportPath       = V1Prefix + "/gaggles/import"
 	WorkflowDetailPath           = V1Prefix + "/gaggles/{gaggle}/workflows/{workflow}"
 	WorkflowQueueEligibilityPath = WorkflowDetailPath + "/queue-eligibility"
 	RunsPath                     = V1Prefix + "/runs"
@@ -268,6 +270,8 @@ const (
 	RouteGaggleGoobers            RouteID = "gaggleGoobers"
 	RouteGaggleWorkflows          RouteID = "gaggleWorkflows"
 	RouteGaggleConnections        RouteID = "gaggleConnections"
+	RouteGaggleBundleExport       RouteID = "gaggleBundleExport"
+	RouteGaggleBundleImport       RouteID = "gaggleBundleImport"
 	RouteWorkflowDetail           RouteID = "workflowDetail"
 	RouteWorkflowQueueEligibility RouteID = "workflowQueueEligibility"
 	RouteRuns                     RouteID = "runs"
@@ -459,6 +463,8 @@ var v1Routes = []Route{
 	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleBundleExport, Method: http.MethodGet, Path: GaggleBundleExportPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleBundleImport, Method: http.MethodPost, Path: GaggleBundleImportPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkflowQueueEligibility, Method: http.MethodGet, Path: WorkflowQueueEligibilityPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
@@ -582,10 +588,11 @@ var v1Routes = []Route{
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{
-	RouteHealth:   {},
-	RouteInstance: {},
-	RouteRuns:     {},
-	RouteEvents:   {},
+	RouteHealth:             {},
+	RouteInstance:           {},
+	RouteRuns:               {},
+	RouteEvents:             {},
+	RouteGaggleBundleExport: {},
 }
 
 // InitiallyRemoteInvocable identifies the bounded first remote-read profile.

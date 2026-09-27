@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/gaggle-bundle.schema.json",
+  "title": "GaggleBundle",
+  "description": "A versioned, sanitized, portable export of one gaggle's declarative configuration and referenced companion files.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "schemaVersion", "source", "exportedAt", "provenance", "definition", "digest"],
+  "properties": {
+    "apiVersion": {
+      "const": "goobers.dev/v1alpha1",
+      "description": "Public API version of the bundle envelope."
+    },
+    "kind": {
+      "const": "GaggleBundle",
+      "description": "Bundle kind discriminator; always GaggleBundle."
+    },
+    "schemaVersion": {
+      "const": 1,
+      "description": "Wire-schema revision interpreted by importers."
+    },
+    "source": {
+      "$ref": "#/$defs/source",
+      "description": "Portable source identity, API version, and sanitized definition digest."
+    },
+    "exportedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC time when this envelope was exported. It is excluded from the definition digest."
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance",
+      "description": "Public exporter provenance and the destination-specific fields removed during sanitization."
+    },
+    "definition": {
+      "$ref": "#/$defs/definition",
+      "description": "Canonical typed definitions, referenced companion files, and logical repository requirements."
+    },
+    "digest": {
+      "$ref": "#/$defs/digest",
+      "description": "SHA-256 of the canonical JSON encoding of definition. Export timestamps and provenance do not affect it."
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "Lowercase SHA-256 digest prefixed by sha256:."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "apiVersion", "digest"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Source gaggle name. It identifies no instance, host, user, tenant, or authorization."
+        },
+        "apiVersion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "API version of the exported source gaggle definition."
+        },
+        "digest": {
+          "$ref": "#/$defs/digest",
+          "description": "Digest of the sanitized declarative definition; it must equal the envelope digest."
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exporter", "exporterVersion", "sanitizedFields"],
+      "properties": {
+        "exporter": {
+          "type": "string",
+          "const": "goobers",
+          "description": "Public tool that produced the bundle."
+        },
+        "exporterVersion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Goobers build version that produced the bundle."
+        },
+        "exporterCommit": {
+          "type": "string",
+          "description": "Optional public source revision of the exporter build."
+        },
+        "sanitizedFields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Field path intentionally normalized or omitted because it is destination-specific or non-portable."
+          },
+          "description": "Explicit list of field classes removed or normalized during export; sanitization is never silent."
+        }
+      }
+    },
+    "definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gaggle", "workflows", "goobers", "repositories"],
+      "properties": {
+        "gaggle": {
+          "$ref": "gaggle.schema.json",
+          "description": "Sanitized canonical Gaggle object. Import replaces the portable isolation placeholder with the destination gaggle namespace."
+        },
+        "workflows": {
+          "type": "array",
+          "items": {
+            "$ref": "workflow.schema.json",
+            "description": "Canonical Workflow object belonging to the exported gaggle."
+          },
+          "description": "Workflows sorted by metadata.name for deterministic export."
+        },
+        "goobers": {
+          "type": "array",
+          "items": {
+            "$ref": "goober.schema.json",
+            "description": "Canonical Goober object belonging to the exported gaggle."
+          },
+          "description": "Goobers sorted by metadata.name for deterministic export."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/file",
+            "description": "Referenced portable companion file."
+          },
+          "description": "Referenced instruction and skill package files sorted by path. Shared skill packages are materialized under the imported gaggle."
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "$ref": "gaggle.schema.json#/$defs/repoRef",
+            "description": "Credential-free logical repository identity that must already be authorized by the destination instance."
+          },
+          "description": "Primary, additional, and sibling repository identities sorted deterministically. Connection and credential material is never included."
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "contentBase64", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^[^/\\\\][^\\\\]*$",
+          "description": "Slash-separated path relative to the gaggle directory. Absolute paths, backslashes, and traversal are forbidden."
+        },
+        "contentBase64": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "Exact companion-file bytes encoded as base64."
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest",
+          "description": "Digest of the decoded companion-file bytes."
+        }
+      }
+    }
+  }
+}

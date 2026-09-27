@@ -1,0 +1,796 @@
+package gagglebundle
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/version"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
+)
+
+var (
+	ErrInvalidBundle           = errors.New("invalid gaggle bundle")
+	ErrGaggleNotFound          = errors.New("gaggle not found")
+	ErrNameConflict            = errors.New("gaggle name conflict")
+	ErrRepositoryAuthorization = errors.New("destination repository authorization is required")
+	prepareConfigDirSwap       = instance.PrepareConfigDirSwap
+)
+
+var sanitizedFields = []string{
+	"definition.gaggle.metadata.runtime",
+	"definition.gaggle.metadata.labels",
+	"definition.gaggle.metadata.annotations except goobers.dev/allow-preview-features",
+	"definition.gaggle.spec.selfIdentity",
+	"definition.gaggle.spec.isolation",
+	"definition.gaggle.spec.outboxMirrorPath",
+	"definition.gaggle.spec.workcopies",
+	"definition.gaggle.spec.*.connectionRef",
+	"definition.workflows[].metadata.runtime",
+	"definition.workflows[].metadata.labels",
+	"definition.workflows[].metadata.annotations except goobers.dev/allow-preview-features",
+	"definition.workflows[].spec.outboxMirrorPath",
+	"definition.workflows[].spec.tasks[].outboxMirrorPath",
+	"definition.goobers[].metadata.runtime",
+	"definition.goobers[].metadata.labels",
+	"definition.goobers[].metadata.annotations except goobers.dev/allow-preview-features",
+}
+
+// Export returns a deterministic portable definition plus timestamped
+// provenance. The digest commits only to Definition.
+func Export(configDir, name string, now time.Time) (apiv1.GaggleBundle, error) {
+	set, report, err := instance.LoadConfigDir(configDir)
+	if err != nil {
+		return apiv1.GaggleBundle{}, fmt.Errorf("load source configuration: %w (%s)", err, reportSummary(report))
+	}
+	name = strings.TrimSpace(name)
+	var source *apiv1.Gaggle
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == name {
+			source = &set.Gaggles[i]
+			break
+		}
+	}
+	if source == nil {
+		return apiv1.GaggleBundle{}, fmt.Errorf("%w: %q", ErrGaggleNotFound, name)
+	}
+
+	gaggle := sanitizeGaggle(*source)
+	var workflows []apiv1.Workflow
+	for _, workflow := range set.Workflows {
+		if workflow.Spec.Gaggle == name {
+			for _, task := range workflow.Spec.Tasks {
+				if task.Run != nil && len(task.Run.Env) != 0 {
+					return apiv1.GaggleBundle{}, fmt.Errorf(
+						"%w: workflow %q task %q declares run.env values; portable bundles refuse environment values rather than exporting or silently dropping them",
+						ErrInvalidBundle, workflow.Name, task.Name,
+					)
+				}
+			}
+			workflows = append(workflows, sanitizeWorkflow(workflow))
+		}
+	}
+	var goobers []apiv1.Goober
+	for _, goober := range set.Goobers {
+		if goober.Spec.Gaggle == name {
+			if len(goober.Spec.HarnessOptions) != 0 {
+				return apiv1.GaggleBundle{}, fmt.Errorf(
+					"%w: goober %q declares opaque harnessOptions; portable export cannot prove opaque values exclude credentials, environment values, or local paths",
+					ErrInvalidBundle, goober.Name,
+				)
+			}
+			goobers = append(goobers, sanitizeGoober(goober))
+		}
+	}
+	sort.Slice(workflows, func(i, j int) bool { return workflows[i].Name < workflows[j].Name })
+	sort.Slice(goobers, func(i, j int) bool { return goobers[i].Name < goobers[j].Name })
+
+	files, err := collectFiles(configDir, set, name, goobers)
+	if err != nil {
+		return apiv1.GaggleBundle{}, err
+	}
+	repositories := portableRepositories(gaggle.Spec)
+	definition := apiv1.GaggleBundleDefinition{
+		Gaggle: gaggle, Workflows: workflows, Goobers: goobers,
+		Files: files, Repositories: repositories,
+	}
+	if path, value := firstAbsoluteString(definition); path != "" {
+		return apiv1.GaggleBundle{}, fmt.Errorf("%w: %s contains non-portable absolute path %q", ErrInvalidBundle, path, value)
+	}
+	digest, err := DefinitionDigest(definition)
+	if err != nil {
+		return apiv1.GaggleBundle{}, err
+	}
+	build := version.Get()
+	sourceVersion := gaggle.APIVersion
+	if sourceVersion == "" {
+		sourceVersion = "goobers.dev/v1alpha1"
+	}
+	bundle := apiv1.GaggleBundle{
+		APIVersion:    apiv1.GaggleBundleAPIVersion,
+		Kind:          apiv1.GaggleBundleKind,
+		SchemaVersion: apiv1.GaggleBundleSchemaVersion,
+		Source:        apiv1.GaggleBundleSource{Name: name, APIVersion: sourceVersion, Digest: digest},
+		ExportedAt:    now.UTC(),
+		Provenance: apiv1.GaggleBundleProvenance{
+			Exporter: "goobers", ExporterVersion: build.Version, ExporterCommit: build.Commit,
+			SanitizedFields: append([]string(nil), sanitizedFields...),
+		},
+		Definition: definition,
+		Digest:     digest,
+	}
+	if err := Validate(bundle); err != nil {
+		return apiv1.GaggleBundle{}, fmt.Errorf("validate exported gaggle bundle: %w", err)
+	}
+	return bundle, nil
+}
+
+// DefinitionDigest returns the stable SHA-256 of the sanitized declarative
+// definition. JSON map keys are sorted by encoding/json.
+func DefinitionDigest(definition apiv1.GaggleBundleDefinition) (string, error) {
+	data, err := json.Marshal(definition)
+	if err != nil {
+		return "", fmt.Errorf("marshal portable gaggle definition: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// Validate verifies the complete bundle before any destination mutation.
+func Validate(bundle apiv1.GaggleBundle) error {
+	switch {
+	case bundle.APIVersion != apiv1.GaggleBundleAPIVersion:
+		return fmt.Errorf("%w: apiVersion must be %q", ErrInvalidBundle, apiv1.GaggleBundleAPIVersion)
+	case bundle.Kind != apiv1.GaggleBundleKind:
+		return fmt.Errorf("%w: kind must be %q", ErrInvalidBundle, apiv1.GaggleBundleKind)
+	case bundle.SchemaVersion != apiv1.GaggleBundleSchemaVersion:
+		return fmt.Errorf("%w: unsupported schemaVersion %d", ErrInvalidBundle, bundle.SchemaVersion)
+	case strings.TrimSpace(bundle.Source.Name) == "":
+		return fmt.Errorf("%w: source.name is required", ErrInvalidBundle)
+	case bundle.Source.APIVersion == "":
+		return fmt.Errorf("%w: source.apiVersion is required", ErrInvalidBundle)
+	case bundle.ExportedAt.IsZero():
+		return fmt.Errorf("%w: exportedAt is required", ErrInvalidBundle)
+	case strings.TrimSpace(bundle.Provenance.Exporter) == "":
+		return fmt.Errorf("%w: provenance.exporter is required", ErrInvalidBundle)
+	case strings.TrimSpace(bundle.Provenance.ExporterVersion) == "":
+		return fmt.Errorf("%w: provenance.exporterVersion is required", ErrInvalidBundle)
+	case bundle.Definition.Gaggle.Name == "":
+		return fmt.Errorf("%w: definition.gaggle.metadata.name is required", ErrInvalidBundle)
+	case bundle.Definition.Gaggle.Name != bundle.Source.Name:
+		return fmt.Errorf("%w: source.name %q does not match definition gaggle %q", ErrInvalidBundle, bundle.Source.Name, bundle.Definition.Gaggle.Name)
+	}
+	digest, err := DefinitionDigest(bundle.Definition)
+	if err != nil {
+		return err
+	}
+	if bundle.Digest != digest || bundle.Source.Digest != digest {
+		return fmt.Errorf("%w: digest mismatch: computed %s", ErrInvalidBundle, digest)
+	}
+	if err := validateReferences(bundle.Definition); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+	}
+	if err := validateSanitizedDefinition(bundle.Definition); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+	}
+	if err := validateFiles(bundle.Definition); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+	}
+	return nil
+}
+
+// PrepareImport validates and stages a destination gaggle, then atomically
+// installs the complete candidate config tree. The caller must Commit or
+// Rollback the returned swap.
+func PrepareImport(layout instance.Layout, target string, bundle apiv1.GaggleBundle) (*instance.PreparedConfigSwap, error) {
+	if err := Validate(bundle); err != nil {
+		return nil, err
+	}
+	target = strings.TrimSpace(target)
+	if !portableName(target) {
+		return nil, fmt.Errorf("%w: destination name %q must use lowercase letters, digits, and interior hyphens", ErrInvalidBundle, target)
+	}
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		return nil, fmt.Errorf("load destination configuration: %w (%s)", err, reportSummary(report))
+	}
+	for _, gaggle := range set.Gaggles {
+		if gaggle.Name == target {
+			return nil, fmt.Errorf("%w: gaggle %q already exists", ErrNameConflict, target)
+		}
+	}
+	existingWorkflows := make(map[string]bool, len(set.Workflows))
+	for _, workflow := range set.Workflows {
+		existingWorkflows[workflow.Name] = true
+	}
+	for _, workflow := range bundle.Definition.Workflows {
+		if existingWorkflows[workflow.Name] {
+			return nil, fmt.Errorf("%w: workflow %q already exists", ErrNameConflict, workflow.Name)
+		}
+	}
+	existingGoobers := make(map[string]bool, len(set.Goobers))
+	for _, goober := range set.Goobers {
+		existingGoobers[goober.Name] = true
+	}
+	for _, goober := range bundle.Definition.Goobers {
+		if existingGoobers[goober.Name] {
+			return nil, fmt.Errorf("%w: goober %q already exists", ErrNameConflict, goober.Name)
+		}
+	}
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return nil, fmt.Errorf("load destination instance authorization: %w", err)
+	}
+	if err := requireRepositoryAuthorization(cfg, bundle.Definition.Repositories); err != nil {
+		return nil, err
+	}
+
+	stagingRoot, err := os.MkdirTemp(layout.Root, ".gaggle-import-")
+	if err != nil {
+		return nil, fmt.Errorf("create import staging directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(stagingRoot) }()
+	stagedConfig := filepath.Join(stagingRoot, instance.ConfigDirName)
+	if err := copyTree(layout.ConfigDir(), stagedConfig); err != nil {
+		return nil, fmt.Errorf("stage destination configuration: %w", err)
+	}
+	if err := materialize(stagedConfig, target, bundle); err != nil {
+		return nil, err
+	}
+	if _, stagedReport, err := instance.LoadConfigDir(stagedConfig); err != nil {
+		return nil, fmt.Errorf("%w: imported configuration failed validation: %v (%s)", ErrInvalidBundle, err, reportSummary(stagedReport))
+	}
+	swap, err := prepareConfigDirSwap(layout, stagedConfig)
+	if err != nil {
+		return nil, fmt.Errorf("install imported gaggle: %w", err)
+	}
+	return swap, nil
+}
+
+func sanitizeGaggle(source apiv1.Gaggle) apiv1.Gaggle {
+	g := *source.DeepCopy()
+	g.TypeMeta = metav1.TypeMeta{APIVersion: "goobers.dev/v1alpha1", Kind: "Gaggle"}
+	g.ObjectMeta = portableMetadata(g.Name, g.Labels, g.Annotations)
+	g.Status = apiv1.GaggleStatus{}
+	g.Spec.SelfIdentity = ""
+	g.Spec.Isolation = apiv1.GaggleIsolation{Namespace: "gaggle-portable"}
+	g.Spec.OutboxMirrorPath = ""
+	g.Spec.Workcopies = nil
+	clearRepoConnection(&g.Spec.Project)
+	for i := range g.Spec.AdditionalRepos {
+		clearRepoConnection(&g.Spec.AdditionalRepos[i])
+	}
+	g.Spec.Backlog.ConnectionRef = ""
+	for i := range g.Spec.Siblings {
+		clearRepoConnection(&g.Spec.Siblings[i].Project)
+	}
+	return g
+}
+
+func sanitizeWorkflow(source apiv1.Workflow) apiv1.Workflow {
+	w := *source.DeepCopy()
+	w.TypeMeta = metav1.TypeMeta{APIVersion: "goobers.dev/v1alpha1", Kind: "Workflow"}
+	w.ObjectMeta = portableMetadata(w.Name, w.Labels, w.Annotations)
+	w.Spec.OutboxMirrorPath = ""
+	for i := range w.Spec.Tasks {
+		w.Spec.Tasks[i].OutboxMirrorPath = ""
+		if w.Spec.Tasks[i].Run != nil {
+			w.Spec.Tasks[i].Run.Env = nil
+		}
+	}
+	return w
+}
+
+func sanitizeGoober(source apiv1.Goober) apiv1.Goober {
+	g := *source.DeepCopy()
+	g.TypeMeta = metav1.TypeMeta{APIVersion: "goobers.dev/v1alpha1", Kind: "Goober"}
+	g.ObjectMeta = portableMetadata(g.Name, g.Labels, g.Annotations)
+	return g
+}
+
+func portableMetadata(name string, labels, annotations map[string]string) metav1.ObjectMeta {
+	portableAnnotations := map[string]string{}
+	if annotations["goobers.dev/allow-preview-features"] == "true" {
+		portableAnnotations["goobers.dev/allow-preview-features"] = "true"
+	}
+	if len(portableAnnotations) == 0 {
+		portableAnnotations = nil
+	}
+	return metav1.ObjectMeta{Name: name, Annotations: portableAnnotations}
+}
+
+func clearRepoConnection(repo *apiv1.RepoRef) {
+	repo.ConnectionRef = ""
+}
+
+func portableRepositories(spec apiv1.GaggleSpec) []apiv1.RepoRef {
+	repositories := append([]apiv1.RepoRef{spec.Project}, spec.AdditionalRepos...)
+	for _, sibling := range spec.Siblings {
+		repositories = append(repositories, sibling.Project)
+	}
+	for i := range repositories {
+		clearRepoConnection(&repositories[i])
+	}
+	sort.Slice(repositories, func(i, j int) bool { return repositoryKey(repositories[i]) < repositoryKey(repositories[j]) })
+	return repositories
+}
+
+func validateReferences(definition apiv1.GaggleBundleDefinition) error {
+	gaggle := definition.Gaggle.Name
+	workflows := make(map[string]bool, len(definition.Workflows))
+	for _, workflow := range definition.Workflows {
+		if workflow.Spec.Gaggle != gaggle {
+			return fmt.Errorf("workflow %q references gaggle %q, want %q", workflow.Name, workflow.Spec.Gaggle, gaggle)
+		}
+		if workflows[workflow.Name] {
+			return fmt.Errorf("duplicate workflow %q", workflow.Name)
+		}
+		workflows[workflow.Name] = true
+	}
+	goobers := make(map[string]bool, len(definition.Goobers))
+	for _, goober := range definition.Goobers {
+		if goober.Spec.Gaggle != gaggle {
+			return fmt.Errorf("goober %q references gaggle %q, want %q", goober.Name, goober.Spec.Gaggle, gaggle)
+		}
+		if goobers[goober.Name] {
+			return fmt.Errorf("duplicate goober %q", goober.Name)
+		}
+		goobers[goober.Name] = true
+		for _, workflow := range goober.Spec.Workflows {
+			if !workflows[workflow] {
+				return fmt.Errorf("goober %q references missing workflow %q", goober.Name, workflow)
+			}
+		}
+	}
+	return nil
+}
+
+func validateSanitizedDefinition(definition apiv1.GaggleBundleDefinition) error {
+	gaggle := definition.Gaggle
+	if !reflect.DeepEqual(gaggle.Status, apiv1.GaggleStatus{}) {
+		return errors.New("gaggle runtime status is forbidden")
+	}
+	if gaggle.Spec.SelfIdentity != "" || gaggle.Spec.OutboxMirrorPath != "" || gaggle.Spec.Workcopies != nil {
+		return errors.New("gaggle contains destination-local identity or absolute-path settings")
+	}
+	if gaggle.Spec.Isolation.Namespace != "gaggle-portable" || gaggle.Spec.Isolation.IdentityRef != "" {
+		return errors.New("gaggle isolation must be the portable placeholder without an identity reference")
+	}
+	if err := validatePortableMetadata("gaggle", gaggle.Labels, gaggle.Annotations); err != nil {
+		return err
+	}
+	if gaggle.Spec.Project.ConnectionRef != "" || gaggle.Spec.Backlog.ConnectionRef != "" {
+		return errors.New("repository and backlog connection references are forbidden")
+	}
+	for _, repo := range append(append([]apiv1.RepoRef(nil), gaggle.Spec.AdditionalRepos...), gaggle.Spec.Project) {
+		if repo.ConnectionRef != "" {
+			return errors.New("repository connection references are forbidden")
+		}
+	}
+	for _, workflow := range definition.Workflows {
+		if err := validatePortableMetadata("workflow "+workflow.Name, workflow.Labels, workflow.Annotations); err != nil {
+			return err
+		}
+		if workflow.Spec.OutboxMirrorPath != "" {
+			return fmt.Errorf("workflow %q contains an outbox mirror path", workflow.Name)
+		}
+		for _, task := range workflow.Spec.Tasks {
+			if task.OutboxMirrorPath != "" {
+				return fmt.Errorf("workflow %q task %q contains an outbox mirror path", workflow.Name, task.Name)
+			}
+			if task.Run != nil && len(task.Run.Env) != 0 {
+				return fmt.Errorf("workflow %q task %q contains environment values", workflow.Name, task.Name)
+			}
+		}
+	}
+	for _, goober := range definition.Goobers {
+		if err := validatePortableMetadata("goober "+goober.Name, goober.Labels, goober.Annotations); err != nil {
+			return err
+		}
+		if len(goober.Spec.HarnessOptions) != 0 {
+			return fmt.Errorf("goober %q contains opaque harnessOptions", goober.Name)
+		}
+	}
+	if path, value := firstAbsoluteString(definition); path != "" {
+		return fmt.Errorf("%s contains non-portable absolute path %q", path, value)
+	}
+	expectedRepositories := portableRepositories(gaggle.Spec)
+	if !reflect.DeepEqual(definition.Repositories, expectedRepositories) {
+		return errors.New("repositories must exactly match the sorted credential-free project and additionalRepos identities")
+	}
+	return nil
+}
+
+func validatePortableMetadata(subject string, labels, annotations map[string]string) error {
+	if len(labels) != 0 {
+		return fmt.Errorf("%s metadata labels are forbidden", subject)
+	}
+	for key, value := range annotations {
+		if key != "goobers.dev/allow-preview-features" || value != "true" {
+			return fmt.Errorf("%s metadata annotation %q is not portable", subject, key)
+		}
+	}
+	return nil
+}
+
+func collectFiles(configDir string, set *instance.ConfigSet, gaggle string, goobers []apiv1.Goober) ([]apiv1.GaggleBundleFile, error) {
+	root := filepath.Join(configDir, "gaggles", gaggle)
+	paths := map[string]string{}
+	for _, goober := range goobers {
+		source, ok := set.GooberSource(goober.Name)
+		if !ok {
+			return nil, fmt.Errorf("resolve goober %q source", goober.Name)
+		}
+		sourceDir := filepath.Dir(filepath.Join(configDir, filepath.FromSlash(source)))
+		if goober.Spec.Instructions != "" {
+			instructions := filepath.Clean(filepath.FromSlash(goober.Spec.Instructions))
+			if filepath.IsAbs(instructions) || instructions == ".." || strings.HasPrefix(instructions, ".."+string(filepath.Separator)) {
+				return nil, fmt.Errorf("goober %q instructions path %q is not contained", goober.Name, goober.Spec.Instructions)
+			}
+			portable := filepath.ToSlash(filepath.Join("goobers", goober.Name, instructions))
+			paths[portable] = filepath.Join(sourceDir, instructions)
+		}
+		for _, skill := range goober.Spec.Skills {
+			if skill == "" || strings.ContainsAny(skill, `/\`) || skill == "." || skill == ".." {
+				return nil, fmt.Errorf("goober %q has non-portable skill name %q", goober.Name, skill)
+			}
+			skillDir := filepath.Join(root, "skills", skill)
+			info, err := os.Stat(skillDir)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return nil, fmt.Errorf("inspect gaggle skill package %q: %w", skill, err)
+			}
+			if err != nil || !info.IsDir() {
+				skillDir = filepath.Join(filepath.Dir(configDir), "skills", skill)
+			}
+			info, err = os.Stat(skillDir)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return nil, fmt.Errorf("inspect shared skill package %q: %w", skill, err)
+			}
+			if err != nil || !info.IsDir() {
+				return nil, fmt.Errorf("goober %q references missing skill package %q", goober.Name, skill)
+			}
+			if err := filepath.WalkDir(skillDir, func(path string, entry fs.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if entry.Type()&os.ModeSymlink != 0 {
+					return fmt.Errorf("referenced skill path %s is a symlink", path)
+				}
+				if entry.IsDir() {
+					return nil
+				}
+				rel, err := filepath.Rel(skillDir, path)
+				if err != nil {
+					return err
+				}
+				portable := filepath.ToSlash(filepath.Join("skills", skill, rel))
+				paths[portable] = path
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	var files []apiv1.GaggleBundleFile
+	for rel, path := range paths {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, fmt.Errorf("read referenced file %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("referenced file %s is not a regular file", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read referenced file %s: %w", path, err)
+		}
+		sum := sha256.Sum256(data)
+		files = append(files, apiv1.GaggleBundleFile{
+			Path: rel, ContentBase64: base64.StdEncoding.EncodeToString(data),
+			SHA256: "sha256:" + hex.EncodeToString(sum[:]),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, nil
+}
+
+func validateFile(file apiv1.GaggleBundleFile) error {
+	if file.Path == "" || filepath.IsAbs(file.Path) || strings.Contains(file.Path, `\`) {
+		return fmt.Errorf("file path %q must be a relative slash-separated path", file.Path)
+	}
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(file.Path)))
+	if clean != file.Path || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("file path %q is not contained", file.Path)
+	}
+	data, err := base64.StdEncoding.DecodeString(file.ContentBase64)
+	if err != nil {
+		return fmt.Errorf("file %q contentBase64 is invalid: %w", file.Path, err)
+	}
+	sum := sha256.Sum256(data)
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	if file.SHA256 != want {
+		return fmt.Errorf("file %q digest mismatch", file.Path)
+	}
+	return nil
+}
+
+func validateFiles(definition apiv1.GaggleBundleDefinition) error {
+	seen := map[string]bool{}
+	for _, file := range definition.Files {
+		if err := validateFile(file); err != nil {
+			return err
+		}
+		if seen[file.Path] {
+			return fmt.Errorf("duplicate file path %q", file.Path)
+		}
+		seen[file.Path] = true
+		if !isReferencedCompanionPath(definition.Goobers, file.Path) {
+			return fmt.Errorf("file path %q is not a referenced Goober instruction or gaggle skill file", file.Path)
+		}
+	}
+	return nil
+}
+
+func isReferencedCompanionPath(goobers []apiv1.Goober, path string) bool {
+	for _, goober := range goobers {
+		if goober.Spec.Instructions != "" {
+			instructions := filepath.ToSlash(filepath.Clean(filepath.Join("goobers", goober.Name, filepath.FromSlash(goober.Spec.Instructions))))
+			if instructions == path {
+				return true
+			}
+		}
+		for _, skill := range goober.Spec.Skills {
+			prefix := "skills/" + skill + "/"
+			if strings.HasPrefix(path, prefix) && len(path) > len(prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requireRepositoryAuthorization(cfg *instance.Config, required []apiv1.RepoRef) error {
+	configured := map[string]bool{}
+	for _, repo := range cfg.Repos {
+		configured[repositoryKey(apiv1.RepoRef{
+			Provider: apiv1.Provider(repo.Provider), BaseURL: repo.BaseURL, Owner: repo.Owner,
+			Project: repo.Project, Name: repo.Name,
+		})] = true
+	}
+	for _, repo := range required {
+		if !configured[repositoryKey(repo)] {
+			return fmt.Errorf("%w for %s", ErrRepositoryAuthorization, repositoryKey(repo))
+		}
+	}
+	return nil
+}
+
+func repositoryKey(repo apiv1.RepoRef) string {
+	return strings.Join([]string{string(repo.Provider), repo.BaseURL, repo.Owner, repo.Project, repo.Name}, "|")
+}
+
+func materialize(configDir, target string, bundle apiv1.GaggleBundle) error {
+	gaggleDir := filepath.Join(configDir, "gaggles", target)
+	if _, err := os.Lstat(gaggleDir); err == nil {
+		return fmt.Errorf("%w: destination directory %s exists", ErrNameConflict, gaggleDir)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("inspect destination gaggle directory: %w", err)
+	}
+	if err := os.MkdirAll(gaggleDir, 0o755); err != nil {
+		return fmt.Errorf("create destination gaggle directory: %w", err)
+	}
+	gaggle := *bundle.Definition.Gaggle.DeepCopy()
+	gaggle.Name = target
+	gaggle.Spec.Isolation = apiv1.GaggleIsolation{Namespace: "gaggle-" + target}
+	gaggleDocument := struct {
+		metav1.TypeMeta   `json:",inline" yaml:",inline"`
+		metav1.ObjectMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+		Spec              apiv1.GaggleSpec `json:"spec" yaml:"spec"`
+	}{TypeMeta: gaggle.TypeMeta, ObjectMeta: gaggle.ObjectMeta, Spec: gaggle.Spec}
+	if err := writeYAML(filepath.Join(gaggleDir, "gaggle.yaml"), gaggleDocument); err != nil {
+		return err
+	}
+	for _, workflow := range bundle.Definition.Workflows {
+		copy := *workflow.DeepCopy()
+		copy.Spec.Gaggle = target
+		if err := writeYAML(filepath.Join(gaggleDir, "workflows", copy.Name+".yaml"), copy); err != nil {
+			return err
+		}
+	}
+	for _, goober := range bundle.Definition.Goobers {
+		copy := *goober.DeepCopy()
+		copy.Spec.Gaggle = target
+		if err := writeYAML(filepath.Join(gaggleDir, "goobers", copy.Name, "goober.yaml"), copy); err != nil {
+			return err
+		}
+	}
+	for _, file := range bundle.Definition.Files {
+		data, _ := base64.StdEncoding.DecodeString(file.ContentBase64)
+		path := filepath.Join(gaggleDir, filepath.FromSlash(file.Path))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("create imported file directory: %w", err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return fmt.Errorf("write imported file %s: %w", file.Path, err)
+		}
+	}
+	provenance := struct {
+		Source     apiv1.GaggleBundleSource     `json:"source"`
+		ExportedAt time.Time                    `json:"exportedAt"`
+		ImportedAt time.Time                    `json:"importedAt"`
+		Provenance apiv1.GaggleBundleProvenance `json:"provenance"`
+	}{
+		Source: bundle.Source, ExportedAt: bundle.ExportedAt,
+		ImportedAt: time.Now().UTC(), Provenance: bundle.Provenance,
+	}
+	provenanceData, err := json.MarshalIndent(provenance, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode imported bundle provenance: %w", err)
+	}
+	provenanceData = append(provenanceData, '\n')
+	if err := os.WriteFile(filepath.Join(gaggleDir, "bundle-source.json"), provenanceData, 0o644); err != nil {
+		return fmt.Errorf("write imported bundle provenance: %w", err)
+	}
+	manifestPath := filepath.Join(configDir, "manifest.yaml")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read destination manifest: %w", err)
+	}
+	var manifest apiv1.Manifest
+	if err := yaml.UnmarshalStrict(raw, &manifest); err != nil {
+		return fmt.Errorf("parse destination manifest: %w", err)
+	}
+	manifest.Spec.Gaggles = append(manifest.Spec.Gaggles, target)
+	return writeYAML(manifestPath, manifest)
+}
+
+func writeYAML(path string, value any) error {
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", filepath.Base(path), err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create %s parent: %w", path, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func copyTree(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("configuration path %s is a symlink", path)
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("configuration path %s is not a regular file", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		mode := fs.FileMode(0o644)
+		if info, infoErr := entry.Info(); infoErr == nil {
+			mode = info.Mode().Perm()
+		}
+		return os.WriteFile(target, data, mode)
+	})
+}
+
+func portableName(name string) bool {
+	if name == "" || name[0] == '-' || name[len(name)-1] == '-' {
+		return false
+	}
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func firstAbsoluteString(value any) (string, string) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", ""
+	}
+	var decoded any
+	if json.Unmarshal(data, &decoded) != nil {
+		return "", ""
+	}
+	var walk func(any, string) (string, string)
+	walk = func(current any, path string) (string, string) {
+		switch typed := current.(type) {
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				if found, text := walk(typed[key], path+"."+key); found != "" {
+					return found, text
+				}
+			}
+		case []any:
+			for i, item := range typed {
+				if found, text := walk(item, fmt.Sprintf("%s[%d]", path, i)); found != "" {
+					return found, text
+				}
+			}
+		case string:
+			if absolutePortablePath(typed) {
+				return strings.TrimPrefix(path, "."), typed
+			}
+		}
+		return "", ""
+	}
+	return walk(decoded, "")
+}
+
+func absolutePortablePath(value string) bool {
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\\`) {
+		return true
+	}
+	return len(value) >= 3 &&
+		((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) &&
+		value[1] == ':' && (value[2] == '\\' || value[2] == '/')
+}
+
+func reportSummary(report *validate.Report) string {
+	if report == nil {
+		return "no validation report"
+	}
+	var issues []string
+	for _, issue := range report.Issues {
+		if issue.Severity == validate.Error {
+			issues = append(issues, issue.String())
+			if len(issues) == 3 {
+				break
+			}
+		}
+	}
+	if len(issues) != 0 {
+		return strings.Join(issues, "; ")
+	}
+	return "no validation errors"
+}
+
+// MarshalJSON emits deterministic, indented bundle JSON for CLI/file export.
+func MarshalJSON(bundle apiv1.GaggleBundle) ([]byte, error) {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(bundle); err != nil {
+		return nil, fmt.Errorf("encode gaggle bundle: %w", err)
+	}
+	return out.Bytes(), nil
+}

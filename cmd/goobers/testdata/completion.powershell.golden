@@ -8,6 +8,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'connect'
         'examples'
         'scaffold'
+        'gaggle'
         'validate'
         'up'
         'down'

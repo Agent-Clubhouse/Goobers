@@ -563,6 +563,7 @@ type handlerConfig struct {
 	interventionContext     context.Context
 	runRevealer             func(context.Context, string) error
 	workflowMutations       WorkflowMutationService
+	gaggleBundles           GaggleBundleService
 	claims                  ClaimService
 	triggers                TriggerService
 	escalations             EscalationService
@@ -776,6 +777,18 @@ func WithWorkflowMutations(service WorkflowMutationService) HandlerOption {
 			return errors.New("http API workflow mutation service is required")
 		}
 		config.workflowMutations = service
+		return nil
+	}
+}
+
+// WithGaggleBundles enables the sanitized gaggle export and atomic import
+// routes behind the router's existing authentication and authorization gates.
+func WithGaggleBundles(service GaggleBundleService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("http API gaggle bundle service is required")
+		}
+		config.gaggleBundles = service
 		return nil
 	}
 }
@@ -1114,6 +1127,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)
+	registerGaggleBundleRoutes(router, config.gaggleBundles, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)

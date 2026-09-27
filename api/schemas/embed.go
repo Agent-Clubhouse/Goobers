@@ -60,6 +60,9 @@ const RemediationBriefV1 = "remediation-brief-v1.schema.json"
 // AgentToolkitManifest inventories the portable repository-side agent toolkit.
 const AgentToolkitManifest = "agent-toolkit-manifest.schema.json"
 
+// GaggleBundle is the sanitized portable gaggle export/import contract.
+const GaggleBundle = "gaggle-bundle.schema.json"
+
 // StageArtifactManifest is the workspace-relative artifact staging contract.
 const StageArtifactManifest = "stage-artifact-manifest.schema.json"
 
