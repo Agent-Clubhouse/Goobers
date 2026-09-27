@@ -44,7 +44,7 @@ func TestWithMinimumLifetimeRefreshesAShortLivedValue(t *testing.T) {
 				}
 				return "fresh", tc.freshExpiry, nil
 			})
-			value, expiresAt, err := withMinimumLifetime(held, refresh, clock)(context.Background())
+			value, expiresAt, err := held.WithLifetimeFloor(LifetimeFloor{Refresh: refresh, Now: clock})(context.Background())
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -67,5 +67,79 @@ func TestWithMinimumLifetimePassesSourceErrorsThrough(t *testing.T) {
 	})
 	if _, _, err := f.WithMinimumLifetime(refresh)(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("err = %v, want %v", err, want)
+	}
+}
+
+// TestWithLifetimeFloorDoesNotRepeatARefreshThatCannotLift pins that a
+// refresh which succeeds but leaves the value below the floor (an upstream
+// cache returning the same token) is not paid again on every resolve for that
+// value, and that it is reported once, without the value. A new held value
+// (the source's own cache moved on) is refreshed again.
+func TestWithLifetimeFloorDoesNotRepeatARefreshThatCannotLift(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	heldExpiry := now.Add(6 * time.Minute)
+	refreshes := 0
+	var reports []error
+	held := ExpiringResolveFunc(func(context.Context) (string, time.Time, error) {
+		return "held", heldExpiry, nil
+	})
+	resolve := held.WithLifetimeFloor(LifetimeFloor{
+		Refresh: func(context.Context) (string, time.Time, error) {
+			refreshes++
+			return "held", heldExpiry, nil
+		},
+		Now:             func() time.Time { return now },
+		OnShortDelivery: func(_ time.Time, err error) { reports = append(reports, err) },
+	})
+	for i := 0; i < 5; i++ {
+		value, expiresAt, err := resolve(context.Background())
+		if err != nil || value != "held" || !expiresAt.Equal(heldExpiry) {
+			t.Fatalf("resolve %d = (%q, %v, %v)", i, value, expiresAt, err)
+		}
+	}
+	if refreshes != 1 {
+		t.Fatalf("refreshes = %d, want 1 for one held value", refreshes)
+	}
+	if len(reports) != 1 || reports[0] != nil {
+		t.Fatalf("reports = %v, want one report with no error", reports)
+	}
+	heldExpiry = now.Add(7 * time.Minute)
+	if _, _, err := resolve(context.Background()); err != nil {
+		t.Fatalf("resolve after the held value moved on: %v", err)
+	}
+	if refreshes != 2 {
+		t.Fatalf("refreshes = %d, want a new held value to be refreshed", refreshes)
+	}
+}
+
+// TestWithLifetimeFloorReportsAFailedRefresh pins that a still-valid value
+// delivered because its refresh failed is reported with the refresh error,
+// and that the refresh is retried on the next resolve (an outage may end).
+func TestWithLifetimeFloorReportsAFailedRefresh(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	outage := errors.New("identity endpoint unavailable")
+	refreshes := 0
+	var reports []error
+	held := ExpiringResolveFunc(func(context.Context) (string, time.Time, error) {
+		return "held", now.Add(10 * time.Minute), nil
+	})
+	resolve := held.WithLifetimeFloor(LifetimeFloor{
+		Refresh: func(context.Context) (string, time.Time, error) {
+			refreshes++
+			return "", time.Time{}, outage
+		},
+		Now:             func() time.Time { return now },
+		OnShortDelivery: func(_ time.Time, err error) { reports = append(reports, err) },
+	})
+	for i := 0; i < 2; i++ {
+		if value, _, err := resolve(context.Background()); err != nil || value != "held" {
+			t.Fatalf("resolve %d = (%q, %v), want the held value", i, value, err)
+		}
+	}
+	if refreshes != 2 {
+		t.Fatalf("refreshes = %d, want a failed refresh retried", refreshes)
+	}
+	if len(reports) != 2 || !errors.Is(reports[0], outage) || !errors.Is(reports[1], outage) {
+		t.Fatalf("reports = %v, want the refresh error each time", reports)
 	}
 }

@@ -336,6 +336,92 @@ func TestADORepositoryTokenSourceRefreshesBelowTheDeliveryFloor(t *testing.T) {
 	}
 }
 
+// adoTestFailingSource is a rebuilt identity source whose token fetch fails,
+// as it does during a brief Entra, IMDS or az outage.
+type adoTestFailingSource struct{}
+
+func (adoTestFailingSource) Credential(context.Context) (providers.ADOCredential, error) {
+	return providers.ADOCredential{}, errors.New("transient identity outage")
+}
+
+// TestADORepositoryTokenSourceKeepsTheHeldTokenWhenARefreshFails pins that a
+// rebuilt source replaces the kept one only once it has produced a
+// credential: while rebuilt sources fail, every resolve still delivers the
+// held, still-valid token instead of failing, and the first rebuilt source
+// that succeeds is adopted.
+func TestADORepositoryTokenSourceKeepsTheHeldTokenWhenARefreshFails(t *testing.T) {
+	held := time.Now().Add(10 * time.Minute)
+	fresh := time.Now().Add(time.Hour)
+	builds := 0
+	outage := true
+	stubADOCredentialSource(t, func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+		builds++
+		switch {
+		case builds == 1:
+			return adoTestIdentitySource{credential: providers.ADOCredential{
+				Kind: providers.ADOCredentialKindBearer, Secret: "entra-held-token-0123456789", ExpiresAt: held,
+			}}, nil
+		case outage:
+			return adoTestFailingSource{}, nil
+		default:
+			return adoTestIdentitySource{credential: providers.ADOCredential{
+				Kind: providers.ADOCredentialKindBearer, Secret: "entra-fresh-token-0123456789", ExpiresAt: fresh,
+			}}, nil
+		}
+	})
+	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
+	if err != nil {
+		t.Fatalf("newADORepositoryTokenSource: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		token, expiresAt, err := mint(context.Background())
+		if err != nil {
+			t.Fatalf("resolve %d during the outage: %v", i, err)
+		}
+		if token != "entra-held-token-0123456789" || !expiresAt.Equal(held) {
+			t.Fatalf("resolve %d = (%q, %v), want the held token", i, token, expiresAt)
+		}
+	}
+	outage = false
+	for i := 0; i < 2; i++ {
+		token, expiresAt, err := mint(context.Background())
+		if err != nil || token != "entra-fresh-token-0123456789" || !expiresAt.Equal(fresh) {
+			t.Fatalf("resolve %d after the outage = (%q, %v, %v), want the fresh token", i, token, expiresAt, err)
+		}
+	}
+	if builds != 5 {
+		t.Fatalf("source built %d times, want 5 (one build, three failed refreshes, one adopted refresh)", builds)
+	}
+}
+
+// TestADORepositoryTokenSourceDoesNotRepeatAnUnhelpfulRefresh pins that when
+// a rebuilt source hands back the same short-lived token (the Azure CLI's own
+// token cache), later resolves of that token do not rebuild the source and
+// fetch again: one refresh per held token, not one per resolve.
+func TestADORepositoryTokenSourceDoesNotRepeatAnUnhelpfulRefresh(t *testing.T) {
+	short := time.Now().Add(credentials.MinDeliveredLifetime / 2)
+	builds := 0
+	stubADOCredentialSource(t, func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+		builds++
+		return adoTestIdentitySource{credential: providers.ADOCredential{
+			Kind: providers.ADOCredentialKindBearer, Secret: "entra-short-token-0123456789", ExpiresAt: short,
+		}}, nil
+	})
+	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
+	if err != nil {
+		t.Fatalf("newADORepositoryTokenSource: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		token, expiresAt, err := mint(context.Background())
+		if err != nil || token != "entra-short-token-0123456789" || !expiresAt.Equal(short) {
+			t.Fatalf("resolve %d = (%q, %v, %v)", i, token, expiresAt, err)
+		}
+	}
+	if builds != 2 {
+		t.Fatalf("source built %d times, want 2 (one build, one refresh)", builds)
+	}
+}
+
 // TestADORepositoryTokenSourceKeepsATokenAboveTheDeliveryFloor pins the
 // other side: a cached token with enough life left is reused, not rebuilt.
 func TestADORepositoryTokenSourceKeepsATokenAboveTheDeliveryFloor(t *testing.T) {

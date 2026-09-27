@@ -190,8 +190,9 @@ func (s *TokenSource) TokenWithExpiry(ctx context.Context) (string, time.Time, e
 	return s.mintAndCacheLocked(ctx, now)
 }
 
-// Refresh mints a new installation token whatever the cached one's remaining
-// lifetime, caches it, and returns it with its expiry. It is the refresh half
+// Refresh mints a new installation token unless the cached one already has
+// credentials.MinDeliveredLifetime left, caches it, and returns it with its
+// expiry. It is the refresh half
 // of DeliverySource: a token about to be handed to a stage that cannot
 // refresh it is re-minted rather than delivered with minutes left (#5905).
 func (s *TokenSource) Refresh(ctx context.Context) (string, time.Time, error) {
@@ -200,15 +201,28 @@ func (s *TokenSource) Refresh(ctx context.Context) (string, time.Time, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.mintAndCacheLocked(ctx, s.cfg.Now())
+	// Concurrent deliveries that all saw the short-lived token queue here;
+	// the first re-mints and the rest take its token from the cache rather
+	// than each minting (and registering) their own.
+	now := s.cfg.Now()
+	if s.token != "" && !s.expiresAt.Before(now.Add(credentials.MinDeliveredLifetime)) {
+		return s.token, s.expiresAt, nil
+	}
+	return s.mintAndCacheLocked(ctx, now)
 }
 
 // DeliverySource is TokenWithExpiry with the daemon's delivery floor: a
 // cached token with less than credentials.MinDeliveredLifetime left is
 // re-minted first. It is the source the daemon registers for a grant, so a
 // token a stage receives, locally or in a pod, has at least that long to live.
-func (s *TokenSource) DeliverySource() credentials.ExpiringResolveFunc {
-	return credentials.ExpiringResolveFunc(s.TokenWithExpiry).WithMinimumLifetimeClock(s.Refresh, s.cfg.Now)
+// onShortDelivery, when non-nil, is told when a token below the floor is
+// delivered anyway (credentials.LifetimeFloor.OnShortDelivery).
+func (s *TokenSource) DeliverySource(onShortDelivery func(expiresAt time.Time, err error)) credentials.ExpiringResolveFunc {
+	return credentials.ExpiringResolveFunc(s.TokenWithExpiry).WithLifetimeFloor(credentials.LifetimeFloor{
+		Refresh:         s.Refresh,
+		Now:             s.cfg.Now,
+		OnShortDelivery: onShortDelivery,
+	})
 }
 
 // mintAndCacheLocked mints a token, registers it and caches it. s.mu is held.

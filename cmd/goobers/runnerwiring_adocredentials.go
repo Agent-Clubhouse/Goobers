@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,15 +75,7 @@ var newADORepositoryTokenSource = func(repo instance.RepoRef, registrar credenti
 			return nil, err
 		}
 	}
-	resolve := func(ctx context.Context, get func() (providers.ADOCredentialSource, error)) (string, time.Time, error) {
-		current, err := get()
-		if err != nil {
-			return "", time.Time{}, err
-		}
-		credential, err := current.Credential(ctx)
-		if err != nil {
-			return "", time.Time{}, err
-		}
+	deliver := func(credential providers.ADOCredential) (string, time.Time, error) {
 		if registrar != nil {
 			for _, form := range credential.ScrubForms() {
 				registrar.Register([]byte(form))
@@ -89,17 +83,32 @@ var newADORepositoryTokenSource = func(repo instance.RepoRef, registrar credenti
 		}
 		return credential.Secret, credential.ExpiresAt, nil
 	}
+	current := credentials.ExpiringResolveFunc(func(ctx context.Context) (string, time.Time, error) {
+		held, err := source.get()
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		credential, err := held.Credential(ctx)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		return deliver(credential)
+	})
 	// The delivery floor (#5905): an Entra token with less than
 	// credentials.MinDeliveredLifetime left is fetched again from a rebuilt
 	// source before it reaches a stage, locally or through the credential
 	// plane. Rebuilding (not just clearing this cache) matters for the
 	// workload and managed identity kinds, whose Azure SDK credential keeps a
 	// token cache of its own. A PAT states no expiry and is never refreshed.
-	current := credentials.ExpiringResolveFunc(func(ctx context.Context) (string, time.Time, error) {
-		return resolve(ctx, source.get)
-	})
-	return current.WithMinimumLifetime(func(ctx context.Context) (string, time.Time, error) {
-		return resolve(ctx, source.rebuild)
+	return current.WithLifetimeFloor(credentials.LifetimeFloor{
+		Refresh: func(ctx context.Context) (string, time.Time, error) {
+			credential, err := source.refresh(ctx)
+			if err != nil {
+				return "", time.Time{}, err
+			}
+			return deliver(credential)
+		},
+		OnShortDelivery: logShortCredentialDelivery("Azure DevOps token for repository " + repo.Owner + "/" + repo.Name),
 	}), nil
 }
 
@@ -127,18 +136,43 @@ func (l *lazyADOCredentialSource) get() (providers.ADOCredentialSource, error) {
 	return source, nil
 }
 
-// rebuild replaces the kept source with a newly built one, so the next
-// credential is fetched without any cache the old source held. A failed build
-// keeps the old source.
-func (l *lazyADOCredentialSource) rebuild() (providers.ADOCredentialSource, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	source, err := l.build()
+// refresh builds a new source and fetches a credential from it, bypassing
+// any cache the kept source holds. The new source replaces the kept one only
+// once it has produced a credential: a failed build or fetch (a brief Entra,
+// IMDS or az outage) leaves the kept source, and its still-valid cached
+// token, in place for later resolves.
+func (l *lazyADOCredentialSource) refresh(ctx context.Context) (providers.ADOCredential, error) {
+	candidate, err := l.build()
 	if err != nil {
-		return nil, err
+		return providers.ADOCredential{}, err
 	}
-	l.source = source
-	return source, nil
+	credential, err := candidate.Credential(ctx)
+	if err != nil {
+		return providers.ADOCredential{}, err
+	}
+	if strings.TrimSpace(credential.Secret) == "" {
+		return providers.ADOCredential{}, credentials.ErrTokenRefEmpty
+	}
+	l.mu.Lock()
+	l.source = candidate
+	l.mu.Unlock()
+	return credential, nil
+}
+
+// logShortCredentialDelivery returns the credentials.LifetimeFloor observer
+// for a daemon minting source: it logs, without the value, each delivery of a
+// still-valid token below credentials.MinDeliveredLifetime, so an operator
+// can see a refresh that keeps failing (or a source whose cache cannot be
+// bypassed) rather than only a later mid-stage authentication failure.
+func logShortCredentialDelivery(what string) func(time.Time, error) {
+	return func(expiresAt time.Time, err error) {
+		until := expiresAt.UTC().Format(time.RFC3339)
+		if err != nil {
+			log.Printf("credentials: %s expires at %s, inside the %s delivery floor; refresh failed, delivering the still-valid token: %v", what, until, credentials.MinDeliveredLifetime, err)
+			return
+		}
+		log.Printf("credentials: %s expires at %s, inside the %s delivery floor; the source returned no longer-lived token, delivering it", what, until, credentials.MinDeliveredLifetime)
+	}
 }
 
 // referenceReadBindings returns bindings with the token ref cleared for every

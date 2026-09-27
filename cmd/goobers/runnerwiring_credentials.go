@@ -446,7 +446,7 @@ var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.
 	if err != nil {
 		return nil, err
 	}
-	return source.DeliverySource(), nil
+	return source.DeliverySource(logShortCredentialDelivery("GitHub App token for repository " + repo.Owner + "/" + repo.Name)), nil
 }
 
 var newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
@@ -482,7 +482,7 @@ var newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppCo
 	if err != nil {
 		return nil, err
 	}
-	return source.DeliverySource(), nil
+	return source.DeliverySource(logShortCredentialDelivery("agent:model GitHub App token " + app.Name)), nil
 }
 
 // newDaemonIdentityGitHubAppTokenSource builds the installation-token minting
@@ -526,7 +526,7 @@ var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfi
 	if err != nil {
 		return nil, err
 	}
-	return source.DeliverySource(), nil
+	return source.DeliverySource(logShortCredentialDelivery("daemon identity GitHub App token")), nil
 }
 
 // newWorkflowSourceAppTokenSource builds the installation-token minting source
