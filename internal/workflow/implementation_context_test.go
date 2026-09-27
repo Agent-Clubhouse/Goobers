@@ -17,8 +17,9 @@ func TestImplementationWorkflowsGatherFirstPassContext(t *testing.T) {
 	// the acme-web example is a separate customer fixture, deliberately
 	// untouched by this defect fix.
 	wantGatherNext := map[string]string{
-		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "workflows", "implementation.yaml"):    "implement",
-		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml"): "warm-module-cache",
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "workflows", "implementation.yaml"):                          "implement",
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation-pre-review-experiment.yaml"): "warm-module-cache",
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml"):                       "warm-module-cache",
 	}
 	for path, wantNext := range wantGatherNext {
 		t.Run(path, func(t *testing.T) {

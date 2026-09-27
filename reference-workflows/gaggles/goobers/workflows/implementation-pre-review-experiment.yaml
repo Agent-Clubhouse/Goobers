@@ -70,6 +70,28 @@ spec:
         - claim-backlog-items
       expectedOutputs:
         - claimed-item
+      next: recovery-resume
+
+    # Reclaims first adopt any compatible retained implementation from a
+    # prior terminal run. No matching checkpoint is the normal fresh path;
+    # stale, divergent, or conflicting state fails closed for inspection.
+    - name: recovery-resume
+      type: deterministic
+      goal: Restore and adopt compatible retained work for this claimed issue before implementation.
+      run:
+        command: ["goobers", "recovery-resume"]
+      inputs:
+        resultFile: "recovery-resume.json"
+      expectedOutputs:
+        - recovery-resume
+      capabilities:
+        - repo:push
+      policyActions:
+        - modify-repository
+      timeoutSeconds: 360
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
       next: gather-implement-context
 
     # Workflow enrichment (#1299): produce one bounded journal artifact with
