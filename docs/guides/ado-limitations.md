@@ -46,8 +46,8 @@ No new DSL is involved. Each stage is routed by role
   `issue-close-out`, the issue half of `post-merge`, `backlog-assignment`,
   `backlog-health`, `backlog-dedupe`, `check-issue-staleness`, the
   decomposition stages (`select-source`, `validate-plan`, `publish-batch`),
-  and the daemon's park, failure and claim-release handlers read and write
-  the GitHub issues. Claims are keyed by the backlog provider.
+  `set-milestone`, and the daemon's park, failure and claim-release handlers
+  read and write the GitHub issues. Claims are keyed by the backlog provider.
 - **Credentials follow the capability family.** `github:issues:*` and
   `github:milestones:write` are backed by the backlog repository's `repos[]`
   entry. Pull-request and repository capabilities are backed by the ADO
@@ -102,15 +102,17 @@ Not yet covered in topology (b):
 
 - `goobers run --continue` of a run that claimed a GitHub issue. It stops
   with an error naming the provider mismatch.
-- A stage pod on the cluster substrate reading the claim-marker bot login for
-  the backlog repository. The dispatcher stamps the login only for the routed
-  repository.
+- Stage pods on the cluster substrate. A stage pod has no instance config, so
+  it cannot route backlog work and credentials by role. The engine refuses
+  every stage of a topology (b) run before a pod is created (failure code
+  `cross_provider_backlog_pod_unsupported`). Place the gaggle's stages on a
+  self runner.
 - The daemon's terminal claim-marker release for a Gitea backlog. As on a
   plain Gitea gaggle, backlog curation reconciles the marker instead.
-- Pull-request stages that authenticate to Azure DevOps with
-  `github:issues:write`, such as `pr-comment-watch` and the merge-queue
-  remediation label. Their backlog-family credential belongs to GitHub in
-  topology (b), so they stop with the refusal above.
+- A stage that is not routed by role and opens the Azure DevOps repository
+  with a `github:issues:*` or `github:milestones:write` credential. That
+  credential belongs to GitHub in topology (b), so the stage stops with the
+  refusal above. Every shipped backlog stage listed above is routed by role.
 
 ## One gaggle, two code providers (topology c)
 

@@ -527,6 +527,9 @@ func TestTopologyBBacklogStagesDispatchToTheBacklogProvider(t *testing.T) {
 		}},
 		{"validate-plan", nil, capability.GitHubIssuesRead, setupTopologyBValidatePlan},
 		{"publish-batch", nil, capability.GitHubIssuesWrite, setupTopologyBPublishBatch},
+		// Milestones live with the backlog issues, and
+		// github:milestones:write is bound to the backlog credential.
+		{"set-milestone", []string{"--item", "7", "--milestone", "22"}, capability.GitHubMilestonesWrite, func(*testing.T) {}},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
 			root := initDemo(t)
