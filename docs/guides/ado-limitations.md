@@ -60,6 +60,16 @@ No new DSL is involved. Each stage is routed by role
     for the backlog repository.
   - A stage that would open the ADO repository with a backlog-family
     credential is refused with an error instead of sending it to Azure DevOps.
+  - **Caveat: an explicit `credentials:` entry still wins.** An instance
+    `credentials:` entry for a pull-request or repository capability (for
+    example `github:pr:write` or `repo:push`) replaces the ADO repository's
+    credential for that capability, as it does everywhere else, so stages
+    that declare it send that token to Azure DevOps. Goobers cannot tell
+    from the entry which service issued the token. Use an Azure DevOps
+    credential in such an entry, or remove it so the repository's own
+    credential backs the capability. `validate` warns about each such entry
+    while a gaggle is in topology (b) (CFG012). CFG012 is strict-neutral:
+    `goobers validate --strict` prints it but does not fail on it.
 - **Pull requests name the issue by URL.** On Azure DevOps, `#42` in a pull
   request description or squash commit message means ADO work item 42. So
   `open-pr` writes `Fixes https://github.com/example-org/example-backlog/issues/42`,

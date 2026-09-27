@@ -523,7 +523,7 @@ func TestCheckoutRepoWorkspaceAncestryGuardAtTheRealSeam(t *testing.T) {
 		stampEnv(t, "run-stale", staleDigest)
 		ws := t.TempDir()
 		var errOut strings.Builder
-		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
 			t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 		}
 		if got := strings.TrimSpace(runGitOutputT(t, ws, "rev-parse", "HEAD")); got != aheadHead {
@@ -565,7 +565,7 @@ func TestCheckoutRepoWorkspaceAncestryGuardAtTheRealSeam(t *testing.T) {
 		stampEnv(t, "run-drift", digest)
 		ws := t.TempDir()
 		var errOut strings.Builder
-		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
 			t.Fatalf("checkout failed because base merely advanced mid-run: %v\nstderr: %s", err, errOut.String())
 		}
 		if _, err := os.Stat(filepath.Join(ws, "carried.txt")); err != nil {

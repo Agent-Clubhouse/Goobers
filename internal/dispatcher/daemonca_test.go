@@ -89,7 +89,7 @@ const (
 var daemonAPICalls = map[string]func(ctx context.Context, base string, deadline time.Duration) error{
 	"credential resolve": func(ctx context.Context, base string, deadline time.Duration) error {
 		client := &CredentialResolveClient{BaseURL: base, Token: "tok", RetryDeadline: deadline, RetryPolicy: fastRetryPolicy()}
-		_, err := client.Resolve(ctx, "run-1", "stage", []string{"contents:write"})
+		_, err := client.ResolveStage(ctx, "run-1", "stage", []string{"contents:write"})
 		return err
 	},
 	"blob get": func(ctx context.Context, base string, deadline time.Duration) error {
