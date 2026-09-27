@@ -76,31 +76,36 @@ func newPrivateCADaemon(t *testing.T) *privateCADaemon {
 	return daemon
 }
 
-// daemonCARetryDeadline bounds the retrying clients' refused case.
-const daemonCARetryDeadline = 50 * time.Millisecond
+// Retry deadlines for the retrying clients: generous when the handshake must
+// succeed (a -race CI runner can take well over 50ms), short when it is
+// refused and the clients would otherwise retry until the deadline.
+const (
+	daemonCAReachDeadline  = 30 * time.Second
+	daemonCARefuseDeadline = 50 * time.Millisecond
+)
 
 // daemonAPICalls drives every dispatcher daemon-API client through its
 // default (nil Client) path.
-var daemonAPICalls = map[string]func(ctx context.Context, base string) error{
-	"credential resolve": func(ctx context.Context, base string) error {
-		client := &CredentialResolveClient{BaseURL: base, Token: "tok", RetryDeadline: daemonCARetryDeadline, RetryPolicy: fastRetryPolicy()}
+var daemonAPICalls = map[string]func(ctx context.Context, base string, deadline time.Duration) error{
+	"credential resolve": func(ctx context.Context, base string, deadline time.Duration) error {
+		client := &CredentialResolveClient{BaseURL: base, Token: "tok", RetryDeadline: deadline, RetryPolicy: fastRetryPolicy()}
 		_, err := client.Resolve(ctx, "run-1", "stage", []string{"contents:write"})
 		return err
 	},
-	"blob get": func(ctx context.Context, base string) error {
+	"blob get": func(ctx context.Context, base string, deadline time.Duration) error {
 		_, err := (&BlobClient{BaseURL: base, Token: "tok"}).Get(ctx, "sha256:abc")
 		return err
 	},
-	"blob put": func(ctx context.Context, base string) error {
-		client := &BlobClient{BaseURL: base, Token: "tok", RetryDeadline: daemonCARetryDeadline, RetryPolicy: fastRetryPolicy()}
+	"blob put": func(ctx context.Context, base string, deadline time.Duration) error {
+		client := &BlobClient{BaseURL: base, Token: "tok", RetryDeadline: deadline, RetryPolicy: fastRetryPolicy()}
 		return client.Put(ctx, "sha256:abc", []byte("blob"))
 	},
-	"stage credentials": func(ctx context.Context, base string) error {
+	"stage credentials": func(ctx context.Context, base string, deadline time.Duration) error {
 		_, err := ResolveStageCredentials(ctx, nil, base, "tok", StageCredentialRequest{RunID: "run-1", Stage: "stage"})
 		return err
 	},
-	"surrender": func(ctx context.Context, base string) error {
-		client := &SurrenderPutClient{BaseURL: base, Token: "tok", RetryDeadline: daemonCARetryDeadline, RetryPolicy: fastRetryPolicy()}
+	"surrender": func(ctx context.Context, base string, deadline time.Duration) error {
+		client := &SurrenderPutClient{BaseURL: base, Token: "tok", RetryDeadline: deadline, RetryPolicy: fastRetryPolicy()}
 		return client.Put(ctx, "run-1", "stage", 1, []byte(`{}`))
 	},
 }
@@ -115,7 +120,7 @@ func TestDaemonAPIClientsTrustTheConfiguredDaemonCA(t *testing.T) {
 		t.Run(name+"/configured", func(t *testing.T) {
 			daemon := newPrivateCADaemon(t)
 			t.Setenv(daemonclient.CAEnv, daemon.caPEM)
-			if err := call(context.Background(), daemon.server.URL); err != nil {
+			if err := call(context.Background(), daemon.server.URL, daemonCAReachDeadline); err != nil {
 				t.Fatalf("configured daemon CA: %v", err)
 			}
 			if daemon.served.Load() == 0 {
@@ -125,7 +130,7 @@ func TestDaemonAPIClientsTrustTheConfiguredDaemonCA(t *testing.T) {
 		t.Run(name+"/unset", func(t *testing.T) {
 			daemon := newPrivateCADaemon(t)
 			t.Setenv(daemonclient.CAEnv, "")
-			if err := call(context.Background(), daemon.server.URL); err == nil {
+			if err := call(context.Background(), daemon.server.URL, daemonCARefuseDeadline); err == nil {
 				t.Fatal("unset daemon CA reached a private-CA daemon")
 			}
 			if served := daemon.served.Load(); served != 0 {
