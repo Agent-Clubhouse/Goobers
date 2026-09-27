@@ -320,6 +320,85 @@ func TestOpenPRADOWorkItemLinkRequiresDedicatedCapability(t *testing.T) {
 	}
 }
 
+func TestOpenPRIssueUsesExplicitReadOnlySelection(t *testing.T) {
+	t.Setenv(executor.InputEnvVar("itemID"), "3295607")
+	t.Setenv(executor.InputEnvVar("itemTitle"), "Selected canary")
+
+	id, title, ok, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || id != "3295607" || title != "Selected canary" {
+		t.Fatalf("openPRIssue = (%q, %q, %t), want explicit selected item", id, title, ok)
+	}
+}
+
+func TestOpenPRIssueRejectsTitleWithoutIdentity(t *testing.T) {
+	t.Setenv(executor.InputEnvVar("itemTitle"), "Ambiguous item")
+
+	_, _, _, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	if err == nil || !strings.Contains(err.Error(), "itemTitle requires itemID") {
+		t.Fatalf("openPRIssue error = %v, want itemTitle identity error", err)
+	}
+}
+
+func TestOpenPRIssueAcceptsMatchingClaimedIdentity(t *testing.T) {
+	root := initDemo(t)
+	const runID = "run-matching-item"
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"id": "42", "title": "Claimed title"},
+	}); err != nil {
+		t.Fatalf("record claimed item: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	t.Setenv(executor.InputEnvVar("itemID"), "42")
+
+	id, title, ok, err := openPRIssue(root, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || id != "42" || title != "Claimed title" {
+		t.Fatalf("openPRIssue = (%q, %q, %t), want matching claimed item", id, title, ok)
+	}
+}
+
+func TestOpenPRIssueRejectsConflictingClaimedIdentity(t *testing.T) {
+	root := initDemo(t)
+	const runID = "run-conflicting-item"
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"id": "42", "title": "Claimed title"},
+	}); err != nil {
+		t.Fatalf("record claimed item: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	t.Setenv(executor.InputEnvVar("itemID"), "84")
+
+	_, _, _, err = openPRIssue(root, runID)
+	if err == nil || !strings.Contains(err.Error(), `itemID "84" conflicts with claimed item "42"`) {
+		t.Fatalf("openPRIssue error = %v, want conflicting identity error", err)
+	}
+}
+
 func TestOpenPRGitHubDoesNotResolveADOWorkItemAuthority(t *testing.T) {
 	previous := newADOProviderForWorkItemWrite
 	called := false
@@ -338,6 +417,33 @@ func TestOpenPRGitHubDoesNotResolveADOWorkItemAuthority(t *testing.T) {
 	}
 	if called {
 		t.Fatal("GitHub open-pr resolved ADO work-item authority")
+	}
+}
+
+func TestOpenPRGitHubSupportsExplicitItemWithoutADOAuthority(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "run-github-explicit-item")
+	t.Setenv(executor.InputEnvVar("itemID"), "42")
+	t.Setenv(executor.InputEnvVar("itemTitle"), "Explicit GitHub issue")
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "")
+	t.Chdir(t.TempDir())
+
+	if code, stdout, stderr := runArgs(t, "open-pr", root); code != 0 {
+		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	server.mu.Lock()
+	pr := server.prs[1]
+	server.mu.Unlock()
+	if pr == nil {
+		t.Fatal("no GitHub PR opened")
+	}
+	if pr.title != "Explicit GitHub issue" {
+		t.Fatalf("GitHub PR title = %q, want explicit issue title", pr.title)
+	}
+	if !strings.Contains(pr.body, "Fixes #42") {
+		t.Fatalf("GitHub PR body = %q, want GitHub issue back-reference", pr.body)
 	}
 }
 
