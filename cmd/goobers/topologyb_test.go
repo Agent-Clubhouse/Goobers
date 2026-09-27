@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -419,5 +420,73 @@ func TestIssueCloseOutProviderSplitsTopologyB(t *testing.T) {
 	}
 	if !reflect.DeepEqual(opened, []providers.RepositoryRef{topologyBBacklogRef(), topologyBRouted()}) {
 		t.Fatalf("opened %v, want the GitHub backlog then the ADO project", opened)
+	}
+}
+
+// TestTopologyBBacklogStagesDispatchToTheBacklogProvider is the topology (b)
+// row set of the provider dispatch conformance gate: every backlog stage of a
+// (b) gaggle builds its issue provider on GitHub, for the backlog repository,
+// from the github:issues:* capability its manifest row declares, and builds no
+// Azure DevOps provider for that work.
+func TestTopologyBBacklogStagesDispatchToTheBacklogProvider(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		args    []string
+		want    capability.Capability
+		setup   func(*testing.T)
+	}{
+		{"backlog-query", []string{"--read-only"}, capability.GitHubIssuesRead, func(t *testing.T) {
+			t.Setenv(executor.InputEnvVar("trustLabel"), "goobers:approved")
+		}},
+		{"backlog-assignment", nil, capability.GitHubIssuesWrite, func(t *testing.T) {
+			t.Setenv(executor.InputEnvVar("trustLabel"), "goobers:approved")
+			t.Setenv(executor.InputEnvVar("strategy"), assignmentStrategyConstantCap)
+			t.Setenv(executor.InputEnvVar("roster"), `[{"assignee":"goober","maxOpen":1}]`)
+		}},
+		{"backlog-dedupe", nil, capability.GitHubIssuesRead, func(t *testing.T) {
+			t.Setenv("GOOBERS_RUN_ID", "dispatch-backlog-dedupe")
+			t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+		}},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			root := initDemo(t)
+			topologyBFixture(t, root, "example")
+			tc.setup(t)
+			repo := topologyBRouted()
+			t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+			t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+			t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+			t.Setenv(executor.RepoNameEnvVar, repo.Name)
+			t.Setenv("GOOBERS_GAGGLE", "example")
+			t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), "result.json"))
+			deliverEveryADOStageCapability(t)
+
+			previousADO := newADOProviderForStage
+			newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+				t.Errorf("%s built an Azure DevOps provider for %+v; backlog work belongs to the GitHub backlog", tc.command, routed)
+				return nil, errors.New(dispatchProbeError)
+			}
+			t.Cleanup(func() { newADOProviderForStage = previousADO })
+			previousGitHub := stageProviderFactories[providers.ProviderGitHub]
+			t.Cleanup(func() { stageProviderFactories[providers.ProviderGitHub] = previousGitHub })
+			var built []stageProviderConfig
+			stageProviderFactories[providers.ProviderGitHub] = func(cfg stageProviderConfig) (providers.Provider, error) {
+				built = append(built, cfg)
+				return nil, errors.New(dispatchProbeError)
+			}
+
+			args := append(append([]string{tc.command}, tc.args...), root)
+			code, _, stderr := runArgs(t, args...)
+			if code != 1 || len(built) == 0 || !strings.Contains(stderr, dispatchProbeError) {
+				t.Fatalf("code = %d, built = %d, stderr = %q; want the GitHub dispatch probe failure", code, len(built), stderr)
+			}
+			if built[0].repo != topologyBBacklogRef() {
+				t.Fatalf("%s opened %+v, want the GitHub backlog %+v", tc.command, built[0].repo, topologyBBacklogRef())
+			}
+			if built[0].capability != tc.want {
+				t.Fatalf("%s built its backlog provider from %q, want %q", tc.command, built[0].capability, tc.want)
+			}
+			assertManifestDeclares(t, tc.command, string(tc.want))
+		})
 	}
 }

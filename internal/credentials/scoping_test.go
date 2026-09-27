@@ -26,13 +26,13 @@ var twoRepoBindings = []RepoBinding{
 func TestRunnerGrants_RoutesToGagglesOwnRepo(t *testing.T) {
 	caps := []string{"repo:push", "github:pr:write"}
 
-	a := grantMap(RunnerGrants(twoRepoBindings, "alpha-org", "site", caps, nil))
+	a := grantMap(RunnerGrants(twoRepoBindings, "alpha-org", "site", nil, caps, nil))
 	for _, c := range caps {
 		if a[c] != "alpha-org/site" {
 			t.Errorf("gaggle A: %s granted %q, want alpha-org/site", c, a[c])
 		}
 	}
-	b := grantMap(RunnerGrants(twoRepoBindings, "bravo-org", "app", caps, nil))
+	b := grantMap(RunnerGrants(twoRepoBindings, "bravo-org", "app", nil, caps, nil))
 	for _, c := range caps {
 		if b[c] != "bravo-org/app" {
 			t.Errorf("gaggle B: %s granted %q, want bravo-org/app", c, b[c])
@@ -57,7 +57,7 @@ func TestRunnerGrants_FallsBackToFirstRepo(t *testing.T) {
 		{"", ""},            // instance-level caller
 		{"unknown", "repo"}, // a gaggle whose repo has no configured token
 	} {
-		got := grantMap(RunnerGrants(twoRepoBindings, tc.owner, tc.name, caps, nil))
+		got := grantMap(RunnerGrants(twoRepoBindings, tc.owner, tc.name, nil, caps, nil))
 		for _, c := range caps {
 			if got[c] != "alpha-org/site" {
 				t.Errorf("(%q,%q): %s granted %q, want first-repo alpha-org/site", tc.owner, tc.name, c, got[c])
@@ -74,7 +74,7 @@ func TestRunnerGrants_OverrideBeatsRepoDefault(t *testing.T) {
 	caps := []string{"repo:push", "agent:model"}
 	overrides := []Grant{{Capability: "agent:model", Ref: "credential:agent:model"}}
 
-	got := grantMap(RunnerGrants(twoRepoBindings, "bravo-org", "app", caps, overrides))
+	got := grantMap(RunnerGrants(twoRepoBindings, "bravo-org", "app", nil, caps, overrides))
 	if got["repo:push"] != "bravo-org/app" {
 		t.Errorf("repo:push granted %q, want bravo-org/app", got["repo:push"])
 	}
@@ -87,7 +87,7 @@ func TestRunnerGrants_OverrideBeatsRepoDefault(t *testing.T) {
 // repo-default token; only override-sourced capabilities are granted.
 func TestRunnerGrants_NoReposLeavesOnlyOverrides(t *testing.T) {
 	overrides := []Grant{{Capability: "agent:model", Ref: "credential:agent:model"}}
-	got := RunnerGrants(nil, "", "", []string{"repo:push", "agent:model"}, overrides)
+	got := RunnerGrants(nil, "", "", nil, []string{"repo:push", "agent:model"}, overrides)
 	want := []Grant{{Capability: "agent:model", Ref: "credential:agent:model"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("grants = %+v, want only the override %+v", got, want)
@@ -166,7 +166,7 @@ func TestRepoScopedCapability(t *testing.T) {
 func TestRunnerGrants_DeterministicOrder(t *testing.T) {
 	caps := []string{"repo:push", "github:pr:write"}
 	overrides := []Grant{{Capability: "agent:model", Ref: "credential:agent:model"}}
-	got := RunnerGrants(twoRepoBindings, "alpha-org", "site", caps, overrides)
+	got := RunnerGrants(twoRepoBindings, "alpha-org", "site", nil, caps, overrides)
 	wantOrder := []string{"repo:push", "github:pr:write", "agent:model"}
 	if len(got) != len(wantOrder) {
 		t.Fatalf("got %d grants, want %d", len(got), len(wantOrder))

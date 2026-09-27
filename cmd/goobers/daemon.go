@@ -1198,7 +1198,7 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 	for i, capability := range credentialedCapabilities {
 		caps[i] = string(capability)
 	}
-	grants := credentials.RoleRunnerGrants(bindings, owner, project.Name, gaggleBacklogRole(project, backlog), caps, overrides)
+	grants := credentials.RunnerGrants(bindings, owner, project.Name, gaggleBacklogRole(project, backlog), caps, overrides)
 	envByCapability := make(map[string]string, len(grants))
 	for _, grant := range grants {
 		if env := envByRef[grant.Ref]; env != "" {

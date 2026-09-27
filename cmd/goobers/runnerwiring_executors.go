@@ -234,7 +234,7 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, bac
 	for i, c := range credentialedCapabilities {
 		caps[i] = string(c)
 	}
-	grants := credentials.RoleRunnerGrants(bindings, owner, project.Name, gaggleBacklogRole(project, backlog), caps, overrides)
+	grants := credentials.RunnerGrants(bindings, owner, project.Name, gaggleBacklogRole(project, backlog), caps, overrides)
 	result := make(map[string]bool, len(grants))
 	for _, grant := range grants {
 		result[grant.Capability] = true

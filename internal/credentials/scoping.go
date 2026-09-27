@@ -12,28 +12,6 @@ type RepoBinding struct {
 	TokenRef string
 }
 
-// RunnerGrants computes the runner-owned credential grants for a gaggle whose
-// project repo is (owner, name). Every capability in credentialedCaps is granted
-// that gaggle's own repo token — the binding whose Owner/Name match — so a
-// gaggle's stages only ever hold a token for that gaggle's repo, not a shared
-// instance-wide one (per-repo credential scoping, docs/design/v1/
-// multi-gaggle-validation.md §G1). When no binding matches (a single-repo or
-// legacy instance, or an unqualified caller), the FIRST binding backs the repo
-// capabilities — byte-identical to the pre-scoping "first repo's token backs
-// every credentialed capability" default, so a one-gaggle instance is unchanged.
-//
-// overrides source individual capabilities from their own refs (#287 — e.g.
-// agent:model from a personal token): an override for a capability the repo
-// token would otherwise back REPLACES that grant, and a new capability is added.
-// These stay unqualified (shared) — the agent-model token every gaggle uses.
-//
-// Grant order is deterministic: the repo-capability defaults first (in
-// credentialedCaps order), then any override-only capabilities (in overrides
-// order), so the resulting grant slice is stable across builds.
-func RunnerGrants(bindings []RepoBinding, owner, name string, credentialedCaps []string, overrides []Grant) []Grant {
-	return RoleRunnerGrants(bindings, owner, name, nil, credentialedCaps, overrides)
-}
-
 // BacklogRole names the repository that backs a gaggle's backlog-role
 // capabilities when its backlog lives on a different provider than its
 // project (topology (b), docs/design/ado-parity-dsl-2-0.md §7.2). Owner and
@@ -45,19 +23,36 @@ type BacklogRole struct {
 	Capabilities []string
 }
 
-// RoleRunnerGrants is RunnerGrants with a role-aware binding choice. A nil
-// backlog is RunnerGrants exactly. With a backlog role, each credentialed
+// RunnerGrants computes the runner-owned credential grants for a gaggle whose
+// project repo is (owner, name). Every capability in credentialedCaps is granted
+// that gaggle's own repo token — the binding whose Owner/Name match — so a
+// gaggle's stages only ever hold a token for that gaggle's repo, not a shared
+// instance-wide one (per-repo credential scoping, docs/design/v1/
+// multi-gaggle-validation.md §G1). When no binding matches (a single-repo or
+// legacy instance, or an unqualified caller), the FIRST binding backs the repo
+// capabilities — byte-identical to the pre-scoping "first repo's token backs
+// every credentialed capability" default, so a one-gaggle instance is unchanged.
+//
+// backlog is the role-aware binding choice, nil for every gaggle whose backlog
+// shares its project's provider. With a backlog role, each credentialed
 // capability in backlog.Capabilities is granted the binding matching the
 // backlog repository's owner/name instead of the project repo's, and every
-// other capability keeps the project binding.
+// other capability keeps the project binding. The two repositories are on
+// different providers, so a backlog capability is never backed by the project
+// repo's credential: when no binding with a token matches the backlog
+// repository, the capability gets no grant and a stage that declares it fails
+// closed for want of a credential, rather than sending one provider's
+// credential to the other.
 //
-// The two repositories are on different providers, so a backlog capability is
-// never backed by the project repo's credential: when no binding with a token
-// matches the backlog repository, the capability gets no grant and a stage
-// that declares it fails closed for want of a credential, rather than sending
-// one provider's credential to the other. overrides still apply last, as in
-// RunnerGrants.
-func RoleRunnerGrants(bindings []RepoBinding, owner, name string, backlog *BacklogRole, credentialedCaps []string, overrides []Grant) []Grant {
+// overrides source individual capabilities from their own refs (#287 — e.g.
+// agent:model from a personal token): an override for a capability the repo
+// token would otherwise back REPLACES that grant, and a new capability is added.
+// These stay unqualified (shared) — the agent-model token every gaggle uses.
+//
+// Grant order is deterministic: the repo-capability defaults first (in
+// credentialedCaps order), then any override-only capabilities (in overrides
+// order), so the resulting grant slice is stable across builds.
+func RunnerGrants(bindings []RepoBinding, owner, name string, backlog *BacklogRole, credentialedCaps []string, overrides []Grant) []Grant {
 	defaultRef := ""
 	if len(bindings) > 0 {
 		defaultRef = bindings[0].TokenRef

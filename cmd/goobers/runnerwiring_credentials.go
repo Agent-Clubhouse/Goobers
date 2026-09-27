@@ -188,7 +188,7 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 		}
 		overrides = append(overrides, credentials.Grant{Capability: key, Ref: credentialRefName(key)})
 	}
-	grants := credentials.RoleRunnerGrants(bindings, gaggleOwner, gaggleName, backlog, caps, overrides)
+	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, backlog, caps, overrides)
 	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
 	// AdditionalRepos is granted only a repo-qualified contents:read token, drawn
 	// from that repo's own configured token binding. These runner-owned grants
