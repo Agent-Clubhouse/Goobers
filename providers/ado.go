@@ -209,9 +209,11 @@ func (p *ADOProvider) Kind() ProviderKind {
 // docs/design/provider-contract-conformance.md §3.2/§4, CONF-3 #2076): the
 // landing set — pr.merge, pr.landing.detect-policy, pr.landing.enqueue,
 // pr.landing.poll, pr.compare, branch.delete — is now conformant, mapped
-// onto the mergepolicy seam (#758) per §4's table. pr.review.submit/
-// threads and repo.policy.read remain excluded (no ADO implementation
-// exists). pr.status.publish is real (PublishPullRequestStatus).
+// onto the mergepolicy seam (#758) per §4's table. pr.review.threads and
+// pr.review.resolve are real (ado_review_threads.go, ADO-N20): ADO pull-
+// request threads are listed, replied to and resolved natively.
+// pr.review.submit and repo.policy.read remain excluded (no ADO
+// implementation exists). pr.status.publish is real (PublishPullRequestStatus).
 // backlog.blockers is excluded (CONF-5 #2078, closing #2059): ADO
 // dependency-link modeling reaches parity in V1, so there is no real
 // native-dependency read to declare — Dispatcher returns ErrUnsupported
@@ -220,6 +222,7 @@ func (p *ADOProvider) Capabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
 		CapPRQueryAuthor, CapPRQueryRequestedReviewer,
 		CapPRStatusPublish,
+		CapPRReviewThreads, CapPRReviewResolve,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRCompare, CapBranchDelete,
 	)
