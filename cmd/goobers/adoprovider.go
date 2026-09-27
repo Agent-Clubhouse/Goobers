@@ -238,7 +238,9 @@ func backlogProviderRef(gaggle string, project apiv1.RepoRef, backlog apiv1.Back
 				backlog.Project,
 			)
 		}
-		repo.Owner, repo.Name = owner, name
+		// The project tier is Azure DevOps addressing; a GitHub or Gitea
+		// repository has none.
+		repo.Owner, repo.Project, repo.Name = owner, "", name
 	case providers.ProviderADO:
 		repo.Project = backlog.Project
 	}
