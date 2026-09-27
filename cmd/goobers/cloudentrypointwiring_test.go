@@ -30,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/temporaldial"
 	"github.com/goobers/goobers/internal/workerhost"
 )
 
@@ -188,7 +189,7 @@ func TestRunWorkerServesDerivedDispatchQueuesAndWiresTheDispatcher(t *testing.T)
 	// The boot-time orphan sweep is the worker's only Temporal contact before
 	// it polls; refusing the dial exercises its skip path without a frontend.
 	previousDial := dialWorkerSweepTemporal
-	dialWorkerSweepTemporal = func(string, string) (client.Client, error) {
+	dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS) (client.Client, error) {
 		return nil, context.DeadlineExceeded
 	}
 	t.Cleanup(func() { dialWorkerSweepTemporal = previousDial })

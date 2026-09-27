@@ -16,6 +16,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 func writeInstanceYAML(t *testing.T, body string) string {
@@ -4267,5 +4268,51 @@ func TestStorageHealthConfigValidate(t *testing.T) {
 				t.Fatalf("validate() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestLoadConfigEngineTLSReachesEffectiveConfig pins the #5289 plumbing: the
+// engine.tls block survives the env-override resolution LoadConfig applies,
+// so every dial site reading EffectiveEngineConfig sees it.
+func TestLoadConfigEngineTLSReachesEffectiveConfig(t *testing.T) {
+	t.Setenv(TemporalHostPortEnv, "temporal.internal:7233")
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: localhost:7233
+  tls:
+    caFile: /etc/temporal/ca.pem
+    certFile: /etc/temporal/tls.crt
+    keyFile: /etc/temporal/tls.key
+    serverName: temporal-frontend
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	want := temporaldial.TLS{CAFile: "/etc/temporal/ca.pem", CertFile: "/etc/temporal/tls.crt", KeyFile: "/etc/temporal/tls.key", ServerName: "temporal-frontend"}
+	got := cfg.EffectiveEngineConfig()
+	if got.TLS == nil || *got.TLS != want {
+		t.Fatalf("EffectiveEngineConfig().TLS = %+v, want %+v", got.TLS, want)
+	}
+	if got.HostPort != "temporal.internal:7233" {
+		t.Fatalf("HostPort = %q, want the environment override", got.HostPort)
+	}
+}
+
+func TestLoadConfigEngineTLSRejectsCertWithoutKey(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: localhost:7233
+  tls:
+    certFile: /etc/temporal/tls.crt
+`)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "certFile and keyFile must be set together") {
+		t.Fatalf("LoadConfig error = %v, want the cert/key pairing refusal", err)
 	}
 }
