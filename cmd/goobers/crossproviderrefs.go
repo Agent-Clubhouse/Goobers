@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
@@ -95,14 +96,49 @@ var bareIssueRefPattern = regexp.MustCompile(`(^|[^\w&/#])#(\d+)\b`)
 // own issue n, is rewritten to that issue's URL, so the Azure DevOps
 // description never names ADO work item n.
 func crossProviderIssueText(text, issueID, issueRef string) string {
-	prefix, ok := strings.CutSuffix(issueRef, issueID)
-	if !ok || issueID == "" || !strings.HasSuffix(prefix, "/issues/") || !strings.Contains(prefix, "://") {
+	prefix, ok := crossProviderIssuePrefix(issueID, issueRef)
+	if !ok {
 		return text
 	}
 	return bareIssueRefPattern.ReplaceAllStringFunc(text, func(match string) string {
 		groups := bareIssueRefPattern.FindStringSubmatch(match)
 		return groups[1] + prefix + groups[2]
 	})
+}
+
+// crossProviderIssuePrefix is the backlog issue URL prefix (".../issues/")
+// when issueRef is the full URL prIssueReference writes in topology (b) for
+// issueID. It reports false for the "#<id>" of a same-provider gaggle.
+func crossProviderIssuePrefix(issueID, issueRef string) (string, bool) {
+	prefix, ok := strings.CutSuffix(issueRef, issueID)
+	if !ok || issueID == "" || !strings.HasSuffix(prefix, "/issues/") || !strings.Contains(prefix, "://") {
+		return "", false
+	}
+	return prefix, true
+}
+
+// crossProviderReviews returns reviews with the agent-authored verdict text
+// that open-pr embeds in a pull request description (summary, rationale and
+// finding messages) passed through crossProviderIssueText. On a same-provider
+// gaggle it returns reviews unchanged; in topology (b) it returns rewritten
+// copies and leaves the originals untouched.
+func crossProviderReviews(reviews []prBodyReview, issueID, issueRef string) []prBodyReview {
+	if _, ok := crossProviderIssuePrefix(issueID, issueRef); !ok {
+		return reviews
+	}
+	out := make([]prBodyReview, len(reviews))
+	for i, review := range reviews {
+		review.verdict.Summary = crossProviderIssueText(review.verdict.Summary, issueID, issueRef)
+		review.verdict.Rationale = crossProviderIssueText(review.verdict.Rationale, issueID, issueRef)
+		findings := make([]apiv1.Finding, len(review.verdict.Findings))
+		for j, finding := range review.verdict.Findings {
+			finding.Message = crossProviderIssueText(finding.Message, issueID, issueRef)
+			findings[j] = finding
+		}
+		review.verdict.Findings = findings
+		out[i] = review
+	}
+	return out
 }
 
 // postMergePullRequestRef names the merged pull request in the comment

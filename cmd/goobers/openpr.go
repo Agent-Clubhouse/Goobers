@@ -170,7 +170,11 @@ func openPRIssue(root, runID string) (id, title string, ok bool, err error) {
 	return id, title, ok, nil
 }
 
-func openPRTitle(root, runID string) (title, issueID, issueTitle string, haveIssue bool, err error) {
+// openPRTitle resolves the pull request title. In topology (b) a bare "#<n>"
+// in it (the issue title is the default) is rewritten to the backlog issue's
+// URL, because the title becomes the Azure DevOps squash-commit title, where
+// "#<n>" names ADO work item n; see crossProviderIssueText.
+func openPRTitle(root, runID string, repo providers.RepositoryRef) (title, issueID, issueTitle string, haveIssue bool, err error) {
 	issueID, issueTitle, haveIssue, err = openPRIssue(root, runID)
 	if err != nil {
 		return "", "", "", false, err
@@ -181,6 +185,9 @@ func openPRTitle(root, runID string) (title, issueID, issueTitle string, haveIss
 	}
 	if title == "" {
 		title = "Automated implementation"
+	}
+	if haveIssue && issueID != "" {
+		title = crossProviderIssueText(title, issueID, prIssueReference(root, repo, issueID))
 	}
 	return title, issueID, issueTitle, haveIssue, nil
 }
@@ -227,7 +234,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// both sides. Recovered from the run journal (resume-safe), so this holds on
 	// a repass too. Falls back to the generic title/body when the run claimed no
 	// issue (other workflows) or an explicit title/body input is set.
-	title, issueID, issueTitle, haveIssue, err := openPRTitle(root, runID)
+	title, issueID, issueTitle, haveIssue, err := openPRTitle(root, runID, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

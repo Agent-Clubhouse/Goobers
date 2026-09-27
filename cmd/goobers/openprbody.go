@@ -175,6 +175,7 @@ func stageArtifactByName(artifacts []journalArtifact, stageRefs []journal.Ref, r
 
 func formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdatedAt, workflowDigest string, reviews []prBodyReview, changes []prBodyChange, ci *prBodyCI) string {
 	var b strings.Builder
+	reviews = crossProviderReviews(reviews, issueID, issueRef)
 	latest := prBodyReview{}
 	if len(reviews) > 0 {
 		latest = reviews[len(reviews)-1]
@@ -182,7 +183,7 @@ func formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdat
 
 	b.WriteString("## Summary\n\n")
 	if issueID != "" {
-		fmt.Fprintf(&b, "Implements %s: **%s**.\n", html.EscapeString(issueRef), html.EscapeString(issueTitle))
+		fmt.Fprintf(&b, "Implements %s: **%s**.\n", html.EscapeString(issueRef), html.EscapeString(crossProviderIssueText(issueTitle, issueID, issueRef)))
 	}
 	if summary := strings.TrimSpace(latest.verdict.Summary); summary != "" {
 		if issueID != "" {

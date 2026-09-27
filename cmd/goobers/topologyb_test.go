@@ -264,6 +264,29 @@ func TestCrossProviderIssueTextTopologyB(t *testing.T) {
 	if strings.Contains(body, "#7") || !strings.Contains(body, "after "+topologyBIssueURL+"7 lands") {
 		t.Fatalf("structured (b) body embeds a bare #7:\n%s", body)
 	}
+
+	// The issue title and the agent-authored verdict text are rewritten too.
+	reviews := []prBodyReview{{verdict: apiv1.Verdict{
+		Decision:  apiv1.VerdictPass,
+		Summary:   "closes the gap from #11",
+		Rationale: "matches #12",
+		Findings:  []apiv1.Finding{{Severity: apiv1.SeverityInfo, Message: "revisit #13"}},
+	}}}
+	body = formatStructuredPRBody("42", ref, "Follow-up to #10", "", "", "sha256:abc", reviews, nil, nil)
+	for _, n := range []string{"10", "11", "12", "13"} {
+		if strings.Contains(body, "#"+n) || !strings.Contains(body, topologyBIssueURL+n) {
+			t.Fatalf("structured (b) body embeds a bare #%s:\n%s", n, body)
+		}
+	}
+	if reviews[0].verdict.Summary != "closes the gap from #11" || reviews[0].verdict.Findings[0].Message != "revisit #13" {
+		t.Fatalf("the caller's verdict was mutated: %+v", reviews[0].verdict)
+	}
+	same := formatStructuredPRBody("42", "#42", "Follow-up to #10", "", "", "sha256:abc", reviews, nil, nil)
+	for _, n := range []string{"10", "11", "12", "13"} {
+		if !strings.Contains(same, "#"+n) {
+			t.Fatalf("same-provider body lost #%s:\n%s", n, same)
+		}
+	}
 }
 
 // The role-aware credential binding (§7.2 step 2): in a (b) gaggle the
@@ -381,7 +404,7 @@ func TestOpenPRTopologyBLinksTheIssueByURL(t *testing.T) {
 	const runID = "run-topology-b"
 	root := initDemo(t)
 	topologyBFixture(t, root, "example")
-	recordClaimedIssue(t, root, runID, "42", "Add the widget")
+	recordClaimedIssue(t, root, runID, "42", "Follow-up to #123")
 
 	repo := topologyBRouted()
 	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
@@ -392,7 +415,7 @@ func TestOpenPRTopologyBLinksTheIssueByURL(t *testing.T) {
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "implementation")
 
-	var description string
+	var description, title string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/"+topologyBOrg+"/"+topologyBCodeProject+"/_apis/git/repositories/"+topologyBCodeRepo+"/pullrequests", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -400,12 +423,13 @@ func TestOpenPRTopologyBLinksTheIssueByURL(t *testing.T) {
 			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 		case http.MethodPost:
 			var posted struct {
+				Title       string `json:"title"`
 				Description string `json:"description"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
 				t.Errorf("decode pull request: %v", err)
 			}
-			description = posted.Description
+			title, description = posted.Title, posted.Description
 			writeJSONResp(t, w, map[string]interface{}{
 				"pullRequestId": 5,
 				"_links":        map[string]interface{}{"web": map[string]string{"href": "https://dev.azure.com/example-org/example-project/_git/service/pullrequest/5"}},
@@ -440,6 +464,11 @@ func TestOpenPRTopologyBLinksTheIssueByURL(t *testing.T) {
 	}
 	if strings.Contains(description, "#42") {
 		t.Fatalf("pull request description carries a bare #42: %q", description)
+	}
+	// The PR title defaults to the issue title and becomes the ADO squash
+	// commit title, so a "#123" in it would name ADO work item 123.
+	if title != "Follow-up to "+topologyBIssueURL+"123" {
+		t.Fatalf("pull request title = %q, want the bare #123 rewritten to the backlog issue URL", title)
 	}
 	if !strings.Contains(stderr, "github:issues:read") {
 		t.Fatalf("stderr = %q, want the skipped staleness re-check to name the missing capability", stderr)

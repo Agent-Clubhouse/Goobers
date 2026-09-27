@@ -67,9 +67,10 @@ No new DSL is involved. Each stage is routed by role
   merge, `post-merge` closes only issues that the pull request references by a
   URL into the backlog repository. A bare `#N` is ignored. In the other
   direction, the comment `post-merge` leaves on the GitHub issue names the
-  ADO pull request by its URL. Any `#N` in the issue's acceptance criteria
-  that `open-pr` copies into the description is rewritten to that backlog
-  issue's URL.
+  ADO pull request by its URL. Any `#N` that `open-pr` copies from the
+  backlog into the pull request is rewritten to that backlog issue's URL:
+  in the title (which becomes the squash commit title), the issue title and
+  acceptance criteria, and the reviewer's summary, rationale and findings.
 - **GitHub pull-request extras are skipped.** In `backlog-query`, the open-PR
   eligibility backstop and contested-file ordering read GitHub pull requests,
   and there are none here, so they do not run. Native ADO work-item linking
