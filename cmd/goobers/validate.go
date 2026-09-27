@@ -487,8 +487,8 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	checkGaggleDispatchNamespacesIfRequested(options, root, configDir, set, stdout, diagnostics)
 	printDSLVersionSummary(stdout, set.Workflows)
-	// Four codes are strict-neutral by ruling: they print and land in
-	// diagnostics but are excluded from --strict's promotion. Each is a
+	// The strictNeutralWarningCodes are strict-neutral by ruling: they print
+	// and land in diagnostics but are excluded from --strict's promotion. Each is a
 	// compatibility or advisory nudge that must not turn an existing green
 	// pipeline red purely on upgrade. See each code's declaration for the
 	// specific rationale.
@@ -546,6 +546,7 @@ var strictNeutralWarningCodes = func() []validate.WarningCode {
 		validate.RunnerAVExclusionsUnverified,
 		validate.WarningImplicitWritableWorkspace,
 		validate.WarningGaggleMixedProvider,
+		validate.WarningInertADOCapability,
 	}
 	for _, code := range workflowsafety.Codes() {
 		codes = append(codes, validate.WarningCode(code))
