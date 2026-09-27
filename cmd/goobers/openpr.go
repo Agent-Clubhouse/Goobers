@@ -44,9 +44,40 @@ func adoNativeWorkItemLink(root string, repo providers.RepositoryRef, haveIssue 
 	return !backlogOnOtherProvider(repo, backlogRepoRefForStage(root, repo))
 }
 
-func openPRWorkItemLinker(root string, repo providers.RepositoryRef, haveIssue bool, issueID string) (adoPullRequestWorkItemLinker, error) {
+// textOnlyADOWorkItemLink stands in for the native linker when native linking
+// applies but the stage was not delivered an ado:work-items:write credential.
+// Native linking is best-effort (#5925): the pull request still opens, with
+// its text reference to the work item and a note saying it is not linked
+// natively. A delivered credential that Azure DevOps rejects still fails the
+// stage (linkADOPullRequestToWorkItem).
+type textOnlyADOWorkItemLink struct{}
+
+func (textOnlyADOWorkItemLink) LinkPullRequestToWorkItem(context.Context, providers.RepositoryRef, providers.RepositoryRef, string, string) error {
+	return nil
+}
+
+// adoWorkItemsWriteDelivered reports whether the runner delivered a
+// credential for ado:work-items:write to this stage process.
+func adoWorkItemsWriteDelivered() bool {
+	return os.Getenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite))) != ""
+}
+
+// textOnlyWorkItemLinkNote is appended to the body of a pull request that
+// open-pr could not link natively to its work item.
+func textOnlyWorkItemLinkNote(body, issueID string) string {
+	return strings.TrimRight(body, "\n") + "\n\n" + fmt.Sprintf(
+		"_Not linked natively to work item #%s: this stage was not given the %s capability, so the work item is referenced by text only._",
+		issueID, capability.ADOWorkItemsWrite)
+}
+
+func openPRWorkItemLinker(root string, repo providers.RepositoryRef, haveIssue bool, issueID string, stderr io.Writer) (adoPullRequestWorkItemLinker, error) {
 	if !adoNativeWorkItemLink(root, repo, haveIssue, issueID) {
 		return nil, nil
+	}
+	if !adoWorkItemsWriteDelivered() {
+		pf(stderr, "warning: no %s credential was delivered to this stage; the pull request is opened without a native link to work item #%s (declare %s on open-pr to link it natively)\n",
+			capability.ADOWorkItemsWrite, issueID, capability.ADOWorkItemsWrite)
+		return textOnlyADOWorkItemLink{}, nil
 	}
 	return newProviderForStageSurface[adoPullRequestWorkItemLinker](root, repo, false,
 		withStageProviderCapability(capability.ADOWorkItemsWrite),
@@ -91,6 +122,9 @@ func openPullRequestWithADOLink(
 	tutorHoldout *tutorHoldoutRecord,
 	stderr io.Writer,
 ) (providers.PullRequestResult, int) {
+	if _, textOnly := linker.(textOnlyADOWorkItemLink); textOnly {
+		prReq.Body = textOnlyWorkItemLinkNote(prReq.Body, issueID)
+	}
 	result, err := provider.OpenPullRequest(ctx, prReq)
 	if err != nil {
 		if tutorHoldout != nil {
@@ -130,8 +164,12 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"empty value is not an override — every empty input falls back.\n\n" +
 	"itemID explicitly identifies a selected backlog item when the workflow\n" +
 	"read it without claiming. If a claimed item also exists, the IDs must\n" +
-	"match. On ADO, native work-item linking separately requires the\n" +
-	"ado:work-items:write capability; GitHub never resolves that capability.\n\n" +
+	"match. On ADO, native work-item linking separately uses the\n" +
+	"ado:work-items:write capability, which the ADO repository credential backs\n" +
+	"when the stage declares it. Without it the pull request still opens, with\n" +
+	"a text reference and a note that the item is not linked natively; a\n" +
+	"delivered credential that ADO rejects fails the stage. GitHub never\n" +
+	"resolves that capability.\n\n" +
 	"Body precedence: an explicitly set non-empty body is used as given and\n" +
 	"bypasses structured rendering; otherwise a structured body is rendered\n" +
 	"from the run journal's recorded review and local-CI evidence; otherwise a\n" +
@@ -393,7 +431,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	workItemLinker, err := openPRWorkItemLinker(root, repo, haveIssue, issueID)
+	workItemLinker, err := openPRWorkItemLinker(root, repo, haveIssue, issueID, stderr)
 	if err != nil {
 		pf(stderr, "error: resolve ADO work-item link authority: %v\n", err)
 		return 1
