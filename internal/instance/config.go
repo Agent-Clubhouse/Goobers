@@ -1335,7 +1335,8 @@ type TelemetryConfig struct {
 // is a destination credential and therefore uses the same TokenRef seam as all
 // other secrets.
 type AzureMonitorConfig struct {
-	ConnectionString TokenRef `json:"connectionString" yaml:"connectionString"`
+	ConnectionString TokenRef                  `json:"connectionString" yaml:"connectionString"`
+	Replay           *AzureMonitorReplayConfig `json:"replay,omitempty" yaml:"replay,omitempty"`
 }
 
 // Enabled reports whether a direct Azure Monitor destination is configured.

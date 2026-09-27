@@ -34,25 +34,30 @@ func startServiceHealthWithStores(ctx context.Context, root string, identity *da
 	go func() {
 		defer close(done)
 		initialize, cancel := context.WithTimeout(ctx, 5*time.Second)
-		exporter, err := buildDiagnosticExporterWithStores(initialize, setup, stores)
+		exporter, err := buildDiagnosticExporterWithStores(initialize, root, setup, stores)
 		cancel()
 		if err != nil {
 			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: "diagnostics_export_unavailable", Message: err.Error()}})
 		}
-		runHealthExports(ctx, setup, exporter, records, fleet)
+		runHealthExports(ctx, root, setup, exporter, records, fleet)
 
 		if exporter != nil {
 			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = exporter.Shutdown(flush)
 			stats := exporter.Stats()
-			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "diagnostics-export-summary", "accepted": stats.Accepted, "delivered": stats.Delivered, "dropped": stats.Dropped, "failures": stats.Failures}})
+			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{
+				"kind": "diagnostics-export-summary", "accepted": stats.Accepted, "delivered": stats.Delivered, "dropped": stats.Dropped, "failures": stats.Failures,
+				"azureReplayAccepted": stats.AzureReplay.Accepted, "azureReplayDelivered": stats.AzureReplay.Delivered,
+				"azureReplayRetried": stats.AzureReplay.Retried, "azureReplayPrunedAge": stats.AzureReplay.PrunedAge,
+				"azureReplayPrunedBytes": stats.AzureReplay.PrunedBytes, "azureReplayMalformed": stats.AzureReplay.Malformed,
+			}})
 		}
 	}()
 	return done
 }
 
-func buildDiagnosticExporterWithStores(ctx context.Context, setup *schedulerSetup, stores credentials.StoreResolver) (*telemetry.DiagnosticExporter, error) {
+func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *schedulerSetup, stores credentials.StoreResolver) (*telemetry.DiagnosticExporter, error) {
 	otlp := setup.Config.DiagnosticOTLP()
 	azure := setup.Config.Telemetry.AzureMonitor
 	azureEnabled := setup.Config.TelemetryEnabled() && azure != nil && azure.Enabled()
@@ -69,7 +74,7 @@ func buildDiagnosticExporterWithStores(ctx context.Context, setup *schedulerSetu
 		}
 	}
 	if azureEnabled {
-		if err := configureAzureMonitor(ctx, &cfg, *azure, setup.Config.Telemetry.EffectiveCollectionProfile(), setup.SharedRegistry, stores); err != nil {
+		if err := configureAzureMonitor(ctx, &cfg, *azure, setup.Config.Telemetry.EffectiveCollectionProfile(), root, setup.SharedRegistry, stores); err != nil {
 			return nil, err
 		}
 	}
@@ -101,7 +106,7 @@ func serviceHealthDiagnosticRecord(event journal.Event, includeHostIdentity bool
 	return telemetry.DiagnosticRecord{Time: event.Time, Name: "goobers.service.health", Attributes: attrs}
 }
 
-func runHealthExports(ctx context.Context, setup *schedulerSetup, exporter *telemetry.DiagnosticExporter, records <-chan telemetry.DiagnosticRecord, fleet []fleetHealthSample) {
+func runHealthExports(ctx context.Context, root string, setup *schedulerSetup, exporter *telemetry.DiagnosticExporter, records <-chan telemetry.DiagnosticRecord, fleet []fleetHealthSample) {
 	var scrubber journal.Scrubber = journal.NewPatternScrubber()
 	if setup.SharedRegistry != nil {
 		scrubber = journal.Chain(setup.SharedRegistry, scrubber)
@@ -123,7 +128,7 @@ func runHealthExports(ctx context.Context, setup *schedulerSetup, exporter *tele
 		ticker := time.NewTicker(setup.Config.Telemetry.Diagnostics.HeartbeatPeriod())
 		defer ticker.Stop()
 		ticks = ticker.C
-		recordHistoryFailure(emitFleetHealth(ctx, store, exporter, fleet, time.Now().UTC()))
+		recordHistoryFailure(emitFleetHealth(ctx, root, store, exporter, fleet, time.Now().UTC()))
 	}
 	for {
 		select {
@@ -132,28 +137,53 @@ func runHealthExports(ctx context.Context, setup *schedulerSetup, exporter *tele
 				return
 			}
 			if exporter != nil {
+				addAzureReplayHealth(&record, root)
 				exporter.Emit(record)
 			}
 		case now := <-ticks:
-			recordHistoryFailure(emitFleetHealth(ctx, store, exporter, fleet, now.UTC()))
+			recordHistoryFailure(emitFleetHealth(ctx, root, store, exporter, fleet, now.UTC()))
 		}
 	}
 }
 
-func emitFleetHealth(ctx context.Context, store *history.Store, exporter *telemetry.DiagnosticExporter, fleet []fleetHealthSample, now time.Time) error {
+func addAzureReplayHealth(record *telemetry.DiagnosticRecord, root string) {
+	if record == nil {
+		return
+	}
+	if record.Attributes == nil {
+		record.Attributes = make(map[string]any)
+	}
+	pending := telemetry.InspectAzureReplayRoot(filepath.Join(root, "telemetry-export", "azure-monitor"))
+	record.Attributes["azureReplayPendingRecords"] = pending.PendingRecords
+	record.Attributes["azureReplayPendingBytes"] = pending.PendingBytes
+	record.Attributes["azureReplayOldestPendingSeconds"] = int64(pending.OldestPendingAge.Seconds())
+	record.Attributes["azureReplayAccepted"] = int64(min(pending.Accepted, uint64(math.MaxInt64)))
+	record.Attributes["azureReplayDelivered"] = int64(min(pending.Delivered, uint64(math.MaxInt64)))
+	record.Attributes["azureReplayRetried"] = int64(min(pending.Retried, uint64(math.MaxInt64)))
+	record.Attributes["azureReplayPrunedAge"] = int64(min(pending.PrunedAge, uint64(math.MaxInt64)))
+	record.Attributes["azureReplayPrunedBytes"] = int64(min(pending.PrunedBytes, uint64(math.MaxInt64)))
+	record.Attributes["azureReplayMalformed"] = int64(min(pending.Malformed, uint64(math.MaxInt64)))
+}
+
+func emitFleetHealth(ctx context.Context, root string, store *history.Store, exporter *telemetry.DiagnosticExporter, fleet []fleetHealthSample, now time.Time) error {
 	var historyErr error
 	sampleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	for _, sample := range fleet {
 		records := sample(sampleCtx, now)
-		for _, record := range records {
-			if exporter != nil && record.Name == "goobers.fleet.heartbeat" && record.Attributes["gaggleId"] == "" {
-				record.Attributes["diagnosticsDroppedRecords"] = int64(min(exporter.Stats().Dropped, uint64(math.MaxInt64)))
-			}
-		}
+		// Persist the canonical fleet schema before adding transport-only export
+		// health fields. The bounded local history decoder intentionally rejects
+		// fields outside that versioned fleet contract.
 		if store != nil {
 			if err := store.Append(sampleCtx, records); err != nil {
 				historyErr = err
+			}
+		}
+		for _, record := range records {
+			if exporter != nil && record.Name == "goobers.fleet.heartbeat" && record.Attributes["gaggleId"] == "" {
+				stats := exporter.Stats()
+				record.Attributes["diagnosticsDroppedRecords"] = int64(min(stats.Dropped, uint64(math.MaxInt64)))
+				addAzureReplayHealth(&record, root)
 			}
 		}
 		for len(records) > 0 {

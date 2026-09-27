@@ -48,6 +48,7 @@ type azureMonitorClient struct {
 	ingestionURL       string
 	httpClient         *http.Client
 	defaultTags        contracts.ContextTags
+	replay             *azureReplaySpool
 }
 
 // azureMonitorSpanExporter adapts the existing OTel span pipeline to the
@@ -60,15 +61,15 @@ type azureMonitorSpanExporter struct {
 	closed atomic.Bool
 }
 
-func newAzureMonitorSpanExporter(connectionString string, httpClient *http.Client, includeHostIdentity bool) (*azureMonitorSpanExporter, error) {
-	client, err := newAzureMonitorClient(connectionString, httpClient, includeHostIdentity)
+func newAzureMonitorSpanExporter(connectionString string, httpClient *http.Client, includeHostIdentity bool, replay azureReplayConfig) (*azureMonitorSpanExporter, error) {
+	client, err := newAzureMonitorClient(connectionString, httpClient, includeHostIdentity, replay)
 	if err != nil {
 		return nil, fmt.Errorf("create Azure Monitor telemetry exporter: %w", err)
 	}
 	return &azureMonitorSpanExporter{client: client}, nil
 }
 
-func newAzureMonitorClient(connectionString string, httpClient *http.Client, includeHostIdentity bool) (*azureMonitorClient, error) {
+func newAzureMonitorClient(connectionString string, httpClient *http.Client, includeHostIdentity bool, replay azureReplayConfig) (*azureMonitorClient, error) {
 	connection, err := parseAzureMonitorConnectionString(connectionString)
 	if err != nil {
 		return nil, err
@@ -86,13 +87,19 @@ func newAzureMonitorClient(connectionString string, httpClient *http.Client, inc
 			tags[contracts.CloudRoleInstance] = hostname
 		}
 	}
-	return &azureMonitorClient{
+	client := &azureMonitorClient{
 		instrumentationKey: connection.instrumentationKey,
 		nameKey:            strings.ReplaceAll(connection.instrumentationKey, "-", ""),
 		ingestionURL:       connection.ingestionURL,
 		httpClient:         httpClient,
 		defaultTags:        tags,
-	}, nil
+	}
+	spool, err := newAzureReplaySpool(replay, client.sendPayload)
+	if err != nil {
+		return nil, err
+	}
+	client.replay = spool
+	return client, nil
 }
 
 type azureMonitorIngestionResponse struct {
@@ -110,13 +117,27 @@ func (c *azureMonitorClient) export(ctx context.Context, items []appinsights.Tel
 		if item == nil {
 			continue
 		}
+		if properties := item.GetProperties(); properties != nil && properties["goobers.telemetry.record_id"] == "" {
+			id, err := azureReplayID()
+			if err != nil {
+				return err
+			}
+			properties["goobers.telemetry.record_id"] = id
+		}
 		if err := encoder.Encode(c.envelope(item)); err != nil {
 			return fmt.Errorf("encode Azure Monitor telemetry: %w", err)
 		}
 	}
+	if c.replay != nil {
+		return c.replay.submit(ctx, raw.Bytes())
+	}
+	return c.sendPayload(ctx, raw.Bytes())
+}
+
+func (c *azureMonitorClient) sendPayload(ctx context.Context, raw []byte) error {
 	var compressed bytes.Buffer
 	writer := gzip.NewWriter(&compressed)
-	if _, err := writer.Write(raw.Bytes()); err != nil {
+	if _, err := writer.Write(raw); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("compress Azure Monitor telemetry: %w", err)
 	}
@@ -148,7 +169,8 @@ func (c *azureMonitorClient) export(ctx context.Context, items []appinsights.Tel
 	}
 	if response.StatusCode == http.StatusPartialContent {
 		var result azureMonitorIngestionResponse
-		if err := json.Unmarshal(body, &result); err == nil && result.ItemsReceived == len(items) && result.ItemsAccepted == len(items) {
+		itemCount := len(bytesLines(raw))
+		if err := json.Unmarshal(body, &result); err == nil && result.ItemsReceived == itemCount && result.ItemsAccepted == itemCount {
 			return nil
 		}
 		return fmt.Errorf("the Azure Monitor destination partially rejected telemetry (HTTP %d)", response.StatusCode)
@@ -263,6 +285,9 @@ func (e *azureMonitorSpanExporter) Shutdown(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.client.replay.close(ctx); err != nil {
+		return err
+	}
 	return ctx.Err()
 }
 
@@ -332,8 +357,15 @@ type azureMonitorLogExporter struct {
 	closed atomic.Bool
 }
 
-func newAzureMonitorLogExporter(connectionString string, httpClient *http.Client, includeHostIdentity bool) (*azureMonitorLogExporter, error) {
-	client, err := newAzureMonitorClient(connectionString, httpClient, includeHostIdentity)
+func (e *azureMonitorLogExporter) ReplayStats() AzureReplayStats {
+	if e == nil || e.client == nil {
+		return AzureReplayStats{}
+	}
+	return e.client.replay.stats()
+}
+
+func newAzureMonitorLogExporter(connectionString string, httpClient *http.Client, includeHostIdentity bool, replay azureReplayConfig) (*azureMonitorLogExporter, error) {
+	client, err := newAzureMonitorClient(connectionString, httpClient, includeHostIdentity, replay)
 	if err != nil {
 		return nil, fmt.Errorf("create Azure Monitor log exporter: %w", err)
 	}
@@ -374,6 +406,9 @@ func (e *azureMonitorLogExporter) Shutdown(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.client.replay.close(ctx); err != nil {
+		return err
+	}
 	return ctx.Err()
 }
 

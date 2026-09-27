@@ -114,6 +114,7 @@ type JournalExportStats struct {
 	DroppedShutdown       uint64
 	QueuedRecords         int
 	QueuedBytes           int
+	AzureReplay           AzureReplayStats
 }
 
 var _ journal.CommittedEventSink = (*Client)(nil)
@@ -133,7 +134,7 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 		}
 	}
 	if cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorJournalLogs {
-		exporter, err := newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
+		exporter, err := newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("journal"))
 		if err != nil {
 			if len(exporters) == 0 {
 				return err
@@ -171,6 +172,15 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 }
 
 type journalLogFanoutExporter []sdklog.Exporter
+
+func (e journalLogFanoutExporter) ReplayStats() AzureReplayStats {
+	for _, exporter := range e {
+		if source, ok := exporter.(interface{ ReplayStats() AzureReplayStats }); ok {
+			return source.ReplayStats()
+		}
+	}
+	return AzureReplayStats{}
+}
 
 func (e journalLogFanoutExporter) Export(ctx context.Context, records []sdklog.Record) error {
 	var errs []error
@@ -234,7 +244,15 @@ func (c *Client) JournalExportStats() JournalExportStats {
 		DroppedStopping:       p.dropCauses[dropStopping].Load(),
 		DroppedShutdown:       p.dropCauses[dropShutdown].Load(),
 		SinkPanics:            journal.CommittedSinkPanicCount(),
+		AzureReplay:           p.azureReplayStats(),
 	}
+}
+
+func (p *journalLogPipeline) azureReplayStats() AzureReplayStats {
+	if p == nil || p.replayStats == nil {
+		return AzureReplayStats{}
+	}
+	return p.replayStats()
 }
 
 type journalLogItem struct {
@@ -283,6 +301,7 @@ type journalLogPipeline struct {
 	// client has no instruments — which includes JournalLogsOnly mode, where the
 	// stats API is the only channel.
 	observeDrops func(cause journalDropCause, delta uint64)
+	replayStats  func() AzureReplayStats
 }
 
 func newJournalLogPipeline(exporter sdklog.Exporter, res *resource.Resource, scrubber journal.Scrubber) *journalLogPipeline {
@@ -293,6 +312,9 @@ func newJournalLogPipeline(exporter sdklog.Exporter, res *resource.Resource, scr
 		wake: make(chan struct{}, 1), done: make(chan struct{}), ready: make(chan struct{}),
 		flushes:  make(chan journalLogFlush, 1),
 		reporter: newExportErrorHandler(),
+	}
+	if source, ok := exporter.(interface{ ReplayStats() AzureReplayStats }); ok {
+		p.replayStats = source.ReplayStats
 	}
 	// The application queue is the only lossy boundary. A batch processor here
 	// would introduce another queue whose losses could not be accounted for.

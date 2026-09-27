@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,14 +65,14 @@ func TestAzureMonitorHostIdentityRequiresExplicitConsent(t *testing.T) {
 	if err != nil {
 		t.Skip("hostname unavailable")
 	}
-	standard, err := newAzureMonitorClient(connectionString, nil, false)
+	standard, err := newAzureMonitorClient(connectionString, nil, false, azureReplayConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if standard.defaultTags[contracts.DeviceId] != "" || standard.defaultTags[contracts.CloudRoleInstance] != "" {
 		t.Fatal("standard profile exposed hostname")
 	}
-	diagnostic, err := newAzureMonitorClient(connectionString, nil, true)
+	diagnostic, err := newAzureMonitorClient(connectionString, nil, true, azureReplayConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +209,117 @@ func TestAzureMonitorExporterSendsCommittedJournalLog(t *testing.T) {
 	if strings.Contains(body, secret) {
 		t.Fatalf("payload contains registered secret: %s", body)
 	}
+}
+
+func TestAzureMonitorJournalReplaySurvivesRestartWithStableScrubbedIdentity(t *testing.T) {
+	var available atomic.Bool
+	var failedMu sync.Mutex
+	var failedPayload string
+	delivered := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		body, _ := io.ReadAll(reader)
+		_ = reader.Close()
+		if !available.Load() {
+			failedMu.Lock()
+			if failedPayload == "" {
+				failedPayload = string(body)
+			}
+			failedMu.Unlock()
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		delivered <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	const secret = "spool-secret-must-never-land"
+	registry := journal.NewRegistryScrubber()
+	registry.Register([]byte(secret))
+	scrubber := journal.Chain(registry, journal.NewPatternScrubber())
+	replayRoot := t.TempDir()
+	cfg := Config{
+		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + server.URL,
+		AzureMonitorHTTPClient:       server.Client(), AzureMonitorJournalLogs: true, JournalLogs: true, JournalLogsOnly: true,
+		AzureMonitorReplayRoot: replayRoot, AzureMonitorReplayMaxAge: 72 * time.Hour, AzureMonitorReplayMaxBytes: 1 << 20,
+		Scrubber: scrubber,
+	}
+	first, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Commit(journal.CommittedEvent{
+		Kind: "run", JournalID: "0af7651916cd43dd8448eb211c80319c", RunID: "0af7651916cd43dd8448eb211c80319c",
+		Seq: 1, Time: time.Now(), Body: scrubber.Scrub([]byte(`{"type":"auth.failed","detail":"` + secret + `"}`)),
+	})
+	shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := first.Shutdown(shutdown); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	cancel()
+	if stats := first.JournalExportStats(); stats.ExportFailures == 0 {
+		t.Fatalf("unavailable destination was not reflected in export stats: %+v", stats)
+	}
+	spooled, err := filepath.Glob(filepath.Join(replayRoot, "journal", "*.ndjson"))
+	if err != nil || len(spooled) != 1 {
+		t.Fatalf("spooled batches = %v, %v", spooled, err)
+	}
+	onDisk, err := os.ReadFile(spooled[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(onDisk), secret) || !strings.Contains(string(onDisk), "[REDACTED]") {
+		t.Fatalf("spool did not retain only scrubbed content: %s", onDisk)
+	}
+
+	available.Store(true)
+	second, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replayed string
+	select {
+	case replayed = <-delivered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restart did not replay the pending journal batch")
+	}
+	shutdown, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := second.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	failedMu.Lock()
+	failed := failedPayload
+	failedMu.Unlock()
+	failedID, replayedID := azureRecordID(failed), azureRecordID(replayed)
+	if failedID == "" || replayedID != failedID {
+		t.Fatalf("record IDs changed across replay: failed=%q replayed=%q", failedID, replayedID)
+	}
+	spooled, _ = filepath.Glob(filepath.Join(replayRoot, "journal", "*.ndjson"))
+	if len(spooled) != 0 {
+		t.Fatalf("acknowledged replay remained pending: %v", spooled)
+	}
+}
+
+func azureRecordID(payload string) string {
+	const marker = `"goobers.telemetry.record_id":"`
+	start := strings.Index(payload, marker)
+	if start < 0 {
+		return ""
+	}
+	rest := payload[start+len(marker):]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 func TestAzureMonitorExporterSendsWhitelistedDiagnosticLog(t *testing.T) {

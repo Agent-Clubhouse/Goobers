@@ -322,7 +322,7 @@ func TestConfigureAzureMonitorResolvesAndRegistersConnectionString(t *testing.T)
 	var cfg telemetry.Config
 	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
 		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_APPLICATIONINSIGHTS_CONNECTION_STRING"},
-	}, instance.TelemetryProfileStandard, registry, nil)
+	}, instance.TelemetryProfileStandard, t.TempDir(), registry, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestConfigureAzureMonitorCollectionProfiles(t *testing.T) {
 			var cfg telemetry.Config
 			err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
 				ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_PROFILE_CONNECTION"},
-			}, tc.profile, nil, nil)
+			}, tc.profile, t.TempDir(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
