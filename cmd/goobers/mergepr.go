@@ -39,6 +39,7 @@ const (
 	// These stable refusal tokens are threaded through merge-review's fail
 	// branch and recorded against the unchanged pull request head.
 	mergeConflictReason         = "merge-conflict"
+	mergeProviderErrorReason    = "provider-error"
 	requiredStatusPendingReason = "required-status-check-pending"
 )
 
@@ -781,6 +782,23 @@ func failLandingReceipt(stderr io.Writer, path, number, head string, land mergep
 	return 1
 }
 
+func failLandingProvider(stderr io.Writer, path, number, head string, mergeErr error) int {
+	const what = "merge pull request"
+	pf(stderr, "error: %s: %v\n", what, mergeErr)
+	code, retryable, extra := classifyProviderError(mergeErr)
+	out := mergeResultFields(number, head, "", "", []string{mergeProviderErrorReason}, nil)
+	out[executor.OutputErrorCode] = code
+	out[executor.OutputErrorMessage] = fmt.Sprintf("%s: %v", what, mergeErr)
+	out[executor.OutputErrorRetryable] = retryable
+	for k, v := range extra {
+		out[k] = v
+	}
+	if err := writeProviderStageResult(path, out); err != nil {
+		pf(stderr, "warning: write typed error result %s: %v\n", path, err)
+	}
+	return 1
+}
+
 func reportLandingError(stdout, stderr io.Writer, path, number, head string, land mergepolicy.Result, mergeErr error) int {
 	var receiptErr *providers.LandingReceiptError
 	if errors.As(mergeErr, &receiptErr) {
@@ -796,7 +814,7 @@ func reportLandingError(stdout, stderr io.Writer, path, number, head string, lan
 		reason = requiredStatusPendingReason
 	}
 	if reason == "" {
-		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")
+		return failLandingProvider(stderr, path, number, head, mergeErr)
 	}
 	if err := writeMergeResult(path, number, head, mergepolicy.Result{}, []string{reason}, nil); err != nil {
 		pf(stderr, "error: %v\n", err)
