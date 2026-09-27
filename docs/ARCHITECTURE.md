@@ -345,7 +345,9 @@ Contract rules:
   `SEC-044`). Non-injection holds on every provider, Azure DevOps included:
   every ADO auth kind resolves in the daemon, a stage receives only the
   `GOOBERS_CRED_<capability>` values its declared capabilities deliver (plus
-  the non-secret `GOOBERS_REPO_AUTH_SCHEME`), and no stage reads
+  the non-secret `GOOBERS_REPO_AUTH_SCHEME` and, for a value whose source
+  states an expiry, the non-secret `GOOBERS_CREDENTIAL_EXPIRES_<capability>`),
+  and no stage reads
   `repos[].auth` (see [the stage contract](stage-contract.md)). When a
   gaggle keeps its backlog on another provider than its code (topology (b):
   a GitHub or Gitea backlog for Azure DevOps code), the credential a

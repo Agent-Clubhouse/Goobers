@@ -273,7 +273,9 @@ A value whose source states an expiry has at least 20 minutes left when it is
 delivered, local or in a pod: the daemon refreshes one with less first (a
 GitHub App token is re-minted; an Entra source is rebuilt so the Azure SDK's
 own cache is bypassed). If the refresh fails, or the source can only return the
-same token (the Azure CLI's cache), the daemon delivers the still-valid value.
+same token (the Azure CLI's cache), the daemon delivers the still-valid value
+and logs that it did (never the value); a refresh that returned the same token
+is not repeated for that token.
 Such a value is delivered with its expiry as the non-secret
 `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`, an RFC 3339 UTC timestamp. The name
 is deliberately outside the `GOOBERS_CRED_` prefix, whose values are secrets. A
