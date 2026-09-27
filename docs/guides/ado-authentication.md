@@ -4,6 +4,12 @@ Goobers supports four Azure DevOps credential sources. Authentication only
 proves an identity; Azure DevOps permissions and Goobers stage capabilities
 still authorize each operation.
 
+`goobers init --template=standard --provider=ado` writes `azure-cli`
+authentication by default, with no token variable. Pass `--repo-auth-kind`
+with `workload-identity`, `managed-identity` or `pat` to choose another source;
+only `pat` records a token variable, `GOOBERS_ADO_TOKEN`. `goobers connect`
+records PAT authentication.
+
 ## Local interactive authentication
 
 Sign in with Azure CLI:
