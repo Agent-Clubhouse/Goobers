@@ -275,6 +275,91 @@ func TestADORepositoryTokenSourceRetriesAFailedConstruction(t *testing.T) {
 	}
 }
 
+// TestADORepositoryTokenSourceRefreshesBelowTheDeliveryFloor pins #5905: an
+// Entra token with less than credentials.MinDeliveredLifetime left is fetched
+// again from a rebuilt source (the Azure SDK credential keeps its own cache)
+// before the daemon delivers it, and the fresh value is registered with the
+// scrubber. A rebuilt source that can only return the same short-lived token
+// still delivers it, with its expiry, instead of failing the stage.
+func TestADORepositoryTokenSourceRefreshesBelowTheDeliveryFloor(t *testing.T) {
+	short := time.Now().Add(credentials.MinDeliveredLifetime / 2)
+	fresh := time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		name       string
+		rebuilt    providers.ADOCredential
+		wantToken  string
+		wantExpiry time.Time
+	}{
+		{
+			name:       "rebuilt source mints a fresh token",
+			rebuilt:    providers.ADOCredential{Kind: providers.ADOCredentialKindBearer, Secret: "entra-fresh-token-0123456789", ExpiresAt: fresh},
+			wantToken:  "entra-fresh-token-0123456789",
+			wantExpiry: fresh,
+		},
+		{
+			name:       "rebuilt source returns the same short-lived token",
+			rebuilt:    providers.ADOCredential{Kind: providers.ADOCredentialKindBearer, Secret: "entra-short-token-0123456789", ExpiresAt: short},
+			wantToken:  "entra-short-token-0123456789",
+			wantExpiry: short,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			builds := 0
+			stubADOCredentialSource(t, func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+				builds++
+				if builds == 1 {
+					return adoTestIdentitySource{credential: providers.ADOCredential{
+						Kind: providers.ADOCredentialKindBearer, Secret: "entra-short-token-0123456789", ExpiresAt: short,
+					}}, nil
+				}
+				return adoTestIdentitySource{credential: tc.rebuilt}, nil
+			})
+			registrar := &escTestRegistrar{}
+			mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), registrar, nil)
+			if err != nil {
+				t.Fatalf("newADORepositoryTokenSource: %v", err)
+			}
+			token, expiresAt, err := mint(context.Background())
+			if err != nil {
+				t.Fatalf("mint: %v", err)
+			}
+			if token != tc.wantToken || !expiresAt.Equal(tc.wantExpiry) {
+				t.Fatalf("mint = (%q, %v), want (%q, %v)", token, expiresAt, tc.wantToken, tc.wantExpiry)
+			}
+			if builds != 2 {
+				t.Fatalf("source built %d times, want one rebuild below the delivery floor", builds)
+			}
+			if !registeredStrings(registrar)[tc.wantToken] {
+				t.Fatal("the delivered token was not registered with the scrubber")
+			}
+		})
+	}
+}
+
+// TestADORepositoryTokenSourceKeepsATokenAboveTheDeliveryFloor pins the
+// other side: a cached token with enough life left is reused, not rebuilt.
+func TestADORepositoryTokenSourceKeepsATokenAboveTheDeliveryFloor(t *testing.T) {
+	builds := 0
+	stubADOCredentialSource(t, func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+		builds++
+		return adoTestIdentitySource{credential: providers.ADOCredential{
+			Kind: providers.ADOCredentialKindBearer, Secret: "entra-long-token-0123456789", ExpiresAt: time.Now().Add(time.Hour),
+		}}, nil
+	})
+	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
+	if err != nil {
+		t.Fatalf("newADORepositoryTokenSource: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, _, err := mint(context.Background()); err != nil {
+			t.Fatalf("mint %d: %v", i, err)
+		}
+	}
+	if builds != 1 {
+		t.Fatalf("source built %d times, want 1", builds)
+	}
+}
+
 // TestADOBasicHeaderIsRedactedFromJournalWrites is the scrubber half of
 // ADO-N17: a PAT's Basic Authorization value does not contain the PAT, so it
 // is redacted only because the daemon registered that form at mint time.
@@ -431,6 +516,27 @@ func TestStageCredentialEnvStampsTheADOSchemeWithTheCredentials(t *testing.T) {
 	}
 	if env := stageCredentialEnv(nil, adoauth.SchemeBearer); len(env) != 0 {
 		t.Fatalf("stage credential env with no credentials = %q, want nothing", env)
+	}
+}
+
+// TestStageCredentialEnvDeliversTheStatedExpiry pins #5905 for stage pods: a
+// credential the plane stated an expiry for is delivered with it, and one
+// without an expiry gets no expiry variable.
+func TestStageCredentialEnvDeliversTheStatedExpiry(t *testing.T) {
+	expiresAt := time.Date(2026, 9, 28, 13, 4, 5, 0, time.FixedZone("example", 3600))
+	creds := []dispatcher.MintedCredential{
+		{Capability: "repo:push", Value: "entra-pod-token-0123456789", ExpiresAt: &expiresAt},
+		{Capability: "github:issues:read", Value: "entra-pod-token-9876543210"},
+	}
+	got := strings.Join(stageCredentialEnv(creds, adoauth.SchemeBearer), "\n")
+	want := strings.Join([]string{
+		executor.CredentialEnvVar("repo:push") + "=entra-pod-token-0123456789",
+		executor.CredentialExpiryEnvVar("repo:push") + "=2026-09-28T12:04:05Z",
+		executor.CredentialEnvVar("github:issues:read") + "=entra-pod-token-9876543210",
+		executor.RepoAuthSchemeEnvVar + "=bearer",
+	}, "\n")
+	if got != want {
+		t.Fatalf("stage credential env = %q, want %q", got, want)
 	}
 }
 

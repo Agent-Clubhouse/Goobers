@@ -791,7 +791,12 @@ func (p *ADOProvider) deliveredCredentialRejected(resp *http.Response, method, e
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return &adoDeliveredCredentialRejectedError{label: source.label, cause: newProviderResponseError(resp, method, endpoint, body)}
+	return &adoDeliveredCredentialRejectedError{
+		label:     source.label,
+		cause:     newProviderResponseError(resp, method, endpoint, body),
+		expiresAt: source.expiresAt,
+		at:        p.now(),
+	}
 }
 
 func (p *ADOProvider) invalidateCredential() bool {

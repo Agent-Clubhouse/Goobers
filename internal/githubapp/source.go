@@ -187,6 +187,32 @@ func (s *TokenSource) TokenWithExpiry(ctx context.Context) (string, time.Time, e
 	if s.token != "" && now.Add(refreshSkew).Before(s.expiresAt) {
 		return s.token, s.expiresAt, nil
 	}
+	return s.mintAndCacheLocked(ctx, now)
+}
+
+// Refresh mints a new installation token whatever the cached one's remaining
+// lifetime, caches it, and returns it with its expiry. It is the refresh half
+// of DeliverySource: a token about to be handed to a stage that cannot
+// refresh it is re-minted rather than delivered with minutes left (#5905).
+func (s *TokenSource) Refresh(ctx context.Context) (string, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return "", time.Time{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mintAndCacheLocked(ctx, s.cfg.Now())
+}
+
+// DeliverySource is TokenWithExpiry with the daemon's delivery floor: a
+// cached token with less than credentials.MinDeliveredLifetime left is
+// re-minted first. It is the source the daemon registers for a grant, so a
+// token a stage receives, locally or in a pod, has at least that long to live.
+func (s *TokenSource) DeliverySource() credentials.ExpiringResolveFunc {
+	return credentials.ExpiringResolveFunc(s.TokenWithExpiry).WithMinimumLifetimeClock(s.Refresh, s.cfg.Now)
+}
+
+// mintAndCacheLocked mints a token, registers it and caches it. s.mu is held.
+func (s *TokenSource) mintAndCacheLocked(ctx context.Context, now time.Time) (string, time.Time, error) {
 	token, expiresAt, err := s.mint(ctx, now)
 	if err != nil {
 		return "", time.Time{}, err

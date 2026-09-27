@@ -76,6 +76,34 @@ func TestCredentialResolveStageReturnsTheRepoAuthScheme(t *testing.T) {
 	}
 }
 
+// TestCredentialResolveStageKeepsTheStatedExpiry pins #5905: the expiry the
+// plane states beside a value reaches the pod, which delivers it to the stage;
+// a value without one decodes with none.
+func TestCredentialResolveStageKeepsTheStatedExpiry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"credentials": []map[string]string{
+				{"capability": "repo:push", "value": "tok-abc", "expiresAt": "2026-09-28T13:04:05Z"},
+				{"capability": "github:issues:read", "value": "tok-def"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := &CredentialResolveClient{BaseURL: server.URL}
+	resolution, err := client.ResolveStage(context.Background(), "run-1", "push-branch", []string{"repo:push", "github:issues:read"})
+	if err != nil {
+		t.Fatalf("ResolveStage: %v", err)
+	}
+	want := time.Date(2026, 9, 28, 13, 4, 5, 0, time.UTC)
+	if len(resolution.Credentials) != 2 || resolution.Credentials[0].ExpiresAt == nil || !resolution.Credentials[0].ExpiresAt.Equal(want) {
+		t.Fatalf("credentials = %+v, want repo:push expiring at %v", resolution.Credentials, want)
+	}
+	if resolution.Credentials[1].ExpiresAt != nil {
+		t.Fatalf("github:issues:read expiry = %v, want none", resolution.Credentials[1].ExpiresAt)
+	}
+}
+
 // No declared capabilities must mean NO request at all — a stage that needs
 // nothing must not cause the daemon to mint anything.
 func TestCredentialResolveSkipsTheCallWhenNothingIsDeclared(t *testing.T) {

@@ -324,6 +324,52 @@ func TestTokenCachesUntilNearExpiry(t *testing.T) {
 	}
 }
 
+// TestDeliverySourceReMintsBelowTheDeliveryFloor pins #5905 for App tokens: a
+// cached token with less than credentials.MinDeliveredLifetime left is still
+// served to the daemon's own callers (TokenWithExpiry), but the source the
+// daemon delivers to stages re-mints it first, so a stage never starts with a
+// token that has only minutes to live.
+func TestDeliverySourceReMintsBelowTheDeliveryFloor(t *testing.T) {
+	base := time.Now()
+	now := base
+	api := &fakeAppAPI{t: t, key: appTestKey(t), appID: "123456", installationID: "42",
+		expiresAt: func() time.Time { return now.Add(time.Hour) }}
+	srv := httptest.NewServer(api.handler())
+	defer srv.Close()
+	source := newTokenSource(t, api, srv, func(c *Config) {
+		c.Now = func() time.Time { return now }
+	})
+	deliver := source.DeliverySource()
+
+	first, firstExpiry, err := deliver(context.Background())
+	if err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	// 45 minutes in: 15 minutes left, above the cache's refresh skew but
+	// below the delivery floor.
+	now = base.Add(45 * time.Minute)
+	if cached, _, err := source.TokenWithExpiry(context.Background()); err != nil || cached != first {
+		t.Fatalf("TokenWithExpiry = %q, %v; want the cached token", cached, err)
+	}
+	if got := api.requests.Load(); got != 1 {
+		t.Fatalf("exchanges = %d, want 1 before delivery", got)
+	}
+	delivered, deliveredExpiry, err := deliver(context.Background())
+	if err != nil {
+		t.Fatalf("deliver (near floor): %v", err)
+	}
+	if delivered == first || !deliveredExpiry.After(firstExpiry) {
+		t.Fatalf("delivered (%q, %v), want a fresh mint after (%q, %v)", delivered, deliveredExpiry, first, firstExpiry)
+	}
+	if got := api.requests.Load(); got != 2 {
+		t.Fatalf("exchanges = %d, want 2 (delivery re-mint)", got)
+	}
+	// The re-mint is cached: the daemon's own callers get it too.
+	if cached, _, err := source.TokenWithExpiry(context.Background()); err != nil || cached != delivered {
+		t.Fatalf("TokenWithExpiry after re-mint = %q, %v; want %q", cached, err, delivered)
+	}
+}
+
 func TestTokenSingleFlightsConcurrentMints(t *testing.T) {
 	api := &fakeAppAPI{t: t, key: appTestKey(t), appID: "123456", installationID: "42",
 		expiresAt: func() time.Time { return time.Now().Add(time.Hour) },

@@ -93,12 +93,18 @@ func buildADOProviderForStage(routed providers.RepositoryRef, credential provide
 // scheme is never guessed from the token. A token with no scheme is sent as
 // Basic: that is the historical personal-access-token behaviour a standalone
 // invocation (GOOBERS_CRED_<cap> set by hand) relies on.
+//
+// The expiry the daemon delivered beside the token
+// (GOOBERS_CREDENTIAL_EXPIRES_<cap>, #5905) lets a 401 say whether the token
+// expired or was revoked. A missing or unreadable expiry is ignored: it only
+// sharpens that error.
 func stageADOCredentialSource(cap capability.Capability, token string) (providers.ADOCredentialSource, error) {
 	kind, err := stageADOCredentialKind()
 	if err != nil {
 		return nil, err
 	}
-	return providers.NewADODeliveredCredentialSource(kind, token, string(cap))
+	expiresAt, _ := capability.ParseCredentialExpiry(os.Getenv(capability.CredentialExpiryEnvVar(string(cap))))
+	return providers.NewADODeliveredCredentialSourceWithExpiry(kind, token, string(cap), expiresAt)
 }
 
 func stageADOCredentialKind() (string, error) {

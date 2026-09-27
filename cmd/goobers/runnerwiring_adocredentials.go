@@ -73,8 +73,8 @@ var newADORepositoryTokenSource = func(repo instance.RepoRef, registrar credenti
 			return nil, err
 		}
 	}
-	return func(ctx context.Context) (string, time.Time, error) {
-		current, err := source.get()
+	resolve := func(ctx context.Context, get func() (providers.ADOCredentialSource, error)) (string, time.Time, error) {
+		current, err := get()
 		if err != nil {
 			return "", time.Time{}, err
 		}
@@ -88,7 +88,19 @@ var newADORepositoryTokenSource = func(repo instance.RepoRef, registrar credenti
 			}
 		}
 		return credential.Secret, credential.ExpiresAt, nil
-	}, nil
+	}
+	// The delivery floor (#5905): an Entra token with less than
+	// credentials.MinDeliveredLifetime left is fetched again from a rebuilt
+	// source before it reaches a stage, locally or through the credential
+	// plane. Rebuilding (not just clearing this cache) matters for the
+	// workload and managed identity kinds, whose Azure SDK credential keeps a
+	// token cache of its own. A PAT states no expiry and is never refreshed.
+	current := credentials.ExpiringResolveFunc(func(ctx context.Context) (string, time.Time, error) {
+		return resolve(ctx, source.get)
+	})
+	return current.WithMinimumLifetime(func(ctx context.Context) (string, time.Time, error) {
+		return resolve(ctx, source.rebuild)
+	}), nil
 }
 
 // lazyADOCredentialSource builds its source on first use and keeps it, so a
@@ -107,6 +119,20 @@ func (l *lazyADOCredentialSource) get() (providers.ADOCredentialSource, error) {
 	if l.source != nil {
 		return l.source, nil
 	}
+	source, err := l.build()
+	if err != nil {
+		return nil, err
+	}
+	l.source = source
+	return source, nil
+}
+
+// rebuild replaces the kept source with a newly built one, so the next
+// credential is fetched without any cache the old source held. A failed build
+// keeps the old source.
+func (l *lazyADOCredentialSource) rebuild() (providers.ADOCredentialSource, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	source, err := l.build()
 	if err != nil {
 		return nil, err

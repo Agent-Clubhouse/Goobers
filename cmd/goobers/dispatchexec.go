@@ -830,14 +830,18 @@ func resolveStageCredentialsWithScheme(ctx context.Context) ([]dispatcher.Minted
 // repository credential. The scheme is not a secret; it tells the stage which
 // Authorization header the delivered token belongs in. The rule matches the
 // local executor's (executor.ShellExecutor.appendRepoEnv): the scheme travels
-// only with at least one credential. cred.ExpiresAt is not exported: a stage
-// that outlives its token gets Azure DevOps' 401, and the stage's ADO
-// credential source (providers.NewADODeliveredCredentialSource) turns that into
-// a clear "expired or revoked" failure instead of retrying the same value.
+// only with at least one credential. A credential whose source states an
+// expiry also gets GOOBERS_CREDENTIAL_EXPIRES_<capability>, the rule the local
+// executor applies too (#5905): the stage cannot refresh the value, and the
+// expiry lets its Azure DevOps credential source say "expired" rather than
+// "revoked or without access" when Azure DevOps answers 401.
 func stageCredentialEnv(creds []dispatcher.MintedCredential, repoAuthScheme string) []string {
-	env := make([]string, 0, len(creds)+1)
+	env := make([]string, 0, 2*len(creds)+1)
 	for _, cred := range creds {
 		env = append(env, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
+		if cred.ExpiresAt != nil && !cred.ExpiresAt.IsZero() {
+			env = append(env, capability.CredentialExpiryEnvVar(cred.Capability)+"="+capability.FormatCredentialExpiry(*cred.ExpiresAt))
+		}
 	}
 	if repoAuthScheme != "" && len(creds) > 0 {
 		env = append(env, executor.RepoAuthSchemeEnvVar+"="+repoAuthScheme)
