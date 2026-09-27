@@ -931,7 +931,13 @@ func stageArtifactMediaType(mediaTypes map[string]string, name string) string {
 }
 
 func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[string][]byte) []apiv1.ArtifactPointer {
-	return recordStageArtifactsTyped(ctx, stderr, streams, nil)
+	return recordStageArtifactsWithTiming(ctx, stderr, streams, artifactTiming{})
+}
+
+func recordStageArtifactsWithTiming(
+	ctx context.Context, stderr io.Writer, streams map[string][]byte, timing artifactTiming,
+) []apiv1.ArtifactPointer {
+	return recordStageArtifactsTypedWithTiming(ctx, stderr, streams, nil, timing)
 }
 
 // recordStageArtifactsTyped is recordStageArtifacts with per-artifact media
@@ -942,6 +948,13 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 func recordStageArtifactsTyped(
 	ctx context.Context, stderr io.Writer, streams map[string][]byte, mediaTypes map[string]string,
 ) []apiv1.ArtifactPointer {
+	return recordStageArtifactsTypedWithTiming(ctx, stderr, streams, mediaTypes, artifactTiming{})
+}
+
+func recordStageArtifactsTypedWithTiming(
+	ctx context.Context, stderr io.Writer, streams map[string][]byte, mediaTypes map[string]string, timing artifactTiming,
+) []apiv1.ArtifactPointer {
+	timing = timing.withDefaults()
 	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
 	runID := os.Getenv(dispatcher.EnvRunID)
 	stage := os.Getenv(dispatcher.EnvStage)
@@ -962,7 +975,10 @@ func recordStageArtifactsTyped(
 	// nil when this pod has no blob endpoint (the pre-blob-plane deployment
 	// shape); one client for the whole batch.
 	blobs := podBlobClient()
-	putCtx, cancelPut := stageBlobWriteThroughContext(ctx, blobs)
+	if blobs != nil {
+		blobs.RetryPolicy = timing.blobRetryPolicy
+	}
+	putCtx, cancelPut := stageBlobWriteThroughContext(ctx, blobs, timing.blobWriteThroughBudget)
 	defer cancelPut()
 	ops := make([]livejournal.Op, 0, len(names))
 	pointers := make([]apiv1.ArtifactPointer, 0, len(names))
@@ -1046,7 +1062,8 @@ func recordStageArtifactsTyped(
 	emitter := &livejournal.HTTPEmitter{
 		BaseURL:       daemonAPI,
 		Token:         os.Getenv(dispatcher.EnvPodToken),
-		RetryDeadline: 3 * time.Second,
+		RetryDeadline: timing.journalRetryDeadline,
+		RetryPolicy:   timing.journalRetryPolicy,
 	}
 	if _, err := emitter.Emit(ctx, livejournal.EmitRequest{
 		RunID:  runID,
@@ -1114,10 +1131,27 @@ const blobWriteThroughFailureArtifact = "blob-write-through.errors"
 // span transcript by DefaultMaxTranscriptBytes) and far below anything that
 // would look like a hung pod.
 //
-// A var, not a const, so the CEILING ITSELF is testable in bounded time (#3805):
-// a hanging plane is the one failure mode this budget exists for, and a test
-// that had to wait the real 15s to observe it would never be written.
-var blobWriteThroughBudget = 15 * time.Second
+// Tests inject a shorter per-call budget through artifactTiming so observing a
+// hanging plane never requires mutating production timing shared by other
+// tests.
+const blobWriteThroughBudget = 15 * time.Second
+
+type artifactTiming struct {
+	blobWriteThroughBudget time.Duration
+	blobRetryPolicy        dispatcher.RetryPolicy
+	journalRetryDeadline   time.Duration
+	journalRetryPolicy     livejournal.RetryPolicy
+}
+
+func (t artifactTiming) withDefaults() artifactTiming {
+	if t.blobWriteThroughBudget <= 0 {
+		t.blobWriteThroughBudget = blobWriteThroughBudget
+	}
+	if t.journalRetryDeadline <= 0 {
+		t.journalRetryDeadline = 3 * time.Second
+	}
+	return t
+}
 
 // stageBlobWriteThroughContext returns the context the write-through PUTs run
 // under, and it is DELIBERATELY NOT THE STAGE'S.
@@ -1136,9 +1170,9 @@ var blobWriteThroughBudget = 15 * time.Second
 // context.WithoutCancel keeps the caller's values while dropping its
 // cancellation, so a deadline of our own is the only thing that can stop these
 // PUTs.
-func stageBlobWriteThroughContext(ctx context.Context, blobs *dispatcher.BlobClient) (context.Context, context.CancelFunc) {
+func stageBlobWriteThroughContext(ctx context.Context, blobs *dispatcher.BlobClient, budget time.Duration) (context.Context, context.CancelFunc) {
 	if blobs == nil {
 		return ctx, func() {}
 	}
-	return context.WithTimeout(context.WithoutCancel(ctx), blobWriteThroughBudget)
+	return context.WithTimeout(context.WithoutCancel(ctx), budget)
 }

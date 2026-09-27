@@ -58,6 +58,9 @@ type SurrenderPutClient struct {
 	// The endpoint is a write-once upsert keyed by (runID, stage, attempt)
 	// (surrender.go:298-302), so retrying the identical body is always safe.
 	RetryDeadline time.Duration
+	// RetryPolicy overrides retry pacing for this client. Zero values retain
+	// the production defaults.
+	RetryPolicy RetryPolicy
 }
 
 // Put posts one attempt's surrendered result document, retrying a transport
@@ -80,7 +83,7 @@ func (c *SurrenderPutClient) Put(ctx context.Context, runID, stage string, attem
 	if deadline <= 0 {
 		deadline = defaultSurrenderRetryDeadline
 	}
-	return withRetry(ctx, deadline, func(ctx context.Context) (bool, error) {
+	return withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 		if err != nil {
 			return false, fmt.Errorf("dispatcher: build surrender request: %w", err)

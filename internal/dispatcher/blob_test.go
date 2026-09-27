@@ -111,7 +111,6 @@ func TestBlobClientRequiresCredential(t *testing.T) {
 // #4260: the pod's artifact write-through must survive the same transient
 // network blips the surrender PUT does.
 func TestBlobClientPutRetriesTransientFailureThenSucceeds(t *testing.T) {
-	shrinkRetryDelays(t)
 	var attempts atomic.Int32
 	const failures = 2
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +128,7 @@ func TestBlobClientPutRetriesTransientFailureThenSucceeds(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("x")))
-	client := &BlobClient{BaseURL: server.URL, RetryDeadline: time.Second}
+	client := &BlobClient{BaseURL: server.URL, RetryDeadline: time.Second, RetryPolicy: fastRetryPolicy()}
 	if err := client.Put(context.Background(), digest, []byte("x")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -139,14 +138,13 @@ func TestBlobClientPutRetriesTransientFailureThenSucceeds(t *testing.T) {
 }
 
 func TestBlobClientPutHonoursRetryDeadline(t *testing.T) {
-	shrinkRetryDelays(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(server.Close)
 
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("x")))
-	client := &BlobClient{BaseURL: server.URL, RetryDeadline: 30 * time.Millisecond}
+	client := &BlobClient{BaseURL: server.URL, RetryDeadline: 30 * time.Millisecond, RetryPolicy: fastRetryPolicy()}
 	start := time.Now()
 	err := client.Put(context.Background(), digest, []byte("x"))
 	elapsed := time.Since(start)
@@ -162,7 +160,6 @@ func TestBlobClientPutHonoursRetryDeadline(t *testing.T) {
 // a lost ack on a write that already landed must not corrupt the stored
 // bytes when the pod retries with the identical digest and data.
 func TestBlobClientRetryAfterLostAckDoesNotCorrupt(t *testing.T) {
-	shrinkRetryDelays(t)
 	server, blobs := fakeBlobEndpoint(t, "stage-scoped-token")
 	// fakeBlobEndpoint's PUT handler already stores-then-200s; wrap it so the
 	// FIRST PUT's response is dropped after the store completes, exactly as
@@ -198,7 +195,10 @@ func TestBlobClientRetryAfterLostAckDoesNotCorrupt(t *testing.T) {
 
 	data := []byte("artifact-bytes")
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
-	client := &BlobClient{BaseURL: server.URL, Token: "stage-scoped-token", RetryDeadline: time.Second}
+	client := &BlobClient{
+		BaseURL: server.URL, Token: "stage-scoped-token",
+		RetryDeadline: time.Second, RetryPolicy: fastRetryPolicy(),
+	}
 	if err := client.Put(context.Background(), digest, data); err != nil {
 		t.Fatalf("Put: %v", err)
 	}

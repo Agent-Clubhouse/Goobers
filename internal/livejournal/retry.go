@@ -16,13 +16,33 @@ import (
 // after a dropped or refused connection can only be a no-op on the server
 // side, never a double-apply.
 
-// retryBaseDelay and retryMaxDelay bound the jittered exponential backoff
-// between attempts. Vars, not consts, so a test can shrink them and observe
-// several retries in bounded time — mirroring internal/dispatcher's copy.
-var (
-	retryBaseDelay = 500 * time.Millisecond
-	retryMaxDelay  = 30 * time.Second
+// defaultRetryBaseDelay and defaultRetryMaxDelay bound the production jittered
+// exponential backoff between attempts.
+const (
+	defaultRetryBaseDelay = 500 * time.Millisecond
+	defaultRetryMaxDelay  = 30 * time.Second
 )
+
+// RetryPolicy overrides retry pacing for one emitter. Zero values retain the
+// production defaults.
+type RetryPolicy struct {
+	BaseDelay time.Duration
+	MaxDelay  time.Duration
+}
+
+func (p RetryPolicy) delays() (time.Duration, time.Duration) {
+	base, max := p.BaseDelay, p.MaxDelay
+	if base <= 0 {
+		base = defaultRetryBaseDelay
+	}
+	if max <= 0 {
+		max = defaultRetryMaxDelay
+	}
+	if max < base {
+		max = base
+	}
+	return base, max
+}
 
 // defaultEmitRetryDeadline bounds Emit's retry loop when the caller sets no
 // RetryDeadline of its own. Short relative to the surrender plane's default:
@@ -49,8 +69,13 @@ func retryBackoff(base, max time.Duration, attempt int) time.Duration {
 // waiting a jittered backoff between tries. attempt classifies its OWN
 // failure as retryable or not; withRetry owns only pacing and the deadline.
 func withRetry(ctx context.Context, deadline time.Duration, attempt func(ctx context.Context) (retryable bool, err error)) error {
+	return withRetryPolicy(ctx, deadline, RetryPolicy{}, attempt)
+}
+
+func withRetryPolicy(ctx context.Context, deadline time.Duration, policy RetryPolicy, attempt func(ctx context.Context) (retryable bool, err error)) error {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
+	base, max := policy.delays()
 	var lastErr error
 	for n := 0; ; n++ {
 		retryable, err := attempt(ctx)
@@ -61,7 +86,7 @@ func withRetry(ctx context.Context, deadline time.Duration, attempt func(ctx con
 		if !retryable {
 			return err
 		}
-		timer := time.NewTimer(retryBackoff(retryBaseDelay, retryMaxDelay, n))
+		timer := time.NewTimer(retryBackoff(base, max, n))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

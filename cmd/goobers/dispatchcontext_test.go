@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -484,7 +485,9 @@ func TestPodStageArtifactPutIsBestEffortAndNoisy(t *testing.T) {
 		_, _ = w.Write([]byte(`{"applied":1}`))
 	}))
 	defer journalPlane.Close()
+	var attempts atomic.Int32
 	brokenBlobs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer brokenBlobs.Close()
@@ -497,12 +500,17 @@ func TestPodStageArtifactPutIsBestEffortAndNoisy(t *testing.T) {
 	t.Setenv(dispatcher.EnvAttempt, "1")
 
 	var errOut strings.Builder
-	pointers := recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": []byte("x\n")})
+	pointers := recordStageArtifactsWithTiming(
+		context.Background(), &errOut, map[string][]byte{"stdout.log": []byte("x\n")}, fastArtifactTiming(),
+	)
 	if len(pointers) != 1 {
 		t.Fatalf("a failed blob PUT dropped the journal pointer: %+v", pointers)
 	}
-	if !strings.Contains(errOut.String(), "blob plane") {
-		t.Fatalf("stderr does not report the failed write-through:\n%s", errOut.String())
+	if got := attempts.Load(); got < 2 {
+		t.Fatalf("blob plane saw %d attempt(s), want retries before terminal failure", got)
+	}
+	if got := errOut.String(); !strings.Contains(got, "blob plane") || !strings.Contains(got, "retry deadline exceeded") {
+		t.Fatalf("stderr does not report the terminal write-through failure:\n%s", got)
 	}
 }
 
@@ -572,7 +580,9 @@ func TestPodStageArtifactWriteThroughOutlivesACancelledStageContext(t *testing.T
 // not surrender at all.
 func TestADroppedWriteThroughIsJournaledByTheProducingStage(t *testing.T) {
 	journalPlane, emittedOps := recordingJournalPlane(t)
+	var attempts atomic.Int32
 	brokenBlobs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer brokenBlobs.Close()
@@ -585,9 +595,14 @@ func TestADroppedWriteThroughIsJournaledByTheProducingStage(t *testing.T) {
 	t.Setenv(dispatcher.EnvAttempt, "1")
 
 	data := []byte("findings the next stage will be refused\n")
-	pointers := recordStageArtifacts(context.Background(), &strings.Builder{}, map[string][]byte{"findings.json": data})
+	pointers := recordStageArtifactsWithTiming(
+		context.Background(), &strings.Builder{}, map[string][]byte{"findings.json": data}, fastArtifactTiming(),
+	)
 	if len(pointers) != 1 {
 		t.Fatalf("a failed blob PUT dropped the journal pointer: %+v", pointers)
+	}
+	if got := attempts.Load(); got < 2 {
+		t.Fatalf("blob plane saw %d attempt(s), want retries before terminal failure", got)
 	}
 
 	var record string
@@ -603,6 +618,9 @@ func TestADroppedWriteThroughIsJournaledByTheProducingStage(t *testing.T) {
 	}
 	if record == "" {
 		t.Fatalf("the journal carries no record of the dropped write-through, so the evidence dies with this pod; artifacts emitted: %v", names)
+	}
+	if !strings.Contains(record, "retry deadline exceeded") {
+		t.Fatalf("the durable record does not carry the terminal retry error: %q", record)
 	}
 	// The record has to name the artifact whose bytes are missing — the digest
 	// is what a downstream errContextBlobMissing refusal will quote.

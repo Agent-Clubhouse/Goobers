@@ -7,21 +7,13 @@ import (
 	"time"
 )
 
-// shrinkRetryDelays swaps in test-scale backoff bounds for the duration of
-// one test, restoring the production values on cleanup — the same seam
-// blobWriteThroughBudget provides on the write-through budget, applied here
-// so a multi-attempt retry test runs in milliseconds instead of seconds.
-func shrinkRetryDelays(t *testing.T) {
-	t.Helper()
-	origBase, origMax := retryBaseDelay, retryMaxDelay
-	retryBaseDelay, retryMaxDelay = time.Millisecond, 5*time.Millisecond
-	t.Cleanup(func() { retryBaseDelay, retryMaxDelay = origBase, origMax })
+func fastRetryPolicy() RetryPolicy {
+	return RetryPolicy{BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}
 }
 
 func TestWithRetrySucceedsAfterTransientFailures(t *testing.T) {
-	shrinkRetryDelays(t)
 	attempts := 0
-	err := withRetry(context.Background(), time.Second, func(context.Context) (bool, error) {
+	err := withRetryPolicy(context.Background(), time.Second, fastRetryPolicy(), func(context.Context) (bool, error) {
 		attempts++
 		if attempts < 3 {
 			return true, errors.New("transient")
@@ -37,9 +29,8 @@ func TestWithRetrySucceedsAfterTransientFailures(t *testing.T) {
 }
 
 func TestWithRetryStopsImmediatelyOnNonRetryableError(t *testing.T) {
-	shrinkRetryDelays(t)
 	attempts := 0
-	err := withRetry(context.Background(), time.Second, func(context.Context) (bool, error) {
+	err := withRetryPolicy(context.Background(), time.Second, fastRetryPolicy(), func(context.Context) (bool, error) {
 		attempts++
 		return false, errors.New("permanent")
 	})
@@ -52,11 +43,10 @@ func TestWithRetryStopsImmediatelyOnNonRetryableError(t *testing.T) {
 }
 
 func TestWithRetryHonoursDeadline(t *testing.T) {
-	shrinkRetryDelays(t)
 	deadline := 30 * time.Millisecond
 	attempts := 0
 	start := time.Now()
-	err := withRetry(context.Background(), deadline, func(context.Context) (bool, error) {
+	err := withRetryPolicy(context.Background(), deadline, fastRetryPolicy(), func(context.Context) (bool, error) {
 		attempts++
 		return true, errors.New("always fails")
 	})
@@ -76,14 +66,13 @@ func TestWithRetryHonoursDeadline(t *testing.T) {
 }
 
 func TestWithRetryRespectsCallerContextCancellation(t *testing.T) {
-	shrinkRetryDelays(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	attempts := 0
 	go func() {
 		time.Sleep(5 * time.Millisecond)
 		cancel()
 	}()
-	err := withRetry(ctx, time.Minute, func(context.Context) (bool, error) {
+	err := withRetryPolicy(ctx, time.Minute, fastRetryPolicy(), func(context.Context) (bool, error) {
 		attempts++
 		return true, errors.New("always fails")
 	})

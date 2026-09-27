@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +26,21 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runnercap"
 )
+
+func fastArtifactTiming() artifactTiming {
+	return artifactTiming{
+		blobWriteThroughBudget: 50 * time.Millisecond,
+		blobRetryPolicy: dispatcher.RetryPolicy{
+			BaseDelay: time.Millisecond,
+			MaxDelay:  5 * time.Millisecond,
+		},
+		journalRetryDeadline: 50 * time.Millisecond,
+		journalRetryPolicy: livejournal.RetryPolicy{
+			BaseDelay: time.Millisecond,
+			MaxDelay:  5 * time.Millisecond,
+		},
+	}
+}
 
 func TestRunDeclaredStageCommandSuccessCapturesOutput(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageCommand, `["sh","-c","echo hello; echo world >&2"]`)
@@ -491,7 +507,9 @@ func TestRecordStageArtifactsIsBestEffortAndVisible(t *testing.T) {
 }
 
 func TestRecordStageArtifactsSurfacesFailureWithoutPanicking(t *testing.T) {
+	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":{"code":"boom","message":"journal down"}}`))
 	}))
@@ -503,12 +521,16 @@ func TestRecordStageArtifactsSurfacesFailureWithoutPanicking(t *testing.T) {
 
 	var errOut strings.Builder
 	start := time.Now()
-	recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": []byte("x")})
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
+	recordStageArtifactsWithTiming(context.Background(), &errOut, map[string][]byte{"stdout.log": []byte("x")}, fastArtifactTiming())
+	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("recordStageArtifacts exceeded the short best-effort retry window: %s", elapsed)
 	}
-	if !strings.Contains(errOut.String(), "record stage artifacts") {
-		t.Fatalf("a journal failure must be VISIBLE on stderr, got %q", errOut.String())
+	if got := attempts.Load(); got < 2 {
+		t.Fatalf("journal plane saw %d attempt(s), want retries before terminal failure", got)
+	}
+	if got := errOut.String(); !strings.Contains(got, "record stage artifacts") ||
+		!strings.Contains(got, "retry deadline exceeded") {
+		t.Fatalf("a terminal journal failure must be VISIBLE on stderr, got %q", got)
 	}
 }
 
