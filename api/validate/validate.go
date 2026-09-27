@@ -130,6 +130,19 @@ const (
 	// the RNR001 constraint solve owns 3.0 documents and every declared
 	// runners: inventory (at error severity there, the #3497 fix).
 	WarningUnclaimedRunnerCapability WarningCode = "CAP003"
+	// WarningInertADOCapability (CAP006) identifies a DSL 2.0 task or goober
+	// that declares an ado:* capability no DSL 2.0 stage consumes
+	// (ado:code:read, ado:pr:comment, ado:pr:write, ado:work-items:write
+	// outside open-pr). Under the rebinding rule
+	// (docs/design/ado-parity-dsl-2-0.md §3.1) the github:* capability on a
+	// provider-dispatched stage authorizes the operation on Azure DevOps, and
+	// the warning names it. The ado:* names stay valid: no vocabulary is
+	// added or removed.
+	//
+	// STRICT-NEUTRAL, like REF012: older docs told ADO authors to declare
+	// these names, so promoting the notice would turn unchanged, working
+	// --strict pipelines red on upgrade for a grant that was always inert.
+	WarningInertADOCapability WarningCode = "CAP006"
 	// WarningMaxOpenPRsUnenforceable identifies a workflow whose maxOpenPRs
 	// readiness cap cannot obtain a GitHub open-PR count for its gaggle's
 	// project repository.
@@ -1229,6 +1242,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 			sortedSuppressedFeatureConsequences(suppressedFeatureConsequences[indexed.definition.DSLVersion])...)
 	}
 	ix.checkWorkflowsCompile(r)
+	ix.checkInertADOCapabilities(r)
 	ix.checkManifestPreviewAnnotationDeprecated(r)
 
 	// Every referenceNotFound call in this pass (including from checkWorkflow
