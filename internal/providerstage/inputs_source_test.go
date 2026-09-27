@@ -67,6 +67,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"rebasepr.go":               {command: "rebase-pr"},
 	"reconcilebranches.go":      {command: "reconcile-branches"},
 	"recordmergerefusal.go":     {command: "record-merge-refusal"},
+	"recoveryresume.go":         {command: "recovery-resume"},
 	"remediationcheckpoint.go":  {command: "remediation-checkpoint"},
 	"reportprstatus.go":         {command: "report-pr-status"},
 	"resolvereviewthreads.go":   {command: "resolve-review-threads"},

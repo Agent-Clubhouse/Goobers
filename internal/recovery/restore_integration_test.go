@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -113,6 +114,10 @@ func TestIntegrationRestoreFullPatchOntoCurrentMain(t *testing.T) {
 	}
 	if got := recoveryTestGit(t, repository, "for-each-ref", "--format=%(refname)", "refs/heads/conflict"); got != "" {
 		t.Fatalf("conflict created a branch: %s", got)
+	}
+	rewritten := recoveryTestGit(t, repository, "commit-tree", mainTree, "-m", "rewritten main")
+	if commit, err := RestoreSnapshot(context.Background(), repository, record, rewritten, "stale", 1<<20); err == nil || commit != "" || !strings.Contains(err.Error(), "checkpoint is stale") {
+		t.Fatalf("divergent-base restore = %q, %v; want explicit stale refusal", commit, err)
 	}
 }
 

@@ -655,6 +655,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 			artifactName: "claimed-item.json", artifactData: []byte(`{"id":"42"}`),
 			artifactMediaType: "application/json", artifactIntegrity: apiv1.IntegrityMaintainer,
 		},
+		runID + ":recovery-resume": {status: apiv1.ResultSuccess},
 		runID + ":gather-implement-context": {
 			status: apiv1.ResultSuccess, artifactName: "implementation-context.json",
 			artifactData: []byte(`{"reviewerVerdictTaxonomy":{},"hotFileMap":{}}`), artifactMediaType: "application/json",
@@ -710,7 +711,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 
-	want := []string{"preflight-repo-write", "query-backlog", "gather-implement-context", "warm-module-cache", "implement", "push-branch", "local-ci", "open-pr", "ci-poll", "close-out"}
+	want := []string{"preflight-repo-write", "query-backlog", "recovery-resume", "gather-implement-context", "warm-module-cache", "implement", "push-branch", "local-ci", "open-pr", "ci-poll", "close-out"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
 	}
@@ -758,6 +759,7 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 			artifactName: "claimed-item.json", artifactData: []byte(`{"id":"42"}`),
 			artifactMediaType: "application/json", artifactIntegrity: apiv1.IntegrityMaintainer,
 		},
+		runID + ":recovery-resume": {status: apiv1.ResultSuccess},
 		runID + ":gather-implement-context": {
 			status: apiv1.ResultSuccess, artifactName: "implementation-context.json",
 			artifactData: []byte(`{"hotFileMap":{}}`), artifactMediaType: "application/json",
@@ -800,7 +802,7 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 	want := []string{
-		"preflight-repo-write", "query-backlog", "gather-implement-context", "warm-module-cache", "implement", "push-branch",
+		"preflight-repo-write", "query-backlog", "recovery-resume", "gather-implement-context", "warm-module-cache", "implement", "push-branch",
 		"local-ci", "open-pr", "ci-poll", "remediate-ci", "push-branch",
 		"local-ci", "open-pr", "ci-poll", "close-out",
 	}

@@ -60,6 +60,9 @@ func (s HTTPArchiveSource) WithArchive(ctx context.Context, repositoryKey, issue
 		return fmt.Errorf("recovery download transport failed")
 	}
 	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode == http.StatusNotFound {
+		return ErrNoMatchingSnapshot
+	}
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("recovery download refused (HTTP %d)", response.StatusCode)
 	}

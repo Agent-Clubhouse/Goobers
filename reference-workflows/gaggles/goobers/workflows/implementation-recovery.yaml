@@ -86,9 +86,13 @@ spec:
 
     - name: recovery-resume
       type: deterministic
-      goal: Restore and adopt the claimed issue's verified retained implementation before any implementation session.
+      goal: Restore and adopt compatible retained work for this claimed issue before implementation.
       run:
         command: ["goobers", "recovery-resume"]
+      inputs:
+        resultFile: "recovery-resume.json"
+      expectedOutputs:
+        - recovery-resume
       capabilities:
         - repo:push
       policyActions:

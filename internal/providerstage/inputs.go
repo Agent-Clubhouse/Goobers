@@ -222,7 +222,7 @@ var inputSchemas = map[string][]Input{
 	// test until its contract is declared here.
 	"push-branch":        {},
 	"recovery-restore":   {},
-	"recovery-resume":    {},
+	"recovery-resume":    schema(pathsIn("resultFile")),
 	"ios-simulator-test": schema(integersIn("maxOutputBytes"), pathsIn("resultFile")),
 	"mcp-io":             {},
 	"validate":           {},
