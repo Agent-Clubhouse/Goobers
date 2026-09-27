@@ -125,6 +125,7 @@ type OperatorFacts struct {
 	ReviewFindings        []apiv1.Finding
 	ReviewProblem         string
 	PROpenerStage         string
+	ResumedFromRunID      string
 	ContinuedFromRunID    string
 	ContinuationTarget    string
 	WorkspaceBranch       string
@@ -456,6 +457,9 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 					row.Operator.IssueNumber = id
 					row.Operator.IssueTitle = title
 				}
+			}
+			if source, ok := event.Outputs["resumedFromRun"].(string); ok && source != "" {
+				row.Operator.ResumedFromRunID = source
 			}
 			countAttempt(&row, event)
 		case journal.EventGateStarted:

@@ -36,8 +36,18 @@ func TestImplementationWorkflowsGatherFirstPassContext(t *testing.T) {
 				tasks[task.Name] = task
 			}
 			query := tasks["query-backlog"]
-			if query.Next != "gather-implement-context" {
-				t.Fatalf("query-backlog.next = %q, want gather-implement-context", query.Next)
+			if query.Next != "recovery-resume" {
+				t.Fatalf("query-backlog.next = %q, want recovery-resume", query.Next)
+			}
+			resume, ok := tasks["recovery-resume"]
+			if !ok {
+				t.Fatal("recovery-resume task not found")
+			}
+			if resume.Type != apiv1.TaskDeterministic || resume.Run == nil ||
+				!reflect.DeepEqual(resume.Run.Command, []string{"goobers", "recovery-resume"}) ||
+				resume.Inputs["resultFile"] != "recovery-resume.json" ||
+				resume.Next != "gather-implement-context" {
+				t.Fatalf("recovery-resume task = %+v, want bounded restore before context gathering", resume)
 			}
 			gather, ok := tasks["gather-implement-context"]
 			if !ok {

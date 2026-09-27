@@ -70,7 +70,7 @@ func selectIssueRecovery(ctx context.Context, layout instance.Layout, repository
 		candidates = append(candidates, entry)
 	}
 	if len(candidates) == 0 {
-		return recovery.InventoryEntry{}, fmt.Errorf("no unexpired terminal recovery snapshot matches the claimed issue")
+		return recovery.InventoryEntry{}, fmt.Errorf("%w: no unexpired terminal recovery snapshot matches the claimed issue", recovery.ErrNoMatchingSnapshot)
 	}
 	// Resolve ties only at the newest capture time. Older ambiguous captures
 	// must not prevent selecting a later, independently identified run.

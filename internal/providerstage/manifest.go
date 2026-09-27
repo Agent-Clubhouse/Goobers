@@ -435,6 +435,7 @@ var commands = map[string]Command{
 		},
 	},
 	"recovery-resume": {
+		ResultFile: "recovery-resume.json",
 		Capabilities: []CapabilityUse{
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so recovery cannot fetch current main for restoration"),
 		},

@@ -3234,10 +3234,13 @@ restore retained implementation into the receiving run (a workflow stage)
 Usage: goobers recovery-resume [instance]
 
 Restore the current run's single claimed issue onto freshly fetched main,
-then fast-forward its clean receiving worktree to the restored commit.
+then fast-forward its clean receiving worktree to the restored commit. A
+claim with no retained checkpoint succeeds without changing the branch.
 Requires workflow run context and repository credentials. Refuses another
-branch, changed or dirty work, and expired claims. Verified retries resume
-the prepared result; completed adoption removes its preparation branch.
+branch, changed or dirty work, expired claims, divergent bases, and patch
+conflicts. Verified retries resume the prepared result; completed adoption
+removes its preparation branch. Writes recovery-resume.json with resume
+status and source-run provenance for the run journal.
 Does not push, open a PR, release the claim, or remove retained state.
 ~~~
 

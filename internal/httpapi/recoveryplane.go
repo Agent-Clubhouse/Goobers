@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/recovery"
 )
 
 // RecoveryService delivers retained state to the authenticated receiving run.
@@ -68,6 +69,10 @@ func recoveryArchiveHandler(service RecoveryService, errorLog *log.Logger) http.
 				// Never append a JSON error to binary archive bytes or report a
 				// normally completed response after partial delivery.
 				panic(http.ErrAbortHandler)
+			}
+			if errors.Is(err, recovery.ErrNoMatchingSnapshot) {
+				writeError(w, http.StatusNotFound, "recovery_not_found", "no recoverable implementation matches this claim")
+				return
 			}
 			writeError(w, http.StatusForbidden, "recovery_refused", "recovery delivery was refused or its state is unavailable")
 		}

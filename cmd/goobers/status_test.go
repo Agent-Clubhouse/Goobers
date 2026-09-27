@@ -31,6 +31,25 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
+func TestRenderStatusIdentifiesRecoveredImplementationSource(t *testing.T) {
+	now := time.Now().UTC()
+	var output bytes.Buffer
+	renderStatus(&output, []runSummary{{
+		RunID: "receiving-run", Workflow: "implementation", Gaggle: "core",
+		Phase: journal.PhaseRunning, StartedAt: now, LastActivityAt: now,
+		Operator: readservice.OperatorRunSummary{
+			ResumedFromRunID:  "source-run",
+			Liveness:          "no-heartbeat",
+			Trajectory:        "implementing",
+			Claim:             readservice.OperatorClaim{LeaseStatus: "held", ProviderMarker: "recorded"},
+			PotentialBlockers: []string{},
+		},
+	}}, now)
+	if !strings.Contains(output.String(), "resumed implementation from run source-run") {
+		t.Fatalf("status did not identify recovered source:\n%s", output.String())
+	}
+}
+
 func writeStatusRun(t *testing.T, root, runID, workflow, gaggle string, startedAt time.Time) {
 	writeStatusRunWithPhase(t, root, runID, workflow, gaggle, startedAt, journal.PhaseRunning)
 }

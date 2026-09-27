@@ -16,7 +16,7 @@ import (
 )
 
 func TestHTTPArchiveSourceVerifiedDownload(t *testing.T) {
-	for _, mode := range []string{"valid", "corrupt", "foreign-repository", "own-run", "expired", "refused", "consumer-error"} {
+	for _, mode := range []string{"valid", "corrupt", "foreign-repository", "own-run", "expired", "refused", "not-found", "consumer-error"} {
 		t.Run(mode, func(t *testing.T) {
 			record := storageTestRecord()
 			record.CreatedAt = time.Now().Add(-time.Hour).UTC()
@@ -55,6 +55,10 @@ func TestHTTPArchiveSourceVerifiedDownload(t *testing.T) {
 					w.WriteHeader(http.StatusForbidden)
 					return
 				}
+				if mode == "not-found" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				_, _ = w.Write(data)
 			}))
 			defer server.Close()
@@ -81,6 +85,9 @@ func TestHTTPArchiveSourceVerifiedDownload(t *testing.T) {
 				}
 			} else if err == nil || consumedPath != "" {
 				t.Fatalf("unusable archive reached consumer: %q %v", consumedPath, err)
+			}
+			if mode == "not-found" && !errors.Is(err, ErrNoMatchingSnapshot) {
+				t.Fatalf("not-found error = %v, want ErrNoMatchingSnapshot", err)
 			}
 		})
 	}

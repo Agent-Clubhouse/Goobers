@@ -234,6 +234,7 @@ type OperatorRunSummary struct {
 	Trajectory         string               `json:"trajectory"`
 	PullRequest        *journal.ExternalRef `json:"pullRequest,omitempty"`
 	PROpenerStage      string               `json:"prOpenerStage,omitempty"`
+	ResumedFromRunID   string               `json:"resumedFromRunId,omitempty"`
 	Claim              OperatorClaim        `json:"claim"`
 	LatestError        *journal.ErrorDetail `json:"latestError,omitempty"`
 	Review             *OperatorReview      `json:"review,omitempty"`
@@ -1749,6 +1750,9 @@ func summarizeRunForStage(
 				currentStage = ""
 			}
 			lastStageStatus[event.Stage] = event.Status
+			if source, ok := event.Outputs["resumedFromRun"].(string); ok && source != "" {
+				operator.ResumedFromRunID = source
+			}
 			if !claimedIssueFound {
 				id, idOK := event.Outputs["id"].(string)
 				title, titleOK := event.Outputs["title"].(string)

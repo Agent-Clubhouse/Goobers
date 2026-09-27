@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "ff2e04db1adf9813a3318cb9fab754572600cffb387aaf2f2dd00f757439ac31",
+  "snapshotSha256": "a1db21948eb7aba19a921ac708dfd610674e0b5bc248fcdaf0ee24a556538926",
   "changes": [
     {
       "version": 1,
@@ -52,6 +52,10 @@
     {
       "version": 13,
       "description": "Add optional uses for topology (b) (ADO-N31, docs/design/ado-parity-dsl-2-0.md section 7.2): open-pr gains optional github:issues:read and github:issues:write for the claimed-issue staleness re-check on a GitHub/Gitea backlog, and issue-close-out gains optional github:pr:write and provider:pr:write for the pull-request lookup on the Azure DevOps code provider. Additive and optional only: no required use, flag or result-file field changes, so every shipped config keeps compiling and no capability is auto-derived onto a task."
+    },
+    {
+      "version": 14,
+      "description": "Give recovery-resume a typed recovery-resume.json result contract (#4418), allowing the ordinary implementation workflow to record whether it resumed retained work and the source run. The existing repo:push capability requirement is unchanged."
     }
   ]
 }
