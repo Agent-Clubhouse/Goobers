@@ -223,8 +223,8 @@ func TestValidationEnvAddsKnownTargetWithoutChangingRepositoryRemotes(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("git", "-C", root, "config", "--get-regexp", `^remote\..*\.url$`)
-	cmd.Env = validationEnv(env, checkedInTrees[0])
+	cmd := testgit.Command("-C", root, "config", "--get-regexp", `^remote\..*\.url$`)
+	cmd.Env = validationEnv(testgit.IsolateEnvironment(env), checkedInTrees[0])
 	output, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)
@@ -262,8 +262,8 @@ func TestValidationEnvPreservesExistingGitConfigSlots(t *testing.T) {
 		"GIT_CONFIG_KEY_0=safe.directory",
 		"GIT_CONFIG_VALUE_0="+root,
 	)
-	cmd := exec.Command("git", "-C", root, "config", "--get-regexp", `^(safe\.directory|remote\.goobers-validation-target\.url)$`)
-	cmd.Env = validationEnv(env, checkedInTrees[0])
+	cmd := testgit.Command("-C", root, "config", "--get-regexp", `^(safe\.directory|remote\.goobers-validation-target\.url)$`)
+	cmd.Env = validationEnv(testgit.IsolateEnvironment(env), checkedInTrees[0])
 	output, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)
