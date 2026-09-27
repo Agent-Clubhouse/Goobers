@@ -125,11 +125,12 @@ type MergeQueuePoller interface {
 }
 
 // WorkItemBlockerChecker reports whether a work item has an unresolved
-// native blocker. Optional (backlog.blockers). ADO does not implement or
-// declare it — dependency-link modeling reaches parity under #2061 — so the call
-// site (cmd/goobers/backlogquery.go) goes through Dispatcher: an ADO item
-// with a nonzero BlockedByCount fails closed (excluded with a warning)
-// instead of the fail-open stub #2059 used to return (CONF-5, #2078).
+// native blocker. Optional (backlog.blockers). GitHub and Gitea read native
+// issue dependencies; ADO reads predecessor links and their state (ADO-N32).
+// The call site (cmd/goobers/backlogquery.go) goes through Dispatcher, so a
+// provider that does not declare it has an item with a nonzero
+// BlockedByCount fail closed (excluded with a warning) instead of the
+// fail-open stub #2059 used to return (CONF-5, #2078).
 type WorkItemBlockerChecker interface {
 	HasOpenWorkItemBlocker(context.Context, RepositoryRef, string) (bool, error)
 }

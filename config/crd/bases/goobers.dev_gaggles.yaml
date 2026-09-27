@@ -152,6 +152,40 @@ spec:
                       not route the backlog through a different credential. validate reports
                       REF012 wherever it is declared.
                     type: string
+                  doneStates:
+                    description: |-
+                      DoneStates decides when a linked predecessor work item stops blocking
+                      its successor. It is read for an Azure DevOps backlog only; GitHub and
+                      Gitea map a closed item to Completed, so the setting is accepted but
+                      has no effect there. Omitted means the Resolved, Completed and Removed
+                      state categories count as done.
+                    properties:
+                      byType:
+                        additionalProperties:
+                          items:
+                            type: string
+                          type: array
+                        description: |-
+                          ByType lists, per work item type name, the state names that count as
+                          done for that type. A listed type ignores Categories.
+                        type: object
+                      categories:
+                        description: |-
+                          Categories are the ADO state categories that count as done for any work
+                          item type not listed in ByType. Omitted or empty means Resolved,
+                          Completed and Removed.
+                        items:
+                          description: BacklogStateCategory is an Azure DevOps work-item
+                            state category.
+                          enum:
+                          - Proposed
+                          - InProgress
+                          - Resolved
+                          - Completed
+                          - Removed
+                          type: string
+                        type: array
+                    type: object
                   fieldPredicate:
                     description: |-
                       FieldPredicate is a CEL expression over the provider's typed native-field

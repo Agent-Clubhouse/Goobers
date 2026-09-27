@@ -53,7 +53,7 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `backlog.update` | yes | conformant | conformant | conformant |
 | `backlog.status` | yes | conformant | conformant | conformant |
 | `backlog.claim` | yes | conformant | conformant | conformant |
-| `backlog.blockers` | yes | conformant | gap (#2061) | conformant |
+| `backlog.blockers` | yes | conformant | conformant | conformant |
 | `security.alerts.code-scanning` |  | conformant | not declared | not declared |
 | `security.alerts.dependabot` |  | conformant | not declared | not declared |
 | `trigger.subscribe` | yes | conformant | conformant | conformant |

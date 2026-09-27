@@ -149,13 +149,9 @@ type CapabilityGap struct {
 // declaration).
 var knownGaps = map[ProviderKind]map[Capability]CapabilityGap{
 	ProviderADO: {
-		// ADO populates WorkItem.BlockedByCount from Dependency-Reverse
-		// relations without checking whether the blocker is still open, so
-		// the count alone cannot answer the question; ADO neither declares
-		// nor implements WorkItemBlockerChecker, and the parity work is
-		// tracked by the ADO end-to-end epic (#3030, its original issue,
-		// closed as the count-population half only).
-		CapBacklogBlockers: {Kind: GapTracked, Issue: "#2061"},
+		// backlog.blockers left this registry with ADO-N32: ADO declares and
+		// implements WorkItemBlockerChecker over predecessor state
+		// (providers/ado_blockers.go).
 		CapPRQueryAssignee: {
 			Kind:      GapNotApplicable,
 			Rationale: "Azure DevOps pull requests have no assignee concept; reviewers are the closest analog and are covered by pr.query.requestedReviewer",

@@ -167,25 +167,34 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 
 // GetWorkItem reads an Azure Boards item as a unified work item.
 func (p *ADOProvider) GetWorkItem(ctx context.Context, repo RepositoryRef, id string) (WorkItem, error) {
-	if err := p.requireWorkItemScope(p.project(repo)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := validateADOWorkItemID(id); err != nil {
-		return WorkItem{}, err
-	}
-	endpoint, err := p.workURL(p.project(repo), "workitems", id)
+	out, err := p.getRawWorkItem(ctx, repo, id)
 	if err != nil {
-		return WorkItem{}, err
-	}
-	endpoint, err = addQuery(endpoint, url.Values{"$expand": []string{"Relations"}})
-	if err != nil {
-		return WorkItem{}, err
-	}
-	var out adoWorkItem
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
 		return WorkItem{}, err
 	}
 	return p.mapADOWorkItem(ctx, repo, out)
+}
+
+// getRawWorkItem reads one Azure Boards item with its relations expanded.
+func (p *ADOProvider) getRawWorkItem(ctx context.Context, repo RepositoryRef, id string) (adoWorkItem, error) {
+	if err := p.requireWorkItemScope(p.project(repo)); err != nil {
+		return adoWorkItem{}, err
+	}
+	if err := validateADOWorkItemID(id); err != nil {
+		return adoWorkItem{}, err
+	}
+	endpoint, err := p.workURL(p.project(repo), "workitems", id)
+	if err != nil {
+		return adoWorkItem{}, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"$expand": []string{"Relations"}})
+	if err != nil {
+		return adoWorkItem{}, err
+	}
+	var out adoWorkItem
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return adoWorkItem{}, err
+	}
+	return out, nil
 }
 
 // LinkPullRequestToWorkItem adds ADO's native Pull Request artifact relation
@@ -1100,10 +1109,13 @@ func adoHierarchy(relations []adoRelation) (*WorkItemRef, []Link, map[string]int
 	return parent, links, hierarchy
 }
 
+// adoBlockedByCount counts predecessor links. A nonzero count only says the
+// item has predecessors; HasOpenWorkItemBlocker decides whether any of them
+// still blocks.
 func adoBlockedByCount(relations []adoRelation) int {
 	count := 0
 	for _, relation := range relations {
-		if relation.Rel == "System.LinkTypes.Dependency-Reverse" {
+		if relation.Rel == adoPredecessorRel {
 			count++
 		}
 	}

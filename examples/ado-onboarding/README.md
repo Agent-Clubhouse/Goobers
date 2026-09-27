@@ -36,8 +36,28 @@ The Boards `backlog.project` can differ from the repository project, but
 `backlog.provider` must stay `ado`: `validate` refuses a gaggle whose backlog
 provider differs from its project provider (a mixed-provider backlog is
 planned for a later release; see
-[ADO limitations](../../docs/guides/ado-limitations.md)). Check both Git and
-Boards access, then optionally seed one tagged Task:
+[ADO limitations](../../docs/guides/ado-limitations.md)).
+
+A work item with a predecessor link is not claimed until the predecessor is
+done. By default a predecessor in the Resolved, Completed or Removed state
+category is done, so a Resolved Bug no longer blocks. A team whose process
+uses Resolved as "awaiting QA" can override this in the gaggle's backlog
+block; `byType` state names take precedence for that type:
+
+```yaml
+backlog:
+  provider: ado
+  project: example-project
+  doneStates:
+    categories: [Resolved, Completed, Removed]   # default when omitted
+    byType:
+      Bug: [Closed]
+```
+
+`validate` rejects an unknown category name. GitHub and Gitea backlogs accept
+`doneStates` and ignore it.
+
+Check both Git and Boards access, then optionally seed one tagged Task:
 
 ```sh
 goobers validate --strict --check-repos ./ado-instance

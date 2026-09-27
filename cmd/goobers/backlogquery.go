@@ -334,6 +334,9 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	}
 	env.issueProvider = issueProvider
 	env.ghIssueProvider, _ = provider.(*providers.GitHubProvider)
+	if ado, isADO := provider.(*providers.ADOProvider); isADO {
+		applyGaggleDoneStates(env.root, ado)
+	}
 	return 0
 }
 

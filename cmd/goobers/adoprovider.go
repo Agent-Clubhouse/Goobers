@@ -185,3 +185,45 @@ func applyBacklogProject(set *instance.ConfigSet, gaggle string, routed provider
 	}
 	return routed
 }
+
+// applyGaggleDoneStates sets the ADO provider's predecessor done states from
+// the stage's gaggle backlog.doneStates (ADO-N32). It resolves the gaggle the
+// same way backlogRepoRefForStage does. When the gaggle, its config or the
+// setting cannot be resolved (for example in a stage pod, which has no
+// instance config), the provider keeps its default: the Resolved, Completed
+// and Removed categories.
+func applyGaggleDoneStates(root string, provider *providers.ADOProvider) {
+	gaggle := os.Getenv(executor.GaggleEnvVar)
+	if gaggle == "" {
+		return
+	}
+	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
+	if err != nil || report == nil || set == nil {
+		return
+	}
+	if states, ok := gaggleADODoneStates(set, gaggle); ok {
+		providers.WithADODoneStates(states)(provider)
+	}
+}
+
+// gaggleADODoneStates converts the named gaggle's backlog.doneStates into the
+// provider form. It reports false when the gaggle is absent, its backlog is
+// not ADO, or it declares no doneStates.
+func gaggleADODoneStates(set *instance.ConfigSet, gaggle string) (providers.ADODoneStates, bool) {
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		if g.Name != gaggle {
+			continue
+		}
+		backlog := g.Spec.Backlog
+		if backlog.Provider != apiv1.ProviderADO || backlog.DoneStates == nil {
+			return providers.ADODoneStates{}, false
+		}
+		states := providers.ADODoneStates{ByType: backlog.DoneStates.ByType}
+		for _, category := range backlog.DoneStates.Categories {
+			states.Categories = append(states.Categories, string(category))
+		}
+		return states, true
+	}
+	return providers.ADODoneStates{}, false
+}

@@ -449,8 +449,15 @@ set:
 | PRL-081 | ADO verdict threads are **posted**, not reconciled, so the single-sticky-comment guarantee does not hold on the thread carrier. |
 | PRL-082 | The ADO stage provider does not wire the mutation recorder, so ADO merge-path side effects are not journal-attributed. |
 
-`backlog.blockers` also remains undeclared for ADO — the Dispatcher fails closed
-per item rather than refusing the config, which is CONF-5's intended outcome.
+`backlog.blockers` is now declared for ADO (ADO-N32). The provider reads an
+item's predecessor links (`System.LinkTypes.Dependency-Reverse`), hydrates the
+predecessors through `workitemsbatch`, and counts one as blocking until its
+state is done. By default the Resolved, Completed and Removed state categories
+are done: a Resolved Bug means its code has landed, while a User Story's
+Resolved state sits in the InProgress category and still blocks. A gaggle can
+override this with `backlog.doneStates` (`categories`, and `byType` state names
+that take precedence for one type). A predecessor whose state cannot be read,
+or that the batch omits, still blocks, so the answer fails closed as before.
 
 ### 10.4 Lane stages added since §1 was written
 
