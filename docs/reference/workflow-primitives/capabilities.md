@@ -82,8 +82,8 @@ operation:
 `CAP006` is strict-neutral: `goobers validate --strict` prints it but does not
 fail on it. It covers DSL 2.0 workflows and the goobers their agentic tasks and
 gates run. DSL 3.0 is out of scope; its provider-neutral names are designed in
-[provider-access-layer.md](../../design/provider-access-layer.md). The full
-rule is in [ado-parity-dsl-2-0.md §3.1](../../design/ado-parity-dsl-2-0.md).
+`docs/design/provider-access-layer.md`. The full rule is in
+`docs/design/ado-parity-dsl-2-0.md` §3.1.
 
 ## Runner-only capability
 

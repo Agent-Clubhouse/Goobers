@@ -142,7 +142,11 @@ behaviour changes.
   `ado:pr:write` have no consumer on ADO today. In DSL 2.0 they are accepted and draw
   an advisory warning that names the `github:*` name that authorizes the operation.
   `goobers validate --strict` treats the warning as neutral. This does not break
-  configurations that followed the older docs.
+  configurations that followed the older docs. As shipped (ADO-N24) the code is
+  `CAP006`. It covers DSL 2.0 tasks and the goobers their agentic tasks and
+  gates run. `open-pr` gained a real consumer of `ado:work-items:write` (#5819:
+  it links the pull request to its work item), so a declaration on `open-pr` is
+  not reported.
 - **Compile-matrix gate** (§8.1). Every shipped workflow is validated against an ADO
   gaggle.
 
