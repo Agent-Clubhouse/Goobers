@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -92,7 +93,70 @@ func ciReadyForMerge(poll providers.PullRequestPollResult) bool {
 	return poll.MergeableState == providers.MergeableStateUnstable
 }
 
-func runMergePR(args []string, stdout, stderr io.Writer) int {
+// finishMergePRFailure runs ensureMergeRefusalOutputs after a failed
+// (exit 1) merge-pr; usage errors (exit 2) and successes are left untouched.
+func finishMergePRFailure(code *int, stderr io.Writer, captured *bytes.Buffer) {
+	if *code == 1 {
+		ensureMergeRefusalOutputs(stderr, captured.String())
+	}
+}
+
+// ensureMergeRefusalOutputs backs merge-review's routing contract on every
+// failed merge-pr (#5527): merge-gate sends a failed stage to its fail branch,
+// and record-merge-refusal's inputsFrom needs selectedNumber, selectedHeadSha
+// and reason from this stage. A failure path that wrote no result (a missing
+// credential, an unresolvable repo) or only the typed error envelope
+// (failProviderStage) used to omit them, so the run crashed resolving inputs
+// instead of recording the refusal. The stage still fails with its typed
+// errorCode; only absent routing outputs are filled, never an existing one.
+func ensureMergeRefusalOutputs(stderr io.Writer, captured string) {
+	resultFile := providerInput("resultFile", "merge-result.json")
+	payload := map[string]interface{}{}
+	if data, err := os.ReadFile(resultFile); err == nil {
+		if json.Unmarshal(data, &payload) != nil || payload == nil {
+			payload = map[string]interface{}{}
+		}
+	}
+	if code, _ := payload[executor.OutputErrorCode].(string); code == "" {
+		message := providerStageErrorMessage("merge-pr", captured)
+		code, retryable, extra := classifyProviderError(errors.New(message))
+		payload[executor.OutputErrorCode] = code
+		payload[executor.OutputErrorMessage] = message
+		payload[executor.OutputErrorRetryable] = retryable
+		for k, v := range extra {
+			payload[k] = v
+		}
+	}
+	for key, value := range map[string]interface{}{
+		"selectedNumber":  providerInput("pullNumber", ""),
+		"selectedHeadSha": providerInput("headSha", ""),
+		"merged":          false,
+		"optedOut":        false,
+	} {
+		if _, ok := payload[key]; !ok {
+			payload[key] = value
+		}
+	}
+	// A landing-receipt failure already carries its acknowledged landOutcome
+	// (merge-gate routes on that), so an empty reason there is left as is.
+	reason, _ := payload["reason"].(string)
+	if _, landed := payload["landOutcome"]; reason == "" && !landed {
+		payload["reason"] = fmt.Sprintf("merge-pr failed (%v): %v",
+			payload[executor.OutputErrorCode], payload[executor.OutputErrorMessage])
+	}
+	if err := writeProviderStageResult(resultFile, payload); err != nil {
+		pf(stderr, "warning: write merge-pr refusal outputs %s: %v\n", resultFile, err)
+	}
+}
+
+func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
+	// #5527: every failure below must still emit merge-review's refusal
+	// routing outputs; the deferred finisher fills them from the result file
+	// and the captured stderr once the exit code is known.
+	var captured bytes.Buffer
+	defer finishMergePRFailure(&code, stderr, &captured)
+	stderr = io.MultiWriter(stderr, &captured)
+
 	fs := newCLIFlagSet("merge-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "merge-pr")
@@ -805,6 +869,10 @@ func reportLandingError(stdout, stderr io.Writer, path, number, head string, lan
 		reason = mergeConflictReason
 	case providers.IsRequiredStatusCheckPendingError(mergeErr):
 		reason = requiredStatusPendingReason
+	default:
+		if detail, refused := providers.MergeRefusalReason(mergeErr); refused {
+			reason = "merge-refused: " + detail
+		}
 	}
 	if reason == "" {
 		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")

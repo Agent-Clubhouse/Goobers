@@ -146,7 +146,9 @@ behaviour changes.
   `CAP006`. It covers DSL 2.0 tasks and the goobers their agentic tasks and
   gates run. `open-pr` gained a real consumer of `ado:work-items:write` (#5819:
   it links the pull request to its work item), so a declaration on `open-pr` is
-  not reported.
+  not reported. The link is best-effort (#5925): without a delivered credential
+  the pull request still opens with a text reference and a note, and the Azure
+  DevOps repository credential backs the capability when a stage declares it.
 - **Compile-matrix gate** (§8.1). Every shipped workflow is validated against an ADO
   gaggle.
 
@@ -454,12 +456,16 @@ backlog:
 
 - **Categories** give a process-agnostic default. `byType` matches state names for
   one work item type and takes precedence for that type.
-- **Uses.** The same setting decides when a predecessor stops blocking (ADO-N32) and
-  when a claimed item counts as already done (ADO-N28). Goobers' own close still
-  targets the Completed category.
+- **Uses.** The setting decides only when a predecessor stops blocking (ADO-N32).
+  It does not decide when a claimed item counts as already done: Goobers' own close
+  always drives an item to the Completed category, and a Resolved item moves on to
+  Completed (ADO-N28).
 - **Validation.** Unknown category names are errors. Unknown state names warn, and
   are checked against the project's real per-type states by
-  `validate --check-repos` (ADO-N34).
+  `validate --check-repos` (ADO-N34). Names are trimmed of surrounding whitespace
+  the same way at runtime, and `byType` keys that differ only in case are merged
+  (their state lists are combined); `validate --check-repos` warns about such
+  duplicate keys.
 - **Other providers.** GitHub and Gitea map closed to Completed, so the setting is
   accepted but has no effect there.
 

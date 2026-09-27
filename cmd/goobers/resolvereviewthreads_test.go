@@ -61,6 +61,51 @@ func seedReviewThreadResolutionRunWithComments(t *testing.T, root, runID, respon
 	}
 }
 
+// setDaemonStageAttributionEnv sets the remaining stage env a daemon injects
+// into a goobers CLI stage, so the stage provider stamps its writes with run
+// attribution exactly as it does in a real run.
+func setDaemonStageAttributionEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv(executor.TaskEnvVar, "resolve-review-threads")
+}
+
+// assertAttributedReviewThreadReply checks that a posted reply carries the
+// provider's attribution after the stage's own response marker.
+func assertAttributedReviewThreadReply(t *testing.T, threadID, body string) {
+	t.Helper()
+	if !strings.Contains(body, "<!-- goobers:review-thread-response:") {
+		t.Errorf("thread %s reply %q has no response marker", threadID, body)
+	}
+	if attribution, ok, err := providers.ParseAttribution(body); err != nil || !ok || attribution.Task != "resolve-review-threads" {
+		t.Errorf("thread %s reply attribution = %+v, %v, %v; want the stage's run attribution", threadID, attribution, ok, err)
+	}
+}
+
+func TestReviewThreadHasReplyMatchesResponseMarkerLine(t *testing.T) {
+	rendered := renderReviewThreadReply("run-1", "sha", reviewThreadDisposition{ThreadID: "T1", Disposition: "addressed", Detail: "done"})
+	attributed := rendered + "\n\n<!-- goobers:attribution v1 e30= -->\nPosted by **Goobers** | `goobers/pr-remediation`"
+	for _, tc := range []struct {
+		name     string
+		comments []providers.PullRequestInlineComment
+		want     bool
+	}{
+		{"attributed reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: attributed}}, true},
+		{"CRLF-normalised reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, "\n", "\r\n")}}, true},
+		{"reply on another thread", []providers.PullRequestInlineComment{{ThreadID: "T2", Body: attributed}}, false},
+		{"another run's reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, "run-1", "run-0")}}, false},
+		{"marker quoted mid-line", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "see " + reviewThreadResponseMarker("run-1", "T1") + " above"}}, false},
+		{"reviewer comment only", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "finding"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := providers.PullRequestReviewThreads{InlineComments: tc.comments}
+			if got := reviewThreadHasReply(snapshot, "run-1", "T1"); got != tc.want {
+				t.Fatalf("reviewThreadHasReply = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveReviewThreadsRepliesBeforeResolvingAndReturnsUnresolvedCount(t *testing.T) {
 	const runID = "resolve-threads"
 	root := initDemo(t)
@@ -160,11 +205,22 @@ func TestResolveReviewThreadsRepliesBeforeResolvingAndReturnsUnresolvedCount(t *
 	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
 	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
 	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	setDaemonStageAttributionEnv(t)
 	dir := t.TempDir()
 	t.Chdir(dir)
 
-	if code, stdout, stderr := runArgs(t, "resolve-review-threads", root); code != 0 {
-		t.Fatalf("resolve-review-threads: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	// The second run is a stage retry: it must recognise the attributed
+	// replies the first run posted and add none of its own.
+	for attempt := 1; attempt <= 2; attempt++ {
+		if code, stdout, stderr := runArgs(t, "resolve-review-threads", root); code != 0 {
+			t.Fatalf("resolve-review-threads attempt %d: code=%d stdout=%q stderr=%q", attempt, code, stdout, stderr)
+		}
+	}
+	for id, state := range threads {
+		if len(state.replies) != 1 {
+			t.Fatalf("thread %s replies = %d, want exactly 1", id, len(state.replies))
+		}
+		assertAttributedReviewThreadReply(t, id, state.replies[0]["body"].(string))
 	}
 	data, err := os.ReadFile(filepath.Join(dir, resolveReviewThreadsResultFile))
 	if err != nil {

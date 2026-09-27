@@ -38,6 +38,7 @@ import (
 
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 const (
@@ -181,18 +182,18 @@ func (r temporalRunStates) status(ctx context.Context, workflowID string) sweepS
 // workerhost: the host dials inside Run, which has not been called yet, and a
 // boot-time connection that lives for the length of one sweep costs nothing to
 // reason about.
-func sweepWorkerStageOrphans(sweeper stageOrphanSweeper, hostPort, namespace string, stdout, stderr io.Writer) {
-	sweepWorkerStageOrphansContext(context.Background(), sweeper, hostPort, namespace, stdout, stderr)
+func sweepWorkerStageOrphans(sweeper stageOrphanSweeper, hostPort, namespace string, tls *temporaldial.TLS, stdout, stderr io.Writer) {
+	sweepWorkerStageOrphansContext(context.Background(), sweeper, hostPort, namespace, tls, stdout, stderr)
 }
 
-func sweepWorkerStageOrphansContext(parent context.Context, sweeper stageOrphanSweeper, hostPort, namespace string, stdout, stderr io.Writer) {
+func sweepWorkerStageOrphansContext(parent context.Context, sweeper stageOrphanSweeper, hostPort, namespace string, tls *temporaldial.TLS, stdout, stderr io.Writer) {
 	if sweeper == nil {
 		return
 	}
 	if err := parent.Err(); err != nil {
 		return
 	}
-	c, err := dialWorkerSweepTemporal(hostPort, namespace)
+	c, err := dialWorkerSweepTemporal(hostPort, namespace, tls)
 	if err != nil {
 		pf(stderr, "goobers worker: orphan sweep skipped: dial temporal %s (namespace %s): %v\n", hostPort, namespace, err)
 		return
@@ -222,6 +223,7 @@ func startPeriodicWorkerStageOrphanSweeps(
 	ctx context.Context,
 	sweeper stageOrphanSweeper,
 	hostPort, namespace string,
+	tls *temporaldial.TLS,
 	stdout, stderr io.Writer,
 	interval time.Duration,
 ) <-chan struct{} {
@@ -242,7 +244,7 @@ func startPeriodicWorkerStageOrphanSweeps(
 				if ctx.Err() != nil {
 					return
 				}
-				sweepWorkerStageOrphansContext(ctx, sweeper, hostPort, namespace, stdout, stderr)
+				sweepWorkerStageOrphansContext(ctx, sweeper, hostPort, namespace, tls, stdout, stderr)
 			}
 		}
 	}()

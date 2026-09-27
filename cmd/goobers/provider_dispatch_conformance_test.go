@@ -449,14 +449,11 @@ func setNonGitHubStageEnv(t *testing.T, kind providers.ProviderKind) {
 // the wrong one is caught by name.
 
 // everyCredentialedCapability is every capability the daemon can deliver as
-// GOOBERS_CRED_<capability> (credentialedCapabilities), so the probe can tell
-// any of them apart.
+// GOOBERS_CRED_<capability> from a repository credential
+// (repoCredentialedCapabilityNames, which on ADO includes
+// ado:work-items:write), so the probe can tell any of them apart.
 func everyCredentialedCapability() []string {
-	names := make([]string, 0, len(credentialedCapabilities))
-	for _, c := range credentialedCapabilities {
-		names = append(names, string(c))
-	}
-	return names
+	return repoCredentialedCapabilityNames()
 }
 
 // deliverEveryADOStageCapability delivers a distinct value for every

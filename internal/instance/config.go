@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/speechnotify"
 	"github.com/goobers/goobers/internal/strictyaml"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // APIVersion and Kind for instance.yaml. Mirrors the config-as-code
@@ -1468,6 +1469,10 @@ type EngineConfig struct {
 	// protocol (#3883). Nil or disabled leaves every engine run settling at
 	// its terminal exactly as it did before, which is the rollback posture.
 	HITL *EngineHITLConfig `json:"hitl,omitempty" yaml:"hitl,omitempty"`
+	// TLS opts the Temporal frontend connection into TLS or mTLS (#5289).
+	// Nil keeps the plaintext dial a local dev Temporal expects; every dial
+	// site builds its options through temporaldial.Options with this value.
+	TLS *temporaldial.TLS `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // EngineHITLConfig is the instance's posture on holding an engine-driven run's
@@ -2158,6 +2163,7 @@ func (c *Config) resolveEngineConfig(lookupEnv func(string) (string, bool)) (Eng
 		if c.Engine.TaskQueue != "" {
 			resolved.TaskQueue = c.Engine.TaskQueue
 		}
+		resolved.TLS = c.Engine.TLS
 	}
 	var envResolution engineEnvResolution
 	overrides := []struct {
@@ -2245,6 +2251,9 @@ func (c EngineConfig) Validate() error {
 		if err := c.HITL.Validate(); err != nil {
 			return fmt.Errorf("hitl: %w", err)
 		}
+	}
+	if err := c.TLS.Validate(); err != nil {
+		return fmt.Errorf("tls: %w", err)
 	}
 	return nil
 }

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
@@ -43,5 +46,45 @@ func TestGaggleADODoneStatesCarriesBacklogSetting(t *testing.T) {
 		if got, ok := gaggleADODoneStates(set, name); ok {
 			t.Errorf("gaggleADODoneStates(%s) = %+v, true; want the provider default", name, got)
 		}
+	}
+}
+
+// TestStageWarnsWhenGaggleConfigIsUnreadable pins the brokered-pod fallback:
+// a stage that names a gaggle but has no instance config (a stage pod) warns
+// once per setting on stderr instead of silently using the default
+// doneStates and the code project for backlog work.
+func TestStageWarnsWhenGaggleConfigIsUnreadable(t *testing.T) {
+	var warnings bytes.Buffer
+	previous := stageGaggleConfigWarnings
+	stageGaggleConfigWarnings = &warnings
+	clearWarned := func() {
+		stageGaggleConfigWarned.Range(func(key, _ any) bool {
+			stageGaggleConfigWarned.Delete(key)
+			return true
+		})
+	}
+	clearWarned()
+	t.Cleanup(func() {
+		stageGaggleConfigWarnings = previous
+		clearWarned()
+	})
+	t.Setenv(executor.GaggleEnvVar, "example")
+	root := t.TempDir() // no instance config, as in a stage pod
+
+	routed := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "example-org", Project: "code", Name: "repo"}
+	for range 2 {
+		if got := backlogRepoRefForStage(root, routed); got != routed {
+			t.Fatalf("backlogRepoRefForStage = %+v, want the routed repo unchanged", got)
+		}
+		applyGaggleDoneStates(root, providers.NewADOProvider("example-org", "code", "token"))
+	}
+	out := warnings.String()
+	for _, setting := range []string{"the backlog project override", "backlog.doneStates"} {
+		if n := strings.Count(out, setting+" is not applied"); n != 1 {
+			t.Errorf("warnings for %q = %d, want exactly 1:\n%s", setting, n, out)
+		}
+	}
+	if !strings.Contains(out, `gaggle "example"`) {
+		t.Errorf("warning does not name the gaggle:\n%s", out)
 	}
 }

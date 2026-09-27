@@ -284,6 +284,12 @@ func TestInitGuidedRejectsExistingConfigurationBeforeWriting(t *testing.T) {
 
 func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 	for _, workflow := range guidedWorkflowOrder {
+		if workflow == GuidedWorkflowMergeReview {
+			// Guided merge-review is Azure DevOps-only; GitHub refuses it
+			// (TestInitGuidedGitHubRefusesMergeReview).
+			t.Run(workflow, assertGuidedADOSingleWorkflow(workflow))
+			continue
+		}
 		t.Run(workflow, func(t *testing.T) {
 			opts := GuidedOptions{
 				GaggleName:           "widget",
@@ -710,6 +716,34 @@ func guidedADOOptions(workflows ...string) GuidedOptions {
 	}
 }
 
+// assertGuidedADOSingleWorkflow runs guided setup on Azure DevOps with only
+// workflow selected (Azure CLI auth) and checks that exactly that workflow is
+// scaffolded against the ADO repository.
+func assertGuidedADOSingleWorkflow(workflow string) func(*testing.T) {
+	return func(t *testing.T) {
+		opts := guidedADOOptions(workflow)
+		opts.RepoAuthKind = ADOAuthAzureCLI
+		root := filepath.Join(t.TempDir(), "guided")
+		if _, err := initGuidedForTest(root, opts); err != nil {
+			t.Fatalf("InitGuided: %v", err)
+		}
+		set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+		if err != nil {
+			t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+		}
+		if len(set.Workflows) != 1 || set.Workflows[0].Name != workflow {
+			t.Fatalf("guided workflows = %+v, want only %q", set.Workflows, workflow)
+		}
+		cfg, err := LoadConfig(NewLayout(root).ConfigFile())
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if len(cfg.Repos) != 1 || cfg.Repos[0].Provider != "ado" || cfg.Repos[0].Auth == nil || cfg.Repos[0].Auth.Kind != ADOAuthAzureCLI {
+			t.Fatalf("guided repos = %+v, want one ado repository with azure-cli auth", cfg.Repos)
+		}
+	}
+}
+
 func TestInitGuidedADOAcceptsEveryAuthKind(t *testing.T) {
 	for _, kind := range []string{"", ADOAuthAzureCLI, ADOAuthWorkloadIdentity, ADOAuthManagedIdentity, ADOAuthPAT} {
 		t.Run("kind="+kind, func(t *testing.T) {
@@ -765,6 +799,24 @@ func TestInitGuidedADORejectsBeforeWriting(t *testing.T) {
 	}
 }
 
+// TestInitGuidedGitHubRefusesMergeReview pins that guided setup offers
+// merge-review on Azure DevOps only: guided GitHub setup grants merge-review
+// no pull-request token, so it is refused before anything is written.
+func TestInitGuidedGitHubRefusesMergeReview(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "guided")
+	_, err := initGuidedForTest(root, GuidedOptions{
+		GaggleName: "widget", RepoOwner: "example-org", RepoName: "widget",
+		RepoTokenEnv: "REPO_TOKEN", WorkTrackingTokenEnv: "ISSUES_TOKEN", PullRequestTokenEnv: "PR_TOKEN",
+		Workflows: []string{GuidedWorkflowBacklogCuration, GuidedWorkflowMergeReview},
+	})
+	if err == nil || !strings.Contains(err.Error(), "merge-review workflow on Azure DevOps only") {
+		t.Fatalf("InitGuided error = %v, want the Azure DevOps-only merge-review refusal", err)
+	}
+	if _, statErr := os.Stat(root); !os.IsNotExist(statErr) {
+		t.Fatalf("refused guided setup wrote root, stat error = %v", statErr)
+	}
+}
+
 // TestInitGuidedADOUsesADOInstructions pins the per-provider instruction
 // selection: an ADO scaffold gets the curator's instructions-ado.md variant,
 // a GitHub scaffold keeps the canonical instructions.md, and goobers with no
@@ -786,8 +838,9 @@ func TestInitGuidedADOUsesADOInstructions(t *testing.T) {
 	githubOpts := GuidedOptions{
 		GaggleName: "widget", RepoOwner: "example-org", RepoName: "widget",
 		RepoTokenEnv: "REPO_TOKEN", WorkTrackingTokenEnv: "ISSUES_TOKEN", PullRequestTokenEnv: "PR_TOKEN",
-		CopilotTokenEnv: "MODEL_TOKEN",
-		Workflows:       []string{GuidedWorkflowBacklogCuration, GuidedWorkflowMergeReview},
+		CopilotTokenEnv:  "MODEL_TOKEN",
+		RepoPushTokenEnv: "PUSH_TOKEN", PullRequestCI: true,
+		Workflows: []string{GuidedWorkflowBacklogCuration, GuidedWorkflowImplementation},
 	}
 	if _, err := initGuidedForTest(githubRoot, githubOpts); err != nil {
 		t.Fatalf("InitGuided GitHub: %v", err)

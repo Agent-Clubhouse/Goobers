@@ -279,7 +279,7 @@
       },
       {
         "capability": "ado:work-items:write",
-        "consequence": "the separately brokered Azure Boards credential is required at runtime only when an ADO pull request is linked to its work item",
+        "consequence": "optional on Azure DevOps: when declared, the pull request is also linked natively to its claimed work item; without it the pull request opens with a text reference only",
         "optional": true
       },
       {

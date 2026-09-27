@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -174,6 +175,12 @@ func IntegrityForLabels(labels []string, trustLabel string) apiintegrity.Grade {
 	}
 	return apiintegrity.Unapproved
 }
+
+// ErrLabelHistoryIncomplete reports that one work item's label history cannot
+// be read completely or consistently (for example, an Azure DevOps item past
+// the revision cap, or a tag change without a change date). It concerns that
+// item only: a caller walking several items can skip it and continue.
+var ErrLabelHistoryIncomplete = errors.New("work item label history is incomplete")
 
 // WorkItemLabelTransition is one provider-issued label add/remove event.
 type WorkItemLabelTransition struct {

@@ -215,10 +215,6 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
 
-	caps := make([]string, len(credentialedCapabilities))
-	for i, c := range credentialedCapabilities {
-		caps[i] = string(c)
-	}
 	overrides := make([]credentials.Grant, 0, len(daemonIdentityOverrides)+len(cfg.Credentials))
 	overrides = append(overrides, daemonIdentityOverrides...)
 	for _, cg := range cfg.Credentials {
@@ -228,7 +224,7 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 		}
 		overrides = append(overrides, credentials.Grant{Capability: key, Ref: credentialRefName(key)})
 	}
-	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, backlog, caps, overrides)
+	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, backlog, repoCredentialedCapabilityNames(), overrides))
 	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
 	// AdditionalRepos is granted only a repo-qualified contents:read token, drawn
 	// from that repo's own configured token binding. These runner-owned grants

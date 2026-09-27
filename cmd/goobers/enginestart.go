@@ -7,11 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"go.temporal.io/sdk/client"
-
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 const engineStartHelp = "Usage: goobers engine-start [flags] <workflow> [path]\n\n" +
@@ -152,7 +151,7 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	}
 	defer release()
 
-	c, err := client.DialContext(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
+	c, err := temporaldial.Dial(ctx, *hostPort, *namespace, engineConfig.TLS)
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
 		return 1

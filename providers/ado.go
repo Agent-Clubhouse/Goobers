@@ -661,11 +661,12 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
 			// A transport failure (connection reset, DNS blip, timeout) is only
-			// safe to retry automatically for an idempotent method (#2026): a
-			// POST/PATCH may have already committed server-side before its
-			// response was lost, and ADO has no transport-level dedup marker
-			// (unlike GitHub issue creation's footer check, #140) to make a
-			// blind retry safe for those.
+			// safe to retry automatically for an idempotent method (#2026), or
+			// for a POST to a read-only endpoint (workitemsbatch, WIQL; see
+			// adoRetryableRequest): any other POST/PATCH may have already
+			// committed server-side before its response was lost, and ADO has
+			// no transport-level dedup marker (unlike GitHub issue creation's
+			// footer check, #140) to make a blind retry safe for those.
 			if adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
 					return nil, serr

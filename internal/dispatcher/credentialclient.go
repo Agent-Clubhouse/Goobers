@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/daemonclient"
 )
 
 // defaultCredentialTimeout bounds a resolve. Short on purpose: credentials are
@@ -160,7 +161,7 @@ func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage
 	}
 	client := c.Client
 	if client == nil {
-		client = &http.Client{Timeout: defaultCredentialTimeout}
+		client = daemonclient.NewHTTP(defaultCredentialTimeout)
 	}
 	deadline := c.RetryDeadline
 	if deadline <= 0 {

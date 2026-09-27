@@ -251,6 +251,17 @@ type continuationEligibilityPolicy struct {
 	assignedTo      string
 }
 
+// comparedLabels lists every label the policy compares a re-read item's
+// labels against exactly, so an ADO tag first written in another case is
+// folded onto the configured spelling before the check.
+func (policy *continuationEligibilityPolicy) comparedLabels() []string {
+	if policy == nil {
+		return nil
+	}
+	labels := append(append([]string(nil), policy.requireLabels...), policy.excludeLabels...)
+	return append(labels, policy.labelFilter.Labels()...)
+}
+
 func validateContinuationClaims(root string, claims []localscheduler.ClaimEntry, sourceIdentity journal.RunIdentity, provider providers.Provider, repo providers.RepositoryRef) error {
 	if len(claims) == 0 {
 		return nil
@@ -302,7 +313,7 @@ func validateContinuationClaims(root string, claims []localscheduler.ClaimEntry,
 		case item.State != "" && !strings.EqualFold(item.State, "open"):
 			return fmt.Errorf("revalidate continuation claims: source claim %q is no longer open (state %q)", claimID, item.State)
 		}
-		if err := validateContinuationEligibility(item, claimID, policy); err != nil {
+		if err := validateContinuationEligibility(item, workItemRepo.Provider, claimID, policy); err != nil {
 			return fmt.Errorf("revalidate continuation claims: %w", err)
 		}
 	}
@@ -484,10 +495,15 @@ func continuationClaimID(claim localscheduler.ClaimEntry) string {
 	return claim.ItemID
 }
 
-func validateContinuationEligibility(item providers.WorkItem, claimID string, policy *continuationEligibilityPolicy) error {
+// validateContinuationEligibility re-checks a re-read source claim against the
+// workflow's eligibility policy. The item's labels are first folded onto the
+// policy's spellings for a case-insensitive provider (ADO), so a human-added
+// exclude tag in another case still stops the continuation.
+func validateContinuationEligibility(item providers.WorkItem, kind providers.ProviderKind, claimID string, policy *continuationEligibilityPolicy) error {
 	if policy == nil {
 		return nil
 	}
+	item.Labels = providers.FoldLabelsForCompare(kind, item.Labels, policy.comparedLabels())
 	if policy.respectAssignee && !item.AssigneeMatches(policy.assignedTo) {
 		return fmt.Errorf("source claim %q is assigned to %q, need %q", claimID, item.Assignee, policy.assignedTo)
 	}

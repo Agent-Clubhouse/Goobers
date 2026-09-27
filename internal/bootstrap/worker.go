@@ -1,6 +1,8 @@
 package bootstrap
 
 import (
+	"context"
+
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
@@ -8,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // EngineDeps are the execution seams a goober runtime provides to the engine
@@ -63,7 +66,8 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 }
 
 // DialTemporal connects to a Temporal frontend. A thin wrapper so the cmd
-// entrypoints don't each reimplement client construction.
-func DialTemporal(hostPort, namespace string) (client.Client, error) {
-	return client.Dial(client.Options{HostPort: hostPort, Namespace: namespace})
+// entrypoints don't each reimplement client construction; the options come
+// from temporaldial, so a nil tls is today's plaintext dial (#5289).
+func DialTemporal(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error) {
+	return temporaldial.Dial(context.Background(), hostPort, namespace, tls)
 }
