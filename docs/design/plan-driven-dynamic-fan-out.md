@@ -3,7 +3,6 @@
 > Status: **draft** — requires maintainer sign-off before implementation
 > Area: workflow DSL, runner, journal, conformance
 > Tracking: #1310
-> Related proposal: [krazeelazy/Goobers#1](https://github.com/krazeelazy/Goobers/issues/1)
 > Extends: [`static-fan-out-fan-in.md`](static-fan-out-fan-in.md)
 > Related: #155, #817, #2891, #5123
 
