@@ -1839,13 +1839,18 @@ func TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != len(credentialedCapabilities) {
+	if len(grants) != len(credentialedCapabilities)+1 {
 		t.Fatalf("ADO identity grants = %#v, want one per credentialed capability", grants)
 	}
+	hasWorkItemWrite := false
 	for _, grant := range grants {
 		if grant.Ref != "acme/widgets/web" {
 			t.Fatalf("grant %+v is not backed by the ADO repo's own source", grant)
 		}
+		hasWorkItemWrite = hasWorkItemWrite || grant.Capability == string(capability.ADOWorkItemsWrite)
+	}
+	if !hasWorkItemWrite {
+		t.Fatalf("ADO identity grants = %#v, want %s", grants, capability.ADOWorkItemsWrite)
 	}
 }
 
