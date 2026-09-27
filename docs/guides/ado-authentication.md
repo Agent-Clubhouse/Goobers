@@ -192,9 +192,11 @@ for the capabilities it declares:
 The daemon tracks each Entra token's expiry and refreshes it shortly before it
 lapses, but the stage does not receive the expiry. A delivered token can
 therefore have only a few minutes left. A stage cannot refresh what it was
-delivered: when Azure DevOps rejects the value with HTTP 401, the stage fails
-with an error that names the capability and says the credential expired or was
-revoked, and the next attempt receives a new value.
+delivered: when Azure DevOps rejects the value with HTTP 401, the request fails
+without a retry, with an error that names the capability, says the credential
+expired or was revoked, and keeps the 401 response. It is reported as an
+authentication failure (`github_auth_failed`), and the next attempt receives a
+new value. Refreshing a delivered value in a stage is follow-up #5905.
 
 The workload and managed identity sources that back grants are built on first
 use, so a host without the identity can still run read-only commands such as
@@ -223,6 +225,15 @@ This needs no `runner.envPassthrough` entry for a PAT or an Azure identity
 variable, and a stage pod needs no Azure identity of its own: only the daemon
 does. A `GOOBERS_CRED_<CAPABILITY>` set by hand for a standalone invocation,
 with no `GOOBERS_REPO_AUTH_SCHEME`, is sent as a PAT.
+
+The daemon states one authorization scheme per stage, taken from the
+repository's `auth` kind, and it applies to every credential the stage
+receives, including a `credentials:` entry. On a gaggle whose repository
+authenticates as a Microsoft Entra identity (`azure-cli`, `workload-identity`,
+`managed-identity`), a `credentials:` value such as the one backing
+`ado:work-items:write` is therefore sent as `Bearer` and must be an Entra
+access token; a PAT there is rejected. To link work items with a PAT, use a
+repository with `pat` auth.
 
 Operator commands that are not stages, such as `goobers status` and
 `goobers run`, still read the repository's `auth` block on the host where they
@@ -253,8 +264,9 @@ the instance config surface documented above.
 
 - Entra tokens are cached with an expiry-aware refresh window.
 - A 401 invalidates an expiring credential and retries exactly once. A
-  credential delivered to a stage is never resent after a 401; the stage fails
-  with an "expired or been revoked" error instead.
+  credential delivered to a stage is never resent after a 401; that request
+  fails with an "expired or been revoked" error that still classifies as an
+  authentication failure.
 - PAT sources are not retried as though they were refreshable.
 - The daemon registers every value it resolves with the journal and telemetry
   scrubber when it mints it, in each form the value can travel in: the raw

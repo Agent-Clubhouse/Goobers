@@ -293,8 +293,10 @@ so an undeclared capability means no credential on Azure DevOps too, and the
 command runs the same in a stage pod, which has no instance config. A
 `GOOBERS_CRED_<CAPABILITY>` set without a scheme (a standalone invocation) is
 sent as a PAT (`basic`). A delivered value cannot be refreshed by the stage: if
-Azure DevOps rejects it with HTTP 401, the stage fails with an "expired or been
-revoked" error naming the capability, and a new attempt receives a new value.
+Azure DevOps rejects it with HTTP 401, the request fails without a retry, with
+an "expired or been revoked" error naming the capability that keeps the 401
+response and reports `github_auth_failed`, and a new attempt receives a new
+value.
 Agentic stages fail closed on a missing grant on Azure DevOps as on GitHub;
 only a capability the harness marks optional (such as `agent:model`) is
 skipped.

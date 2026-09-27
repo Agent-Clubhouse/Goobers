@@ -278,6 +278,13 @@ then re-resolves through the credential plane for pods, and fails with a clear
 "credential expired" error locally. Long-lived agentic stages do not hold ADO
 credentials at all (credential containment, #5664).
 
+> **As shipped (ADO-N18):** a stage, local or pod, cannot refresh a delivered
+> value. A 401 fails the request at once with an "expired or been revoked" error
+> that names the capability and keeps the 401 response, so it still classifies
+> as an authentication failure. The daemon does not deliver the token's expiry.
+> Pod re-resolve, expiry delivery or a minimum remaining lifetime at mint is
+> follow-up #5905.
+
 **Harness.** Remove the ADO exception that tolerates a missing grant
 (`internal/harness/environment.go:170-173`). Once every kind backs its grants, ADO
 fails closed like GitHub.
