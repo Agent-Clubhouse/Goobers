@@ -100,10 +100,9 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's\n" +
 	"stable branch), base (default GOOBERS_BASE_BRANCH, else \"main\"), itemID,\n" +
 	"itemTitle, resultFile, timeout. PR metadata is configured through these\n" +
-	"workflow\n" +
-	"inputs — there are no --title/--body flags — and a stage may bind them\n" +
-	"from an upstream stage's declared output with inputsFrom rather than a\n" +
-	"static value:\n\n" +
+	"workflow inputs — there are no --title/--body flags — and a stage may\n" +
+	"bind them from an upstream stage's declared output with inputsFrom\n" +
+	"rather than a static value:\n\n" +
 	"    - name: open-pr\n" +
 	"      run:\n" +
 	"        command: [\"goobers\", \"open-pr\"]\n" +

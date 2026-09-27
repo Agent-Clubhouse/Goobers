@@ -2652,10 +2652,9 @@ to the declared result file for a downstream stage's Task.InputsFrom.
 Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's
 stable branch), base (default GOOBERS_BASE_BRANCH, else "main"), itemID,
 itemTitle, resultFile, timeout. PR metadata is configured through these
-workflow
-inputs — there are no --title/--body flags — and a stage may bind them
-from an upstream stage's declared output with inputsFrom rather than a
-static value:
+workflow inputs — there are no --title/--body flags — and a stage may
+bind them from an upstream stage's declared output with inputsFrom
+rather than a static value:
 
     - name: open-pr
       run:
