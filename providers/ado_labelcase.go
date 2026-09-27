@@ -63,6 +63,19 @@ func canonicalADOLabels(labels, wanted []string) []string {
 	return uniqueStrings(out)
 }
 
+// FoldLabelsForCompare returns labels as a caller that compares them exactly
+// against wanted should see them. On a provider whose labels match
+// case-insensitively (Azure DevOps), a label equal to one of wanted ignoring
+// case is returned in wanted's spelling; this is the single-item counterpart
+// of ListWorkItemsRequest.CompareLabels for items read one at a time
+// (GetWorkItem). For every other provider labels is returned unchanged.
+func FoldLabelsForCompare(kind ProviderKind, labels, wanted []string) []string {
+	if kind != ProviderADO {
+		return labels
+	}
+	return canonicalADOLabels(labels, wanted)
+}
+
 // adoRequestedLabels lists every label a ListWorkItems request compares
 // exactly: its native label filter, its label predicate's labels and the
 // caller's CompareLabels.
