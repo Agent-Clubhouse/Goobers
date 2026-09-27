@@ -108,6 +108,15 @@ same abstraction, whose shape is unchanged.
     new, matching the label ignoring case, and timed by that update's
     `System.ChangedDate`. A work item whose history reaches ADO's 10,000-revision
     cap fails closed rather than returning a truncated history (`ADO-N21`).
+  - *ADO blockers:* a work item's predecessors
+    (`System.LinkTypes.Dependency-Reverse` links) block it until each is in a
+    done state, and the ADO provider declares `backlog.blockers`. By default the
+    Resolved, Completed and Removed state categories are done, so a Resolved Bug
+    (its code has landed) no longer blocks. A gaggle can set
+    `backlog.doneStates.categories`, and `backlog.doneStates.byType` state names
+    that take precedence for one work item type. A predecessor whose state cannot
+    be read still blocks. GitHub and Gitea accept `doneStates` and ignore it
+    (`ADO-N32`).
   - *ADO partial label add:* ADO adds one PR label per request. When some labels
     in a multi-label add fail, the ones that applied are kept (not rolled back)
     and the error names each label that failed.

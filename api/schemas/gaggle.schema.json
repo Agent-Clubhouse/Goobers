@@ -221,7 +221,25 @@
           "minLength": 1,
           "description": "CEL predicate over the provider's typed native-field projection. ANDed with labels; unavailable fields are errors."
         },
-        "connectionRef": { "type": "string", "description": "Name of a Manifest connection. Accepted but not yet used to source credentials (validate reports REF012): backlog access uses the same instance.yaml repos[]/credentials[] credential as the rest of the gaggle, with Key Vault tokens resolved through secretStores. Connection-level credentials are planned (docs/design/provider-access-layer.md)." }
+        "connectionRef": { "type": "string", "description": "Name of a Manifest connection. Accepted but not yet used to source credentials (validate reports REF012): backlog access uses the same instance.yaml repos[]/credentials[] credential as the rest of the gaggle, with Key Vault tokens resolved through secretStores. Connection-level credentials are planned (docs/design/provider-access-layer.md)." },
+        "doneStates": {
+          "type": "object",
+          "description": "Work-item states that count as done when deciding whether a linked predecessor still blocks its successor. Read for an Azure DevOps backlog only; GitHub and Gitea accept it and ignore it. Omitted means the Resolved, Completed and Removed state categories count as done.",
+          "additionalProperties": false,
+          "properties": {
+            "categories": {
+              "type": "array",
+              "description": "Azure DevOps state categories that count as done for any work item type not listed in byType. Omitted or empty means Resolved, Completed and Removed.",
+              "items": { "type": "string", "enum": ["Proposed", "InProgress", "Resolved", "Completed", "Removed"] }
+            },
+            "byType": {
+              "type": "object",
+              "description": "Per work item type name, the state names that count as done for that type. A listed type ignores categories.",
+              "propertyNames": { "minLength": 1 },
+              "additionalProperties": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+            }
+          }
+        }
       }
     }
   }

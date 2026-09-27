@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -45,7 +47,7 @@ func (f *fakeDependencyCheckProvider) HasOpenWorkItemBlocker(context.Context, pr
 // TestFilterDeclaredDependencyEligibilityFailsClosedWhenUndeclared is
 // CONF-5's (#2078) regression test proving #2059's fail-open class cannot
 // recur structurally: a provider that does not declare backlog.blockers —
-// ADO's real state as of this fix — must have an item with a nonzero
+// ADO's state until ADO-N32 — must have an item with a nonzero
 // BlockedByCount excluded with a warning, never silently passed through as
 // "not blocked". blockerCalls staying 0 proves providers.Dispatcher
 // refused before the provider's own HasOpenWorkItemBlocker (which this
@@ -75,55 +77,93 @@ func TestFilterDeclaredDependencyEligibilityFailsClosedWhenUndeclared(t *testing
 	}
 }
 
-func TestFilterDeclaredDependencyEligibilityExcludesADOItemWithPredecessor(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, _ *http.Request) {
-		writeADOJSON(t, w, map[string]interface{}{
-			"id": 42,
+// newADOPredecessorProvider serves successor 42, linked to predecessor 41
+// in predecessorState, over the per-item GET, workitemsbatch and the Issue
+// type's state categories (Basic process: Doing is InProgress, Done is
+// Completed).
+func newADOPredecessorProvider(t *testing.T, predecessorState string) *providers.ADOProvider {
+	t.Helper()
+	item := func(id int, state string, relations []map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{
+			"id": id,
 			"fields": map[string]interface{}{
 				"System.WorkItemType": "Issue",
-				"System.Title":        "Blocked work",
-				"System.State":        "Active",
+				"System.Title":        "work " + strconv.Itoa(id),
+				"System.State":        state,
 			},
-			"relations": []map[string]interface{}{
-				{
-					"rel": "System.LinkTypes.Dependency-Reverse",
-					"url": "https://dev.azure.com/org/project/_apis/wit/workItems/41",
-					"attributes": map[string]interface{}{
-						"name": "Predecessor",
-					},
-				},
-			},
-		})
+			"relations": relations,
+		}
+	}
+	successor := item(42, "To Do", []map[string]interface{}{{
+		"rel":        "System.LinkTypes.Dependency-Reverse",
+		"url":        "https://dev.azure.com/org/project/_apis/wit/workItems/41",
+		"attributes": map[string]interface{}{"name": "Predecessor"},
+	}})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, _ *http.Request) {
+		writeADOJSON(t, w, successor)
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitemsbatch", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			IDs []int `json:"ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.IDs) != 1 || body.IDs[0] != 41 {
+			t.Errorf("workitemsbatch ids = %v (err %v), want [41]", body.IDs, err)
+		}
+		writeADOJSON(t, w, map[string]interface{}{"value": []interface{}{item(41, predecessorState, nil)}})
 	})
 	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, _ *http.Request) {
 		writeADOJSON(t, w, map[string]interface{}{"value": []map[string]string{
-			{"name": "Active", "category": "InProgress"},
+			{"name": "To Do", "category": "Proposed"},
+			{"name": "Doing", "category": "InProgress"},
+			{"name": "Done", "category": "Completed"},
 		}})
 	})
 	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+	t.Cleanup(server.Close)
+	return providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
 		p.BaseURL = server.URL
 	})
-	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}
-	item, err := provider.GetWorkItem(context.Background(), repo, "42")
-	if err != nil {
-		t.Fatalf("GetWorkItem: %v", err)
-	}
-	if item.BlockedByCount != 1 {
-		t.Fatalf("BlockedByCount = %d, want 1 for an ADO predecessor relation", item.BlockedByCount)
-	}
+}
 
-	filtered, warnings := filterDeclaredDependencyEligibilityDebug(
-		context.Background(), provider, repo, []providers.WorkItem{item}, nil,
-	)
-	if len(filtered) != 0 {
-		t.Fatalf("filtered = %+v, want blocked ADO item excluded", filtered)
-	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], string(providers.CapBacklogBlockers)) {
-		t.Fatalf("warnings = %+v, want one backlog.blockers warning", warnings)
+// TestFilterDeclaredDependencyEligibilityUsesADOPredecessorState pins
+// ADO-N32 end to end through backlog-query's filter: an ADO item whose only
+// predecessor is done is eligible, and one whose predecessor is still open
+// is excluded, naming the open predecessor. Before ADO declared
+// backlog.blockers, both were excluded with an "unsupported" warning.
+func TestFilterDeclaredDependencyEligibilityUsesADOPredecessorState(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}
+	for _, tc := range []struct {
+		predecessorState string
+		wantEligible     bool
+	}{
+		{predecessorState: "Done", wantEligible: true},
+		{predecessorState: "Doing", wantEligible: false},
+	} {
+		t.Run(tc.predecessorState, func(t *testing.T) {
+			provider := newADOPredecessorProvider(t, tc.predecessorState)
+			item, err := provider.GetWorkItem(context.Background(), repo, "42")
+			if err != nil {
+				t.Fatalf("GetWorkItem: %v", err)
+			}
+			if item.BlockedByCount != 1 {
+				t.Fatalf("BlockedByCount = %d, want 1 for an ADO predecessor relation", item.BlockedByCount)
+			}
+			var reasons []string
+			filtered, warnings := filterDeclaredDependencyEligibilityDebug(
+				context.Background(), provider, repo, []providers.WorkItem{item},
+				func(_ providers.WorkItem, reason string) { reasons = append(reasons, reason) },
+			)
+			if len(warnings) != 0 {
+				t.Fatalf("warnings = %+v, want none (ADO declares backlog.blockers)", warnings)
+			}
+			if eligible := len(filtered) == 1; eligible != tc.wantEligible {
+				t.Fatalf("eligible = %v, want %v (filtered %+v)", eligible, tc.wantEligible, filtered)
+			}
+			if !tc.wantEligible && (len(reasons) != 1 || !strings.Contains(reasons[0], "open blocker(s): 41")) {
+				t.Fatalf("exclusion reasons = %v, want one naming open blocker 41", reasons)
+			}
+		})
 	}
 }
 

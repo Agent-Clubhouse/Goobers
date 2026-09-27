@@ -48,6 +48,10 @@ type ADOProvider struct {
 
 	stateMu         sync.RWMutex
 	stateCategories map[string][]adoWorkItemState
+	// doneStates decides when a predecessor stops blocking (ADO-N32); the
+	// zero value means the default Resolved, Completed and Removed
+	// categories.
+	doneStates ADODoneStates
 
 	// requirementTypeMu guards requirementTypes, the per-project cache of the
 	// Requirement category's default work item type (ADO-N27): the create
@@ -215,10 +219,8 @@ func (p *ADOProvider) Kind() ProviderKind {
 // request threads are listed, replied to and resolved natively.
 // pr.review.submit and repo.policy.read remain excluded (no ADO
 // implementation exists). pr.status.publish is real (PublishPullRequestStatus).
-// backlog.blockers is excluded (CONF-5 #2078, closing #2059): ADO
-// dependency-link modeling reaches parity in V1, so there is no real
-// native-dependency read to declare — Dispatcher returns ErrUnsupported
-// for this capability instead of the deleted fail-open stub.
+// backlog.blockers is real (ado_blockers.go, ADO-N32): a predecessor blocks
+// until its state is done under the gaggle's backlog.doneStates.
 func (p *ADOProvider) Capabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
 		CapPRQueryAuthor, CapPRQueryRequestedReviewer,
@@ -226,6 +228,7 @@ func (p *ADOProvider) Capabilities() CapabilitySet {
 		CapPRReviewThreads, CapPRReviewResolve,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRCompare, CapBranchDelete,
+		CapBacklogBlockers,
 	)
 }
 

@@ -142,7 +142,32 @@ type BacklogRef struct {
 	// REF012 wherever it is declared.
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`
+	// DoneStates decides when a linked predecessor work item stops blocking
+	// its successor. It is read for an Azure DevOps backlog only; GitHub and
+	// Gitea map a closed item to Completed, so the setting is accepted but
+	// has no effect there. Omitted means the Resolved, Completed and Removed
+	// state categories count as done.
+	// +optional
+	DoneStates *BacklogDoneStates `json:"doneStates,omitempty" yaml:"doneStates,omitempty"`
 }
+
+// BacklogDoneStates names the work-item states that count as done when
+// deciding whether a predecessor still blocks (ADO-N32).
+type BacklogDoneStates struct {
+	// Categories are the ADO state categories that count as done for any work
+	// item type not listed in ByType. Omitted or empty means Resolved,
+	// Completed and Removed.
+	// +optional
+	Categories []BacklogStateCategory `json:"categories,omitempty" yaml:"categories,omitempty"`
+	// ByType lists, per work item type name, the state names that count as
+	// done for that type. A listed type ignores Categories.
+	// +optional
+	ByType map[string][]string `json:"byType,omitempty" yaml:"byType,omitempty"`
+}
+
+// BacklogStateCategory is an Azure DevOps work-item state category.
+// +kubebuilder:validation:Enum=Proposed;InProgress;Resolved;Completed;Removed
+type BacklogStateCategory string
 
 // Connection declares a named, reusable link to an external system. Manifests
 // declare connections once; gaggles reference them by name (connectionRef).
