@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
@@ -78,12 +77,7 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	provider, err := remediationStageProvider(root, repo, token, false)
+	provider, err := reviewThreadStageSurface[reviewThreadResolver](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: construct remediation provider: %v\n", err)
 		return 1
@@ -118,7 +112,7 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 		}
 		if !reviewThreadHasReply(snapshot, response.ThreadID, body) {
 			if _, err := mutator.ReplyPullRequestReviewThread(ctx, providers.PullRequestReviewThreadReply{
-				Repository: repo, PullID: brief.SelectedNumber, CommentID: thread.CommentID, Body: body,
+				Repository: repo, PullID: brief.SelectedNumber, ThreadID: thread.ID, CommentID: thread.CommentID, Body: body,
 			}); err != nil {
 				return failProviderStage(stderr, fmt.Sprintf("reply to review thread %s", response.ThreadID), err, resolveReviewThreadsResultFile)
 			}

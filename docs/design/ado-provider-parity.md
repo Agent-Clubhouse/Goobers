@@ -338,6 +338,25 @@ shared stage-provider seam, and ADO satisfies that surface through the same
 The sticky remediation-state comment (carrying the pre-remediation head SHA) is a PR thread
 updated in place via the composite comment id.
 
+### 7.1 Review threads (ADO-N20)
+
+`gather-review-threads` and `resolve-review-threads` run on ADO. ADO pull-request threads
+are first-class, so the ADO provider declares `pr.review.threads` and `pr.review.resolve` and
+implements the same `PullRequestReviewThreadProvider` / `PullRequestReviewThreadMutator`
+surfaces GitHub does (`providers/ado_review_threads.go`). Both stages build their provider
+through a narrow surface over the shared stage-provider seam (`reviewThreadStageSurface`), the
+same route `pr-claim` takes, and on ADO they do not require the `github:pr:write` grant.
+
+| Operation | ADO call and mapping |
+|---|---|
+| List | `GET …/pullRequests/{id}/threads`, following `x-ms-continuationtoken`. Skipped: threads whose root comment is `commentType: system`, deleted threads (and deleted comments), and threads the Goobers identity opened, matched by `authenticatedUser.id` (§4.1), never by display name. `Reviews` is empty: an ADO vote carries no review body. |
+| Ids | `ThreadID` is the composite `<pullID>/<threadId>`, because the resolve call receives no pull id. A comment's `ID` is ADO's thread-local comment id and `InReplyTo` its `parentCommentId`. |
+| Resolved | `active` and `pending` are unresolved; `fixed`, `wontFix`, `closed` and `byDesign` are resolved. Any other status (`unknown`, absent) reads as unresolved, so feedback is never hidden. |
+| Position | `threadContext.filePath` without ADO's leading `/` (repository-relative, as on GitHub) and `rightFileStart.line`; a left-side-only anchor maps to `leftFileStart.line` with side `LEFT`. A thread without a context is a general comment and has no path. |
+| Outdated | A file-anchored thread is outdated only when its `pullRequestThreadContext.iterationContext.secondComparingIteration` is older than the PR's latest iteration **and** its file is no longer in the PR's latest-iteration diff: its anchor cannot appear in the current diff, which is what GitHub's `isOutdated` means. ADO re-anchors threads across iterations itself, so an older iteration alone is not enough. A thread with no iteration context is live, and if either iteration read fails every thread is live: the rule fails open. |
+| Reply | `POST …/threads/{threadId}/comments` with `parentCommentId` set to the replied-to comment. ADO comment ids are only unique within a thread, so the reply request carries the thread id (`PullRequestReviewThreadReply.ThreadID`, an additive provider-model field GitHub ignores). |
+| Resolve | `PATCH …/threads/{threadId}` `{status: "fixed"}`; `fixed` clears a comment-resolution branch policy. ADO must echo `fixed` back, or the resolution is reported unconfirmed. |
+
 ## 8. Hazards and invariants (consolidated)
 
 - **PR-number → work-item wrong-object write.** The single most dangerous ADO hazard. Every
@@ -399,10 +418,11 @@ Derivation is now per provider: on ADO, `apply-verdict` derives
 See `provider-contract-conformance.md` §6.1. `TestShippedMergeReviewWorkflowValidatesOnADO`
 pins it against the real `reference-workflows` definition.
 
-A genuine gap still refuses: `gather-review-threads` derives `pr.review.threads`,
-ADO does not declare it, and no ADO path exists — so an ADO gaggle using that
-stage is refused at config load with the capability named. That is the intended
-shape of an "explicitly documented unsupported diagnosis".
+A genuine gap still refuses at config load with the capability named — for
+example a workflow that explicitly requires `pr.review.submit`, which ADO does
+not declare. That is the intended shape of an "explicitly documented unsupported
+diagnosis". (`gather-review-threads`, the example this paragraph used to give,
+now runs on ADO: see §7.1.)
 
 ### 10.2 What "verified" means here, precisely
 

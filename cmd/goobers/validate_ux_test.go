@@ -731,7 +731,7 @@ func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
 
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	replaceInFile(t, workflowPath, "spec:\n  gaggle: example",
-		"spec:\n  gaggle: example\n  requires:\n    capabilities:\n      - pr.review.threads")
+		"spec:\n  gaggle: example\n  requires:\n    capabilities:\n      - pr.review.submit")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 1 {
@@ -739,7 +739,7 @@ func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
 	}
 	for _, want := range []string{
 		"requires provider capability",
-		"pr.review.threads",
+		"pr.review.submit",
 		`"ado"`,
 	} {
 		if !strings.Contains(stdout, want) {

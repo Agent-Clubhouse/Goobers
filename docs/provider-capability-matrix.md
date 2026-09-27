@@ -34,8 +34,8 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `pr.query.requestedReviewer` | yes | conformant | conformant | not declared |
 | `pr.review.request` | yes | conformant | conformant | conformant |
 | `pr.review.submit` |  | conformant | not declared | conformant |
-| `pr.review.threads` |  | conformant | not declared | conformant |
-| `pr.review.resolve` |  | conformant | not declared | not declared |
+| `pr.review.threads` |  | conformant | conformant | conformant |
+| `pr.review.resolve` |  | conformant | conformant | not declared |
 | `pr.merge` | yes | conformant | conformant | conformant |
 | `pr.merge.inventory` |  | conformant | not declared | not declared |
 | `pr.landing.detect-policy` | yes | conformant | conformant | conformant |
