@@ -64,10 +64,9 @@ type RepositoryWritePreflighter interface {
 }
 
 // githubRepoWritePermissionDetail is the subset of GET .../repos/{owner}/
-// {repo} PreflightRepositoryWrite reads: GitHub includes `permissions` only
-// for an authenticated request, reporting the caller's own admin/push/pull
-// grant on the exact repository — read directly, never inferred from
-// reachability alone.
+// {repo} PreflightRepositoryWrite reads. These are user-role permissions,
+// not installation-token grants: GitHub can report every role as false for
+// an App with Contents:write. A non-positive value needs a Git service probe.
 type githubRepoWritePermissionDetail struct {
 	Permissions *struct {
 		Push bool `json:"push"`
@@ -141,8 +140,9 @@ func describeBranchNamePattern(params githubBranchNamePatternParameters) string 
 // that only discovers a bad credential or a blocking branch ruleset at
 // `push-branch`, after spending implementation/review/CI resources, is the
 // problem this exists to catch before an issue is claimed. It performs at
-// most two reads: GET /repos/{owner}/{repo} (reachability, auth, and push
-// permission) and GET /repos/{owner}/{repo}/rules/branches/{branch} (branch
+// most three reads: GET /repos/{owner}/{repo} (reachability and user roles),
+// Git receive-pack discovery when roles do not establish push access, and
+// GET /repos/{owner}/{repo}/rules/branches/{branch} (branch
 // ruleset policy for the exact generated branch name) — the same "rules for
 // a branch" endpoint DetectMergePolicy and GetRepoPolicy already use.
 func (p *GitHubProvider) PreflightRepositoryWrite(ctx context.Context, repo RepositoryRef, branch string) (RepositoryWritePreflightResult, error) {
@@ -169,21 +169,11 @@ func (p *GitHubProvider) PreflightRepositoryWrite(ctx context.Context, repo Repo
 		}
 		return RepositoryWritePreflightResult{}, err
 	}
-	if detail.Permissions == nil {
-		// GitHub omits `permissions` for some authenticated request shapes
-		// rather than reporting push:false — that is unavailable
-		// introspection, not a denial, and must be reported as such rather
-		// than inferred either way.
-		return RepositoryWritePreflightResult{
-			FailureCapability: RepoWriteFailurePolicyIntrospectionUnavailable,
-			Detail:            "repository push permission is not reported for this credential",
-		}, nil
-	}
-	if !detail.Permissions.Push {
-		return RepositoryWritePreflightResult{
-			FailureCapability: RepoWriteFailureNoPushPermission,
-			Detail:            "credential is authenticated but lacks push permission on this repository",
-		}, nil
+	if detail.Permissions == nil || !detail.Permissions.Push {
+		result, err := p.preflightGitReceivePack(ctx, repo)
+		if err != nil || !result.OK {
+			return result, err
+		}
 	}
 
 	rulesEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "rules", "branches", branch)

@@ -176,7 +176,7 @@ func WithQuotaRequestGate(gate QuotaRequestGate) func(*GitHubProvider) {
 	return func(p *GitHubProvider) { p.quotaGate = gate }
 }
 
-// WithHTTPClient overrides the HTTP client every provider request is sent
+// WithHTTPClient overrides the HTTP client REST API requests are sent
 // through. It exists so a caller can wrap the default client with a
 // conditional-GET (ETag) caching layer that turns unchanged per-tick list GETs
 // into zero-quota 304s (#1053). A nil client is ignored so the constructor's
