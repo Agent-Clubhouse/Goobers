@@ -306,6 +306,43 @@ func TestPerformPostMergeADOCostTrustsPRThreadsByIdentityGUID(t *testing.T) {
 	}
 }
 
+// TestPerformPostMergeADOCostTrustsWorkItemsByIdentityGUID is the work-item
+// counterpart: a work-item comment from another identity that shares this
+// identity's display name cannot plant a receipt (nor, by reusing a run id,
+// replace a real one), while a receipt this identity wrote still counts.
+func TestPerformPostMergeADOCostTrustsWorkItemsByIdentityGUID(t *testing.T) {
+	ownPR := costComment(t, "goobers", "merge-review", "run-review", 30, 2_000_000_000)
+	ownPR.AuthorID = "self-guid"
+	ownItem := costComment(t, "goobers", "implementation", "run-impl", 10, 3_000_000_000)
+	ownItem.AuthorID = "self-guid"
+	planted := costComment(t, "goobers", "implementation", "run-planted", 99, 50_000_000_000)
+	planted.AuthorID = "other-guid"
+	replacing := costComment(t, "goobers", "implementation", "run-impl", 999, 40_000_000_000)
+	replacing.AuthorID = "other-guid"
+	closer := &fakeADOWorkItemCloser{
+		item:       providers.WorkItem{ID: "1456", State: "open"},
+		comments:   []providers.Comment{ownItem, planted, replacing},
+		prComments: []providers.Comment{ownPR},
+	}
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(
+		context.Background(), closer, closer, backlogRef, poll, "359", "",
+		providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "code", Name: "repo"},
+		&stdout, &stderr,
+	)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.prCommentReqs) != 1 {
+		t.Fatalf("PR summary comments = %q, want exactly one", closer.prCommentReqs)
+	}
+	if !strings.Contains(closer.prCommentReqs[0], "**5.00 AIC**") {
+		t.Fatalf("PR summary = %q, want 5.00 AIC: work-item receipts from a same-named identity must not be counted", closer.prCommentReqs[0])
+	}
+}
+
 // TestCloseReferencedWorkItemsADOMultipleAndError proves each distinct closing
 // ref is marked done, and a per-item failure is collected (not fatal to the
 // others) — mirroring closeReferencedIssues' best-effort posture.

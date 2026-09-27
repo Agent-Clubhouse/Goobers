@@ -643,6 +643,43 @@ func (r *counterResolverProbe) Resolve(_ context.Context, name string) (string, 
 	return "repo-secret", nil
 }
 
+// TestScheduleDemandCounterIsUnsizedOnADO: on Azure DevOps the schedule is
+// pr-remediation's only autonomous trigger, and the GitHub-only demand count
+// could only error, sizing every tick to zero so the lane never ran. The ADO
+// repository therefore gets no counter (each due tick fires unsized, bounded
+// by readiness), while a GitHub repository in the same instance keeps its
+// claim-aware count.
+func TestScheduleDemandCounterIsUnsizedOnADO(t *testing.T) {
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "ado", Owner: "example-org", Project: "example-project", Name: "web"},
+		{Provider: "github", Owner: "acme", Name: "api", Token: instance.TokenRef{Env: "GH_TOK"}},
+	}}
+	wf := &apiv1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-remediation"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "goobers",
+			Start:    "select",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "37 * * * *", Priority: 100}},
+			Tasks: []apiv1.Task{{
+				Name: "select",
+				Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "update-behind-pr"}},
+			}},
+		},
+	}
+	probe := &counterResolverProbe{}
+	adoRef := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "web"}
+	if counter := buildScheduleDemandCounter(cfg, wf, adoRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil); counter != nil {
+		t.Fatalf("ADO schedule demand counter = %T, want none so due ticks fire unsized", counter)
+	}
+	if len(probe.calls) != 0 {
+		t.Fatalf("credential resolved while wiring the ADO schedule: %v", probe.calls)
+	}
+	githubRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "api"}
+	if _, ok := buildScheduleDemandCounter(cfg, wf, githubRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil).(*remediationDemandCounter); !ok {
+		t.Fatal("GitHub schedule demand counter was dropped; only Azure DevOps runs unsized")
+	}
+}
+
 // Demand counters carry the counted repository's own provider, so a non-GitHub
 // repository's credential is never resolved for a GitHub client.
 func TestDemandCountersKeepTheRepositoryProvider(t *testing.T) {

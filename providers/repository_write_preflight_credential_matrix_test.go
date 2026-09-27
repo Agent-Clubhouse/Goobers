@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,6 +78,7 @@ func TestPreflightRepositoryWriteCredentialMatrix(t *testing.T) {
 	cases := []struct {
 		name          string
 		wantToken     string
+		appRoles      bool
 		buildProvider func(t *testing.T, serverURL string) *providers.GitHubProvider
 	}{
 		{
@@ -96,6 +98,7 @@ func TestPreflightRepositoryWriteCredentialMatrix(t *testing.T) {
 		{
 			name:      "GitHub App installation token",
 			wantToken: appTokenValue,
+			appRoles:  true,
 			buildProvider: func(t *testing.T, serverURL string) *providers.GitHubProvider {
 				source, err := githubapp.New(githubapp.Config{
 					AppID:          "12345",
@@ -108,6 +111,23 @@ func TestPreflightRepositoryWriteCredentialMatrix(t *testing.T) {
 					t.Fatalf("build githubapp source: %v", err)
 				}
 				return providers.NewGitHubProvider("", func(p *providers.GitHubProvider) { p.BaseURL = serverURL }, providers.WithTokenSource(source))
+			},
+		},
+		{
+			name:      "externally minted installation token via static environment reference",
+			wantToken: "externally-minted-installation-token",
+			appRoles:  true,
+			buildProvider: func(t *testing.T, serverURL string) *providers.GitHubProvider {
+				t.Setenv("GOOBERS_TEST_EXTERNAL_APP", "externally-minted-installation-token")
+				r, err := credentials.NewResolver([]credentials.TokenRef{{Name: "external-app", Env: "GOOBERS_TEST_EXTERNAL_APP"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				token, err := r.Resolve(context.Background(), "external-app")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return providers.NewGitHubProvider(token, func(p *providers.GitHubProvider) { p.BaseURL = serverURL })
 			},
 		},
 	}
@@ -130,8 +150,19 @@ func TestPreflightRepositoryWriteCredentialMatrix(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"permissions": map[string]interface{}{"push": true},
+					"permissions": map[string]interface{}{"push": !tc.appRoles, "pull": !tc.appRoles, "admin": false, "maintain": false, "triage": false},
 				})
+			})
+			var gitReads atomic.Int32
+			mux.HandleFunc("/acme/app.git/info/refs", func(w http.ResponseWriter, r *http.Request) {
+				gitReads.Add(1)
+				user, token, ok := r.BasicAuth()
+				if !ok || user != "x-access-token" || token != tc.wantToken || r.Method != http.MethodGet || r.URL.RawQuery != "service=git-receive-pack" {
+					http.Error(w, "unexpected Git discovery request", http.StatusUnauthorized)
+					return
+				}
+				w.Header().Set("Content-Type", "application/x-git-receive-pack-advertisement")
+				_, _ = w.Write([]byte("001f# service=git-receive-pack\n00000000"))
 			})
 			mux.HandleFunc("/repos/acme/app/rules/branches/goobers/run-1", func(w http.ResponseWriter, r *http.Request) {
 				if got := r.Header.Get("Authorization"); got != "token "+tc.wantToken && got != "Bearer "+tc.wantToken {
@@ -152,6 +183,9 @@ func TestPreflightRepositoryWriteCredentialMatrix(t *testing.T) {
 			}
 			if !result.OK {
 				t.Fatalf("result = %+v, want OK — the server only accepts this case's own distinct credential, so a non-OK result means the wrong token was sent", result)
+			}
+			if (gitReads.Load() == 1) != tc.appRoles {
+				t.Fatalf("Git discovery reads = %d, app role response = %v", gitReads.Load(), tc.appRoles)
 			}
 		})
 	}

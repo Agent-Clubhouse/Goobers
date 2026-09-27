@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -180,6 +181,12 @@ func TestADOProviderMergePullRequestMapsStaleHeadConflict(t *testing.T) {
 	if !errors.As(err, &moved) || moved.Expected != "head1" {
 		t.Fatalf("err = %v, want PullRequestHeadMovedError{Expected: head1}", err)
 	}
+	if want := "ado HTTP 409 GitPullRequestStaleException: TF401192: The pull request source has changed."; moved.Detail != want {
+		t.Fatalf("Detail = %q, want %q", moved.Detail, want)
+	}
+	if !strings.Contains(err.Error(), moved.Detail) {
+		t.Fatalf("err = %q, want it to carry the ADO detail", err)
+	}
 	if patchCalls != 1 {
 		t.Fatalf("PATCH calls = %d, want 1 (never retried)", patchCalls)
 	}
@@ -201,6 +208,12 @@ func TestADOProviderMergePullRequestMapsPolicyRejection(t *testing.T) {
 	var policy PullRequestPolicyNotMetError
 	if !errors.As(err, &policy) || policy.PullID != "42" {
 		t.Fatalf("err = %v, want PullRequestPolicyNotMetError for PR 42", err)
+	}
+	if want := "ado HTTP 403 GitPullRequestUpdateRejectedByPolicyException"; policy.Detail != want {
+		t.Fatalf("Detail = %q, want %q", policy.Detail, want)
+	}
+	if !strings.Contains(err.Error(), "required policies are not satisfied") || !strings.Contains(err.Error(), policy.Detail) {
+		t.Fatalf("err = %q, want the ADO message and detail", err)
 	}
 	if IsAuthenticationError(err) {
 		t.Fatalf("IsAuthenticationError(%v) = true, want false for a policy refusal", err)

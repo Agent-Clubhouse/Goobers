@@ -175,6 +175,38 @@ func (r adoPRThreadCostReader) ListComments(ctx context.Context, repo providers.
 	return adoAttributeCommentsByID(comments, r.self), nil
 }
 
+// adoAttributingCommentReader lists work-item comments with their authors
+// attributed by identity GUID, the work-item counterpart of
+// adoPRThreadCostReader: a comment from another identity that shares the
+// Goobers display name is never trusted as a cost receipt.
+type adoAttributingCommentReader struct {
+	provider postMergeCostCommentReader
+	self     providers.ADOIdentity
+}
+
+func (r adoAttributingCommentReader) ListComments(ctx context.Context, repo providers.RepositoryRef, id string) ([]providers.Comment, error) {
+	comments, err := r.provider.ListComments(ctx, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	return adoAttributeCommentsByID(comments, r.self), nil
+}
+
+// adoWorkItemCostIdentity is the identity whose work-item receipts are
+// trusted: the work-item provider's own when it can report one (it may run
+// under a different credential than the PR provider), otherwise prSelf.
+func adoWorkItemCostIdentity(ctx context.Context, issueProvider adoWorkItemCloser, prSelf providers.ADOIdentity) providers.ADOIdentity {
+	reader, ok := issueProvider.(adoIdentityReader)
+	if !ok {
+		return prSelf
+	}
+	self, err := reader.AuthenticatedIdentity(ctx)
+	if err != nil || (strings.TrimSpace(self.ID) == "" && strings.TrimSpace(self.DisplayName) == "") {
+		return prSelf
+	}
+	return self
+}
+
 func collectADOPostMergeCostReport(
 	ctx context.Context,
 	issueProvider adoWorkItemCloser,
@@ -189,18 +221,20 @@ func collectADOPostMergeCostReport(
 		pf(stderr, "warning: resolve cost receipt author: %v\n", err)
 		return postMergeCostReport{}
 	}
-	// PR threads are attributed by GUID in the reader; work-item comments
-	// keep the display-name comparison (their author ids are not mapped).
+	// Both sides are attributed by identity GUID in their readers (ADO-N5):
+	// PR threads against the PR identity, work-item comments against the
+	// identity of the provider that wrote them.
+	issueSelf := adoWorkItemCostIdentity(ctx, issueProvider, self)
 	report, collectErr := collectPostMergeCostReport(
 		ctx,
 		adoPRThreadCostReader{provider: prProvider, self: self},
-		issueProvider,
+		adoAttributingCommentReader{provider: issueProvider, self: issueSelf},
 		repo,
 		backlogRepo,
 		pullNumber,
 		issueIDs,
 		self.DisplayName,
-		self.DisplayName,
+		issueSelf.DisplayName,
 	)
 	if collectErr != nil {
 		pf(stderr, "warning: %v\n", collectErr)

@@ -1003,3 +1003,32 @@ func TestGiteaProviderPublishPullRequestStatusResolvesHeadSHAThenPosts(t *testin
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+// TestGiteaProviderPublishPullRequestStatusUsesPinnedHead proves a HeadSHA
+// pin posts the commit status on the reviewed commit rather than on the pull
+// request's live head, which may have moved since.
+func TestGiteaProviderPublishPullRequestStatusUsesPinnedHead(t *testing.T) {
+	var statusPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/repos/acme/app/pulls/9", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"number": 9, "head": map[string]interface{}{"sha": "pushed-later"}})
+	})
+	mux.HandleFunc("/api/v1/repos/acme/app/statuses/", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		statusPath = r.URL.Path
+		writeJSON(t, w, map[string]interface{}{"id": 5})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGiteaProvider(server.URL, "token")
+	if _, err := provider.PublishPullRequestStatus(context.Background(), PullRequestStatusRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+		Name: "merge-review", State: CheckStatePassing, HeadSHA: "reviewed",
+	}); err != nil {
+		t.Fatalf("PublishPullRequestStatus returned error: %v", err)
+	}
+	if statusPath != "/api/v1/repos/acme/app/statuses/reviewed" {
+		t.Fatalf("status path = %q, want the pinned reviewed commit", statusPath)
+	}
+}

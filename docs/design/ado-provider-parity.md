@@ -224,10 +224,12 @@ of a GitHub handoff channel:
    policy with `invalidateOnSourceUpdate: true` (reset-on-push) rejects a PR-level status
    with 403, and an iteration-scoped status satisfies it; a new push creates a new
    iteration, which resets the policy until a fresh status is posted against it (ADO-N7).
-   The latest iteration is resolved when the status is posted, not when the head was
-   reviewed: a push that lands between review and apply-verdict attaches the verdict to
-   the newer iteration. PR-level statuses had the same window; binding the status to the
-   reviewed head SHA is a follow-up.
+   A pass status is pinned to the reviewed head: apply-verdict passes the reviewed head
+   SHA, and the status is posted only when the latest iteration's `sourceRefCommit` is
+   that commit. A push that lands between review and apply-verdict makes the post fail
+   with a head-moved error instead of attaching the pass to the newer, unreviewed
+   iteration. A failing status stays unpinned, since on a newer head it only blocks.
+   `report-pr-status` takes the same pin through its optional `headSha` input.
 2. **The routing label, by decision**, mirroring the GitHub `verdictLabel` contract:
    - **fail →** add `goobers:merge-escalated`, clear `goobers:needs-remediation`. An
      escalation is *never* burned on the remediation budget; clearing needs-remediation and
@@ -342,6 +344,26 @@ shared stage-provider seam, and ADO satisfies that surface through the same
   fails closed rather than proceeding against an unverified source. On ADO it polls with
   the delivered `github:pr:write` credential in the daemon-stated scheme, like every other
   remediation stage, and every ADO auth kind backs that credential (ADO-N18, §3).
+- **`gather-issue-context`** reads the selected pull request with `GetPullRequest`
+  (an ADO pull-request list carries no description, so the closing references are not
+  in it) and each closing reference with `GetWorkItem` in the gaggle's backlog project.
+  A pull request that is no longer active, or now targets another base, yields an empty
+  issue context, as on GitHub. Each provider is built through a narrow surface from its
+  own declared credential: `github:pr:write` for the pull request and
+  `github:issues:read` for the work items.
+- **`respond-to-findings`** keeps its run-scoped account in one pull-request thread,
+  posted `closed` so it never trips a comment-resolution policy. A retry finds its own
+  thread by the `goobers:remediation-response:<run>` marker and the identity GUID
+  (§4.1), updates it in place, and deletes any duplicate. It uses the
+  `github:issues:write` credential it declares, as on GitHub and Gitea; in topology (b)
+  that credential belongs to the GitHub backlog, so the stage stops with the
+  cross-provider refusal (`docs/guides/ado-limitations.md`).
+- **Scheduling.** ADO has no webhook ingestion, so the `schedule` trigger is the
+  lane's only autonomous start. The schedule demand count (unclaimed pull requests
+  behind their base) is GitHub-only, and behind-ness is not ADO's eligibility
+  (`update-behind-pr` is not applicable), so an ADO repository gets no demand counter:
+  each due tick fires one run, bounded by readiness, and `gather-pr-context` ends a
+  cycle with nothing to remediate as no-work.
 
 The sticky remediation-state comment (carrying the pre-remediation head SHA) is a PR thread
 updated in place via the composite comment id.
@@ -486,7 +508,7 @@ set:
 |---|---|
 | PRL-045 / PRL-064 | Queue eviction and timeout do not label the PR or seed the reconciliation ledger. |
 | PRL-040 | Landing authority is `github:pr:merge` on ADO too; `ado:pr:complete` is optional and, when declared, is the credential completion uses (ADO-N2, `ado-parity-dsl-2-0.md` §3.3). |
-| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag, set only when the landing stage holds `github:branch:delete` (ADO-N25). |
+| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag, set only when the landing stage holds `github:branch:delete` (ADO-N25) and no open pull request targets the source branch. A stacked branch is kept and reported as `branchCleanup: skipped-stacked`, as on GitHub. The stacked check runs when the landing is requested, so a PR stacked later on an auto-complete-armed branch is not seen. |
 | PRL-081 | ADO verdict threads are **posted**, not reconciled, so the single-sticky-comment guarantee does not hold on the thread carrier. |
 | PRL-082 | Resolved — the ADO stage provider does wire the mutation recorder (`cmd/goobers/stageprovider.go`'s `newProviderForStage`); this row is retained only to record that the earlier "not ADO" annotation was stale. |
 
@@ -560,12 +582,13 @@ not.
 | Build, status | `queued` / `running` | CI pending |
 | Build, status | `rejected` / `broken` | CI failing. The check links the build from `context.buildId`. |
 | Minimum reviewers, required reviewers | not `approved` | A wait on a human (`CheckDetail.AwaitingHuman`). Never CI pending or failing, and never a remediation trigger. |
-| Comment requirements | `rejected` | Failing, "unresolved comment threads" |
-| Work item linking | `rejected` | Failing, "no linked work item" |
+| Comment requirements | `rejected` | Pending, "unresolved comment threads". Never CI failing: the threads route to `gather-review-threads`. |
+| Work item linking | `rejected` | Pending, "no linked work item". Never CI failing: `open-pr`'s `workItemRefs` carry the link. |
 | Any other type | as before | Gates CI unless listed in `humanPolicyConfigurationIds` |
 
-When ADO evaluated only reviewer policies for a pull request, the branch has
-no CI to wait for and `ci-poll` sees passing. With no evaluations at all it
+When ADO evaluated only reviewer, comment-resolution or work-item-linking
+policies for a pull request, the branch has no CI to wait for and `ci-poll`
+sees passing. With no evaluations at all it
 stays fail-closed pending.
 
 ### 11.2 The human wait

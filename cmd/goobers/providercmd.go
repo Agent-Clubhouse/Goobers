@@ -280,18 +280,18 @@ func landingAuthority(repo providers.RepositoryRef) (capability.Capability, erro
 	}
 	// Each providerToken call names its capability as a constant so the
 	// manifest drift check (provider_capability_manifest_test.go) can see it.
-	authority := capability.GitHubPRMerge
-	var err error
+	// The error names the path taken: a declared ado:pr:complete never falls
+	// back, so suggesting github:pr:merge there would mislead the operator.
 	if os.Getenv(executor.CredentialEnvVar(string(capability.ADOPRComplete))) != "" {
-		authority = capability.ADOPRComplete
-		_, err = providerToken(capability.ADOPRComplete)
-	} else {
-		_, err = providerToken(capability.GitHubPRMerge)
+		if _, err := providerToken(capability.ADOPRComplete); err != nil {
+			return "", fmt.Errorf("landing on Azure DevOps with the declared %s (no fallback to %s): %w", capability.ADOPRComplete, capability.GitHubPRMerge, err)
+		}
+		return capability.ADOPRComplete, nil
 	}
-	if err != nil {
+	if _, err := providerToken(capability.GitHubPRMerge); err != nil {
 		return "", fmt.Errorf("landing on Azure DevOps needs %s (or %s): %w", capability.GitHubPRMerge, capability.ADOPRComplete, err)
 	}
-	return authority, nil
+	return capability.GitHubPRMerge, nil
 }
 
 // providerInput reads a declared Task.Inputs value the runner passed through
@@ -445,7 +445,7 @@ const (
 	// already open — this is the git-protocol refusal of a push that never
 	// became a PR at all. Never an auth failure and never retried: retrying
 	// (as a ref race or with a fresh credential) hits the identical policy.
-	errorCodeBranchPolicyProtected = "branch_policy_protected"
+	errorCodeBranchPolicyProtected = "provider_branch_policy_protected"
 	// errorCodeProvider is the fallback for a provider-originated failure
 	// that doesn't classify into any of the above (e.g. a non-401/403/5xx
 	// status such as a 422 validation error). Still typed and diagnosable —

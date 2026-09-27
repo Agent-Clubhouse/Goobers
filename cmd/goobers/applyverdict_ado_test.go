@@ -89,7 +89,7 @@ func TestPublishADOPassVerdictPublishesValidationStatus(t *testing.T) {
 		threadBody   map[string]interface{}
 	)
 	mux := http.NewServeMux()
-	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359")
+	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359", "head-sha")
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/iterations/2/statuses", func(w http.ResponseWriter, r *http.Request) {
 		statusMethod = r.Method
 		_ = json.NewDecoder(r.Body).Decode(&statusBody)
@@ -263,7 +263,7 @@ func adoMergeReviewMux(t *testing.T, repo providers.RepositoryRef, prNumber int,
 	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 	})
-	serveADOPullRequestIterations(t, mux, prBase+"/"+strconv.Itoa(prNumber))
+	serveADOPullRequestIterations(t, mux, prBase+"/"+strconv.Itoa(prNumber), headSHA)
 	mux.HandleFunc(prBase+"/"+strconv.Itoa(prNumber)+"/iterations/2/statuses", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("statuses method = %s, want POST", r.Method)
@@ -289,14 +289,18 @@ func adoMergeReviewMux(t *testing.T, repo providers.RepositoryRef, prNumber int,
 // serveADOPullRequestIterations serves the PR iterations list with ids out of
 // order (latest = 2): ADO statuses are posted against the latest iteration,
 // not the PR itself (ADO-N7), so fakes register the status handler at
-// <pr>/iterations/2/statuses.
-func serveADOPullRequestIterations(t *testing.T, mux *http.ServeMux, pr string) {
+// <pr>/iterations/2/statuses. The latest iteration's source commit is
+// headSHA, the head a pinned pass status must match.
+func serveADOPullRequestIterations(t *testing.T, mux *http.ServeMux, pr, headSHA string) {
 	t.Helper()
 	mux.HandleFunc(pr+"/iterations", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("iterations method = %s, want GET", r.Method)
 		}
-		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{map[string]int{"id": 2}, map[string]int{"id": 1}}})
+		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{
+			map[string]interface{}{"id": 2, "sourceRefCommit": map[string]string{"commitId": headSHA}},
+			map[string]interface{}{"id": 1, "sourceRefCommit": map[string]string{"commitId": "older-sha"}},
+		}})
 	})
 }
 
@@ -326,7 +330,7 @@ func TestPublishADONonPassVerdictPublishesFailedStatusLabelAndThread(t *testing.
 		threadContent string
 	)
 	mux := http.NewServeMux()
-	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359")
+	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359", "head-sha")
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/iterations/2/statuses", func(w http.ResponseWriter, r *http.Request) {
 		statusMethod = r.Method
 		_ = json.NewDecoder(r.Body).Decode(&statusBody)
@@ -430,7 +434,7 @@ func TestPublishADOFailVerdictEscalatesAndClearsRemediation(t *testing.T) {
 	)
 	const nrID = "nr-label-guid"
 	mux := http.NewServeMux()
-	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359")
+	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359", "head-sha")
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/iterations/2/statuses", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -673,4 +677,52 @@ func adoNeedsChangesMux(t *testing.T, repo providers.RepositoryRef, prNumber int
 		t.Fatalf("wit/workitems/%d was mutated — the PR-as-work-item wrong-object write ran on ADO", prNumber)
 	})
 	return mux
+}
+
+// TestPublishADOPassVerdictRefusesHeadPushedAfterReview pins the pass status
+// to the reviewed head: when a push lands between the pin check and the
+// status post, ADO's latest iteration carries a commit nobody reviewed, so no
+// passing status (which would satisfy a reset-on-push status policy for that
+// commit) and no verdict thread are posted, and the stage fails.
+func TestPublishADOPassVerdictRefusesHeadPushedAfterReview(t *testing.T) {
+	statusPosted, threadPosted := false, false
+	mux := http.NewServeMux()
+	serveADOPullRequestIterations(t, mux, "/org/project/_apis/git/repositories/repo/pullrequests/359", "pushed-after-review")
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/iterations/2/statuses", func(w http.ResponseWriter, _ *http.Request) {
+		statusPosted = true
+		_, _ = w.Write([]byte(`{"id":7}`))
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/threads", func(w http.ResponseWriter, _ *http.Request) {
+		threadPosted = true
+		writeJSONResp(t, w, map[string]interface{}{"id": 11})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+		p.BaseURL = server.URL
+	})
+	var stdout, stderr bytes.Buffer
+	resultFile := filepath.Join(t.TempDir(), "verdict-result.json")
+	code := publishADOPassVerdict(
+		context.Background(),
+		"",
+		provider,
+		providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"},
+		359,
+		providers.PullRequestSummary{Number: 359, HeadSHA: "head-sha", BaseSHA: "base-sha"},
+		apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "Looks good."},
+		resultFile,
+		&stdout,
+		&stderr,
+	)
+	if code == 0 {
+		t.Fatalf("code = 0, want a failure when the head moved after review; stdout = %q", stdout.String())
+	}
+	if statusPosted || threadPosted {
+		t.Fatalf("status posted = %v, thread posted = %v; want neither for an unreviewed head", statusPosted, threadPosted)
+	}
+	if !strings.Contains(stderr.String(), "head moved from head-sha to pushed-after-review") {
+		t.Fatalf("stderr = %q, want the head-moved refusal", stderr.String())
+	}
 }

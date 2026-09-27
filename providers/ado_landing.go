@@ -60,8 +60,9 @@ func (p *ADOProvider) getPullRequestDetail(ctx context.Context, repo RepositoryR
 // evaluation yet (a policy added after it was opened may be evaluated late),
 // the project's policy configurations are scanned across every page: an
 // enabled, blocking, non-deleted configuration whose scope covers the target
-// ref (Exact by equality, Prefix by ref folder, an empty scope repo-wide)
-// means auto-complete. A read, so it does not emit a mutation event.
+// ref (Exact by equality, Prefix by ref folder, DefaultBranch only for the
+// repository's default branch, an empty scope repo-wide) means auto-complete.
+// A read, so it does not emit a mutation event.
 func (p *ADOProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicyRequest) (RepoMergePolicyResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return RepoMergePolicyResult{}, err
@@ -83,8 +84,9 @@ func (p *ADOProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicy
 		return RepoMergePolicyResult{}, err
 	}
 	targetRef := "refs/heads/" + strings.TrimPrefix(req.Branch, "refs/heads/")
+	defaultRef := p.defaultBranchRefForScopes(ctx, req.Repository, configs)
 	for _, c := range configs {
-		if adoConfigurationGatesRef(c, req.Repository.ID, targetRef) {
+		if adoConfigurationGatesRef(c, req.Repository.ID, targetRef, defaultRef) {
 			return RepoMergePolicyResult{Policy: MergePolicyMergeQueue}, nil
 		}
 	}
@@ -211,9 +213,13 @@ func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueu
 		// Armed and still active: report whether only a human approval is
 		// holding it (design ado-parity-dsl-2-0.md §5.1, live probe F4), so
 		// merge-queue-poll can say so rather than report a bare pending.
+		// The read is diagnostic only: when the evaluations endpoint fails
+		// (a preview API that can 400/403, or a transient error that
+		// outlived its retries), the entry is still plainly pending, so
+		// the watch degrades to that instead of failing the stage.
 		awaitingHuman, err := p.autoCompleteAwaitingHuman(ctx, req.Repository, req.PullID, detail)
 		if err != nil {
-			return PollMergeQueueEntryResult{}, err
+			awaitingHuman = false
 		}
 		return PollMergeQueueEntryResult{State: MergeQueueEntryPending, Labels: labels, AwaitingHuman: awaitingHuman}, nil
 	default:
@@ -488,12 +494,36 @@ func adoCompletionError(err error, req MergePullRequestRequest) error {
 	}
 	switch {
 	case responseErr.statusCode == http.StatusConflict && strings.Contains(responseErr.body, "TF401192"):
-		return PullRequestHeadMovedError{Expected: req.ExpectedHeadSHA}
+		return PullRequestHeadMovedError{
+			Expected: req.ExpectedHeadSHA,
+			Detail:   adoRefusalDetail(responseErr.statusCode, responseErr.body, true),
+		}
 	case responseErr.statusCode == http.StatusForbidden &&
 		strings.Contains(responseErr.body, "GitPullRequestUpdateRejectedByPolicyException"):
-		return PullRequestPolicyNotMetError{PullID: req.PullID, Message: adoErrorMessage(responseErr.body)}
+		return PullRequestPolicyNotMetError{
+			PullID:  req.PullID,
+			Message: adoErrorMessage(responseErr.body),
+			Detail:  adoRefusalDetail(responseErr.statusCode, responseErr.body, false),
+		}
 	}
 	return err
+}
+
+// adoRefusalDetail renders what ADO said about a refused completion — the
+// HTTP status, the error typeKey and, when withMessage, the server message —
+// for the typed errors adoCompletionError returns, which otherwise drop it.
+func adoRefusalDetail(statusCode int, body string, withMessage bool) string {
+	var parsed struct {
+		TypeKey string `json:"typeKey"`
+	}
+	detail := fmt.Sprintf("ado HTTP %d", statusCode)
+	if json.Unmarshal([]byte(body), &parsed) == nil && strings.TrimSpace(parsed.TypeKey) != "" {
+		detail += " " + strings.TrimSpace(parsed.TypeKey)
+	}
+	if message := adoErrorMessage(body); withMessage && message != "" {
+		detail += ": " + message
+	}
+	return detail
 }
 
 // adoErrorMessage extracts the human-readable "message" field from an ADO

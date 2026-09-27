@@ -523,7 +523,9 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
 - **PRL-072 (MUST, Shipped):** *(GitHub and Gitea; **not ADO** — ADO
   source-branch deletion rides on the completion request's own
   `deleteSourceBranch` flag rather than this cleanup path, and `merge-pr` skips
-  the shared cleanup for ADO by construction. #2061. The landing stage still
+  the shared cleanup for ADO by construction. #2061. The flag honours the same
+  stacked exception: it is withheld (`branchCleanup: skipped-stacked`) when an
+  open PR targets the source branch when the landing is requested. The landing stage still
   declares `github:branch:delete` on ADO, and completes with `github:pr:merge`
   or a declared `ado:pr:complete` per PRL-040.)* After an actual merge
   (direct or queue-reported), the merged head branch MUST be deleted unless
