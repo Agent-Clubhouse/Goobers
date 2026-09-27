@@ -25,8 +25,7 @@ const reportPRStatusHelp = "Usage: goobers report-pr-status [path]\n\n" +
 	"state (succeeded|failed|pending, default succeeded), description,\n" +
 	"targetUrl (default the PR url), headSha (optional: the commit the evidence\n" +
 	"covers; Gitea posts the status on it, Azure DevOps refuses when the PR\n" +
-	"head has moved past it),\n" +
-	"resultFile (default status-result.json).\n" +
+	"head has moved past it), resultFile (default status-result.json).\n" +
 	"Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.\n"
 
 // reportPRStatusPublisher is the narrow surface report-pr-status needs. Only

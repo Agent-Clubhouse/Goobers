@@ -224,10 +224,12 @@ of a GitHub handoff channel:
    policy with `invalidateOnSourceUpdate: true` (reset-on-push) rejects a PR-level status
    with 403, and an iteration-scoped status satisfies it; a new push creates a new
    iteration, which resets the policy until a fresh status is posted against it (ADO-N7).
-   The latest iteration is resolved when the status is posted, not when the head was
-   reviewed: a push that lands between review and apply-verdict attaches the verdict to
-   the newer iteration. PR-level statuses had the same window; binding the status to the
-   reviewed head SHA is a follow-up.
+   A pass status is pinned to the reviewed head: apply-verdict passes the reviewed head
+   SHA, and the status is posted only when the latest iteration's `sourceRefCommit` is
+   that commit. A push that lands between review and apply-verdict makes the post fail
+   with a head-moved error instead of attaching the pass to the newer, unreviewed
+   iteration. A failing status stays unpinned, since on a newer head it only blocks.
+   `report-pr-status` takes the same pin through its optional `headSha` input.
 2. **The routing label, by decision**, mirroring the GitHub `verdictLabel` contract:
    - **fail →** add `goobers:merge-escalated`, clear `goobers:needs-remediation`. An
      escalation is *never* burned on the remediation budget; clearing needs-remediation and
@@ -486,7 +488,7 @@ set:
 |---|---|
 | PRL-045 / PRL-064 | Queue eviction and timeout do not label the PR or seed the reconciliation ledger. |
 | PRL-040 | Landing authority is `github:pr:merge` on ADO too; `ado:pr:complete` is optional and, when declared, is the credential completion uses (ADO-N2, `ado-parity-dsl-2-0.md` §3.3). |
-| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag, set only when the landing stage holds `github:branch:delete` (ADO-N25). |
+| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag, set only when the landing stage holds `github:branch:delete` (ADO-N25) and no open pull request targets the source branch. A stacked branch is kept and reported as `branchCleanup: skipped-stacked`, as on GitHub. The stacked check runs when the landing is requested, so a PR stacked later on an auto-complete-armed branch is not seen. |
 | PRL-081 | ADO verdict threads are **posted**, not reconciled, so the single-sticky-comment guarantee does not hold on the thread carrier. |
 | PRL-082 | Resolved — the ADO stage provider does wire the mutation recorder (`cmd/goobers/stageprovider.go`'s `newProviderForStage`); this row is retained only to record that the earlier "not ADO" annotation was stale. |
 
