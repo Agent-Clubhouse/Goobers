@@ -53,13 +53,10 @@ func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	// 25s, not the helper's full 30s budget: generous enough to absorb process
-	// startup under real Windows CI contention (the observed merge_group flake,
-	// #2048 — a fixed 5s deadline for spawning and dispatching a real external
-	// process was too tight for a loaded shared runner, not evidence of a
-	// broken attach/resume path) while still leaving margin below the helper's
-	// sleep window.
-	deadline := time.Now().Add(25 * time.Second)
+	// Allow a minute for process startup on heavily contended Windows runners.
+	// The helper's runtime is longer than this deadline so a slow start cannot
+	// turn into a misleading timeout after the child exits.
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		if _, err := os.Stat(marker); err == nil {
 			return
@@ -179,7 +176,7 @@ func TestProcessTreeHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	time.Sleep(30 * time.Second)
+	time.Sleep(90 * time.Second)
 }
 
 func TestKillTerminatesEscapedDescendants(t *testing.T) {
