@@ -146,7 +146,9 @@ behaviour changes.
   `CAP006`. It covers DSL 2.0 tasks and the goobers their agentic tasks and
   gates run. `open-pr` gained a real consumer of `ado:work-items:write` (#5819:
   it links the pull request to its work item), so a declaration on `open-pr` is
-  not reported.
+  not reported. The link is best-effort (#5925): without a delivered credential
+  the pull request still opens with a text reference and a note, and the Azure
+  DevOps repository credential backs the capability when a stage declares it.
 - **Compile-matrix gate** (§8.1). Every shipped workflow is validated against an ADO
   gaggle.
 

@@ -905,10 +905,15 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			return 1
 		}
 		reason := "no eligible item to claim"
+		if len(session.refusals) > 0 {
+			// Every candidate sat out a claim-disagreement backoff; saying
+			// "no eligible item" would hide that real items exist (#5468).
+			reason = claimRefusalReason(session.refusals)
+		}
 		if len(observedSkips) > 0 {
 			// This cycle's only candidate(s) were all blocked — distinct from a
 			// genuinely empty backlog (#1907). See blockedOnlyCompletionAnnotation.
-			reason = fmt.Sprintf("no eligible item to claim (%d blocked candidate(s) skipped this cycle)", len(observedSkips))
+			reason = fmt.Sprintf("%s (%d blocked candidate(s) skipped this cycle)", reason, len(observedSkips))
 			if jerr := annotations.Append(journal.Event{
 				Type:     journal.EventRunnerAnnotation,
 				Workflow: workflow,
@@ -944,7 +949,11 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
+		reason := "every eligible item is already claimed by another run"
+		if len(session.refusals) > 0 {
+			reason = claimRefusalReason(session.refusals)
+		}
+		return writeNoWorkResult(stdout, stderr, reason)
 	}
 
 	if code := writeClaimedBacklogResult(ctx, env, claimed, readOnlyResweep, claimedBacklogResultOptions{
@@ -1113,6 +1122,64 @@ type backlogClaimSession struct {
 	nextClaimIndex      int
 	claimSetPrepared    bool
 	driftBackoffChecked bool
+	// refusals records every eligible item this session did not claim and
+	// who held it, so a no-work result names the holder and the source of
+	// that ownership instead of a generic "already claimed" (#5468).
+	refusals []claimRefusal
+}
+
+// Sources a claimRefusal can name. They are distinct because each sends an
+// operator somewhere different: the local ledger (scheduler/claims.json), the
+// provider's claim breadcrumb epoch, or this instance's disagreement backoff.
+const (
+	claimRefusalLedger        = "local ledger"
+	claimRefusalProviderEpoch = "provider epoch"
+	claimRefusalBackoff       = "claim-disagreement backoff"
+)
+
+// claimRefusalReasonLimit bounds how many refusals a no-work reason spells
+// out; a curation listing can be long and the reason is a journaled scalar.
+const claimRefusalReasonLimit = 5
+
+type claimRefusal struct {
+	itemID     string
+	holder     string
+	source     string
+	retryAfter time.Time
+}
+
+func (r claimRefusal) describe() string {
+	holder := "an unknown run"
+	if r.holder != "" {
+		holder = "run " + r.holder
+	}
+	if r.source == claimRefusalBackoff {
+		return fmt.Sprintf("item %s deferred by %s after %s held its provider claim, retry after %s",
+			r.itemID, r.source, holder, r.retryAfter.UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf("item %s held by %s (%s)", r.itemID, holder, r.source)
+}
+
+// claimRefusalReason renders the no-work reason for a cycle whose eligible
+// items were all refused. It keeps the historical "already claimed by another
+// run" wording only when that is literally true of every refusal.
+func claimRefusalReason(refusals []claimRefusal) string {
+	prefix := "every eligible item is already claimed by another run"
+	for _, refusal := range refusals {
+		if refusal.source == claimRefusalBackoff {
+			prefix = "every eligible item is claimed by another run or deferred by claim-disagreement backoff"
+			break
+		}
+	}
+	parts := make([]string, 0, min(len(refusals), claimRefusalReasonLimit)+1)
+	for index, refusal := range refusals {
+		if index == claimRefusalReasonLimit {
+			parts = append(parts, fmt.Sprintf("and %d more", len(refusals)-index))
+			break
+		}
+		parts = append(parts, refusal.describe())
+	}
+	return prefix + ": " + strings.Join(parts, "; ")
 }
 
 func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *labelpredicate.Predicate) (int, int) {
@@ -1202,7 +1269,7 @@ func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger cl
 	for session.nextClaimIndex < len(session.eligible) && len(session.claimed) < session.maxItems {
 		item := session.eligible[session.nextClaimIndex]
 		session.nextClaimIndex++
-		ok, err := session.claimItem(ctx, ledger, item)
+		ok, holder, err := session.claimItem(ctx, ledger, item)
 		if err != nil {
 			return err
 		}
@@ -1213,6 +1280,7 @@ func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger cl
 			}
 		} else {
 			session.env.debugf("claim lost %s: ledger claim held by another run", item.ID)
+			session.refusals = append(session.refusals, claimRefusal{itemID: item.ID, holder: holder, source: claimRefusalLedger})
 		}
 	}
 	return nil
@@ -1284,13 +1352,13 @@ func (session *backlogClaimSession) claimKey(item providers.WorkItem) claimsclie
 	}
 }
 
-func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claimsclient.Ledger, item providers.WorkItem) (bool, error) {
-	ok, _, err := ledger.ClaimScoped(ctx, session.claimKey(item), session.runID, session.workflow, session.leaseDuration)
+func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claimsclient.Ledger, item providers.WorkItem) (bool, string, error) {
+	ok, holder, err := ledger.ClaimScoped(ctx, session.claimKey(item), session.runID, session.workflow, session.leaseDuration)
 	if err != nil {
-		return false, fmt.Errorf("claim %s in ledger: %w", item.ID, err)
+		return false, "", fmt.Errorf("claim %s in ledger: %w", item.ID, err)
 	}
 	if !ok {
-		return false, nil
+		return false, holder, nil
 	}
 	// #4417: record this item's own typed repository identity against the
 	// claim — terminal circuit-breaker/notification bookkeeping later reads
@@ -1300,9 +1368,9 @@ func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claims
 		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID); releaseErr != nil {
 			session.env.debugf("release claim %s after repository-identity record failure: %v", item.ID, releaseErr)
 		}
-		return false, fmt.Errorf("record repository identity for %s: %w", item.ID, recordErr)
+		return false, "", fmt.Errorf("record repository identity for %s: %w", item.ID, recordErr)
 	}
-	return true, nil
+	return true, "", nil
 }
 
 func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, start int) error {
@@ -1346,10 +1414,16 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			return fmt.Errorf("read provider claim history for item %s: %w", item.ID, err)
 		}
 		if drift != nil {
+			// Persistent disagreement with one provider owner is recorded as
+			// ownership drift (telemetry + the backoff the next cycle honours)
+			// and skips only this item. Failing the stage here rolled back the
+			// whole batch — up to maxItems claims — over one orphaned epoch.
 			session.recordCurrentClaimObservation(ctx, item, result, nil)
-			return drift
+			session.journalOwnershipDrift(drift)
+		} else {
+			session.recordCurrentContention(ctx, item, result.ClaimedBy)
 		}
-		session.recordCurrentContention(ctx, item, result.ClaimedBy)
+		session.refusals = append(session.refusals, claimRefusal{itemID: item.ID, holder: result.ClaimedBy, source: claimRefusalProviderEpoch})
 		if err := session.releaseLedger(ctx, item); err != nil {
 			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
 		}
@@ -1387,6 +1461,26 @@ func (session *backlogClaimSession) recordCurrentContention(ctx context.Context,
 			recordProviderClaimContention(ctx, session.ledger, entry, providerRunID, session.env.stderr)
 			return
 		}
+	}
+}
+
+// journalOwnershipDrift surfaces a repeated provider contention that is now
+// skipped per item rather than failing the stage, so it stays visible in the
+// run journal and on stderr. A journal failure only warns: the skip is the
+// safe outcome either way.
+func (session *backlogClaimSession) journalOwnershipDrift(drift *providerClaimOwnershipError) {
+	pf(session.env.stderr, "warning: %v; skipping item %s this cycle\n", drift, drift.itemID)
+	if err := session.annotations.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation, Workflow: session.workflow, RunID: session.runID,
+		Reason: drift.Error(),
+		Runner: map[string]any{
+			"annotation": "provider-claim-ownership-drift",
+			"errorCode":  drift.Code(),
+			"provider":   drift.provider, "itemId": drift.itemID,
+			"claimRunId": drift.claimRunID, "providerRunId": drift.providerRunID,
+		},
+	}); err != nil {
+		pf(session.env.stderr, "warning: journal provider claim ownership drift for item %s: %v\n", drift.itemID, err)
 	}
 }
 
@@ -1442,6 +1536,9 @@ func (session *backlogClaimSession) filterRecentClaimDisagreements(ctx context.C
 			continue
 		}
 		retryAt := observation.ObservedAt.Add(session.leaseDuration)
+		session.refusals = append(session.refusals, claimRefusal{
+			itemID: item.ID, holder: observation.ProviderRunID, source: claimRefusalBackoff, retryAfter: retryAt,
+		})
 		pf(session.env.stderr, "warning: delaying provider claim for item %s; owner %s disagreed with the ledger, retry after %s\n",
 			item.ID, observation.ProviderRunID, retryAt.UTC().Format(time.RFC3339))
 		if err := session.annotations.Append(journal.Event{

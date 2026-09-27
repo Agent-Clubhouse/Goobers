@@ -635,12 +635,17 @@ func validateGuidedOptions(opts GuidedOptions) error {
 // validateGuidedProvider checks the repository provider and the options that
 // depend on it. Azure DevOps accepts every repository auth kind the instance
 // configuration accepts, and refuses work-nomination, whose file-issues stage
-// files GitHub issues only.
+// files GitHub issues only. Guided merge-review is offered on Azure DevOps
+// only: guided GitHub setup grants no pull-request token to it.
 func validateGuidedProvider(opts GuidedOptions) error {
 	switch opts.RepoProvider {
 	case string(apiv1.ProviderGitHub):
 		if opts.RepoProject != "" {
 			return fmt.Errorf("repository project is only valid for Azure DevOps")
+		}
+		if slices.Contains(opts.Workflows, GuidedWorkflowMergeReview) {
+			return fmt.Errorf("guided setup offers the %s workflow on Azure DevOps only; on GitHub select %s, %s and/or %s",
+				GuidedWorkflowMergeReview, GuidedWorkflowImplementation, GuidedWorkflowBacklogCuration, GuidedWorkflowWorkNomination)
 		}
 	case string(apiv1.ProviderADO):
 		if opts.RepoProject == "" {

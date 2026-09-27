@@ -976,7 +976,7 @@ func guidedStandardInitArgv(repository, provider, assignedTo, instancePath strin
 	// explicitly so the CLI does not substitute its legacy template defaults.
 	for _, option := range []struct{ name, value string }{
 		{"repo-auth-kind", input.AuthKind},
-		{"repo-token-env", input.RepoTokenEnv},
+		{"repo-token-env", guidedRepoTokenEnvArg(provider, input)},
 		{"work-tracking-token-env", input.WorkTrackingTokenEnv},
 		{"pr-token-env", input.PullRequestTokenEnv},
 		{"push-token-env", input.RepoPushTokenEnv},
@@ -987,6 +987,17 @@ func guidedStandardInitArgv(repository, provider, assignedTo, instancePath strin
 		argv = append(argv, "--pr-ci")
 	}
 	return append(argv, instancePath)
+}
+
+// guidedRepoTokenEnvArg is the --repo-token-env value for guided init. On
+// Azure DevOps only PAT auth reads a token variable, and init refuses one
+// named alongside any other kind, so the wizard's GitHub-shaped default is
+// not forwarded for Azure CLI and the other token-free kinds.
+func guidedRepoTokenEnvArg(provider string, input *guidedInitOptionsInput) string {
+	if provider == string(providers.ProviderADO) && strings.TrimSpace(input.AuthKind) != instance.ADOAuthPAT {
+		return ""
+	}
+	return input.RepoTokenEnv
 }
 
 func (s *guidedServer) checkInitTarget(ctx context.Context) error {

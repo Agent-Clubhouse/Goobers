@@ -447,6 +447,86 @@ func TestTwoPointZeroKeepsLastWriter(t *testing.T) {
 	}
 }
 
+// #3767 residual (prod run 806ccaa2, pr-remediation): a declared producer
+// that EXECUTED but committed nothing is the most recent listed producer that
+// executed (dsl-3.0.md §4), exactly as WF022's static half models it (a
+// producer is a must-define). rebase-pr publishes X, implement runs and
+// reports its branch unchanged, local-ci declares repoFrom [implement] — the
+// only declaration the validator accepts — and must continue from X, where
+// the runtime used to refuse naming rebase-pr. A NON-producer that reports
+// unchanged (local-ci, a consumer) must stay invisible: check, which does not
+// declare it, still continues from implement's pass-through.
+func TestUnchangedDeclaredProducerPassesPredecessorThrough(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}, Start: "rebase-pr",
+		Tasks: []apiv1.Task{
+			podTask("rebase-pr", "implement", func(t *apiv1.Task) { t.CommitsRepo = true }),
+			podTask("implement", "local-ci", func(t *apiv1.Task) { t.CommitsRepo = true; t.RepoFrom = apiv1.RepoFrom{"rebase-pr"} }),
+			podTask("local-ci", "check", func(t *apiv1.Task) { t.RepoFrom = apiv1.RepoFrom{"implement"} }),
+			podTask("check", "", func(t *apiv1.Task) { t.RepoFrom = apiv1.RepoFrom{"implement"} }),
+		},
+	}
+	in := projectionInput("repofrom-unchanged-producer", spec)
+	in.DSLVersion = "3.0"
+	in.Placements = []PinnedPlacement{remotePin("rebase-pr"), remotePin("implement"), remotePin("local-ci"), remotePin("check")}
+	surrenders := surrenderStore(t)
+	surrenderDelta(t, surrenders, in.RunID, "rebase-pr", 1, deltaX)
+	unchanged := dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, WorkspaceDeltaUnchanged: true}
+	putSurrendered(t, surrenders, in.RunID, "implement", 1, unchanged)
+	putSurrendered(t, surrenders, in.RunID, "local-ci", 1, unchanged)
+	putSurrendered(t, surrenders, in.RunID, "check", 1, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v (a declared producer that ran unchanged must pass its predecessor's delta through)", err)
+	}
+	if len(fake.attempts) != 4 {
+		t.Fatalf("attempts = %d, want rebase-pr, implement, local-ci, check", len(fake.attempts))
+	}
+	for i, stage := range []string{"implement", "local-ci", "check"} {
+		if got := fake.attempts[i+1].WorkspaceDelta; got != deltaX {
+			t.Errorf("%s carried %q, want rebase-pr's %s", stage, got, deltaX)
+		}
+	}
+}
+
+// The selector half of the pass-through rule, pure: a declared pass-through
+// is selected (carrying its predecessor's bytes), an undeclared one is
+// neither refused nor selected, the nil arm ignores pass-throughs entirely,
+// and a real undeclared committer is still refused.
+func TestSelectDeltaPassThrough(t *testing.T) {
+	x := continuityEntry{Stage: "rebase-pr", Attempt: 1, Digest: deltaX}
+	impl := continuityEntry{Stage: "implement", Attempt: 1, Digest: deltaX, PassThrough: true}
+	ci := continuityEntry{Stage: "local-ci", Attempt: 1, Digest: deltaX, PassThrough: true}
+	t.Run("declared pass-through is the most recent declared producer", func(t *testing.T) {
+		got, err := selectDelta([]continuityEntry{x, impl}, "local-ci", []string{"implement"}, "")
+		if err != nil || got.Stage != "implement" || got.Digest != deltaX {
+			t.Fatalf("selectDelta = %+v, %v; want implement's pass-through of %s", got, err, deltaX)
+		}
+	})
+	t.Run("undeclared pass-through is skipped, not refused", func(t *testing.T) {
+		got, err := selectDelta([]continuityEntry{x, impl, ci}, "check", []string{"implement"}, "")
+		if err != nil || got.Stage != "implement" {
+			t.Fatalf("selectDelta = %+v, %v; want implement", got, err)
+		}
+	})
+	t.Run("nil arm ignores pass-throughs", func(t *testing.T) {
+		got, err := selectDelta([]continuityEntry{x, impl, ci}, "gate", nil, "")
+		if err != nil || got != x {
+			t.Fatalf("selectDelta = %+v, %v; want rebase-pr's own entry", got, err)
+		}
+	})
+	t.Run("real undeclared committer after a pass-through is still refused", func(t *testing.T) {
+		undeclared := continuityEntry{Stage: "x", Attempt: 1, Digest: deltaB}
+		if _, err := selectDelta([]continuityEntry{x, impl, undeclared}, "local-ci", []string{"implement"}, ""); err == nil {
+			t.Fatal("selectDelta accepted a consumer building on an undeclared committer")
+		}
+	})
+}
+
 // Repass (decision 001 rule 3): a stage re-entered from a gate continues
 // from its OWN prior publication even though its repoFrom does not — cannot
 // — name itself.

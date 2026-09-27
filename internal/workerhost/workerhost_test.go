@@ -17,6 +17,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/goobers/goobers/internal/attemptidentity"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 type fakeWorker struct {
@@ -73,7 +74,7 @@ func newTestHost(t *testing.T, cfg Config, fleet *fakeFleet) *Host {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	h.dial = func(string, string) (client.Client, error) { return nil, nil }
+	h.dial = func(string, string, *temporaldial.TLS) (client.Client, error) { return nil, nil }
 	h.newWorker = fleet.newWorker
 	return h
 }
@@ -273,7 +274,7 @@ func TestRunPropagatesDialFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	h.dial = func(string, string) (client.Client, error) { return nil, errors.New("no frontend") }
+	h.dial = func(string, string, *temporaldial.TLS) (client.Client, error) { return nil, errors.New("no frontend") }
 	if err := h.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "dial temporal") {
 		t.Fatalf("Run = %v, want dial failure", err)
 	}
@@ -455,7 +456,7 @@ func TestRunDrainsQueuesConcurrently(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			h.dial = func(string, string) (client.Client, error) { return nil, nil }
+			h.dial = func(string, string, *temporaldial.TLS) (client.Client, error) { return nil, nil }
 			started := make(chan string, 3)
 			stopping := make(chan string, 3)
 			release := make(chan struct{})
@@ -515,4 +516,23 @@ func (w *blockingDrainWorker) Start() error {
 func (w *blockingDrainWorker) Stop() {
 	w.stopping <- w.queue
 	<-w.release
+}
+
+// TestRunDialsWithConfiguredTLS: the worker's frontend dial carries the
+// configured transport security (#5289) rather than dropping it.
+func TestRunDialsWithConfiguredTLS(t *testing.T) {
+	want := &temporaldial.TLS{CAFile: "ca.pem"}
+	h, err := New(Config{HostPort: "h:1", Namespace: "ns", TLS: want, TaskQueues: []string{"goobers-engine"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var got *temporaldial.TLS
+	h.dial = func(_, _ string, tls *temporaldial.TLS) (client.Client, error) {
+		got = tls
+		return nil, errors.New("stop after dial")
+	}
+	_ = h.Run(context.Background())
+	if got != want {
+		t.Fatalf("dial TLS = %+v, want %+v", got, want)
+	}
 }

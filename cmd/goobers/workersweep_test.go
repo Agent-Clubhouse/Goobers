@@ -16,6 +16,7 @@ import (
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // fakeSweepDescriber answers DescribeWorkflowExecution from a table keyed by
@@ -230,7 +231,7 @@ func TestSweepWorkerStageOrphansReportsDisposal(t *testing.T) {
 	sweeper := &recordingSweeper{disposed: []string{"gbn-open-pr-run1-a2"}}
 	withFakeSweepDial(t, &fakeSweepDescriber{})
 	var stdout, stderr bytes.Buffer
-	sweepWorkerStageOrphans(sweeper, "127.0.0.1:7233", "default", &stdout, &stderr)
+	sweepWorkerStageOrphans(sweeper, "127.0.0.1:7233", "default", nil, &stdout, &stderr)
 	states, ok := sweeper.states.(temporalRunStates)
 	if !ok {
 		t.Fatalf("sweep ran with resolver %T, want temporalRunStates — a sweep with any other basis is not asking the engine", sweeper.states)
@@ -255,12 +256,12 @@ func TestSweepWorkerStageOrphansReportsDisposal(t *testing.T) {
 func TestSweepWorkerStageOrphansIsNeverFatal(t *testing.T) {
 	t.Run("dial fails", func(t *testing.T) {
 		previous := dialWorkerSweepTemporal
-		dialWorkerSweepTemporal = func(string, string) (client.Client, error) {
+		dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS) (client.Client, error) {
 			return nil, errors.New("connection refused")
 		}
 		t.Cleanup(func() { dialWorkerSweepTemporal = previous })
 		var stdout, stderr bytes.Buffer
-		sweepWorkerStageOrphans(&recordingSweeper{}, "127.0.0.1:7233", "default", &stdout, &stderr)
+		sweepWorkerStageOrphans(&recordingSweeper{}, "127.0.0.1:7233", "default", nil, &stdout, &stderr)
 		if !strings.Contains(stderr.String(), "orphan sweep skipped") {
 			t.Fatalf("stderr %q does not report the skipped sweep", stderr.String())
 		}
@@ -268,14 +269,14 @@ func TestSweepWorkerStageOrphansIsNeverFatal(t *testing.T) {
 	t.Run("sweep errors", func(t *testing.T) {
 		withFakeSweepDial(t, &fakeSweepDescriber{})
 		var stdout, stderr bytes.Buffer
-		sweepWorkerStageOrphans(&recordingSweeper{err: errors.New("apiserver conflict")}, "127.0.0.1:7233", "default", &stdout, &stderr)
+		sweepWorkerStageOrphans(&recordingSweeper{err: errors.New("apiserver conflict")}, "127.0.0.1:7233", "default", nil, &stdout, &stderr)
 		if !strings.Contains(stderr.String(), "apiserver conflict") {
 			t.Fatalf("stderr %q does not report the sweep failure", stderr.String())
 		}
 	})
 	t.Run("no dispatcher", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		sweepWorkerStageOrphans(nil, "127.0.0.1:7233", "default", &stdout, &stderr)
+		sweepWorkerStageOrphans(nil, "127.0.0.1:7233", "default", nil, &stdout, &stderr)
 		if stdout.Len() != 0 || stderr.Len() != 0 {
 			t.Fatalf("a worker with no dispatcher must not sweep at all; stdout=%q stderr=%q", stdout.String(), stderr.String())
 		}
@@ -288,7 +289,7 @@ func TestPeriodicWorkerStageOrphanSweepRetriesAndStopsWithWorker(t *testing.T) {
 	sweeper := &recurringSweeper{calls: make(chan recurringSweepCall, 8)}
 	var stdout, stderr synchronizedBuffer
 	done := startPeriodicWorkerStageOrphanSweeps(
-		ctx, sweeper, "127.0.0.1:7233", "default", &stdout, &stderr, 25*time.Millisecond,
+		ctx, sweeper, "127.0.0.1:7233", "default", nil, &stdout, &stderr, 25*time.Millisecond,
 	)
 
 	first := <-sweeper.calls
@@ -343,7 +344,7 @@ func (c *sweepStubClient) Close() {}
 func withFakeSweepDial(t *testing.T, describer *fakeSweepDescriber) {
 	t.Helper()
 	previous := dialWorkerSweepTemporal
-	dialWorkerSweepTemporal = func(string, string) (client.Client, error) {
+	dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS) (client.Client, error) {
 		return &sweepStubClient{describer: describer}, nil
 	}
 	t.Cleanup(func() { dialWorkerSweepTemporal = previous })
