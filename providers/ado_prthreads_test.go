@@ -197,6 +197,40 @@ func TestADOProviderUpdatePullRequestThreadCommentRecordsMutation(t *testing.T) 
 	}
 }
 
+func TestADOProviderDeletePullRequestThreadCommentRecordsMutation(t *testing.T) {
+	called := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/threads/7/comments/2", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodDelete)
+		if got := r.URL.Query().Get("api-version"); got != "7.1" {
+			t.Fatalf("api-version = %q, want 7.1", got)
+		}
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	recorder := &adoMutationRecorder{}
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	provider.SetMutationRecorder(recorder)
+	repo := RepositoryRef{Name: "repo", Project: "project"}
+	if err := provider.DeletePullRequestThreadComment(context.Background(), repo, "42/7/2"); err != nil {
+		t.Fatalf("DeletePullRequestThreadComment returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("DELETE endpoint was not called")
+	}
+	if len(recorder.refs) != 1 || recorder.refs[0].Ref != "ado#42" || recorder.refs[0].Operation != "comment" {
+		t.Fatalf("mutation refs = %#v", recorder.refs)
+	}
+	for _, bad := range []string{"", "42/7", "42/x/1"} {
+		if err := provider.DeletePullRequestThreadComment(context.Background(), repo, bad); err == nil {
+			t.Fatalf("DeletePullRequestThreadComment(%q) returned nil error, want parse failure", bad)
+		}
+	}
+}
+
 func TestADOProviderAddPullRequestLabels(t *testing.T) {
 	var postedNames []string
 	mux := http.NewServeMux()
