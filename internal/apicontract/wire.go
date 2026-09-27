@@ -316,6 +316,14 @@ func newWireFixtures() wireFixtures {
 		RetryCount:       2,
 		PolicyRetryCount: 1,
 		InfraRetryCount:  1,
+		Lineage: &readservice.RunLineage{
+			Source:                &readservice.LineageRun{ID: "run-122", Phase: journal.PhaseFailed},
+			Continuations:         []readservice.LineageRun{{ID: "run-124", Phase: journal.PhaseRunning}},
+			ResumeTarget:          "implement",
+			WorkspaceBranch:       "goobers/implementation/run-122",
+			WorkspaceBranchSHA:    "abc123",
+			HistoricalRepassCount: 2,
+		},
 		Operator: readservice.OperatorRunSummary{
 			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status"},
 			CurrentStage:      "review",

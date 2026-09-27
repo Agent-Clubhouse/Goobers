@@ -871,11 +871,32 @@ export interface RunSummary {
   retryCount: number;
   policyRetryCount: number;
   infraRetryCount: number;
+  lineage?: RunLineage;
   /** True for a completed run that touched exactly one stage and that stage's terminal status was no-work (#2188). */
   noWork: boolean;
   /** Projected cause of a non-completed terminal run — failed and aborted as well as escalated (#4246). */
   terminalReason?: string;
   operator?: OperatorRunSummary;
+}
+
+export interface RunLineage {
+  source?: LineageRun;
+  continuations?: LineageRun[];
+  resumeTarget?: string;
+  workspaceBranch?: string;
+  workspaceBranchSha?: string;
+  injectedInputs?: Array<{
+    name: string;
+    ref: { path: string; digest: string; integrity?: string };
+    integrity?: string;
+    source?: string;
+  }>;
+  historicalRepassCount: number;
+}
+
+export interface LineageRun {
+  id: string;
+  phase?: RunPhase;
 }
 
 export interface OperatorRunSummary {

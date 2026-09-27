@@ -177,6 +177,7 @@ func measureRunDiskUsage(runDir, runID string) (runDiskUsage, error) {
 // runSummary is the flat, journal-derived row the run-listing commands print.
 type runSummary struct {
 	EngineFallback *readmodel.EngineFallback
+	Lineage        *readservice.RunLineage
 	RunID          string
 	DirName        string
 	Workflow       string

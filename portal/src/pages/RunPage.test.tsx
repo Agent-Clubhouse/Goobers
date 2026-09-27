@@ -51,6 +51,31 @@ describe("run detail", () => {
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
+  it("shows continuation provenance and navigates to the immutable source", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.["01JZ402DASHBOARD"];
+    if (!detail) {
+      throw new Error("Expected continuation run fixture.");
+    }
+    detail.lineage = {
+      source: { id: "01JZ400FAILED", phase: "failed" },
+      resumeTarget: "implement",
+      workspaceBranch: "goobers/implementation/source",
+      historicalRepassCount: 2,
+      injectedInputs: [{
+        name: "operator-note",
+        ref: { path: "inputs/operator-note", digest: "sha256:note" },
+      }],
+    };
+    renderRun(detail.id, new FixtureDaemonClient(fixtures));
+
+    expect(await screen.findByRole("heading", { name: "Continuation lineage" })).toBeInTheDocument();
+    expect(screen.getByText(/Historical repasses: 2/)).toBeInTheDocument();
+    expect(screen.getByText("Injected input: operator-note")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "01JZ400FAILED" }));
+    expect(window.location.hash).toBe("#/run/01JZ400FAILED");
+  });
+
   it("renders nested current status cards and structured progress history", async () => {
     const fixtures = populatedDaemonFixtures();
     const detail = fixtures.runDetails?.["01JZ441DAEMONAPI"];
