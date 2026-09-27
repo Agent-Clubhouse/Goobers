@@ -4,11 +4,19 @@ import (
 	"compress/gzip"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/microsoft/ApplicationInsights-Go/appinsights/contracts"
+	"go.opentelemetry.io/otel/attribute"
+	collectorlogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -48,6 +56,52 @@ func TestParseAzureMonitorConnectionString(t *testing.T) {
 	}
 }
 
+func TestAzureMonitorHostIdentityRequiresExplicitConsent(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Skip("hostname unavailable")
+	}
+	standard, err := newAzureMonitorClient(connectionString, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if standard.defaultTags[contracts.DeviceId] != "" || standard.defaultTags[contracts.CloudRoleInstance] != "" {
+		t.Fatal("standard profile exposed hostname")
+	}
+	diagnostic, err := newAzureMonitorClient(connectionString, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diagnostic.defaultTags[contracts.DeviceId] != hostname || diagnostic.defaultTags[contracts.CloudRoleInstance] != hostname {
+		t.Fatal("diagnostic profile omitted consented hostname")
+	}
+}
+
+func TestAzureMonitorSignalsAreSelectedIndependently(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	exporters, err := spanExporters(context.Background(), Config{AzureMonitorConnectionString: connectionString})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exporters) != 0 {
+		t.Fatalf("disabled Azure traces created %d exporters", len(exporters))
+	}
+	client, err := New(context.Background(), Config{
+		AzureMonitorConnectionString: connectionString,
+		JournalLogsOnly:              true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.JournalLogsEnabled() {
+		t.Fatal("disabled Azure journals created a journal pipeline")
+	}
+	if err := client.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAzureMonitorExporterSendsCorrelatedScrubbedSpan(t *testing.T) {
 	payloads := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +131,7 @@ func TestAzureMonitorExporterSendsCorrelatedScrubbedSpan(t *testing.T) {
 	client, err := New(context.Background(), Config{
 		ServiceName: "goobers", ServiceVersion: "v0.5.0-test", BuildCommit: "abc123",
 		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + server.URL,
+		AzureMonitorTraces:           true,
 		AzureMonitorHTTPClient:       server.Client(), Scrubber: scrubber,
 	})
 	if err != nil {
@@ -107,5 +162,241 @@ func TestAzureMonitorExporterSendsCorrelatedScrubbedSpan(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for Application Insights request")
+	}
+}
+
+func TestAzureMonitorExporterSendsCommittedJournalLog(t *testing.T) {
+	payloads, server := azureMonitorTestServer(t)
+	defer server.Close()
+
+	const secret = "journal-secret-value"
+	registry := journal.NewRegistryScrubber()
+	registry.Register([]byte(secret))
+	scrubber := journal.Chain(registry, journal.NewPatternScrubber())
+	client, err := New(context.Background(), Config{
+		ServiceName: "goobers", ServiceVersion: "v0.5.0-test", BuildCommit: "journal-build",
+		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + server.URL,
+		AzureMonitorJournalLogs:      true,
+		AzureMonitorHTTPClient:       server.Client(), JournalLogs: true, JournalLogsOnly: true,
+		Scrubber:           scrubber,
+		ResourceAttributes: []attribute.KeyValue{attribute.String("goobers.instance.id", "durable-instance")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Commit(journal.CommittedEvent{
+		Kind: "run", JournalID: "0af7651916cd43dd8448eb211c80319c", RunID: "0af7651916cd43dd8448eb211c80319c",
+		InstanceID: "durable-instance", Gaggle: "tenant-gaggle", Seq: 7, Time: time.Now(),
+		// CommittedEvent.Body is the already-scrubbed authoritative journal
+		// payload; direct Commit in this test mirrors that boundary contract.
+		Body: scrubber.Scrub([]byte(`{"type":"stage.failed","error":"` + secret + `"}`)),
+	})
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+
+	body := waitAzureMonitorPayload(t, payloads)
+	for _, want := range []string{"stage.failed", "[REDACTED]", "goobers.journal", "durable-instance", "tenant-gaggle", "0af7651916cd43dd8448eb211c80319c", `"goobers.journal.seq":"7"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("payload missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, secret) {
+		t.Fatalf("payload contains registered secret: %s", body)
+	}
+}
+
+func TestAzureMonitorExporterSendsWhitelistedDiagnosticLog(t *testing.T) {
+	payloads, server := azureMonitorTestServer(t)
+	defer server.Close()
+
+	const secret = "diagnostic-secret-value"
+	registry := journal.NewRegistryScrubber()
+	registry.Register([]byte(secret))
+	exporter, err := NewDiagnosticExporter(Config{
+		ServiceVersion: "v0.5.0-test", BuildCommit: "diagnostic-build",
+		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + server.URL,
+		AzureMonitorHTTPClient:       server.Client(), Scrubber: journal.Chain(registry, journal.NewPatternScrubber()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exporter.Emit(DiagnosticRecord{Time: time.Now(), Name: "goobers.service.health", Attributes: map[string]any{
+		"instanceId": "durable-instance", "machineName": "windows-worker-07", "reasonCode": "auth_rejected", "detail": secret,
+	}}) {
+		t.Fatal("diagnostic record was not accepted")
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := exporter.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	if stats := exporter.Stats(); stats.Accepted != 1 || stats.Delivered != 1 || stats.Dropped != 0 {
+		t.Fatalf("diagnostic stats = %+v", stats)
+	}
+
+	body := waitAzureMonitorPayload(t, payloads)
+	for _, want := range []string{"goobers.service.health", "goobers.diagnostics", "durable-instance", "windows-worker-07", "auth_rejected", "[REDACTED]"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("payload missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, secret) {
+		t.Fatalf("payload contains registered secret: %s", body)
+	}
+}
+
+func TestJournalLogsFanOutToOTLPAndAzureMonitor(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grpcServer := grpc.NewServer()
+	receiver := &journalLogsReceiver{
+		requests: make(chan *collectorlogspb.ExportLogsServiceRequest, 1),
+		headers:  make(chan metadata.MD, 1),
+	}
+	collectorlogspb.RegisterLogsServiceServer(grpcServer, receiver)
+	go func() { _ = grpcServer.Serve(listener) }()
+	defer grpcServer.Stop()
+
+	payloads, azureServer := azureMonitorTestServer(t)
+	defer azureServer.Close()
+	client, err := New(context.Background(), Config{
+		Exporter: ExporterOTLP, OTLPEndpoint: listener.Addr().String(), OTLPInsecure: true,
+		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + azureServer.URL,
+		AzureMonitorJournalLogs:      true,
+		AzureMonitorHTTPClient:       azureServer.Client(), JournalLogs: true, JournalLogsOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Commit(journal.CommittedEvent{Kind: "scheduler", JournalID: "fanout-journal", Seq: 1, Time: time.Now(), Body: []byte(`{"type":"scheduler.tick"}`)})
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case request := <-receiver.requests:
+		if !strings.Contains(request.String(), "fanout-journal") {
+			t.Fatalf("OTLP export missing journal identity: %s", request)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OTLP destination received no journal record")
+	}
+	if body := waitAzureMonitorPayload(t, payloads); !strings.Contains(body, "fanout-journal") {
+		t.Fatalf("Azure Monitor export missing journal identity: %s", body)
+	}
+}
+
+func TestDiagnosticLogsFanOutToOTLPAndAzureMonitor(t *testing.T) {
+	collector := &diagnosticTestCollector{
+		requests: make(chan *collectorlogspb.ExportLogsServiceRequest, 1),
+		headers:  make(chan metadata.MD, 1),
+	}
+	endpoint := startDiagnosticTestCollector(t, collector)
+	payloads, azureServer := azureMonitorTestServer(t)
+	defer azureServer.Close()
+	exporter, err := NewDiagnosticExporter(Config{
+		OTLPEndpoint: endpoint, OTLPInsecure: true,
+		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + azureServer.URL,
+		AzureMonitorHTTPClient:       azureServer.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exporter.Emit(DiagnosticRecord{Time: time.Now(), Name: "goobers.fleet.heartbeat", Attributes: map[string]any{"instanceId": "fanout-instance"}}) {
+		t.Fatal("diagnostic fanout record was not accepted")
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := exporter.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case request := <-collector.requests:
+		if !strings.Contains(request.String(), "fanout-instance") {
+			t.Fatalf("OTLP diagnostic export missing identity: %s", request)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OTLP destination received no diagnostic record")
+	}
+	if body := waitAzureMonitorPayload(t, payloads); !strings.Contains(body, "fanout-instance") {
+		t.Fatalf("Azure Monitor diagnostic export missing identity: %s", body)
+	}
+}
+
+func TestAzureMonitorRejectionIsVisibleInLogExportStats(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	connectionString := "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + server.URL
+
+	diagnostic, err := NewDiagnosticExporter(Config{AzureMonitorConnectionString: connectionString, AzureMonitorHTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !diagnostic.Emit(DiagnosticRecord{Time: time.Now(), Name: "goobers.service.health"}) {
+		t.Fatal("diagnostic record was not accepted")
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := diagnostic.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	if stats := diagnostic.Stats(); stats.Accepted != 1 || stats.Delivered != 0 || stats.Dropped != 1 || stats.Failures != 1 {
+		t.Fatalf("diagnostic rejection stats = %+v", stats)
+	}
+
+	journalClient, err := New(context.Background(), Config{
+		AzureMonitorConnectionString: connectionString, AzureMonitorHTTPClient: server.Client(), AzureMonitorJournalLogs: true,
+		JournalLogs: true, JournalLogsOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalClient.Commit(journal.CommittedEvent{Kind: "scheduler", JournalID: "rejected-journal", Time: time.Now(), Body: []byte(`{"type":"test"}`)})
+	if err := journalClient.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	if stats := journalClient.JournalExportStats(); stats.Accepted != 1 || stats.ExportFailures != 1 {
+		t.Fatalf("journal rejection stats = %+v", stats)
+	}
+}
+
+func azureMonitorTestServer(t *testing.T) (chan string, *httptest.Server) {
+	t.Helper()
+	payloads := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Errorf("gzip reader: %v", err)
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		payloads <- string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"itemsReceived":1,"itemsAccepted":1,"errors":[]}`)
+	}))
+	return payloads, server
+}
+
+func waitAzureMonitorPayload(t *testing.T, payloads <-chan string) string {
+	t.Helper()
+	select {
+	case body := <-payloads:
+		return body
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Application Insights request")
+		return ""
 	}
 }

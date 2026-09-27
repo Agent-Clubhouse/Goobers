@@ -72,11 +72,17 @@ func TestServiceHealthExportProductionWiring(t *testing.T) {
 }
 func TestServiceHealthExportWhitelist(t *testing.T) {
 	record := serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{
-		"instanceId": "known", "prompt": "private prompt", "rawConfig": "private config",
+		"instanceId": "known", "machineName": "workstation-7", "accountName": "alice", "prompt": "private prompt", "rawConfig": "private config",
 		"recoveryInventory": map[string]any{"state": "healthy", "used": 1, "inventoryRoot": "private path", "error": "private raw error"},
-	}})
+	}}, false)
 	if len(record.Attributes) != 3 || record.Attributes["instanceId"] != "known" || record.Attributes["recoveryInventory.used"] != 1 {
 		t.Fatalf("unexpected public fields: %+v", record.Attributes)
+	}
+	diagnostic := serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{
+		"instanceId": "known", "machineName": "workstation-7", "accountName": "alice",
+	}}, true)
+	if diagnostic.Attributes["machineName"] != "workstation-7" || diagnostic.Attributes["accountName"] != "alice" {
+		t.Fatalf("diagnostic consent did not include host identity: %+v", diagnostic.Attributes)
 	}
 }
 func TestServiceHealthDisabledExportDoesNotResolveSecrets(t *testing.T) {
@@ -87,6 +93,30 @@ func TestServiceHealthDisabledExportDoesNotResolveSecrets(t *testing.T) {
 	exporter, err := buildDiagnosticExporterWithStores(context.Background(), &schedulerSetup{Config: cfg}, nil)
 	if err != nil || exporter != nil {
 		t.Fatalf("disabled export resolved credentials: %v %v", exporter, err)
+	}
+}
+
+func TestServiceHealthUsesUnifiedAzureMonitorDestination(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("SERVICE_HEALTH_AZURE_MONITOR", connectionString)
+	registry := journal.NewRegistryScrubber()
+	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{AzureMonitor: &instance.AzureMonitorConfig{
+		ConnectionString: instance.TokenRef{Env: "SERVICE_HEALTH_AZURE_MONITOR"},
+	}}}
+	exporter, err := buildDiagnosticExporterWithStores(context.Background(), &schedulerSetup{Config: cfg, SharedRegistry: registry}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exporter == nil {
+		t.Fatal("unified Azure Monitor destination did not enable diagnostics")
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := exporter.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(registry.Scrub([]byte(connectionString))); strings.Contains(got, connectionString) {
+		t.Fatalf("connection string not registered with diagnostic scrubber: %q", got)
 	}
 }
 

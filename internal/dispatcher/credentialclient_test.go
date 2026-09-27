@@ -204,10 +204,6 @@ func TestCredentialResolveRejectsEmptyValue(t *testing.T) {
 // the plane's own doc noted that recovery came from spending a FRESH POD,
 // a whole dispatch cycle to survive something that lasts seconds to minutes.
 func TestCredentialResolveRidesOutARestart(t *testing.T) {
-	origBase, origMax := retryBaseDelay, retryMaxDelay
-	retryBaseDelay, retryMaxDelay = time.Millisecond, 5*time.Millisecond
-	t.Cleanup(func() { retryBaseDelay, retryMaxDelay = origBase, origMax })
-
 	var attempts int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -234,7 +230,9 @@ func TestCredentialResolveRidesOutARestart(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &CredentialResolveClient{BaseURL: server.URL, RetryDeadline: 5 * time.Second}
+	client := &CredentialResolveClient{
+		BaseURL: server.URL, RetryDeadline: 5 * time.Second, RetryPolicy: fastRetryPolicy(),
+	}
 	credentials, err := client.Resolve(context.Background(), "run-1", "s", []string{"contents:write"})
 	if err != nil {
 		t.Fatalf("Resolve did not survive a restarting plane: %v", err)

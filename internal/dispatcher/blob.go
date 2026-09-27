@@ -58,6 +58,9 @@ type BlobClient struct {
 	// Has are not retried: a hung fetch or probe fails the caller directly
 	// rather than blocking the fail-soft materialize contract.
 	RetryDeadline time.Duration
+	// RetryPolicy overrides retry pacing for this client. Zero values retain
+	// the production defaults.
+	RetryPolicy RetryPolicy
 }
 
 func (c *BlobClient) httpClient() *http.Client {
@@ -140,7 +143,7 @@ func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error 
 	if deadline <= 0 {
 		deadline = defaultBlobRetryDeadline
 	}
-	return withRetry(ctx, deadline, func(ctx context.Context) (bool, error) {
+	return withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
 		request, err := c.request(ctx, http.MethodPut, digest, bytes.NewReader(data))
 		if err != nil {
 			return false, fmt.Errorf("dispatcher: put blob %s: %w", digest, err)

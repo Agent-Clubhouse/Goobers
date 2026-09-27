@@ -53,7 +53,7 @@ func buildTelemetryClient(
 		}
 	}
 	if telemetryConfig.AzureMonitor != nil {
-		if err := configureAzureMonitor(ctx, &cfg, *telemetryConfig.AzureMonitor, registry, stores); err != nil {
+		if err := configureAzureMonitor(ctx, &cfg, *telemetryConfig.AzureMonitor, telemetryConfig.EffectiveCollectionProfile(), registry, stores); err != nil {
 			return nil, err
 		}
 	}
@@ -69,6 +69,7 @@ func configureAzureMonitor(
 	ctx context.Context,
 	cfg *telemetry.Config,
 	azure instance.AzureMonitorConfig,
+	profile instance.TelemetryCollectionProfile,
 	registry *journal.RegistryScrubber,
 	stores credentials.StoreResolver,
 ) error {
@@ -81,8 +82,15 @@ func configureAzureMonitor(
 	if err != nil {
 		return fmt.Errorf("resolve Azure Monitor connection string: %w", err)
 	}
-	registry.Register([]byte(connectionString))
+	if registry != nil {
+		registry.Register([]byte(connectionString))
+	}
 	cfg.AzureMonitorConnectionString = connectionString
+	cfg.AzureMonitorTraces = profile.IncludesTraces()
+	cfg.AzureMonitorJournalLogs = profile.IncludesJournal()
+	cfg.AzureMonitorHostIdentity = profile.IncludesHostIdentity()
+	cfg.ResourceAttributes = append(cfg.ResourceAttributes,
+		attribute.String("goobers.telemetry.profile", string(profile)))
 	return nil
 }
 
@@ -113,7 +121,9 @@ func resolveOTLPHeaders(
 		if err != nil {
 			return nil, fmt.Errorf("resolve telemetry OTLP header %q: %w", name, err)
 		}
-		registry.Register([]byte(value))
+		if registry != nil {
+			registry.Register([]byte(value))
+		}
 		headers[name] = value
 	}
 	return headers, nil

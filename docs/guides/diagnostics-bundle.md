@@ -95,6 +95,7 @@ configure its destination explicitly in `instance.yaml`:
 
 ```yaml
 telemetry:
+  collectionProfile: diagnostic
   diagnostics:
     otlp:
       endpoint: https://collector.example.com:4317
@@ -118,9 +119,11 @@ upstream to Goobers maintainers.
 The initial record is `goobers.service.health`, emitted at daemon startup and
 every six hours. Its resource identifies the Goobers version, build commit,
 and `goobers.telemetry.stream=diagnostics`. The record includes durable instance
-identity when available, machine/account names, process uptime, observed dirty
+identity when available, process uptime, observed dirty
 restarts and their history coverage, and recovery inventory occupancy. Account
-name is runtime identity, **not an owner or outreach address**. It excludes
+and machine names are included only when `collectionProfile: diagnostic`
+explicitly consents to them; account name is runtime identity, **not an owner
+or outreach address**. The record excludes
 inventory paths, arbitrary journal payloads, raw errors, prompts, and code;
 exported strings also pass through registered-secret and pattern scrubbing.
 Unknown history coverage does not emit a zero restart count.

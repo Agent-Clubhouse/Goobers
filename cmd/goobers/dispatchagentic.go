@@ -512,6 +512,7 @@ type podArtifactRecorder struct {
 	stderr   io.Writer
 	scrubber journal.Scrubber
 	dir      string
+	timing   artifactTiming
 }
 
 // RecordArtifact scrubs ONCE, derives the content address of the scrubbed
@@ -533,7 +534,7 @@ func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.R
 	// Best effort, exactly as the deterministic path treats stream artifacts:
 	// the stage has already produced its result, and losing an artifact must
 	// not turn a completed invocation into a failure.
-	recordStageArtifacts(context.Background(), r.stderr, map[string][]byte{name: scrubbed})
+	recordStageArtifactsWithTiming(context.Background(), r.stderr, map[string][]byte{name: scrubbed}, r.timing)
 	return ref, nil
 }
 

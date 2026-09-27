@@ -18,14 +18,33 @@ import (
 // so retrying the identical request is safe by construction — no client-side
 // idempotency key is needed, only patience.
 
-// retryBaseDelay and retryMaxDelay bound the jittered exponential backoff
-// between attempts. Vars, not consts, so a test can shrink them and observe
-// several retries in bounded time — the same reason blobWriteThroughBudget
-// (cmd/goobers/dispatchexec.go) is a var rather than a const.
-var (
-	retryBaseDelay = 500 * time.Millisecond
-	retryMaxDelay  = 30 * time.Second
+// defaultRetryBaseDelay and defaultRetryMaxDelay bound the production jittered
+// exponential backoff between attempts.
+const (
+	defaultRetryBaseDelay = 500 * time.Millisecond
+	defaultRetryMaxDelay  = 30 * time.Second
 )
+
+// RetryPolicy overrides retry pacing for one client. Zero values retain the
+// production defaults.
+type RetryPolicy struct {
+	BaseDelay time.Duration
+	MaxDelay  time.Duration
+}
+
+func (p RetryPolicy) delays() (time.Duration, time.Duration) {
+	base, max := p.BaseDelay, p.MaxDelay
+	if base <= 0 {
+		base = defaultRetryBaseDelay
+	}
+	if max <= 0 {
+		max = defaultRetryMaxDelay
+	}
+	if max < base {
+		max = base
+	}
+	return base, max
+}
 
 // retryBackoff returns a jittered duration between half and all of
 // base<<attempt, capped at max — this package's own copy of the pattern
@@ -40,18 +59,20 @@ func retryBackoff(base, max time.Duration, attempt int) time.Duration {
 	return floor + time.Duration(rand.Int64N(int64(ceiling-floor)+1))
 }
 
-// withRetry runs attempt until it succeeds (nil error), reports a
+// withRetryPolicy runs attempt until it succeeds (nil error), reports a
 // non-retryable failure, or deadline elapses — whichever comes first —
-// waiting a jittered backoff between tries. attempt classifies its OWN
-// failure as retryable or not; withRetry owns only pacing and the deadline.
+// waiting a jittered backoff between tries. attempt classifies its own
+// failure as retryable or not; withRetryPolicy owns only pacing and the
+// deadline.
 //
 // deadline bounds the WHOLE loop via ctx, so a caller-supplied ctx with its
 // own earlier deadline (e.g. the 15s blob write-through batch budget,
 // dispatchexec.go's blobWriteThroughBudget) wins automatically — this never
 // widens a caller's existing bound, only fills in one where none exists.
-func withRetry(ctx context.Context, deadline time.Duration, attempt func(ctx context.Context) (retryable bool, err error)) error {
+func withRetryPolicy(ctx context.Context, deadline time.Duration, policy RetryPolicy, attempt func(ctx context.Context) (retryable bool, err error)) error {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
+	base, max := policy.delays()
 	var lastErr error
 	for n := 0; ; n++ {
 		retryable, err := attempt(ctx)
@@ -62,7 +83,7 @@ func withRetry(ctx context.Context, deadline time.Duration, attempt func(ctx con
 		if !retryable {
 			return err
 		}
-		timer := time.NewTimer(retryBackoff(retryBaseDelay, retryMaxDelay, n))
+		timer := time.NewTimer(retryBackoff(base, max, n))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

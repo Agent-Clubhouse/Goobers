@@ -34,6 +34,7 @@ func TestExamplesListFromOutsideCheckout(t *testing.T) {
 	const want = "backlog-assignment  Backlog assignment\n" +
 		"backlog-curation    Backlog curation\n" +
 		"implementation      Implementation (issue -> PR, reviewer gate, CI-poll repass)\n" +
+		"merge-review        Merge review (PR-lifecycle decider)\n" +
 		"work-nomination     Work nomination\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
@@ -155,7 +156,7 @@ func TestExamplesUsageErrors(t *testing.T) {
 
 func TestExamplesCompletionCandidates(t *testing.T) {
 	got := completionCandidates("examples", t.TempDir())
-	want := []string{"backlog-assignment", "backlog-curation", "implementation", "work-nomination"}
+	want := []string{"backlog-assignment", "backlog-curation", "implementation", "merge-review", "work-nomination"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates = %v, want %v", got, want)
 	}

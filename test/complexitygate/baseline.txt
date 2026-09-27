@@ -40,7 +40,6 @@ internal/fleet/connector.go	(*Connector).connectOnce	47
 internal/harness/claude_transcript.go	convertClaudeStreams	40
 internal/harness/copilot.go	(*CopilotAdapter).Run	51
 internal/harness/executor.go	(*Executor).run	53
-internal/instance/guided.go	validateGuidedOptions	44
 internal/journal/run.go	CreateContinuation	50
 internal/localscheduler/scheduler.go	(*Scheduler).Tick	56
 internal/mcpconfig/validate.go	Validate	52

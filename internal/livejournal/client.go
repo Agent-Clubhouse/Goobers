@@ -48,6 +48,9 @@ type HTTPEmitter struct {
 	// retry unconditionally: every op carries an idempotency key the writer
 	// dedupes on, so a redelivered batch cannot double-apply.
 	RetryDeadline time.Duration
+	// RetryPolicy overrides retry pacing for this emitter. Zero values retain
+	// the production defaults.
+	RetryPolicy RetryPolicy
 }
 
 // TokenMinter issues a per-run bearer. Declared here as a SEAM rather than
@@ -95,7 +98,7 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 		deadline = defaultEmitRetryDeadline
 	}
 	var out EmitResponse
-	err = withRetry(ctx, deadline, func(ctx context.Context) (bool, error) {
+	err = withRetryPolicy(ctx, deadline, e.RetryPolicy, func(ctx context.Context) (bool, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return false, fmt.Errorf("livejournal: build emit request: %w", err)

@@ -1308,11 +1308,15 @@ type TelemetryConfig struct {
 	// Enabled toggles OTel client construction, span emission, local SQLite
 	// ingest, and configured collector push. Defaults to true.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// CollectionProfile selects the versioned signal/privacy contract for
+	// tenant export. Empty is the recommended standard profile.
+	CollectionProfile TelemetryCollectionProfile `json:"collectionProfile,omitempty" yaml:"collectionProfile,omitempty"`
 	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
 	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
-	// AzureMonitor opts into direct trace export to a customer-owned Application
-	// Insights resource. The connection string is always resolved indirectly;
-	// it is never valid inline instance configuration.
+	// AzureMonitor opts into direct trace, committed-journal, and whitelisted
+	// diagnostic export to a customer-owned Application Insights resource. The
+	// connection string is always resolved indirectly; it is never valid inline
+	// instance configuration.
 	AzureMonitor *AzureMonitorConfig `json:"azureMonitor,omitempty" yaml:"azureMonitor,omitempty"`
 	// Diagnostics has its own opt-in collector; it never inherits journal export.
 	Diagnostics *DiagnosticsConfig `json:"diagnostics,omitempty" yaml:"diagnostics,omitempty"`

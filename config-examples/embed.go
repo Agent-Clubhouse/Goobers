@@ -19,6 +19,7 @@ import (
 //go:embed gaggles/acme-web/workflows/backlog-assignment.yaml
 //go:embed gaggles/acme-web/workflows/backlog-curation.yaml
 //go:embed gaggles/acme-web/workflows/work-nomination.yaml
+//go:embed gaggles/acme-web/workflows/merge-review.yaml
 //go:embed gaggles/acme-web/goobers/implementer
 //go:embed gaggles/acme-web/goobers/reviewer
 //go:embed gaggles/acme-web/goobers/curator

@@ -59,7 +59,9 @@ func startCommandJournalTelemetry(l instance.Layout, stderr io.Writer) func() {
 		}
 		return noop
 	}
-	if !cfg.TelemetryEnabled() || cfg.Telemetry.OTLP == nil || !cfg.Telemetry.OTLP.JournalLogsEnabled() {
+	azureEnabled := cfg.Telemetry.AzureMonitor != nil && cfg.Telemetry.AzureMonitor.Enabled() && cfg.Telemetry.EffectiveCollectionProfile().IncludesJournal()
+	otlpEnabled := cfg.Telemetry.OTLP != nil && cfg.Telemetry.OTLP.JournalLogsEnabled()
+	if !cfg.TelemetryEnabled() || (!otlpEnabled && !azureEnabled) {
 		return noop
 	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
@@ -74,15 +76,24 @@ func startCommandJournalTelemetry(l instance.Layout, stderr io.Writer) func() {
 		Scrubber: scrubber, JournalRoot: l.Root, JournalLogsOnly: true,
 	}
 	export.JournalInstanceID, _ = l.ReadIdentity()
-	if err := configureOTLP(initialize, &export, *cfg.Telemetry.OTLP, registry, stores); err != nil {
-		cancel()
-		pf(stderr, "warning: journal OTLP logs unavailable: %v\n", err)
-		return noop
+	if cfg.Telemetry.OTLP != nil {
+		if err := configureOTLP(initialize, &export, *cfg.Telemetry.OTLP, registry, stores); err != nil {
+			cancel()
+			pf(stderr, "warning: journal telemetry unavailable: %v\n", err)
+			return noop
+		}
+	}
+	if cfg.Telemetry.AzureMonitor != nil {
+		if err := configureAzureMonitor(initialize, &export, *cfg.Telemetry.AzureMonitor, cfg.Telemetry.EffectiveCollectionProfile(), registry, stores); err != nil {
+			cancel()
+			pf(stderr, "warning: journal telemetry unavailable: %v\n", err)
+			return noop
+		}
 	}
 	client, err := telemetry.New(initialize, export)
 	cancel()
 	if err != nil {
-		pf(stderr, "warning: journal OTLP logs unavailable: %v\n", err)
+		pf(stderr, "warning: journal telemetry unavailable: %v\n", err)
 	}
 	if client == nil {
 		return noop
@@ -107,11 +118,11 @@ func releaseCommandJournalTelemetry(root string, owner *commandJournalTelemetryO
 			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := owner.client.Shutdown(flush); err != nil {
-				pf(stderr, "warning: journal OTLP logs shutdown: %v\n", err)
+				pf(stderr, "warning: journal telemetry shutdown: %v\n", err)
 			}
 			stats := owner.client.JournalExportStats()
 			if stats.Dropped > 0 || stats.ExportFailures > 0 {
-				pf(stderr, "warning: journal OTLP logs: %d dropped, %d export failures; local journal remains authoritative\n", stats.Dropped, stats.ExportFailures)
+				pf(stderr, "warning: journal telemetry: %d dropped, %d export failures; local journal remains authoritative\n", stats.Dropped, stats.ExportFailures)
 			}
 			if stats.SinkPanics > 0 {
 				pf(stderr, "warning: journal sinks: %d contained panics across this process; local journals remain authoritative\n", stats.SinkPanics)

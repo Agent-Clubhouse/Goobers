@@ -1,22 +1,35 @@
 package telemetry
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/microsoft/ApplicationInsights-Go/appinsights"
+	"github.com/microsoft/ApplicationInsights-Go/appinsights/contracts"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	otellog "go.opentelemetry.io/otel/log"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logpb "go.opentelemetry.io/proto/otlp/logs/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 const (
@@ -29,27 +42,148 @@ type azureMonitorConnection struct {
 	ingestionURL       string
 }
 
+type azureMonitorClient struct {
+	instrumentationKey string
+	nameKey            string
+	ingestionURL       string
+	httpClient         *http.Client
+	defaultTags        contracts.ContextTags
+}
+
 // azureMonitorSpanExporter adapts the existing OTel span pipeline to the
 // customer-owned Application Insights ingestion endpoint. The OTel batch span
-// processor remains the producer-side bound; the SDK channel performs HTTP
-// batching on its own worker, so workflow execution never waits on Azure.
+// processor remains the producer-side bound and performs this HTTP export on
+// its worker, so workflow execution never waits on Azure.
 type azureMonitorSpanExporter struct {
-	client appinsights.TelemetryClient
+	client *azureMonitorClient
+	mu     sync.RWMutex
 	closed atomic.Bool
 }
 
-func newAzureMonitorSpanExporter(connectionString string, httpClient *http.Client) (*azureMonitorSpanExporter, error) {
-	connection, err := parseAzureMonitorConnectionString(connectionString)
+func newAzureMonitorSpanExporter(connectionString string, httpClient *http.Client, includeHostIdentity bool) (*azureMonitorSpanExporter, error) {
+	client, err := newAzureMonitorClient(connectionString, httpClient, includeHostIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("create Azure Monitor telemetry exporter: %w", err)
 	}
-	config := appinsights.NewTelemetryConfiguration(connection.instrumentationKey)
-	config.EndpointUrl = connection.ingestionURL
+	return &azureMonitorSpanExporter{client: client}, nil
+}
+
+func newAzureMonitorClient(connectionString string, httpClient *http.Client, includeHostIdentity bool) (*azureMonitorClient, error) {
+	connection, err := parseAzureMonitorConnectionString(connectionString)
+	if err != nil {
+		return nil, err
+	}
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
-	config.Client = httpClient
-	return &azureMonitorSpanExporter{client: appinsights.NewTelemetryClientFromConfig(config)}, nil
+	tags := contracts.ContextTags{
+		contracts.DeviceOSVersion:    runtime.GOOS,
+		contracts.InternalSdkVersion: "goobers:" + appinsights.Version,
+	}
+	if includeHostIdentity {
+		if hostname, err := os.Hostname(); err == nil {
+			tags[contracts.DeviceId] = hostname
+			tags[contracts.CloudRoleInstance] = hostname
+		}
+	}
+	return &azureMonitorClient{
+		instrumentationKey: connection.instrumentationKey,
+		nameKey:            strings.ReplaceAll(connection.instrumentationKey, "-", ""),
+		ingestionURL:       connection.ingestionURL,
+		httpClient:         httpClient,
+		defaultTags:        tags,
+	}, nil
+}
+
+type azureMonitorIngestionResponse struct {
+	ItemsReceived int `json:"itemsReceived"`
+	ItemsAccepted int `json:"itemsAccepted"`
+}
+
+func (c *azureMonitorClient) export(ctx context.Context, items []appinsights.Telemetry) error {
+	if len(items) == 0 {
+		return nil
+	}
+	var raw bytes.Buffer
+	encoder := json.NewEncoder(&raw)
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		if err := encoder.Encode(c.envelope(item)); err != nil {
+			return fmt.Errorf("encode Azure Monitor telemetry: %w", err)
+		}
+	}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write(raw.Bytes()); err != nil {
+		_ = writer.Close()
+		return fmt.Errorf("compress Azure Monitor telemetry: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("compress Azure Monitor telemetry: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ingestionURL, &compressed)
+	if err != nil {
+		return fmt.Errorf("create Azure Monitor ingestion request: %w", err)
+	}
+	request.Header.Set("Content-Encoding", "gzip")
+	request.Header.Set("Content-Type", "application/x-json-stream")
+	request.Header.Set("Accept-Encoding", "gzip, deflate")
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("send Azure Monitor telemetry: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	const responseLimit = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(response.Body, responseLimit+1))
+	if err != nil {
+		return fmt.Errorf("read Azure Monitor ingestion response: %w", err)
+	}
+	if len(body) > responseLimit {
+		return errors.New("the Azure Monitor ingestion response exceeds 1 MiB")
+	}
+	if response.StatusCode == http.StatusOK {
+		return nil
+	}
+	if response.StatusCode == http.StatusPartialContent {
+		var result azureMonitorIngestionResponse
+		if err := json.Unmarshal(body, &result); err == nil && result.ItemsReceived == len(items) && result.ItemsAccepted == len(items) {
+			return nil
+		}
+		return fmt.Errorf("the Azure Monitor destination partially rejected telemetry (HTTP %d)", response.StatusCode)
+	}
+	return fmt.Errorf("the Azure Monitor destination rejected telemetry (HTTP %d)", response.StatusCode)
+}
+
+func (c *azureMonitorClient) envelope(item appinsights.Telemetry) *contracts.Envelope {
+	dataContract := item.TelemetryData()
+	warnings := dataContract.Sanitize()
+	if len(warnings) != 0 && item.GetProperties() != nil {
+		item.GetProperties()["goobers.azure_monitor.truncated"] = "true"
+	}
+	data := contracts.NewData()
+	data.BaseType = dataContract.BaseType()
+	data.BaseData = dataContract
+	envelope := contracts.NewEnvelope()
+	envelope.Name = dataContract.EnvelopeName(c.nameKey)
+	envelope.Data = data
+	envelope.IKey = c.instrumentationKey
+	timestamp := item.Time()
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	envelope.Time = timestamp.UTC().Format("2006-01-02T15:04:05.999999Z")
+	envelope.Tags = make(contracts.ContextTags, len(c.defaultTags)+len(item.ContextTags()))
+	for key, value := range c.defaultTags {
+		envelope.Tags[key] = value
+	}
+	for key, value := range item.ContextTags() {
+		envelope.Tags[key] = value
+	}
+	_ = contracts.SanitizeTags(envelope.Tags)
+	_ = envelope.Sanitize()
+	return envelope
 }
 
 func parseAzureMonitorConnectionString(raw string) (azureMonitorConnection, error) {
@@ -107,39 +241,29 @@ func azureMonitorIngestionURL(endpoint string) (string, error) {
 	return u.String(), nil
 }
 
-func (e *azureMonitorSpanExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
+func (e *azureMonitorSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	if e.closed.Load() {
 		return errors.New("azure monitor telemetry exporter is shut down")
 	}
+	items := make([]appinsights.Telemetry, 0, len(spans))
 	for _, span := range spans {
 		if span == nil {
 			continue
 		}
-		e.client.Track(azureMonitorSpan(span))
+		items = append(items, azureMonitorSpan(span))
 	}
-	return nil
+	return e.client.export(ctx, items)
 }
 
 func (e *azureMonitorSpanExporter) Shutdown(ctx context.Context) error {
 	if !e.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	// The legacy Application Insights channel synchronously hands its close
-	// request to the worker. Perform even that handoff off-thread so a worker
-	// inside a bounded HTTP request cannot consume the caller's shutdown budget.
-	closing := make(chan (<-chan struct{}), 1)
-	go func() { closing <- e.client.Channel().Close() }()
-	select {
-	case done := <-closing:
-		select {
-		case <-done:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return ctx.Err()
 }
 
 func azureMonitorSpan(span sdktrace.ReadOnlySpan) appinsights.Telemetry {
@@ -197,4 +321,194 @@ func azureMonitorAttribute(properties map[string]string, measurements map[string
 	}
 }
 
+// azureMonitorLogExporter adapts both committed journal records and the
+// whitelisted diagnostic stream to Application Insights TraceTelemetry. The
+// callers retain their existing bounded queues and invoke this exporter only
+// from background workers; HTTP ingestion results therefore feed their loss
+// accounting without putting network work on a journal or workflow path.
+type azureMonitorLogExporter struct {
+	client *azureMonitorClient
+	mu     sync.RWMutex
+	closed atomic.Bool
+}
+
+func newAzureMonitorLogExporter(connectionString string, httpClient *http.Client, includeHostIdentity bool) (*azureMonitorLogExporter, error) {
+	client, err := newAzureMonitorClient(connectionString, httpClient, includeHostIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("create Azure Monitor log exporter: %w", err)
+	}
+	return &azureMonitorLogExporter{client: client}, nil
+}
+
+func (e *azureMonitorLogExporter) Export(ctx context.Context, records []sdklog.Record) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.closed.Load() {
+		return sdklog.ErrExporterShutdown
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	items := make([]appinsights.Telemetry, 0, len(records))
+	for i := range records {
+		items = append(items, azureMonitorLog(&records[i]))
+	}
+	return e.client.export(ctx, items)
+}
+
+func (e *azureMonitorLogExporter) ForceFlush(ctx context.Context) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.closed.Load() {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (e *azureMonitorLogExporter) Shutdown(ctx context.Context) error {
+	if !e.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return ctx.Err()
+}
+
+func azureMonitorLog(record *sdklog.Record) *appinsights.TraceTelemetry {
+	body := record.Body()
+	message := body.String()
+	if body.Type() == attribute.STRING {
+		message = body.AsString()
+	}
+	item := appinsights.NewTraceTelemetry(message, azureMonitorSeverity(record.Severity()))
+	if timestamp := record.Timestamp(); !timestamp.IsZero() {
+		item.Timestamp = timestamp
+	}
+	if res := record.Resource(); res != nil {
+		for _, attr := range res.Attributes() {
+			item.Properties[string(attr.Key)] = attr.Value.String()
+		}
+	}
+	record.WalkAttributes(func(attr attribute.KeyValue) bool {
+		item.Properties[string(attr.Key)] = attr.Value.String()
+		return true
+	})
+	if scope := record.InstrumentationScope(); scope.Name != "" {
+		item.Properties["otel.scope.name"] = scope.Name
+		if scope.Version != "" {
+			item.Properties["otel.scope.version"] = scope.Version
+		}
+	}
+	if traceID := record.TraceID(); traceID.IsValid() {
+		item.Tags.Operation().SetId(traceID.String())
+	}
+	if spanID := record.SpanID(); spanID.IsValid() {
+		item.Tags.Operation().SetParentId(spanID.String())
+	}
+	if value := item.Properties["service.name"]; value != "" {
+		item.Tags.Cloud().SetRole(value)
+	}
+	if value := item.Properties["service.instance.id"]; value != "" {
+		item.Tags.Cloud().SetRoleInstance(value)
+	}
+	if value := item.Properties["service.version"]; value != "" {
+		item.Tags.Application().SetVer(value)
+	}
+	return item
+}
+
+func azureMonitorSeverity(severity otellog.Severity) contracts.SeverityLevel {
+	switch {
+	case severity >= otellog.SeverityFatal:
+		return contracts.Critical
+	case severity >= otellog.SeverityError:
+		return contracts.Error
+	case severity >= otellog.SeverityWarn:
+		return contracts.Warning
+	case severity >= otellog.SeverityInfo:
+		return contracts.Information
+	default:
+		return contracts.Verbose
+	}
+}
+
+func (e *azureMonitorLogExporter) exportDiagnosticRecords(ctx context.Context, resource *resourcepb.Resource, records []*logpb.LogRecord) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.closed.Load() {
+		return sdklog.ErrExporterShutdown
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	items := make([]appinsights.Telemetry, 0, len(records))
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		item := appinsights.NewTraceTelemetry(protoLogValue(record.Body), azureMonitorProtoSeverity(record.SeverityNumber))
+		if record.TimeUnixNano != 0 {
+			item.Timestamp = time.Unix(0, int64(record.TimeUnixNano))
+		}
+		if resource != nil {
+			for _, attr := range resource.Attributes {
+				item.Properties[attr.Key] = protoLogValue(attr.Value)
+			}
+		}
+		for _, attr := range record.Attributes {
+			item.Properties[attr.Key] = protoLogValue(attr.Value)
+		}
+		item.Properties["otel.scope.name"] = "goobers.diagnostics"
+		item.Properties["otel.scope.version"] = "1"
+		if value := item.Properties["service.name"]; value != "" {
+			item.Tags.Cloud().SetRole(value)
+		}
+		if value := item.Properties["service.instance.id"]; value != "" {
+			item.Tags.Cloud().SetRoleInstance(value)
+		}
+		if value := item.Properties["service.version"]; value != "" {
+			item.Tags.Application().SetVer(value)
+		}
+		items = append(items, item)
+	}
+	return e.client.export(ctx, items)
+}
+
+func protoLogValue(value *commonpb.AnyValue) string {
+	if value == nil {
+		return ""
+	}
+	switch typed := value.Value.(type) {
+	case *commonpb.AnyValue_StringValue:
+		return typed.StringValue
+	case *commonpb.AnyValue_BoolValue:
+		return strconv.FormatBool(typed.BoolValue)
+	case *commonpb.AnyValue_IntValue:
+		return strconv.FormatInt(typed.IntValue, 10)
+	case *commonpb.AnyValue_DoubleValue:
+		return strconv.FormatFloat(typed.DoubleValue, 'g', -1, 64)
+	default:
+		return ""
+	}
+}
+
+func azureMonitorProtoSeverity(severity logpb.SeverityNumber) contracts.SeverityLevel {
+	switch {
+	case severity >= logpb.SeverityNumber_SEVERITY_NUMBER_FATAL:
+		return contracts.Critical
+	case severity >= logpb.SeverityNumber_SEVERITY_NUMBER_ERROR:
+		return contracts.Error
+	case severity >= logpb.SeverityNumber_SEVERITY_NUMBER_WARN:
+		return contracts.Warning
+	case severity >= logpb.SeverityNumber_SEVERITY_NUMBER_INFO:
+		return contracts.Information
+	default:
+		return contracts.Verbose
+	}
+}
+
 var _ sdktrace.SpanExporter = (*azureMonitorSpanExporter)(nil)
+var _ sdklog.Exporter = (*azureMonitorLogExporter)(nil)
