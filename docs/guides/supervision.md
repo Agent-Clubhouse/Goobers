@@ -309,11 +309,12 @@ Two deliberate limits on what the record claims:
   `processUptimeSeconds` is this process's lifetime, not cumulative healthy
   availability across restarts.
 
-Export of this record to an OpenTelemetry collector is **not** implemented. It
-needs the separately configurable operational-diagnostics stream tracked by
-#5243, whose whole point is that configuring a workflow-journal destination must
-not silently start exporting machine and account labels. The record is local
-evidence until that lands.
+When tenant telemetry is explicitly enabled, this record is exported on the
+operational-diagnostics stream as `goobers.service.health`. The `health`,
+`journal`, and default `standard` profiles omit `machineName` and `accountName`;
+the `diagnostic` profile includes them only after that separate consent choice.
+With no tenant telemetry destination configured, the record remains local
+evidence. See [Azure Monitor tenant telemetry](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/azure-monitor.md).
 
 ## Dirty restart journal event
 

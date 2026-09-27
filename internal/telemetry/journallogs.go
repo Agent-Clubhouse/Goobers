@@ -320,7 +320,10 @@ func newJournalLogPipeline(exporter sdklog.Exporter, res *resource.Resource, scr
 	// would introduce another queue whose losses could not be accounted for.
 	p.provider = sdklog.NewLoggerProvider(
 		sdklog.WithResource(res),
-		sdklog.WithAttributeCountLimit(8),
+		// Fixed correlation fields now include workflow/digest/stage/attempt in
+		// addition to the journal envelope. Keep modest headroom for versioned
+		// additions without silently dropping the last correlation key.
+		sdklog.WithAttributeCountLimit(16),
 		sdklog.WithAttributeValueLengthLimit(-1),
 		sdklog.WithProcessor(sdklog.NewSimpleProcessor(&journalLogExporter{Exporter: exporter, pipeline: p})),
 	)
@@ -350,7 +353,8 @@ func (p *journalLogPipeline) drop(cause journalDropCause) {
 func journalLogSize(e journal.CommittedEvent) int {
 	// All variable-sized data retained by a queued event is charged, including
 	// metadata. The fixed-size ring is independently bounded by item count.
-	return len(e.Body) + len(e.Kind) + len(e.JournalID) + len(e.InstanceID) + len(e.Gaggle) + len(e.RunID)
+	return len(e.Body) + len(e.Kind) + len(e.JournalID) + len(e.InstanceID) + len(e.Gaggle) +
+		len(e.Workflow) + len(e.WorkflowDigest) + len(e.ConfigGeneration) + len(e.TriggerKind) + len(e.RunID) + len(e.Stage)
 }
 
 func (p *journalLogPipeline) queueRejectionLocked(size int) (journalDropCause, bool) {
@@ -400,7 +404,12 @@ func (p *journalLogPipeline) commit(e journal.CommittedEvent) {
 	e.JournalID = strings.Clone(e.JournalID)
 	e.InstanceID = strings.Clone(e.InstanceID)
 	e.Gaggle = strings.Clone(e.Gaggle)
+	e.Workflow = strings.Clone(e.Workflow)
+	e.WorkflowDigest = strings.Clone(e.WorkflowDigest)
+	e.ConfigGeneration = strings.Clone(e.ConfigGeneration)
+	e.TriggerKind = strings.Clone(e.TriggerKind)
 	e.RunID = strings.Clone(e.RunID)
+	e.Stage = strings.Clone(e.Stage)
 	if !p.mu.TryLock() {
 		// Distinct from queue_full: the queue may be empty and the collector
 		// healthy. This is contention on the queue lock itself, which the
@@ -550,25 +559,34 @@ func (p *journalLogPipeline) emit(e journal.CommittedEvent) {
 		attribute.String("goobers.journal.id", e.JournalID),
 		attribute.String("goobers.journal.seq", strconv.FormatUint(e.Seq, 10)),
 	)
-	// Gaggle is the only operator-supplied free text among the identity
-	// attributes, so it is the only one that can plausibly carry a pasted
-	// credential; the body it travels with was already scrubbed by the journal.
-	// The remaining attributes are machine-generated identifiers and are
-	// deliberately left raw: they are the correlation keys, and running a
-	// secret-shaped pattern net over an opaque hex id risks redacting the very
-	// values a consumer joins on. Keep them out of the scrubber.
-	gaggle := e.Gaggle
-	if gaggle != "" && p.scrubber != nil {
-		gaggle = redactWith(p.scrubber, gaggle)
+	// Human/config-authored labels use the same scrubber as the body. Opaque
+	// machine IDs and digests remain raw: a pattern net can mistake their random
+	// bytes for a credential and destroy the correlation key.
+	scrubLabel := func(value string) string {
+		if value != "" && p.scrubber != nil {
+			return redactWith(p.scrubber, value)
+		}
+		return value
 	}
 	for _, kv := range []attribute.KeyValue{
 		attribute.String("goobers.instance.id", e.InstanceID),
-		attribute.String("goobers.gaggle", gaggle),
+		attribute.String("goobers.gaggle", scrubLabel(e.Gaggle)),
+		attribute.String(AttrWorkflow, scrubLabel(e.Workflow)),
+		attribute.String(AttrWorkflowDigest, e.WorkflowDigest),
+		attribute.String(AttrConfigGeneration, scrubLabel(e.ConfigGeneration)),
+		attribute.String(AttrTriggerKind, e.TriggerKind),
 		attribute.String("goobers.run.id", e.RunID),
+		attribute.String(AttrStage, scrubLabel(e.Stage)),
 	} {
 		if kv.Value.AsString() != "" {
 			record.AddAttributes(kv)
 		}
+	}
+	if e.WorkflowVersion > 0 {
+		record.AddAttributes(attribute.Int(AttrWorkflowVersion, e.WorkflowVersion))
+	}
+	if e.Attempt > 0 {
+		record.AddAttributes(attribute.Int(AttrAttemptNumber, e.Attempt))
 	}
 	ctx, cancel := context.WithTimeout(p.ctx, journalLogTimeout)
 	defer cancel()

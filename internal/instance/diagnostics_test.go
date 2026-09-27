@@ -103,7 +103,7 @@ func TestDiagnosticFleetConfigBounds(t *testing.T) {
 		t.Fatal("configured timing not used")
 	}
 	var defaults *DiagnosticsConfig
-	if defaults.HeartbeatPeriod() != 30*time.Second || defaults.ProgressPeriod() != 30*time.Minute {
+	if defaults.HeartbeatPeriod() != time.Minute || defaults.ProgressPeriod() != 30*time.Minute {
 		t.Fatal("unsafe defaults")
 	}
 }

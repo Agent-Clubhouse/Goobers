@@ -18,10 +18,12 @@ import (
 // Body excludes the JSONL newline; it must not be reconstructed from Event,
 // whose in-memory fields have not passed through the boundary scrubber.
 type CommittedEvent struct {
-	Kind, JournalID, InstanceID, Gaggle, RunID string
-	Seq                                        uint64
-	Time, ObservedTime                         time.Time
-	Body                                       []byte
+	Kind, JournalID, InstanceID, Gaggle, Workflow, WorkflowDigest string
+	ConfigGeneration, TriggerKind, RunID, Stage                   string
+	WorkflowVersion, Attempt                                      int
+	Seq                                                           uint64
+	Time, ObservedTime                                            time.Time
+	Body                                                          []byte
 }
 
 // CommittedEventSink accepts ownership of an immutable event. Commit MUST only
@@ -156,7 +158,9 @@ func runCommitTarget(dir string, id RunIdentity) *commitTarget {
 	}
 	return &commitTarget{reg: reg, context: CommittedEvent{
 		Kind: "run", JournalID: id.RunID, RunID: id.RunID,
-		InstanceID: instanceID, Gaggle: id.Gaggle,
+		InstanceID: instanceID, Gaggle: id.Gaggle, Workflow: id.Workflow,
+		WorkflowVersion: id.WorkflowVersion, WorkflowDigest: id.WorkflowDigest,
+		ConfigGeneration: id.ConfigGeneration, TriggerKind: string(id.Trigger.Kind),
 	}}
 }
 
@@ -176,6 +180,19 @@ func (t *commitTarget) notify(ev Event, line []byte) {
 	}
 	event := t.context
 	event.Seq, event.Time, event.ObservedTime = ev.Seq, ev.Time, time.Now()
+	// Instance-journal decisions carry their own run/workflow context. Run
+	// journals inherit it from run.yaml so every exported stage can be queried
+	// directly without first joining the opening run.started body.
+	if ev.Gaggle != "" {
+		event.Gaggle = ev.Gaggle
+	}
+	if ev.Workflow != "" {
+		event.Workflow = ev.Workflow
+	}
+	if ev.RunID != "" {
+		event.RunID = ev.RunID
+	}
+	event.Stage, event.Attempt = ev.Stage, ev.Attempt
 	event.Body = append([]byte(nil), line...)
 	if t.staged {
 		t.pending = &event

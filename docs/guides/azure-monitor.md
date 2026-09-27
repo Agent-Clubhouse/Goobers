@@ -226,3 +226,145 @@ traces
 Use the same `recordId` projection and `summarize arg_max(timestamp, *) by
 recordId` pattern for `dependencies` when a query must count logical spans
 rather than ingestion attempts.
+
+## Fleet and incident queries
+
+The fleet contract emits one deployment heartbeat per configured heartbeat
+period (one minute by default). Gaggle records are emitted immediately after a
+state transition is observed and otherwise every minute. Inventory reads
+follow pagination through 1,000 gaggles/workflows and inspect at most 100
+retained runs per gaggle. Crossing a bound produces `windowCoverage=partial`
+and `reasonCode=observation_incomplete`; it never produces a false healthy or
+complete result. Poll activity is summarized into these bounded records, not
+exported one event per provider poll.
+
+Latest observation for every active instance (a deployment record has an empty
+`gaggleId`):
+
+```kusto
+traces
+| where timestamp > ago(10m) and message == "goobers.fleet.heartbeat"
+| where isempty(tostring(customDimensions["gaggleId"]))
+| extend instanceId=tostring(customDimensions["instanceId"]),
+         observedAt=todatetime(customDimensions["observedAt"])
+| summarize arg_max(observedAt, *) by instanceId
+| project observedAt, instanceId,
+          version=tostring(customDimensions["version"]),
+          platform=tostring(customDimensions["platform"]),
+          state=tostring(customDimensions["state"]),
+          reason=tostring(customDimensions["reasonCode"]),
+          coverage=tostring(customDimensions["windowCoverage"])
+| order by observedAt desc
+```
+
+Gaggles which are stalled, partially observed, blocked, or otherwise need
+attention:
+
+```kusto
+traces
+| where timestamp > ago(15m) and message == "goobers.fleet.heartbeat"
+| extend instanceId=tostring(customDimensions["instanceId"]),
+         gaggle=tostring(customDimensions["gaggleId"]),
+         observedAt=todatetime(customDimensions["observedAt"]),
+         state=tostring(customDimensions["state"]),
+         reason=tostring(customDimensions["reasonCode"]),
+         coverage=tostring(customDimensions["windowCoverage"])
+| where isnotempty(gaggle)
+| summarize arg_max(observedAt, *) by instanceId, gaggle
+| where state in ("stalled", "unknown") or coverage != "complete"
+       or reason in ("startup", "storage_failure", "cleanup_failure",
+                     "worker_unavailable", "provider_throttled")
+| project observedAt, instanceId, gaggle, state, reason, coverage,
+          eligible=tostring(customDimensions["eligibleCount"]),
+          inflight=tostring(customDimensions["inflightCount"]),
+          lastProgress=tostring(customDimensions["lastUsefulProgressAt"])
+| order by observedAt desc
+```
+
+PAT/credential failures, provider failures, harness refusals, and instances
+which remain in startup are queryable without parsing human error text. Journal
+event bodies are scrubbed structured JSON; `error.code` and refusal `reason`
+are the stable fields:
+
+```kusto
+let journalFailures = traces
+| where timestamp > ago(24h)
+| where tostring(customDimensions["goobers.telemetry.stream"]) == "journal"
+| extend event=parse_json(message)
+| extend code=tostring(event.error.code), reason=tostring(event.reason),
+         eventName=tostring(event.type),
+         instanceId=tostring(customDimensions["goobers.instance.id"]),
+         gaggle=tostring(customDimensions["goobers.gaggle"]),
+         workflow=tostring(customDimensions["goobers.workflow"]),
+         runId=tostring(customDimensions["goobers.run.id"])
+| where code in ("github_auth_failed", "credential_unavailable",
+                 "provider_error", "poll_provider_error", "github_rate_limited",
+                 "harness.failure")
+    or (eventName == "workflow.refused" and reason startswith "conditions: harness-unavailable");
+let startup = traces
+| where timestamp > ago(24h) and message == "goobers.fleet.heartbeat"
+| where tostring(customDimensions["reasonCode"]) == "startup"
+| extend eventName="goobers.fleet.heartbeat", code="startup", reason="startup",
+         instanceId=tostring(customDimensions["instanceId"]),
+         gaggle=tostring(customDimensions["gaggleId"]), workflow="", runId="";
+union journalFailures, startup
+| project timestamp, instanceId, gaggle, workflow, runId, eventName, code, reason
+| order by timestamp desc
+```
+
+Reconstruct one run from scheduler decision through terminal journal evidence
+and correlated spans. Replace the value in `selectedRun`; `operation_Id` and
+`goobers.run.id` are the same trace/run identity for generated run IDs:
+
+```kusto
+let selectedRun = "RUN_ID";
+let journalTimeline = traces
+| where tostring(customDimensions["goobers.run.id"]) == selectedRun
+| where tostring(customDimensions["goobers.telemetry.stream"]) == "journal"
+| extend event=parse_json(message),
+         recordId=tostring(customDimensions["goobers.telemetry.record_id"])
+| summarize arg_max(timestamp, *) by recordId
+| project timestamp, source="journal", name=tostring(event.type),
+          stage=tostring(event.stage), attempt=tostring(event.attempt),
+          outcome=coalesce(tostring(event.status), tostring(event.outcome)),
+          operation_Id, parentId="", customDimensions;
+let spanTimeline = dependencies
+| where operation_Id == selectedRun
+| extend recordId=tostring(customDimensions["goobers.telemetry.record_id"])
+| summarize arg_max(timestamp, *) by recordId
+| project timestamp, source="span", name,
+          stage=tostring(customDimensions["goobers.stage"]),
+          attempt=tostring(customDimensions["goobers.attempt.n"]),
+          outcome=tostring(customDimensions["goobers.outcome"]),
+          operation_Id, parentId=operation_ParentId, customDimensions;
+union journalTimeline, spanTimeline
+| order by timestamp asc
+```
+
+Exporter backlog, retry, and irreversible-loss indicators are attached to root
+fleet heartbeats and service-health records:
+
+```kusto
+traces
+| where timestamp > ago(24h)
+| where message in ("goobers.fleet.heartbeat", "goobers.service.health")
+| extend instanceId=tostring(customDimensions["instanceId"]),
+         pending=tolong(customDimensions["azureReplayPendingRecords"]),
+         pendingBytes=tolong(customDimensions["azureReplayPendingBytes"]),
+         oldestSeconds=tolong(customDimensions["azureReplayOldestPendingSeconds"]),
+         retried=tolong(customDimensions["azureReplayRetried"]),
+         prunedAge=tolong(customDimensions["azureReplayPrunedAge"]),
+         prunedBytes=tolong(customDimensions["azureReplayPrunedBytes"]),
+         malformed=tolong(customDimensions["azureReplayMalformed"]),
+         queueDropped=tolong(customDimensions["diagnosticsDroppedRecords"])
+| where pending > 0 or retried > 0 or prunedAge > 0 or prunedBytes > 0
+       or malformed > 0 or queueDropped > 0
+| summarize arg_max(timestamp, *) by instanceId
+| project timestamp, instanceId, pending, pendingBytes, oldestSeconds, retried,
+          prunedAge, prunedBytes, malformed, queueDropped
+| order by timestamp desc
+```
+
+The generated incident/correlation schema, profile membership, emission
+cadences, and hard observation bounds are in
+[`tenant-observability-v1.json`](../reference/tenant-observability-v1.json).
