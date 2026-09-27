@@ -328,7 +328,12 @@ the instance config surface documented above.
   scrubber when it mints it, in each form the value can travel in: the raw
   token, the `Bearer` header value, and the base64 `Basic` header value.
   Providers that the daemon constructs with a registrar register the same
-  forms for each request.
+  forms for each request. A stage pod registers the same forms for the
+  values it resolved before it scrubs the stage's output, its result file
+  and the message of a failed stage.
+- A stage pod's workspace checkout sends the delivered value in the stated
+  scheme: `Basic` for a PAT, and `Bearer` with the MSA passthrough header for
+  an Entra token.
 - Stage commands build no Azure DevOps connection of their own; every value
   a stage uses was registered by the daemon when it was minted.
 - Git receives credentials through its child environment, never command-line
