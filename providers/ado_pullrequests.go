@@ -97,11 +97,7 @@ func (p *ADOProvider) pullRequestWebURL(repo RepositoryRef, pr adoPullRequest) s
 		return pr.Links.Web.Href
 	}
 	if pr.Repository.Name != "" && pr.Repository.Project.Name != "" {
-		base := strings.TrimSuffix(p.BaseURL, "/")
-		if base == "" {
-			base = "https://dev.azure.com"
-		}
-		return base + "/" + p.Organization + "/" + pr.Repository.Project.Name + "/_git/" + pr.Repository.Name + "/pullrequest/" + strconv.Itoa(pr.PullRequestID)
+		return p.webURL(pr.Repository.Project.Name, "_git", pr.Repository.Name, "pullrequest", strconv.Itoa(pr.PullRequestID))
 	}
 	return p.entityWebURL(repo, "pr", strconv.Itoa(pr.PullRequestID))
 }
@@ -132,7 +128,10 @@ func (p *ADOProvider) FindPullRequestByBranch(ctx context.Context, repo Reposito
 	return PullRequestResult{}, false, nil
 }
 
-// RequestReview requests Azure DevOps reviewers for a pull request.
+// RequestReview requests Azure DevOps reviewers for a pull request. Every
+// reviewer is resolved before the first one is added, so a reviewer that does
+// not resolve (or resolves ambiguously) leaves the pull request's reviewers
+// untouched instead of partly added.
 func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) error {
 	if err := requireRepo(req.Repository); err != nil {
 		return err
@@ -140,11 +139,15 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 	if req.PullID == "" {
 		return errPullIDRequired
 	}
+	identityIDs := make([]string, 0, len(req.Reviewers))
 	for _, reviewer := range req.Reviewers {
 		identityID, err := p.resolveIdentityID(ctx, reviewer)
 		if err != nil {
 			return err
 		}
+		identityIDs = append(identityIDs, identityID)
+	}
+	for _, identityID := range identityIDs {
 		endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "reviewers", identityID)
 		if err != nil {
 			return err

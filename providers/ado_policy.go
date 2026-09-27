@@ -266,8 +266,9 @@ func (p *ADOProvider) autoCompleteAwaitingHuman(ctx context.Context, repo Reposi
 
 // adoConfigurationGatesRef reports whether an enabled, blocking, non-deleted
 // configuration applies to targetRef in repoID. A configuration with no scope
-// at all is repo-wide.
-func adoConfigurationGatesRef(c adoPolicyConfiguration, repoID, targetRef string) bool {
+// at all is repo-wide. defaultRef is the repository's default branch ref, or
+// "" when it is unknown.
+func adoConfigurationGatesRef(c adoPolicyConfiguration, repoID, targetRef, defaultRef string) bool {
 	if !c.IsEnabled || !c.IsBlocking || c.IsDeleted {
 		return false
 	}
@@ -275,21 +276,51 @@ func adoConfigurationGatesRef(c adoPolicyConfiguration, repoID, targetRef string
 		return true
 	}
 	for _, scope := range c.Settings.Scope {
-		if adoScopeMatches(scope, repoID, targetRef) {
+		if adoScopeMatches(scope, repoID, targetRef, defaultRef) {
 			return true
 		}
 	}
 	return false
 }
 
+// defaultBranchRefForScopes returns repo's default branch ref when some
+// configuration is scoped to the default branch, so such a scope gates only
+// that ref. It reads nothing when no scope needs it, and returns "" (every
+// DefaultBranch scope then covers the target, as before) when the read fails.
+func (p *ADOProvider) defaultBranchRefForScopes(ctx context.Context, repo RepositoryRef, configs []adoPolicyConfiguration) string {
+	needed := false
+	for _, c := range configs {
+		for _, scope := range c.Settings.Scope {
+			needed = needed || strings.EqualFold(scope.MatchKind, adoScopeMatchKindDefaultBranch)
+		}
+	}
+	if !needed {
+		return ""
+	}
+	ids, err := p.RepositoryIDs(ctx, repo)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(ids.DefaultBranch)
+}
+
+// adoScopeMatchKindDefaultBranch is the scope matchKind ADO uses for a
+// policy on "the default branch of each repository"; it carries no refName.
+const adoScopeMatchKindDefaultBranch = "DefaultBranch"
+
 // adoScopeMatches applies one policy scope to targetRef. An Exact scope
 // matches the ref itself; a Prefix scope matches by ref folder, so
 // "refs/heads/release/" (or "refs/heads/release") covers
 // "refs/heads/release/1.0" but not "refs/heads/released" (live probe F7). A
-// scope without a ref name covers every ref of its repository.
-func adoScopeMatches(scope adoPolicyScope, repoID, targetRef string) bool {
+// DefaultBranch scope covers only defaultRef; while the default branch is
+// unknown ("") it is assumed to cover targetRef, the conservative reading. Any
+// other scope without a ref name covers every ref of its repository.
+func adoScopeMatches(scope adoPolicyScope, repoID, targetRef, defaultRef string) bool {
 	if scope.RepositoryID != "" && repoID != "" && !strings.EqualFold(scope.RepositoryID, repoID) {
 		return false
+	}
+	if strings.EqualFold(scope.MatchKind, adoScopeMatchKindDefaultBranch) {
+		return defaultRef == "" || strings.EqualFold(defaultRef, targetRef)
 	}
 	if scope.RefName == "" {
 		return true
