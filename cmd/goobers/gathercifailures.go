@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 const gatherCIRawLogByteLimit = 0
@@ -63,21 +65,83 @@ func runGatherCIFailures(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "resolve repository", err, remediationBriefResultFile)
 	}
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	failures, step, err := gatherCIFailureDetails(ctx, root, repo, brief)
+	if err != nil {
+		return failProviderStage(stderr, step, err, remediationBriefResultFile)
+	}
+
+	checks := remediationCIFailureChecks(failures)
+	brief.GatherCIFailures = &apiv1.RemediationCIFailures{Checks: checks}
+	brief.Integrity = apiv1.WeakestIntegrity(brief.Integrity, apiv1.IntegrityUnapproved)
+	if err := writeRemediationBrief(resultFile, brief); err != nil {
+		pf(stderr, "error: write CI-enriched remediation brief: %v\n", err)
+		return 2
+	}
+	pf(stdout, "gathered %d failing CI check(s) for PR #%s\n", len(checks), brief.SelectedNumber)
+	return 0
+}
+
+// gatherCIFailureDetails reads the failing-CI evidence for the brief's pull
+// request. GitHub and Gitea report CI per commit, so they are asked for the
+// brief's head SHA exactly as before. On failure it also names the step that
+// failed, for failProviderStage.
+func gatherCIFailureDetails(ctx context.Context, root string, repo providers.RepositoryRef, brief apiv1.RemediationBrief) ([]providers.CIFailureDetail, string, error) {
+	if repo.Provider == providers.ProviderADO {
+		return gatherADOCIFailures(ctx, root, repo, brief)
+	}
 	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
-		return failProviderStage(stderr, "resolve GitHub credential", err, remediationBriefResultFile)
+		return nil, "resolve GitHub credential", err
 	}
 	provider, err := remediationStageProvider(root, repo, token, true)
 	if err != nil {
-		return failProviderStage(stderr, "build remediation provider", err, remediationBriefResultFile)
+		return nil, "build remediation provider", err
 	}
-	ctx, cancel := providerCommandContext()
-	defer cancel()
 	failures, err := provider.CIFailures(ctx, repo, brief.GatherPRContext.HeadSHA)
 	if err != nil {
-		return failProviderStage(stderr, "gather CI failures", err, remediationBriefResultFile)
+		return nil, "gather CI failures", err
 	}
+	return failures, "", nil
+}
 
+// gatherADOCIFailures is the Azure DevOps arm (ADO-N22, design
+// ado-parity-dsl-2-0.md §3.4): minimal native evidence from the pull
+// request's rejected policy evaluations, with a build link and no logs. It
+// builds its provider through the same narrow surface as the review-thread
+// stages, so the ADO stage factory resolves the credential itself.
+//
+// Policy evaluations belong to the pull request, not to a commit. When the
+// head ADO reports differs from the brief's head, the pull request moved
+// after gather-pr-context read it, so each finding is marked stale rather
+// than presented as evidence about the brief's head.
+func gatherADOCIFailures(ctx context.Context, root string, repo providers.RepositoryRef, brief apiv1.RemediationBrief) ([]providers.CIFailureDetail, string, error) {
+	reader, err := reviewThreadStageSurface[providers.PullRequestCIFailureReader](root, repo, false)
+	if err != nil {
+		return nil, "build remediation provider", err
+	}
+	evidence, err := reader.PullRequestCIFailures(ctx, repo, brief.SelectedNumber)
+	if err != nil {
+		return nil, "gather CI failures", err
+	}
+	want := strings.TrimSpace(brief.GatherPRContext.HeadSHA)
+	if want == "" || strings.EqualFold(evidence.HeadSHA, want) {
+		return evidence.Failures, "", nil
+	}
+	stale := fmt.Sprintf("STALE: Azure DevOps evaluated head %s, not this brief's head %s", evidence.HeadSHA, want)
+	for i := range evidence.Failures {
+		summary := stale
+		if evidence.Failures[i].Summary != "" {
+			summary += "; " + evidence.Failures[i].Summary
+		}
+		evidence.Failures[i].Summary = summary
+	}
+	return evidence.Failures, "", nil
+}
+
+// remediationCIFailureChecks maps provider CI evidence to the brief's shape.
+func remediationCIFailureChecks(failures []providers.CIFailureDetail) []apiv1.RemediationCIFailure {
 	checks := make([]apiv1.RemediationCIFailure, 0, len(failures))
 	for _, failure := range failures {
 		annotations := make([]apiv1.RemediationCIAnnotation, 0, len(failure.Annotations))
@@ -99,14 +163,7 @@ func runGatherCIFailures(args []string, stdout, stderr io.Writer) int {
 			Annotations: annotations,
 		})
 	}
-	brief.GatherCIFailures = &apiv1.RemediationCIFailures{Checks: checks}
-	brief.Integrity = apiv1.WeakestIntegrity(brief.Integrity, apiv1.IntegrityUnapproved)
-	if err := writeRemediationBrief(resultFile, brief); err != nil {
-		pf(stderr, "error: write CI-enriched remediation brief: %v\n", err)
-		return 2
-	}
-	pf(stdout, "gathered %d failing CI check(s) for PR #%s\n", len(checks), brief.SelectedNumber)
-	return 0
+	return checks
 }
 
 func readRemediationBriefArtifact(root, runID, stage string) (apiv1.RemediationBrief, error) {

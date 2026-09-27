@@ -358,6 +358,26 @@ same route `pr-claim` takes, and on ADO they do not require the `github:pr:write
 | Reply | `POST …/threads/{threadId}/comments` with `parentCommentId` set to the replied-to comment. ADO comment ids are only unique within a thread, so the reply request carries the thread id (`PullRequestReviewThreadReply.ThreadID`, an additive provider-model field GitHub ignores). |
 | Resolve | `PATCH …/threads/{threadId}` `{status: "fixed"}`; `fixed` clears a comment-resolution branch policy. ADO must echo `fixed` back, or the resolution is reported unconfirmed. |
 
+### 7.2 CI failure evidence (ADO-N22)
+
+`gather-ci-failures` runs on ADO with minimal native evidence. GitHub and Gitea report CI
+per commit and keep `CIFailures(headSHA)`; ADO has no per-commit check list, so the stage's
+ADO arm calls `ADOProvider.PullRequestCIFailures` (the `PullRequestCIFailureReader`
+surface) for the brief's pull request, built through the same narrow surface as the
+review-thread stages and without the `github:pr:write` grant. The read is GET-only.
+
+| Aspect | Behaviour |
+|---|---|
+| Source | The pull request's policy evaluations, classified by type id as in §11.1. |
+| Reported | Enabled, blocking build, status and unclassified policies whose evaluation is `rejected` or `broken`. Name: the policy type plus the build policy's `settings.displayName` or the status policy's `statusGenre/statusName`. |
+| Not reported | Reviewer, comment-resolution and work-item-linking policies (a wait on a human or on threads, never CI), advisory (non-blocking) policies, and `approved`, `queued`, `running` or `notApplicable` evaluations. |
+| Link | The build results page from `context.buildId` (`{org}/{project}/_build/results?buildId=N`); none for a status policy. |
+| Logs, annotations | Not fetched; annotations are empty. The raw-log volume bound stays 0 bytes. |
+| Head | Evaluations are pull-request-scoped, so the evidence carries the head ADO reports (`lastMergeSourceCommit`). When it differs from the brief's `gatherPRContext.headSha`, each finding's summary is prefixed `STALE:` with both heads rather than presented as evidence about the brief's head. |
+
+Per-pipeline job detail, test results and log excerpts (#5652's larger ask) remain out of
+scope.
+
 ## 8. Hazards and invariants (consolidated)
 
 - **PR-number → work-item wrong-object write.** The single most dangerous ADO hazard. Every
