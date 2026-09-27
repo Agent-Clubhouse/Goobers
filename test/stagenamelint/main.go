@@ -33,6 +33,7 @@ var exceptions = []exception{
 	{Path: "internal/instance/guided.go", Value: "implementation", Reason: "guided-init workflow definition"},
 	{Path: "internal/instance/guided.go", Value: "backlog-curation", Reason: "guided-init workflow definition"},
 	{Path: "internal/instance/guided.go", Value: "work-nomination", Reason: "guided-init workflow definition"},
+	{Path: "internal/instance/guided.go", Value: "merge-review", Reason: "guided-init workflow definition"},
 	{Path: "internal/instance/instance.go", Value: "docs-updater", Reason: "canonical scaffold directory name"},
 	{Path: "cmd/goobers/clisynopsis.go", Value: "self-update", Reason: "CLI command registry key"},
 	{Path: "cmd/goobers/runtime_capabilities.go", Value: "self-update", Reason: "CLI command registry key and lookup"},

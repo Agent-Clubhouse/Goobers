@@ -68,6 +68,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/gaggle.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/coder/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/coder/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/curator/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/curator/instructions-ado.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/curator/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/docs/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/docs/instructions.md

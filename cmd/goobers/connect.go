@@ -83,8 +83,11 @@ const connectHelp = "Usage: goobers connect <repository> [--token-env NAME] [--s
 	"like a pasted token is rejected.\n\n" +
 	"Use owner/repository for GitHub, or organization/project/repository (or a\n" +
 	"dev.azure.com URL) for Azure DevOps. Initialize ADO instances with\n" +
-	"--template=standard --provider=ado first. ADO defaults to GOOBERS_ADO_TOKEN\n" +
-	"and records PAT authentication. Connect never changes an existing provider.\n" +
+	"--template=standard --provider=ado first; init defaults the repository to\n" +
+	"azure-cli authentication. Connect records PAT authentication for ADO, reading\n" +
+	"GOOBERS_ADO_TOKEN by default. To keep azure-cli, workload-identity or\n" +
+	"managed-identity, edit the placeholders in instance.yaml and gaggle.yaml.\n" +
+	"Connect never changes an existing provider.\n" +
 	"See docs/guides/ado-authentication.md for other authentication modes.\n\n" +
 	"For GitHub, --seed derives two label sets from the connected gaggles and idempotently\n" +
 	"ensures every one of them exists on the repository: the backlog SELECTORS\n" +

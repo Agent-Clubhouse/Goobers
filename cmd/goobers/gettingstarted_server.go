@@ -1224,7 +1224,8 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	case "quickstart", "default-implement",
 		instance.GuidedWorkflowImplementation,
 		instance.GuidedWorkflowBacklogCuration,
-		instance.GuidedWorkflowWorkNomination:
+		instance.GuidedWorkflowWorkNomination,
+		instance.GuidedWorkflowMergeReview:
 	default:
 		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
 			Code:    "invalid_workflow",

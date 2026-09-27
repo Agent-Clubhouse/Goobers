@@ -812,7 +812,7 @@ func TestGettingStartedAllowlistRejections(t *testing.T) {
 	}{
 		{"unknown init template", "/guided/actions/init-instance", `{"template":"demo"}`, "invalid_template"},
 		{"connect without repo", "/guided/actions/connect", `{}`, "invalid_repo"},
-		{"unknown run workflow", "/guided/actions/run", `{"workflow":"merge-review"}`, "invalid_workflow"},
+		{"unknown run workflow", "/guided/actions/run", `{"workflow":"todo-check"}`, "invalid_workflow"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -958,7 +958,7 @@ func TestGettingStartedRunDoesNotRequireEnvTokenForCLIAuth(t *testing.T) {
 				RepoName:     "widgets",
 				RepoBranch:   "main",
 				RepoAuthKind: instance.ADOAuthAzureCLI,
-				Workflows:    []string{instance.GuidedWorkflowWorkNomination},
+				Workflows:    []string{instance.GuidedWorkflowBacklogCuration},
 			},
 		},
 	}

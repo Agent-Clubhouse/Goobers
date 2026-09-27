@@ -22,8 +22,11 @@ like a pasted token is rejected.
 
 Use owner/repository for GitHub, or organization/project/repository (or a
 dev.azure.com URL) for Azure DevOps. Initialize ADO instances with
---template=standard --provider=ado first. ADO defaults to GOOBERS_ADO_TOKEN
-and records PAT authentication. Connect never changes an existing provider.
+--template=standard --provider=ado first; init defaults the repository to
+azure-cli authentication. Connect records PAT authentication for ADO, reading
+GOOBERS_ADO_TOKEN by default. To keep azure-cli, workload-identity or
+managed-identity, edit the placeholders in instance.yaml and gaggle.yaml.
+Connect never changes an existing provider.
 See docs/guides/ado-authentication.md for other authentication modes.
 
 For GitHub, --seed derives two label sets from the connected gaggles and idempotently

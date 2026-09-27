@@ -188,9 +188,15 @@ For noninteractive scaffolding, select the provider explicitly:
 goobers init --template=standard --provider=ado --ci-command='["dotnet","test"]' --required-capabilities=dotnet@8 ./ado-instance
 ```
 
-This creates ADO repository and Azure Boards project placeholders, with a
-`GOOBERS_ADO_TOKEN` PAT reference, without reading a token or starting a run.
-Connect the real organization, project and repository before running:
+This creates ADO repository and Azure Boards project placeholders with
+`azure-cli` authentication, the `implementation`, `backlog-curation` and
+`merge-review` workflows, and Azure Boards curator instructions, without
+reading a token or starting a run. Pass `--repo=organization/project/repository`
+to write the real coordinates directly, and `--repo-auth-kind` to choose
+`workload-identity`, `managed-identity` or `pat` (see
+[what `init` produces](../../examples/ado-onboarding/README.md#what-init-produces)).
+For PAT onboarding, connect the real organization, project and repository
+before running:
 
 ```sh
 # Set GOOBERS_ADO_TOKEN securely in your environment; pass its name, not its value.

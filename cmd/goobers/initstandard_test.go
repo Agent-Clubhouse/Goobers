@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -68,9 +69,82 @@ func TestInitStandardADO(t *testing.T) {
 	if len(set.Gaggles) != 1 || set.Gaggles[0].Spec.Project.Provider != "ado" || set.Gaggles[0].Spec.Project.Project != "your-project" || set.Gaggles[0].Spec.Backlog.Provider != "ado" || set.Gaggles[0].Spec.Backlog.Project != "your-project" {
 		t.Fatalf("ADO identity not preserved: %+v", set.Gaggles)
 	}
+	cfg, err := instance.LoadConfig(filepath.Join(root, "instance.yaml"))
+	if err != nil || len(cfg.Repos) != 1 || cfg.Repos[0].Auth == nil || cfg.Repos[0].Auth.Kind != instance.ADOAuthAzureCLI ||
+		cfg.Repos[0].Token.Configured() || len(cfg.Runner.EnvPassthrough) != 0 {
+		t.Fatalf("ADO default auth is not token-free azure-cli: %+v %v", cfg, err)
+	}
 	data, err := os.ReadFile(filepath.Join(root, "instance.yaml"))
-	if err != nil || !strings.Contains(string(data), "GOOBERS_ADO_TOKEN") || strings.Contains(string(data), "GOOBERS_GITHUB") {
-		t.Fatalf("ADO credentials incorrect: %s %v", data, err)
+	if err != nil || strings.Contains(string(data), "GOOBERS_ADO_TOKEN") || strings.Contains(string(data), "GOOBERS_GITHUB") {
+		t.Fatalf("ADO default scaffold names a token variable: %s %v", data, err)
+	}
+	var workflows []string
+	for _, wf := range set.Workflows {
+		workflows = append(workflows, wf.Name)
+	}
+	slices.Sort(workflows)
+	if want := []string{"backlog-curation", "implementation", "merge-review"}; !reflect.DeepEqual(workflows, want) {
+		t.Fatalf("ADO default modules = %v, want %v", workflows, want)
+	}
+	curator, err := os.ReadFile(filepath.Join(root, "config", "gaggles", "example", "goobers", "curator", "instructions.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, githubOnly := range []string{"set-milestone", "gh issue edit", "blocked-by", "GitHub"} {
+		if strings.Contains(string(curator), githubOnly) {
+			t.Errorf("ADO curator instructions mention GitHub-only %q", githubOnly)
+		}
+	}
+	if !strings.Contains(string(curator), "Predecessor link") {
+		t.Error("ADO curator instructions do not describe Predecessor links")
+	}
+}
+
+// TestInitStandardADOValidatesStrict is the golden scaffold check of design
+// §7.1: `init --template=standard --provider=ado` followed by
+// `validate --strict` passes once the repository coordinates are real.
+func TestInitStandardADOValidatesStrict(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "ado")
+	code, stdout, stderr := runArgs(t, "init", "--template=standard", "--repo=example-org/example-project/example-repo", "--pr-ci", root)
+	if code != 0 {
+		t.Fatalf("ADO init code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runArgs(t, "validate", "--strict", root); code != 0 {
+		t.Fatalf("validate --strict on the ADO scaffold code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}
+
+func TestInitStandardADOAuthKinds(t *testing.T) {
+	for _, kind := range []string{instance.ADOAuthAzureCLI, instance.ADOAuthWorkloadIdentity, instance.ADOAuthManagedIdentity, instance.ADOAuthPAT} {
+		t.Run(kind, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "ado")
+			code, stdout, stderr := runArgs(t, "init", "--template=standard", "--provider=ado", "--pr-ci", "--repo-auth-kind="+kind, root)
+			if code != 0 {
+				t.Fatalf("ADO init --repo-auth-kind=%s code=%d stdout=%s stderr=%s", kind, code, stdout, stderr)
+			}
+			cfg, err := instance.LoadConfig(filepath.Join(root, "instance.yaml"))
+			if err != nil || len(cfg.Repos) != 1 || cfg.Repos[0].Auth == nil || cfg.Repos[0].Auth.Kind != kind {
+				t.Fatalf("repository auth for %s: %+v %v", kind, cfg, err)
+			}
+			wantEnv := ""
+			if kind == instance.ADOAuthPAT {
+				wantEnv = "GOOBERS_ADO_TOKEN"
+			}
+			if got := cfg.Repos[0].Token.Env; got != wantEnv {
+				t.Fatalf("repository token env for %s = %q, want %q", kind, got, wantEnv)
+			}
+		})
+	}
+}
+
+func TestInitStandardADORefusesWorkNomination(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "ado")
+	code, _, stderr := runArgs(t, "init", "--template=standard", "--provider=ado", "--pr-ci", "--workflows=implementation,work-nomination", root)
+	if code != 2 || !strings.Contains(stderr, "work-nomination") || !strings.Contains(stderr, "file-issues") {
+		t.Fatalf("work-nomination on ADO: code=%d stderr=%s", code, stderr)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("refused init wrote destination: %v", err)
 	}
 }
 
@@ -111,6 +185,28 @@ func TestInitStandardMatchesGuidedOutput(t *testing.T) {
 				"--workflows=implementation", "--harness=copilot", "--pr-ci", "--repo-auth-kind=",
 				"--repo-token-env=", "--work-tracking-token-env=", "--pr-token-env=", "--push-token-env=",
 			},
+		},
+		{
+			name: "Azure DevOps defaults",
+			opts: instance.GuidedOptions{
+				GaggleName: "widgets", DisplayName: "acme/platform/widgets", RepoProvider: "ado",
+				RepoOwner: "acme", RepoProject: "platform", RepoName: "widgets",
+				Workflows: []string{
+					instance.GuidedWorkflowImplementation, instance.GuidedWorkflowBacklogCuration, instance.GuidedWorkflowMergeReview,
+				},
+				PullRequestCI: true,
+			},
+			args: []string{"--repo=acme/platform/widgets", "--pr-ci"},
+		},
+		{
+			name: "Azure DevOps PAT auth",
+			opts: instance.GuidedOptions{
+				GaggleName: "widgets", DisplayName: "acme/platform/widgets", RepoProvider: "ado",
+				RepoOwner: "acme", RepoProject: "platform", RepoName: "widgets",
+				RepoAuthKind: instance.ADOAuthPAT, RepoTokenEnv: "GOOBERS_ADO_TOKEN",
+				Workflows: []string{instance.GuidedWorkflowBacklogCuration}, IssueScope: "all",
+			},
+			args: []string{"--repo=acme/platform/widgets", "--repo-auth-kind=pat", "--workflows=backlog-curation"},
 		},
 	}
 	for _, test := range tests {

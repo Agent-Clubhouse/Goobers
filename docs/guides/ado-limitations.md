@@ -43,3 +43,27 @@ service. Azure DevOps Server (on-premises) is out of scope.
 ## Service-hook triggers
 
 Goobers polls Azure DevOps; it does not consume ADO service-hook events.
+
+## Iterations (milestones)
+
+Goobers does not model Azure Boards iterations in v0.5.0. `set-milestone`
+refuses on ADO and suggests an Azure Boards iteration instead.
+`goobers init --provider=ado` gives the curator Azure Boards instructions that
+do no milestone or iteration housekeeping. Iteration paths are per-team trees,
+so a numeric milestone does not map onto them cleanly.
+
+## Work nomination and `file-issues`
+
+The `file-issues` stage files GitHub issues only, so the `work-nomination`
+workflow does not run on ADO. `goobers init --provider=ado` refuses
+`--workflows=work-nomination` with that reason, and its default modules are
+`implementation`, `backlog-curation` and `merge-review`.
+
+## Other non-goals for DSL 2.0
+
+These belong to DSL 3.0 (`docs/design/provider-access-layer.md`), not this plan:
+
+- New capability names, provider-neutral renames, or aliases. ADO workflows
+  keep the `github:*` capability names.
+- Several credentials for the same provider in one gaggle or scope.
+- Unifying the provider interfaces.
