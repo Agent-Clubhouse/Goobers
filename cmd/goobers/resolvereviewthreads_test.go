@@ -18,14 +18,22 @@ import (
 
 func seedReviewThreadResolutionRun(t *testing.T, root, runID, responses string) {
 	t.Helper()
+	seedReviewThreadResolutionRunWithComments(t, root, runID, responses, []apiv1.RemediationInlineComment{
+		{ID: 101, ThreadID: "PRRT_addressed", Body: "fix", Path: "a.go", Integrity: apiv1.IntegrityUnapproved},
+		{ID: 201, ThreadID: "PRRT_obsolete", Body: "old", Path: "b.go", Integrity: apiv1.IntegrityUnapproved},
+		{ID: 301, ThreadID: "PRRT_blocked", Body: "blocked", Path: "c.go", Integrity: apiv1.IntegrityUnapproved},
+	})
+}
+
+// seedReviewThreadResolutionRunWithComments seeds a resolve-review-threads run
+// whose gathered brief holds comments, with implement's threadResponses and a
+// published push-remediated head of "published-sha".
+func seedReviewThreadResolutionRunWithComments(t *testing.T, root, runID, responses string, comments []apiv1.RemediationInlineComment) {
+	t.Helper()
 	brief := reviewThreadsBrief()
 	brief.GatherReviewThreads = &apiv1.RemediationReviewThreads{
-		InlineComments: []apiv1.RemediationInlineComment{
-			{ID: 101, ThreadID: "PRRT_addressed", Body: "fix", Path: "a.go", Integrity: apiv1.IntegrityUnapproved},
-			{ID: 201, ThreadID: "PRRT_obsolete", Body: "old", Path: "b.go", Integrity: apiv1.IntegrityUnapproved},
-			{ID: 301, ThreadID: "PRRT_blocked", Body: "blocked", Path: "c.go", Integrity: apiv1.IntegrityUnapproved},
-		},
-		Reviews: []apiv1.RemediationNativeReview{},
+		InlineComments: comments,
+		Reviews:        []apiv1.RemediationNativeReview{},
 	}
 	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
 		RunID: runID, Workflow: "pr-remediation", Gaggle: "goobers",

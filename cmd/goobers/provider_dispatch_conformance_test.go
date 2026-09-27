@@ -48,6 +48,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"push-remediated":          {test: TestPushRemediatedDispatchesFromCommand},
 	"rebase-pr":                {test: TestRebasePRDispatchesFromCommand},
 	"remediation-checkpoint":   {test: TestRemediationCheckpointDispatchesFromCommand},
+	"resolve-review-threads":   {test: TestResolveReviewThreadsOnADO},
 	"report-pr-status":         {test: TestReportPRStatusDispatchesFromCommand},
 	"respond-to-findings":      {test: TestRespondToFindingsDispatchesToGitea},
 	"security-alerts-query":    {test: TestSecurityAlertsQueryRefusesNonGitHubProviders},
@@ -57,17 +58,16 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 }
 
 var providerDispatchAllowlist = map[string]string{
-	"recovery-restore":       "Uses configured Git transport and verified archives, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/record and /http-issue exercise the command against a Gitea identity with an exact local Git URL redirect.",
-	"recovery-resume":        "Uses claims-plane identity and configured Git transport, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/resume-issue exercises actual adoption for a Gitea repository.",
-	"elect-lander":           "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
-	"post-merge":             "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
-	"preflight-repo-write":   "Repository-write preflight (#4414) is a GitHub-only capability today (branch ruleset introspection has no ADO/Gitea equivalent); Dispatcher fails closed with ErrUnsupported for other providers.",
-	"reconcile-post-merge":   "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
-	"record-merge-refusal":   "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
-	"reconcile-branches":     "This operator command is scoped to GitHub branch reconciliation and requires github:branch:delete.",
-	"resolve-review-threads": "Native review-thread replies and resolution are GitHub-only; no equivalent ADO or Gitea capability exists.",
-	"set-milestone":          "Milestones are GitHub-only; the command help explicitly says GitHub milestone and no ADO milestone capability exists.",
-	"telemetry-query":        "Provider access is limited to the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
+	"recovery-restore":     "Uses configured Git transport and verified archives, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/record and /http-issue exercise the command against a Gitea identity with an exact local Git URL redirect.",
+	"recovery-resume":      "Uses claims-plane identity and configured Git transport, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/resume-issue exercises actual adoption for a Gitea repository.",
+	"elect-lander":         "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
+	"post-merge":           "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
+	"preflight-repo-write": "Repository-write preflight (#4414) is a GitHub-only capability today (branch ruleset introspection has no ADO/Gitea equivalent); Dispatcher fails closed with ErrUnsupported for other providers.",
+	"reconcile-post-merge": "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
+	"record-merge-refusal": "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
+	"reconcile-branches":   "This operator command is scoped to GitHub branch reconciliation and requires github:branch:delete.",
+	"set-milestone":        "Milestones are GitHub-only; the command help explicitly says GitHub milestone and no ADO milestone capability exists.",
+	"telemetry-query":      "Provider access is limited to the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
 }
 
 func TestBlessedTierStageDispatchCoverage(t *testing.T) {
@@ -133,14 +133,58 @@ func TestGatherPRContextDispatchesFromCommand(t *testing.T) {
 	assertRemediationStageDispatch(t, "gather-pr-context", initDemo)
 }
 
+// TestGatherReviewThreadsDispatchesFromCommand is gather-review-threads'
+// non-GitHub dispatch evidence. Since ADO-N20 the stage resolves its provider
+// through the narrow reviewThreadReader surface (reviewThreadStageSurface),
+// so both non-GitHub arms are pinned at the registered stage-provider seam:
+// ADO at newADOProviderForStage with no GitHub-capability credential, and
+// Gitea at its stageProviderFactories entry, still handed github:pr:write.
 func TestGatherReviewThreadsDispatchesFromCommand(t *testing.T) {
-	assertRemediationStageDispatch(t, "gather-review-threads", func(t *testing.T) string {
-		const runID = "dispatch-review-threads"
-		root := initDemo(t)
+	const runID = "dispatch-review-threads"
+	t.Run("ado", func(t *testing.T) {
+		root, _ := adoReviewThreadsStageFixture(t, runID)
 		seedReviewThreadsBrief(t, root, runID, reviewThreadsBrief())
+		t.Chdir(t.TempDir())
+		original := newADOProviderForStage
+		called := false
+		newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+			called = true
+			if routed.Provider != providers.ProviderADO {
+				t.Fatalf("provider = %q, want ado", routed.Provider)
+			}
+			return nil, errors.New(dispatchProbeError)
+		}
+		t.Cleanup(func() { newADOProviderForStage = original })
+
+		code, _, stderr := runArgs(t, "gather-review-threads", root)
+		if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
+			t.Fatalf("code = %d, called = %v, stderr = %q; want ADO dispatch probe failure", code, called, stderr)
+		}
+	})
+	t.Run("gitea", func(t *testing.T) {
+		root, repo := providerDispatchFixture(t, providers.ProviderGitea)
+		t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+		t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+		t.Setenv(executor.RepoNameEnvVar, repo.Name)
 		t.Setenv("GOOBERS_RUN_ID", runID)
 		t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-		return root
+		seedReviewThreadsBrief(t, root, runID, reviewThreadsBrief())
+		t.Chdir(t.TempDir())
+		previous := stageProviderFactories[providers.ProviderGitea]
+		t.Cleanup(func() { stageProviderFactories[providers.ProviderGitea] = previous })
+		called := false
+		stageProviderFactories[providers.ProviderGitea] = func(cfg stageProviderConfig) (providers.Provider, error) {
+			called = true
+			if cfg.token != "gitea-pr-token" {
+				t.Fatalf("token = %q, want the github:pr:write credential", cfg.token)
+			}
+			return nil, errors.New(dispatchProbeError)
+		}
+
+		code, _, stderr := runArgs(t, "gather-review-threads", root)
+		if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
+			t.Fatalf("code = %d, called = %v, stderr = %q; want Gitea dispatch probe failure", code, called, stderr)
+		}
 	})
 }
 

@@ -182,8 +182,11 @@ Rules for this table:
 - **An override is only correct when the stage has a real implementation on that
   provider.** It is not a way to make a preflight quiet. A stage with no path on
   a provider must keep deriving the capability that provider lacks, so config
-  load refuses it — `gather-review-threads` on ADO stays refused, and a test
-  pins that.
+  load refuses it — a workflow that needs `pr.review.submit` on ADO stays
+  refused, and `TestCheckProviderCapabilityRequirementsRejectsRealADOGap` pins
+  that. (`gather-review-threads` was this example until ADO-N20 gave it a real
+  ADO path; it now validates because ADO declares `pr.review.threads`, not
+  through an override.)
 - **A workflow's explicit `requires.capabilities` still replaces derivation
   entirely**, for both providers.
 - **The acceptance evidence is a test over the shipped definition**, not a

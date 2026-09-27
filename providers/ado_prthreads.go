@@ -511,6 +511,11 @@ type adoPullRequestThread struct {
 	ID       int                           `json:"id"`
 	Status   string                        `json:"status"`
 	Comments []adoPullRequestThreadComment `json:"comments"`
+	// IsDeleted, ThreadContext and PullRequestThreadContext are read by the
+	// review-thread surface (ado_review_threads.go).
+	IsDeleted                bool                         `json:"isDeleted"`
+	ThreadContext            *adoThreadContext            `json:"threadContext"`
+	PullRequestThreadContext *adoPullRequestThreadContext `json:"pullRequestThreadContext"`
 }
 
 type adoPullRequestThreadComment struct {
@@ -520,6 +525,7 @@ type adoPullRequestThreadComment struct {
 	CommentType     string      `json:"commentType"`
 	Author          adoIdentity `json:"author"`
 	PublishedDate   string      `json:"publishedDate"`
+	IsDeleted       bool        `json:"isDeleted"`
 }
 
 // adoConnectionData is the minimal shape of the ADO connectionData response —
