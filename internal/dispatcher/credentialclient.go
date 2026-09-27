@@ -72,7 +72,7 @@ type CredentialResolveClient struct {
 	Token string
 	// Client overrides the HTTP client; nil uses a bounded default.
 	Client *http.Client
-	// RetryDeadline bounds how long Resolve retries a transport error or 5xx
+	// RetryDeadline bounds how long ResolveStage retries a transport error or 5xx
 	// response before giving up. Zero uses defaultCredentialRetryDeadline.
 	RetryDeadline time.Duration
 	// RetryPolicy overrides retry pacing for this client. Zero values retain
@@ -83,7 +83,7 @@ type CredentialResolveClient struct {
 // CredentialResolveRefusal is the credential plane's own answer to a resolve —
 // a non-200 status carrying the plane's diagnostic — as distinct from a
 // transport fault (a dial that never reached the plane, a timeout, an
-// unreadable body), which Resolve returns untyped. The split is what a pod
+// unreadable body), which ResolveStage returns untyped. The split is what a pod
 // classifies a failed resolve by: a refusal the plane will repeat for every
 // pod of this stage (403 capability_undeclared, 409 gate_pin_missing, 400
 // invalid_request) is a configuration outcome, and spending a fresh pod on it
@@ -114,22 +114,16 @@ func (e *CredentialResolveRefusal) Deterministic() bool {
 	return e.Status >= 400 && e.Status < 500
 }
 
-// Resolve returns the credentials the daemon grants this run's stage. An empty
-// capability list resolves to nothing WITHOUT calling the daemon: a stage that
-// declared no capabilities must not cause a credential request at all.
+// ResolveStage returns the credentials the daemon grants this run's stage,
+// with the authorization scheme the plane states for an Azure DevOps
+// repository credential. An empty capability list resolves to nothing WITHOUT
+// calling the daemon: a stage that declared no capabilities must not cause a
+// credential request at all.
 //
 // A non-200 answer from the plane is returned as a *CredentialResolveRefusal;
 // every other failure — including a plane that could not be reached — is an
 // untyped error, so errors.As on the refusal type separates the plane's
 // judgement from the transport's.
-func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage string, capabilities []string) ([]MintedCredential, error) {
-	resolution, err := c.ResolveStage(ctx, runID, stage, capabilities)
-	return resolution.Credentials, err
-}
-
-// ResolveStage is Resolve returning the whole answer, including the
-// authorization scheme the plane states for an Azure DevOps repository
-// credential. Its request, retry and refusal behaviour are Resolve's.
 func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage string, capabilities []string) (CredentialResolution, error) {
 	if len(capabilities) == 0 {
 		return CredentialResolution{}, nil
