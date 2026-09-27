@@ -4,6 +4,7 @@ package activetime
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 	"unsafe"
@@ -39,6 +40,14 @@ func (c deadlineContext) Deadline() (time.Time, bool) {
 		return parentDeadline, true
 	}
 	return c.deadline, true
+}
+
+func (c deadlineContext) Err() error {
+	err := c.Context.Err()
+	if err != nil && errors.Is(context.Cause(c.Context), context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
 }
 
 // WithTimeout cancels after timeout has elapsed on Windows' unbiased interrupt
