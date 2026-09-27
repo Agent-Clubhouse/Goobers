@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,6 +95,39 @@ func TestGaggleBundleImportDecodesCompleteRequest(t *testing.T) {
 	}
 	if service.input.Name != "copy" || service.input.Bundle.Kind != apiv1.GaggleBundleKind {
 		t.Fatalf("decoded input = %+v", service.input)
+	}
+}
+
+func TestGaggleBundleImportBodyLimit(t *testing.T) {
+	service := &fakeGaggleBundles{}
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithGaggleBundles(service))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		size   int
+		status int
+		code   string
+	}{
+		{name: "exact limit", size: maxGaggleBundleBody, status: http.StatusOK},
+		{name: "over limit after valid object", size: maxGaggleBundleBody + 1, status: http.StatusRequestEntityTooLarge, code: "gaggle_bundle_too_large"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := "{}" + strings.Repeat(" ", test.size-2)
+			request := httptest.NewRequest(http.MethodPost, apicontract.GaggleBundleImportPath, strings.NewReader(body))
+			request.Host = "127.0.0.1:8080"
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.status, response.Body)
+			}
+			if test.code != "" && errorCode(t, response) != test.code {
+				t.Fatalf("code = %q, want %q", errorCode(t, response), test.code)
+			}
+		})
 	}
 }
 

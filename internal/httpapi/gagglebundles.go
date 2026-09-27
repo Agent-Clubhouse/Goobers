@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,8 @@ import (
 )
 
 const maxGaggleBundleBody = 16 << 20
+
+var errGaggleBundleBodyTooLarge = errors.New("gaggle bundle request body exceeds the size limit")
 
 // GaggleBundleService exports sanitized definitions and atomically creates a
 // destination gaggle from a fully validated bundle.
@@ -55,6 +58,10 @@ func gaggleBundleImportHandler(service GaggleBundleService, errorLog *log.Logger
 		}
 		input, err := decodeGaggleBundleImportRequest(request)
 		if err != nil {
+			if errors.Is(err, errGaggleBundleBodyTooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "gaggle_bundle_too_large", err.Error())
+				return
+			}
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
@@ -69,7 +76,14 @@ func gaggleBundleImportHandler(service GaggleBundleService, errorLog *log.Logger
 
 func decodeGaggleBundleImportRequest(request *http.Request) (apiv1.GaggleBundleImportRequest, error) {
 	defer func() { _ = request.Body.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxGaggleBundleBody))
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxGaggleBundleBody+1))
+	if err != nil {
+		return apiv1.GaggleBundleImportRequest{}, fmt.Errorf("read JSON request body: %w", err)
+	}
+	if len(body) > maxGaggleBundleBody {
+		return apiv1.GaggleBundleImportRequest{}, errGaggleBundleBodyTooLarge
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var input apiv1.GaggleBundleImportRequest
 	if err := decoder.Decode(&input); err != nil {

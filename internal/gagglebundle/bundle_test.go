@@ -2,8 +2,11 @@ package gagglebundle
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +73,111 @@ func TestExportRejectsExplicitEnvironmentValues(t *testing.T) {
 	}
 	if _, err := Export(source.ConfigDir(), "example", time.Now()); !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "run.env") {
 		t.Fatalf("Export error = %v, want explicit run.env refusal", err)
+	}
+}
+
+func TestCompanionContentPolicyRejectsExportAndImport(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{"provider token", []byte("token=ghp_" + strings.Repeat("a", 36))},
+		{"private key", []byte("-----BEGIN PRIVATE KEY-----\nbody\n-----END PRIVATE KEY-----")},
+		{"generic secret assignment", []byte("password=correct-horse-battery-staple")},
+		{"credential URI", []byte("remote=https://alice:correct-horse@example.com/repo")},
+		{"Windows local path", []byte(`workspace=C:\Users\alice\project`)},
+		{"Unix local path", []byte("workspace=/home/alice/project")},
+		{"invalid UTF-8 binary", []byte{0xff, 0xfe, 0x00}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := newBundleSource(t)
+			safe, err := Export(source.ConfigDir(), "example", time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			instruction := companionInstructionPath(t, source)
+			if err := os.WriteFile(instruction, test.data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Export(source.ConfigDir(), "example", time.Now()); !errors.Is(err, ErrInvalidBundle) {
+				t.Fatalf("Export error = %v, want ErrInvalidBundle", err)
+			} else if bytes.Contains([]byte(err.Error()), test.data) {
+				t.Fatal("export error echoed rejected companion content")
+			}
+
+			crafted := cloneBundle(t, safe)
+			setBundleFileContent(t, &crafted, 0, test.data)
+			if err := Validate(crafted); !errors.Is(err, ErrInvalidBundle) {
+				t.Fatalf("Validate error = %v, want ErrInvalidBundle", err)
+			} else if bytes.Contains([]byte(err.Error()), test.data) {
+				t.Fatal("import validation error echoed rejected companion content")
+			}
+		})
+	}
+}
+
+func TestCompanionContentPolicyAllowsPortableTemplate(t *testing.T) {
+	source := newBundleSource(t)
+	content := []byte("# Portable template\nTOKEN=${GITHUB_TOKEN}\npassword={{PASSWORD}}\nworkspace=./checkout\n")
+	if err := os.WriteFile(companionInstructionPath(t, source), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Export(source.ConfigDir(), "example", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(bundle); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompanionLimitsRejectExportAndImport(t *testing.T) {
+	tests := []struct {
+		name  string
+		files int
+		size  int
+	}{
+		{name: "per file", files: 1, size: maxCompanionFileBytes + 1},
+		{name: "aggregate", files: 9, size: 1 << 20},
+		{name: "count", files: maxCompanionFiles + 1, size: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := newBundleSource(t)
+			safe, err := Export(source.ConfigDir(), "example", time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			skillDir, skill := companionSkillDir(t, source)
+			if err := os.RemoveAll(skillDir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(skillDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			content := bytes.Repeat([]byte("a"), test.size)
+			for i := range test.files {
+				if err := os.WriteFile(filepath.Join(skillDir, fmt.Sprintf("file-%03d.txt", i)), content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := Export(source.ConfigDir(), "example", time.Now()); !errors.Is(err, ErrInvalidBundle) {
+				t.Fatalf("Export error = %v, want ErrInvalidBundle", err)
+			}
+
+			crafted := cloneBundle(t, safe)
+			crafted.Definition.Files = nil
+			for i := range test.files {
+				file := apiv1.GaggleBundleFile{Path: fmt.Sprintf("skills/%s/file-%03d.txt", skill, i)}
+				setFileContent(&file, content)
+				crafted.Definition.Files = append(crafted.Definition.Files, file)
+			}
+			refreshBundleDigest(t, &crafted)
+			if err := Validate(crafted); !errors.Is(err, ErrInvalidBundle) {
+				t.Fatalf("Validate error = %v, want ErrInvalidBundle", err)
+			}
+		})
 	}
 }
 
@@ -262,6 +370,54 @@ func refreshBundleDigest(t *testing.T, bundle *apiv1.GaggleBundle) {
 	}
 	bundle.Digest = digest
 	bundle.Source.Digest = digest
+}
+
+func setBundleFileContent(t *testing.T, bundle *apiv1.GaggleBundle, index int, data []byte) {
+	t.Helper()
+	setFileContent(&bundle.Definition.Files[index], data)
+	refreshBundleDigest(t, bundle)
+}
+
+func setFileContent(file *apiv1.GaggleBundleFile, data []byte) {
+	sum := sha256.Sum256(data)
+	file.ContentBase64 = base64.StdEncoding.EncodeToString(data)
+	file.SHA256 = fmt.Sprintf("sha256:%x", sum)
+}
+
+func companionInstructionPath(t *testing.T, layout instance.Layout) string {
+	t.Helper()
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		t.Fatalf("load source: %v report=%+v", err, report)
+	}
+	for _, goober := range set.Goobers {
+		if goober.Spec.Gaggle != "example" || goober.Spec.Instructions == "" {
+			continue
+		}
+		source, ok := set.GooberSource(goober.Name)
+		if !ok {
+			t.Fatalf("missing source for goober %q", goober.Name)
+		}
+		return filepath.Join(layout.ConfigDir(), filepath.FromSlash(filepath.Dir(source)), filepath.FromSlash(goober.Spec.Instructions))
+	}
+	t.Fatal("example fixture has no Goober instructions")
+	return ""
+}
+
+func companionSkillDir(t *testing.T, layout instance.Layout) (string, string) {
+	t.Helper()
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		t.Fatalf("load source: %v report=%+v", err, report)
+	}
+	for _, goober := range set.Goobers {
+		if goober.Spec.Gaggle == "example" && len(goober.Spec.Skills) != 0 {
+			skill := goober.Spec.Skills[0]
+			return filepath.Join(layout.ConfigDir(), "gaggles", "example", "skills", skill), skill
+		}
+	}
+	t.Fatal("example fixture has no referenced skill")
+	return "", ""
 }
 
 func TestPrepareImportRejectsNameConflictAndMissingAuthorization(t *testing.T) {

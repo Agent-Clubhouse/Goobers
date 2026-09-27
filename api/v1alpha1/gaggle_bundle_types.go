@@ -17,8 +17,8 @@ const (
 )
 
 // GaggleBundle is a sanitized, portable snapshot of one gaggle's declarative
-// definitions. It never contains instance credentials, runtime state, host
-// identity, or absolute local paths.
+// definitions. Structured fields exclude credentials and runtime identity;
+// companion text must pass the bundle's bounded credential and path checks.
 type GaggleBundle struct {
 	APIVersion    string                 `json:"apiVersion"`
 	Kind          string                 `json:"kind"`
@@ -103,7 +103,9 @@ func (d *GaggleBundleDefinition) UnmarshalJSON(data []byte) error {
 // GaggleBundleFile carries a referenced declarative companion file, such as a
 // Goober instruction document or referenced skill package file.
 type GaggleBundleFile struct {
-	Path          string `json:"path"`
+	Path string `json:"path"`
+	// ContentBase64 is bounded UTF-8 text that passed the portable companion
+	// credential and host-local-path checks, encoded without modification.
 	ContentBase64 string `json:"contentBase64"`
 	SHA256        string `json:"sha256"`
 }

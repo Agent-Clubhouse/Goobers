@@ -31,8 +31,9 @@ of `definition`. Re-exporting unchanged sanitized definitions produces the same
 digest even though `exportedAt` changes. Workflows, Goobers, files, and
 repository references are sorted before hashing.
 
-Export normalizes or omits destination-specific fields and lists every omitted
-field class in `provenance.sanitizedFields`. Bundles never include:
+Export normalizes or omits destination-specific structured fields and lists
+every omitted field class in `provenance.sanitizedFields`. The structured
+bundle model excludes:
 
 - instance credentials, tokens, secret values, or repository authorization;
 - resolved or explicitly configured task environment values;
@@ -43,6 +44,18 @@ field class in `provenance.sanitizedFields`. Bundles never include:
 
 Repository entries are credential-free logical identities only. They are not
 proof of access and cannot authorize the destination.
+
+Companion files are not treated as implicitly safe. Export and import both
+require valid UTF-8 text, reject binary control bytes, and fail closed when the
+content matches the repository-standard provider-token/private-key patterns,
+bounded generic credential assignments, credential-bearing URIs, or common
+Windows/Unix host-local absolute paths. Placeholder forms such as
+`${GITHUB_TOKEN}` remain portable. Rejected content is never redacted or copied,
+and errors identify only the file and reason, not the suspected value.
+
+Bundles allow at most 256 companion files, 1 MiB decoded per file, and 8 MiB
+decoded across all companion files. These limits are checked before export and
+again after base64 decoding during import.
 
 Export fails explicitly instead of silently dropping task `run.env` values or
 opaque Goober `harnessOptions`, because their contents cannot be proven
@@ -71,13 +84,13 @@ authorized `repos[]` entry for every logical repository in the bundle. It never
 copies credentials or connection authorization from the source.
 
 Before mutation, import verifies the envelope version, complete digest, file
-digests and contained paths, gaggle/workflow/Goober references, destination
-name, destination repository authorization, and the fully materialized
-candidate with the existing configuration validator. It then uses the existing
-configuration lock and atomic directory-swap mechanism. Invalid schema, digest,
-reference, name conflict, missing authorization, validation failure, write
-failure, or daemon reload rejection returns an explicit error and leaves no
-partial gaggle.
+digests, paths, text safety and size/count limits, gaggle/workflow/Goober
+references, destination name, destination repository authorization, and the
+fully materialized candidate with the existing configuration validator. It
+then uses the existing configuration lock and atomic directory-swap mechanism.
+Invalid schema, digest, reference, content, name conflict, missing
+authorization, validation failure, write failure, or daemon reload rejection
+returns an explicit error and leaves no partial gaggle.
 
 The destination receives a new local gaggle name and destination-derived
 isolation namespace. `bundle-source.json` records the retained public source

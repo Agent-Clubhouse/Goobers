@@ -12,13 +12,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/secretpattern"
 	"github.com/goobers/goobers/internal/version"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
@@ -30,6 +33,21 @@ var (
 	ErrNameConflict            = errors.New("gaggle name conflict")
 	ErrRepositoryAuthorization = errors.New("destination repository authorization is required")
 	prepareConfigDirSwap       = instance.PrepareConfigDirSwap
+)
+
+const (
+	maxCompanionFiles        = 256
+	maxCompanionFileBytes    = 1 << 20
+	maxCompanionEncodedBytes = ((maxCompanionFileBytes + 2) / 3) * 4
+	maxCompanionTotalBytes   = 8 << 20
+)
+
+var (
+	companionSecretPatterns = secretpattern.NewScrubber()
+	credentialAssignment    = regexp.MustCompile(`(?i)\b(?:api[_-]?key|access[_-]?key|auth(?:entication|orization)?|client[_-]?secret|credential|passwd|password|private[_-]?key|secret|token)\b\s*[:=]\s*(?:"([^"\r\n]{8,})"|'([^'\r\n]{8,})'|([^\s"',;#]{8,}))`)
+	credentialURI           = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:([^@\s/]+)@`)
+	windowsLocalPath        = regexp.MustCompile(`(?i)(?:\b[A-Z]:[\\/]|\\\\[^\\\s]+\\[^\\\s]+)`)
+	unixLocalPath           = regexp.MustCompile(`(?:^|[\s"'=(])/(?:home|Users|private|tmp|var|etc|opt|srv|root|mnt)/[^\s"'<>]+`)
 )
 
 var sanitizedFields = []string{
@@ -175,13 +193,6 @@ func Validate(bundle apiv1.GaggleBundle) error {
 	case bundle.Definition.Gaggle.Name != bundle.Source.Name:
 		return fmt.Errorf("%w: source.name %q does not match definition gaggle %q", ErrInvalidBundle, bundle.Source.Name, bundle.Definition.Gaggle.Name)
 	}
-	digest, err := DefinitionDigest(bundle.Definition)
-	if err != nil {
-		return err
-	}
-	if bundle.Digest != digest || bundle.Source.Digest != digest {
-		return fmt.Errorf("%w: digest mismatch: computed %s", ErrInvalidBundle, digest)
-	}
 	if err := validateReferences(bundle.Definition); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
 	}
@@ -190,6 +201,13 @@ func Validate(bundle apiv1.GaggleBundle) error {
 	}
 	if err := validateFiles(bundle.Definition); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+	}
+	digest, err := DefinitionDigest(bundle.Definition)
+	if err != nil {
+		return err
+	}
+	if bundle.Digest != digest || bundle.Source.Digest != digest {
+		return fmt.Errorf("%w: digest mismatch: computed %s", ErrInvalidBundle, digest)
 	}
 	return nil
 }
@@ -487,6 +505,10 @@ func collectFiles(configDir string, set *instance.ConfigSet, gaggle string, goob
 		}
 	}
 	var files []apiv1.GaggleBundleFile
+	if len(paths) > maxCompanionFiles {
+		return nil, fmt.Errorf("%w: companion file count %d exceeds limit %d", ErrInvalidBundle, len(paths), maxCompanionFiles)
+	}
+	totalBytes := int64(0)
 	for rel, path := range paths {
 		info, err := os.Lstat(path)
 		if err != nil {
@@ -495,9 +517,25 @@ func collectFiles(configDir string, set *instance.ConfigSet, gaggle string, goob
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("referenced file %s is not a regular file", path)
 		}
+		if info.Size() > maxCompanionFileBytes {
+			return nil, invalidCompanionFile(rel, fmt.Sprintf("exceeds the %d-byte per-file limit", maxCompanionFileBytes))
+		}
+		if totalBytes+info.Size() > maxCompanionTotalBytes {
+			return nil, fmt.Errorf("%w: companion files exceed the %d-byte aggregate limit", ErrInvalidBundle, maxCompanionTotalBytes)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("read referenced file %s: %w", path, err)
+		}
+		if len(data) > maxCompanionFileBytes {
+			return nil, invalidCompanionFile(rel, fmt.Sprintf("exceeds the %d-byte per-file limit", maxCompanionFileBytes))
+		}
+		totalBytes += int64(len(data))
+		if totalBytes > maxCompanionTotalBytes {
+			return nil, fmt.Errorf("%w: companion files exceed the %d-byte aggregate limit", ErrInvalidBundle, maxCompanionTotalBytes)
+		}
+		if err := validateCompanionContent(rel, data); err != nil {
+			return nil, err
 		}
 		sum := sha256.Sum256(data)
 		files = append(files, apiv1.GaggleBundleFile{
@@ -510,30 +548,53 @@ func collectFiles(configDir string, set *instance.ConfigSet, gaggle string, goob
 }
 
 func validateFile(file apiv1.GaggleBundleFile) error {
+	_, err := decodeAndValidateFile(file)
+	return err
+}
+
+func decodeAndValidateFile(file apiv1.GaggleBundleFile) ([]byte, error) {
 	if file.Path == "" || filepath.IsAbs(file.Path) || strings.Contains(file.Path, `\`) {
-		return fmt.Errorf("file path %q must be a relative slash-separated path", file.Path)
+		return nil, fmt.Errorf("file path %q must be a relative slash-separated path", file.Path)
 	}
 	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(file.Path)))
 	if clean != file.Path || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("file path %q is not contained", file.Path)
+		return nil, fmt.Errorf("file path %q is not contained", file.Path)
+	}
+	if len(file.ContentBase64) > maxCompanionEncodedBytes {
+		return nil, invalidCompanionFile(file.Path, fmt.Sprintf("exceeds the %d-byte per-file limit", maxCompanionFileBytes))
 	}
 	data, err := base64.StdEncoding.DecodeString(file.ContentBase64)
 	if err != nil {
-		return fmt.Errorf("file %q contentBase64 is invalid: %w", file.Path, err)
+		return nil, fmt.Errorf("file %q contentBase64 is invalid: %w", file.Path, err)
+	}
+	if len(data) > maxCompanionFileBytes {
+		return nil, invalidCompanionFile(file.Path, fmt.Sprintf("exceeds the %d-byte per-file limit", maxCompanionFileBytes))
+	}
+	if err := validateCompanionContent(file.Path, data); err != nil {
+		return nil, err
 	}
 	sum := sha256.Sum256(data)
 	want := "sha256:" + hex.EncodeToString(sum[:])
 	if file.SHA256 != want {
-		return fmt.Errorf("file %q digest mismatch", file.Path)
+		return nil, fmt.Errorf("file %q digest mismatch", file.Path)
 	}
-	return nil
+	return data, nil
 }
 
 func validateFiles(definition apiv1.GaggleBundleDefinition) error {
+	if len(definition.Files) > maxCompanionFiles {
+		return fmt.Errorf("companion file count %d exceeds limit %d", len(definition.Files), maxCompanionFiles)
+	}
 	seen := map[string]bool{}
+	totalBytes := 0
 	for _, file := range definition.Files {
-		if err := validateFile(file); err != nil {
+		data, err := decodeAndValidateFile(file)
+		if err != nil {
 			return err
+		}
+		totalBytes += len(data)
+		if totalBytes > maxCompanionTotalBytes {
+			return fmt.Errorf("companion files exceed the %d-byte aggregate limit", maxCompanionTotalBytes)
 		}
 		if seen[file.Path] {
 			return fmt.Errorf("duplicate file path %q", file.Path)
@@ -544,6 +605,59 @@ func validateFiles(definition apiv1.GaggleBundleDefinition) error {
 		}
 	}
 	return nil
+}
+
+func validateCompanionContent(path string, data []byte) error {
+	if !utf8.Valid(data) {
+		return invalidCompanionFile(path, "must be valid UTF-8 text")
+	}
+	for _, b := range data {
+		if b == 0 || (b < 0x20 && b != '\n' && b != '\r' && b != '\t') {
+			return invalidCompanionFile(path, "contains binary control bytes")
+		}
+	}
+	if !bytes.Equal(companionSecretPatterns.Scrub(data), data) {
+		return invalidCompanionFile(path, "contains a provider credential or private key")
+	}
+	text := string(data)
+	for _, match := range credentialAssignment.FindAllStringSubmatch(text, -1) {
+		if value := firstNonEmptyCapture(match); value != "" && !portablePlaceholder(value) {
+			return invalidCompanionFile(path, "contains a credential-like assignment")
+		}
+	}
+	for _, match := range credentialURI.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 && !portablePlaceholder(match[1]) {
+			return invalidCompanionFile(path, "contains a credential-bearing URI")
+		}
+	}
+	if windowsLocalPath.MatchString(text) || unixLocalPath.MatchString(text) {
+		return invalidCompanionFile(path, "contains a host-local absolute path")
+	}
+	return nil
+}
+
+func firstNonEmptyCapture(match []string) string {
+	for _, value := range match[1:] {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func portablePlaceholder(value string) bool {
+	trimmed := strings.Trim(strings.TrimSpace(value), `"'`)
+	lower := strings.ToLower(trimmed)
+	return (strings.HasPrefix(trimmed, "${") && strings.HasSuffix(trimmed, "}")) ||
+		(strings.HasPrefix(trimmed, "{{") && strings.HasSuffix(trimmed, "}}")) ||
+		(strings.HasPrefix(trimmed, "<") && strings.HasSuffix(trimmed, ">")) ||
+		strings.HasPrefix(lower, "your_") || strings.HasPrefix(lower, "your-") ||
+		strings.Contains(lower, "placeholder") || strings.Contains(lower, "replace_me") ||
+		strings.Contains(lower, "replace-me")
+}
+
+func invalidCompanionFile(path, reason string) error {
+	return fmt.Errorf("%w: companion file %q %s", ErrInvalidBundle, path, reason)
 }
 
 func isReferencedCompanionPath(goobers []apiv1.Goober, path string) bool {

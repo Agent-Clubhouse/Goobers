@@ -19,8 +19,8 @@ import (
 const gaggleHelp = "Usage: goobers gaggle export|import [flags]\n\n" +
 	"Export or import a sanitized, portable gaggle bundle. Bundles contain only\n" +
 	"declarative gaggle, workflow, stage, Goober, instruction, skill, repository\n" +
-	"reference, and provenance data. They never contain credentials, resolved\n" +
-	"environment values, host identity, runtime records, or absolute local paths.\n"
+	"reference, and provenance data. Structured credentials and runtime state are\n" +
+	"excluded; companion text with recognized credential or local-path shapes is refused.\n"
 
 const gaggleExportHelp = "Usage: goobers gaggle export [--output <file>] <gaggle> [path]\n\n" +
 	"Validate the source configuration and write a deterministic JSON bundle.\n" +

@@ -126,11 +126,12 @@
         },
         "files": {
           "type": "array",
+          "maxItems": 256,
           "items": {
             "$ref": "#/$defs/file",
             "description": "Referenced portable companion file."
           },
-          "description": "Referenced instruction and skill package files sorted by path. Shared skill packages are materialized under the imported gaggle."
+          "description": "At most 256 referenced instruction and skill package text files, sorted by path, with at most 1 MiB decoded per file and 8 MiB decoded in aggregate. Shared skill packages are materialized under the imported gaggle."
         },
         "repositories": {
           "type": "array",
@@ -154,8 +155,10 @@
         },
         "contentBase64": {
           "type": "string",
+          "maxLength": 1398104,
           "contentEncoding": "base64",
-          "description": "Exact companion-file bytes encoded as base64."
+          "contentMediaType": "text/plain; charset=utf-8",
+          "description": "Exact UTF-8 companion-file text encoded as base64 after provider-secret, private-key, credential-assignment, credential-URI, binary-control, and host-local-path checks."
         },
         "sha256": {
           "$ref": "#/$defs/digest",
