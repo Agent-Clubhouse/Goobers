@@ -59,7 +59,7 @@ func TestRecoveryCustodyResolvesBaseAfterGatherPRContextStyleCheckout(t *testing
 	ws := t.TempDir()
 	var errOut strings.Builder
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds, ""); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 	}
 	if got := checkedOutBranch(t, ws); got != "goobernetes/pr-remediation/run-5154" {
@@ -120,7 +120,7 @@ func TestCheckoutFallbackArmAlsoLeavesRemoteTrackingBaseRef(t *testing.T) {
 	ws := t.TempDir()
 	var errOut strings.Builder
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds, ""); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 	}
 

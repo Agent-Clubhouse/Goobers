@@ -100,7 +100,16 @@ func stageADOCredentialSource(cap capability.Capability, token string) (provider
 }
 
 func stageADOCredentialKind() (string, error) {
-	scheme := strings.TrimSpace(os.Getenv(executor.RepoAuthSchemeEnvVar))
+	return adoCredentialKindForScheme(os.Getenv(executor.RepoAuthSchemeEnvVar))
+}
+
+// adoCredentialKindForScheme maps the authorization scheme the daemon stated
+// for an Azure DevOps repository credential (GOOBERS_REPO_AUTH_SCHEME for a
+// stage, the credential plane's repoAuthScheme for a pod checkout) to the
+// credential kind that sends it: "basic", or no stated scheme, is a PAT and
+// "bearer" a Microsoft Entra token.
+func adoCredentialKindForScheme(scheme string) (string, error) {
+	scheme = strings.TrimSpace(scheme)
 	switch strings.ToLower(scheme) {
 	case "", adoauth.SchemeBasic:
 		return providers.ADOCredentialKindPAT, nil

@@ -220,7 +220,7 @@ func fetchRecoveryBaseRef(ctx context.Context, dir, base string) error {
 		return err
 	}
 	var authEnv []string
-	if creds, credErr := resolveCheckoutCredential(ctx); credErr == nil {
+	if creds, _, credErr := resolveCheckoutCredential(ctx); credErr == nil {
 		if token := gitToken(creds); token != "" {
 			authEnv = gitAuthEnv(token)
 		}
