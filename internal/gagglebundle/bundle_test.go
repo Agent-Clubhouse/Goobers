@@ -52,7 +52,7 @@ func TestExportDigestIsStableAndSanitized(t *testing.T) {
 		t.Fatalf("referenced instruction/skill files = %d, want at least 3", len(first.Definition.Files))
 	}
 	for _, file := range first.Definition.Files {
-		if err := validateFile(file); err != nil {
+		if _, err := decodeAndValidateFile(file); err != nil {
 			t.Fatalf("exported file %q invalid: %v", file.Path, err)
 		}
 	}

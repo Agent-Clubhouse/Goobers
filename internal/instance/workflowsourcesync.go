@@ -102,10 +102,6 @@ func PrepareConfigDirSwap(layout Layout, stagedConfigDir string) (*PreparedConfi
 	return &PreparedConfigSwap{layout: layout, backupRoot: backupRoot, backupConfig: backupConfigDir, release: release}, nil
 }
 
-func prepareSyncedConfigDir(layout Layout, stagedConfigDir string) (*PreparedConfigSwap, error) {
-	return PrepareConfigDirSwap(layout, stagedConfigDir)
-}
-
 // Commit accepts the installed candidate and removes its prior-tree backup.
 func (s *PreparedConfigSwap) Commit() error {
 	if s == nil || s.finished {

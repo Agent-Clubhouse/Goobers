@@ -548,11 +548,6 @@ func collectFiles(configDir string, set *instance.ConfigSet, gaggle string, goob
 	return files, nil
 }
 
-func validateFile(file apiv1.GaggleBundleFile) error {
-	_, err := decodeAndValidateFile(file)
-	return err
-}
-
 func decodeAndValidateFile(file apiv1.GaggleBundleFile) ([]byte, error) {
 	if file.Path == "" || filepath.IsAbs(file.Path) || strings.Contains(file.Path, `\`) {
 		return nil, fmt.Errorf("file path %q must be a relative slash-separated path", file.Path)

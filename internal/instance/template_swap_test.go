@@ -18,7 +18,7 @@ func TestPreparedTemplateFirstEnrollmentHoldsConfigLock(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(candidate, "gaggles", "orders", gaggletemplate.MetadataDir), 0755); err != nil {
 		t.Fatal(err)
 	}
-	swap, err := prepareSyncedConfigDir(layout, candidate)
+	swap, err := PrepareConfigDirSwap(layout, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestPreparedTemplateSourceSwapProtectsEditsAndReleasesLock(t *testing.T) {
 	}
 	staged := filepath.Join(root, "candidate")
 	write(staged, tree)
-	if _, err := prepareSyncedConfigDir(layout, staged); err == nil || !strings.Contains(err.Error(), "unpersisted") {
+	if _, err := PrepareConfigDirSwap(layout, staged); err == nil || !strings.Contains(err.Error(), "unpersisted") {
 		t.Fatalf("source replacement overwrote runtime edits: %v", err)
 	}
 	edited, err := gaggletemplate.ReadTree(current)
@@ -67,7 +67,7 @@ func TestPreparedTemplateSourceSwapProtectsEditsAndReleasesLock(t *testing.T) {
 	}
 	for _, rollback := range []bool{true, false} {
 		write(staged, edited)
-		swap, err := prepareSyncedConfigDir(layout, staged)
+		swap, err := PrepareConfigDirSwap(layout, staged)
 		if err != nil {
 			t.Fatal(err)
 		}
