@@ -566,9 +566,20 @@ func buildScheduleDemandCounter(
 	if !hasSchedule || !ok {
 		return nil
 	}
+	repo := backlogCounterRepoRef(cfg, repoRef)
+	if repo.Provider == providers.ProviderADO {
+		// Azure DevOps has no webhook ingestion, so the schedule is its only
+		// autonomous pr-remediation trigger, and update-behind-pr is
+		// not-applicable there (ADO-N15), so behind-ness is not its
+		// eligibility. The demand count is GitHub-only; a counter that can
+		// only error would size every tick to zero. Without one each due
+		// tick fires unsized, bounded by readiness, and gather-pr-context
+		// ends a run with no eligible pull request as ordinary no-work.
+		return nil
+	}
 	return &remediationDemandCounter{
 		ref:          repoRef.Owner + "/" + repoRef.Name,
-		repo:         backlogCounterRepoRef(cfg, repoRef),
+		repo:         repo,
 		base:         base,
 		headPrefix:   headPrefix,
 		gaggle:       wf.Spec.Gaggle,
