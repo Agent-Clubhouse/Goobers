@@ -1,13 +1,15 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS TELEMETRY" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers telemetry \- query, export, prune, or compact run telemetry
+goobers telemetry \- configure, test, query, export, prune, or compact telemetry
 .SH SYNOPSIS
 \fBgoobers telemetry\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers telemetry <stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
 
+configure: enable or disable customer-owned Application Insights export
+test:    send one secret-safe direct-ingestion connectivity probe
 merges: confirmed PR landings and daily counts by originating instance
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
@@ -18,10 +20,10 @@ compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
 .fi
 .SH EXAMPLES
 .nf
+goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance
+goobers telemetry test ./instance
 goobers telemetry stats
 goobers telemetry errors
-goobers telemetry export --since=2026-07-01T00:00:00Z
-goobers telemetry prune --dry-run
 .fi
 .SH SEE ALSO
 \fBgoobers\fR(1)

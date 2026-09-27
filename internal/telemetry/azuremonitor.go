@@ -37,6 +37,38 @@ const (
 	azureMonitorDefaultIngestionEndpoint  = "https://dc.services.visualstudio.com/"
 )
 
+// AzureMonitorConnectivityResult identifies one secret-safe ingestion probe.
+// RecordID can be queried in Application Insights without exposing the
+// connection string or any host/user identity.
+type AzureMonitorConnectivityResult struct {
+	Schema     string    `json:"schema"`
+	Accepted   bool      `json:"accepted"`
+	RecordID   string    `json:"recordId"`
+	ObservedAt time.Time `json:"observedAt"`
+}
+
+// TestAzureMonitorConnectivity sends one fixed, low-cardinality trace directly
+// to the configured Application Insights ingestion endpoint. It deliberately
+// bypasses replay: success means Azure acknowledged this request now.
+func TestAzureMonitorConnectivity(ctx context.Context, connectionString string, httpClient *http.Client) (AzureMonitorConnectivityResult, error) {
+	observedAt := time.Now().UTC()
+	client, err := newAzureMonitorClient(connectionString, httpClient, false, azureReplayConfig{})
+	if err != nil {
+		return AzureMonitorConnectivityResult{}, err
+	}
+	item := appinsights.NewTraceTelemetry("goobers.telemetry.connectivity", contracts.Information)
+	item.Timestamp = observedAt
+	item.Properties["goobers.telemetry.kind"] = "connectivity_test"
+	item.Properties["goobers.telemetry.schema"] = "goobers.dev/telemetry/connectivity/v1"
+	if err := client.export(ctx, []appinsights.Telemetry{item}); err != nil {
+		return AzureMonitorConnectivityResult{}, err
+	}
+	return AzureMonitorConnectivityResult{
+		Schema: "goobers.dev/telemetry/connectivity/v1", Accepted: true,
+		RecordID: item.Properties["goobers.telemetry.record_id"], ObservedAt: observedAt,
+	}, nil
+}
+
 type azureMonitorConnection struct {
 	instrumentationKey string
 	ingestionURL       string

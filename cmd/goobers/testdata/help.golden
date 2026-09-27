@@ -167,7 +167,7 @@ Advanced operator commands:
   service task-stop stop a per-user Windows Scheduled Task supervisor
   service task-uninstall remove a per-user Windows Scheduled Task supervisor
   speech            preflight and test local speech notifications
-  telemetry         query, export, prune, or compact run telemetry
+  telemetry         configure, test, query, export, prune, or compact telemetry
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
   worker            host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
@@ -2748,8 +2748,10 @@ with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit 
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
 
+configure: enable or disable customer-owned Application Insights export
+test:    send one secret-safe direct-ingestion connectivity probe
 merges: confirmed PR landings and daily counts by originating instance
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
@@ -2769,6 +2771,17 @@ stopped first — compaction rewrites files a running daemon holds open.
 --dry-run reports what would be reclaimed without changing anything. The
 default 90d window applies when none is configured. Exit codes: 0 = OK,
 1 = compaction error, 2 = usage/config error.
+
+### telemetry configure
+Usage: goobers telemetry configure (--connection-string-env NAME | --connection-string-file PATH | --connection-string-store STORE/SECRET | --disable) [--profile health|journal|standard|diagnostic] [--json] [path]
+
+Configure the customer-owned Application Insights destination in one atomic
+instance.yaml update. Only the reference is stored; this command never accepts
+or writes an inline connection-string value. The profile defaults to standard,
+and bounded 72-hour replay defaults on. Stop a live daemon before changing its
+configuration. --disable removes only the direct Azure destination.
+
+Exit codes: 0 = configured, 1 = refused/invalid config, 2 = usage or I/O error.
 
 ### telemetry errors
 Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--since=RFC3339] [--until=RFC3339] [--limit=N] [--rebuild] [path]
@@ -2828,6 +2841,17 @@ across every run (default path "."). Agent filters retain matching agentic
 stage attempts; --branch filters stage/usage rows by journal branch id.
 A run that used multiple grouped agent cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.
+
+### telemetry test
+Usage: goobers telemetry test [--json] [--timeout DURATION] [path]
+
+Resolve the configured connection-string reference and send one fixed,
+identity-free connectivity record directly to Application Insights. The probe
+bypasses disk replay: success means Azure acknowledged this request now. No
+connection-string value is printed, logged, journaled, or persisted.
+
+Exit codes: 0 = accepted, 1 = resolution/connection/rejection failure,
+2 = usage or invalid configuration.
 
 ### telemetry-query
 Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--learning-action <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]

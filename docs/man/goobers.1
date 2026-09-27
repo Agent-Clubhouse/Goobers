@@ -353,10 +353,13 @@ check the configured local speech engine without emitting sound
 speak the fixed local readiness phrase
 .TP
 \fBgoobers telemetry\fR
-query, export, prune, or compact run telemetry
+configure, test, query, export, prune, or compact telemetry
 .TP
 \fBgoobers telemetry compact\fR
 drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
+.TP
+\fBgoobers telemetry configure\fR
+configure customer-owned Application Insights export from a secret reference
 .TP
 \fBgoobers telemetry errors\fR
 recent errors across runs, by class, with run/stage refs
@@ -375,6 +378,9 @@ report or delete old orphan and unfinished run directories
 .TP
 \fBgoobers telemetry stats\fR
 success rate and duration aggregates per workflow and stage
+.TP
+\fBgoobers telemetry test\fR
+send one secret-safe Application Insights connectivity probe
 .TP
 \fBgoobers versions\fR
 print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
@@ -685,12 +691,14 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-status\fR(1),
 \fBgoobers-telemetry\fR(1),
 \fBgoobers-telemetry-compact\fR(1),
+\fBgoobers-telemetry-configure\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
 \fBgoobers-telemetry-merges\fR(1),
 \fBgoobers-telemetry-prune\fR(1),
 \fBgoobers-telemetry-prune-orphans\fR(1),
 \fBgoobers-telemetry-stats\fR(1),
+\fBgoobers-telemetry-test\fR(1),
 \fBgoobers-telemetry-query\fR(1),
 \fBgoobers-trace\fR(1),
 \fBgoobers-up\fR(1),

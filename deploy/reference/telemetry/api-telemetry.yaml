@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-api
+  namespace: goobers-system
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: configure-azure-monitor
+          image: goobers
+          args:
+            - telemetry
+            - configure
+            - --connection-string-env
+            - APPLICATIONINSIGHTS_CONNECTION_STRING
+            - --profile
+            - standard
+            - /var/lib/goobers
+          volumeMounts:
+            - name: journal
+              mountPath: /var/lib/goobers
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: api
+          env:
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: goobers-application-insights
+                  key: connection-string

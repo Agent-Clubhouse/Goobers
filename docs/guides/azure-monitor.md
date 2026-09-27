@@ -14,7 +14,40 @@ a persistent volume if pending records must survive pod replacement.
 ## Configure the destination
 
 Copy the connection string from the Application Insights resource's Overview
-page. Store it outside `instance.yaml`, then reference it from the instance:
+page and store it outside `instance.yaml`. The normal setup is one command;
+it atomically enables direct export, selects the `standard` profile, and stores
+only the secret reference:
+
+```powershell
+goobers telemetry configure --connection-string-file C:\ProgramData\Goobers\secrets\application-insights.txt --profile standard C:\ProgramData\Goobers\instance
+goobers telemetry test C:\ProgramData\Goobers\instance
+```
+
+The same commands work on macOS and Linux with platform paths. For a process
+whose service manager supplies the environment variable, use
+`--connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING`; for a
+declared secret store, use `--connection-string-store STORE/SECRET`. A Windows
+service running as LocalSystem does not inherit the interactive user's
+environment, so a protected file or machine-level environment variable is the
+safer choice. Stop a locally running daemon before changing its config.
+
+The connectivity test resolves the reference and sends one fixed,
+identity-free record. It never prints, logs, journals, or persists the resolved
+value. It bypasses replay, so success means Application Insights acknowledged
+the request now. Failure exits nonzero but does not modify configuration or
+stop a running daemon. Disable the destination without disturbing other
+telemetry settings with:
+
+```powershell
+goobers telemetry configure --disable C:\ProgramData\Goobers\instance
+```
+
+Kubernetes uses the same command and test through the
+[`deploy/reference/telemetry`](../../deploy/reference/telemetry/README.md)
+overlay. The overlay reads a Kubernetes Secret into the API container and
+persists replay on the existing instance-root PVC.
+
+The command writes the equivalent of:
 
 ```yaml
 telemetry:
@@ -132,6 +165,18 @@ that disable local authentication require an Entra-authenticated ingestion
 path; that is separate from this connection-string exporter.
 
 ## Confirm data in KQL
+
+Find the exact record ID printed by `goobers telemetry test`:
+
+```kusto
+traces
+| where timestamp > ago(30m)
+| where tostring(customDimensions["goobers.telemetry.kind"]) == "connectivity_test"
+| project timestamp,
+          recordId=tostring(customDimensions["goobers.telemetry.record_id"]),
+          message
+| order by timestamp desc
+```
 
 After a workflow completes, this query should show its run and stage spans in
 the Application Insights `dependencies` table:

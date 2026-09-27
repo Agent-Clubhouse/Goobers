@@ -616,6 +616,12 @@ func init() {
 		groupCommand(
 			"telemetry",
 			runTelemetry,
+			subcommand("telemetry configure", "configure", apicontract.ActionConfigTime, runTelemetryConfigure).
+				withHelp("configure customer-owned Application Insights export from a secret reference", telemetryConfigureHelp).
+				withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry configure --connection-string-file C:\\ProgramData\\Goobers\\secrets\\application-insights.txt C:\\ProgramData\\Goobers\\instance"),
+			subcommand("telemetry test", "test", apicontract.ActionMaintenance, runTelemetryTest).
+				withHelp("send one secret-safe Application Insights connectivity probe", telemetryTestHelp).
+				withExamples("goobers telemetry test ./instance", "goobers telemetry test --json ./instance"),
 			subcommand("telemetry merges", "merges", apicontract.ActionReadOnlyNavigation, runTelemetryMerges).
 				withHelp("confirmed PR landings and daily counts by originating instance", telemetryMergesHelp).
 				withExamples("goobers telemetry merges", "goobers telemetry merges --json"),
@@ -639,8 +645,8 @@ func init() {
 				withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),
 		).
 			withSynopsis(synopsisByID["telemetry"]).
-			withHelp("query, export, prune, or compact run telemetry", telemetryHelp).
-			withExamples("goobers telemetry stats", "goobers telemetry errors", "goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry prune --dry-run"),
+			withHelp("configure, test, query, export, prune, or compact telemetry", telemetryHelp).
+			withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry test ./instance", "goobers telemetry stats", "goobers telemetry errors"),
 		groupCommand(
 			"journal",
 			runJournal,
