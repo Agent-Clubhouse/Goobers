@@ -30,15 +30,11 @@ func TestVanishedThreadOnlyAcceptsInvalidParameter(t *testing.T) {
 
 func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
-	cmd := exec.Command(
-		"powershell.exe",
-		"-NoLogo",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"Set-Content -LiteralPath $env:GOOBERS_PROCESS_MARKER -Value started; Start-Sleep -Seconds 30",
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
+	cmd.Env = append(os.Environ(),
+		"GOOBERS_PROC_HELPER_ROLE=marker",
+		"GOOBERS_PROC_HELPER_MARKER="+marker,
 	)
-	cmd.Env = append(os.Environ(), "GOOBERS_PROCESS_MARKER="+marker)
 	Configure(cmd)
 	prepareStart(cmd)
 	if err := cmd.Start(); err != nil {
@@ -57,12 +53,12 @@ func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	// 25s, not the child's full 30s budget: generous enough to absorb a cold
-	// powershell.exe start under real Windows CI contention (the observed
-	// merge_group flake, #2048 — a fixed 5s deadline for spawning and
-	// dispatching a real external process was too tight for a loaded shared
-	// runner, not evidence of a broken attach/resume path) while still
-	// leaving margin below the child's Start-Sleep window.
+	// 25s, not the helper's full 30s budget: generous enough to absorb process
+	// startup under real Windows CI contention (the observed merge_group flake,
+	// #2048 — a fixed 5s deadline for spawning and dispatching a real external
+	// process was too tight for a loaded shared runner, not evidence of a
+	// broken attach/resume path) while still leaving margin below the helper's
+	// sleep window.
 	deadline := time.Now().Add(25 * time.Second)
 	for {
 		if _, err := os.Stat(marker); err == nil {
@@ -75,18 +71,15 @@ func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 	}
 }
 
-func TestKillTerminatesPowerShellDescendants(t *testing.T) {
+func TestKillTerminatesJobDescendants(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "child.pid")
-	cmd := exec.Command(
-		"powershell.exe",
-		"-NoLogo",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"$child = Start-Process powershell.exe -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','$grandchild = Start-Process powershell.exe -ArgumentList ''-NoLogo'',''-NoProfile'',''-NonInteractive'',''-Command'',''Start-Sleep -Seconds 30'' -PassThru; Set-Content -LiteralPath $env:GOOBERS_GRANDCHILD_PID -Value $grandchild.Id; Start-Sleep -Seconds 30' -PassThru; Set-Content -LiteralPath $env:GOOBERS_CHILD_PID -Value $child.Id; Start-Sleep -Seconds 30",
-	)
 	grandchildMarker := filepath.Join(t.TempDir(), "grandchild.pid")
-	cmd.Env = append(os.Environ(), "GOOBERS_CHILD_PID="+marker, "GOOBERS_GRANDCHILD_PID="+grandchildMarker)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
+	cmd.Env = append(os.Environ(),
+		"GOOBERS_PROC_HELPER_ROLE=root",
+		"GOOBERS_PROC_HELPER_PID="+marker,
+		"GOOBERS_PROC_HELPER_GRANDCHILD="+grandchildMarker,
+	)
 	tree, err := Start(cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -160,10 +153,16 @@ func TestProcessTreeHelper(t *testing.T) {
 	pidMarker := os.Getenv("GOOBERS_PROC_HELPER_PID")
 	grandchildMarker := os.Getenv("GOOBERS_PROC_HELPER_GRANDCHILD")
 	switch role {
+	case "marker":
+		if err := os.WriteFile(os.Getenv("GOOBERS_PROC_HELPER_MARKER"), []byte("started"), 0600); err != nil {
+			t.Fatal(err)
+		}
 	case "root":
 		cmd := exec.Command(os.Args[0], "-test.run=TestProcessTreeHelper")
 		cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=child")
-		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_BREAKAWAY_FROM_JOB}
+		if os.Getenv("GOOBERS_PROC_HELPER_BREAKAWAY") == "1" {
+			cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_BREAKAWAY_FROM_JOB}
+		}
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -191,6 +190,7 @@ func TestKillTerminatesEscapedDescendants(t *testing.T) {
 		"GOOBERS_PROC_HELPER_ROLE=root",
 		"GOOBERS_PROC_HELPER_PID="+childMarker,
 		"GOOBERS_PROC_HELPER_GRANDCHILD="+grandchildMarker,
+		"GOOBERS_PROC_HELPER_BREAKAWAY=1",
 	)
 	tree, err := Start(cmd)
 	if err != nil {
