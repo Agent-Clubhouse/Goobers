@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -33,8 +34,50 @@ type ADODoneStates struct {
 
 // WithADODoneStates sets the states that count as done for predecessor
 // blocking. Omitting it keeps the default: Resolved, Completed and Removed.
+// Names are normalized as validate reads them (normalizeADODoneStates).
 func WithADODoneStates(states ADODoneStates) func(*ADOProvider) {
-	return func(p *ADOProvider) { p.doneStates = states }
+	normalized := normalizeADODoneStates(states)
+	return func(p *ADOProvider) { p.doneStates = normalized }
+}
+
+// normalizeADODoneStates trims the category, type and state names, so a name
+// written with stray whitespace matches as `goobers validate` reports it, and
+// merges ByType keys that differ only in case (ADO type names are
+// case-insensitive) into one lower-cased key holding the union of their
+// states, so the lookup no longer depends on map iteration order.
+func normalizeADODoneStates(states ADODoneStates) ADODoneStates {
+	out := ADODoneStates{Categories: trimmedNonEmpty(states.Categories)}
+	if len(states.ByType) == 0 {
+		return out
+	}
+	keys := make([]string, 0, len(states.ByType))
+	for key := range states.ByType {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out.ByType = make(map[string][]string, len(keys))
+	for _, key := range keys {
+		folded := strings.ToLower(strings.TrimSpace(key))
+		for _, state := range trimmedNonEmpty(states.ByType[key]) {
+			if !containsFold(out.ByType[folded], state) {
+				out.ByType[folded] = append(out.ByType[folded], state)
+			}
+		}
+		if _, ok := out.ByType[folded]; !ok {
+			out.ByType[folded] = []string{}
+		}
+	}
+	return out
+}
+
+func trimmedNonEmpty(values []string) []string {
+	var out []string
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // done reports whether a predecessor of itemType in the named state and

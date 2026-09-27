@@ -325,6 +325,22 @@ func TestCheckADOBacklogStatesWarnsOnUnknownDoneStates(t *testing.T) {
 	}
 }
 
+func TestCheckADOBacklogStatesWarnsOnCaseDuplicateTypes(t *testing.T) {
+	states := fullADOBacklogStates()
+	states.byType = map[string][]providers.ADOWorkItemState{
+		"Bug": {{Name: "Closed", Category: "Completed"}},
+		"bug": {{Name: "Closed", Category: "Completed"}},
+	}
+	stubADOAccessReads(t, fullADORepositoryAccess(), states)
+	var out strings.Builder
+	collector := &diagnosticCollector{}
+	checkADOBacklogStates("alpha", map[string][]string{"Bug": {"Closed"}, "bug": {"Closed"}},
+		instance.RepoRef{Provider: "ado"}, "work", nil, &out, "gaggle.yaml", collector)
+	if len(collector.findings) != 1 || !strings.Contains(collector.findings[0].Message, `keys "Bug" and "bug" name the same work item type`) {
+		t.Fatalf("diagnostics = %+v, want one duplicate-key warning", collector.findings)
+	}
+}
+
 func TestCheckADOBacklogStatesWarnsWhenCreateTypeCannotClose(t *testing.T) {
 	states := adoBacklogStates{createType: "Story", createStates: []providers.ADOWorkItemState{{Name: "New", Category: "Proposed"}}}
 	stubADOAccessReads(t, fullADORepositoryAccess(), states)
