@@ -313,6 +313,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		WorktreeManager:     nil,
 		BranchNamespaces:    branchNamespacesByGaggle(set),
 		GaggleProject:       project,
+		GaggleBacklog:       gaggleBacklogRef(set, gaggle),
 		HarnessInfo:         harnessInfo,
 		CredentialStores:    stores,
 		SandboxPosture:      instance.EffectiveAgenticSandbox(cfg, nil),
@@ -514,6 +515,17 @@ func gaggleProjectRef(set *instance.ConfigSet, gaggle string) apiv1.RepoRef {
 		}
 	}
 	return apiv1.RepoRef{}
+}
+
+// gaggleBacklogRef returns the named gaggle's backlog, or the zero value when
+// the gaggle is not configured.
+func gaggleBacklogRef(set *instance.ConfigSet, gaggle string) apiv1.BacklogRef {
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == gaggle {
+			return set.Gaggles[i].Spec.Backlog
+		}
+	}
+	return apiv1.BacklogRef{}
 }
 
 // resolveGoobersForGaggle returns the goober specs a declared gaggle's stages

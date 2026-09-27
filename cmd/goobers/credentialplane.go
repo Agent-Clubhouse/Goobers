@@ -56,7 +56,10 @@ const credentialResolutionMarker = "credentials.resolved"
 // credentialGaggleScope is what the plane needs to rebuild one gaggle's
 // credential grants: the same inputs buildRunnerConfig hands buildCredentials.
 type credentialGaggleScope struct {
-	Project         apiv1.RepoRef
+	Project apiv1.RepoRef
+	// Backlog selects the backlog-role binding when the backlog lives on
+	// another provider than Project (topology (b)).
+	Backlog         apiv1.BacklogRef
 	AdditionalRepos []apiv1.RepoRef
 }
 
@@ -85,6 +88,7 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 		g := &set.Gaggles[i]
 		defs.Scopes[g.Name] = credentialGaggleScope{
 			Project:         g.Spec.Project,
+			Backlog:         g.Spec.Backlog,
 			AdditionalRepos: g.Spec.AdditionalRepos,
 		}
 	}
@@ -575,11 +579,7 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 	build := s.buildSources
 	if build == nil {
 		build = func(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
-			owner := scope.Project.Owner
-			if scope.Project.Provider == apiv1.ProviderADO && scope.Project.Project != "" {
-				owner += "/" + scope.Project.Project
-			}
-			return buildCredentials(s.config, s.stores, owner, scope.Project.Name, scope.AdditionalRepos, s.shared)
+			return buildGaggleCredentials(s.config, s.stores, scope.Project, scope.Backlog, scope.AdditionalRepos, s.shared)
 		}
 	}
 	resolver, grants, err := build(scope)

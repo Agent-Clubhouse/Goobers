@@ -147,7 +147,7 @@ func validateStoredCopilotAuthBoundaries(cfg *instance.Config, set *instance.Con
 		grantedCapabilities, ok := grantedCapabilitiesByGaggle[workflowGaggle]
 		if !ok {
 			var err error
-			grantedCapabilities, err = configuredCredentialGrants(cfg, gaggleProjectRef(set, workflowGaggle))
+			grantedCapabilities, err = configuredCredentialGrants(cfg, gaggleProjectRef(set, workflowGaggle), gaggleBacklogRef(set, workflowGaggle))
 			if err != nil {
 				return fmt.Errorf("workflow %q: resolve configured credential grants: %w", workflowName, err)
 			}
@@ -194,7 +194,7 @@ func validateStoredCopilotAuthBoundaries(cfg *instance.Config, set *instance.Con
 	return nil
 }
 
-func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef) (map[string]bool, error) {
+func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, backlog apiv1.BacklogRef) (map[string]bool, error) {
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
 	for _, repo := range cfg.Repos {
 		owner := repo.Owner
@@ -234,7 +234,7 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef) (ma
 	for i, c := range credentialedCapabilities {
 		caps[i] = string(c)
 	}
-	grants := credentials.RunnerGrants(bindings, owner, project.Name, caps, overrides)
+	grants := credentials.RoleRunnerGrants(bindings, owner, project.Name, gaggleBacklogRole(project, backlog), caps, overrides)
 	result := make(map[string]bool, len(grants))
 	for _, grant := range grants {
 		result[grant.Capability] = true

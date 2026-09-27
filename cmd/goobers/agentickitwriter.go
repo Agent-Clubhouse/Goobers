@@ -161,7 +161,7 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 		return nil, fmt.Errorf("resolve credential stores: %w", err)
 	}
 	project := gaggleProjectRef(set, env.Gaggle)
-	_, grants, err := buildCredentials(cfg, stores, project.Owner, project.Name, nil, w.registrar)
+	_, grants, err := buildRoleCredentials(cfg, stores, project.Owner, project.Name, gaggleBacklogRole(project, gaggleBacklogRef(set, env.Gaggle)), nil, w.registrar)
 	if err != nil {
 		return nil, fmt.Errorf("derive credential grants: %w", err)
 	}

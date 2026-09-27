@@ -31,6 +31,33 @@ type RepoBinding struct {
 // credentialedCaps order), then any override-only capabilities (in overrides
 // order), so the resulting grant slice is stable across builds.
 func RunnerGrants(bindings []RepoBinding, owner, name string, credentialedCaps []string, overrides []Grant) []Grant {
+	return RoleRunnerGrants(bindings, owner, name, nil, credentialedCaps, overrides)
+}
+
+// BacklogRole names the repository that backs a gaggle's backlog-role
+// capabilities when its backlog lives on a different provider than its
+// project (topology (b), docs/design/ado-parity-dsl-2-0.md §7.2). Owner and
+// Name select the binding by the gaggle's backlog repository; Capabilities is
+// the capability family that routes to the backlog provider (§3.1).
+type BacklogRole struct {
+	Owner        string
+	Name         string
+	Capabilities []string
+}
+
+// RoleRunnerGrants is RunnerGrants with a role-aware binding choice. A nil
+// backlog is RunnerGrants exactly. With a backlog role, each credentialed
+// capability in backlog.Capabilities is granted the binding matching the
+// backlog repository's owner/name instead of the project repo's, and every
+// other capability keeps the project binding.
+//
+// The two repositories are on different providers, so a backlog capability is
+// never backed by the project repo's credential: when no binding with a token
+// matches the backlog repository, the capability gets no grant and a stage
+// that declares it fails closed for want of a credential, rather than sending
+// one provider's credential to the other. overrides still apply last, as in
+// RunnerGrants.
+func RoleRunnerGrants(bindings []RepoBinding, owner, name string, backlog *BacklogRole, credentialedCaps []string, overrides []Grant) []Grant {
 	defaultRef := ""
 	if len(bindings) > 0 {
 		defaultRef = bindings[0].TokenRef
@@ -44,15 +71,21 @@ func RunnerGrants(bindings []RepoBinding, owner, name string, credentialedCaps [
 		}
 	}
 
+	backlogRef, backlogCaps := backlogRoleRef(bindings, backlog)
 	grantRef := make(map[string]string, len(credentialedCaps)+len(overrides))
 	order := make([]string, 0, len(credentialedCaps)+len(overrides))
-	if defaultRef != "" {
-		for _, c := range credentialedCaps {
-			if _, exists := grantRef[c]; !exists {
-				order = append(order, c)
-			}
-			grantRef[c] = defaultRef
+	for _, c := range credentialedCaps {
+		ref := defaultRef
+		if backlogCaps[c] {
+			ref = backlogRef
 		}
+		if ref == "" {
+			continue
+		}
+		if _, exists := grantRef[c]; !exists {
+			order = append(order, c)
+		}
+		grantRef[c] = ref
 	}
 	for _, o := range overrides {
 		if _, exists := grantRef[o.Capability]; !exists {
@@ -66,6 +99,26 @@ func RunnerGrants(bindings []RepoBinding, owner, name string, credentialedCaps [
 		grants = append(grants, Grant{Capability: c, Ref: grantRef[c]})
 	}
 	return grants
+}
+
+// backlogRoleRef resolves the token ref backing a backlog role and the set of
+// capabilities it backs. It returns an empty ref (no grant) when no binding
+// with a token matches the backlog repository, and no capabilities for a nil
+// role.
+func backlogRoleRef(bindings []RepoBinding, backlog *BacklogRole) (string, map[string]bool) {
+	if backlog == nil {
+		return "", nil
+	}
+	caps := make(map[string]bool, len(backlog.Capabilities))
+	for _, c := range backlog.Capabilities {
+		caps[c] = true
+	}
+	for _, b := range bindings {
+		if b.TokenRef != "" && b.Owner == backlog.Owner && b.Name == backlog.Name {
+			return b.TokenRef, caps
+		}
+	}
+	return "", caps
 }
 
 // RepoScopedCapability returns the repo-qualified grant key for a base capability

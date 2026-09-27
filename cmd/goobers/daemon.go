@@ -828,7 +828,7 @@ func buildSchedulerDefinitions(
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, hooks, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
-			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
+			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleBacklogRef(set, gaggle), gaggleAdditionalRepos[gaggle], harnessInfo,
 			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle], generation,
 		)
 		if err != nil {
@@ -954,7 +954,7 @@ func buildSchedulerDefinitions(
 		}
 		if len(scheds) > 0 {
 			project := gaggleProjects[wf.Spec.Gaggle]
-			if err := validateScheduledWorkflowCredentialEnvironment(machine, cfg, project); err != nil {
+			if err := validateScheduledWorkflowCredentialEnvironment(machine, cfg, project, gaggleBacklogRef(set, wf.Spec.Gaggle)); err != nil {
 				return nil, err
 			}
 		}
@@ -1119,8 +1119,8 @@ func compileSchedulerMachinesWithProgress(
 	)
 }
 
-func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, cfg *instance.Config, project apiv1.RepoRef) error {
-	envByCapability, err := scheduledWorkflowCredentialEnvironments(cfg, project)
+func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, cfg *instance.Config, project apiv1.RepoRef, backlog apiv1.BacklogRef) error {
+	envByCapability, err := scheduledWorkflowCredentialEnvironments(cfg, project, backlog)
 	if err != nil {
 		return err
 	}
@@ -1146,7 +1146,7 @@ func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, c
 	return nil
 }
 
-func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1.RepoRef) (map[string]string, error) {
+func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1.RepoRef, backlog apiv1.BacklogRef) (map[string]string, error) {
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
 	envByRef := make(map[string]string, len(cfg.Repos)+len(cfg.Credentials)+1)
 	for _, repo := range cfg.Repos {
@@ -1198,7 +1198,7 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 	for i, capability := range credentialedCapabilities {
 		caps[i] = string(capability)
 	}
-	grants := credentials.RunnerGrants(bindings, owner, project.Name, caps, overrides)
+	grants := credentials.RoleRunnerGrants(bindings, owner, project.Name, gaggleBacklogRole(project, backlog), caps, overrides)
 	envByCapability := make(map[string]string, len(grants))
 	for _, grant := range grants {
 		if env := envByRef[grant.Ref]; env != "" {
@@ -1291,7 +1291,7 @@ func buildRetainedLegacyRunner(
 	}
 	rn, manager, _, err := buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
-		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
+		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, apiv1.BacklogRef{}, nil, harnessInfo, stores,
 		// Legacy retained runtime is not gaggle-scoped, so only the
 		// instance-wide posture can apply (no gaggle override to consult).
 		instance.EffectiveAgenticSandbox(cfg, nil),
@@ -1332,6 +1332,7 @@ func buildRuntimeRunner(
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
+	gaggleBacklog apiv1.BacklogRef,
 	additionalRepos []apiv1.RepoRef,
 	harnessInfo harnessPreflightInfo,
 	stores credentials.StoreResolver,
@@ -1359,6 +1360,7 @@ func buildRuntimeRunner(
 		WorktreeManager:      manager,
 		BranchNamespaces:     branchNamespaces,
 		GaggleProject:        gaggleProject,
+		GaggleBacklog:        gaggleBacklog,
 		AdditionalRepos:      additionalRepos,
 		HarnessInfo:          harnessInfo,
 		CredentialStores:     stores,
