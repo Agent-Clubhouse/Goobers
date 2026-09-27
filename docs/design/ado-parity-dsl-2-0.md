@@ -405,6 +405,7 @@ applies prefix scopes, path filters and lazy evaluation.
   §2). Fall back to scanning the configurations when the evaluations list is empty:
   - page through `x-ms-continuationtoken`;
   - match `Prefix` scopes by ref folder;
+  - match a `DefaultBranch` scope only on the repository's default branch;
   - treat a policy with an empty scope as repo-wide.
 
 **Classification** (feeds `ci-poll` and `merge-queue-poll`):
@@ -419,7 +420,8 @@ applies prefix scopes, path filters and lazy evaluation.
 
 With auto-complete armed and a human approval still missing, the PR stays `active`
 (F4). `merge-queue-poll` reports "awaiting human approval" instead of timing out or
-treating the PR as evicted.
+treating the PR as evicted. The evaluations read behind that report is diagnostic:
+when it fails, the entry is reported as plain pending rather than failing the poll.
 
 ## 6. ADO backlog correctness
 

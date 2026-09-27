@@ -2,6 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/executor"
@@ -62,5 +67,56 @@ func TestReportPRStatusRequiresPRNumber(t *testing.T) {
 	}
 	if !bytes.Contains(stderr.Bytes(), []byte("prNumber is required")) {
 		t.Fatalf("stderr = %q, want a prNumber-required error", stderr.String())
+	}
+}
+
+// TestReportPRStatusHeadShaPinsTheStatus proves the optional headSha input
+// reaches the provider: on Azure DevOps a status whose evidence covers an
+// older commit than the pull request's latest iteration is refused, and one
+// that covers the latest iteration is posted.
+func TestReportPRStatusHeadShaPinsTheStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		headSha  string
+		wantCode int
+	}{
+		{name: "reviewed head is current", headSha: "current-head", wantCode: 0},
+		{name: "head moved after the evidence", headSha: "reviewed-head", wantCode: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initDemo(t)
+			setNonGitHubStageEnv(t, providers.ProviderADO)
+			t.Setenv(executor.InputEnvVar("prNumber"), "77")
+			t.Setenv(executor.InputEnvVar("headSha"), tc.headSha)
+			t.Setenv(executor.InputEnvVar("resultFile"), filepath.Join(t.TempDir(), "status-result.json"))
+			posted := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pullrequests/77/iterations"):
+					_ = json.NewEncoder(w).Encode(map[string]any{"value": []map[string]any{
+						{"id": 1, "sourceRefCommit": map[string]string{"commitId": "reviewed-head"}},
+						{"id": 2, "sourceRefCommit": map[string]string{"commitId": "current-head"}},
+					}})
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pullrequests/77/iterations/2/statuses"):
+					posted = true
+					_ = json.NewEncoder(w).Encode(map[string]int{"id": 11})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			pointADOStageProviderAt(t, server)
+
+			code, _, stderr := runArgs(t, "report-pr-status", root)
+			if code != tc.wantCode {
+				t.Fatalf("code = %d, want %d; stderr = %q", code, tc.wantCode, stderr)
+			}
+			if posted != (tc.wantCode == 0) {
+				t.Fatalf("status posted = %v, want %v", posted, tc.wantCode == 0)
+			}
+			if tc.wantCode != 0 && !strings.Contains(stderr, "head moved from reviewed-head to current-head") {
+				t.Fatalf("stderr = %q, want the head-moved refusal", stderr)
+			}
+		})
 	}
 }

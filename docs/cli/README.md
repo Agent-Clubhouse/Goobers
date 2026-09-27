@@ -3307,7 +3307,9 @@ gate both pass, so the default published state is `succeeded`.
 Inputs (Task.Inputs / inputsFrom): prNumber (required, from open-pr),
 statusName (default "validation"), statusGenre (default "goobers"),
 state (succeeded|failed|pending, default succeeded), description,
-targetUrl (default the PR url), resultFile (default status-result.json).
+targetUrl (default the PR url), headSha (optional: the commit the evidence
+covers; Gitea posts the status on it, Azure DevOps refuses when the PR
+head has moved past it), resultFile (default status-result.json).
 Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.
 ~~~
 

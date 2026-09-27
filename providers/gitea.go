@@ -1391,8 +1391,26 @@ func (p *GiteaProvider) UpdateBranch(ctx context.Context, req UpdateBranchReques
 	return UpdateBranchResult{Number: number, URL: pr.HTMLURL}, nil
 }
 
+// pullRequestStatusHead picks the commit the status is posted on: the pinned
+// req.HeadSHA when the caller set one (a Gitea commit status belongs to that
+// commit, so evidence for it never lands on a newer head), otherwise the pull
+// request's live head.
+func (p *GiteaProvider) pullRequestStatusHead(ctx context.Context, req PullRequestStatusRequest) (string, error) {
+	if head := strings.TrimSpace(req.HeadSHA); head != "" {
+		return head, nil
+	}
+	pr, err := p.getPull(ctx, req.Repository, req.PullID)
+	if err != nil {
+		return "", err
+	}
+	if pr.Head.SHA == "" {
+		return "", fmt.Errorf("pull request %s has no head sha", req.PullID)
+	}
+	return pr.Head.SHA, nil
+}
+
 // PublishPullRequestStatus posts a Gitea commit status a status-check branch
-// policy can gate on (#772), resolving the head SHA first.
+// policy can gate on (#772), on the pinned req.HeadSHA or the live head.
 func (p *GiteaProvider) PublishPullRequestStatus(ctx context.Context, req PullRequestStatusRequest) (PullRequestStatusResult, error) {
 	if err := p.ready(); err != nil {
 		return PullRequestStatusResult{}, err
@@ -1406,18 +1424,15 @@ func (p *GiteaProvider) PublishPullRequestStatus(ctx context.Context, req PullRe
 	if req.Name == "" {
 		return PullRequestStatusResult{}, fmt.Errorf("status name is required")
 	}
-	pr, err := p.getPull(ctx, req.Repository, req.PullID)
+	headSHA, err := p.pullRequestStatusHead(ctx, req)
 	if err != nil {
 		return PullRequestStatusResult{}, err
-	}
-	if pr.Head.SHA == "" {
-		return PullRequestStatusResult{}, fmt.Errorf("pull request %s has no head sha", req.PullID)
 	}
 	genre := req.Genre
 	if genre == "" {
 		genre = "goobers"
 	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "statuses", pr.Head.SHA)
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "statuses", headSHA)
 	if err != nil {
 		return PullRequestStatusResult{}, err
 	}
