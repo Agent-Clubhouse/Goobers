@@ -46,7 +46,7 @@ No new DSL is involved. Each stage is routed by role
   `issue-close-out`, the issue half of `post-merge`, `backlog-assignment`,
   `backlog-health`, `backlog-dedupe`, `check-issue-staleness`, the
   decomposition stages (`select-source`, `validate-plan`, `publish-batch`),
-  `set-milestone`, and the daemon's park, failure and claim-release handlers
+  `set-milestone` run as its own deterministic stage, and the daemon's park, failure and claim-release handlers
   read and write the GitHub issues. Claims are keyed by the backlog provider.
 - **Credentials follow the capability family.** `github:issues:*` and
   `github:milestones:write` are backed by the backlog repository's `repos[]`
@@ -123,11 +123,19 @@ Not yet covered in topology (b):
 - A stage that is not routed by role and opens the Azure DevOps repository
   with a `github:issues:*` or `github:milestones:write` credential. That
   credential belongs to GitHub in topology (b), so the stage stops with the
-  refusal above. Every shipped backlog stage listed above is routed by role.
+  refusal above. Every shipped deterministic backlog stage listed above is
+  routed by role.
   `pr-remediation`'s `respond-to-findings` is not: it posts its account to
   the pull request with the `github:issues:write` credential it declares, so
   in topology (b) it stops with that refusal after the remediated branch is
   published.
+- Agentic stages that declare `github:issues:*` or `github:milestones:write`,
+  such as the curator in `backlog-curation`. An agentic stage's credentials
+  follow the invocation's repository, which is the Azure DevOps project, so
+  the harness withholds every `github:*` credential from it. The agent cannot
+  label, curate or set milestones on the GitHub backlog, including through
+  `goobers set-milestone`; those calls fail closed. Curate the GitHub backlog
+  by hand until this is covered.
 
 ## One gaggle, two code providers (topology c)
 

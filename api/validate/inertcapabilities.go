@@ -11,17 +11,22 @@ import (
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
-// inertADORebinding names, for each ado:* capability that no DSL 2.0 stage
-// consumes, what authorizes the operation instead under the rebinding rule
-// (docs/design/ado-parity-dsl-2-0.md §3.1): a github:* capability declared on
-// a provider-dispatched stage authorizes the same operation on Azure DevOps
-// and selects its credential. ado:pr:status and ado:pr:complete are absent on
-// purpose: both are optional but honoured when declared (§3.3).
+// inertADORebinding names, for each ado:* capability that no built-in DSL 2.0
+// stage consumes, what authorizes the operation instead under the rebinding
+// rule (docs/design/ado-parity-dsl-2-0.md §3.1): a github:* capability
+// declared on a provider-dispatched stage authorizes the same operation on
+// the provider the stage routes to and selects its credential. The advice is
+// provider-neutral because the warning fires on every provider. Two names are
+// absent on purpose (§3.3): ado:pr:complete is honoured when declared, and
+// ado:pr:status is accepted on report-pr-status but harmless (nothing reads
+// it). ado:work-items:write is consumed only by open-pr, so its advice says
+// that renaming it would not keep open-pr's native work-item link.
 var inertADORebinding = map[capability.Capability]string{
-	capability.ADOCodeRead:       "no capability is needed: repository reads use the repository credential",
-	capability.ADOPRComment:      fmt.Sprintf("%q authorizes this operation on Azure DevOps", capability.GitHubPRWrite),
-	capability.ADOPRWrite:        fmt.Sprintf("%q authorizes this operation on Azure DevOps", capability.GitHubPRWrite),
-	capability.ADOWorkItemsWrite: fmt.Sprintf("%q authorizes this operation on Azure DevOps (%q for reads)", capability.GitHubIssuesWrite, capability.GitHubIssuesRead),
+	capability.ADOCodeRead:  "no capability is needed: repository reads use the repository credential",
+	capability.ADOPRComment: fmt.Sprintf("%q authorizes this operation on the stage's provider", capability.GitHubPRWrite),
+	capability.ADOPRWrite:   fmt.Sprintf("%q authorizes this operation on the stage's provider", capability.GitHubPRWrite),
+	capability.ADOWorkItemsWrite: fmt.Sprintf("%q authorizes work-item updates on the backlog provider (%q for reads); only open-pr consumes %q, to link a pull request to its work item",
+		capability.GitHubIssuesWrite, capability.GitHubIssuesRead, capability.ADOWorkItemsWrite),
 }
 
 // inertADOCapabilityAdvice returns the rebinding advice for value when it is
@@ -38,8 +43,9 @@ func inertADOCapabilityAdvice(value string) (string, bool) {
 // no consumer and names what authorizes the operation. A built-in command
 // whose manifest row lists the capability does consume it (open-pr links an
 // ADO pull request to its work item with ado:work-items:write), so such a
-// declaration is not reported. DSL 3.0 is left to the provider access layer
-// design (docs/design/provider-access-layer.md).
+// declaration is not reported, and a task that runs its own command gets
+// wording of its own (inertTaskCapabilityMessage). DSL 3.0 is left to the
+// provider access layer design (docs/design/provider-access-layer.md).
 func (ix *index) checkInertADOCapabilities(r *Report) {
 	gooberUsers := map[string]bool{}
 	for _, indexed := range ix.workflows {
@@ -49,13 +55,9 @@ func (ix *index) checkInertADOCapabilities(r *Report) {
 		}
 		for _, task := range w.Spec.Tasks {
 			for _, value := range task.Capabilities {
-				advice, inert := inertADOCapabilityAdvice(value)
-				if !inert || taskCommandConsumes(task, value) {
-					continue
+				if message, inert := inertTaskCapabilityMessage(task, value); inert {
+					r.addWarning(WarningInertADOCapability, indexed.file, w.Spec.Gaggle, "Workflow", w.Name, "%s", message)
 				}
-				r.addWarning(WarningInertADOCapability, indexed.file, w.Spec.Gaggle, "Workflow", w.Name,
-					"task %q declares capability %q, which no DSL 2.0 stage consumes on this task; %s (rebinding rule, docs/design/ado-parity-dsl-2-0.md §3.1)",
-					task.Name, value, advice)
 			}
 			if task.Type == apiv1.TaskAgentic && task.Goober != "" {
 				gooberUsers[task.Goober] = true
@@ -87,17 +89,37 @@ func (ix *index) checkInertADOCapabilities(r *Report) {
 	}
 }
 
-// taskCommandConsumes reports whether task runs a built-in `goobers`
-// subcommand whose provider-stage manifest row lists value.
-func taskCommandConsumes(task apiv1.Task, value string) bool {
-	if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
-		return false
+// inertTaskCapabilityMessage returns the CAP006 message for an inert ado:*
+// capability value that task declares, and false when there is nothing to
+// report. A built-in `goobers` stage that does not consume it gets the
+// rebinding advice. A task that runs its own command (a custom deterministic
+// command or an agentic stage) receives the credential its declared
+// capabilities select, so the name may be in use there: that warning says so
+// instead of telling the author to rename it.
+func inertTaskCapabilityMessage(task apiv1.Task, value string) (string, bool) {
+	advice, inert := inertADOCapabilityAdvice(value)
+	if !inert {
+		return "", false
 	}
-	entry, ok := providerstage.Lookup(task.Run.Command[1])
-	if !ok {
-		return false
+	entry, builtin := taskBuiltinStage(task)
+	if !builtin {
+		return fmt.Sprintf("task %q declares capability %q, which no built-in DSL 2.0 stage consumes; the task's own command receives the credential it selects, so keep it only if that command uses it (for built-in stages, %s; rebinding rule, docs/design/ado-parity-dsl-2-0.md §3.1)",
+			task.Name, value, advice), true
 	}
-	return slices.ContainsFunc(entry.Capabilities, func(use providerstage.CapabilityUse) bool {
+	if slices.ContainsFunc(entry.Capabilities, func(use providerstage.CapabilityUse) bool {
 		return string(use.Capability) == value
-	})
+	}) {
+		return "", false
+	}
+	return fmt.Sprintf("task %q declares capability %q, which no DSL 2.0 stage consumes on this task; %s (rebinding rule, docs/design/ado-parity-dsl-2-0.md §3.1)",
+		task.Name, value, advice), true
+}
+
+// taskBuiltinStage returns the provider-stage manifest row of the built-in
+// `goobers` subcommand task runs, and false when it runs anything else.
+func taskBuiltinStage(task apiv1.Task) (providerstage.Command, bool) {
+	if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
+		return providerstage.Command{}, false
+	}
+	return providerstage.Lookup(task.Run.Command[1])
 }

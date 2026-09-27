@@ -17,6 +17,10 @@ carrying the nominated label, excludes anything flake-watch already
 fingerprints, enforces maxPerRun, and creates issues with a retry-safe
 idempotency key.
 
+file-issues files GitHub issues only. It refuses any other repository
+provider (Azure DevOps, Gitea) with an error, so work nomination is not
+available there.
+
 goobers:approved (the SEC-047 trust label) is applied on one condition
 only (decision 004): the nomination's evidence names a finding — a go
 vet diagnostic, a golangci-lint issue (linter + file + line) or a go

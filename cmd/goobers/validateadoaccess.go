@@ -171,7 +171,7 @@ func reportADOPermissions(r adoAccessReporter, access adoRepositoryAccess) bool 
 			strings.Join(missing, ", ")))
 	}
 	if !access.permissions[providers.ADOGitForcePush] {
-		r.warn(adoAccessForcePushCode, fmt.Sprintf("the identity lacks %q; pushing a rewritten run branch (for example after PR remediation) will fail",
+		r.warn(adoAccessForcePushCode, fmt.Sprintf("the identity lacks %q at repository level; Azure DevOps lets a branch's creator force-push its own branches, but rewriting or deleting branches it did not create (for example remediating a human-opened pull request) will fail",
 			providers.ADOGitForcePush.String()))
 	}
 	if held := adoPermissionsWithValue(access.permissions, adoBypassGitPermissions, true); len(held) > 0 {

@@ -660,9 +660,9 @@ deployed config separately, and it can drift from the checked-in reference.
 
 Arbitrary tier-1/tier-2 repositories are current scope, not a future V1
 prerequisite. Repository-neutral GitHub onboarding and multi-gaggle configuration
-are shipped, alongside the Azure DevOps provider (supported, though with known
-provider-parity gaps still open, e.g. #5554, #5648, #5649 — see
-`docs/provider-capability-matrix.md`) and an experimental Gitea provider,
+are shipped, alongside the Azure DevOps provider (supported; its remaining
+provider differences are listed in `docs/provider-capability-matrix.md` and
+`docs/guides/ado-limitations.md`) and an experimental Gitea provider,
 packaged-install machinery, the journal-backed portal, capability-scoped and
 per-goober credential injection, optional OIDC, and a narrow Tutor workflow.
 Native sandboxed stage execution has also shipped (epic #35, closed) but
