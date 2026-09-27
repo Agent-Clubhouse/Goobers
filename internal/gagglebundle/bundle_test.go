@@ -32,7 +32,7 @@ func TestExportDigestIsStableAndSanitized(t *testing.T) {
 	if first.Digest != second.Digest {
 		t.Fatalf("unchanged definition digest moved: %s != %s", first.Digest, second.Digest)
 	}
-	if first.ExportedAt == second.ExportedAt {
+	if first.ExportedAt.Equal(second.ExportedAt) {
 		t.Fatal("export timestamps unexpectedly equal")
 	}
 	if first.Source.Digest != first.Digest {

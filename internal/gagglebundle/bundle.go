@@ -1,3 +1,4 @@
+// Package gagglebundle exports and imports sanitized, portable gaggle definitions.
 package gagglebundle
 
 import (
@@ -28,13 +29,19 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-var (
-	ErrInvalidBundle           = errors.New("invalid gaggle bundle")
-	ErrGaggleNotFound          = errors.New("gaggle not found")
-	ErrNameConflict            = errors.New("gaggle name conflict")
-	ErrRepositoryAuthorization = errors.New("destination repository authorization is required")
-	prepareConfigDirSwap       = instance.PrepareConfigDirSwap
-)
+// ErrInvalidBundle indicates that a bundle violates its schema or safety contract.
+var ErrInvalidBundle = errors.New("invalid gaggle bundle")
+
+// ErrGaggleNotFound indicates that the requested source gaggle does not exist.
+var ErrGaggleNotFound = errors.New("gaggle not found")
+
+// ErrNameConflict indicates that the destination gaggle name already exists.
+var ErrNameConflict = errors.New("gaggle name conflict")
+
+// ErrRepositoryAuthorization indicates that the destination lacks a required repository authorization.
+var ErrRepositoryAuthorization = errors.New("destination repository authorization is required")
+
+var prepareConfigDirSwap = instance.PrepareConfigDirSwap
 
 const (
 	maxCompanionFiles        = 256
@@ -195,13 +202,13 @@ func Validate(bundle apiv1.GaggleBundle) error {
 		return fmt.Errorf("%w: source.name %q does not match definition gaggle %q", ErrInvalidBundle, bundle.Source.Name, bundle.Definition.Gaggle.Name)
 	}
 	if err := validateReferences(bundle.Definition); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+		return fmt.Errorf("%w: %w", ErrInvalidBundle, err)
 	}
 	if err := validateSanitizedDefinition(bundle.Definition); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+		return fmt.Errorf("%w: %w", ErrInvalidBundle, err)
 	}
 	if err := validateFiles(bundle.Definition); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+		return fmt.Errorf("%w: %w", ErrInvalidBundle, err)
 	}
 	digest, err := DefinitionDigest(bundle.Definition)
 	if err != nil {
