@@ -253,16 +253,17 @@ func backlogProviderRef(gaggle string, project apiv1.RepoRef, backlog apiv1.Back
 // work-item calls; a backlog on another provider (topology (b)) opens that
 // provider.
 func backlogProviderRepo(routed, backlog providers.RepositoryRef) providers.RepositoryRef {
-	if backlog.Provider != routed.Provider {
+	if backlogOnOtherProvider(routed, backlog) {
 		return backlog
 	}
 	return routed
 }
 
 // backlogOnOtherProvider reports whether backlog work leaves the routed
-// provider (topology (b)).
+// provider: topology (b), a GitHub or Gitea backlog for Azure DevOps code
+// (crossProviderBacklog).
 func backlogOnOtherProvider(routed, backlog providers.RepositoryRef) bool {
-	return backlog.Provider != routed.Provider
+	return crossProviderBacklog(apiv1.Provider(routed.Provider), apiv1.Provider(backlog.Provider))
 }
 
 // applyGaggleDoneStates sets the ADO provider's predecessor done states from
