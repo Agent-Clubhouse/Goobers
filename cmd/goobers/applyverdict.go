@@ -1673,6 +1673,10 @@ func publishADOPassVerdict(
 		Name:        "validation",
 		State:       providers.CheckStatePassing,
 		Description: "goobers merge-review verdict: pass",
+		// Pin to the reviewed head: a push after the pin check must not
+		// inherit this pass on ADO's latest iteration. The non-pass path
+		// stays unpinned, since a failing status on a newer head only blocks.
+		HeadSHA: current.HeadSHA,
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
 	}

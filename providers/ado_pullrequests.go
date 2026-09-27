@@ -318,24 +318,56 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 // iterations list is not guaranteed to be sorted, so callers must scan for
 // the max rather than take the last entry.
 func (p *ADOProvider) latestPullRequestIteration(ctx context.Context, repo RepositoryRef, pullID string) (int, error) {
-	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
+	latest, err := p.latestPullRequestIterationEntry(ctx, repo, pullID)
 	if err != nil {
 		return 0, err
 	}
+	return latest.ID, nil
+}
+
+// latestPullRequestIterationEntry is latestPullRequestIteration with the
+// iteration's source commit, for callers that pin to a reviewed head.
+func (p *ADOProvider) latestPullRequestIterationEntry(ctx context.Context, repo RepositoryRef, pullID string) (adoPullRequestIteration, error) {
+	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
+	if err != nil {
+		return adoPullRequestIteration{}, err
+	}
 	var iterations adoPullRequestIterationsResponse
 	if err := p.do(ctx, http.MethodGet, iterationsEndpoint, nil, &iterations); err != nil {
-		return 0, err
+		return adoPullRequestIteration{}, err
 	}
-	latestIteration := 0
+	var latest adoPullRequestIteration
 	for _, iteration := range iterations.Value {
-		if iteration.ID > latestIteration {
-			latestIteration = iteration.ID
+		if iteration.ID > latest.ID {
+			latest = iteration
 		}
 	}
-	if latestIteration == 0 {
-		return 0, fmt.Errorf("ado pull request %s returned no iterations", pullID)
+	if latest.ID == 0 {
+		return adoPullRequestIteration{}, fmt.Errorf("ado pull request %s returned no iterations", pullID)
 	}
-	return latestIteration, nil
+	return latest, nil
+}
+
+// pullRequestStatusIteration returns the iteration a status belongs on: the
+// latest one. When headSHA pins the evidence to a commit, the latest
+// iteration must carry that commit; a push that landed after the review
+// yields PullRequestHeadMovedError instead of a status that would satisfy
+// a reset-on-push policy for code nobody reviewed. An older iteration that
+// carries headSHA is never used: a status there no longer gates anything.
+func (p *ADOProvider) pullRequestStatusIteration(ctx context.Context, repo RepositoryRef, pullID, headSHA string) (int, error) {
+	latest, err := p.latestPullRequestIterationEntry(ctx, repo, pullID)
+	if err != nil {
+		return 0, err
+	}
+	headSHA = strings.TrimSpace(headSHA)
+	if headSHA == "" {
+		return latest.ID, nil
+	}
+	actual := strings.TrimSpace(latest.SourceRefCommit.CommitID)
+	if !strings.EqualFold(actual, headSHA) {
+		return 0, PullRequestHeadMovedError{Expected: headSHA, Actual: actual}
+	}
+	return latest.ID, nil
 }
 
 // PublishPullRequestStatus posts an Azure DevOps pull-request status so a
@@ -344,6 +376,8 @@ func (p *ADOProvider) latestPullRequestIteration(ctx context.Context, repo Repos
 // for PR correctness (#772). Statuses are posted against the latest PR
 // iteration rather than the PR itself: a status policy with reset-on-push
 // rejects PR-level statuses with 403, and iteration-scoped statuses satisfy it.
+// A set req.HeadSHA must be the latest iteration's source commit, so the
+// status never vouches for a push that landed after the review.
 func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequestStatusRequest) (PullRequestStatusResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestStatusResult{}, err
@@ -354,7 +388,7 @@ func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequ
 	if req.Name == "" {
 		return PullRequestStatusResult{}, fmt.Errorf("status name is required")
 	}
-	latestIteration, err := p.latestPullRequestIteration(ctx, req.Repository, req.PullID)
+	latestIteration, err := p.pullRequestStatusIteration(ctx, req.Repository, req.PullID, req.HeadSHA)
 	if err != nil {
 		return PullRequestStatusResult{}, err
 	}
@@ -751,9 +785,16 @@ type adoPRLinks struct {
 }
 
 type adoPullRequestIterationsResponse struct {
-	Value []struct {
-		ID int `json:"id"`
-	} `json:"value"`
+	Value []adoPullRequestIteration `json:"value"`
+}
+
+// adoPullRequestIteration is one push to a pull request's source branch;
+// sourceRefCommit is the head commit that push produced.
+type adoPullRequestIteration struct {
+	ID              int `json:"id"`
+	SourceRefCommit struct {
+		CommitID string `json:"commitId"`
+	} `json:"sourceRefCommit"`
 }
 
 type adoPullRequestIterationChanges struct {
