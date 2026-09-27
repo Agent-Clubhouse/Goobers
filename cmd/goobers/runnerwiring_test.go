@@ -1872,7 +1872,7 @@ func TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != len(credentialedCapabilities) {
+	if len(grants) != len(repoCredentialedCapabilityNames()) {
 		t.Fatalf("ADO identity grants = %#v, want one per credentialed capability", grants)
 	}
 	for _, grant := range grants {

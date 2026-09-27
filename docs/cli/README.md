@@ -2685,8 +2685,12 @@ empty value is not an override — every empty input falls back.
 
 itemID explicitly identifies a selected backlog item when the workflow
 read it without claiming. If a claimed item also exists, the IDs must
-match. On ADO, native work-item linking separately requires the
-ado:work-items:write capability; GitHub never resolves that capability.
+match. On ADO, native work-item linking separately uses the
+ado:work-items:write capability, which the ADO repository credential backs
+when the stage declares it. Without it the pull request still opens, with
+a text reference and a note that the item is not linked natively; a
+delivered credential that ADO rejects fails the stage. GitHub never
+resolves that capability.
 
 Body precedence: an explicitly set non-empty body is used as given and
 bypasses structured rendering; otherwise a structured body is rendered
