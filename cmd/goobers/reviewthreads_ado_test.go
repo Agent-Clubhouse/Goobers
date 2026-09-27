@@ -50,6 +50,14 @@ func (f *fakeADOReviewThreads) threadsJSON() map[string]any {
 		}}},
 		// ADO-synthesized vote thread: skipped as system.
 		{"id": 2, "comments": []map[string]any{{"id": 1, "commentType": "system", "content": "voted"}}},
+		// A reviewer's general PR comment with no file anchor: a conversation
+		// comment, not a review thread, so it is skipped. Were it emitted, its
+		// empty path would fail the remediation brief schema.
+		{"id": 3, "status": "active", "comments": []map[string]any{{
+			"id": 1, "parentCommentId": 0, "content": "general remark", "commentType": "text",
+			"author":        map[string]string{"id": "reviewer-guid", "displayName": "Reviewer"},
+			"publishedDate": "2026-09-01T10:00:00Z",
+		}}},
 	}
 	for _, id := range ids {
 		thread := f.threads[id]
@@ -202,7 +210,7 @@ func TestGatherReviewThreadsOnADO(t *testing.T) {
 	}
 	section := got.GatherReviewThreads
 	if section == nil || len(section.Reviews) != 0 || len(section.InlineComments) != 2 {
-		t.Fatalf("gathered review threads = %#v, want 2 inline comments and no reviews (own and system threads skipped)", section)
+		t.Fatalf("gathered review threads = %#v, want 2 inline comments and no reviews (own, system and general threads skipped)", section)
 	}
 	live, resolved := section.InlineComments[0], section.InlineComments[1]
 	if live.ThreadID != "77/5" || live.ID != 1 || live.Path != "worker.go" || live.Line != 5 || live.IsResolved || live.IsOutdated {

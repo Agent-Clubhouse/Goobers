@@ -42,19 +42,22 @@ func adoReviewThreadIsResolved(status string) bool {
 // carry no body, so there is no native review to report.
 //
 // Threads are skipped when ADO synthesized them (a "system" comment type),
-// when they are deleted, or when the Goobers identity itself opened them
-// (matched by authenticatedUser.id, never by display name — ADO-N5): the
-// verdict, finding-history and sticky-state threads Goobers writes are not
-// review feedback. Deleted and system comments inside a kept thread are
-// dropped too.
+// when they are deleted, when they have no file anchor, or when the Goobers
+// identity itself opened them (matched by authenticatedUser.id, never by
+// display name — ADO-N5): the verdict, finding-history and sticky-state
+// threads Goobers writes are not review feedback. A thread without a
+// threadContext.filePath is a general PR conversation comment, not a review
+// thread: GitHub review threads are always file-anchored, the remediation
+// brief requires a path on every inline comment, and gather-pr-context's
+// thread-comment read already surfaces general comments. Deleted and system
+// comments inside a kept thread are dropped too.
 //
 // Each comment's ThreadID is the composite "<pullID>/<threadId>" so
 // ResolvePullRequestReviewThread, which receives no pull id, can address the
 // thread; ID is ADO's thread-local comment id and InReplyTo its
 // parentCommentId. Path is threadContext.filePath without ADO's leading "/"
 // (repository-relative, as on GitHub); Line is rightFileStart.line, or
-// leftFileStart.line with Side "LEFT" for a comment on a deleted line. A
-// thread without a context is a general PR comment and has no Path.
+// leftFileStart.line with Side "LEFT" for a comment on a deleted line.
 //
 // IsOutdated follows adoOutdatedThreads' rule and fails open.
 func (p *ADOProvider) ListPullRequestReviewThreads(ctx context.Context, repo RepositoryRef, pullID string) (PullRequestReviewThreads, error) {
@@ -96,10 +99,11 @@ func (p *ADOProvider) ListPullRequestReviewThreads(ctx context.Context, repo Rep
 	}, nil
 }
 
-// adoReviewThreadSkipped reports whether a thread is not reviewer feedback:
-// deleted, synthesized by ADO, empty, or opened by the Goobers identity.
+// adoReviewThreadSkipped reports whether a thread is not file-anchored
+// reviewer feedback: deleted, a general (unanchored) conversation thread,
+// synthesized by ADO, empty, or opened by the Goobers identity.
 func adoReviewThreadSkipped(thread adoPullRequestThread, selfID string) bool {
-	if thread.IsDeleted {
+	if thread.IsDeleted || adoReviewThreadPath(thread) == "" {
 		return true
 	}
 	root, ok := adoThreadRootComment(thread)
@@ -107,6 +111,15 @@ func adoReviewThreadSkipped(thread adoPullRequestThread, selfID string) bool {
 		return true
 	}
 	return selfID != "" && strings.EqualFold(strings.TrimSpace(root.Author.ID), selfID)
+}
+
+// adoReviewThreadPath is a thread's repository-relative file anchor, or ""
+// for a general thread with no threadContext.filePath.
+func adoReviewThreadPath(thread adoPullRequestThread) string {
+	if thread.ThreadContext == nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(thread.ThreadContext.FilePath), "/")
 }
 
 // adoThreadRootComment is the comment that opened a thread: the first comment
@@ -148,7 +161,7 @@ func (p *ADOProvider) mapADOReviewThreadComment(repo RepositoryRef, pullID strin
 		out.URL = web + "?discussionId=" + strconv.Itoa(thread.ID)
 	}
 	if ctxt := thread.ThreadContext; ctxt != nil {
-		out.Path = strings.TrimPrefix(ctxt.FilePath, "/")
+		out.Path = adoReviewThreadPath(thread)
 		switch {
 		case ctxt.RightFileStart != nil:
 			out.Line, out.Side = ctxt.RightFileStart.Line, "RIGHT"
@@ -173,7 +186,7 @@ func (p *ADOProvider) mapADOReviewThreadComment(repo RepositoryRef, pullID strin
 func (p *ADOProvider) adoOutdatedThreads(ctx context.Context, repo RepositoryRef, pullID string, threads []adoPullRequestThread) map[int]bool {
 	candidates := make([]adoPullRequestThread, 0)
 	for _, thread := range threads {
-		if adoThreadIteration(thread) > 0 && thread.ThreadContext != nil && thread.ThreadContext.FilePath != "" {
+		if adoThreadIteration(thread) > 0 && adoReviewThreadPath(thread) != "" {
 			candidates = append(candidates, thread)
 		}
 	}
@@ -203,7 +216,7 @@ func (p *ADOProvider) adoOutdatedThreads(ctx context.Context, repo RepositoryRef
 	}
 	outdated := make(map[int]bool, len(older))
 	for _, thread := range older {
-		if !changed[strings.TrimPrefix(thread.ThreadContext.FilePath, "/")] {
+		if !changed[adoReviewThreadPath(thread)] {
 			outdated[thread.ID] = true
 		}
 	}

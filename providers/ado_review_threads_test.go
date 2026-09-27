@@ -75,8 +75,13 @@ func newADOReviewThreadsServer(t *testing.T, iterationsStatus int) (*httptest.Se
 				adoFileThread(6, "fixed", "/src/removed.go", 3, 1, adoThreadComment(1, 0, "reviewer-guid", "stale", "text")),
 				// No iteration context, file not in the diff: live (fails open).
 				adoFileThread(7, "active", "/src/removed.go", 4, 0, adoThreadComment(1, 0, "reviewer-guid", "no ctx", "text")),
-				// General comment, no file anchor; unknown status is unresolved.
-				{"id": 8, "status": "unknown", "comments": []map[string]interface{}{adoThreadComment(1, 0, "reviewer-guid", "general", "text")}},
+				// General comment, no file anchor: skipped (not a review thread).
+				{"id": 8, "status": "active", "comments": []map[string]interface{}{adoThreadComment(1, 0, "reviewer-guid", "general", "text")}},
+				// A context with an empty filePath is general too: skipped.
+				{"id": 11, "status": "active", "comments": []map[string]interface{}{adoThreadComment(1, 0, "reviewer-guid", "general", "text")},
+					"threadContext": map[string]interface{}{"filePath": ""}},
+				// Unknown status is unresolved.
+				adoFileThread(10, "unknown", "/src/a.go", 30, 0, adoThreadComment(1, 0, "reviewer-guid", "odd status", "text")),
 				// Left-side anchor.
 				{"id": 9, "status": "wontFix", "comments": []map[string]interface{}{adoThreadComment(1, 0, "reviewer-guid", "left", "text")},
 					"threadContext": map[string]interface{}{"filePath": "/src/a.go", "leftFileStart": map[string]int{"line": 7}}},
@@ -126,10 +131,10 @@ func TestADOListPullRequestReviewThreadsMapsAndSkips(t *testing.T) {
 	for _, c := range got.InlineComments {
 		byKey[key{c.ThreadID, c.ID}] = c
 	}
-	wantThreads := map[string]bool{"42/1": true, "42/5": true, "42/6": true, "42/7": true, "42/8": true, "42/9": true}
+	wantThreads := map[string]bool{"42/1": true, "42/5": true, "42/6": true, "42/7": true, "42/9": true, "42/10": true}
 	for _, c := range got.InlineComments {
 		if !wantThreads[c.ThreadID] {
-			t.Errorf("unexpected thread %q in output (system, deleted and own threads must be skipped)", c.ThreadID)
+			t.Errorf("unexpected thread %q in output (system, deleted, general and own threads must be skipped)", c.ThreadID)
 		}
 	}
 	if len(got.InlineComments) != 7 {
@@ -158,8 +163,8 @@ func TestADOListPullRequestReviewThreadsMapsAndSkips(t *testing.T) {
 	if c := byKey[key{"42/7", 1}]; c.IsOutdated {
 		t.Errorf("thread without iteration context must be live: %#v", c)
 	}
-	if c := byKey[key{"42/8", 1}]; c.Path != "" || c.Line != 0 || c.IsResolved {
-		t.Errorf("general thread must have no anchor and unknown status must be unresolved: %#v", c)
+	if c := byKey[key{"42/10", 1}]; c.Path != "src/a.go" || c.Line != 30 || c.IsResolved {
+		t.Errorf("unknown status must be unresolved: %#v", c)
 	}
 	if c := byKey[key{"42/9", 1}]; c.Side != "LEFT" || c.Line != 7 || !c.IsResolved {
 		t.Errorf("left-anchored wontFix thread = %#v", c)
