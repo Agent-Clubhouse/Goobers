@@ -900,7 +900,7 @@ func checkDocsRootsExist(base, configDir string, cfg *instance.Config, set *inst
 	}
 	ok := true
 	for _, d := range declared {
-		provider, owner, name := docsRootTargetRepository(cfg, set, d.gaggle)
+		owner, name := docsRootTargetRepository(cfg, set, d.gaggle)
 		if toplevelErr != nil {
 			// Not inside a git repository at all — the permanent, expected
 			// state of every INSTANCE ROOT (an instance root is never a
@@ -914,7 +914,7 @@ func checkDocsRootsExist(base, configDir string, cfg *instance.Config, set *inst
 				d.workflow, d.root, owner, name)
 			continue
 		}
-		if !remotesNameRepository(treeRemotes, provider, owner, name) {
+		if !remotesNameRepository(treeRemotes, owner, name) {
 			// A git checkout whose remotes do not name the target repository:
 			// a standalone workflowSource repo, or a checkout of the WRONG
 			// repo. Actionable (the operator can verify against the real
@@ -945,27 +945,23 @@ func checkDocsRootsExist(base, configDir string, cfg *instance.Config, set *inst
 // to: its spec.project, or — mirroring the runtime single-repo binding that
 // checkGaggleRepositoryBindings reports as REPO003 — instance repos[0] when
 // the project is empty and exactly one repository is configured.
-func docsRootTargetRepository(cfg *instance.Config, set *instance.ConfigSet, gaggleName string) (provider, owner, name string) {
+func docsRootTargetRepository(cfg *instance.Config, set *instance.ConfigSet, gaggleName string) (owner, name string) {
 	for _, gaggle := range set.Gaggles {
 		if gaggle.Name == gaggleName {
-			provider = string(gaggle.Spec.Project.Provider)
 			owner, name = gaggle.Spec.Project.Owner, gaggle.Spec.Project.Name
 			break
 		}
 	}
 	if owner == "" && name == "" && cfg != nil && len(cfg.Repos) == 1 {
-		provider = cfg.Repos[0].Provider
 		owner, name = cfg.Repos[0].Owner, cfg.Repos[0].Name
 	}
-	return provider, owner, name
+	return owner, name
 }
 
 // remotesNameRepository reports whether any configured git remote plausibly
 // names the owner/name repository — the #3285 test for "the validated tree IS
-// the gaggle's target repo", deliberately network-free. A github.com remote
-// with the same repository name is also a plausible checkout of a GitHub fork;
-// other providers and unrelated repository names still require an exact match.
-func remotesNameRepository(remotes []string, provider, owner, name string) bool {
+// the gaggle's target repo", deliberately network-free.
+func remotesNameRepository(remotes []string, owner, name string) bool {
 	if owner == "" || name == "" {
 		return false
 	}
@@ -973,37 +969,8 @@ func remotesNameRepository(remotes []string, provider, owner, name string) bool 
 		if remoteURLNamesRepository(remote, owner, name) {
 			return true
 		}
-		if provider == string(apiv1.ProviderGitHub) && githubRemoteNamesRepository(remote, name) {
-			return true
-		}
 	}
 	return false
-}
-
-func githubRemoteNamesRepository(remote, name string) bool {
-	path := strings.TrimSpace(remote)
-	var host string
-	if scheme := strings.Index(path, "://"); scheme >= 0 {
-		path = path[scheme+len("://"):]
-		slash := strings.Index(path, "/")
-		if slash < 0 {
-			return false
-		}
-		host, path = path[:slash], path[slash+1:]
-	} else if colon := strings.Index(path, ":"); colon >= 0 && !strings.Contains(path[:colon], "/") {
-		host, path = path[:colon], path[colon+1:]
-	} else {
-		return false
-	}
-	if at := strings.LastIndex(host, "@"); at >= 0 {
-		host = host[at+1:]
-	}
-	if !strings.EqualFold(host, "github.com") {
-		return false
-	}
-	segments := strings.Split(strings.Trim(path, "/"), "/")
-	return len(segments) == 2 &&
-		strings.EqualFold(strings.TrimSuffix(segments[1], ".git"), name)
 }
 
 // remoteURLNamesRepository matches one remote URL against owner/name: the

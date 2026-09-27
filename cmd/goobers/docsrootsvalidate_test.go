@@ -77,6 +77,7 @@ func TestValidateChecksDocsRootsInGitHubFork(t *testing.T) {
 		t.Fatal(err)
 	}
 	runGitT(t, root, "remote", "set-url", "origin", "https://github.com/fork-owner/your-repo.git")
+	runGitT(t, root, "remote", "add", "upstream", "https://github.com/your-org/your-repo.git")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 1 {
@@ -142,6 +143,20 @@ func TestValidateWarnsDocsRootsWhenTreeIsNotTargetRepository(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "DSLVERSION") {
 		t.Fatalf("stdout = %q, want the DSLVERSION summary to render past the warning", stdout)
+	}
+}
+
+func TestValidateWarnsDocsRootsForSameNamedUnrelatedGitHubRepository(t *testing.T) {
+	unsetRunContext(t)
+	root := demoWithDocsRoots(t, []string{"MISSING.md"})
+	runGitT(t, root, "remote", "set-url", "origin", "https://github.com/independent-owner/your-repo.git")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (advisory warning); stdout = %q stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `WARNING DOCS003 Workflow/default-implement: declared docs root "MISSING.md" not verified: config tree is not the target repository your-org/your-repo`) {
+		t.Fatalf("stdout = %q, want a DOCS003 warning for the same-named unrelated repository", stdout)
 	}
 }
 
@@ -233,23 +248,22 @@ func TestRemoteURLNamesRepositoryADOForms(t *testing.T) {
 
 func TestRemotesNameRepositoryGitHubForks(t *testing.T) {
 	tests := []struct {
-		name     string
-		remote   string
-		provider string
-		want     bool
+		name    string
+		remotes []string
+		want    bool
 	}{
-		{"canonical", "https://github.com/your-org/your-repo.git", "github", true},
-		{"https fork", "https://github.com/fork-owner/your-repo.git", "github", true},
-		{"ssh fork", "git@github.com:fork-owner/your-repo.git", "github", true},
-		{"unrelated GitHub repository", "https://github.com/fork-owner/unrelated.git", "github", false},
-		{"same name on unrelated host", "https://git.example.com/fork-owner/your-repo.git", "github", false},
-		{"same name is not a fork for Gitea", "https://github.com/fork-owner/your-repo.git", "gitea", false},
+		{"canonical", []string{"https://github.com/your-org/your-repo.git"}, true},
+		{"https fork with upstream", []string{"https://github.com/fork-owner/your-repo.git", "https://github.com/your-org/your-repo.git"}, true},
+		{"ssh fork with upstream", []string{"git@github.com:fork-owner/your-repo.git", "git@github.com:your-org/your-repo.git"}, true},
+		{"same-named unrelated GitHub repository", []string{"https://github.com/independent-owner/your-repo.git"}, false},
+		{"unrelated GitHub repository", []string{"https://github.com/fork-owner/unrelated.git"}, false},
+		{"same name on unrelated host", []string{"https://git.example.com/fork-owner/your-repo.git"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := remotesNameRepository([]string{tc.remote}, tc.provider, "your-org", "your-repo")
+			got := remotesNameRepository(tc.remotes, "your-org", "your-repo")
 			if got != tc.want {
-				t.Fatalf("remotesNameRepository(%q, %q) = %v, want %v", tc.remote, tc.provider, got, tc.want)
+				t.Fatalf("remotesNameRepository(%q) = %v, want %v", tc.remotes, got, tc.want)
 			}
 		})
 	}
