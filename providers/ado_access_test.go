@@ -72,13 +72,13 @@ func TestADOProviderEvaluateGitPermissions(t *testing.T) {
 		writeJSON(t, w, response)
 	})
 	provider := newADOAccessTestProvider(t, mux)
-	permissions := []ADOGitPermission{ADOGitContribute, ADOGitPullRequestBypassPolicy}
+	permissions := []ADOGitPermission{ADOGitContribute, ADOGitPullRequestPolicyOverride}
 	results, err := provider.EvaluateGitPermissions(context.Background(),
 		ADORepositoryIDs{ProjectID: "project-guid", RepositoryID: "repo-guid"}, permissions)
 	if err != nil {
 		t.Fatalf("EvaluateGitPermissions: %v", err)
 	}
-	want := map[ADOGitPermission]bool{ADOGitContribute: true, ADOGitPullRequestBypassPolicy: false}
+	want := map[ADOGitPermission]bool{ADOGitContribute: true, ADOGitPullRequestPolicyOverride: false}
 	if !reflect.DeepEqual(results, want) {
 		t.Fatalf("results = %v, want %v", results, want)
 	}
@@ -108,8 +108,8 @@ func TestADOProviderEvaluateGitPermissionsMissingValueIsError(t *testing.T) {
 	provider := newADOAccessTestProvider(t, mux)
 	_, err := provider.EvaluateGitPermissions(context.Background(),
 		ADORepositoryIDs{ProjectID: "project-guid", RepositoryID: "repo-guid"}, []ADOGitPermission{ADOGitCreateBranch})
-	if err == nil || !strings.Contains(err.Error(), "CreateBranch") {
-		t.Fatalf("err = %v, want an error naming CreateBranch", err)
+	if err == nil || !strings.Contains(err.Error(), "Create branch") {
+		t.Fatalf("err = %v, want an error naming Create branch", err)
 	}
 }
 

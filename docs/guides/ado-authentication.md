@@ -162,6 +162,51 @@ For the PAT-based onboarding path, `connect --seed` uses the same named token
 for Git reachability and Boards creation. `validate --check-repos` separately
 checks Boards read access. See the [production onboarding guide](arbitrary-repo-onboarding.md#3-initialize-the-instance).
 
+## Repository permissions
+
+Scopes limit what a credential may call. Repository permissions decide what the
+identity behind it may do. Grant the Goobers identity these Git repository
+permissions on each target repository:
+
+| Permission | Why Goobers needs it |
+| --- | --- |
+| Contribute | Push run branches |
+| Create branch | Create run branches |
+| Contribute to pull requests | Open, comment on and complete pull requests |
+| Force push (rewrite history and delete branches) | Push a rewritten run branch after remediation, and delete merged run branches. Recommended. |
+
+Do not grant it these permissions. Goobers never bypasses branch policy, and its
+identity should not be able to:
+
+| Permission | Why it must not be held |
+| --- | --- |
+| Bypass policies when completing pull requests | Lets a pull request land without its required reviewers and checks |
+| Bypass policies when pushing | Lets a push skip the policies on a protected branch |
+
+Scope blocking branch policies to the branches they protect, such as the
+default branch. A blocking policy with a **Prefix** scope over `refs/heads/`
+makes every branch accept changes only through a pull request, so Goobers
+cannot push its run branches.
+
+### What `validate --check-repos` reports
+
+After each repository is reachable, `goobers validate --check-repos` makes
+these reads against the configured organization only. It changes nothing.
+
+| Check | Result |
+| --- | --- |
+| Identity | Prints the id and UPN of the identity the credential authenticates as |
+| Contribute, Contribute to pull requests, Create branch | `ADOACCESS001` error when the identity lacks one. `validate` exits 1. |
+| Force push | `ADOACCESS002` warning when the identity lacks it |
+| Either bypass permission | `ADOACCESS003` warning when the identity holds it |
+| Branch policies | `ADOACCESS004` warning for each enabled, blocking policy with a Prefix scope over `refs/heads/` |
+| A read that fails | `ADOACCESS005` warning. The result is unknown, not missing. |
+| Boards states | For each Azure Boards backlog, prints the states of the work item type Goobers creates. A `BACKLOG002` warning names a type with no Completed state, and each `backlog.doneStates.byType` type or state name the project does not have. |
+
+Permissions are evaluated on the repository (security token
+`repoV2/<projectId>/<repositoryId>`). A deny set only on a single branch is not
+seen.
+
 ## Where the credential resolves
 
 Every auth kind resolves in the daemon. The daemon registers the repository's

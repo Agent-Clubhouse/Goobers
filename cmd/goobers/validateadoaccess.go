@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/api/validate"
@@ -40,7 +41,7 @@ var adoRequiredGitPermissions = []providers.ADOGitPermission{
 // adoBypassGitPermissions let an identity land changes past branch policy.
 // Goobers never bypasses policy, so holding either is a warning.
 var adoBypassGitPermissions = []providers.ADOGitPermission{
-	providers.ADOGitPullRequestBypassPolicy,
+	providers.ADOGitPullRequestPolicyOverride,
 	providers.ADOGitPolicyExempt,
 }
 
@@ -162,28 +163,18 @@ func reportADOPermissions(r adoAccessReporter, access adoRepositoryAccess) bool 
 		r.warn(adoAccessUnknownCode, fmt.Sprintf("could not evaluate Git permissions: %v; permissions are unknown, not missing", access.permissionsErr))
 		return true
 	}
-	var missing []string
-	for _, permission := range adoRequiredGitPermissions {
-		if !access.permissions[permission] {
-			missing = append(missing, permission.String())
-		}
-	}
+	missing := adoPermissionsWithValue(access.permissions, adoRequiredGitPermissions, false)
 	ok := len(missing) == 0
 	if !ok {
 		r.fail(adoAccessMissingPermissionCode, fmt.Sprintf(
-			"the identity lacks %s on this repository; Goobers needs Contribute, Contribute to pull requests and Create branch to push run branches and open pull requests",
+			"the identity lacks %s on this repository; Goobers needs Contribute, Contribute to pull requests and Create branch to create and push run branches and open pull requests",
 			strings.Join(missing, ", ")))
 	}
 	if !access.permissions[providers.ADOGitForcePush] {
-		r.warn(adoAccessForcePushCode, "the identity lacks ForcePush; pushing a rewritten run branch (for example after PR remediation) will fail")
+		r.warn(adoAccessForcePushCode, fmt.Sprintf("the identity lacks %q; pushing a rewritten run branch (for example after PR remediation) will fail",
+			providers.ADOGitForcePush.String()))
 	}
-	var held []string
-	for _, permission := range adoBypassGitPermissions {
-		if access.permissions[permission] {
-			held = append(held, permission.String())
-		}
-	}
-	if len(held) > 0 {
+	if held := adoPermissionsWithValue(access.permissions, adoBypassGitPermissions, true); len(held) > 0 {
 		r.warn(adoAccessBypassCode, fmt.Sprintf(
 			"the identity holds %s; Goobers never bypasses branch policy, and its identity should not be able to (remove the allow)",
 			strings.Join(held, ", ")))
@@ -192,6 +183,18 @@ func reportADOPermissions(r adoAccessReporter, access adoRepositoryAccess) bool 
 		pf(r.stdout, "REPOSITORY %s: required Git permissions held\n", r.label)
 	}
 	return ok
+}
+
+// adoPermissionsWithValue returns, quoted, the names of the permissions whose
+// evaluated value is want.
+func adoPermissionsWithValue(evaluated map[providers.ADOGitPermission]bool, permissions []providers.ADOGitPermission, want bool) []string {
+	var names []string
+	for _, permission := range permissions {
+		if evaluated[permission] == want {
+			names = append(names, strconv.Quote(permission.String()))
+		}
+	}
+	return names
 }
 
 func reportADOBlanketPolicies(r adoAccessReporter, access adoRepositoryAccess) {

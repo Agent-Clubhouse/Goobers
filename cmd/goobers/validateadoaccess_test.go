@@ -16,17 +16,17 @@ import (
 )
 
 // fullADORepositoryAccess is an access report with every required permission
-// and ForcePush held, no bypass and no blanket policy: nothing to report.
+// and Force push held, no bypass and no blanket policy: nothing to report.
 func fullADORepositoryAccess() adoRepositoryAccess {
 	return adoRepositoryAccess{
 		identity: providers.ADOIdentity{ID: "identity-guid", UniqueName: "bot@example.com"},
 		permissions: map[providers.ADOGitPermission]bool{
-			providers.ADOGitContribute:              true,
-			providers.ADOGitPullRequestContribute:   true,
-			providers.ADOGitCreateBranch:            true,
-			providers.ADOGitForcePush:               true,
-			providers.ADOGitPullRequestBypassPolicy: false,
-			providers.ADOGitPolicyExempt:            false,
+			providers.ADOGitContribute:                true,
+			providers.ADOGitPullRequestContribute:     true,
+			providers.ADOGitCreateBranch:              true,
+			providers.ADOGitForcePush:                 true,
+			providers.ADOGitPullRequestPolicyOverride: false,
+			providers.ADOGitPolicyExempt:              false,
 		},
 	}
 }
@@ -123,31 +123,31 @@ func TestCheckADORepositoryAccessDiagnostics(t *testing.T) {
 			name:     "missing create branch is an error",
 			mutate:   func(a *adoRepositoryAccess) { a.permissions[providers.ADOGitCreateBranch] = false },
 			wantOK:   false,
-			wantCode: adoAccessMissingPermissionCode, wantSev: "error", wantText: "lacks CreateBranch",
+			wantCode: adoAccessMissingPermissionCode, wantSev: "error", wantText: `lacks "Create branch"`,
 		},
 		{
 			name:     "missing pull request contribute is an error",
 			mutate:   func(a *adoRepositoryAccess) { a.permissions[providers.ADOGitPullRequestContribute] = false },
 			wantOK:   false,
-			wantCode: adoAccessMissingPermissionCode, wantSev: "error", wantText: "lacks PullRequestContribute",
+			wantCode: adoAccessMissingPermissionCode, wantSev: "error", wantText: `lacks "Contribute to pull requests"`,
 		},
 		{
 			name:     "missing force push is a warning",
 			mutate:   func(a *adoRepositoryAccess) { a.permissions[providers.ADOGitForcePush] = false },
 			wantOK:   true,
-			wantCode: adoAccessForcePushCode, wantSev: "warning", wantText: "lacks ForcePush",
+			wantCode: adoAccessForcePushCode, wantSev: "warning", wantText: `lacks "Force push"`,
 		},
 		{
 			name:     "held bypass is a warning",
-			mutate:   func(a *adoRepositoryAccess) { a.permissions[providers.ADOGitPullRequestBypassPolicy] = true },
+			mutate:   func(a *adoRepositoryAccess) { a.permissions[providers.ADOGitPullRequestPolicyOverride] = true },
 			wantOK:   true,
-			wantCode: adoAccessBypassCode, wantSev: "warning", wantText: "holds PullRequestBypassPolicy",
+			wantCode: adoAccessBypassCode, wantSev: "warning", wantText: `holds "Bypass policies when completing pull requests"`,
 		},
 		{
 			name:     "held policy exemption is a warning",
 			mutate:   func(a *adoRepositoryAccess) { a.permissions[providers.ADOGitPolicyExempt] = true },
 			wantOK:   true,
-			wantCode: adoAccessBypassCode, wantSev: "warning", wantText: "holds PolicyExempt",
+			wantCode: adoAccessBypassCode, wantSev: "warning", wantText: `holds "Bypass policies when pushing"`,
 		},
 		{
 			name: "blanket prefix policy is a warning",
@@ -273,7 +273,7 @@ func adoAccessFixture(t *testing.T, req *http.Request, token string, denyEvaluat
 		}
 		for _, evaluation := range batch.Evaluations {
 			bit := int(evaluation["permissions"].(float64))
-			evaluation["value"] = bit != int(providers.ADOGitPolicyExempt) && bit != int(providers.ADOGitPullRequestBypassPolicy)
+			evaluation["value"] = bit != int(providers.ADOGitPolicyExempt) && bit != int(providers.ADOGitPullRequestPolicyOverride)
 		}
 		body, err := json.Marshal(batch)
 		if err != nil {
@@ -360,7 +360,7 @@ func TestValidateCheckReposFailsOnMissingADOPermission(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("validate: %d stdout=%s stderr=%s", code, stdout, stderr)
 	}
-	for _, want := range []string{adoAccessMissingPermissionCode, "lacks Contribute", "/repos/0", "instance.yaml"} {
+	for _, want := range []string{adoAccessMissingPermissionCode, `lacks \"Contribute\"`, "/repos/0", "instance.yaml"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("JSON lacks %q: %s", want, stdout)
 		}

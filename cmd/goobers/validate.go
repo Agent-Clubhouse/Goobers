@@ -85,7 +85,12 @@ var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--c
 	"referenced by a goober (GBO-011) — installed, signed in, actionable\n" +
 	"guidance otherwise. --check-repos resolves each target repository's\n" +
 	"token, verifies authenticated git access, and (GitHub only) warns when\n" +
-	"a repository is larger than the checkout-size threshold. " +
+	"a repository is larger than the checkout-size threshold. On Azure DevOps\n" +
+	"it also reports the identity the credential authenticates as, fails when\n" +
+	"that identity lacks Contribute, Contribute to pull requests or Create\n" +
+	"branch, and warns on a missing Force push, a held policy bypass, a blocking\n" +
+	"Prefix policy over refs/heads/, and backlog.doneStates state names the\n" +
+	"Boards project does not have; these checks only read. " +
 	"--check-dispatch-namespaces additionally verifies, for each gaggle, that\n" +
 	"its declared isolation.namespace exists and this kubeconfig's credentials\n" +
 	"hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check\n" +

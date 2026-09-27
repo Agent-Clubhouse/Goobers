@@ -23,31 +23,34 @@ const adoGitRepositoriesNamespace = "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87"
 // value is its bit in that namespace.
 type ADOGitPermission int
 
-// The Git repositories permissions `validate --check-repos` evaluates.
+// The Git repositories permissions `validate --check-repos` evaluates. The
+// last two let an identity land changes past branch policy; the check only
+// reads whether they are held, so it can warn when they are.
 const (
-	ADOGitForcePush               ADOGitPermission = 8
-	ADOGitContribute              ADOGitPermission = 4
-	ADOGitCreateBranch            ADOGitPermission = 16
-	ADOGitPolicyExempt            ADOGitPermission = 128
-	ADOGitPullRequestContribute   ADOGitPermission = 16384
-	ADOGitPullRequestBypassPolicy ADOGitPermission = 32768
+	ADOGitContribute                ADOGitPermission = 4
+	ADOGitForcePush                 ADOGitPermission = 8
+	ADOGitCreateBranch              ADOGitPermission = 16
+	ADOGitPullRequestContribute     ADOGitPermission = 16384
+	ADOGitPolicyExempt              ADOGitPermission = 128
+	ADOGitPullRequestPolicyOverride ADOGitPermission = 32768
 )
 
-// String returns the permission's Azure DevOps name.
+// String returns the permission's name as the Azure DevOps security settings
+// show it.
 func (p ADOGitPermission) String() string {
 	switch p {
 	case ADOGitContribute:
 		return "Contribute"
 	case ADOGitForcePush:
-		return "ForcePush"
+		return "Force push"
 	case ADOGitCreateBranch:
-		return "CreateBranch"
-	case ADOGitPolicyExempt:
-		return "PolicyExempt"
+		return "Create branch"
 	case ADOGitPullRequestContribute:
-		return "PullRequestContribute"
-	case ADOGitPullRequestBypassPolicy:
-		return "PullRequestBypassPolicy"
+		return "Contribute to pull requests"
+	case ADOGitPolicyExempt:
+		return "Bypass policies when pushing"
+	case ADOGitPullRequestPolicyOverride:
+		return "Bypass policies when completing pull requests"
 	default:
 		return fmt.Sprintf("GitPermission(%d)", int(p))
 	}

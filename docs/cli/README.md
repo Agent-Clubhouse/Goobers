@@ -4635,7 +4635,12 @@ config-repo PR check surfaces failures directly on the PR diff; composes with --
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
 token, verifies authenticated git access, and (GitHub only) warns when
-a repository is larger than the checkout-size threshold. --check-dispatch-namespaces additionally verifies, for each gaggle, that
+a repository is larger than the checkout-size threshold. On Azure DevOps
+it also reports the identity the credential authenticates as, fails when
+that identity lacks Contribute, Contribute to pull requests or Create
+branch, and warns on a missing Force push, a held policy bypass, a blocking
+Prefix policy over refs/heads/, and backlog.doneStates state names the
+Boards project does not have; these checks only read. --check-dispatch-namespaces additionally verifies, for each gaggle, that
 its declared isolation.namespace exists and this kubeconfig's credentials
 hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check
 the worker runs at startup, run here ahead of a rollout; silently skipped
