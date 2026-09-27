@@ -133,12 +133,12 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider, err := backlogDedupeProvider(root, repo)
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	issueProvider, err := backlogDedupeProvider(root, backlogProviderRepo(repo, backlogRepo))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 

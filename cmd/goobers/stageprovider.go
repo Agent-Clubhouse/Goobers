@@ -131,6 +131,9 @@ func newProviderForStage(root string, repo providers.RepositoryRef, readOnly boo
 	if !ok {
 		return nil, fmt.Errorf("repository provider %q is not registered for stages", repo.Provider)
 	}
+	if err := refuseBacklogCredentialOnCodeProvider(cfg); err != nil {
+		return nil, err
+	}
 	provider, err := factory(cfg)
 	if err != nil {
 		return nil, err

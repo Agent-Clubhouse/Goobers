@@ -71,7 +71,10 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider, err := remediationStageProvider(root, repo, issuesToken, true)
+	// Originating issues are read on the routed repository, or on the backlog
+	// provider when the backlog lives on another provider (topology (b)).
+	issuesRepo := backlogProviderRepo(repo, backlogRepoRefForStage(root, repo))
+	issuesProvider, err := remediationStageProvider(root, issuesRepo, issuesToken, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -102,10 +105,10 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 	if !foundPR {
 		pf(stderr, "warning: selected PR #%s no longer resolves; emitting empty issue context\n", brief.SelectedNumber)
 	} else {
-		refs := closingIssueNumbers(prBody)
+		refs := postMergeClosingIDs(prBody, repo, issuesRepo)
 		issues = make([]apiv1.RemediationIssue, 0, len(refs))
 		for _, number := range refs {
-			item, issueErr := issuesProvider.GetWorkItem(ctx, repo, number)
+			item, issueErr := issuesProvider.GetWorkItem(ctx, issuesRepo, number)
 			if providers.IsNotFoundError(issueErr) {
 				pf(stderr, "warning: originating issue #%s no longer resolves; omitting it from issue context\n", number)
 				continue

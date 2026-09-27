@@ -346,7 +346,14 @@ Contract rules:
   every ADO auth kind resolves in the daemon, a stage receives only the
   `GOOBERS_CRED_<capability>` values its declared capabilities deliver (plus
   the non-secret `GOOBERS_REPO_AUTH_SCHEME`), and no stage reads
-  `repos[].auth` (see [the stage contract](stage-contract.md)). A task whose
+  `repos[].auth` (see [the stage contract](stage-contract.md)). When a
+  gaggle keeps its backlog on another provider than its code (topology (b):
+  a GitHub or Gitea backlog for Azure DevOps code), the credential a
+  capability delivers follows its family: `github:issues:*` and
+  `github:milestones:write` resolve from the `repos[]` entry for the backlog
+  repository, every other capability from the project repository's, and a
+  backlog-family capability with no such entry delivers no credential rather
+  than the other provider's. A task whose
   command, policy, persona, or verdict vocabulary can prescribe an external
   mutation also declares that closed vocabulary in
   `policyActions`. Goober definitions make persona prescriptions

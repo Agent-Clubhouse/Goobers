@@ -45,6 +45,7 @@ func TestStartInputVersionPinsEveryStartSpecField(t *testing.T) {
 		BacklogQueryRequireLabels: "goobers:cloud",
 		GooberDigest:              "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
 		HITL:                      &HITLPolicy{Enabled: true, WaitSeconds: 3600, Actors: []string{"ops"}},
+		RoleRoutedBacklogProvider: apiv1.ProviderGitHub,
 	}
 	specValue := reflect.ValueOf(spec)
 	for i := 0; i < specValue.NumField(); i++ {

@@ -396,7 +396,7 @@ func TestScheduledWorkflowCredentialEnvironmentsUsesRuntimeSourcePrecedence(t *t
 		Provider: apiv1.ProviderGitHub,
 		Owner:    "acme",
 		Name:     "widget",
-	})
+	}, apiv1.BacklogRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestScheduledWorkflowCredentialEnvironmentsUsesGitHubAppPrivateKeys(t *test
 		Provider: apiv1.ProviderGitHub,
 		Owner:    "acme",
 		Name:     "widget",
-	})
+	}, apiv1.BacklogRef{})
 	if err != nil {
 		t.Fatal(err)
 	}

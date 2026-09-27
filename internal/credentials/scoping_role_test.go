@@ -1,0 +1,85 @@
+package credentials
+
+import (
+	"reflect"
+	"testing"
+)
+
+// TestRunnerGrants_BacklogRoleBindsIssueFamilyToBacklogRepo covers topology
+// (b) (docs/design/ado-parity-dsl-2-0.md §7.2 step 2): the backlog-family
+// capabilities bind to the backlog repository's credential, and pull-request
+// and repository capabilities keep the project repository's.
+func TestRunnerGrants_BacklogRoleBindsIssueFamilyToBacklogRepo(t *testing.T) {
+	bindings := []RepoBinding{
+		{Owner: "example-org/example-project", Name: "service", TokenRef: "example-org/example-project/service"},
+		{Owner: "example-org", Name: "backlog", TokenRef: "example-org/backlog"},
+	}
+	caps := []string{"repo:push", "github:issues:read", "github:issues:write", "github:pr:write", "github:milestones:write"}
+	role := &BacklogRole{Owner: "example-org", Name: "backlog", Capabilities: []string{"github:issues:read", "github:issues:write", "github:milestones:write"}}
+
+	got := grantMap(RunnerGrants(bindings, "example-org/example-project", "service", role, caps, nil))
+	want := map[string]string{
+		"repo:push":               "example-org/example-project/service",
+		"github:pr:write":         "example-org/example-project/service",
+		"github:issues:read":      "example-org/backlog",
+		"github:issues:write":     "example-org/backlog",
+		"github:milestones:write": "example-org/backlog",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("grants = %v, want %v", got, want)
+	}
+}
+
+// TestRunnerGrants_UnboundBacklogFailsClosed: with no repos[] credential
+// for the backlog repository, the backlog-family capabilities get no grant at
+// all. They must never fall back to the project repository's credential, which
+// belongs to the other provider.
+func TestRunnerGrants_UnboundBacklogFailsClosed(t *testing.T) {
+	bindings := []RepoBinding{
+		{Owner: "example-org/example-project", Name: "service", TokenRef: "example-org/example-project/service"},
+		{Owner: "example-org", Name: "backlog"}, // configured without a credential
+	}
+	caps := []string{"repo:push", "github:issues:write"}
+	role := &BacklogRole{Owner: "example-org", Name: "backlog", Capabilities: []string{"github:issues:write"}}
+
+	got := grantMap(RunnerGrants(bindings, "example-org/example-project", "service", role, caps, nil))
+	if ref, ok := got["github:issues:write"]; ok {
+		t.Fatalf("github:issues:write granted %q; an unbound backlog role must grant nothing", ref)
+	}
+	if got["repo:push"] != "example-org/example-project/service" {
+		t.Fatalf("repo:push granted %q, want the project credential", got["repo:push"])
+	}
+
+	// An explicit credentials: override still sources the capability.
+	overrides := []Grant{{Capability: "github:issues:write", Ref: "credential:github:issues:write"}}
+	got = grantMap(RunnerGrants(bindings, "example-org/example-project", "service", role, caps, overrides))
+	if got["github:issues:write"] != "credential:github:issues:write" {
+		t.Fatalf("override not applied: %v", got)
+	}
+}
+
+// TestRunnerGrants_BacklogRoleDisablesFirstBindingFallback: with a backlog
+// role, a project repository that matches no binding exactly gets no grant for
+// its capabilities, even when the backlog repository is listed first. Without
+// a role the first-binding fallback is unchanged.
+func TestRunnerGrants_BacklogRoleDisablesFirstBindingFallback(t *testing.T) {
+	bindings := []RepoBinding{
+		{Owner: "example-org", Name: "backlog", TokenRef: "example-org/backlog"},
+		{Owner: "example-org/example-project", Name: "other-service", TokenRef: "example-org/example-project/other-service"},
+	}
+	caps := []string{"repo:push", "github:pr:write", "github:issues:write"}
+	role := &BacklogRole{Owner: "example-org", Name: "backlog", Capabilities: []string{"github:issues:write"}}
+
+	got := grantMap(RunnerGrants(bindings, "example-org/example-project", "service", role, caps, nil))
+	want := map[string]string{"github:issues:write": "example-org/backlog"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("grants = %v, want only the backlog family %v", got, want)
+	}
+
+	got = grantMap(RunnerGrants(bindings, "example-org/example-project", "service", nil, caps, nil))
+	for _, c := range caps {
+		if got[c] != "example-org/backlog" {
+			t.Fatalf("without a role %s granted %q, want the first binding", c, got[c])
+		}
+	}
+}

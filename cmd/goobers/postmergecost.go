@@ -375,7 +375,14 @@ func splitInt64ByWeight(total int64, keys []string, weights map[string]int64, we
 }
 
 func mergedPullRequestComment(pullNumber string, report postMergeCostReport, issueID string) string {
-	comment := fmt.Sprintf("Merged in pull request #%s.", pullNumber)
+	return mergedPullRequestCommentAt("#"+pullNumber, report, issueID)
+}
+
+// mergedPullRequestCommentAt is mergedPullRequestComment with the pull
+// request named by pullRef ("#<n>", or its URL when the item lives on another
+// provider; see postMergePullRequestRef).
+func mergedPullRequestCommentAt(pullRef string, report postMergeCostReport, issueID string) string {
+	comment := fmt.Sprintf("Merged in pull request %s.", pullRef)
 	if report.Total.NanoAIU == nil {
 		return comment
 	}

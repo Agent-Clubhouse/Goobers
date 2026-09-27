@@ -157,12 +157,12 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider, err := newBacklogHealthProvider(root, repo, !*feedback)
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	issueProvider, err := newBacklogHealthProvider(root, backlogProviderRepo(repo, backlogRepo), !*feedback)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
 	trustLabel := providerInput("trustLabel", "")
 	readyLabel := providerInput("readyLabel", providers.LabelReady)
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))

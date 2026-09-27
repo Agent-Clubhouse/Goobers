@@ -278,7 +278,8 @@ const (
 	// (for example a GitHub project with a Gitea backlog). It is strict-neutral:
 	// such configs validated cleanly, --strict included, before the ADO-N13
 	// guard shipped, so promoting it would turn unchanged non-ADO configs red
-	// on upgrade. The ADO case is the hard error CFG010 instead.
+	// on upgrade. An ADO backlog for non-ADO code is the hard error CFG010; a
+	// GitHub or Gitea backlog for ADO code is topology (b) and accepted.
 	WarningGaggleMixedProvider WarningCode = "CFG011"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
@@ -1156,8 +1157,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleCheckout(r)
 	// Managed working-copy root normalization and cross-gaggle collisions (#3663).
 	ix.checkGaggleWorkcopies(r)
-	// A backlog on a different provider than the project is refused when ADO
-	// is on either side (ADO-N13); topology (b) support lands in ADO-N31. A
+	// A GitHub or Gitea backlog for an ADO project is topology (b), routed by
+	// role (ADO-N31). An ADO backlog for non-ADO code stays refused; a
 	// non-ADO mismatch (e.g. GitHub project, Gitea backlog) is warned, not
 	// refused, so no existing non-ADO config breaks.
 	ix.checkGaggleProviderTopology(r)
@@ -1947,21 +1948,26 @@ func (ix *index) checkGaggleWorkcopies(r *Report) {
 	}
 }
 
-// checkGaggleProviderTopology flags a gaggle whose backlog provider differs
-// from its project (code) provider. Every backlog stage today opens the
-// routed *project* provider (cmd/goobers/backlogquery.go), so a mismatched
-// backlog silently queries the wrong forge instead of failing loudly.
+// checkGaggleProviderTopology checks a gaggle whose backlog provider differs
+// from its project (code) provider.
+//
+// A GitHub or Gitea backlog for an Azure DevOps project is topology (b)
+// (docs/design/ado-parity-dsl-2-0.md §7.2, ADO-N31): backlog stages open the
+// backlog provider, backlog capabilities bind to the backlog repository's
+// credential, and pull requests refer to the item by URL. It is accepted when
+// spec.backlog.project names the backlog repository as owner/name, which is
+// how its provider and credential are found.
+//
+// An Azure DevOps backlog for non-ADO code is refused (CFG010): nothing in
+// the gaggle names the backlog's ADO organization, so its stages would
+// address the wrong service. A mismatch between two non-ADO providers (e.g.
+// GitHub project, Gitea backlog) keeps the routed project provider and is
+// warned instead of refused, so no existing non-ADO config breaks under the
+// no-breaking-change goal.
 //
 // A project/backlog split that stays on the SAME provider (e.g. an ADO
 // project with the backlog in a different ADO project) is unaffected: that
 // is the supported "ADO project split" and Provider values are equal there.
-//
-// A mismatch where ADO is on either side is refused outright (ADO-N13):
-// that is the case the v0.5.0 code path silently mis-routes. A mismatch
-// between two non-ADO providers (e.g. GitHub project, Gitea backlog) is
-// warned instead of refused, so no existing non-ADO config breaks under the
-// no-breaking-change goal. Full mixed-provider support is planned for
-// v0.5.x (ADO-N31), which lifts this guard.
 func (ix *index) checkGaggleProviderTopology(r *Report) {
 	for _, name := range sortedGaggleNames(ix.gaggles) {
 		spec := ix.gaggles[name].Spec
@@ -1970,14 +1976,27 @@ func (ix *index) checkGaggleProviderTopology(r *Report) {
 		if project == "" || backlog == "" || project == backlog {
 			continue
 		}
-		msg := "spec.backlog.provider %q differs from spec.project.provider %q; a backlog on a different " +
-			"provider than the project is not yet supported and would query the wrong forge — " +
-			"planned for v0.5.x (ADO-N31)"
-		if project == apiv1.ProviderADO || backlog == apiv1.ProviderADO {
-			r.add(errorGaggleMixedProviderADO, Error, ix.gaggleFile[name], "Gaggle", name, msg, backlog, project)
-			continue
+		switch {
+		case project == apiv1.ProviderADO:
+			if owner, repo, ok := strings.Cut(spec.Backlog.Project, "/"); !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+				r.add(errorGaggleMixedProviderADO, Error, ix.gaggleFile[name], "Gaggle", name,
+					"spec.backlog.project %q must name the %s backlog repository as owner/name; a backlog on a different "+
+						"provider than the project is found, and its credential bound, by that repository",
+					spec.Backlog.Project, backlog)
+			}
+		case backlog == apiv1.ProviderADO:
+			r.add(errorGaggleMixedProviderADO, Error, ix.gaggleFile[name], "Gaggle", name,
+				"spec.backlog.provider %q differs from spec.project.provider %q; an Azure DevOps backlog is supported "+
+					"only for Azure DevOps code — a GitHub or Gitea backlog for Azure DevOps code is the supported "+
+					"mixed topology",
+				backlog, project)
+		default:
+			r.add(WarningGaggleMixedProvider, Warning, ix.gaggleFile[name], "Gaggle", name,
+				"spec.backlog.provider %q differs from spec.project.provider %q; a backlog on a different "+
+					"provider than the project is not supported between these providers, and backlog stages "+
+					"query the project provider",
+				backlog, project)
 		}
-		r.add(WarningGaggleMixedProvider, Warning, ix.gaggleFile[name], "Gaggle", name, msg, backlog, project)
 	}
 }
 

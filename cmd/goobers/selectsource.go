@@ -42,7 +42,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 	}
 	l := layoutFor(root)
 
-	repo, err := providerRepo(root)
+	repo, err := decompositionIssueRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

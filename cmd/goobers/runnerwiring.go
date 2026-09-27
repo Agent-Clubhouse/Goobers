@@ -99,6 +99,7 @@ type runnerCompositionInput struct {
 	WorktreeManager      *worktree.Manager
 	BranchNamespaces     map[string]string
 	GaggleProject        apiv1.RepoRef
+	GaggleBacklog        apiv1.BacklogRef
 	AdditionalRepos      []apiv1.RepoRef
 	HarnessInfo          harnessPreflightInfo
 	CredentialStores     credentials.StoreResolver
@@ -134,11 +135,9 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// Computed before the worktree Manager so its per-repo git-auth resolver can
 	// back each read-only reference-repo clone with that repo's contents:read
 	// token (MGV-10/#1285, consumed by MGV-11/#1286).
-	gaggleOwner := gaggleProject.Owner
-	if gaggleProject.Provider == apiv1.ProviderADO && gaggleProject.Project != "" {
-		gaggleOwner += "/" + gaggleProject.Project
-	}
-	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, gaggleProject.Name, additionalRepos, sharedReg)
+	// A backlog on another provider (topology (b)) binds the backlog-family
+	// capabilities to the backlog repository's credential.
+	resolver, grants, err := buildGaggleCredentials(cfg, stores, gaggleProject, input.GaggleBacklog, additionalRepos, sharedReg)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}

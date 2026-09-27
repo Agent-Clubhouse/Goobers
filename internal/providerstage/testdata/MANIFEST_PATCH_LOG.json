@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "97c3d8c3033976ee9318d9af7e504a50de7a78966c12fc770cd9345c55cffa32",
+  "snapshotSha256": "ff2e04db1adf9813a3318cb9fab754572600cffb387aaf2f2dd00f757439ac31",
   "changes": [
     {
       "version": 1,
@@ -48,6 +48,10 @@
     {
       "version": 12,
       "description": "Reword the consequence text of the optional ado:pr:complete use on merge-pr and merge-queue-poll (ADO-N2, docs/design/ado-parity-dsl-2-0.md section 3.3): github:pr:merge is the landing authority on every provider, and ado:pr:complete, when declared, is used instead on Azure DevOps. Text only: no capability, optional bit, flag or result-file field changes, so every shipped config's admission is unchanged."
+    },
+    {
+      "version": 13,
+      "description": "Add optional uses for topology (b) (ADO-N31, docs/design/ado-parity-dsl-2-0.md section 7.2): open-pr gains optional github:issues:read and github:issues:write for the claimed-issue staleness re-check on a GitHub/Gitea backlog, and issue-close-out gains optional github:pr:write and provider:pr:write for the pull-request lookup on the Azure DevOps code provider. Additive and optional only: no required use, flag or result-file field changes, so every shipped config keeps compiling and no capability is auto-derived onto a task."
     }
   ]
 }

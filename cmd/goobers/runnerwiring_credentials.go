@@ -57,6 +57,101 @@ import (
 // each gains only a repo-qualified contents:read grant from its own token, never
 // a write capability. Pass nil for instance-level or single-repo callers.
 func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
+	return buildRoleCredentials(cfg, stores, gaggleOwner, gaggleName, nil, additionalRepos, registrar)
+}
+
+// buildGaggleCredentials is buildCredentials for one gaggle's project and
+// backlog: a gaggle whose backlog lives on another provider than its project
+// (topology (b)) has its backlog-family capabilities bound to the backlog
+// repository's credential (gaggleBacklogRole); every other gaggle gets exactly
+// buildCredentials' grants.
+func buildGaggleCredentials(cfg *instance.Config, stores credentials.StoreResolver, project apiv1.RepoRef, backlog apiv1.BacklogRef, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
+	return buildRoleCredentials(cfg, stores, credentialBindingOwner(project), project.Name, gaggleBacklogRole(project, backlog), additionalRepos, registrar)
+}
+
+// credentialBindingOwner is the owner half of a repository's credential
+// binding key: the owner, qualified by the project on Azure DevOps.
+func credentialBindingOwner(project apiv1.RepoRef) string {
+	if project.Provider == apiv1.ProviderADO && project.Project != "" {
+		return project.Owner + "/" + project.Project
+	}
+	return project.Owner
+}
+
+// backlogRoleCapabilities is the capability family that routes to a gaggle's
+// backlog provider (docs/design/ado-parity-dsl-2-0.md §3.1).
+var backlogRoleCapabilities = []capability.Capability{
+	capability.GitHubIssuesRead, capability.GitHubIssuesWrite, capability.GitHubIssuesApprove, capability.GitHubMilestonesWrite,
+}
+
+// gaggleBacklogRole returns the credential role binding for a gaggle whose
+// backlog lives on another provider than its project (crossProviderBacklog):
+// the backlog-family capabilities bind to the repos[] entry matching the
+// backlog.project owner/name. It is nil for every other gaggle, which keeps
+// RunnerGrants' single project binding. A malformed backlog.project matches no
+// binding, so those capabilities fail closed instead of falling back to the
+// project's credential.
+func gaggleBacklogRole(project apiv1.RepoRef, backlog apiv1.BacklogRef) *credentials.BacklogRole {
+	if !crossProviderBacklog(project.Provider, backlog.Provider) {
+		return nil
+	}
+	owner, name, ok := strings.Cut(backlog.Project, "/")
+	if !ok || owner == "" || name == "" {
+		return backlogRoleFor("", "")
+	}
+	return backlogRoleFor(owner, name)
+}
+
+// backlogRoleFor binds the backlog-family capabilities to the repos[] entry
+// for owner/name. An empty owner/name matches no binding.
+func backlogRoleFor(owner, name string) *credentials.BacklogRole {
+	role := &credentials.BacklogRole{Owner: owner, Name: name, Capabilities: make([]string, len(backlogRoleCapabilities))}
+	for i, c := range backlogRoleCapabilities {
+		role.Capabilities[i] = string(c)
+	}
+	return role
+}
+
+// daemonIdentityGrantScope is the repository a daemon identity mints for and
+// the capabilities it backs, for one gaggle. Without a backlog role that is
+// the gaggle's project repository and the whole daemon-mutation set, as
+// before. With one (topology (b)) the daemon identity is a GitHub identity
+// (a GitHub PAT or App) and the project is on Azure DevOps, so it backs only
+// the backlog-family capabilities of the set, for the backlog repository; the
+// pull-request and repository capabilities keep the Azure DevOps repository's
+// own credential and never receive the GitHub one.
+func daemonIdentityGrantScope(gaggleOwner, gaggleName string, backlog *credentials.BacklogRole) (string, string, []capability.Capability) {
+	if backlog == nil {
+		return gaggleOwner, gaggleName, daemonIdentityCapabilities
+	}
+	family := make(map[string]bool, len(backlog.Capabilities))
+	for _, c := range backlog.Capabilities {
+		family[c] = true
+	}
+	var caps []capability.Capability
+	for _, c := range daemonIdentityCapabilities {
+		if family[string(c)] {
+			caps = append(caps, c)
+		}
+	}
+	return backlog.Owner, backlog.Name, caps
+}
+
+// daemonIdentityOverrides is the grants a daemon identity backs for one
+// gaggle, by capability: the whole daemon-mutation set, or in topology (b)
+// only its backlog-family subset (daemonIdentityGrantScope). The credential
+// preflights use it so they agree with buildRoleCredentials about which
+// credential backs each capability.
+func daemonIdentityOverrides(backlog *credentials.BacklogRole) []credentials.Grant {
+	_, _, caps := daemonIdentityGrantScope("", "", backlog)
+	grants := make([]credentials.Grant, len(caps))
+	for i, c := range caps {
+		grants[i] = credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName}
+	}
+	return grants
+}
+
+func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string, backlog *credentials.BacklogRole, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
 	var sources map[string]credentials.ExpiringResolveFunc
@@ -82,8 +177,9 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	// repo-default grant).
 	var daemonIdentityOverrides []credentials.Grant
 	if cfg.DaemonIdentity != nil {
+		identityOwner, identityName, identityCaps := daemonIdentityGrantScope(gaggleOwner, gaggleName, backlog)
 		if cfg.DaemonIdentity.GitHubApp() {
-			mint, err := newDaemonIdentityGitHubAppTokenSource(cfg.DaemonIdentity, gaggleOwner, gaggleName, registrar, stores)
+			mint, err := newDaemonIdentityGitHubAppTokenSource(cfg.DaemonIdentity, identityOwner, identityName, registrar, stores)
 			if err != nil {
 				return nil, nil, fmt.Errorf("build credentials: daemonIdentity: %w", err)
 			}
@@ -94,8 +190,8 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		} else {
 			refs = append(refs, cfg.DaemonIdentity.Token.CredentialTokenRef(daemonIdentityRefName))
 		}
-		daemonIdentityOverrides = make([]credentials.Grant, len(daemonIdentityCapabilities))
-		for i, c := range daemonIdentityCapabilities {
+		daemonIdentityOverrides = make([]credentials.Grant, len(identityCaps))
+		for i, c := range identityCaps {
 			daemonIdentityOverrides[i] = credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName}
 		}
 	}
@@ -132,7 +228,7 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		}
 		overrides = append(overrides, credentials.Grant{Capability: key, Ref: credentialRefName(key)})
 	}
-	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, caps, overrides)
+	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, backlog, caps, overrides)
 	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
 	// AdditionalRepos is granted only a repo-qualified contents:read token, drawn
 	// from that repo's own configured token binding. These runner-owned grants

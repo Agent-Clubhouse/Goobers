@@ -145,7 +145,30 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		// pinned at start. Nil on every instance that did not opt in, which
 		// is the rollback posture and the pre-protocol behaviour exactly.
 		HITL: engineHITLPolicy(req.cfg),
+		// Topology (b): a stage pod cannot resolve role routing, so the
+		// engine refuses to place this run's stages in a pod.
+		RoleRoutedBacklogProvider: roleRoutedBacklogProvider(req.set, req.gaggle),
 	}, nil
+}
+
+// roleRoutedBacklogProvider is the named gaggle's backlog provider when its
+// backlog is routed by role to another provider than its code
+// (crossProviderBacklog, topology (b)), and empty for every other gaggle.
+func roleRoutedBacklogProvider(set *instance.ConfigSet, gaggle string) apiv1.Provider {
+	if set == nil {
+		return ""
+	}
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		if g.Name != gaggle {
+			continue
+		}
+		if crossProviderBacklog(g.Spec.Project.Provider, g.Spec.Backlog.Provider) {
+			return g.Spec.Backlog.Provider
+		}
+		return ""
+	}
+	return ""
 }
 
 // engineHITLPolicy translates the instance's engine.hitl block into the

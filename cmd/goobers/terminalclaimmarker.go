@@ -89,13 +89,29 @@ func buildTerminalClaimMarkerRelease(l instance.Layout, cfg *instance.Config, pr
 	switch repo.Provider {
 	case providers.ProviderADO:
 		release, backlog := buildTerminalADOClaimMarkerRelease(l, cfg, project, registrar, stores)
+		if backlog.Provider == providers.ProviderGitHub {
+			// A GitHub backlog for ADO code (topology (b)): the claim marker
+			// lives on the GitHub issue, released with the backlog repository's
+			// credential.
+			return buildTerminalGitHubClaimMarkerRelease(cfg, backlog, credentialBindingOwner(project), project.Name, backlogRoleFor(backlog.Owner, backlog.Name), registrar, stores)
+		}
+		if backlog.Provider != providers.ProviderADO {
+			return nil, providers.RepositoryRef{}, nil
+		}
 		return release, backlog, nil
 	case providers.ProviderGitHub:
 	default:
 		return nil, providers.RepositoryRef{}, nil
 	}
-	gaggleOwner := project.Owner
-	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
+	return buildTerminalGitHubClaimMarkerRelease(cfg, repo, project.Owner, project.Name, nil, registrar, stores)
+}
+
+// buildTerminalGitHubClaimMarkerRelease is the GitHub arm of
+// buildTerminalClaimMarkerRelease: repo is the GitHub repository holding the
+// issue, and (owner, name, backlog) select the credential exactly as the
+// gaggle's stages get it.
+func buildTerminalGitHubClaimMarkerRelease(cfg *instance.Config, repo providers.RepositoryRef, owner, name string, backlog *credentials.BacklogRole, registrar terminalSecretRegistry, stores credentials.StoreResolver) (claimMarkerReleaseFunc, providers.RepositoryRef, error) {
+	resolver, grants, err := buildRoleCredentials(cfg, stores, owner, name, backlog, nil, registrar)
 	if err != nil {
 		return nil, providers.RepositoryRef{}, err
 	}

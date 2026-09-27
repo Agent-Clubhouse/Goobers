@@ -103,12 +103,12 @@ func runBacklogAssignmentWithMutationHook(
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	assigner, err := assignmentProvider(root, repo)
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	assigner, err := assignmentProvider(root, backlogProviderRepo(repo, backlogRepo))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
 
 	labels := append([]string{trustLabel}, labelFilter.RequiredLabels()...)
 	ctx, cancel := providerCommandContext()

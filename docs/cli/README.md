@@ -2690,7 +2690,10 @@ from the run journal's recorded review and local-CI evidence; otherwise a
 generic one-line body. A claimed item still augments an unstructured body
 — explicit or generic — with a "Fixes #<id>" back-reference, so explicit
 body text does not cost the issue linkage. The structured body carries
-its own linkage and is never appended to.
+its own linkage and is never appended to. When the backlog lives on
+another provider than the pull request (a GitHub backlog for Azure
+DevOps code), both name the item by its full URL instead of "#<id>",
+which that provider would read as one of its own items.
 
 A workflow that claims no item, or whose journal holds no recognized
 review/local-CI evidence, therefore gets generic metadata unless it sets
@@ -2818,7 +2821,10 @@ conflicted or file-overlapping ones goobers:needs-remediation, recording
 the merged PR and overlapping paths on each affected PR (issue
 #715 — a clean disjoint sibling is left untouched), and mark each
 issue the merged PR's body references (Fixes/Closes/Resolves #N)
-done. Declared input: pullNumber (required — the just-merged PR).
+done. When the backlog lives on another provider than the PR (a
+GitHub backlog for Azure DevOps code), only references by the
+issue's full URL count. Declared input: pullNumber (required — the
+just-merged PR).
 Exit codes: 0 = done (even if the PR body references no issue, or
 there are no other open PRs — both are normal outcomes, not
 errors), 1 = business error, 2 = usage/IO error.

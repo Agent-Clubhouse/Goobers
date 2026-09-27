@@ -75,15 +75,13 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 	req.ID = blockedLookupID(req.ID)
 	req = withNeedsHumanAssignee(req, c.needsHumanAssignee)
 	if req.Repository.Provider == providers.ProviderADO {
-		provider, err := newConfiguredADOProvider(c.layout.Root, req.Repository)
-		if err != nil {
-			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
+		backlog := backlogRepoRefForGaggle(c.layout, req.Repository)
+		if !backlogOnOtherProvider(req.Repository, backlog) {
+			return c.updateADOWorkItem(ctx, req, backlog)
 		}
-		if err := c.configureAttribution(ctx, provider); err != nil {
-			return providers.WorkItem{}, err
-		}
-		req.Repository = backlogRepoRefForGaggle(c.layout, req.Repository)
-		return provider.UpdateWorkItem(ctx, req)
+		// A backlog on another provider (topology (b)): the item lives there,
+		// reached through that repository's configured credential below.
+		req.Repository = backlog
 	}
 	if req.Repository.Provider == providers.ProviderGitea {
 		// Gitea authenticates with a static token like GitHub (resolved per call
@@ -120,14 +118,33 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 	return provider.UpdateWorkItem(ctx, req)
 }
 
+// updateADOWorkItem is UpdateWorkItem for an item in an Azure DevOps backlog:
+// the provider authenticates as the routed code repository's configured auth
+// and addresses the backlog project.
+func (c *escalationCommenter) updateADOWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest, backlog providers.RepositoryRef) (providers.WorkItem, error) {
+	provider, err := newConfiguredADOProvider(c.layout.Root, req.Repository)
+	if err != nil {
+		return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
+	}
+	if err := c.configureAttribution(ctx, provider); err != nil {
+		return providers.WorkItem{}, err
+	}
+	req.Repository = backlog
+	return provider.UpdateWorkItem(ctx, req)
+}
+
 func (c *escalationCommenter) ListComments(ctx context.Context, repository providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
 	itemID = blockedLookupID(itemID)
 	if repository.Provider == providers.ProviderADO {
-		provider, err := newConfiguredADOProvider(c.layout.Root, repository)
-		if err != nil {
-			return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+		backlog := backlogRepoRefForGaggle(c.layout, repository)
+		if !backlogOnOtherProvider(repository, backlog) {
+			provider, err := newConfiguredADOProvider(c.layout.Root, repository)
+			if err != nil {
+				return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+			}
+			return provider.ListComments(ctx, backlog, itemID)
 		}
-		return provider.ListComments(ctx, backlogRepoRefForGaggle(c.layout, repository), itemID)
+		repository = backlog
 	}
 	ref := repository.Owner + "/" + repository.Name
 	token, err := c.resolver.Resolve(ctx, ref)
@@ -148,7 +165,11 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 
 func (c *escalationCommenter) UpdateComment(ctx context.Context, repository providers.RepositoryRef, commentID, body string) error {
 	if repository.Provider == providers.ProviderADO {
-		return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
+		backlog := backlogRepoRefForGaggle(c.layout, repository)
+		if !backlogOnOtherProvider(repository, backlog) {
+			return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
+		}
+		repository = backlog
 	}
 	ref := repository.Owner + "/" + repository.Name
 	token, err := c.resolver.Resolve(ctx, ref)

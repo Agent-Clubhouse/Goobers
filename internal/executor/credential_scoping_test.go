@@ -58,8 +58,8 @@ func TestPerGaggleRoutingIsolatesRepoTokens(t *testing.T) {
 	sharedOverride := []credentials.Grant{{Capability: "agent:model", Ref: "credential:agent:model"}}
 
 	// The real MGV-5 routing: repo capability -> the gaggle's OWN repo token.
-	aGrants := credentials.RunnerGrants(bindings, "alpha-org", "site", []string{pushCap}, sharedOverride)
-	bGrants := credentials.RunnerGrants(bindings, "bravo-org", "app", []string{pushCap}, sharedOverride)
+	aGrants := credentials.RunnerGrants(bindings, "alpha-org", "site", nil, []string{pushCap}, sharedOverride)
+	bGrants := credentials.RunnerGrants(bindings, "bravo-org", "app", nil, []string{pushCap}, sharedOverride)
 
 	reg := &recordingRegistrar{}
 	aInj := runnerInjector(t, refs, aGrants, reg)

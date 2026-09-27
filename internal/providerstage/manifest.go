@@ -296,6 +296,11 @@ var commands = map[string]Command{
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so issue close-out fails at runtime"),
+			// Topology (b) (docs/design/ado-parity-dsl-2-0.md §7.2): the
+			// pull-request lookup on the code provider uses a pull-request
+			// credential, because github:issues:write belongs to the backlog.
+			optional(capability.GitHubPRWrite, "optional in a GitHub/Gitea backlog for Azure DevOps code: without a pull-request credential the close-out comment does not link the pull request"),
+			optional(capability.ProviderPRWrite, "optional in a GitHub/Gitea backlog for Azure DevOps code: without a pull-request credential the close-out comment does not link the pull request"),
 		},
 	},
 	"merge-pr": {
@@ -327,6 +332,11 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			required(capability.ProviderPRWrite, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
 			optional(capability.ADOWorkItemsWrite, "the separately brokered Azure Boards credential is required at runtime only when an ADO pull request is linked to its work item"),
+			// Topology (b) (docs/design/ado-parity-dsl-2-0.md §7.2): the
+			// claimed-issue staleness re-check reads the backlog provider with
+			// an issue credential; without one it is skipped with a warning.
+			optional(capability.GitHubIssuesRead, "optional in a GitHub/Gitea backlog for Azure DevOps code: without it the claimed-issue staleness re-check is skipped"),
+			optional(capability.GitHubIssuesWrite, "optional in a GitHub/Gitea backlog for Azure DevOps code: accepted for the claimed-issue staleness re-check when github:issues:read is not declared"),
 		},
 	},
 	"post-merge": {

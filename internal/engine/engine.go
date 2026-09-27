@@ -163,6 +163,15 @@ type RunInput struct {
 	// before the protocol existed, and every lane with no human gate — is a
 	// complete no-op: no hold, no extra journal event, byte-identical history.
 	HITL *HITLPolicy `json:"hitl,omitempty"`
+	// RoleRoutedBacklogProvider names the gaggle's backlog provider when its
+	// backlog is routed by role to a provider other than RepoRef's: a GitHub
+	// or Gitea backlog for Azure DevOps code (topology (b),
+	// docs/design/ado-parity-dsl-2-0.md §7.2). A stage pod has no instance
+	// config to resolve that routing from, so dispatchRemoteTask refuses to
+	// place any stage of such a run in a pod. Empty — every same-provider
+	// gaggle, and every input persisted before this field existed — changes
+	// nothing.
+	RoleRoutedBacklogProvider apiv1.Provider `json:"roleRoutedBacklogProvider,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {

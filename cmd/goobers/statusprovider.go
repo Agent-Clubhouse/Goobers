@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
@@ -17,28 +16,9 @@ func statusWorkItemLookup(root string, definitions *instance.ConfigSet) readserv
 			if configured.Name != gaggle {
 				continue
 			}
-			project := configured.Spec.Project
-			backlog := configured.Spec.Backlog
-			repo := providers.RepositoryRef{
-				Provider: providers.ProviderKind(backlog.Provider),
-				Owner:    project.Owner,
-				Project:  project.Project,
-				Name:     project.Name,
-				URL:      backlog.BaseURL,
-			}
-			switch repo.Provider {
-			case providers.ProviderGitHub, providers.ProviderGitea:
-				owner, name, ok := strings.Cut(backlog.Project, "/")
-				if !ok || owner == "" || name == "" {
-					return providers.WorkItem{}, fmt.Errorf(
-						"gaggle %q backlog project %q must be owner/name",
-						gaggle,
-						backlog.Project,
-					)
-				}
-				repo.Owner, repo.Name = owner, name
-			case providers.ProviderADO:
-				repo.Project = backlog.Project
+			repo, err := backlogProviderRef(gaggle, configured.Spec.Project, configured.Spec.Backlog)
+			if err != nil {
+				return providers.WorkItem{}, err
 			}
 			provider, err := newProviderForStage(root, repo, true, withStageProviderCache(), withStageProviderConfiguredADOAuth())
 			if err != nil {
