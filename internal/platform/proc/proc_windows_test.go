@@ -90,8 +90,11 @@ func TestKillTerminatesJobDescendants(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
+	// Leave margin below the helpers' 30-second sleep while allowing process
+	// startup under contention on shared Windows runners.
+	const helperReadyTimeout = 25 * time.Second
 	var childPID int
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(helperReadyTimeout)
 	for time.Now().Before(deadline) {
 		data, readErr := os.ReadFile(marker)
 		if readErr == nil {
@@ -109,7 +112,7 @@ func TestKillTerminatesJobDescendants(t *testing.T) {
 		t.Fatalf("descendant %d exited before tree termination", childPID)
 	}
 	var grandchildPID int
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(helperReadyTimeout)
 	for time.Now().Before(deadline) {
 		data, readErr := os.ReadFile(grandchildMarker)
 		if readErr == nil {
