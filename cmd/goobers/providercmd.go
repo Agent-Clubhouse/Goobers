@@ -278,11 +278,17 @@ func landingAuthority(repo providers.RepositoryRef) (capability.Capability, erro
 	if repo.Provider != providers.ProviderADO {
 		return capability.GitHubPRMerge, nil
 	}
+	// Each providerToken call names its capability as a constant so the
+	// manifest drift check (provider_capability_manifest_test.go) can see it.
 	authority := capability.GitHubPRMerge
+	var err error
 	if os.Getenv(executor.CredentialEnvVar(string(capability.ADOPRComplete))) != "" {
 		authority = capability.ADOPRComplete
+		_, err = providerToken(capability.ADOPRComplete)
+	} else {
+		_, err = providerToken(capability.GitHubPRMerge)
 	}
-	if _, err := providerToken(authority); err != nil {
+	if err != nil {
 		return "", fmt.Errorf("landing on Azure DevOps needs %s (or %s): %w", capability.GitHubPRMerge, capability.ADOPRComplete, err)
 	}
 	return authority, nil

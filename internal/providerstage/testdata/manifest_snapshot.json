@@ -231,7 +231,7 @@
       },
       {
         "capability": "ado:pr:complete",
-        "consequence": "the capability-scoped credential is not injected, so Azure DevOps pull-request completion fails at runtime",
+        "consequence": "optional on Azure DevOps: when declared, pull-request completion uses this credential instead of github:pr:merge's",
         "optional": true
       }
     ]
@@ -254,7 +254,7 @@
       },
       {
         "capability": "ado:pr:complete",
-        "consequence": "the capability-scoped credential is not injected, so Azure DevOps queue completion fails at runtime",
+        "consequence": "optional on Azure DevOps: when declared, queue completion is watched with this credential instead of github:pr:merge's",
         "optional": true
       }
     ]
