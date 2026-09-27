@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -206,5 +207,111 @@ func TestPodFailureEnvelopeMessageIsScrubbed(t *testing.T) {
 	}
 	if !strings.Contains(result.Error.Message, "token ") {
 		t.Fatalf("Error.Message = %q lost the stage's stderr", result.Error.Message)
+	}
+}
+
+// podADOGitOrigin is an Azure DevOps stand-in that records the credential
+// headers of every git smart-HTTP discovery request and refuses it, so a
+// checkout's authentication is observable on the wire even though the clone
+// itself fails.
+func podADOGitOrigin(t *testing.T) (cloneURL string, sent func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/info/refs") {
+			mu.Lock()
+			seen = append(seen, r.Header.Get("Authorization")+"|"+r.Header.Get("X-VSS-ForceMsaPassThrough"))
+			mu.Unlock()
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	t.Cleanup(origin.Close)
+	return origin.URL + "/example-org/example-project/_git/example-repo", func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+}
+
+// The pod's workspace checkout is wired end to end: the scheme the credential
+// plane states reaches runDeclaredStage, then checkoutRepoWorkspace, then the
+// git request itself — whether the credential came from the stage's own
+// capability or from the checkout-only capability (#3770).
+func TestPodStageCheckoutSendsTheStatedADOSchemeOnTheWire(t *testing.T) {
+	for name, caps := range map[string]struct{ stage, checkout string }{
+		"stage capability":         {stage: `["repo:push"]`},
+		"checkout-only capability": {checkout: "repo:push"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cloneURL, sent := podADOGitOrigin(t)
+			prev := checkoutCloneURL
+			checkoutCloneURL = func(apiv1.RepoRef) (string, error) { return cloneURL, nil }
+			t.Cleanup(func() { checkoutCloneURL = prev })
+
+			fakeCredentialPlane(t, "entra-access-token", "bearer")
+			t.Setenv(dispatcher.EnvStageCapabilities, caps.stage)
+			t.Setenv(dispatcher.EnvCheckoutCapability, caps.checkout)
+			t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+			t.Setenv(dispatcher.EnvWorkspaceBranch, "")
+			t.Setenv(dispatcher.EnvWorkflow, "probe")
+			t.Setenv(executor.RepoProviderEnvVar, string(apiv1.ProviderADO))
+			t.Setenv(executor.RepoOwnerEnvVar, "example-org")
+			t.Setenv(executor.RepoProjectEnvVar, "example-project")
+			t.Setenv(executor.RepoNameEnvVar, "example-repo")
+			t.Setenv(executor.BranchNamespaceEnvVar, "goobers/")
+			t.Setenv(executor.BaseBranchEnvVar, "main")
+			t.Setenv(executor.InstanceRootEnvVar, "")
+			t.Setenv(dispatcher.EnvStageCommand, `["true"]`)
+			t.Setenv(dispatcher.EnvStageScript, "")
+			t.Setenv(dispatcher.EnvStageTimeout, "30s")
+			t.Chdir(t.TempDir())
+
+			result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+			if result.Status == apiv1.ResultSuccess {
+				t.Fatalf("result = %+v, want the refused checkout to fail the stage", result)
+			}
+			got := sent()
+			if len(got) == 0 {
+				t.Fatalf("checkout never reached the origin; result = %+v", result)
+			}
+			for _, headers := range got {
+				if headers != "Bearer entra-access-token|true" {
+					t.Fatalf("checkout sent %q, want the Bearer header plus the MSA passthrough", headers)
+				}
+			}
+		})
+	}
+}
+
+// The recovery-custody base fetch sends the checkout credential the way the
+// checkout does: Bearer plus the MSA passthrough on an Entra-backed Azure
+// DevOps repository, and the Basic extraheader everywhere else.
+func TestRecoveryBaseFetchUsesTheStatedADOScheme(t *testing.T) {
+	fakeCredentialPlane(t, "entra-access-token", "bearer")
+	t.Setenv(dispatcher.EnvCheckoutCapability, "repo:push")
+
+	t.Setenv(executor.RepoProviderEnvVar, string(apiv1.ProviderADO))
+	env, err := recoveryFetchAuthEnv(context.Background(), podADOCloneURL)
+	if err != nil {
+		t.Fatalf("recoveryFetchAuthEnv: %v", err)
+	}
+	eff := gitEnvMap(env)
+	scoped := "http." + podADOCloneURL + "/.extraheader"
+	if eff["GIT_CONFIG_KEY_1"] != scoped || eff["GIT_CONFIG_VALUE_1"] != "AUTHORIZATION: Bearer entra-access-token" {
+		t.Fatalf("authorization slot = %q/%q, want the scoped Bearer header", eff["GIT_CONFIG_KEY_1"], eff["GIT_CONFIG_VALUE_1"])
+	}
+	if eff["GIT_CONFIG_KEY_2"] != scoped || eff["GIT_CONFIG_VALUE_2"] != "X-VSS-ForceMsaPassThrough: true" {
+		t.Fatalf("passthrough slot = %q/%q, want the MSA passthrough header", eff["GIT_CONFIG_KEY_2"], eff["GIT_CONFIG_VALUE_2"])
+	}
+
+	t.Setenv(executor.RepoProviderEnvVar, string(apiv1.ProviderGitHub))
+	env, err = recoveryFetchAuthEnv(context.Background(), "https://github.com/example-org/example-repo")
+	if err != nil {
+		t.Fatalf("recoveryFetchAuthEnv: %v", err)
+	}
+	want := "AUTHORIZATION: basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:entra-access-token"))
+	if got := gitEnvMap(env)["GIT_CONFIG_VALUE_0"]; got != want {
+		t.Fatalf("non-ADO recovery fetch header = %q, want the Basic extraheader", got)
 	}
 }
