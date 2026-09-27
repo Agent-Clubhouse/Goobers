@@ -380,7 +380,11 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		result.Outputs["transcriptTruncated"] = true
 		result.Outputs["transcriptDroppedBytes"] = float64(out.TranscriptDroppedBytes)
 	}
-	result.Artifacts, err = e.liftArtifacts(ctx, env, result.Artifacts)
+	reported := result.Artifacts
+	result.Artifacts, err = e.liftArtifacts(ctx, env, reported)
+	if err != nil && noWorkWithoutDeclaredArtifact(result.Status, err) {
+		result.Artifacts, err = reported, nil
+	}
 	if err != nil {
 		if code, summary, ok := declaredArtifactFailure(err); ok {
 			result.Status = apiv1.ResultFailure
@@ -446,6 +450,17 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 	default:
 		return "", "", false
 	}
+}
+
+// noWorkWithoutDeclaredArtifact reports whether a liftArtifacts error is only
+// the declared artifactFile being absent from a no-work completion (#5332). A
+// stage that correctly found nothing has nothing to write into its declared
+// artifact, so requiring the success-path file would turn every empty tick
+// into missing_declared_artifact. Only absence is tolerated, and only for
+// no-work: a success still fails closed without its artifact, and a path
+// escape or an invalid artifact set fails closed whatever the status.
+func noWorkWithoutDeclaredArtifact(status apiv1.ResultStatus, err error) bool {
+	return status == apiv1.ResultNoWork && errors.Is(err, ErrDeclaredArtifactMissing)
 }
 
 // run materializes capability-scoped credentials, drives the adapter, and
