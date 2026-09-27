@@ -169,6 +169,7 @@ func TestBuildCredentialsADOEveryKindBacksRepoGrants(t *testing.T) {
 				string(capability.GitHubPRWrite),
 				string(capability.ProviderPRWrite),
 				string(capability.ADOPRComplete),
+				string(capability.ADOWorkItemsWrite),
 			}
 			for _, name := range declared {
 				if refs[name] != adoTestRef {
@@ -212,6 +213,25 @@ func TestBuildCredentialsADOEveryKindBacksRepoGrants(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBuildCredentialsGitHubDoesNotBackADOWorkItemWrite(t *testing.T) {
+	t.Setenv("EXAMPLE_GITHUB_TOKEN", "github-token-0123456789")
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "github",
+		Owner:    "example-org",
+		Name:     "example-repo",
+		Token:    instance.TokenRef{Env: "EXAMPLE_GITHUB_TOKEN"},
+	}}}
+	_, grants, err := buildCredentials(cfg, nil, "example-org", "example-repo", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, grant := range grants {
+		if grant.Capability == string(capability.ADOWorkItemsWrite) {
+			t.Fatalf("GitHub repository received ADO work-item authority through %q", grant.Ref)
+		}
 	}
 }
 
@@ -399,6 +419,44 @@ func TestCredentialPlaneResolvesADOAzureCLIRepoPushWithExpiry(t *testing.T) {
 	}
 	if got := string(shared.Scrub([]byte("Authorization: Bearer " + azure.token))); strings.Contains(got, azure.token) {
 		t.Fatalf("minted bearer header was not registered with the shared scrubber: %q", got)
+	}
+}
+
+func TestCredentialPlaneResolvesADOWorkItemWrite(t *testing.T) {
+	expires := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	stubADOCredentialSource(t, func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+		return adoTestIdentitySource{credential: providers.ADOCredential{
+			Kind: providers.ADOCredentialKindBearer, Secret: "entra-work-item-token-0123456789", ExpiresAt: expires,
+		}}, nil
+	})
+	spec := credentialPlaneSpec()
+	spec.Tasks[1].Capabilities = []string{string(capability.ADOWorkItemsWrite)}
+	machine := compileCredentialPlaneMachine(t, spec)
+	service, _, runID := newCredentialPlaneFixture(t, machine)
+	service.buildSources = nil
+	service.config = &instance.Config{Repos: []instance.RepoRef{
+		adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}),
+	}}
+	service.Replace(credentialPlaneDefinitions{
+		Scopes: map[string]credentialGaggleScope{"web": {Project: apiv1.RepoRef{
+			Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: adoTestName,
+		}}},
+		Goobers: credentialPlaneGoobers(),
+	})
+
+	response, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "push-branch", Capabilities: []string{string(capability.ADOWorkItemsWrite)},
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(response.Credentials) != 1 ||
+		response.Credentials[0].Capability != string(capability.ADOWorkItemsWrite) ||
+		response.Credentials[0].Value != "entra-work-item-token-0123456789" {
+		t.Fatalf("credentials = %+v, want the ADO work-item credential", response.Credentials)
+	}
+	if response.RepoAuthScheme != adoauth.SchemeBearer {
+		t.Fatalf("repoAuthScheme = %q, want %q", response.RepoAuthScheme, adoauth.SchemeBearer)
 	}
 }
 

@@ -119,10 +119,7 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
 
-	caps := make([]string, len(credentialedCapabilities))
-	for i, c := range credentialedCapabilities {
-		caps[i] = string(c)
-	}
+	caps := repositoryCredentialedCapabilities(cfg, gaggleOwner, gaggleName)
 	overrides := make([]credentials.Grant, 0, len(daemonIdentityOverrides)+len(cfg.Credentials))
 	overrides = append(overrides, daemonIdentityOverrides...)
 	for _, cg := range cfg.Credentials {
@@ -149,6 +146,30 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	}
 	grants = append(grants, credentials.AdditionalReadGrants(referenceReadBindings(cfg.Repos, bindings), additionalBindings, string(capability.ContentsRead))...)
 	return resolver, grants, nil
+}
+
+func repositoryCredentialedCapabilities(cfg *instance.Config, owner, name string) []string {
+	caps := make([]string, len(credentialedCapabilities), len(credentialedCapabilities)+1)
+	for i, c := range credentialedCapabilities {
+		caps[i] = string(c)
+	}
+	for i, repo := range cfg.Repos {
+		repoOwner := repo.Owner
+		if repo.Provider == string(apiv1.ProviderADO) && repo.Project != "" {
+			repoOwner += "/" + repo.Project
+		}
+		selected := owner == "" && name == "" && i == 0
+		if owner != "" && name != "" {
+			selected = repoOwner == owner && repo.Name == name
+		}
+		if selected {
+			if repo.Provider == string(apiv1.ProviderADO) {
+				caps = append(caps, string(capability.ADOWorkItemsWrite))
+			}
+			break
+		}
+	}
+	return caps
 }
 
 // registerRepoCredentialSource registers the credential source that backs one

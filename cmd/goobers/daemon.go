@@ -1194,10 +1194,7 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		owner += "/" + project.Project
 	}
-	caps := make([]string, len(credentialedCapabilities))
-	for i, capability := range credentialedCapabilities {
-		caps[i] = string(capability)
-	}
+	caps := repositoryCredentialedCapabilities(cfg, owner, project.Name)
 	grants := credentials.RunnerGrants(bindings, owner, project.Name, caps, overrides)
 	envByCapability := make(map[string]string, len(grants))
 	for _, grant := range grants {
