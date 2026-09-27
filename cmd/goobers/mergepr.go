@@ -92,18 +92,16 @@ func ciReadyForMerge(poll providers.PullRequestPollResult) bool {
 	return poll.MergeableState == providers.MergeableStateUnstable
 }
 
-func mergePRProviderCapability(root string, repo providers.RepositoryRef) (capability.Capability, error) {
+// mergePRProviderCapability names the capability merge-pr's provider is
+// built from. On Azure DevOps completion authority is ado:pr:complete, and its
+// delivered credential must be present before anything is constructed, so a
+// stage granted only ado:pr:write fails closed (merge-wiring-plan §3).
+func mergePRProviderCapability(repo providers.RepositoryRef) (capability.Capability, error) {
 	if repo.Provider != providers.ProviderADO {
 		return capability.GitHubPRMerge, nil
 	}
-	usesPAT, err := adoStageUsesPAT(root, repo)
-	if err != nil {
-		return "", fmt.Errorf("resolve ADO completion authentication: %w", err)
-	}
-	if usesPAT {
-		if _, err := providerToken(capability.ADOPRComplete); err != nil {
-			return "", err
-		}
+	if _, err := providerToken(capability.ADOPRComplete); err != nil {
+		return "", err
 	}
 	return capability.ADOPRComplete, nil
 }
@@ -136,7 +134,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// require. dispatcher is the provider-neutral landing seam (CONF-1 #2074)
 	// every poll/compare/detect/enqueue/merge call flows through, so every
 	// registered provider runs one shared code path.
-	providerCapability, err := mergePRProviderCapability(root, repo)
+	providerCapability, err := mergePRProviderCapability(repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

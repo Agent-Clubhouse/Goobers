@@ -444,9 +444,9 @@ func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
 	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
 	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
 	t.Setenv(executor.RepoNameEnvVar, repo.Name)
-	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+	setDeliveredADOStageCredentials(t)
 	previous := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(provider *providers.ADOProvider) { provider.BaseURL = server.URL }), nil
 	}
@@ -510,11 +510,11 @@ func TestReconcilePostMergeADOReturnsCloseOutFailure(t *testing.T) {
 	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
 	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
 	t.Setenv(executor.RepoNameEnvVar, repo.Name)
-	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+	setDeliveredADOStageCredentials(t)
 	resultFile := filepath.Join(t.TempDir(), "reconcile-result.json")
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
 	previous := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(provider *providers.ADOProvider) { provider.BaseURL = server.URL }), nil
 	}

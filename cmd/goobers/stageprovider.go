@@ -31,10 +31,14 @@ type stageProviderConfig struct {
 	// kind="branch" separately from the merge's kind="pr") hands it over
 	// intact rather than being forced to re-derive one from a kind string.
 	mutationRecorder providers.MutationRecorder
-	openPR           bool
-	noRetries        bool
-	observeToken     func(string)
-	quota            *localscheduler.ProviderQuotaState
+	// configuredADOAuth selects the repository's configured Azure DevOps
+	// authentication (instance.yaml) instead of the declared capability's
+	// delivered credential. Only an operator command that is not a stage sets
+	// it; see withStageProviderConfiguredADOAuth.
+	configuredADOAuth bool
+	noRetries         bool
+	observeToken      func(string)
+	quota             *localscheduler.ProviderQuotaState
 }
 
 type stageProviderOption func(*stageProviderConfig)
@@ -72,9 +76,15 @@ func withStageProviderMutationRecorder(recorder providers.MutationRecorder) stag
 	}
 }
 
-func withStageProviderOpenPR() stageProviderOption {
+// withStageProviderConfiguredADOAuth is for operator commands that run
+// outside any stage (goobers run, goobers status) and read the instance config
+// anyway: on Azure DevOps they keep authenticating with the repository's
+// configured auth, as they always have. A stage must never pass it — a stage
+// authenticates only with the credential its declared capability delivered.
+// It has no effect on GitHub or Gitea.
+func withStageProviderConfiguredADOAuth() stageProviderOption {
 	return func(cfg *stageProviderConfig) {
-		cfg.openPR = true
+		cfg.configuredADOAuth = true
 	}
 }
 
@@ -325,43 +335,38 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	return newGitHubProvider(token, opts...), nil
 }
 
+// newRegisteredADOProviderForStage builds a stage's Azure DevOps provider from
+// the credential delivered for its declared capability, exactly as the GitHub
+// and Gitea factories do: stageProviderToken reads GOOBERS_CRED_<capability>
+// (or the caller's explicit token), and the daemon-stated scheme decides the
+// header. An undeclared capability therefore means no credential on Azure
+// DevOps too (docs/design/ado-parity-dsl-2-0.md §3.1).
 func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
-	if provider, ok, err := newBrokeredADOProviderForStage(cfg); ok || err != nil {
-		return provider, err
+	var (
+		provider *providers.ADOProvider
+		err      error
+	)
+	if cfg.configuredADOAuth {
+		provider, err = newConfiguredADOProvider(cfg.root, cfg.repo)
+	} else {
+		provider, err = newBrokeredADOProviderForStage(cfg)
 	}
-	if cfg.openPR {
-		return newADOProviderForOpenPR(cfg.root, cfg.repo)
+	if err != nil {
+		return nil, err
 	}
-	if cfg.capability == capability.ADOWorkItemsWrite {
-		return newADOProviderForWorkItemWrite(cfg.root, cfg.repo)
-	}
-	return newADOProviderForStage(cfg.root, cfg.repo)
+	return provider, nil
 }
 
-func newBrokeredADOProviderForStage(cfg stageProviderConfig) (*providers.ADOProvider, bool, error) {
-	scheme := strings.TrimSpace(os.Getenv(executor.RepoAuthSchemeEnvVar))
-	if scheme == "" {
-		return nil, false, nil
-	}
+func newBrokeredADOProviderForStage(cfg stageProviderConfig) (*providers.ADOProvider, error) {
 	token, err := stageProviderToken(cfg)
 	if err != nil {
-		return nil, true, err
+		return nil, err
 	}
-	var source providers.ADOCredentialSource
-	switch scheme {
-	case "basic":
-		source = providers.NewADOPATCredentialSource("goobers", token)
-	case "bearer":
-		source = providers.NewADOBearerCredentialSource(token)
-	default:
-		return nil, true, fmt.Errorf("unsupported brokered ADO authorization scheme %q", scheme)
+	source, err := stageADOCredentialSource(cfg.capability, token)
+	if err != nil {
+		return nil, err
 	}
-	return providers.NewADOProvider(
-		cfg.repo.Owner,
-		cfg.repo.Project,
-		"",
-		providers.WithADOCredentialSource(source),
-	), true, nil
+	return newADOProviderForStage(cfg.repo, source)
 }
 
 func newRegisteredGiteaProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {

@@ -125,19 +125,15 @@ type reviewThreadResolver interface {
 
 // reviewThreadStageSurface builds a review-thread stage's provider through
 // remediationStageSurface, so ADO (ADO-N20) routes like GitHub and Gitea.
-// GitHub and Gitea are handed the stage's github:pr:write credential as
-// before; ADO is not, because the ADO stage factory resolves its own
-// credential from repos[].auth (or, when brokered, from the declared
-// github:pr:write grant), so non-PAT ADO auth kinds work — the same rule as
-// pr-claim. cached selects the GitHub-only conditional-GET read cache.
+// Every provider is built from the stage's declared github:pr:write
+// credential; on ADO it is sent in the daemon-delivered scheme, so every ADO
+// auth kind backs it (ADO-N18) — the same rule as pr-claim. cached selects
+// the GitHub-only conditional-GET read cache.
 func reviewThreadStageSurface[T any](root string, repo providers.RepositoryRef, cached bool) (T, error) {
 	var zero T
-	token := ""
-	if repo.Provider != providers.ProviderADO {
-		var err error
-		if token, err = providerToken(capability.GitHubPRWrite); err != nil {
-			return zero, err
-		}
+	token, err := providerToken(capability.GitHubPRWrite)
+	if err != nil {
+		return zero, err
 	}
 	opts := []stageProviderOption{withStageProviderCapability(capability.GitHubPRWrite)}
 	if cached && repo.Provider == providers.ProviderGitHub {

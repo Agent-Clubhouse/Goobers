@@ -73,22 +73,21 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider := prProvider
 	if repo.Provider == providers.ProviderADO {
 		issuesRepo = backlogRepoRefForStage(root, repo)
-	} else {
-		// The PR poll and the originating-issue read authenticate with distinct
-		// capabilities (github:pr:write vs github:issues:write), the same split
-		// gather-issue-context uses, so issue resolution never fails on a
-		// PR-scoped credential and vice versa.
-		issuesProvider, err = newMergeReviewProvider(root, repo, false,
-			withStageProviderCapability(capability.GitHubIssuesWrite),
-			withStageProviderCache(),
-		)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
+	}
+	// The PR poll and the originating-issue read authenticate with distinct
+	// capabilities (github:pr:write vs github:issues:write), the same split
+	// gather-issue-context uses, so issue resolution never fails on a
+	// PR-scoped credential and vice versa — on Azure DevOps too, where the
+	// issue is a backlog work item (docs/design/ado-parity-dsl-2-0.md §3.1).
+	issuesProvider, err := newMergeReviewProvider(root, repo, false,
+		withStageProviderCapability(capability.GitHubIssuesWrite),
+		withStageProviderCache(),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 
 	ctx, cancel := providerCommandContext()

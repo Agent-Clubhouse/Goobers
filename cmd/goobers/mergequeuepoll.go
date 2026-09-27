@@ -540,20 +540,10 @@ func mergeQueuePollBackoff(base, max time.Duration, attempt int) time.Duration {
 // to the ADO merge epic (CONF-3 #2076).
 func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
 	// Completion authority is a distinct capability from ordinary
-	// ado:pr:write. Resolve the grant before constructing the provider so an
-	// un-granted stage fails closed rather than completing a pull request.
-	usesPAT, err := adoStageUsesPAT(root, repo)
-	if err != nil {
-		pf(stderr, "error: resolve ADO completion authentication: %v\n", err)
-		return 1
-	}
-	if usesPAT {
-		if _, err := providerToken(capability.ADOPRComplete); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-	}
-	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
+	// ado:pr:write. The provider is built from the credential delivered for
+	// ado:pr:complete alone, so an un-granted stage fails closed here rather
+	// than completing a pull request with some other capability's credential.
+	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.ADOPRComplete))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
@@ -154,9 +155,10 @@ func (f *fakeADOReviewThreads) server(repo providers.RepositoryRef, publishedHea
 	return httptest.NewServer(mux)
 }
 
-// adoReviewThreadsStageFixture routes the stage to an ADO repository whose
-// provider talks to server, with no GitHub-capability credential set: ADO
-// resolves its own credential, so the stage must not require one.
+// adoReviewThreadsStageFixture routes the stage to an ADO repository and
+// delivers a distinct value for every credentialed capability: on ADO the
+// review-thread stages consume the declared github:pr:write credential like
+// every other stage (ADO-N18).
 func adoReviewThreadsStageFixture(t *testing.T, runID string) (string, providers.RepositoryRef) {
 	t.Helper()
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
@@ -166,19 +168,26 @@ func adoReviewThreadsStageFixture(t *testing.T, runID string) (string, providers
 	t.Setenv(executor.RepoNameEnvVar, repo.Name)
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "")
+	deliverEveryADOStageCapability(t)
 	return root, repo
 }
 
 func routeADOStageProvider(t *testing.T, serverURL string) {
 	t.Helper()
 	original := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		if routed.Provider != providers.ProviderADO {
 			t.Fatalf("provider = %q, want ado", routed.Provider)
 		}
-		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
-			func(p *providers.ADOProvider) { p.BaseURL = serverURL }), nil
+		if got := deliveredCapabilityOf(t, credential); got != string(capability.GitHubPRWrite) {
+			t.Fatalf("review-thread stage built its ADO provider from %q, want the declared %q", got, capability.GitHubPRWrite)
+		}
+		provider, err := buildADOProviderForStage(routed, credential)
+		if err != nil {
+			return nil, err
+		}
+		provider.BaseURL = serverURL
+		return provider, nil
 	}
 	t.Cleanup(func() { newADOProviderForStage = original })
 }

@@ -160,7 +160,7 @@ func (s *adoRemediationServerState) start(t *testing.T) *httptest.Server {
 func installADOStageProvider(t *testing.T, repo providers.RepositoryRef, server *httptest.Server) {
 	t.Helper()
 	original := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}
@@ -243,8 +243,7 @@ func pushRemediatedADOFixture(t *testing.T, recordHeadSHA bool) (root string, st
 // thread's sticky remediation-state comment.
 func TestPushRemediatedADOPublishesAndClearsLabel(t *testing.T) {
 	root, st, wtPath, remoteTip := pushRemediatedADOFixture(t, true)
-	azureCLISource := useAzureCLIRemediationAuth(t, root)
-	t.Setenv("GOOBERS_CRED_REPO_PUSH", "")
+	setDeliveredADOStageCredentials(t)
 
 	code, stdout, stderr := runArgs(t, "push-remediated", root)
 	if code != 0 {
@@ -252,9 +251,6 @@ func TestPushRemediatedADOPublishesAndClearsLabel(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "#77") {
 		t.Errorf("stdout = %q, want a mention of PR #77", stdout)
-	}
-	if azureCLISource.callCount() == 0 {
-		t.Fatal("the configured Azure CLI credential source was not used for the force-push")
 	}
 	pushResult := readCheckpointResult(t, filepath.Join(wtPath, pushRemediatedResultName))
 	if pushResult["published"] != "true" || pushResult["selectedNumber"] != "77" {

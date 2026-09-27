@@ -190,7 +190,6 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	stageProvider, err := newProviderForStage(root, repo, false,
 		withStageProviderCapability(capability.ProviderPRWrite),
 		withStageProviderMutations("pr"),
-		withStageProviderOpenPR(),
 	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

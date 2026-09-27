@@ -58,10 +58,14 @@ code path byte-identical.
 
 ## 3. Provider construction and auth
 
-ADO stage branches build the provider with `newADOProviderForStage(root, repo)`, which
-resolves the configured auth source — PAT, Azure CLI, workload identity, or managed
-identity — from the instance config, org-scoped. No `github:*` token is resolved on an ADO
-branch. Work-item reads/writes route through the backlog project reference
+ADO stage branches build the provider through the shared stage seam
+(`newProviderForStage` → `newADOProviderForStage`) from the credential delivered for the
+capability the stage declared, in the daemon-stated `GOOBERS_REPO_AUTH_SCHEME`
+(ADO-N18, `docs/design/ado-parity-dsl-2-0.md` §3.1): `github:pr:write` or
+`provider:pr:write` for pull-request work, `github:issues:*` for work items, `repo:push` for
+Git, `ado:pr:complete` for completion. Every auth kind — PAT, Azure CLI, workload identity,
+managed identity — resolves in the daemon; no stage reads `repos[].auth`. Work-item
+reads/writes route through the backlog project reference
 (`backlogRepoRefForStage`) so a split code-repo/backlog-project instance addresses the
 right project; PR-scoped calls use the routed code repo.
 
@@ -331,9 +335,9 @@ shared stage-provider seam, and ADO satisfies that surface through the same
   adapter over `PollPullRequest`), releasing the claim (and returning a terminal no-work
   result) if it has merged or closed. On ADO the claim also never reads as open on an empty
   source head: `GetPullRequest`'s poll-observed `HeadSHA` must be non-empty, so the guard
-  fails closed rather than proceeding against an unverified source. Like the other ADO
-  remediation stages, it does not require the `github:pr:write` grant on ADO: the ADO
-  provider resolves its own credential from `repos[].auth`, so non-PAT auth kinds work.
+  fails closed rather than proceeding against an unverified source. On ADO it polls with
+  the delivered `github:pr:write` credential in the daemon-stated scheme, like every other
+  remediation stage, and every ADO auth kind backs that credential (ADO-N18, §3).
 
 The sticky remediation-state comment (carrying the pre-remediation head SHA) is a PR thread
 updated in place via the composite comment id.
@@ -345,7 +349,8 @@ are first-class, so the ADO provider declares `pr.review.threads` and `pr.review
 implements the same `PullRequestReviewThreadProvider` / `PullRequestReviewThreadMutator`
 surfaces GitHub does (`providers/ado_review_threads.go`). Both stages build their provider
 through a narrow surface over the shared stage-provider seam (`reviewThreadStageSurface`), the
-same route `pr-claim` takes, and on ADO they do not require the `github:pr:write` grant.
+same route `pr-claim` takes. On ADO, as on GitHub and Gitea, they consume the declared
+`github:pr:write` credential, delivered in the daemon-stated scheme (ADO-N18, §3).
 
 | Operation | ADO call and mapping |
 |---|---|

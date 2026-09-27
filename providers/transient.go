@@ -29,6 +29,11 @@ func IsAuthenticationError(err error) bool {
 	if errors.As(err, &policyErr) {
 		return false
 	}
+	// A delivered ADO credential that was answered HTTP 401 cannot be
+	// refreshed by the stage holding it.
+	if errors.Is(err, ErrADODeliveredCredentialRejected) {
+		return true
+	}
 	var responseErr *providerResponseError
 	if errors.As(err, &responseErr) {
 		return (responseErr.statusCode == http.StatusUnauthorized ||

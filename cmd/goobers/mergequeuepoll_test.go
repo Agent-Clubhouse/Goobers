@@ -961,7 +961,7 @@ func adoMergeQueuePollEnvWithAuth(t *testing.T, serverURL, owner, project, name 
 		t.Fatalf("write config: %v", err)
 	}
 	prev := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = serverURL }), nil
 	}
@@ -1035,12 +1035,19 @@ func TestMergeQueuePollADORequiresCompleteCapability(t *testing.T) {
 	}
 }
 
-func TestMergeQueuePollADOAzureCLIUsesConfiguredAuthenticationWithoutTokenGrant(t *testing.T) {
+// TestMergeQueuePollADOAzureCLIUsesDeliveredCredential covers a repository
+// configured for Microsoft Entra (azure-cli) auth: merge-queue-poll watches
+// completion with the bearer value delivered for ado:pr:complete, and without
+// that grant it fails before polling rather than falling back to the
+// repository's configured auth (ADO-N18).
+func TestMergeQueuePollADOAzureCLIUsesDeliveredCredential(t *testing.T) {
 	st := &adoPRDetailState{status: "completed", mergeCommit: "adomergesha"}
 	server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
-	root, dir := adoMergeQueuePollEnvWithAuth(t, server.URL, "acme", "proj", "svc", false, instance.ADOAuthAzureCLI, map[string]string{
+	root, dir := adoMergeQueuePollEnvWithAuth(t, server.URL, "acme", "proj", "svc", true, instance.ADOAuthAzureCLI, map[string]string{
 		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
 	})
+	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
+	credentials := recordADOStageCredentials(t)
 
 	code, _, stderr := runArgs(t, "merge-queue-poll", root)
 	if code != 0 {
@@ -1049,6 +1056,20 @@ func TestMergeQueuePollADOAzureCLIUsesConfiguredAuthenticationWithoutTokenGrant(
 	result := readQueueResult(t, dir)
 	if result["queueOutcome"] != "merged" {
 		t.Fatalf("result = %+v, want queueOutcome=merged", result)
+	}
+	want := providers.ADOCredential{Kind: providers.ADOCredentialKindBearer, Secret: "test-token"}
+	if len(*credentials) != 1 || (*credentials)[0] != want {
+		t.Fatalf("ADO stage credentials = %+v, want exactly the delivered ado:pr:complete bearer", *credentials)
+	}
+
+	t.Setenv("GOOBERS_CRED_ADO_PR_COMPLETE", "")
+	detailCalls := st.detailCalls
+	code, _, stderr = runArgs(t, "merge-queue-poll", root)
+	if code != 1 || !strings.Contains(stderr, "GOOBERS_CRED_ADO_PR_COMPLETE") {
+		t.Fatalf("without the grant: code = %d, stderr = %q, want a missing GOOBERS_CRED_ADO_PR_COMPLETE failure", code, stderr)
+	}
+	if st.detailCalls != detailCalls {
+		t.Fatalf("without the grant: detail calls = %d, want %d — no poll without completion authority", st.detailCalls, detailCalls)
 	}
 }
 

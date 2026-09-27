@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -70,10 +71,6 @@ type adoPATCredentialSource struct {
 	resolve  func(context.Context) (string, error)
 }
 
-type adoBearerCredentialSource struct {
-	resolve func(context.Context) (string, error)
-}
-
 // NewADOPATCredentialSource returns a static PAT source. The provider preserves
 // the historical "goobers" username when username is empty.
 func NewADOPATCredentialSource(username, token string) ADOCredentialSource {
@@ -89,21 +86,6 @@ func NewResolvingADOPATCredentialSource(username string, resolve func(context.Co
 		username = "goobers"
 	}
 	return &adoPATCredentialSource{username: username, resolve: resolve}
-}
-
-// NewADOBearerCredentialSource returns a static Microsoft Entra bearer-token
-// source. It is used when the daemon has already minted and capability-scoped
-// the credential before dispatching a stage.
-func NewADOBearerCredentialSource(token string) ADOCredentialSource {
-	return NewResolvingADOBearerCredentialSource(func(context.Context) (string, error) {
-		return token, nil
-	})
-}
-
-// NewResolvingADOBearerCredentialSource returns a bearer source that resolves
-// its value for every operation.
-func NewResolvingADOBearerCredentialSource(resolve func(context.Context) (string, error)) ADOCredentialSource {
-	return &adoBearerCredentialSource{resolve: resolve}
 }
 
 func (s *adoPATCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
@@ -123,21 +105,70 @@ func (s *adoPATCredentialSource) Credential(ctx context.Context) (ADOCredential,
 	return ADOCredential{Kind: adoCredentialPAT, Secret: token, Username: s.username}, nil
 }
 
-func (s *adoBearerCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
+// ErrADODeliveredCredentialRejected reports that Azure DevOps answered HTTP
+// 401 to a credential a stage was handed rather than one it can mint. The
+// daemon delivers a stage one value per declared capability, and the stage
+// has no way to fetch another, so the request fails instead of retrying.
+// The error that carries it also wraps the original 401 response, so
+// IsAuthenticationError still reports it as an authentication failure.
+var ErrADODeliveredCredentialRejected = errors.New("ado: delivered credential rejected")
+
+// adoDeliveredCredentialRejectedError is the error a request ends with when
+// Azure DevOps answers HTTP 401 to a delivered credential. It matches
+// ErrADODeliveredCredentialRejected and unwraps to the original response
+// error, whose text ("status 401: <body>") it keeps.
+type adoDeliveredCredentialRejectedError struct {
+	label string
+	cause error
+}
+
+func (e *adoDeliveredCredentialRejectedError) Error() string {
+	return fmt.Sprintf("%s: Azure DevOps rejected the credential delivered for %s (expired, revoked, or without access to this resource); a stage cannot refresh it: %v", ErrADODeliveredCredentialRejected, e.label, e.cause)
+}
+
+func (e *adoDeliveredCredentialRejectedError) Unwrap() []error {
+	return []error{ErrADODeliveredCredentialRejected, e.cause}
+}
+
+// adoDeliveredCredentialSource is the credential a stage process received
+// from the daemon for one declared capability: a fixed value in a fixed
+// authorization scheme. It cannot refresh and keeps no state: the provider
+// ends a request that receives HTTP 401 with
+// ErrADODeliveredCredentialRejected instead of resending the value, and later
+// requests still send it (a 401 on one endpoint, for example one the
+// credential has no scope for, does not fail the others).
+type adoDeliveredCredentialSource struct {
+	kind   string
+	secret string
+	label  string
+}
+
+// NewADODeliveredCredentialSource returns the source for a credential a stage
+// was handed: secret is the delivered value, kind is ADOCredentialKindPAT
+// (sent as HTTP Basic) or ADOCredentialKindBearer (a Microsoft Entra token),
+// and label names where it came from (the capability it was delivered for) in
+// error messages. The value is never part of an error.
+//
+// A request that Azure DevOps answers with HTTP 401 fails with
+// ErrADODeliveredCredentialRejected wrapping the 401 response: the value
+// expired, was revoked or lacks access, and a stage cannot mint another one.
+func NewADODeliveredCredentialSource(kind, secret, label string) (ADOCredentialSource, error) {
+	switch kind {
+	case adoCredentialPAT, adoCredentialBearer:
+	default:
+		return nil, fmt.Errorf("unsupported ado credential kind %q", kind)
+	}
+	if strings.TrimSpace(secret) == "" {
+		return nil, fmt.Errorf("ado credential for %s is empty", label)
+	}
+	return &adoDeliveredCredentialSource{kind: kind, secret: secret, label: label}, nil
+}
+
+func (s *adoDeliveredCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
 	if err := ctx.Err(); err != nil {
 		return ADOCredential{}, err
 	}
-	if s.resolve == nil {
-		return ADOCredential{}, fmt.Errorf("ado bearer credential resolver is nil")
-	}
-	token, err := s.resolve(ctx)
-	if err != nil {
-		return ADOCredential{}, err
-	}
-	if strings.TrimSpace(token) == "" {
-		return ADOCredential{}, fmt.Errorf("ado bearer credential is empty")
-	}
-	return ADOCredential{Kind: adoCredentialBearer, Secret: token}, nil
+	return ADOCredential{Kind: s.kind, Secret: s.secret}, nil
 }
 
 func (c ADOCredential) authorizationHeader() (string, error) {

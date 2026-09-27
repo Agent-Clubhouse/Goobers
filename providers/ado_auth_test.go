@@ -68,23 +68,6 @@ func TestAzureCLICredentialSourceDoesNotEchoFailedOutput(t *testing.T) {
 	}
 }
 
-func TestStaticADOBearerCredentialSource(t *testing.T) {
-	credential, err := NewADOBearerCredentialSource("entra-token").Credential(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if credential.Kind != ADOCredentialKindBearer || credential.Secret != "entra-token" || credential.Username != "" {
-		t.Fatalf("credential = %#v", credential)
-	}
-}
-
-func TestStaticADOBearerCredentialSourceRejectsEmptyToken(t *testing.T) {
-	_, err := NewADOBearerCredentialSource(" ").Credential(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "bearer credential is empty") {
-		t.Fatalf("Credential() error = %v, want empty-token error", err)
-	}
-}
-
 func TestParseAzureCLIExpiryTreatsNaiveTimestampAsLocalTime(t *testing.T) {
 	original := time.Local
 	local := time.FixedZone("test-local", 9*60*60)
@@ -370,5 +353,72 @@ func TestADOGitAuthEnvironmentRegistersTheBasicHeader(t *testing.T) {
 	got := string(reg.Scrub([]byte("AUTHORIZATION: Basic " + encoded)))
 	if strings.Contains(got, encoded) {
 		t.Fatalf("Basic header was not scrubbed: %q", got)
+	}
+}
+
+// TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized pins the
+// stage-side contract for a credential the daemon handed a stage: it is sent
+// in its delivered scheme, a 401 is not answered by resending it, and the
+// request fails with ErrADODeliveredCredentialRejected naming where the value
+// came from, never the value itself. The error keeps the 401 response, so it
+// still classifies as an authentication failure (typed and as text), and the
+// rejection does not stick: the next request sends the value again.
+func TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		kind       string
+		wantHeader string
+	}{
+		{name: "bearer", kind: ADOCredentialKindBearer, wantHeader: "Bearer delivered-secret-value"},
+		{name: "basic", kind: ADOCredentialKindPAT, wantHeader: "Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:delivered-secret-value"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, err := NewADODeliveredCredentialSource(tc.kind, "delivered-secret-value", "github:pr:write")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var headers []string
+			provider := NewADOProvider("org", "project", "",
+				WithADOCredentialSource(source),
+				func(p *ADOProvider) {
+					p.Client = adoHTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+						headers = append(headers, req.Header.Get("Authorization"))
+						return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("TF400813: not authorized"))}, nil
+					})
+				},
+			)
+			_, err = provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "42")
+			if !errors.Is(err, ErrADODeliveredCredentialRejected) {
+				t.Fatalf("GetWorkItem error = %v, want ErrADODeliveredCredentialRejected", err)
+			}
+			if !strings.Contains(err.Error(), "github:pr:write") || !strings.Contains(err.Error(), "expired, revoked, or without access to this resource") {
+				t.Fatalf("error %q does not name the capability and the cause", err)
+			}
+			if !strings.Contains(err.Error(), "status 401") || !strings.Contains(err.Error(), "TF400813") {
+				t.Fatalf("error %q dropped the 401 response detail", err)
+			}
+			if strings.Contains(err.Error(), "delivered-secret-value") {
+				t.Fatalf("error leaks the credential: %q", err)
+			}
+			if !IsAuthenticationError(err) || !IsAuthenticationError(errors.New(err.Error())) {
+				t.Fatalf("IsAuthenticationError(%v) = false (typed or as text), want true", err)
+			}
+			if len(headers) != 1 || headers[0] != tc.wantHeader {
+				t.Fatalf("Authorization headers = %q, want exactly one %q", headers, tc.wantHeader)
+			}
+			_, _ = provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "43")
+			if len(headers) != 2 || headers[1] != tc.wantHeader {
+				t.Fatalf("Authorization headers after a second request = %q, want the value sent again", headers)
+			}
+		})
+	}
+}
+
+func TestNewADODeliveredCredentialSourceRejectsUnusableInput(t *testing.T) {
+	if _, err := NewADODeliveredCredentialSource("other", "value", "repo:push"); err == nil {
+		t.Fatal("unknown kind accepted")
+	}
+	if _, err := NewADODeliveredCredentialSource(ADOCredentialKindBearer, " ", "repo:push"); err == nil || !strings.Contains(err.Error(), "repo:push") {
+		t.Fatalf("empty secret error = %v, want one naming repo:push", err)
 	}
 }

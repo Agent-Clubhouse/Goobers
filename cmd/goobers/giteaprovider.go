@@ -14,9 +14,9 @@ import (
 // against the instance config. A single-Gitea-repo instance falls back to its
 // only repo. The returned RepoRef carries BaseURL — the self-hosted forge root
 // the routed env does not carry (the routed env only carries the addressing
-// tuple) — which newGiteaProviderForStage needs to reach the right host. Mirrors
-// adoRepoRefForStage, but Gitea's code repo and backlog coincide (like GitHub),
-// so there is no project tier to reconcile.
+// tuple) — which newGiteaProviderForStage needs to reach the right host. Gitea's
+// code repo and backlog coincide (like GitHub), so there is no project tier to
+// reconcile.
 func giteaRepoRefForStage(root string, routed providers.RepositoryRef) (instance.RepoRef, error) {
 	l := instance.NewLayout(root)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
@@ -38,8 +38,8 @@ func giteaRepoRefForStage(root string, routed providers.RepositoryRef) (instance
 }
 
 // newGiteaProviderForStage builds the Gitea provider a provider-chain stage
-// talks to. It mirrors newADOProviderForStage in resolving the forge BaseURL
-// from instance config, but — like GitHub — Gitea authenticates with a static
+// talks to. It resolves the forge BaseURL from instance config (addressing, not
+// auth) and — like GitHub — authenticates with a static
 // PAT-like token the runner injects for the stage's declared capability
 // (providerToken). The token is resolved by the caller (the stage's own
 // capability, or the daemon's credential resolver) and passed in, so this stays

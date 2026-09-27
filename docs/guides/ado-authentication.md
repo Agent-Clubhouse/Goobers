@@ -191,7 +191,14 @@ for the capabilities it declares:
 
 The daemon tracks each Entra token's expiry and refreshes it shortly before it
 lapses, but the stage does not receive the expiry. A delivered token can
-therefore have only a few minutes left.
+therefore have only a few minutes left. A stage cannot refresh what it was
+delivered: when Azure DevOps rejects the value with HTTP 401, the request fails
+without a retry, with an error that names the capability, says the credential
+expired, was revoked or has no access to the resource called, and keeps the 401
+response (Azure DevOps answers 401 for a missing scope or project access too).
+It is reported as an authentication failure (`github_auth_failed`). The next
+attempt receives a new value, which helps with expiry but not with missing
+access. Refreshing a delivered value in a stage is follow-up #5905.
 
 The workload and managed identity sources that back grants are built on first
 use, so a host without the identity can still run read-only commands such as
@@ -202,9 +209,37 @@ workload-identity projection is missing fails to start.
 A reference repository (`additionalRepos`) that authenticates as a Microsoft
 Entra identity keeps using the gaggle's own repository source for its checkout.
 
-Built-in stage commands still build their Azure DevOps connection from the
-repository's configured `auth` block. They move to the delivered credential in a
-later release.
+Built-in stage commands authenticate only with the credential delivered for
+their declared capabilities. They never read the repository's `auth` block, so
+an undeclared capability means no credential on Azure DevOps, as on GitHub. Under
+DSL 2.0 the declared capability selects the credential for the operation on the
+repository the stage routes to:
+
+| Declared capability | Authenticates |
+| --- | --- |
+| `github:pr:write`, `provider:pr:write` | pull-request reads, threads, labels and statuses |
+| `github:issues:read`, `github:issues:write`, `github:milestones:write` | Azure Boards work items |
+| `repo:push` | `push-branch` and the remediation fetches and force-pushes |
+| `ado:pr:complete` | pull-request completion in `merge-pr` and `merge-queue-poll` |
+| `ado:work-items:write` | linking the pull request `open-pr` opened to its work item (a `credentials:` entry; the repository credential does not back it) |
+
+This needs no `runner.envPassthrough` entry for a PAT or an Azure identity
+variable, and a stage pod needs no Azure identity of its own: only the daemon
+does. A `GOOBERS_CRED_<CAPABILITY>` set by hand for a standalone invocation,
+with no `GOOBERS_REPO_AUTH_SCHEME`, is sent as a PAT.
+
+The daemon states one authorization scheme per stage, taken from the
+repository's `auth` kind, and it applies to every credential the stage
+receives, including a `credentials:` entry. On a gaggle whose repository
+authenticates as a Microsoft Entra identity (`azure-cli`, `workload-identity`,
+`managed-identity`), a `credentials:` value such as the one backing
+`ado:work-items:write` is therefore sent as `Bearer` and must be an Entra
+access token; a PAT there is rejected. To link work items with a PAT, use a
+repository with `pat` auth.
+
+Operator commands that are not stages, such as `goobers status` and
+`goobers run`, still read the repository's `auth` block on the host where they
+run.
 
 ## Publishing review and CI evidence
 
@@ -230,16 +265,18 @@ the instance config surface documented above.
 ## Security behavior
 
 - Entra tokens are cached with an expiry-aware refresh window.
-- A 401 invalidates an expiring credential and retries exactly once.
+- A 401 invalidates an expiring credential and retries exactly once. A
+  credential delivered to a stage is never resent after a 401; that request
+  fails with an "expired, revoked, or without access to this resource" error
+  that still classifies as an authentication failure.
 - PAT sources are not retried as though they were refreshable.
 - The daemon registers every value it resolves with the journal and telemetry
   scrubber when it mints it, in each form the value can travel in: the raw
   token, the `Bearer` header value, and the base64 `Basic` header value.
   Providers that the daemon constructs with a registrar register the same
   forms for each request.
-- A stage command that builds its own Azure DevOps connection from the `auth`
-  block does not register what it resolves with the exact-value scrubber;
-  the pattern scrubber still applies to its output.
+- Stage commands build no Azure DevOps connection of their own; every value
+  a stage uses was registered by the daemon when it was minted.
 - Git receives credentials through its child environment, never command-line
   arguments, repository remotes, or persisted Git configuration.
 - Credential-source failures fail closed; Goobers never falls back to another

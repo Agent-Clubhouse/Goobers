@@ -1608,9 +1608,9 @@ func currentPullRequest(ctx context.Context, provider providers.Provider, repo p
 //
 // Per-arm options reproduce the previous behavior exactly: the GitHub arm stays
 // conditional-GET cached with no mutation recorder, the Gitea arm keeps its
-// kind="pr" recorder and is uncached, and the ADO arm resolves its own
-// credential inside newADOProviderForStage (no capability token is minted for
-// it here, same as before).
+// kind="pr" recorder and is uncached, and the ADO arm, like the others,
+// authenticates with the provider:pr:write credential the stage was delivered
+// (docs/design/ado-parity-dsl-2-0.md §3.1), uncached and with no recorder.
 func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (providers.Provider, error) {
 	opts := []stageProviderOption{withStageProviderCapability(capability.ProviderPRWrite)}
 	switch repo.Provider {
