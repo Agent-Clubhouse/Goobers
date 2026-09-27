@@ -273,21 +273,30 @@ repository the stage routes to:
 | `repo:push` | `push-branch` and the remediation fetches and force-pushes |
 | `github:pr:merge` | pull-request completion in `merge-pr` and `merge-queue-poll` |
 | `ado:pr:complete` | the same completion, instead of `github:pr:merge`, when the stage declares it (optional) |
-| `ado:work-items:write` | linking the pull request `open-pr` opened to its work item (a `credentials:` entry; the repository credential does not back it) |
+| `ado:work-items:write` | linking the pull request `open-pr` opened to its work item natively (optional; the repository credential backs it when the stage declares it) |
 
 This needs no `runner.envPassthrough` entry for a PAT or an Azure identity
 variable, and a stage pod needs no Azure identity of its own: only the daemon
 does. A `GOOBERS_CRED_<CAPABILITY>` set by hand for a standalone invocation,
 with no `GOOBERS_REPO_AUTH_SCHEME`, is sent as a PAT.
 
+Native work-item linking is best-effort. When `open-pr` has a claimed Azure
+Boards item but no `ado:work-items:write` credential was delivered, it warns,
+opens the pull request with the text reference to the item, and adds a note to
+the pull request description that the item is not linked natively. When the
+credential is delivered and Azure DevOps rejects the link, the stage fails. The
+shipped workflows do not declare `ado:work-items:write`; add it to the `open-pr`
+stage to link natively. No `credentials:` entry is needed: the repository
+credential backs it, as it backs `provider:pr:write`. A GitHub or Gitea
+repository credential never backs it.
+
 The daemon states one authorization scheme per stage, taken from the
 repository's `auth` kind, and it applies to every credential the stage
 receives, including a `credentials:` entry. On a gaggle whose repository
 authenticates as a Microsoft Entra identity (`azure-cli`, `workload-identity`,
-`managed-identity`), a `credentials:` value such as the one backing
-`ado:work-items:write` is therefore sent as `Bearer` and must be an Entra
-access token; a PAT there is rejected. To link work items with a PAT, use a
-repository with `pat` auth.
+`managed-identity`), a `credentials:` value, such as one that overrides the
+repository credential for `ado:work-items:write`, is therefore sent as `Bearer`
+and must be an Entra access token; a PAT there is rejected.
 
 Operator commands that are not stages, such as `goobers status` and
 `goobers run`, still read the repository's `auth` block on the host where they

@@ -40,7 +40,7 @@ capabilities must also appear on its referenced Goober.
 | `ado:pr:write` | Open or update Azure Repos pull requests. Accepted but inert in DSL 2.0 (warns `CAP006`): declare `github:pr:write`. |
 | `ado:pr:status` | Publish Azure Repos pull-request statuses. Optional on the `report-pr-status` policy action, which requires `github:pr:write`; declaring `ado:pr:status` alongside it is accepted but not required. |
 | `ado:pr:complete` | Complete an Azure Repos pull request. Optional: accepted on `merge-pr` and `merge-queue-poll` alongside the required `github:pr:merge`, and when declared, completion uses its credential instead. |
-| `ado:work-items:write` | Update explicitly selected Azure Boards work items. Consumed only by `open-pr`, which links an Azure DevOps pull request to its work item; elsewhere it is inert in DSL 2.0 (warns `CAP006`): declare `github:issues:write`. |
+| `ado:work-items:write` | Update explicitly selected Azure Boards work items. Consumed only by `open-pr`, which links an Azure DevOps pull request to its work item natively when the stage declares it (optional: without it the pull request opens with a text reference and a note); an Azure DevOps repository credential backs it. Elsewhere it is inert in DSL 2.0 (warns `CAP006`): declare `github:issues:write`. |
 | `telemetry:read` | Read local telemetry and configured external telemetry connectors. |
 | `journal:read` | Resolve evidence from another run's journal. |
 | `agent:model` | Supply an agentic harness with its model credential. |
