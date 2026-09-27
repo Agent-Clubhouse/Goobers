@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -8,9 +9,14 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -213,6 +219,119 @@ func TestBacklogQueryClaimTopologyBKeysByBacklogProvider(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Repo != topologyBBacklogRef() {
 		t.Fatalf("recorded item repositories = %+v, want the GitHub backlog %+v", items, topologyBBacklogRef())
+	}
+}
+
+// topologyBRecordingCommenter records which repository each escalation call
+// addressed.
+type topologyBRecordingCommenter struct {
+	updates []providers.RepositoryRef
+	lists   []providers.RepositoryRef
+}
+
+func (c *topologyBRecordingCommenter) ListComments(_ context.Context, repo providers.RepositoryRef, _ string) ([]providers.Comment, error) {
+	c.lists = append(c.lists, repo)
+	return nil, nil
+}
+
+func (c *topologyBRecordingCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	c.updates = append(c.updates, req.Repository)
+	return providers.WorkItem{ID: req.ID}, nil
+}
+
+func (c *topologyBRecordingCommenter) UpdateComment(context.Context, providers.RepositoryRef, string, string) error {
+	return nil
+}
+
+// The daemon's park, failure and escalation handlers address a (b) item on
+// the GitHub backlog, with the backlog repository's repos[] credential, and
+// never build an Azure DevOps provider for it.
+func TestEscalationCommenterTopologyBAddressesTheGitHubBacklog(t *testing.T) {
+	root := initDemo(t)
+	topologyBFixture(t, root, "example")
+	t.Setenv("TOPOLOGY_B_BACKLOG_TOKEN", "backlog-token-value")
+	t.Setenv("TOPOLOGY_B_ADO_TOKEN", "ado-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{
+		{Name: "example-org/example-project/service", Env: "TOPOLOGY_B_ADO_TOKEN"},
+		{Name: "example-org/example-backlog", Env: "TOPOLOGY_B_BACKLOG_TOKEN"},
+	})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	fake := &topologyBRecordingCommenter{}
+	var tokens []string
+	previous := newEscalationPoster
+	newEscalationPoster = func(token string) gate.Commenter { tokens = append(tokens, token); return fake }
+	t.Cleanup(func() { newEscalationPoster = previous })
+
+	c := &escalationCommenter{resolver: resolver, reg: &escTestRegistrar{}, layout: layoutFor(root).ForGaggle("example")}
+	if _, err := c.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{Repository: topologyBRouted(), ID: "42", AddLabels: []string{providers.LabelNeedsHuman}}); err != nil {
+		t.Fatalf("UpdateWorkItem: %v", err)
+	}
+	if _, err := c.ListComments(context.Background(), topologyBRouted(), "42"); err != nil {
+		t.Fatalf("ListComments: %v", err)
+	}
+	backlog := topologyBBacklogRef()
+	if len(fake.updates) != 1 || fake.updates[0] != backlog || len(fake.lists) != 1 || fake.lists[0] != backlog {
+		t.Fatalf("escalation addressed updates %+v and lists %+v, want the GitHub backlog %+v", fake.updates, fake.lists, backlog)
+	}
+	for _, token := range tokens {
+		if token != "backlog-token-value" {
+			t.Fatalf("escalation poster built with %q, want the backlog repository's credential", token)
+		}
+	}
+}
+
+// The daemon's terminal claim-marker release for a (b) run clears the marker
+// on the GitHub issue, with the credential bound to the backlog repository,
+// and never builds an Azure DevOps provider.
+func TestTerminalClaimMarkerReleaseTopologyB(t *testing.T) {
+	root := initDemo(t)
+	topologyBFixture(t, root, "example")
+	t.Setenv("TOPOLOGY_B_BACKLOG_TOKEN", "backlog-token-value")
+	t.Setenv("TOPOLOGY_B_ADO_TOKEN", "ado-token-value")
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "ado", Owner: topologyBOrg, Project: topologyBCodeProject, Name: topologyBCodeRepo, Token: instance.TokenRef{Env: "TOPOLOGY_B_ADO_TOKEN"}},
+		{Provider: "github", Owner: "example-org", Name: "example-backlog", Token: instance.TokenRef{Env: "TOPOLOGY_B_BACKLOG_TOKEN"}},
+	}}
+	project := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: topologyBOrg, Project: topologyBCodeProject, Name: topologyBCodeRepo}
+
+	previousADO := newTerminalADOClaimMarkerProvider
+	newTerminalADOClaimMarkerProvider = func(repo instance.RepoRef, _ providers.SecretRegistrar, _ credentials.StoreResolver) (workItemClaimReleaser, error) {
+		t.Errorf("terminal release built an ADO provider for %+v in topology (b)", repo)
+		return nil, errors.New("unexpected ADO provider")
+	}
+	t.Cleanup(func() { newTerminalADOClaimMarkerProvider = previousADO })
+	var token string
+	var released []providers.ClaimWorkItemRequest
+	previous := newTerminalClaimMarkerProvider
+	newTerminalClaimMarkerProvider = func(source providers.TokenSource, _ ...func(*providers.GitHubProvider)) workItemClaimReleaser {
+		return claimReleaserFunc(func(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+			value, err := source.Token(ctx)
+			if err != nil {
+				return providers.WorkItem{}, err
+			}
+			token = value
+			released = append(released, req)
+			return providers.WorkItem{}, nil
+		})
+	}
+	t.Cleanup(func() { newTerminalClaimMarkerProvider = previous })
+
+	registrar, _ := journal.DefaultScrubber()
+	release, repo, err := buildTerminalClaimMarkerRelease(layoutFor(root).ForGaggle("example"), cfg, project, registrar, nil)
+	if err != nil {
+		t.Fatalf("buildTerminalClaimMarkerRelease: %v", err)
+	}
+	if release == nil || repo != topologyBBacklogRef() {
+		t.Fatalf("release target = %+v (release nil: %v), want the GitHub backlog %+v", repo, release == nil, topologyBBacklogRef())
+	}
+	req := providers.ClaimWorkItemRequest{Repository: repo, ID: "42", RunID: "run-42"}
+	if _, err := release(context.Background(), req); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(released) != 1 || released[0] != req || token != "backlog-token-value" {
+		t.Fatalf("released %+v with token %q, want %+v with the backlog repository's credential", released, token, req)
 	}
 }
 
