@@ -81,7 +81,7 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	// gather-issue-context uses, so issue resolution never fails on a
 	// PR-scoped credential and vice versa — on Azure DevOps too, where the
 	// issue is a backlog work item (docs/design/ado-parity-dsl-2-0.md §3.1).
-	issuesProvider, err := newMergeReviewProvider(root, repo, false,
+	issuesProvider, err := newMergeReviewProvider(root, backlogProviderRepo(repo, issuesRepo), false,
 		withStageProviderCapability(capability.GitHubIssuesWrite),
 		withStageProviderCache(),
 	)
