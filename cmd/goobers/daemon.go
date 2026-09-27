@@ -365,11 +365,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}()
 	if cfg.TelemetryEnabled() {
 		reportStartupProgress(options.startupProgress, "opening telemetry state")
-		var otlpConfig instance.OTLPConfig
-		if cfg.Telemetry.OTLP != nil {
-			otlpConfig = *cfg.Telemetry.OTLP
-		}
-		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, otlpConfig, secretStores)
+		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores)
 		if err != nil {
 			if !errors.Is(err, telemetry.ErrOTLPUnavailable) {
 				return nil, err

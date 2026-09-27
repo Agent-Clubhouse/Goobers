@@ -143,7 +143,7 @@ func runRoutingCase(t *testing.T, tc routingCase) {
 	scrubber := journal.Chain(registry, journal.NewPatternScrubber())
 	var client *telemetry.Client
 	if cfg.TelemetryEnabled() {
-		client, err = buildTelemetryClient(context.Background(), instance.NewLayout(t.TempDir()), scrubber, registry, resolved, nil)
+		client, err = buildTelemetryClient(context.Background(), instance.NewLayout(t.TempDir()), scrubber, registry, instance.TelemetryConfig{OTLP: &resolved}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

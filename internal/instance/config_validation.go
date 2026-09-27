@@ -216,6 +216,17 @@ func (c TelemetryConfig) validate(stores map[string]bool, telemetryEnabled bool)
 	if err := c.Diagnostics.validate(stores); err != nil {
 		return err
 	}
+	if c.AzureMonitor != nil {
+		if c.AzureMonitor.ConnectionString.sourceCount() != 1 {
+			return fmt.Errorf("telemetry.azureMonitor.connectionString must reference exactly one of env, file, keychain, or store; inline values are not permitted")
+		}
+		if !telemetryEnabled {
+			return fmt.Errorf("telemetry.azureMonitor cannot be set when telemetry.enabled is false")
+		}
+		if err := validateStoreRef("telemetry.azureMonitor.connectionString", c.AzureMonitor.ConnectionString, stores); err != nil {
+			return err
+		}
+	}
 	if c.OTLP == nil {
 		return nil
 	}

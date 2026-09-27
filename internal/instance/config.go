@@ -1310,6 +1310,10 @@ type TelemetryConfig struct {
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
 	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
+	// AzureMonitor opts into direct trace export to a customer-owned Application
+	// Insights resource. The connection string is always resolved indirectly;
+	// it is never valid inline instance configuration.
+	AzureMonitor *AzureMonitorConfig `json:"azureMonitor,omitempty" yaml:"azureMonitor,omitempty"`
 	// Diagnostics has its own opt-in collector; it never inherits journal export.
 	Diagnostics *DiagnosticsConfig `json:"diagnostics,omitempty" yaml:"diagnostics,omitempty"`
 	// Retention bounds terminal run journals and their rollup rows. Automatic
@@ -1320,6 +1324,19 @@ type TelemetryConfig struct {
 	// first-enable grace window (see TelemetryRetentionConfig.FirstEnable)
 	// rather than immediate deletion.
 	Retention *TelemetryRetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
+}
+
+// AzureMonitorConfig configures direct Application Insights ingestion without
+// requiring an operator-managed OpenTelemetry Collector. The connection string
+// is a destination credential and therefore uses the same TokenRef seam as all
+// other secrets.
+type AzureMonitorConfig struct {
+	ConnectionString TokenRef `json:"connectionString" yaml:"connectionString"`
+}
+
+// Enabled reports whether a direct Azure Monitor destination is configured.
+func (c *AzureMonitorConfig) Enabled() bool {
+	return c != nil && c.ConnectionString.Configured()
 }
 
 // TelemetryRetentionConfig controls pruning of terminal run telemetry.
