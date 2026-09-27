@@ -342,6 +342,26 @@ shared stage-provider seam, and ADO satisfies that surface through the same
   fails closed rather than proceeding against an unverified source. On ADO it polls with
   the delivered `github:pr:write` credential in the daemon-stated scheme, like every other
   remediation stage, and every ADO auth kind backs that credential (ADO-N18, §3).
+- **`gather-issue-context`** reads the selected pull request with `GetPullRequest`
+  (an ADO pull-request list carries no description, so the closing references are not
+  in it) and each closing reference with `GetWorkItem` in the gaggle's backlog project.
+  A pull request that is no longer active, or now targets another base, yields an empty
+  issue context, as on GitHub. Each provider is built through a narrow surface from its
+  own declared credential: `github:pr:write` for the pull request and
+  `github:issues:read` for the work items.
+- **`respond-to-findings`** keeps its run-scoped account in one pull-request thread,
+  posted `closed` so it never trips a comment-resolution policy. A retry finds its own
+  thread by the `goobers:remediation-response:<run>` marker and the identity GUID
+  (§4.1), updates it in place, and deletes any duplicate. It uses the
+  `github:issues:write` credential it declares, as on GitHub and Gitea; in topology (b)
+  that credential belongs to the GitHub backlog, so the stage stops with the
+  cross-provider refusal (`docs/guides/ado-limitations.md`).
+- **Scheduling.** ADO has no webhook ingestion, so the `schedule` trigger is the
+  lane's only autonomous start. The schedule demand count (unclaimed pull requests
+  behind their base) is GitHub-only, and behind-ness is not ADO's eligibility
+  (`update-behind-pr` is not applicable), so an ADO repository gets no demand counter:
+  each due tick fires one run, bounded by readiness, and `gather-pr-context` ends a
+  cycle with nothing to remediate as no-work.
 
 The sticky remediation-state comment (carrying the pre-remediation head SHA) is a PR thread
 updated in place via the composite comment id.
@@ -560,12 +580,13 @@ not.
 | Build, status | `queued` / `running` | CI pending |
 | Build, status | `rejected` / `broken` | CI failing. The check links the build from `context.buildId`. |
 | Minimum reviewers, required reviewers | not `approved` | A wait on a human (`CheckDetail.AwaitingHuman`). Never CI pending or failing, and never a remediation trigger. |
-| Comment requirements | `rejected` | Failing, "unresolved comment threads" |
-| Work item linking | `rejected` | Failing, "no linked work item" |
+| Comment requirements | `rejected` | Pending, "unresolved comment threads". Never CI failing: the threads route to `gather-review-threads`. |
+| Work item linking | `rejected` | Pending, "no linked work item". Never CI failing: `open-pr`'s `workItemRefs` carry the link. |
 | Any other type | as before | Gates CI unless listed in `humanPolicyConfigurationIds` |
 
-When ADO evaluated only reviewer policies for a pull request, the branch has
-no CI to wait for and `ci-poll` sees passing. With no evaluations at all it
+When ADO evaluated only reviewer, comment-resolution or work-item-linking
+policies for a pull request, the branch has no CI to wait for and `ci-poll`
+sees passing. With no evaluations at all it
 stays fail-closed pending.
 
 ### 11.2 The human wait

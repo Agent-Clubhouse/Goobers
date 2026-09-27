@@ -114,6 +114,10 @@ Not yet covered in topology (b):
   with a `github:issues:*` or `github:milestones:write` credential. That
   credential belongs to GitHub in topology (b), so the stage stops with the
   refusal above. Every shipped backlog stage listed above is routed by role.
+  `pr-remediation`'s `respond-to-findings` is not: it posts its account to
+  the pull request with the `github:issues:write` credential it declares, so
+  in topology (b) it stops with that refusal after the remediated branch is
+  published.
 
 ## One gaggle, two code providers (topology c)
 
@@ -130,6 +134,11 @@ service. Azure DevOps Server (on-premises) is out of scope.
 ## Service-hook triggers
 
 Goobers polls Azure DevOps; it does not consume ADO service-hook events.
+A workflow's `pull_request` webhook trigger therefore never fires on ADO, and
+the shipped `pr-remediation` runs from its `schedule` trigger. On GitHub each
+due tick is sized to the number of eligible pull requests; on ADO it fires one
+run, bounded by the workflow's readiness limits, and a tick with nothing to
+remediate ends as no-work.
 
 ## Iterations (milestones)
 

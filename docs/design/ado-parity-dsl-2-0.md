@@ -221,6 +221,11 @@ one natively rather than shipping an ADO variant:
 | `pr-claim` | verify step refuses ADO (#5655) | Verify the PR state and source head through the ADO poll (ADO-N14) |
 | `update-behind-pr` | `pr.update-branch` not declared | An ADO override that derives no capability. The stage reports `not-applicable` (ADO-N15). |
 | `gather-ci-failures` | refuses ADO (#5652) | Minimal native evidence from policy evaluations (ADO-N22) |
+| `gather-issue-context`, `respond-to-findings` | build their provider through the GitHub/Gitea-only remediation factory | Narrow ADO surfaces: the selected PR and its closing work items; one closed PR thread for the response account (FU3) |
+| `schedule` trigger | the demand count errors for non-GitHub repositories, so every tick sizes to zero | No demand counter on ADO: each due tick fires one run, bounded by readiness (FU3) |
+
+The last two rows were found after the plan was written (follow-up FU3); the
+stages ran unconditionally, so every ADO run failed at `gather-issue-context`.
 
 **Why `update-behind-pr` is not applicable on ADO.** ADO always computes the merge
 against the current target (`mergeStatus`), and there is no "branch must be up to
@@ -412,8 +417,8 @@ applies prefix scopes, path filters and lazy evaluation.
 | Build or status policy `queued` / `running` | CI pending |
 | Build or status policy `rejected` / `broken` | CI failed. The build link is in `context.buildId`. |
 | Minimum-reviewers or required-reviewers policy `queued` | **Waiting on a human.** Not CI pending, and never a remediation trigger. It stays `queued` even after a self-vote (F5). |
-| Comment-resolution policy `rejected` | Unresolved threads, which feed `pr-remediation` |
-| Work-item-linking policy `rejected` | A missing link. `open-pr` adds `workItemRefs` when the backlog is ADO. |
+| Comment-resolution policy `rejected` | Unresolved threads, which feed `pr-remediation`. Not CI failing (PO ruling 2026-09-27). |
+| Work-item-linking policy `rejected` | A missing link. `open-pr` adds `workItemRefs` when the backlog is ADO. Not CI failing (PO ruling 2026-09-27). |
 
 With auto-complete armed and a human approval still missing, the PR stays `active`
 (F4). `merge-queue-poll` reports "awaiting human approval" instead of timing out or
