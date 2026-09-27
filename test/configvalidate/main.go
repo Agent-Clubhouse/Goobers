@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/workflowsafety"
@@ -202,20 +203,30 @@ func validationEnv(gitEnv []string, tree checkedInTree) []string {
 	if tree.targetRemote == "" {
 		return gitEnv
 	}
-	env := make([]string, 0, len(gitEnv)+3)
+	count := 0
 	for _, entry := range gitEnv {
-		key, _, _ := strings.Cut(entry, "=")
-		if strings.EqualFold(key, "GIT_CONFIG_COUNT") ||
-			strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_KEY_") ||
-			strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_VALUE_") {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
 			continue
 		}
-		env = append(env, entry)
+		if strings.EqualFold(name, "GIT_CONFIG_COUNT") {
+			if parsed, err := strconv.Atoi(value); err == nil && parsed > count {
+				count = parsed
+			}
+			continue
+		}
+		const keyPrefix = "GIT_CONFIG_KEY_"
+		if len(name) <= len(keyPrefix) || !strings.EqualFold(name[:len(keyPrefix)], keyPrefix) {
+			continue
+		}
+		if slot, err := strconv.Atoi(name[len(keyPrefix):]); err == nil && slot >= count {
+			count = slot + 1
+		}
 	}
-	return append(env,
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=remote.goobers-validation-target.url",
-		"GIT_CONFIG_VALUE_0="+tree.targetRemote,
+	return append(append([]string(nil), gitEnv...),
+		"GIT_CONFIG_COUNT="+strconv.Itoa(count+1),
+		"GIT_CONFIG_KEY_"+strconv.Itoa(count)+"=remote.goobers-validation-target.url",
+		"GIT_CONFIG_VALUE_"+strconv.Itoa(count)+"="+tree.targetRemote,
 	)
 }
 

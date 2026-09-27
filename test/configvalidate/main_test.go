@@ -249,6 +249,36 @@ func TestValidationEnvAddsKnownTargetWithoutChangingRepositoryRemotes(t *testing
 	}
 }
 
+func TestValidationEnvPreservesExistingGitConfigSlots(t *testing.T) {
+	root := t.TempDir()
+	initGitRepository(t, root)
+
+	env, err := gitWorktreeEnv(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = append(env,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0="+root,
+	)
+	cmd := exec.Command("git", "-C", root, "config", "--get-regexp", `^(safe\.directory|remote\.goobers-validation-target\.url)$`)
+	cmd.Env = validationEnv(env, checkedInTrees[0])
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.ReplaceAll(string(output), "\r\n", "\n")
+	for _, want := range []string{
+		"safe.directory " + root,
+		"remote.goobers-validation-target.url https://github.com/Agent-Clubhouse/Goobers.git",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("git config = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestRunRejectsMissingValidator(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{filepath.Join(t.TempDir(), "missing")}, &stdout, &stderr); code != 2 {
