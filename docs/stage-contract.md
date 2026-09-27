@@ -269,6 +269,16 @@ scrubber first.
   whose source states an expiry, such as an App or Microsoft Entra token,
   carries it in the response.
 
+A value whose source states an expiry has at least 20 minutes left when it is
+delivered, local or in a pod: the daemon refreshes one with less first (a
+GitHub App token is re-minted; an Entra source is rebuilt so the Azure SDK's
+own cache is bypassed). If the refresh fails, or the source can only return the
+same token (the Azure CLI's cache), the daemon delivers the still-valid value.
+Such a value is delivered with its expiry as the non-secret
+`GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`, an RFC 3339 UTC timestamp. The name
+is deliberately outside the `GOOBERS_CRED_` prefix, whose values are secrets. A
+value with no stated expiry, such as a PAT, gets no expiry variable.
+
 A repository grant is backed by the repository's own configured source: a
 GitHub App mints an installation token, and any other static token is read.
 Every Azure DevOps auth kind resolves in the daemon, so `repo:push` and
@@ -279,8 +289,8 @@ credential the stage also receives the non-secret `GOOBERS_REPO_AUTH_SCHEME`
 Authorization header without inferring it from the token. The rule is the same
 for a local stage and a stage pod: a deterministic stage that received at least
 one `GOOBERS_CRED_<CAPABILITY>` also receives the scheme. Agentic stages do not
-receive it. The stage does not receive the token's expiry. See "Where the
-credential resolves" in `docs/guides/ado-authentication.md`.
+receive it. An Entra token also carries its `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`.
+See "Where the credential resolves" in `docs/guides/ado-authentication.md`.
 
 A built-in stage command authenticates only with what it was delivered, on
 every provider. On Azure DevOps a declared `github:*` capability selects the
@@ -294,10 +304,13 @@ command runs the same in a stage pod, which has no instance config. A
 `GOOBERS_CRED_<CAPABILITY>` set without a scheme (a standalone invocation) is
 sent as a PAT (`basic`). A delivered value cannot be refreshed by the stage: if
 Azure DevOps rejects it with HTTP 401, the request fails without a retry, with
-an "expired, revoked, or without access to this resource" error naming the
-capability that keeps the 401 response and reports `github_auth_failed`. A new
-attempt receives a new value, which helps when the value expired but not when it
-lacks scope or project access.
+an error naming the capability that keeps the 401 response and reports
+`github_auth_failed`. With a delivered expiry the error says the credential
+"expired at" that time when the 401 arrives at or after it, and "revoked or
+without access to this resource" before it; without one it says "expired,
+revoked, or without access to this resource". A new attempt receives a new
+value, which helps when the value expired but not when it lacks scope or
+project access.
 Agentic stages fail closed on a missing grant on Azure DevOps as on GitHub;
 only a capability the harness marks optional (such as `agent:model`) is
 skipped.
