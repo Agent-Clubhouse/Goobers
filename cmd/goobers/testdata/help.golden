@@ -754,8 +754,11 @@ like a pasted token is rejected.
 
 Use owner/repository for GitHub, or organization/project/repository (or a
 dev.azure.com URL) for Azure DevOps. Initialize ADO instances with
---template=standard --provider=ado first. ADO defaults to GOOBERS_ADO_TOKEN
-and records PAT authentication. Connect never changes an existing provider.
+--template=standard --provider=ado first; init defaults the repository to
+azure-cli authentication. Connect records PAT authentication for ADO, reading
+GOOBERS_ADO_TOKEN by default. To keep azure-cli, workload-identity or
+managed-identity, edit the placeholders in instance.yaml and gaggle.yaml.
+Connect never changes an existing provider.
 See docs/guides/ado-authentication.md for other authentication modes.
 
 For GitHub, --seed derives two label sets from the connected gaggles and idempotently
@@ -1547,13 +1550,18 @@ select the repository's Resource owner, choose Only select repositories, and
 grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=standard non-interactively seeds backlog-curation and implementation
 with their three canonical personas by default. Use --workflows to select
-implementation, backlog-curation, and/or work-nomination. --repo accepts a
-GitHub owner/name or Azure DevOps identity; --branch defaults to main.
+implementation, backlog-curation, merge-review, and/or work-nomination.
+--repo accepts a GitHub owner/name or Azure DevOps identity; --branch
+defaults to main.
 Implementation requires either --pr-ci or an explicit --ci-command JSON argv
 array plus comma-separated --required-capabilities (e.g. node@24).
 Use --issue-scope=assigned with --assigned-to to limit implementation work.
-Use --provider=ado for Azure DevOps placeholders and GOOBERS_ADO_TOKEN;
-the default provider is github. See docs/guides/ado-authentication.md.
+Use --provider=ado for Azure DevOps placeholders; the default provider is
+github. On Azure DevOps the default modules also include merge-review,
+work-nomination is refused (file-issues is GitHub-only), and
+--repo-auth-kind defaults to azure-cli (also workload-identity,
+managed-identity, or pat, which reads GOOBERS_ADO_TOKEN). See
+docs/guides/ado-authentication.md and docs/guides/ado-limitations.md.
 It creates placeholders: configure repository identity and credential refs
 before running. It does not start workflows and refuses configured targets.
 --template=quickstart seeds the versioned onboarding workflow; it is

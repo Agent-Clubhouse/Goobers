@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -96,6 +97,8 @@ func setProviderShape(project, backlog map[string]any, provider apiv1.Provider) 
 
 // scaffoldVariant is one shape of `goobers init --template=standard`: every
 // guided workflow module, with pull-request CI or with a local CI command.
+// work-nomination is GitHub-only: init refuses it on Azure DevOps, so the ADO
+// scaffold is built without it.
 type scaffoldVariant struct {
 	name      string
 	workflows []string
@@ -108,14 +111,30 @@ var scaffoldVariants = []scaffoldVariant{
 		workflows: []string{
 			instance.GuidedWorkflowImplementation,
 			instance.GuidedWorkflowBacklogCuration,
+			instance.GuidedWorkflowMergeReview,
 			instance.GuidedWorkflowWorkNomination,
 		},
 		prCI: true,
 	},
 	{
-		name:      "scaffold/local-ci",
-		workflows: []string{instance.GuidedWorkflowImplementation, instance.GuidedWorkflowBacklogCuration},
+		name: "scaffold/local-ci",
+		workflows: []string{
+			instance.GuidedWorkflowImplementation,
+			instance.GuidedWorkflowBacklogCuration,
+			instance.GuidedWorkflowMergeReview,
+		},
 	},
+}
+
+// scaffoldWorkflows is variant's module set as init accepts it on provider.
+func scaffoldWorkflows(provider apiv1.Provider, variant scaffoldVariant) []string {
+	workflows := append([]string(nil), variant.workflows...)
+	if provider == apiv1.ProviderADO {
+		workflows = slices.DeleteFunc(workflows, func(name string) bool {
+			return name == instance.GuidedWorkflowWorkNomination
+		})
+	}
+	return workflows
 }
 
 // scaffoldSubject seeds the standard scaffold natively for GitHub and ADO
@@ -150,7 +169,7 @@ func standardScaffoldOptions(provider apiv1.Provider, variant scaffoldVariant) i
 		WorkTrackingTokenEnv: "GOOBERS_GITHUB_ISSUES_TOKEN",
 		PullRequestTokenEnv:  "GOOBERS_GITHUB_PR_TOKEN",
 		RepoPushTokenEnv:     "GOOBERS_GITHUB_PUSH_TOKEN",
-		Workflows:            append([]string(nil), variant.workflows...),
+		Workflows:            scaffoldWorkflows(provider, variant),
 		PullRequestCI:        variant.prCI,
 	}
 	if !variant.prCI {
@@ -159,8 +178,8 @@ func standardScaffoldOptions(provider apiv1.Provider, variant scaffoldVariant) i
 	}
 	if provider == apiv1.ProviderADO {
 		opts.RepoProject = "your-project"
-		opts.RepoAuthKind = instance.ADOAuthPAT
-		opts.RepoTokenEnv = "GOOBERS_ADO_TOKEN"
+		opts.RepoAuthKind = instance.ADOAuthAzureCLI
+		opts.RepoTokenEnv = ""
 		opts.WorkTrackingTokenEnv, opts.PullRequestTokenEnv, opts.RepoPushTokenEnv = "", "", ""
 	}
 	return opts
