@@ -447,6 +447,13 @@ func TestTopologyBBacklogStagesDispatchToTheBacklogProvider(t *testing.T) {
 			t.Setenv("GOOBERS_RUN_ID", "dispatch-backlog-dedupe")
 			t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
 		}},
+		// The decomposition stages address the backlog too: the parent issue
+		// and its children live there, never on the ADO code provider.
+		{"select-source", nil, capability.GitHubIssuesWrite, func(t *testing.T) {
+			t.Setenv(executor.InputEnvVar("trustLabel"), providers.LabelApproved)
+		}},
+		{"validate-plan", nil, capability.GitHubIssuesRead, setupTopologyBValidatePlan},
+		{"publish-batch", nil, capability.GitHubIssuesWrite, setupTopologyBPublishBatch},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
 			root := initDemo(t)

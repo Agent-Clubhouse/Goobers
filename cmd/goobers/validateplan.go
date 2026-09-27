@@ -65,7 +65,7 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	repo, err := providerRepo(root)
+	repo, err := decompositionIssueRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

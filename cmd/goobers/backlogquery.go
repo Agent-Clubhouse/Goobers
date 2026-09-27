@@ -327,7 +327,9 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	// metadata, the open-PR eligibility backstop, contested-file dispatch) need
 	// the concrete provider and stay gated on ghIssueProvider being non-nil — for
 	// ADO they are simply skipped, exactly like a GitHub stage that never opted
-	// into github:pr:write.
+	// into github:pr:write. In topology (b) ghIssueProvider IS a GitHub provider
+	// (the backlog's), so the pull-request extras are additionally gated on the
+	// code being on GitHub (backlogPRExtrasAvailable).
 	opts := []stageProviderOption{withStageProviderMutations("issue")}
 	if !readOnly {
 		opts = append(opts, withStageProviderCache())
@@ -348,6 +350,17 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 		applyGaggleDoneStates(env.root, ado)
 	}
 	return 0
+}
+
+// backlogPRExtrasAvailable reports whether backlog-query's GitHub
+// pull-request extras (the open-PR eligibility backstop, the closed-unmerged
+// requeue and contested-file ordering) can run: the issue provider is the
+// concrete GitHub provider and it is also the code provider. In topology (b)
+// (docs/design/ado-parity-dsl-2-0.md §7.2) the GitHub provider is the
+// backlog's while the pull requests live on Azure DevOps, so the extras are
+// skipped rather than listing the backlog repository's pull requests.
+func backlogPRExtrasAvailable(env backlogQueryEnv) bool {
+	return env.ghIssueProvider != nil && !backlogOnOtherProvider(env.repo, env.backlogRepo)
 }
 
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
@@ -482,8 +495,8 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	)
 	// The open-PR eligibility backstop and closed-unmerged requeue read pull
 	// requests through the GitHub PR API, so they need both a github:pr:write
-	// token and the concrete GitHub provider. An ADO stage (ghIssueProvider nil)
-	// gets exactly the pre-backstop label-only behavior — no hard failure.
+	// token and GitHub code (backlogPRExtrasAvailable). ADO code, topology (b)
+	// included, gets exactly the pre-backstop label-only behavior.
 	//
 	// Built through the shared stage-provider seam so this second provider
 	// carries the same declared identity the issue provider above does
@@ -494,7 +507,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	// here means the issue provider already resolved to GitHub with a
 	// registered factory and an explicit token, so there is nothing left for
 	// the seam to refuse.
-	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && ghIssueProvider != nil {
+	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && backlogPRExtrasAvailable(env) {
 		prProvider, _ = newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
 			withStageProviderCapability(capability.GitHubPRWrite),
 			withStageProviderToken(prToken),
