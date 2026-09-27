@@ -169,6 +169,8 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: create continuation run id: %v\n", err)
 		return 2
 	}
+	stopTelemetry := startCommandJournalTelemetry(layoutFor(root), stderr)
+	defer stopTelemetry()
 	request := journal.ContinuationRequest{
 		RunID: runID, SourceRunID: sourceID, ExpectedTerminalSeq: *terminalSeq,
 		Operator: *operator, Target: *target, Inputs: inputs,
@@ -486,7 +488,7 @@ func validateContinuationEligibility(item providers.WorkItem, claimID string, po
 	if policy == nil {
 		return nil
 	}
-	if policy.respectAssignee && item.Assignee != policy.assignedTo {
+	if policy.respectAssignee && !item.AssigneeMatches(policy.assignedTo) {
 		return fmt.Errorf("source claim %q is assigned to %q, need %q", claimID, item.Assignee, policy.assignedTo)
 	}
 	matched, err := policy.labelFilter.Matches(item.Labels)

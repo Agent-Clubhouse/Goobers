@@ -10,6 +10,7 @@ export const apiRoutes = {
   "workerConfigDivergence": { method: "POST", path: "/api/v1/worker/config-divergence", actionClass: "workflow-execution" },
   "instance": { method: "GET", path: "/api/v1/instance", actionClass: "read-only-navigation" },
   "portalConfig": { method: "GET", path: "/api/v1/portal/config", actionClass: "read-only-navigation" },
+  "portalAsset": { method: "GET", path: "/assets/{path...}", actionClass: "read-only-navigation" },
   "gaggles": { method: "GET", path: "/api/v1/gaggles", actionClass: "read-only-navigation" },
   "gaggleGoobers": { method: "GET", path: "/api/v1/gaggles/{gaggle}/goobers", actionClass: "read-only-navigation" },
   "gaggleWorkflows": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows", actionClass: "read-only-navigation" },
@@ -60,6 +61,7 @@ export const apiRoutes = {
   "journalConflictTouches": { method: "POST", path: "/api/v1/journal/conflict-touches", actionClass: "workflow-execution" },
   "journalUnpushedWork": { method: "POST", path: "/api/v1/journal/unpushed-work", actionClass: "workflow-execution" },
   "journalEscalationCandidates": { method: "POST", path: "/api/v1/journal/escalation-candidates", actionClass: "workflow-execution" },
+  "journalMergeAuthority": { method: "POST", path: "/api/v1/journal/merge-authority", actionClass: "workflow-execution" },
   "journalBranchOwnership": { method: "POST", path: "/api/v1/journal/branch-ownership", actionClass: "workflow-execution" },
 } as const;
 

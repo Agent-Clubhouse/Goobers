@@ -35,8 +35,10 @@ import (
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workcopyroot"
 	wf "github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 // Severity ranks an issue.
@@ -258,6 +260,13 @@ const (
 	// notice that the runtime does not honor the field, not a defect in the
 	// config that declared it.
 	WarningConnectionRefUnhonored WarningCode = "REF012"
+	// WarningGaggleMixedProvider (CFG011) identifies a gaggle whose backlog
+	// provider differs from its project provider where neither side is ado
+	// (for example a GitHub project with a Gitea backlog). It is strict-neutral:
+	// such configs validated cleanly, --strict included, before the ADO-N13
+	// guard shipped, so promoting it would turn unchanged non-ADO configs red
+	// on upgrade. The ADO case is the hard error CFG010 instead.
+	WarningGaggleMixedProvider WarningCode = "CFG011"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -308,6 +317,7 @@ const (
 	errorGaggleCheckoutSparse     WarningCode = "CFG007"
 	errorWorkcopiesRoot           WarningCode = "CFG008"
 	errorWorkcopiesCollision      WarningCode = "CFG009"
+	errorGaggleMixedProviderADO   WarningCode = "CFG010"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -369,15 +379,16 @@ const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
 
 // Issue is a single validation finding.
 type Issue struct {
-	Code     WarningCode `json:"code,omitempty"`
-	Severity Severity    `json:"severity"`
-	File     string      `json:"file,omitempty"`
-	Line     int         `json:"-"`
-	Col      int         `json:"-"`
-	Kind     string      `json:"kind,omitempty"`
-	Name     string      `json:"name,omitempty"`
-	Gaggle   string      `json:"gaggle,omitempty"`
-	Message  string      `json:"message"`
+	Code     WarningCode             `json:"code,omitempty"`
+	Severity Severity                `json:"severity"`
+	File     string                  `json:"file,omitempty"`
+	Line     int                     `json:"-"`
+	Col      int                     `json:"-"`
+	Kind     string                  `json:"kind,omitempty"`
+	Name     string                  `json:"name,omitempty"`
+	Gaggle   string                  `json:"gaggle,omitempty"`
+	Message  string                  `json:"message"`
+	Safety   *workflowsafety.Details `json:"safety,omitempty"`
 }
 
 func (i Issue) String() string {
@@ -466,10 +477,11 @@ func (i Issue) Scope() string {
 
 // CodedWarning is the stable warning shape projected by CLI and API consumers.
 type CodedWarning struct {
-	Code        WarningCode `json:"code"`
-	Severity    Severity    `json:"severity"`
-	Scope       string      `json:"scope"`
-	Explanation string      `json:"explanation"`
+	Code        WarningCode             `json:"code"`
+	Severity    Severity                `json:"severity"`
+	Scope       string                  `json:"scope"`
+	Explanation string                  `json:"explanation"`
+	Safety      *workflowsafety.Details `json:"safety,omitempty"`
 }
 
 func (w CodedWarning) String() string {
@@ -511,6 +523,7 @@ func (r *Report) Warnings() []CodedWarning {
 			Severity:    issue.Severity,
 			Scope:       issue.Scope(),
 			Explanation: issue.Message,
+			Safety:      issue.Safety,
 		})
 	}
 	sort.Slice(warnings, func(i, j int) bool {
@@ -916,6 +929,8 @@ type workflowIdentity struct {
 type indexedWorkflow struct {
 	definition apiv1.Workflow
 	file       string
+	node       *yamlv3.Node
+	lineOffset int
 }
 
 // index holds the typed objects keyed by their config identities for
@@ -1041,7 +1056,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			_, ok := ix.workflows[identity]
 			return ok
 		})
-		ix.workflows[identity] = indexedWorkflow{definition: w, file: doc.file}
+		ix.workflows[identity] = indexedWorkflow{definition: w, file: doc.file, node: doc.node, lineOffset: doc.lineOffset}
 		if explicitZeroMaxRunsPerHour(doc.json) {
 			r.addWarning(WarningZeroMaxRunsPerHour, doc.file, w.Spec.Gaggle, "Workflow", w.Name,
 				"spec.readiness.maxRunsPerHour is explicitly 0, which does NOT mean unlimited — the scheduler treats it the same as omitted and substitutes its default of 10 (internal/localscheduler's Conditions.Admit, #339). This is the opposite of instance.yaml's runConditions.maxParallelRuns, where 0 means unlimited. Set an explicit large value if you want a high hourly ceiling.")
@@ -1128,6 +1143,11 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleCheckout(r)
 	// Managed working-copy root normalization and cross-gaggle collisions (#3663).
 	ix.checkGaggleWorkcopies(r)
+	// A backlog on a different provider than the project is refused when ADO
+	// is on either side (ADO-N13); topology (b) support lands in ADO-N31. A
+	// non-ADO mismatch (e.g. GitHub project, Gitea backlog) is warned, not
+	// refused, so no existing non-ADO config breaks.
+	ix.checkGaggleProviderTopology(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
@@ -1913,6 +1933,40 @@ func (ix *index) checkGaggleWorkcopies(r *Report) {
 	}
 }
 
+// checkGaggleProviderTopology flags a gaggle whose backlog provider differs
+// from its project (code) provider. Every backlog stage today opens the
+// routed *project* provider (cmd/goobers/backlogquery.go), so a mismatched
+// backlog silently queries the wrong forge instead of failing loudly.
+//
+// A project/backlog split that stays on the SAME provider (e.g. an ADO
+// project with the backlog in a different ADO project) is unaffected: that
+// is the supported "ADO project split" and Provider values are equal there.
+//
+// A mismatch where ADO is on either side is refused outright (ADO-N13):
+// that is the case the v0.5.0 code path silently mis-routes. A mismatch
+// between two non-ADO providers (e.g. GitHub project, Gitea backlog) is
+// warned instead of refused, so no existing non-ADO config breaks under the
+// no-breaking-change goal. Full mixed-provider support is planned for
+// v0.5.x (ADO-N31), which lifts this guard.
+func (ix *index) checkGaggleProviderTopology(r *Report) {
+	for _, name := range sortedGaggleNames(ix.gaggles) {
+		spec := ix.gaggles[name].Spec
+		project := spec.Project.Provider
+		backlog := spec.Backlog.Provider
+		if project == "" || backlog == "" || project == backlog {
+			continue
+		}
+		msg := "spec.backlog.provider %q differs from spec.project.provider %q; a backlog on a different " +
+			"provider than the project is not yet supported and would query the wrong forge — " +
+			"planned for v0.5.x (ADO-N31)"
+		if project == apiv1.ProviderADO || backlog == apiv1.ProviderADO {
+			r.add(errorGaggleMixedProviderADO, Error, ix.gaggleFile[name], "Gaggle", name, msg, backlog, project)
+			continue
+		}
+		r.add(WarningGaggleMixedProvider, Warning, ix.gaggleFile[name], "Gaggle", name, msg, backlog, project)
+	}
+}
+
 func sortedGaggleNames(gaggles map[string]apiv1.Gaggle) []string {
 	names := make([]string, 0, len(gaggles))
 	for name := range gaggles {
@@ -2434,10 +2488,43 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 			)
 		}
 		def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec, Annotations: w.Annotations}
-		if _, err := wf.Compile(def, opts...); err != nil {
+		machine, err := wf.Compile(def, opts...)
+		if err != nil {
 			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
+			continue
+		}
+		safetyOptions := workflowsafety.Options{BinaryIdentity: version.Version + ":" + version.Commit}
+		if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
+			safetyOptions.GaggleRunControls = gaggle.Spec.RunControls
+		}
+		for _, finding := range workflowsafety.Analyze(machine, safetyOptions) {
+			details := finding.Details
+			line, col := safetyPosition(indexed, details.Stage)
+			details.File, details.Line, details.Col = indexed.file, line, col
+			finding.Details = details
+			r.Issues = append(r.Issues, Issue{
+				Code: WarningCode(finding.Code), Severity: Warning,
+				File: indexed.file, Line: line, Col: col, Kind: "Workflow", Name: w.Name, Gaggle: w.Spec.Gaggle,
+				Message: finding.Message(), Safety: &details,
+			})
 		}
 	}
+}
+
+func safetyPosition(indexed indexedWorkflow, stage string) (int, int) {
+	for _, collection := range []string{"tasks", "gates", "parallels"} {
+		list := yamlNodeAt(indexed.node, []string{"spec", collection})
+		if list == nil {
+			continue
+		}
+		for _, node := range list.Content {
+			name := yamlChild(node, "name")
+			if name != nil && name.Value == stage {
+				return name.Line + indexed.lineOffset, name.Column
+			}
+		}
+	}
+	return 0, 0
 }
 
 func sortedWorkflowIdentities(workflows map[workflowIdentity]indexedWorkflow) []workflowIdentity {

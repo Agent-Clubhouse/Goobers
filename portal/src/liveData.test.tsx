@@ -1586,11 +1586,13 @@ describe("live page integration", () => {
     expect(sortedLatencies[p95Index]).toBeLessThan(1_000);
 
     client.stream.end();
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Reconnecting"));
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("Reconnecting");
+      expect(screen.getByRole("status")).not.toHaveTextContent("Live updates connected");
+    });
     expect(container.querySelector(".topbar-instance-name")).toHaveTextContent(
       "refreshed-instance-20",
     );
-    expect(screen.getByRole("status")).not.toHaveTextContent("Live updates connected");
   }, 25_000);
 });
 

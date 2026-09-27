@@ -212,7 +212,10 @@ func (t *Tree) kill() error {
 	if err != nil {
 		snapshotErr = errors.Join(snapshotErr, fmt.Errorf("proc: terminate job for %d: %w", t.pid, err))
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// WSL broker processes can continue rejecting termination briefly while
+	// the job's members are being torn down. Keep retrying long enough for
+	// that transition to settle without making Kill unbounded.
+	deadline := time.Now().Add(5 * time.Second)
 	// Only the LAST pass's failures are the caller's answer. Kill's contract
 	// is about the state of the tree when it returns, and a descendant that
 	// was mid-exit on one pass and gone on the next was terminated

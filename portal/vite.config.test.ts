@@ -62,6 +62,11 @@ describe("portal development proxy", () => {
     ).toBeTypeOf("function");
   });
 
+  it("bounds test workers on Windows without limiting other platforms", () => {
+    expect(createViteConfig({}, "test", "win32").test.maxWorkers).toBe(2);
+    expect(createViteConfig({}, "test", "linux").test).not.toHaveProperty("maxWorkers");
+  });
+
   it("stamps Getting Started mode for the dedicated dev command", () => {
     const plugin = createViteConfig({}, "getting-started").plugins[1];
     const html =

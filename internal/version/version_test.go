@@ -1,10 +1,21 @@
 package version
 
 import (
+	"encoding/json"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestJournalOTLPCapability(t *testing.T) {
+	data, err := json.Marshal(Get())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"capabilities":["journal-otlp-v1"]`) {
+		t.Fatalf("missing journal OTLP capability: %s", data)
+	}
+}
 
 func TestGetPopulatesRuntime(t *testing.T) {
 	got := Get()

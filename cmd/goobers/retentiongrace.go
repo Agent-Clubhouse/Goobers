@@ -140,6 +140,42 @@ func retentionPassIsDryRun(state retentionGraceState, immediate bool, now time.T
 	return withinGrace || state.EnforceAt.IsZero()
 }
 
+// worktreeRetentionDryRun splits the retention pass's resolved dry-run
+// decision into the two things it actually depends on, so a caller can gate
+// an action on either the combined decision or on the operator's explicit
+// choice alone (#5354).
+//
+// Contentless recovery retirement (an entry justified by
+// recoveryContentlessJustification: no diff, bookkeeping-only, or a
+// byte-identical duplicate of a newer retained entry) and incomplete
+// reservation reclamation (no record.json at all) hold nothing an operator
+// could review. The first-enable grace window exists to give an operator time
+// to see worktrees and snapshots before they are deleted; it has nothing to
+// protect for an entry with no recoverable content, so those two actions
+// honour operator alone. Every other action — retain-floor expiry, worktree
+// pruning, merged-branch pruning, and the recovery landing-proof retirement
+// path — keeps honouring combined(), exactly as before this split existed.
+type worktreeRetentionDryRun struct {
+	// operator is the operator's explicit retention.dryRun preview request.
+	// It always wins and gates every retention action.
+	operator bool
+	// grace is true while the first-enable grace window (#4253) has not
+	// elapsed for this instance.
+	grace bool
+}
+
+// combined is the resolved decision most retention actions use.
+func (d worktreeRetentionDryRun) combined() bool {
+	return d.operator || d.grace
+}
+
+func resolveWorktreeRetentionDryRun(cfg instance.RetentionConfig, state retentionGraceState, now time.Time) worktreeRetentionDryRun {
+	return worktreeRetentionDryRun{
+		operator: cfg.DryRun,
+		grace:    retentionPassIsDryRun(state, cfg.ImmediateFirstEnable(), now),
+	}
+}
+
 // recordRetentionPass advances the grace window and the last-pass record.
 // Starting the window is what a dry pass that found real candidates does.
 func recordRetentionPass(state retentionGraceState, dryRun, immediate bool, candidates int, now time.Time) retentionGraceState {

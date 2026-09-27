@@ -40,7 +40,7 @@ export interface QueueEligibilityView extends WithReadState {
 }
 
 export type Environment = "dev" | "staging" | "prod";
-export type Provider = "github" | "ado";
+export type Provider = "github" | "ado" | "gitea";
 export type InstanceStatus = "starting" | "ready" | "degraded";
 export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
@@ -50,6 +50,16 @@ export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | 
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
+export type AgentLifecycle = "started" | "waiting" | "resumed" | "completed" | "failed" | "cancelled";
+export type AgentProgressKind =
+  | "plan"
+  | "progress"
+  | "decision"
+  | "blocker"
+  | "question"
+  | "next_action"
+  | "summary";
+export type AgentProgressSource = "native" | "model" | "evidence";
 
 export interface TriggerRequest {
   workflow: string;
@@ -324,7 +334,7 @@ export interface ConfigAuthoringErrorEnvelope {
 }
 
 export interface Health extends ContractVersion {
-	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string };
+	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
   startup?: { phase: string; target?: string; since: string };
   build?: BuildMetadata;
   readState?: ReadState;
@@ -390,6 +400,7 @@ export interface Instance extends ContractVersion {
   telemetryRetention?: TelemetryRetentionStatus;
   journalHealth?: JournalHealthStatus;
   storageHealth?: StorageHealthStatus;
+  recoveryInventory?: RecoveryInventoryStatus;
   memoryHighWater?: number;
   memoryGateEnabled: boolean;
   fsyncDisabled: boolean;
@@ -417,6 +428,32 @@ export interface StorageHealthStatus {
   criticalFloorPercent?: number;
   measuredAt?: string;
   error?: string;
+}
+
+/**
+ * Shared recovery-snapshot inventory occupancy (#5343). A full inventory does
+ * not degrade the instance, it stops it: worktree cleanup needs a durable
+ * recovery handoff, and a worktree that cannot be cleaned cannot be reused.
+ */
+export interface RecoveryInventoryStatus {
+  state: "healthy" | "warning" | "exhausted" | "unavailable";
+  /** Occupied slots, including incomplete reservations. */
+  used: number;
+  limit: number;
+  /** Reservations holding no interpretable record. They still occupy slots. */
+  unreadable: number;
+  /**
+   * Snapshots held as pinned mirror refs with no bundle because the inventory
+   * was full when they were captured. They occupy no slot, so they are not
+   * part of `used`, and they are promoted to bundles as capacity frees.
+   */
+  overflow: number;
+  highWaterPercent: number;
+  earliestRetainUntil?: string;
+  inventoryRoot?: string;
+  policySource?: string;
+  error?: string;
+  observedAt: string;
 }
 
 export interface TelemetryRetentionStatus {
@@ -464,6 +501,28 @@ export interface ValidationWarning {
   severity: ValidationSeverity;
   scope: string;
   explanation: string;
+  safety?: WorkflowSafetyDetails;
+}
+
+export interface WorkflowSafetyDetails {
+  version: string;
+  id: string;
+  gaggle: string;
+  workflow: string;
+  stage: string;
+  file?: string;
+  line?: number;
+  col?: number;
+  witnessPath: string[];
+  confidence: string;
+  coverage: string;
+  impact: string;
+  action: string;
+  limitations: string;
+  budget?: number;
+  budgetSource?: string;
+  suppressedCode?: string;
+  suppressionReason?: string;
 }
 
 export interface RepoRef {
@@ -483,8 +542,21 @@ export interface BacklogRef {
 }
 
 export interface Gaggle {
+  template?: {
+    state: string;
+    installed: string;
+    candidate?: string;
+    candidateDigest?: string;
+    checkedAt: string;
+    lastSuccess: string;
+    changes?: string[];
+    conflicts?: string[];
+    error?: string;
+    pendingBackprop: boolean;
+  };
   name: string;
   displayName: string;
+  enabled: boolean;
   status: DefinitionStatus;
   project: RepoRef;
   backlog: BacklogRef;
@@ -588,6 +660,7 @@ export interface WorkflowSummary {
   engineFallback?: EngineFallback;
   identity: WorkflowReference;
   displayName: string;
+  enabled: boolean;
   purpose: string;
   triggers: WorkflowTrigger[];
   readiness: ReadinessConditions;
@@ -595,6 +668,7 @@ export interface WorkflowSummary {
   owners: GooberReference[];
   stageCount: number;
   definition: WorkflowDefinition;
+  backprop?: { enabled: boolean; version?: string };
   warnings: ValidationWarning[];
 }
 
@@ -710,7 +784,57 @@ export interface EngineFallback {
   unpinnedGates?: string[];
 }
 
+/** An observed retry timer; an expired deadline does not establish progress. */
+export interface RetryBackoffWait {
+  stage: string;
+  branch?: number;
+  attempt: number;
+  driver: "local" | "engine";
+  class: "policy" | "infra";
+  observedAt: string;
+  deadline: string;
+}
+
+/** Bounded retained evidence, including explicit gaps in parallel coverage. */
+export interface RetryBackoffState {
+  waits?: RetryBackoffWait[];
+  parallel?: boolean;
+  truncated?: boolean;
+}
+
+export type RequiredMCPObservationStatus = "ready" | "unobservable" | "denied";
+
+/** Scoped session evidence; availability and authorization have independent clocks. */
+export interface RequiredMCPCondition {
+  adapter: string;
+  server: string;
+  stage: string;
+  branch: number;
+  observedAt: string;
+  category: "ready" | "check_unobservable" | "transport_failure" | "required_tool_unavailable" | "authentication_failure" | "tool_authorization_failure";
+  connection: RequiredMCPObservationStatus;
+  inventory: RequiredMCPObservationStatus;
+  authorization: RequiredMCPObservationStatus;
+  active: boolean;
+  reason?: string;
+  availabilityObservedAt?: string;
+  availabilityReason?: string;
+  authorizationObservedAt?: string;
+  authorizationReason?: string;
+}
+
+export interface RequiredMCPState {
+  /** Go encodes a nil slice as null; absence of observations is not readiness. */
+  conditions: RequiredMCPCondition[] | null;
+  truncated?: boolean;
+}
+
 export interface RunSummary {
+  requiredMcp?: RequiredMCPState;
+  /** Optional for older daemon responses; absent evidence is not zero retries. */
+  retryBackoff?: RetryBackoffState;
+  /** Durable human-gate wait; omitted by older daemons and when false. */
+  waitingForGate?: boolean;
   activeStages?: Array<{
     name: string;
     kind: string;
@@ -718,6 +842,12 @@ export interface RunSummary {
     attempt?: number;
     goober?: string;
     startedAt: string;
+    /** Actual execution observation, separate from stage start. */
+    executionObservedAt?: string;
+    executionDeadline?: string;
+    executionId?: string;
+    /** Overlapping executions cannot establish one authoritative deadline. */
+    executionOverlap?: boolean;
   }>;
   activityTruncated?: boolean;
   engineFallback?: EngineFallback;
@@ -741,11 +871,32 @@ export interface RunSummary {
   retryCount: number;
   policyRetryCount: number;
   infraRetryCount: number;
+  lineage?: RunLineage;
   /** True for a completed run that touched exactly one stage and that stage's terminal status was no-work (#2188). */
   noWork: boolean;
   /** Projected cause of a non-completed terminal run — failed and aborted as well as escalated (#4246). */
   terminalReason?: string;
   operator?: OperatorRunSummary;
+}
+
+export interface RunLineage {
+  source?: LineageRun;
+  continuations?: LineageRun[];
+  resumeTarget?: string;
+  workspaceBranch?: string;
+  workspaceBranchSha?: string;
+  injectedInputs?: Array<{
+    name: string;
+    ref: { path: string; digest: string; integrity?: string };
+    integrity?: string;
+    source?: string;
+  }>;
+  historicalRepassCount: number;
+}
+
+export interface LineageRun {
+  id: string;
+  phase?: RunPhase;
 }
 
 export interface OperatorRunSummary {
@@ -774,6 +925,7 @@ export interface OperatorRunSummary {
 export interface RunDetail extends RunSummary {
   graph?: WorkflowGraph;
   graphStatus: "pinned" | "unavailable";
+  agentProgress?: AgentProgressSummary[];
   escalation?: EscalationCause;
   /** The same cause projection as escalation, present for every non-completed terminal phase (#4246). */
   terminalCause?: EscalationCause;
@@ -819,6 +971,75 @@ export interface EscalationSelector {
   name: string;
 }
 
+export interface AgentProgressEvidence {
+  type?: string;
+  id?: string;
+  label?: string;
+  ref?: {
+    path: string;
+    digest: string;
+    size?: number;
+    mediaType?: string;
+    integrity?: string;
+  };
+}
+
+export interface AgentProgressRecord {
+  schema: string;
+  agentId: string;
+  runId: string;
+  stage: string;
+  attempt: number;
+  sequence: number;
+  kind: AgentProgressKind;
+  source: AgentProgressSource;
+  occurredAt: string;
+  updatedAt?: string;
+  fidelity?: "full" | "partial" | "none";
+  summary?: string;
+  plan?: string[];
+  progress?: string[];
+  decision?: string;
+  blocker?: string;
+  question?: string;
+  nextAction?: string;
+  evidence?: AgentProgressEvidence[];
+}
+
+export interface AgentLifecycleStatus {
+  sequence: number;
+  lifecycle: AgentLifecycle;
+  updatedAt?: string;
+}
+
+export interface AgentCurrentStatus {
+  source: "lifecycle" | "progress";
+  sequence: number;
+  lifecycle?: AgentLifecycle;
+  kind?: AgentProgressKind;
+  summary?: string;
+  updatedAt?: string;
+}
+
+export interface AgentProgressSummary {
+  agentId: string;
+  parentId?: string;
+  runId: string;
+  stage: string;
+  attempt: number;
+  role?: string;
+  coordinator?: boolean;
+  worker?: boolean;
+  fidelity: "full" | "partial" | "none";
+  degraded?: boolean;
+  degradedText?: string;
+  lifecycle?: AgentLifecycleStatus;
+  currentStatus?: AgentCurrentStatus;
+  latest?: AgentProgressRecord;
+  history: AgentProgressRecord[];
+  children?: AgentProgressSummary[];
+}
+
 export type KnownRunEventType =
   | "run.started"
   | "run.resumed"
@@ -856,7 +1077,10 @@ export type KnownRunEventType =
   | "parallel.started"
   | "parallel.finished"
   | "branch.started"
-  | "branch.finished";
+  | "branch.finished"
+  | "agent.lifecycle"
+  | "agent.message"
+  | "agent.progress";
 
 export type RunEventType = KnownRunEventType | (string & Record<never, never>);
 
@@ -902,6 +1126,29 @@ export interface RunEvent {
   outputs?: Record<string, JsonValue>;
   artifacts?: ArtifactMetadata[];
   artifact?: ArtifactMetadata;
+  agent?: {
+    schema: string;
+    id: string;
+    parentId?: string;
+    runId: string;
+    stage: string;
+    attempt: number;
+    objective?: string;
+    coordinator?: boolean;
+    worker?: boolean;
+    leaf?: boolean;
+    lifecycle: AgentLifecycle;
+    fidelity?: "full" | "partial" | "none";
+    updatedAt: string;
+  };
+  progress?: AgentProgressRecord;
+  peerMessage?: {
+    id: string;
+    senderId: string;
+    recipientId: string;
+    occurredAt: string;
+    purpose: string;
+  };
   name?: string;
   externalRef?: ExternalRef;
   error?: ErrorDetail;
@@ -1045,6 +1292,9 @@ export interface TelemetryCostOptions {
   provider?: string;
   scope: TelemetryCostScope;
   id?: string;
+  gaggle?: string;
+  workflow?: string;
+  stage?: string;
   since: string;
   until: string;
 }

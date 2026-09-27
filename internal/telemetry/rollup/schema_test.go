@@ -61,13 +61,44 @@ func openHistoricalTestDB(t *testing.T, path string, version int) *DB {
 // every upgraded store silently stops applying the inserted DDL forever while
 // fresh stores get it, the worst kind of schema divergence.
 func TestMigrationPrefixIsAppendOnly(t *testing.T) {
-	const wantDigest = "66f9c408f17d10952738a13a8b901b6a1dd3580f329f73bb4b5cd8fe3c6dd6e0"
+	const wantDigest = "a46ba3f1f293c562955eb245c9d96cd037fd7ebdbf52b78176a66629cac904b8"
 	if got := migrationPrefixDigest(migrations[:len(migrations)-1]); got != wantDigest {
 		t.Fatalf("migration prefix digest = %s, want %s\n"+
 			"migrations must be append-only. If this commit only APPENDED a new\n"+
 			"migration to the end of the list, update wantDigest to the value\n"+
 			"above. If it did anything else to an existing entry, that is the\n"+
 			"bug #2049 exists to catch.", got, wantDigest)
+	}
+}
+
+func TestCostAttributionRepositoryMigrationPreservesHistoricalRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.db")
+	old := openHistoricalTestDB(t, path, 27)
+	if _, err := old.sql.Exec(`
+			INSERT INTO run_cost_attribution
+				(run_id, provider, external_kind, external_id, relationship)
+			VALUES ('old-run', 'github', 'pr', '200', 'merge')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open upgraded store: %v", err)
+	}
+	defer func() { _ = upgraded.Close() }()
+	var repository string
+	var itemURL sql.NullString
+	if err := upgraded.sql.QueryRow(`
+			SELECT repository, url
+			FROM run_cost_attribution
+			WHERE run_id = 'old-run' AND external_id = '200'`).Scan(&repository, &itemURL); err != nil {
+		t.Fatal(err)
+	}
+	if repository != "" || itemURL.Valid {
+		t.Fatalf("historical identity = repository %q, url %v; want explicitly unknown", repository, itemURL)
 	}
 }
 

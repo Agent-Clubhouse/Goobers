@@ -74,6 +74,43 @@ func VerifyCleanupTargetUnchanged(ctx context.Context, target CleanupTarget) err
 	return nil
 }
 
+// VerifyCleanupTargetPreservedByGit proves that removing an intermediate
+// worktree cannot discard its current state. A clean unchanged checkout is
+// disposable, and a clean advanced checkout is safe when HEAD is anchored by
+// its local branch, which survives git worktree removal.
+func VerifyCleanupTargetPreservedByGit(ctx context.Context, target CleanupTarget) error {
+	status, err := runCleanupGitOutput(ctx, target.Path, "inspect cleanup status", "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("worktree cleanup cannot inspect working-tree state: %w", err)
+	}
+	if status != "" {
+		return fmt.Errorf("worktree cleanup target contains unretained changes")
+	}
+	head, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup HEAD", "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("worktree cleanup cannot resolve HEAD: %w", err)
+	}
+	startRef := strings.TrimSpace(target.StartRef)
+	if startRef != "" {
+		start, startErr := runCleanupGitOutput(ctx, target.Path, "resolve cleanup start", "rev-parse", "--verify", startRef+"^{commit}")
+		if startErr == nil && head == start {
+			return nil
+		}
+	}
+	branch, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup branch", "symbolic-ref", "--quiet", "HEAD")
+	if err != nil || !strings.HasPrefix(branch, "refs/heads/") {
+		return fmt.Errorf("worktree cleanup target advanced without a durable local branch")
+	}
+	branchHead, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup branch HEAD", "rev-parse", "--verify", branch+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("worktree cleanup cannot resolve local branch: %w", err)
+	}
+	if branchHead != head {
+		return fmt.Errorf("worktree cleanup HEAD is not anchored by its local branch")
+	}
+	return nil
+}
+
 // CleanupTarget identifies the directory about to be destroyed. OwnerRunID
 // comes from its durable marker; an empty value must not be guessed from the
 // worktree ID, since run IDs and stage names can both contain hyphens.

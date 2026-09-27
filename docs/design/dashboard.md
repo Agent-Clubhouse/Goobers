@@ -483,8 +483,22 @@ spectacle.
 
 ## 12. Run detail becomes the real diagnostic surface
 
-Run detail keeps the section 5 model - the graph explains structure, the ledger
-explains time, and they stay coordinated but separate. What changes is depth.
+Run detail now defaults to an operator-oriented **Overview** that explains the
+current stage, last activity, actual path, stage visits, failures, and corrective
+repasses. The forensic surfaces remain available without competing with the
+normal reading flow:
+
+1. **Overview** - semantic current state, actual path, and one row per stage visit.
+2. **Artifacts** - logical transcripts and recorded outputs, grouped across
+   checkpoint records.
+3. **Diagnostics** - the pinned graph, replay timeline, and stage inspector.
+4. **Journal** - the complete durable sequence ledger and technical filtering.
+
+Graph, replay, inspector, and journal selection share the same selected sequence,
+so moving between tabs preserves context. Run-scoped stage IDs are normalized
+before presentation, repasses name their source and reason, stage duration is
+separate from cumulative run elapsed time, and raw hashes/MIME details stay in
+the forensic views.
 
 ### 12.1 The run graph is the canvas graph, with live state overlay
 

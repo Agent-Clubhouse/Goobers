@@ -6,7 +6,9 @@
 // nothing distinguished them from gates enforced on every push. This command
 // classifies each workflow from its own triggers and fails when the inventory
 // disagrees — so a newly added dormant workflow cannot land unrecorded, and a
-// dormant one cannot stay dormant without naming what unblocks it.
+// dormant one cannot stay dormant without naming what unblocks it. A workflow
+// whose triggers are live but whose runs skip until provisioned declares itself
+// dormant with a `# workflow-inventory: dormant-until-provisioned` line (#5727).
 //
 // Run `go run ./test/workflowinventory -write` to regenerate the table;
 // blocking-issue references are carried forward because no workflow file
@@ -39,6 +41,12 @@ const (
 
 // commentedSchedule matches a `schedule:` key that has been commented out.
 var commentedSchedule = regexp.MustCompile(`(?m)^\s*#\s*schedule:\s*$`)
+
+// provisioningMarker matches the top-level comment a workflow carries when its
+// triggers are live but every run skips its work until external credentials or
+// fixtures are provisioned (#5727). Such a workflow fires, yet enforces nothing,
+// so it is dormant for the same reason a commented-out schedule is.
+var provisioningMarker = regexp.MustCompile(`(?m)^#\s*workflow-inventory:\s*dormant-until-provisioned\s*$`)
 
 type workflow struct {
 	File     string
@@ -157,11 +165,20 @@ func scanWorkflows(dir string) ([]workflow, error) {
 		workflows = append(workflows, workflow{
 			File:     name,
 			Triggers: triggers,
-			Status:   classify(triggers, commentedSchedule.Match(data)),
+			Status:   classifyWorkflow(triggers, data),
 		})
 	}
 	sort.Slice(workflows, func(i, j int) bool { return workflows[i].File < workflows[j].File })
 	return workflows, nil
+}
+
+// classifyWorkflow classifies one workflow file from its enabled triggers and
+// its dormancy comments.
+func classifyWorkflow(triggers []string, data []byte) string {
+	if provisioningMarker.Match(data) {
+		return dormantStatus
+	}
+	return classify(triggers, commentedSchedule.Match(data))
 }
 
 func classify(triggers []string, hasCommentedSchedule bool) string {

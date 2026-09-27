@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,7 +25,6 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
-	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -163,6 +163,8 @@ type ShellExecutor struct {
 	// from. It is injected only into goobers CLI stages; those stages fail
 	// closed if the on-disk tree has since diverged after a rejected reload.
 	AppliedConfigDigest string
+	// ConfigDirectory is the immutable config-as-code tree selected for CLI stages.
+	ConfigDirectory string
 	// SelfBin, if set, is the absolute path substituted for a bare "goobers"
 	// command token before exec. Deterministic stages declare their command as
 	// e.g. ["goobers", "backlog-query", …], but a stage runs with cwd set to a
@@ -272,6 +274,13 @@ type ShellExecutor struct {
 	// SEC-049 for the documented boundary. Empty by default: an unset caller
 	// (e.g. an existing test) gets unchanged behavior.
 	GuardedCredentialPaths []string
+	// RepoAuthScheme is the non-secret authorization scheme ("basic" or
+	// "bearer") of the Azure DevOps credential this executor's grants carry.
+	// Any stage that receives at least one of its declared credentials gets
+	// it as RepoAuthSchemeEnvVar, the same rule the credential plane applies
+	// to a stage pod. Empty for every other provider, and by default, which
+	// stamps nothing.
+	RepoAuthScheme string
 }
 
 type builtinErrorReport struct {
@@ -791,7 +800,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{}, err
 	}
 	defer cleanup()
-	timeout, err := e.timeoutFor(env)
+	resolvedTimeout, err := e.resolveTimeout(env)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
@@ -799,16 +808,11 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
-	resultFile := stringInput(env, InputResultFile)
-	implicitResultFile := ""
-	if resultFile == "" && StageInvokesGoobersCLI(command) && len(command) > 1 {
-		if defaultResultFile, ok := ProviderStageResultFile(command[1]); ok {
-			resultFile = defaultResultFile
-			implicitResultFile = defaultResultFile
-		}
-	}
+	resultFile, implicitResultFile := effectiveResultFile(env, command)
+	ExcludeStageArtifacts(ctx, env.Workspace, resultFile)
 
 	registry, scrubber := journal.DefaultScrubber()
+	registerJournalPlane(ctx, registry)
 	// Only a stage whose command IS the goobers CLI receives the run's
 	// operational identity (GOOBERS_RUN_ID etc.). A stage that runs the
 	// project's own build/test suite (local-ci's `make ci` → `go test ./...`)
@@ -822,34 +826,19 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// wrapper, not "goobers") but still needs the same context its nested
 	// invocation does — declared per-stage rather than guessed from argv[0].
 	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
-	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
-	for key, value := range e.DefaultEnv {
-		declaredEnv[key] = value
-	}
-	for key, value := range run.Env {
-		declaredEnv[key] = value
-	}
+	declaredEnv := declaredStageEnvironment(e.DefaultEnv, run.Env)
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
 	stageEnv = append(stageEnv, commandEnv...)
 	if injectRunContext {
-		stageEnv = append(stageEnv, e.runContextEnv(env)...)
+		stageEnv = append(stageEnv, e.runContextEnv(ctx, env)...)
 	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
-	if injectRunContext && env.RepoRef.Provider != "" {
-		stageEnv = append(stageEnv,
-			RepoProviderEnvVar+"="+string(env.RepoRef.Provider),
-			RepoOwnerEnvVar+"="+env.RepoRef.Owner,
-			RepoNameEnvVar+"="+env.RepoRef.Name,
-		)
-		if env.RepoRef.Project != "" {
-			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+env.RepoRef.Project)
-		}
-	}
+	stageEnv = e.appendRepoEnv(stageEnv, env, injectRunContext)
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)
 	}
@@ -872,10 +861,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		defer func() { _ = os.Remove(builtinErrorFile) }()
 		stageEnv = append(stageEnv, BuiltinErrorFileEnvVar+"="+builtinErrorFile)
 	}
-	telemetryDir := telemetry.PrepareStageTelemetryDir(env.Workspace)
-	if telemetryDir != "" {
-		stageEnv = append(stageEnv, telemetry.StageTelemetryEnv+"="+telemetryDir)
-	}
+	stageEnv, recordFeatureUsage := e.prepareFeatureUsage(env, stageEnv)
+	defer recordFeatureUsage()
 
 	// The tmp:ephemeral binding for runner `self`. It is applied LAST, over the
 	// fully assembled environment, because it is an effect on the environment
@@ -903,7 +890,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	runCtx, cancel := context.WithTimeout(ctx, resolvedTimeout.Duration)
 	defer cancel()
 
 	// Substitute the running daemon's own binary for a bare "goobers" token: the
@@ -949,6 +936,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
+	defer e.observeExecutionDeadline(runCtx, env)()
 	// Released only after the stage is fully accounted for: the bound's own
 	// record of whether it fired (the child cgroup's memory.events) has to
 	// outlive the process it bounded, or the reason a stage died is destroyed
@@ -1046,7 +1034,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	outBytes := scrubber.Scrub(stdout.Bytes())
 	errBytes := scrubber.Scrub(stderr.Bytes())
 
-	result := apiv1.ResultEnvelope{Outputs: map[string]interface{}{}, Metrics: map[string]float64{}}
+	result := newStageResult(resolvedTimeout)
 	if networkIsolationMarker != "" {
 		// #2034: a non-empty marker means this network:none stage did NOT
 		// actually run isolated (the Windows escape hatch fired) — visible
@@ -1088,13 +1076,13 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		if StageInvokesProviderBuiltin(command) {
 			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("timeout", fmt.Errorf(
 				"executor: provider stage %q exceeded timeout %s: %w",
-				command[1], timeout, context.DeadlineExceeded,
+				command[1], resolvedTimeout.Describe(), context.DeadlineExceeded,
 			)))
 		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
 			Code:      "timeout",
-			Message:   fmt.Sprintf("stage exceeded timeout %s", timeout),
+			Message:   fmt.Sprintf("stage exceeded timeout %s", resolvedTimeout.Describe()),
 			Retryable: true,
 		}
 		result.Summary = "stage timed out and was killed"
@@ -1388,23 +1376,6 @@ func lastNonEmptyLine(data []byte) string {
 		}
 	}
 	return ""
-}
-
-func (e *ShellExecutor) timeoutFor(env apiv1.InvocationEnvelope) (time.Duration, error) {
-	if env.Limits.MaxDurationSeconds > 0 {
-		return time.Duration(env.Limits.MaxDurationSeconds) * time.Second, nil
-	}
-	if s := stringInput(env, InputTimeout); s != "" {
-		d, err := time.ParseDuration(s)
-		if err != nil {
-			return 0, fmt.Errorf("executor: invalid %s input %q: %w", InputTimeout, s, err)
-		}
-		return d, nil
-	}
-	if e.DefaultTimeout > 0 {
-		return e.DefaultTimeout, nil
-	}
-	return DefaultTimeout, nil
 }
 
 func (e *ShellExecutor) maxOutputFor(env apiv1.InvocationEnvelope) (int64, error) {
@@ -1745,13 +1716,52 @@ func (d *diagBuffer) Bytes() []byte {
 	return append([]byte(nil), d.buf.Bytes()...)
 }
 
+// appendRepoEnv appends the scheduler-routed repository variables a goobers
+// CLI stage reads (GOOBERS_REPO_PROVIDER and its siblings) when
+// injectRunContext is set, and RepoAuthSchemeEnvVar when the executor knows
+// the scheme of its Azure DevOps grants and the stage received at least one
+// of its declared GOOBERS_CRED_<capability> variables. The scheme follows the
+// credentials, not the CLI gate, so a local stage gets it on the same rule a
+// stage pod does (stageCredentialEnv in cmd/goobers/dispatchexec.go).
+// Extracted from Run for the same complexity-gate reason as runContextEnv
+// below.
+func (e *ShellExecutor) appendRepoEnv(stageEnv []string, env apiv1.InvocationEnvelope, injectRunContext bool) []string {
+	repo := env.RepoRef
+	if injectRunContext && repo.Provider != "" {
+		stageEnv = append(stageEnv,
+			RepoProviderEnvVar+"="+string(repo.Provider),
+			RepoOwnerEnvVar+"="+repo.Owner,
+			RepoNameEnvVar+"="+repo.Name,
+		)
+		if repo.Project != "" {
+			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+repo.Project)
+		}
+	}
+	if e.RepoAuthScheme != "" && receivedCredential(stageEnv, env.Capabilities) {
+		stageEnv = append(stageEnv, RepoAuthSchemeEnvVar+"="+e.RepoAuthScheme)
+	}
+	return stageEnv
+}
+
+// receivedCredential reports whether stageEnv carries the GOOBERS_CRED_
+// variable of at least one declared capability.
+func receivedCredential(stageEnv, declared []string) bool {
+	for _, capability := range declared {
+		prefix := CredentialEnvVar(capability) + "="
+		if slices.ContainsFunc(stageEnv, func(entry string) bool { return strings.HasPrefix(entry, prefix) }) {
+			return true
+		}
+	}
+	return false
+}
+
 // runContextEnv is the run-identity block injected into a stage that opts into
 // run context. Extracted from Run (#4962 follow-up): Run sits at the
 // complexity gate's baseline, so a single added conditional there fails the
 // gate for the whole repository. Decomposition is the fix the gate asks for,
 // and this block is self-contained — it reads nothing but the executor and the
 // run environment.
-func (e *ShellExecutor) runContextEnv(env apiv1.InvocationEnvelope) []string {
+func (e *ShellExecutor) runContextEnv(ctx context.Context, env apiv1.InvocationEnvelope) []string {
 	task := strings.TrimPrefix(env.TaskID, env.RunID+":")
 	if task == "" {
 		task = env.TaskID
@@ -1770,6 +1780,12 @@ func (e *ShellExecutor) runContextEnv(env apiv1.InvocationEnvelope) []string {
 	// would read as "the digest is the empty string" rather than "unknown".
 	if e.AppliedConfigDigest != "" {
 		runEnv = append(runEnv, AppliedConfigDigestEnvVar+"="+e.AppliedConfigDigest)
+	}
+	if env.ConfigGeneration != "" {
+		runEnv = append(runEnv, ConfigGenerationEnvVar+"="+env.ConfigGeneration, ConfigDirectoryEnvVar+"="+e.ConfigDirectory)
+	}
+	if plane, ok := JournalPlaneFromContext(ctx); ok {
+		runEnv = append(runEnv, "GOOBERS_JOURNAL_ENDPOINT="+plane.Endpoint, "GOOBERS_JOURNAL_TOKEN="+plane.Token)
 	}
 	return runEnv
 }

@@ -86,17 +86,30 @@ func TestDispatcherRBACMatchesKubePodAPIVerbSet(t *testing.T) {
 		t.Fatal("kubepods.go now calls a deployments verb this RBAC does not grant — update dispatcher-rbac.yaml's verb list")
 	}
 
-	var podRule, deploymentRule *rbacv1.PolicyRule
+	// #5595: the Go module cache claim check reads one claim and nothing else.
+	if !regexp.MustCompile(`PersistentVolumeClaims\([^)]*\)\.Get\(`).Match(source) {
+		t.Error("kubepods.go no longer reads PersistentVolumeClaims — dispatcher-rbac.yaml grants persistentvolumeclaims get but nothing uses it; narrow the Role")
+	}
+	if regexp.MustCompile(`PersistentVolumeClaims\([^)]*\)\.(Create|Delete|List|Watch|Patch|Update|DeleteCollection|Apply)\(`).Match(source) {
+		t.Fatal("kubepods.go now calls a persistentvolumeclaims verb this RBAC does not grant — update dispatcher-rbac.yaml's verb list")
+	}
+
+	var podRule, deploymentRule, claimRule *rbacv1.PolicyRule
 	for i := range role.Rules {
 		rule := &role.Rules[i]
 		for _, apiGroup := range rule.APIGroups {
 			switch {
 			case apiGroup == "" && containsString(rule.Resources, "pods"):
 				podRule = rule
+			case apiGroup == "" && containsString(rule.Resources, "persistentvolumeclaims"):
+				claimRule = rule
 			case apiGroup == "apps" && containsString(rule.Resources, "deployments"):
 				deploymentRule = rule
 			}
 		}
+	}
+	if claimRule == nil || len(claimRule.Verbs) != 1 || claimRule.Verbs[0] != "get" {
+		t.Errorf("persistentvolumeclaims rule = %+v, want exactly [get] (#5595)", claimRule)
 	}
 	if podRule == nil {
 		t.Fatal("dispatcher-rbac.yaml Role has no core/pods rule")

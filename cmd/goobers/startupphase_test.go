@@ -46,6 +46,36 @@ func TestRunStartupPhaseLogsStartDoneAndFailure(t *testing.T) {
 	}
 }
 
+func TestSchedulerSetupProgressReportsTotalAndInterStepElapsed(t *testing.T) {
+	started := time.Date(2026, 9, 17, 4, 0, 0, 0, time.UTC)
+	times := []time.Time{
+		started.Add(2 * time.Second),
+		started.Add(7 * time.Second),
+	}
+	index := 0
+	var stdout bytes.Buffer
+	progress := newSchedulerSetupProgress(&stdout, started, func() time.Time {
+		current := times[index]
+		index++
+		return current
+	})
+
+	progress("opening telemetry state")
+	progress("opening read-model state")
+
+	got := stdout.String()
+	for _, want := range []string{
+		"startup: opening telemetry state",
+		"elapsed=2s since-previous=2s",
+		"startup: opening read-model state",
+		"elapsed=7s since-previous=5s",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("progress output %q does not contain %q", got, want)
+		}
+	}
+}
+
 func TestRunStartupPhaseTransitionsFromCompletedPhaseToBlockedPhase(t *testing.T) {
 	tracker := &startupPhaseTracker{}
 	if err := runStartupPhase(io.Discard, tracker, "completed", "", func() error { return nil }); err != nil {
@@ -115,6 +145,88 @@ func TestWatchStartupReadinessEmitsDiagnosticNamingCurrentPhase(t *testing.T) {
 	if !strings.Contains(out, "phase=stuck-phase") || !strings.Contains(out, `target="big-repo"`) {
 		t.Fatalf("diagnostic output = %q, want it to name the stuck phase and target", out)
 	}
+}
+
+func TestWatchStartupReadinessWaitsForRecoveryAccumulationBudget(t *testing.T) {
+	var buf syncBuffer
+	tracker := &startupPhaseTracker{}
+	tracker.set("recovery-run-inventory", "source=read-model")
+	tracker.beginRecoveryAccumulation()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watchStartupReadiness(ctx, &buf, tracker, func() bool { return false }, 20*time.Millisecond)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("watchdog fired while recovery accumulation was still being measured")
+	default:
+	}
+
+	tracker.observeRecoveryAccumulation(1)
+	tracker.setRecoveryAccumulation(1)
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("watchdog ignored the recovery-run-derived budget")
+	default:
+	}
+	if got := tracker.budgetSnapshot(time.Now()).Budget; got != 20*time.Millisecond+startupBudgetPerCandidate {
+		t.Fatalf("derived budget = %s, want %s", got, 20*time.Millisecond+startupBudgetPerCandidate)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchStartupReadiness did not stop after cancellation")
+	}
+	if out := buf.String(); out != "" {
+		t.Fatalf("output = %q, want no premature diagnostic", out)
+	}
+}
+
+// TestSyncWriterSerializesWatchdogAndPhaseDiagnostics is #4570's regression
+// test. watchStartupReadiness runs in its own goroutine (started before the
+// synchronous startup phases) while runStartupPhase keeps writing on the
+// main goroutine — both against the same stdout, with no synchronization
+// between them before this fix. A bare io.Writer (bytes.Buffer here,
+// matching how tests construct stdout, and the same type that is not safe
+// for concurrent use in production either) races under `go test -race` when
+// both goroutines write it concurrently.
+//
+// syncWriter (runUpContextWithForce wraps stdout with it before starting the
+// watchdog goroutine) is what removes the race: both goroutines' writes go
+// through the same mutex.
+func TestSyncWriterSerializesWatchdogAndPhaseDiagnostics(t *testing.T) {
+	var buf bytes.Buffer
+	stdout := &syncWriter{w: &buf}
+	tracker := &startupPhaseTracker{}
+	tracker.set("phase-a", "target-a")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// A near-zero threshold keeps the watchdog goroutine writing
+		// throughout the loop below instead of firing once and exiting.
+		for i := 0; i < 200; i++ {
+			watchStartupReadiness(ctx, stdout, tracker, func() bool { return false }, time.Microsecond)
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		if err := runStartupPhase(stdout, tracker, "phase-b", "target-b", func() error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-done
 }
 
 func TestWatchStartupReadinessSilentOnceReady(t *testing.T) {

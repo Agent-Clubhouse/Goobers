@@ -61,7 +61,7 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 
-	l := instance.NewLayout(root)
+	l := layoutFor(root)
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root; run `goobers init` first)\n", l.ConfigFile())
 		return 2

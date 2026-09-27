@@ -21,6 +21,8 @@ type blockingAggregateReader struct {
 	calls    atomic.Int32
 }
 
+var _ readservice.Reader = (*blockingAggregateReader)(nil)
+
 func (r *blockingAggregateReader) TelemetryStats(ctx context.Context, _ readservice.TelemetryStatsRequest) (readservice.TelemetryStatsResult, error) {
 	if r.calls.Add(1) == 1 {
 		close(r.entered)

@@ -164,7 +164,7 @@ func parseWorkItemsQuery(values url.Values) (readservice.WorkItemListOptions, er
 }
 
 func parseTelemetryCostQuery(values url.Values) (readservice.TelemetryCostRequest, error) {
-	if err := validateQueryValues(values, "provider", "scope", "id", "since", "until"); err != nil {
+	if err := validateQueryValues(values, "provider", "scope", "id", "gaggle", "workflow", "stage", "since", "until"); err != nil {
 		return readservice.TelemetryCostRequest{}, err
 	}
 	since, err := parseOptionalTime(values.Get("since"), "since")
@@ -177,7 +177,9 @@ func parseTelemetryCostQuery(values url.Values) (readservice.TelemetryCostReques
 	}
 	return readservice.TelemetryCostRequest{
 		Provider: values.Get("provider"), Scope: values.Get("scope"),
-		ExternalID: values.Get("id"), Since: since, Until: until,
+		ExternalID: values.Get("id"), Gaggle: values.Get("gaggle"),
+		Workflow: values.Get("workflow"), Stage: values.Get("stage"),
+		Since: since, Until: until,
 	}, nil
 }
 

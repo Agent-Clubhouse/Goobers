@@ -9,6 +9,7 @@ import type {
   StageAttempt,
   WorkflowGraphNode,
 } from "../api/types";
+import { newestFirst } from "../chronology";
 import {
   eventHeading,
   eventSummary,
@@ -36,6 +37,24 @@ const previewableMediaTypes = new Set([
 
 function canPreview(media: string): boolean {
   return previewableMediaTypes.has(media.toLowerCase());
+}
+
+function artifactDownloadName(artifact: ArtifactMetadata): string {
+  const logicalName = artifact.name?.split(/[\\/]/).at(-1)?.trim() ?? "";
+  const fallback = artifact.digest.replace(":", "-");
+  const safeName = (logicalName || fallback)
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/[. ]+$/g, "");
+  return safeName || "artifact";
+}
+
+function downloadArtifact(artifact: ArtifactMetadata, content: ArtifactContent): void {
+  const url = URL.createObjectURL(new Blob([content.bytes], { type: content.mediaType }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = artifactDownloadName(artifact);
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 // Above this size an inline artifact preview gets a scroll cap (see
@@ -241,10 +260,15 @@ export function RunStageInspector({
     (attempt) => attempt.startedSeq === undefined || attempt.startedSeq <= selectedSeq,
   );
   const visits = groupAttemptsByVisit(visible);
+  const displayedVisits = newestFirst(visits, (visit) => visit.ordinal);
   const selected =
     visible.find((attempt) => attempt.id === selectedId) ?? visible[visible.length - 1];
   const selectedVisitIndex = visits.findIndex((visit) => visit.ordinal === selected?.visit);
   const selectedVisit = visits[selectedVisitIndex];
+  const displayedAttempts = newestFirst(
+    selectedVisit?.attempts ?? [],
+    (attempt) => attempt.number,
+  );
   const decision = selectedVisit
     ? repassDecision(events, node.id, selectedVisit, visits[selectedVisitIndex - 1])
     : undefined;
@@ -263,7 +287,7 @@ export function RunStageInspector({
   };
 
   const moveVisitSelection = (index: number) => {
-    const visit = visits[index];
+    const visit = displayedVisits[index];
     if (!visit) {
       return;
     }
@@ -273,15 +297,17 @@ export function RunStageInspector({
   const onVisitKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
       event.preventDefault();
-      moveVisitSelection((index + 1) % visits.length);
+      moveVisitSelection((index + 1) % displayedVisits.length);
     } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
       event.preventDefault();
-      moveVisitSelection((index - 1 + visits.length) % visits.length);
+      moveVisitSelection(
+        (index - 1 + displayedVisits.length) % displayedVisits.length,
+      );
     }
   };
 
   const moveAttemptSelection = (index: number) => {
-    const attempt = selectedVisit?.attempts[index];
+    const attempt = displayedAttempts[index];
     if (!attempt) {
       return;
     }
@@ -289,7 +315,7 @@ export function RunStageInspector({
     attemptButtons.current[index]?.focus();
   };
   const onAttemptKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const count = selectedVisit?.attempts.length ?? 0;
+    const count = displayedAttempts.length;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
       event.preventDefault();
       moveAttemptSelection((index + 1) % count);
@@ -355,7 +381,7 @@ export function RunStageInspector({
                 {visible.length > 1 && (
                   <>
                     <div aria-label="Stage visits" className="attempt-switcher" role="group">
-                      {visits.map((visit, index) => (
+                      {displayedVisits.map((visit, index) => (
                         <button
                           aria-pressed={selectedVisit?.ordinal === visit.ordinal}
                           className={
@@ -382,7 +408,7 @@ export function RunStageInspector({
                         className="retry-switcher"
                         role="group"
                       >
-                        {selectedVisit.attempts.map((attempt, index) => (
+                        {displayedAttempts.map((attempt, index) => (
                           <button
                             aria-label={`Visit ${selectedVisit.ordinal} · ${attemptLabel(attempt)}`}
                             aria-pressed={selected?.id === attempt.id}
@@ -778,12 +804,26 @@ function AttemptDetail({
       {outputs.length > 0 && (
         <details className="definition-disclosure" open>
           <summary>Outputs</summary>
-          {outputs.map(([key, value]) => (
-            <div className="output-line" key={key}>
-              <span>{key}</span>
-              <code>{typeof value === "string" ? value : JSON.stringify(value)}</code>
-            </div>
-          ))}
+          <div className="output-table-wrap">
+            <table aria-label="Attempt outputs" className="output-table">
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outputs.map(([key, value]) => (
+                  <tr key={key}>
+                    <th scope="row">{key}</th>
+                    <td>
+                      <code>{typeof value === "string" ? value : JSON.stringify(value)}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </details>
       )}
       <div className="artifact-heading">
@@ -794,16 +834,18 @@ function AttemptDetail({
         <p className="empty-detail">No artifacts recorded.</p>
       ) : (
         <div className="artifact-list">
-          {attempt.artifacts.map((artifact) => (
-            <ArtifactRow
-              artifact={artifact}
-              attemptNumber={attempt.number}
-              attemptVisit={attempt.visit}
-              client={client}
-              key={artifact.digest}
-              runId={runId}
-            />
-          ))}
+          {newestFirst(attempt.artifacts, (artifact) => artifact.recordedSeq).map(
+            (artifact) => (
+              <ArtifactRow
+                artifact={artifact}
+                attemptNumber={attempt.number}
+                attemptVisit={attempt.visit}
+                client={client}
+                key={artifact.digest}
+                runId={runId}
+              />
+            ),
+          )}
         </div>
       )}
     </div>
@@ -824,7 +866,7 @@ function ArtifactRow({
   runId: string;
 }) {
   const [content, setContent] = useState<ArtifactContent>();
-  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [state, setState] = useState<"idle" | "previewing" | "downloading" | "error">("idle");
   const [error, setError] = useState<string>();
   const request = useRef<AbortController | undefined>(undefined);
 
@@ -842,11 +884,15 @@ function ArtifactRow({
     };
   }, [artifact.digest, client, runId]);
 
-  const load = () => {
+  const load = (action: "preview" | "download") => {
+    if (action === "download" && content) {
+      downloadArtifact(artifact, content);
+      return;
+    }
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
-    setState("loading");
+    setState(action === "preview" ? "previewing" : "downloading");
     setError(undefined);
     client
       .getArtifact(runId, artifact.digest, { signal: controller.signal })
@@ -854,7 +900,11 @@ function ArtifactRow({
         if (controller.signal.aborted) {
           return;
         }
-        setContent(value);
+        if (action === "preview") {
+          setContent(value);
+        } else {
+          downloadArtifact(artifact, value);
+        }
         setState("idle");
       })
       .catch((err: unknown) => {
@@ -895,27 +945,34 @@ function ArtifactRow({
           </dd>
         </div>
       </dl>
-      {canPreview(artifact.mediaType) ? (
-        content ? (
-          <pre
-            className={`artifact-content code-block${
-              isLargeArtifactPreview(content.bytes) ? " artifact-content-bounded" : ""
-            }`}
-          >
-            {new TextDecoder().decode(content.bytes)}
-          </pre>
-        ) : (
+      <div className="artifact-actions">
+        {canPreview(artifact.mediaType) && !content && (
           <button
             className="artifact-action"
-            disabled={state === "loading"}
-            onClick={load}
+            disabled={state === "previewing" || state === "downloading"}
+            onClick={() => load("preview")}
             type="button"
           >
-            {state === "loading" ? "Loading…" : "View content"}
+            {state === "previewing" ? "Loading…" : "View content"}
           </button>
-        )
-      ) : (
-        <span className="artifact-access-note">Metadata only</span>
+        )}
+        <button
+          className="artifact-action"
+          disabled={state === "previewing" || state === "downloading"}
+          onClick={() => load("download")}
+          type="button"
+        >
+          {state === "downloading" ? "Downloading…" : "Download"}
+        </button>
+      </div>
+      {content && (
+        <pre
+          className={`artifact-content code-block${
+            isLargeArtifactPreview(content.bytes) ? " artifact-content-bounded" : ""
+          }`}
+        >
+          {new TextDecoder().decode(content.bytes)}
+        </pre>
       )}
       {state === "error" && (
         <p className="artifact-load-error" role="alert">

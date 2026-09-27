@@ -26,21 +26,23 @@ var (
 
 // Info is a structured snapshot of the build metadata plus the Go runtime.
 type Info struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	Date      string `json:"date"`
-	GoVersion string `json:"goVersion"`
-	Platform  string `json:"platform"`
+	Version      string   `json:"version"`
+	Commit       string   `json:"commit"`
+	Date         string   `json:"date"`
+	GoVersion    string   `json:"goVersion"`
+	Platform     string   `json:"platform"`
+	Capabilities []string `json:"capabilities"`
 }
 
 // Get returns the current build Info.
 func Get() Info {
 	return Info{
-		Version:   Version,
-		Commit:    Commit,
-		Date:      Date,
-		GoVersion: runtime.Version(),
-		Platform:  runtime.GOOS + "/" + runtime.GOARCH,
+		Version:      Version,
+		Commit:       Commit,
+		Date:         Date,
+		GoVersion:    runtime.Version(),
+		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
+		Capabilities: []string{"journal-otlp-v1"},
 	}
 }
 

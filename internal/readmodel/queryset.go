@@ -170,6 +170,13 @@ var supportedCombinations = []Combination{
 	{Dims: []Dim{DimGaggle, DimWorkflow, DimUntil}, Index: "idx_run_gaggle_workflow_recency", Bench: "list/gaggle+workflow+until"},
 	{Dims: []Dim{DimGaggle, DimWorkflow, DimSince, DimUntil}, Index: "idx_run_gaggle_workflow_recency", Bench: "list/gaggle+workflow+window"},
 
+	// Gaggle + workflow + phase, the Runs page's default active view after a
+	// workflow is selected.
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimPhase}, Index: "idx_run_gaggle_workflow_phase_recency", Bench: "list/gaggle+workflow+phase"},
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimPhase, DimSince}, Index: "idx_run_gaggle_workflow_phase_recency", Bench: "list/gaggle+workflow+phase+since"},
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimPhase, DimUntil}, Index: "idx_run_gaggle_workflow_phase_recency", Bench: "list/gaggle+workflow+phase+until"},
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimPhase, DimSince, DimUntil}, Index: "idx_run_gaggle_workflow_phase_recency", Bench: "list/gaggle+workflow+phase+window"},
+
 	// Stage-scoped (#1782). These drive from run_stage, where the stage
 	// predicate, the gaggle scope, and the run-recency ordering are all served by
 	// one index. They used to be refused, which meant the portal's Insight

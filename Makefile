@@ -22,7 +22,7 @@
 .DEFAULT_GOAL := help
 
 # ---- Build metadata (injected into internal/version via -ldflags) -----------
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(shell git describe --tags --match=v[0-9]* --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
 PKG     := github.com/goobers/goobers/internal/version
@@ -251,12 +251,14 @@ deploy-validate:
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
 	kubectl kustomize deploy/reference/examples/apiserver-drift-check >/dev/null
 	kubectl kustomize deploy/reference/temporal >/dev/null
+	kubectl kustomize deploy/reference/examples/goobers-system-registry >/dev/null
 	kubectl kustomize deploy/reference/goobers-system | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/config-mirror | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/examples/apiserver-drift-check | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/temporal | $(KUBECONFORM) -strict -summary
+	kubectl kustomize deploy/reference/examples/goobers-system-registry | $(KUBECONFORM) -strict -summary
 	$(GO) test ./cmd/goobers -run 'TestDeployReference' -count=1
 	@echo "deploy/reference kustomize builds, schemas, value formats (#3310), and rendered-together cross-base assertion (#3301) OK"
 
@@ -370,7 +372,7 @@ cover-check: test
 
 ## cover-gate: Enforce COVERAGE_THRESHOLD against an ALREADY-WRITTEN coverage.out.
 # Same gate as cover-check, minus the `test` prerequisite. CI uses this from the
-# unit-macos job, which runs the whole-tree suite unsharded and therefore already
+# unit-linux-coverage job, which runs the whole-tree suite unsharded and therefore already
 # emits a complete profile — so the threshold is enforced without paying for a
 # second full run, and the number stays single-sourced here rather than being
 # duplicated into the workflow. Refuses a missing profile rather than passing

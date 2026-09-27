@@ -117,6 +117,8 @@ func runEngineDrivenCancel(l instance.Layout, identity journal.RunIdentity, acti
 	// this process does not drive belongs in the same recovery record the
 	// stalled-run sweep's cancellations are written to, under the same action
 	// vocabulary a log scraper already greps for.
+	stopTelemetry := startCommandJournalTelemetry(l, stderr)
+	defer stopTelemetry()
 	if log, _, logErr := journal.OpenInstanceLog(l.SchedulerDir()); logErr == nil {
 		appendErr := log.Append(journal.Event{
 			Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle,

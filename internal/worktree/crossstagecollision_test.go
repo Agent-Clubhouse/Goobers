@@ -401,6 +401,50 @@ func TestManagerReapRetriesCleanupPendingWithLiveDaemonPID(t *testing.T) {
 	}
 }
 
+func TestManagerReapCanDeferCleanupPendingToBoundedRetry(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	blocked := true
+	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+		if blocked {
+			return errors.New("temporary outage")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "workflow-run-stage", OwnerRunID: "workflow-run", BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); !errors.Is(err, ErrCleanupDeferred) {
+		t.Fatalf("Remove error = %v, want deferred cleanup", err)
+	}
+	blocked = false
+
+	results, warnings, err := m.Reap(ctx, ReapOptions{DeferCleanupPending: true})
+	if err != nil || len(results) != 0 || len(warnings) != 0 {
+		t.Fatalf("deferred Reap = %+v warnings=%+v err=%v", results, warnings, err)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("deferred Reap changed pending worktree: %v", err)
+	}
+
+	report, err := m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Attempted != 1 || len(report.Removed) != 1 || len(report.Warnings) != 0 {
+		t.Fatalf("bounded retry report = %+v, want one removed worktree", report)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("cleanup-pending worktree survived bounded retry: %v", err)
+	}
+}
+
 func TestManagerFinalizeRunRetriesCleanupPending(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

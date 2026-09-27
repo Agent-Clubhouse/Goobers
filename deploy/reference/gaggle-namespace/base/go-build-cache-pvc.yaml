@@ -1,0 +1,14 @@
+# Durable Go module/build cache for stage pods. This PVC is namespaced with the
+# stage pods because Kubernetes cannot mount a PVC from goobers-system into a
+# gaggle namespace. RWX permits concurrent fresh stage pods to share the cache.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goobers-go-build-cache
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: change-me # an RWX filesystem-backed class for your platform
+  resources:
+    requests:
+      storage: 20Gi

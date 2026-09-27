@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,7 +16,9 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -50,6 +53,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // RollupDB.Close once it's done driving runs, exactly as it did before this
 // seam existed.
 type schedulerSetup struct {
+	Generations  *configgeneration.Retainer
 	Root         string
 	Runner       *runner.Runner
 	Runners      map[string]*runner.Runner
@@ -142,17 +146,18 @@ type schedulerSetup struct {
 }
 
 type schedulerDefinitions struct {
-	Set              *instance.ConfigSet
-	Validation       *validate.Report
-	HarnessPreflight harnessPreflightInfo
-	Runner           *runner.Runner
-	Runners          map[string]*runner.Runner
-	Entries          []localscheduler.WorkflowEntry
-	Machines         map[localscheduler.WorkflowIdentity]*workflow.Machine
-	GooberDigests    map[localscheduler.WorkflowIdentity]string
-	Goobers          map[string]apiv1.GooberSpec
-	RepoRefs         map[localscheduler.WorkflowIdentity]apiv1.RepoRef
-	OpenPRRefresher  *localscheduler.OpenPRRefresherSet
+	GenerationResolver executionGenerationResolver
+	Set                *instance.ConfigSet
+	Validation         *validate.Report
+	HarnessPreflight   harnessPreflightInfo
+	Runner             *runner.Runner
+	Runners            map[string]*runner.Runner
+	Entries            []localscheduler.WorkflowEntry
+	Machines           map[localscheduler.WorkflowIdentity]*workflow.Machine
+	GooberDigests      map[localscheduler.WorkflowIdentity]string
+	Goobers            map[string]apiv1.GooberSpec
+	RepoRefs           map[localscheduler.WorkflowIdentity]apiv1.RepoRef
+	OpenPRRefresher    *localscheduler.OpenPRRefresherSet
 	// EngineRuntime is the late-bound holder every engineStarter these
 	// definitions installed shares; up.go attaches it once the Temporal
 	// client and live journal writer exist. See engineRuntime.
@@ -329,7 +334,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 			return
 		}
 		if tel != nil {
-			_ = tel.Shutdown(context.Background())
+			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = tel.Shutdown(flush)
+			cancel()
 		}
 		if rollupDB != nil {
 			_ = rollupDB.Close()
@@ -472,52 +479,28 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err := journalLegacyRuntimeMigration(l, instanceLog, runtimeMigration); err != nil {
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
 	}
-	var recoveredClaims []localscheduler.ClaimEntry
 	reportStartupProgress(options.startupProgress, "recovering scheduler claims")
-	if err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(instanceLog),
-		)
-		if err != nil {
-			return err
-		}
-		// DS6 (distributed-state-and-coordination.md §10): a daemon start must
-		// rebuild its renewal set from ledger + liveness BEFORE any reap runs,
-		// so `goobers up` closes this gate and reaps in its own startup
-		// recovery pass after the rebuild. The one-shot callers (`run`,
-		// `signal`) do the same when `engine:` is configured
-		// (oneShotClaimRecovery); only a pure mode-1 one-shot passes no gate
-		// and keeps reaping here as before.
-		if options.claimRecoveryGate.RecoveryPermitted() {
-			recoveredClaims, err = ledger.RecoverExpired(time.Now())
-			if err != nil {
-				return err
-			}
-		}
-		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
-			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
-			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
-				instanceLog.AppendBestEffort(journal.Event{
-					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
-					Error: &journal.ErrorDetail{
-						Code:    "legacy_claim_ownership_unresolved",
-						Message: resolveErr.Error(),
-					},
-				})
-			}
-			return namespace, resolveErr
-		})
-	}); err != nil {
+	recoveredClaims, err := recoverSchedulerClaims(l, options.claimRecoveryGate, instanceLog, claimProviders)
+	if err != nil {
 		return nil, err
 	}
+	reportStartupProgress(options.startupProgress, "scheduler claims recovered")
 
 	// #712: shared with the Scheduler via SchedulerOptions below — see
 	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
 	runnerRegistry := newDaemonRunnerRegistry()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores, options.startupProgress)
+	generations, err := newExecutionGenerationRetainer(l)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = generations.Close()
+		}
+	}()
+	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores, options.startupProgress, generations)
 	if err != nil {
 		return nil, err
 	}
@@ -538,7 +521,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, fmt.Errorf("config directory changed during daemon setup; retry startup")
 	}
 
+	runnerRegistry.setGenerationResolver(definitions.GenerationResolver)
 	return &schedulerSetup{
+		Generations:              generations,
 		Root:                     l.Root,
 		Runner:                   definitions.Runner,
 		Runners:                  definitions.Runners,
@@ -618,6 +603,50 @@ func legacyRuntimeMigrationEvent(migration instance.RuntimeMigration) journal.Ev
 			"movedDirectories": migration.MovedDirs,
 		},
 	}
+}
+
+func recoverSchedulerClaims(
+	l instance.Layout,
+	recoveryGate *localscheduler.RecoveryGate,
+	instanceLog *journal.InstanceLog,
+	claimProviders map[string]apiv1.Provider,
+) ([]localscheduler.ClaimEntry, error) {
+	var recoveredClaims []localscheduler.ClaimEntry
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(
+			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+			localscheduler.WithInstanceLog(instanceLog),
+		)
+		if err != nil {
+			return err
+		}
+		// DS6 (distributed-state-and-coordination.md §10): a daemon start must
+		// rebuild its renewal set from ledger + liveness BEFORE any reap runs,
+		// so `goobers up` closes this gate and reaps in its own startup recovery
+		// pass after the rebuild. One-shot callers do the same when `engine:` is
+		// configured; only a pure mode-1 one-shot passes no gate and keeps
+		// reaping here as before.
+		if recoveryGate.RecoveryPermitted() {
+			recoveredClaims, err = ledger.RecoverExpired(time.Now())
+			if err != nil {
+				return err
+			}
+		}
+		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
+			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
+			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
+				instanceLog.AppendBestEffort(journal.Event{
+					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
+					Error: &journal.ErrorDetail{
+						Code:    "legacy_claim_ownership_unresolved",
+						Message: resolveErr.Error(),
+					},
+				})
+			}
+			return namespace, resolveErr
+		})
+	})
+	return recoveredClaims, err
 }
 
 func legacyClaimNamespace(l instance.Layout, providers map[string]apiv1.Provider, entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
@@ -722,9 +751,13 @@ func buildSchedulerDefinitions(
 	terminalNotifier runner.TerminalNotifier,
 	stores credentials.StoreResolver,
 	startupProgress func(string),
+	retainers ...*configgeneration.Retainer,
 ) (*schedulerDefinitions, error) {
-	// Resolve gaggle CI commands on every compilation path, including config
-	// reloads, so preflight and execution see the same effective command.
+	l, generation, err := retainOptionalExecutionGeneration(l, retainers)
+	if err != nil {
+		return nil, err
+	}
+	// Resolve gaggle CI commands on every compilation path.
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)
@@ -735,16 +768,13 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	// Built once and threaded into both admission (#4292 — model discovery at
-	// config-load time previously saw no resolver at all) and the preflight
-	// sign-in probe below, so both consult the exact same credential source.
+	// Admission and the sign-in preflight share this credential source (#4292).
 	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		return nil, err
 	}
-	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		l.ConfigDir(), set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		true, modelCredential,
+	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compileSchedulerMachinesWithProgress(
+		l, cfg, set, goobers, instructions, modelCredential, startupProgress,
 	)
 	if err != nil {
 		return nil, err
@@ -752,7 +782,7 @@ func buildSchedulerDefinitions(
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, modelCredential)
+	harnessInfo, harnessRefusals, err := preflightSchedulerHarnessesWithProgress(cfg, set, goobers, stores, startupProgress)
 	if err != nil {
 		return nil, err
 	}
@@ -761,9 +791,7 @@ func buildSchedulerDefinitions(
 		return nil, err
 	}
 
-	if wtManagers == nil {
-		wtManagers = make(map[string]*worktree.Manager)
-	}
+	wtManagers = clonedWorktreeManagers(wtManagers)
 	branchNamespaces := branchNamespacesByGaggle(set)
 	selfIdentities := selfIdentitiesByGaggle(cfg, set)
 	requireLabelsDefaults := requireLabelsByGaggle(set)
@@ -805,7 +833,7 @@ func buildSchedulerDefinitions(
 		rn, manager, hooks, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
-			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
+			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle], generation,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("initialize gaggle %q runtime: %w", gaggle, err)
@@ -829,10 +857,7 @@ func buildSchedulerDefinitions(
 		return nil, err
 	}
 
-	gagglesByName := make(map[string]apiv1.Gaggle, len(set.Gaggles))
-	for i := range set.Gaggles {
-		gagglesByName[set.Gaggles[i].Name] = set.Gaggles[i]
-	}
+	gagglesByName := indexedGaggles(set)
 
 	// #3876 (decision 005 D1): decide, PER ENTRY, whether this lane dispatches
 	// onto the tier-3 engine. See selectEngineForEntry for the predicate and
@@ -1007,11 +1032,12 @@ func buildSchedulerDefinitions(
 				gaggle:        wf.Spec.Gaggle,
 				def:           machine.Def,
 				spec: engineRunRequest{
-					cfg:     cfg,
-					set:     set,
-					gaggle:  wf.Spec.Gaggle,
-					project: repoRefs[identity],
-					def:     machine.Def,
+					configGeneration: generation,
+					cfg:              cfg,
+					set:              set,
+					gaggle:           wf.Spec.Gaggle,
+					project:          repoRefs[identity],
+					def:              machine.Def,
 				},
 				layout:               l.ForGaggle(wf.Spec.Gaggle),
 				log:                  instanceLog,
@@ -1026,6 +1052,8 @@ func buildSchedulerDefinitions(
 			// Only runner-driven entries execute on the scheduler's self host.
 			// Engine-selected entries enforce capabilities per pinned stage.
 			RequiredCapabilities: selections[identity].schedulerSelfCapabilities(requiredCaps),
+			DisabledReason:       resolveDisabledReason(gagglesByName[wf.Spec.Gaggle], wf),
+			HarnessRefusal:       harnessRefusals[identity], // Broken harnesses refuse only their dependent workflows (#5163).
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
 			// above found this workflow unplaceable on the declared inventory
 			// AND the entry is runner-driven — an engine-selected entry's
@@ -1035,29 +1063,64 @@ func buildSchedulerDefinitions(
 		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
 	}
 
-	var firstRunner *runner.Runner
-	var firstWorktrees *worktree.Manager
-	for _, gaggle := range configuredGaggleNames(set) {
-		firstRunner = runners[gaggle]
-		firstWorktrees = wtManagers[gaggle]
-		break
-	}
+	firstRunner, firstWorktrees := firstGaggleRuntime(set, runners, wtManagers)
+	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(retainers), func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
+		return buildSchedulerDefinitions(pinned, cfg, pinnedSet, pinnedReport, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, wtManagers, providerQuota, terminalNotifier, stores, nil, retainers...)
+	})
 	return &schedulerDefinitions{
-		Set:               set,
-		Validation:        report,
-		HarnessPreflight:  harnessInfo,
-		Runner:            firstRunner,
-		Runners:           runners,
-		Entries:           entries,
-		Machines:          machines,
-		GooberDigests:     gooberDigests,
-		Goobers:           resolvedGoobers,
-		RepoRefs:          repoRefs,
-		OpenPRRefresher:   openPRRefresher,
-		EngineRuntime:     engineRuntimeHolder,
-		Worktrees:         firstWorktrees,
-		WorktreesByGaggle: wtManagers,
+		GenerationResolver: resolveGeneration,
+		Set:                set,
+		Validation:         report,
+		HarnessPreflight:   harnessInfo,
+		Runner:             firstRunner,
+		Runners:            runners,
+		Entries:            entries,
+		Machines:           machines,
+		GooberDigests:      gooberDigests,
+		Goobers:            resolvedGoobers,
+		RepoRefs:           repoRefs,
+		OpenPRRefresher:    openPRRefresher,
+		EngineRuntime:      engineRuntimeHolder,
+		Worktrees:          firstWorktrees,
+		WorktreesByGaggle:  wtManagers,
 	}, nil
+}
+
+func preflightSchedulerHarnessesWithProgress(
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
+	stores credentials.StoreResolver,
+	startupProgress func(string),
+) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+	reportStartupProgress(startupProgress, "preflighting agentic harnesses")
+	started := time.Now()
+	harnessInfo, harnessRefusals, err := preflightSchedulerHarnesses(cfg, set, goobers, stores)
+	reportStartupProgress(startupProgress, harnessPreflightCompletionMessage(err, time.Since(started)))
+	return harnessInfo, harnessRefusals, err
+}
+
+func harnessPreflightCompletionMessage(err error, elapsed time.Duration) string {
+	if err != nil {
+		return fmt.Sprintf("agentic harness preflight failed (duration %s)", elapsed)
+	}
+	return fmt.Sprintf("agentic harnesses ready (preflight duration %s)", elapsed)
+}
+
+func compileSchedulerMachinesWithProgress(
+	l instance.Layout,
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
+	instructions map[string]string,
+	modelCredential func(context.Context) (string, error),
+	startupProgress func(string),
+) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+	reportStartupProgress(startupProgress, "compiling workflow machines")
+	return compiledMachinesWithGooberDigestsAndWarnings(
+		l.ConfigDir(), set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
+		true, modelCredential,
+	)
 }
 
 func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, cfg *instance.Config, project apiv1.RepoRef) error {
@@ -1279,12 +1342,18 @@ func buildRuntimeRunner(
 	sandboxPosture instance.SandboxPosture,
 	selfIdentity string,
 	requireLabelsDefault string,
+	generations ...string,
 ) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
-	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir())
+	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir(), l.Gaggle())
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	var generation string
+	if len(generations) > 0 {
+		generation = generations[0]
+	}
 	runnerCfg, manager, err := buildRunnerConfig(runnerCompositionInput{
+		ConfigGeneration:     generation,
 		Layout:               l,
 		Config:               cfg,
 		Goobers:              goobers,
@@ -1323,7 +1392,7 @@ func buildRuntimeRunner(
 	// issue-close-out (the `no-work` outcome short-circuits straight to
 	// completed) cannot leave claims.json and the provider disagreeing until
 	// the next backlog-curation cycle.
-	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(cfg, gaggleProject, sharedReg, stores)
+	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1353,6 +1422,7 @@ func buildRuntimeRunner(
 		prepare:      prepareTerminal,
 		notify:       runnerCfg.NotifyTerminal,
 		finalize:     runnerCfg.FinalizeTerminal,
+		attribute:    creditgraph.WriteRunRecord,
 	}
 	return rn, manager, hooks, nil
 }
@@ -1385,6 +1455,16 @@ func configuredGaggleNames(set *instance.ConfigSet) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func resolveDisabledReason(gaggle apiv1.Gaggle, wf *apiv1.Workflow) string {
+	if gaggle.Spec.Enabled != nil && !*gaggle.Spec.Enabled {
+		return fmt.Sprintf("gaggle %q is disabled (spec.enabled=false)", gaggle.Name)
+	}
+	if wf != nil && wf.Spec.Enabled != nil && !*wf.Spec.Enabled {
+		return fmt.Sprintf("workflow %q is disabled (spec.enabled=false)", wf.Name)
+	}
+	return ""
 }
 
 // SchedulerOptions returns the localscheduler.Option slice reflecting this
@@ -1519,6 +1599,9 @@ func (s *schedulerSetup) shutdownSteps(ctx context.Context) []shutdownStep {
 	}
 	if s.InstanceLog != nil {
 		steps = append(steps, shutdownStep{"instance log", s.InstanceLog.Close})
+	}
+	if s.Generations != nil {
+		steps = append(steps, shutdownStep{"config generation leases", s.Generations.Close})
 	}
 	return steps
 }
@@ -1776,30 +1859,24 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 
 		identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
 		machine, ok := machines[identity]
+		gooberDigest := gooberDigests[identity]
+		repoRef := repoRefs[identity]
+		if id.ConfigGeneration != "" {
+			pinned, err := runnerRegistry.executionGeneration(ctx, id)
+			if err != nil {
+				return outcome, fmt.Errorf("resolve run %q execution generation: %w", id.RunID, err)
+			}
+			rn, machine, gooberDigest, repoRef = pinned.runner, pinned.machine, pinned.gooberDigest, pinned.repoRef
+			ok = true
+		}
 		if rn == nil || !ok {
 			outcome.Warned = append(outcome.Warned, id.RunID)
-			if log != nil {
-				code := "resume_unresolvable_workflow"
-				message := fmt.Sprintf("run %q references unknown workflow %q — recover with `goobers run abort %s`", id.RunID, id.Workflow, id.RunID)
-				if rn == nil {
-					code = "resume_unresolvable_gaggle"
-					message = fmt.Sprintf("run %q references inactive gaggle %q — recover with `goobers run abort %s`", id.RunID, id.Gaggle, id.RunID)
-				}
-				log.AppendBestEffort(journal.Event{
-					Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
-					Error: &journal.ErrorDetail{
-						Code:    code,
-						Message: message,
-					},
-				})
-			}
+			warnUnresolvableResume(log, id, rn == nil)
 			continue
 		}
 		// Never reinterpret a historical run under the current workflow
 		// merely because the name still matches.
 		machine, machineSource := interruptedRunMachine(id, machine)
-		repoRef := repoRefs[identity]
-		gooberDigest := gooberDigests[identity]
 
 		outcome.Resumed = append(outcome.Resumed, id.RunID)
 		if log != nil {
@@ -1959,3 +2036,43 @@ spec:
     environment: dev
   gaggles: []
 `
+
+func firstGaggleRuntime(set *instance.ConfigSet, runners map[string]*runner.Runner, managers map[string]*worktree.Manager) (*runner.Runner, *worktree.Manager) {
+	for _, gaggle := range configuredGaggleNames(set) {
+		return runners[gaggle], managers[gaggle]
+	}
+	return nil, nil
+}
+func indexedGaggles(set *instance.ConfigSet) map[string]apiv1.Gaggle {
+	out := make(map[string]apiv1.Gaggle, len(set.Gaggles))
+	for _, gaggle := range set.Gaggles {
+		out[gaggle.Name] = gaggle
+	}
+	return out
+}
+
+func clonedWorktreeManagers(managers map[string]*worktree.Manager) map[string]*worktree.Manager {
+	out := maps.Clone(managers)
+	if out == nil {
+		out = make(map[string]*worktree.Manager)
+	}
+	return out
+}
+
+func warnUnresolvableResume(log *journal.InstanceLog, id journal.RunIdentity, missingRunner bool) {
+	if log != nil {
+		code := "resume_unresolvable_workflow"
+		message := fmt.Sprintf("run %q references unknown workflow %q — recover with `goobers run abort %s`", id.RunID, id.Workflow, id.RunID)
+		if missingRunner {
+			code = "resume_unresolvable_gaggle"
+			message = fmt.Sprintf("run %q references inactive gaggle %q — recover with `goobers run abort %s`", id.RunID, id.Gaggle, id.RunID)
+		}
+		log.AppendBestEffort(journal.Event{
+			Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+			Error: &journal.ErrorDetail{
+				Code:    code,
+				Message: message,
+			},
+		})
+	}
+}

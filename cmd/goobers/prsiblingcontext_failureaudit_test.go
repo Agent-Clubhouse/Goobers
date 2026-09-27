@@ -29,6 +29,7 @@ var gatherSiblingFailConsumerFields = []string{
 	"selectedBaseSha",
 	"selectedHeadSha",
 	"selectedNumber",
+	"unlandableSiblingsCsv",
 }
 
 func TestGatherSiblingContextShippedFailBranchConsumers(t *testing.T) {
@@ -79,9 +80,9 @@ func TestGatherSiblingContextShippedFailBranchConsumers(t *testing.T) {
 
 	sort.Strings(consumers)
 	want := []string{
-		"acme-web-claude/claude-merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
-		"acme-web/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
-		"goobers/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
+		"acme-web-claude/claude-merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber,unlandableSiblings=unlandableSiblingsCsv}",
+		"acme-web/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber,unlandableSiblings=unlandableSiblingsCsv}",
+		"goobers/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber,unlandableSiblings=unlandableSiblingsCsv}",
 	}
 	if producers != 4 {
 		t.Fatalf("found %d shipped gather-sibling-context stages, want audited inventory of 4", producers)

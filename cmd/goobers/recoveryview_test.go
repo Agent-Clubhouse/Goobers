@@ -145,7 +145,7 @@ func assertStatusCommandRecovery(t *testing.T, root, runID, ref string, deadline
 }
 
 func TestRecoveryViewDistinguishesUnavailableFromAbsent(t *testing.T) {
-	layout := instance.NewLayout(t.TempDir())
+	layout := writeRecoveryPolicyInstance(t, 0)
 	if view := runRecoveryView(context.Background(), layout, "run", time.Now()); view != nil {
 		t.Fatal("absent inventory reported as retained")
 	}

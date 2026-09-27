@@ -98,6 +98,8 @@ type TelemetryStatsRequest struct {
 	TrendPreviousUntil      time.Time
 }
 
+const runtimeAnalyticsRunLimit = 100
+
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
 	Gaggles            []TelemetryGaggleStats          `json:"gaggles"`
@@ -140,7 +142,8 @@ type TelemetryAttributionRequest struct {
 // TelemetryAttributionResult is the cohorted, path-preserving view over one
 // attribution evidence set.
 type TelemetryAttributionResult struct {
-	Cohorts []creditgraph.CohortAggregation `json:"cohorts,omitempty"`
+	Records []creditgraph.AttributionObservation `json:"records,omitempty"`
+	Cohorts []creditgraph.CohortAggregation      `json:"cohorts,omitempty"`
 }
 
 // AggregateAttributionObservations exposes the cohort aggregation to status and
@@ -155,7 +158,10 @@ func (s *Telemetry) TelemetryAttribution(ctx context.Context, req TelemetryAttri
 	if err := ctx.Err(); err != nil {
 		return TelemetryAttributionResult{}, err
 	}
-	return TelemetryAttributionResult{Cohorts: AggregateAttributionObservations(req.Observations)}, nil
+	return TelemetryAttributionResult{
+		Records: req.Observations,
+		Cohorts: AggregateAttributionObservations(req.Observations),
+	}, nil
 }
 
 // TelemetryAttribution aggregates attribution observations into the cohorted
@@ -165,17 +171,19 @@ func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributi
 		return TelemetryAttributionResult{}, ErrTelemetryUnavailable
 	}
 	if len(req.Observations) == 0 && s.sources.ReadModel != nil {
-		if invocations, ok := s.telemetry.store.(AgentInvocationReader); ok {
-			cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
-				Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
-			})
-			if err != nil {
-				return TelemetryAttributionResult{}, err
-			}
-			return TelemetryAttributionResult{Cohorts: cohorts}, nil
+		records, err := storedAttributionObservations(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
+			Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
+		})
+		if err != nil {
+			return TelemetryAttributionResult{}, err
 		}
+		return TelemetryAttributionResult{Records: records, Cohorts: AggregateAttributionObservations(records)}, nil
 	}
-	return s.telemetry.TelemetryAttribution(ctx, req)
+	result, err := s.telemetry.TelemetryAttribution(ctx, req)
+	if err == nil {
+		result.Records = req.Observations
+	}
+	return result, err
 }
 
 // PromotionSignal is the bounded evidence interface for automated promotion.
@@ -1025,17 +1033,13 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 		return TelemetryStatsResult{}, err
 	}
 	if err := s.attachGraphAnalytics(ctx, req, &result); err != nil {
-		return TelemetryStatsResult{}, err
+		return result, nil
 	}
 	return result, nil
 }
 
 func (s *Local) attachStoredAttributionCohorts(ctx context.Context, req TelemetryStatsRequest, result *TelemetryStatsResult) error {
-	invocations, ok := s.telemetry.store.(AgentInvocationReader)
-	if !ok {
-		return nil
-	}
-	cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
+	cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
 		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
 	})
 	if err != nil {
@@ -1177,7 +1181,7 @@ func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsReq
 			}
 		}
 	}
-	ids, err := s.RunIDs(ctx)
+	ids, err := s.runtimeAnalyticsRunIDs(ctx, req)
 	if err != nil {
 		return readmodel.AnalyticsGraph{}, err
 	}
@@ -1194,7 +1198,7 @@ func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsReq
 	}
 	runs := make([]runtimeRun, 0, len(ids))
 	for _, id := range ids {
-		detail, err := s.GetRun(ctx, id)
+		detail, err := s.getRunUnannotated(ctx, id)
 		if err != nil {
 			return readmodel.AnalyticsGraph{}, fmt.Errorf("read analytics run %q: %w", id, err)
 		}
@@ -1264,6 +1268,38 @@ func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsReq
 		}
 	}
 	return graph, nil
+}
+
+func (s *Local) runtimeAnalyticsRunIDs(ctx context.Context, req TelemetryStatsRequest) ([]string, error) {
+	ids, err := s.RunIDs(ctx)
+	if err != nil || !s.readModelReads {
+		return ids, err
+	}
+
+	options := RunListOptions{
+		Gaggle:     req.Gaggle,
+		Workflow:   req.Workflow,
+		Since:      req.Since,
+		Until:      req.Until,
+		Limit:      runtimeAnalyticsRunLimit,
+		ShowNoWork: true,
+	}
+	page, err := s.listRunsUnannotated(ctx, options)
+	if err != nil {
+		return nil, fmt.Errorf("list analytics runs: %w", err)
+	}
+
+	matching := make(map[string]bool, len(page.Runs))
+	for _, run := range page.Runs {
+		matching[run.ID] = true
+	}
+	filtered := make([]string, 0, len(matching))
+	for _, id := range ids {
+		if matching[id] {
+			filtered = append(filtered, id)
+		}
+	}
+	return filtered, nil
 }
 
 // getWorkflowGraphForQuery returns the compiled workflow graph for a given gaggle/workflow pair.

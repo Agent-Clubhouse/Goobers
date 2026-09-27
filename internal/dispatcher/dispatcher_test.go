@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -36,6 +37,10 @@ type fakePodAPI struct {
 	// recoversAfter, when > 0, lets the pod become schedulable again after that
 	// many observations, modelling an autoscaler adding a node.
 	recoversAfter int
+	// claimErr, when set, is what every GetPersistentVolumeClaim returns;
+	// nil reports the claim present (#5595).
+	claimErr     error
+	claimLookups int
 }
 
 func (f *fakePodAPI) key(namespace, name string) string { return namespace + "/" + name }
@@ -134,6 +139,16 @@ func (f *fakePodAPI) GetDeployment(_ context.Context, _, name string) (*appsv1.D
 		return d.DeepCopy(), nil
 	}
 	return nil, fmt.Errorf("deployment %s not found", name)
+}
+
+func (f *fakePodAPI) GetPersistentVolumeClaim(_ context.Context, namespace, name string) (*corev1.PersistentVolumeClaim, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimLookups++
+	if f.claimErr != nil {
+		return nil, f.claimErr
+	}
+	return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}, nil
 }
 
 // confirmGate is a SurrenderGate with a fixed answer.

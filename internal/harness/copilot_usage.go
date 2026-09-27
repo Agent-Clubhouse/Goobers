@@ -45,7 +45,7 @@ type copilotCapturePaths struct {
 
 func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequest, argv, env []string, confinement *copilotConfinement) (copilotCapturePaths, error) {
 	usageReq := req
-	if c.DisableUsageOutput {
+	if c.usageOutputDisabled() {
 		usageReq.HarnessVersion = ""
 	}
 	argv, usagePath, cleanupUsage, err := prepareCopilotUsageOutput(usageReq, argv)
@@ -70,6 +70,43 @@ func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequ
 		argv: argv, env: env, transcriptPath: transcriptPath, usagePath: usagePath, mcpLogPath: mcpLogPath,
 		cleanup: func() { cleanupMCPLog(); cleanupSession(); cleanupUsage() },
 	}, nil
+}
+
+func (c *CopilotAdapter) usageOutputDisabled() bool {
+	if !c.DisableUsageOutput {
+		return false
+	}
+	c.launcherMu.Lock()
+	defer c.launcherMu.Unlock()
+	return !c.launcherUsageVerified
+}
+
+func (c *CopilotAdapter) verifyLauncherUsageOutput(ctx context.Context, version string, versionArgs []string) {
+	if !c.DisableUsageOutput || !copilotSupportsUsageOutput(version) {
+		return
+	}
+	dir, err := os.MkdirTemp("", "goobers-copilot-usage-probe-")
+	if err != nil {
+		return
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	stdout := newTranscriptBuffer(maxPreflightDiagnosticBytes)
+	command := append(append([]string(nil), resolveHarnessCommand(c.Command)...),
+		"--usage-output-file", filepath.Join(dir, "usage.json"))
+	command = append(command, versionArgs...)
+	result, err := c.runner().Run(ctx, ProcessRequest{
+		Command:            command,
+		Env:                baseEnv(c.ExtraEnvAllowlist, c.EnvUnset),
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+		StdoutCapture:      stdout,
+	})
+	if err != nil || result.ExitCode != 0 || stdout.Truncated() || !copilotSupportsUsageOutput(firstOutputLine(stdout.Bytes())) {
+		return
+	}
+	c.launcherMu.Lock()
+	c.launcherUsageVerified = true
+	c.launcherMu.Unlock()
 }
 
 func prepareCopilotMCPLog(req RunRequest, confinement *copilotConfinement) (string, func(), error) {

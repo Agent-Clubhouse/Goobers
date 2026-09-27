@@ -259,6 +259,12 @@ func TestWindowsScheduledTaskInstallUsesCurrentUserAndLogonTrigger(t *testing.T)
 		"-NoProfile", "-NonInteractive", "Register-ScheduledTask",
 		"New-ScheduledTaskTrigger -AtLogOn", "New-ScheduledTaskPrincipal",
 		"-LogonType Interactive", "-RunLevel Limited", "__service-supervise",
+		"-WindowStyle Hidden", "-ExecutionPolicy Bypass",
+		`-Execute 'powershell.exe'`,
+		`exit $LASTEXITCODE`,
+		"New-ScheduledTaskSettingsSet", "-RestartCount 3",
+		"-RestartInterval (New-TimeSpan -Minutes 1)",
+		"-ExecutionTimeLimit ([TimeSpan]::Zero)", "-Settings $settings",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("create command = %q, missing %q", args, want)
@@ -266,6 +272,34 @@ func TestWindowsScheduledTaskInstallUsesCurrentUserAndLogonTrigger(t *testing.T)
 	}
 	if strings.Contains(strings.ToLower(args), "password") {
 		t.Fatalf("create command must not request or persist a password: %q", args)
+	}
+}
+
+func TestWindowsScheduledTaskActionIsHiddenSynchronousAndSafelyQuoted(t *testing.T) {
+	executable, arguments := windowsScheduledTaskAction(
+		`C:\Program Files\O'Brien's Goobers\goobers.exe`,
+		`C:\Users\O'Brien\Goobers Instance\`,
+	)
+	if executable != "powershell.exe" {
+		t.Fatalf("executable = %q, want powershell.exe", executable)
+	}
+	for _, want := range []string{
+		"-NoLogo -NoProfile -NonInteractive",
+		"-WindowStyle Hidden",
+		"-ExecutionPolicy Bypass",
+		`-Command "`,
+		`& 'C:\Program Files\O''Brien''s Goobers\goobers.exe'`,
+		`__service-supervise 'C:\Users\O''Brien\Goobers Instance\'`,
+		`exit $LASTEXITCODE`,
+	} {
+		if !strings.Contains(arguments, want) {
+			t.Fatalf("arguments = %q, missing %q", arguments, want)
+		}
+	}
+	for _, forbidden := range []string{"Start-Process", "start /b", "cmd.exe"} {
+		if strings.Contains(arguments, forbidden) {
+			t.Fatalf("arguments = %q, contains detached launcher %q", arguments, forbidden)
+		}
 	}
 }
 
@@ -284,8 +318,45 @@ func TestWindowsScheduledTaskStatusReportsLastFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Installed || status.Running || status.LastFailure != "2147942402" {
+	if !status.Installed || status.Running || status.LastFailure != "0x80070002 (ERROR_FILE_NOT_FOUND)" {
 		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestWindowsScheduledTaskStatusDoesNotReportInformationalResultAsFailure(t *testing.T) {
+	for _, result := range []string{
+		"0",
+		"267008", "0x41300",
+		"267009", "0x41301",
+		"267010", "0x41302",
+		"267011", "0x41303",
+		"267012", "0x41304",
+		"267013", "0x41305",
+		"267014", "0x41306",
+		"267015", "0x41307",
+		"267016", "0x41308",
+		"267035", "0x4131B",
+		"267036", "0x4131C",
+	} {
+		t.Run(result, func(t *testing.T) {
+			runner := &fakeRunner{responses: []commandResponse{{
+				output: "Run As User: CONTOSO\\alice\nStatus: Running\nLast Result: " + result + "\n",
+			}}}
+			manager := newTestManager(t, Config{
+				GOOS:         "windows",
+				Executable:   `C:\goobers.exe`,
+				InstanceRoot: `C:\Users\alice\AppData\Local\Goobers`,
+				UserName:     `CONTOSO\alice`,
+				Runner:       runner,
+			})
+			status, err := manager.TaskStatus(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !status.Running || status.LastFailure != "" {
+				t.Fatalf("status = %+v, want running without last failure", status)
+			}
+		})
 	}
 }
 

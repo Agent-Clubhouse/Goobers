@@ -155,3 +155,4 @@ per-issue breakdown as a structured `outputs` field — a result's `outputs` are
 scalar-only (structured or bulk data belongs in `artifacts`, never `outputs`).
 Each filed issue is already recorded on GitHub, so no machine-readable
 per-issue list is needed.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

@@ -95,6 +95,58 @@ func TestNamedCleanupGuardReplacementPreservesOtherHandoffs(t *testing.T) {
 	}
 }
 
+func TestVerifyCleanupTargetPreservedByGit(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+		wantOK bool
+	}{
+		{name: "unchanged", wantOK: true},
+		{name: "committed branch", wantOK: true, mutate: func(t *testing.T, path string) {
+			if err := os.WriteFile(filepath.Join(path, "committed.txt"), []byte("preserved"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runTestGit(t, path, "add", "committed.txt")
+			runTestGit(t, path, "commit", "-m", "Preserve committed work")
+		}},
+		{name: "uncommitted", mutate: func(t *testing.T, path string) {
+			if err := os.WriteFile(filepath.Join(path, "dirty.txt"), []byte("not durable"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "detached commit", mutate: func(t *testing.T, path string) {
+			runTestGit(t, path, "checkout", "--detach")
+			if err := os.WriteFile(filepath.Join(path, "detached.txt"), []byte("not branch anchored"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runTestGit(t, path, "add", "detached.txt")
+			runTestGit(t, path, "commit", "-m", "Detached work")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, err := NewManager(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspace, err := manager.Create(t.Context(), CreateOptions{
+				RepoURL: newSourceRepo(t), RunID: "cleanup-safety", OwnerRunID: "owner",
+				BaseRef: "main", Branch: "goobers/implementation/owner",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := runTestGit(t, workspace.Path, "rev-parse", "HEAD")
+			if tc.mutate != nil {
+				tc.mutate(t, workspace.Path)
+			}
+			err = VerifyCleanupTargetPreservedByGit(t.Context(), CleanupTarget{Path: workspace.Path, StartRef: start})
+			if (err == nil) != tc.wantOK {
+				t.Fatalf("VerifyCleanupTargetPreservedByGit() error = %v, wantOK=%t", err, tc.wantOK)
+			}
+		})
+	}
+}
+
 func TestNamedCleanupGuardConcurrentReplacement(t *testing.T) {
 	manager := &Manager{}
 	var calls atomic.Int64

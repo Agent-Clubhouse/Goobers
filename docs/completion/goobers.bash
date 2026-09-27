@@ -325,7 +325,7 @@ _goobers_completion()
             ;;
         config)
             if (( COMP_CWORD == 2 )); then
-                candidates="diff materialize show"
+                candidates="templates diff materialize show"
             fi
             ;;
         speech)

@@ -546,6 +546,75 @@ func TestStandaloneDashboardAPIWithholdsRevealOffLoopback(t *testing.T) {
 	}
 }
 
+func TestStopDashboardShutsDownServerBeforeClosingAPI(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	server := &http.Server{Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		close(requestStarted)
+		<-releaseRequest
+		response.WriteHeader(http.StatusNoContent)
+	})}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	requestDone := make(chan error, 1)
+	go func() {
+		response, err := http.Get("http://" + listener.Addr().String())
+		if err == nil {
+			err = response.Body.Close()
+		}
+		requestDone <- err
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dashboard request did not start")
+	}
+
+	apiClosed := make(chan struct{})
+	api := dashboardAPI{close: func() error {
+		close(apiClosed)
+		return nil
+	}}
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- stopDashboard(server, func() {}, api)
+	}()
+	select {
+	case <-apiClosed:
+		t.Fatal("dashboard API closed before server shutdown drained the active request")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseRequest)
+	select {
+	case err := <-requestDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dashboard request did not finish")
+	}
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stopDashboard did not finish after the active request drained")
+	}
+	select {
+	case <-apiClosed:
+	case <-time.After(time.Second):
+		t.Fatal("dashboard API close did not run after server shutdown")
+	}
+}
+
 func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
@@ -959,6 +1028,56 @@ func TestDashboardHandlerServesInstanceAssets(t *testing.T) {
 	handler.ServeHTTP(traversal, httptest.NewRequest(http.MethodGet, "/assets/../dashboard.go", nil))
 	if traversal.Code != http.StatusNotFound {
 		t.Fatalf("traversal status = %d, want 404", traversal.Code)
+	}
+}
+
+func TestDaemonInstanceAssetHandlerBoundsCoBrandReads(t *testing.T) {
+	root := t.TempDir()
+	assetsDir := filepath.Join(root, "assets", "brand")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logo := []byte("<svg>brand</svg>")
+	if err := os.WriteFile(filepath.Join(assetsDir, "logo.svg"), logo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsDir, "notes.txt"), []byte("not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "outside.svg"), []byte("<svg>outside</svg>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		serveDaemonInstanceAsset(response, request, root)
+	})
+
+	t.Run("serves nested image with inferred content type", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/brand/logo.svg", nil))
+
+		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), logo) {
+			t.Fatalf("asset response = %d %q", response.Code, response.Body.String())
+		}
+		if got := response.Header().Get("Content-Type"); got != "image/svg+xml" {
+			t.Fatalf("content type = %q, want image/svg+xml", got)
+		}
+	})
+
+	for name, target := range map[string]string{
+		"missing":               "/assets/missing.png",
+		"directory":             "/assets/brand",
+		"traversal":             "/assets/../outside.svg",
+		"encoded traversal":     "/assets/%2e%2e/outside.svg",
+		"unsupported extension": "/assets/brand/notes.txt",
+		"query string":          "/assets/brand/logo.svg?download=true",
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", response.Code)
+			}
+		})
 	}
 }
 

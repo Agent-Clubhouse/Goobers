@@ -21,6 +21,7 @@
         "workflow": { "type": "string", "minLength": 1, "description": "Pinned workflow name." },
         "workflowVersion": { "type": "integer", "minimum": 1, "description": "Pinned workflow definition version." },
         "workflowDigest": { "type": "string", "description": "Content digest of the pinned workflow definition." },
+        "configGeneration": { "type": "string", "description": "Pinned execution configuration archive content address." },
         "gooberDigest": { "type": "string", "description": "Content digest of participating resolved goobers." },
         "gaggle": { "type": "string", "minLength": 1, "description": "Gaggle that owns the run." },
         "trigger": { "type": "object", "description": "Trigger kind and optional provider-specific reference." },

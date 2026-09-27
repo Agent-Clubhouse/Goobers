@@ -32,8 +32,12 @@ repos:
       env: GOOBERS_ADO_TOKEN
 ```
 
-The Boards `backlog.project` can differ from the repository project. Check both
-Git and Boards access, then optionally seed one tagged Task:
+The Boards `backlog.project` can differ from the repository project, but
+`backlog.provider` must stay `ado`: `validate` refuses a gaggle whose backlog
+provider differs from its project provider (a mixed-provider backlog is
+planned for a later release; see
+[ADO limitations](../../docs/guides/ado-limitations.md)). Check both Git and
+Boards access, then optionally seed one tagged Task:
 
 ```sh
 goobers validate --strict --check-repos ./ado-instance

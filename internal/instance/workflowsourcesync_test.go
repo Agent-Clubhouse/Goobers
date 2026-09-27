@@ -25,10 +25,10 @@ func TestSyncGitWorkflowSourceInstallsTrackedCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	revision, _, err := SyncGitWorkflowSource(context.Background(), root, WorkflowSource{
+	revision, _, _, err := commitPreparedWorkflowSource(context.Background(), root, WorkflowSource{
 		Kind: WorkflowSourceKindGit,
 		Path: repo,
-	}, nil, nil, nil)
+	}, "")
 	if err != nil {
 		t.Fatalf("SyncGitWorkflowSource: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestSyncGitWorkflowSourceAdvancesOnNewCommit(t *testing.T) {
 	}
 
 	source := WorkflowSource{Kind: WorkflowSourceKindGit, Path: repo}
-	first, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil, nil)
+	first, _, _, err := commitPreparedWorkflowSource(context.Background(), root, source, "")
 	if err != nil {
 		t.Fatalf("first SyncGitWorkflowSource: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestSyncGitWorkflowSourceAdvancesOnNewCommit(t *testing.T) {
 	runWorkflowSourceSyncTestGit(t, repo, "add", "manifest.yaml")
 	runWorkflowSourceSyncTestGit(t, repo, "commit", "-m", "manifest v2")
 
-	second, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil, nil)
+	second, _, _, err := commitPreparedWorkflowSource(context.Background(), root, source, "")
 	if err != nil {
 		t.Fatalf("second SyncGitWorkflowSource: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestSyncGitWorkflowSourceIfChangedLeavesCurrentConfigUntouched(t *testing.T
 		t.Fatal(err)
 	}
 	source := WorkflowSource{Kind: WorkflowSourceKindGit, Path: repo}
-	revision, changed, _, err := SyncGitWorkflowSourceIfChanged(context.Background(), root, source, "", nil, nil, nil)
+	revision, changed, _, err := commitPreparedWorkflowSource(context.Background(), root, source, "")
 	if err != nil {
 		t.Fatalf("initial SyncGitWorkflowSourceIfChanged: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestSyncGitWorkflowSourceIfChangedLeavesCurrentConfigUntouched(t *testing.T
 		t.Fatal(err)
 	}
 
-	current, changed, _, err := SyncGitWorkflowSourceIfChanged(context.Background(), root, source, revision, nil, nil, nil)
+	current, changed, _, err := commitPreparedWorkflowSource(context.Background(), root, source, revision)
 	if err != nil {
 		t.Fatalf("current SyncGitWorkflowSourceIfChanged: %v", err)
 	}
@@ -109,18 +109,60 @@ func TestSyncGitWorkflowSourceIfChangedLeavesCurrentConfigUntouched(t *testing.T
 	}
 }
 
+func TestPreparedGitWorkflowSourceCanRestoreLastAppliedTree(t *testing.T) {
+	repo := newWorkflowSourceSyncTestRepo(t, "candidate\n")
+	root := t.TempDir()
+	layout := NewLayout(root)
+	if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "last-applied\n")
+	writeWorkflowSourceSyncTestFile(t, layout.ConfigDir(), filepath.Join("gaggles", "example", "gaggle.yaml"), "last-applied-gaggle\n")
+
+	revision, changed, _, swap, err := PrepareGitWorkflowSourceIfChanged(context.Background(), root, WorkflowSource{
+		Kind: WorkflowSourceKindGit, Path: repo,
+	}, "", nil, nil, nil)
+	if err != nil || !changed || revision == "" || swap == nil {
+		t.Fatalf("prepare = revision %q changed=%t swap=%v err=%v", revision, changed, swap != nil, err)
+	}
+	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "candidate\n")
+	if err := swap.Rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "last-applied\n")
+	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), filepath.Join("gaggles", "example", "gaggle.yaml"), "last-applied-gaggle\n")
+	if err := swap.Rollback(); err != nil {
+		t.Fatalf("idempotent rollback: %v", err)
+	}
+}
+
 // TestSyncGitWorkflowSourceRejectsUnsupportedKind pins the guard at this
 // seam: a local-dir workflowSource has nothing to pull, so syncing it is a
 // caller bug, not a silent no-op.
 func TestSyncGitWorkflowSourceRejectsUnsupportedKind(t *testing.T) {
 	root := t.TempDir()
-	_, _, err := SyncGitWorkflowSource(context.Background(), root, WorkflowSource{
+	_, _, _, err := commitPreparedWorkflowSource(context.Background(), root, WorkflowSource{
 		Kind: WorkflowSourceKindLocalDir,
 		Path: t.TempDir(),
-	}, nil, nil, nil)
+	}, "")
 	if err == nil || !strings.Contains(err.Error(), "is not") || !strings.Contains(err.Error(), WorkflowSourceKindGit) {
 		t.Fatalf("err = %v, want kind-mismatch rejection", err)
 	}
+}
+
+// commitPreparedWorkflowSource keeps the legacy install-and-accept behavior in
+// lower-level tests without retaining a production API no runtime caller may
+// use. Production must explicitly Commit or Rollback the prepared swap after
+// validating the candidate tree.
+func commitPreparedWorkflowSource(ctx context.Context, root string, source WorkflowSource, currentRevision string) (revision string, changed bool, warnings []string, err error) {
+	revision, changed, warnings, swap, err := PrepareGitWorkflowSourceIfChanged(ctx, root, source, currentRevision, nil, nil, nil)
+	if err != nil || swap == nil {
+		return revision, changed, warnings, err
+	}
+	if err := swap.Commit(); err != nil {
+		return "", false, warnings, err
+	}
+	return revision, changed, warnings, nil
 }
 
 func newWorkflowSourceSyncTestRepo(t *testing.T, manifestContent string) string {

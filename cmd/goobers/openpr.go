@@ -28,11 +28,104 @@ type openPRProvider interface {
 	OpenPullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error)
 }
 
+type adoPullRequestWorkItemLinker interface {
+	LinkPullRequestToWorkItem(context.Context, providers.RepositoryRef, providers.RepositoryRef, string, string) error
+}
+
+func openPRWorkItemLinker(root string, repo providers.RepositoryRef, haveIssue bool, issueID string) (adoPullRequestWorkItemLinker, error) {
+	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
+		return nil, nil
+	}
+	return newProviderForStageSurface[adoPullRequestWorkItemLinker](root, repo, false,
+		withStageProviderCapability(capability.ADOWorkItemsWrite),
+		withStageProviderMutations("issue"),
+	)
+}
+
+func linkADOPullRequestToWorkItem(
+	ctx context.Context,
+	linker adoPullRequestWorkItemLinker,
+	repo providers.RepositoryRef,
+	root, issueID, pullID string,
+	haveIssue bool,
+	stderr io.Writer,
+) int {
+	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
+		return 0
+	}
+	if linker == nil {
+		pf(stderr, "error: ADO provider cannot create native work-item links\n")
+		return 1
+	}
+	err := linker.LinkPullRequestToWorkItem(ctx, repo, backlogRepoRefForStage(root, repo), issueID, pullID)
+	if err == nil {
+		return 0
+	}
+	if providers.IsNotFoundError(err) {
+		pf(stderr, "warning: work item #%s no longer resolves; pull request %s could not be linked natively\n", issueID, pullID)
+		return 0
+	}
+	return failProviderStage(stderr, "link pull request to work item", err, "pr-result.json")
+}
+
+func openPullRequestWithADOLink(
+	ctx context.Context,
+	provider openPRProvider,
+	linker adoPullRequestWorkItemLinker,
+	repo providers.RepositoryRef,
+	root, issueID string,
+	haveIssue bool,
+	prReq providers.PullRequestRequest,
+	tutorHoldout *tutorHoldoutRecord,
+	stderr io.Writer,
+) (providers.PullRequestResult, int) {
+	result, err := provider.OpenPullRequest(ctx, prReq)
+	if err != nil {
+		if tutorHoldout != nil {
+			if cleanupErr := clearTutorHoldoutsForRun(root, tutorHoldout.Gaggle, tutorHoldout.AuthoringRunID); cleanupErr != nil {
+				pf(stderr, "error: discard Tutor live verification after open pull request failed: %v (open pull request: %v)\n", cleanupErr, err)
+				return providers.PullRequestResult{}, 1
+			}
+		}
+		return providers.PullRequestResult{}, failProviderStage(stderr, "open pull request", err, "pr-result.json")
+	}
+	return result, linkADOPullRequestToWorkItem(ctx, linker, repo, root, issueID, result.ID, haveIssue, stderr)
+}
+
 const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"Open the run's PR — or, on a repass through this stage, find and update\n" +
 	"the PR it already opened (idempotent: the run's branch name is stable\n" +
 	"across repasses, providers.BranchName). Writes prNumber/pull-request-url\n" +
-	"to the declared result file for a downstream stage's Task.InputsFrom.\n" +
+	"to the declared result file for a downstream stage's Task.InputsFrom.\n\n" +
+	"Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's\n" +
+	"stable branch), base (default GOOBERS_BASE_BRANCH, else \"main\"),\n" +
+	"resultFile, timeout. PR metadata is configured through these workflow\n" +
+	"inputs — there are no --title/--body flags — and a stage may bind them\n" +
+	"from an upstream stage's declared output with inputsFrom rather than a\n" +
+	"static value:\n\n" +
+	"    - name: open-pr\n" +
+	"      run:\n" +
+	"        command: [\"goobers\", \"open-pr\"]\n" +
+	"      inputs:\n" +
+	"        resultFile: \"pr-result.json\"\n" +
+	"      inputsFrom:\n" +
+	"        # bare key = the immediately preceding stage's output;\n" +
+	"        # \"plan.prTitle\" would name an earlier stage explicitly.\n" +
+	"        title: prTitle\n\n" +
+	"Title precedence: an explicitly set non-empty title wins; otherwise the\n" +
+	"claimed item's title, recovered from the run journal (so it survives a\n" +
+	"resume or repass); otherwise the generic \"Automated implementation\". An\n" +
+	"empty value is not an override — every empty input falls back.\n\n" +
+	"Body precedence: an explicitly set non-empty body is used as given and\n" +
+	"bypasses structured rendering; otherwise a structured body is rendered\n" +
+	"from the run journal's recorded review and local-CI evidence; otherwise a\n" +
+	"generic one-line body. A claimed item still augments an unstructured body\n" +
+	"— explicit or generic — with a \"Fixes #<id>\" back-reference, so explicit\n" +
+	"body text does not cost the issue linkage. The structured body carries\n" +
+	"its own linkage and is never appended to.\n\n" +
+	"A workflow that claims no item, or whose journal holds no recognized\n" +
+	"review/local-CI evidence, therefore gets generic metadata unless it sets\n" +
+	"these inputs. That is the fallback working, not a missing feature.\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
 
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
@@ -241,6 +334,12 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	workItemLinker, err := openPRWorkItemLinker(root, repo, haveIssue, issueID)
+	if err != nil {
+		pf(stderr, "error: resolve ADO work-item link authority: %v\n", err)
+		return 1
+	}
+
 	// Persist the mandatory finding before the external mutation. If the
 	// process crashes after GitHub accepts the PR, the prepared record still
 	// survives for a later exact-cohort verification pass. Repasses atomically
@@ -264,15 +363,9 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	result, err := provider.OpenPullRequest(ctx, prReq)
-	if err != nil {
-		if tutorHoldout != nil {
-			if cleanupErr := clearTutorHoldoutsForRun(root, tutorHoldout.Gaggle, tutorHoldout.AuthoringRunID); cleanupErr != nil {
-				pf(stderr, "error: discard Tutor live verification after open pull request failed: %v (open pull request: %v)\n", cleanupErr, err)
-				return 1
-			}
-		}
-		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
+	result, code := openPullRequestWithADOLink(ctx, provider, workItemLinker, repo, root, issueID, haveIssue, prReq, tutorHoldout, stderr)
+	if code != 0 {
+		return code
 	}
 
 	if recordTutorLiveVerification {

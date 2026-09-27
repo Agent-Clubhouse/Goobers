@@ -79,6 +79,22 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"config templates import": {
+		{name: "repository", takesArg: true, desc: "Template Git repository"},
+		{name: "directory", takesArg: true, desc: "Template directory in the repository"},
+		{name: "gaggle", takesArg: true, desc: "Destination gaggle"},
+		{name: "ref", takesArg: true, desc: "Tracked template branch"},
+		{name: "token-env", takesArg: true, desc: "Read-only token environment variable"},
+		{name: "source", takesArg: true, desc: "User config checkout"},
+	},
+	"config templates update": {
+		{name: "gaggle", takesArg: true, desc: "Tracked gaggle"},
+		{name: "source", takesArg: true, desc: "User config checkout"},
+	},
+	"config templates backprop": {
+		{name: "gaggle", takesArg: true, desc: "Tracked gaggle"},
+		{name: "source", takesArg: true, desc: "User config checkout"},
+	},
 	"roots discover": {
 		{name: "json", desc: "Emit structured root discovery"},
 	},

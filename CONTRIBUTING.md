@@ -182,8 +182,10 @@ to `Delivered-by`, remove it from `Pending-delivery`, provide a `Scope-delta`
 (including an explicit no-delta statement when appropriate), and refresh
 `Verified`. Removing a tracking reference cannot bypass the base-tree check.
 Use `Tracking` when assigning a new design work item so this association is
-explicit. PR edits trigger CI too, because editing closing references changes
-the delivery claim without changing the code revision.
+explicit. Editing closing references changes the delivery claim without
+changing the code revision, so PR edits re-run this check in the separate
+`design-delivery.yml` workflow; they do not re-run (or cancel) the full CI
+run for an unchanged head.
 
 For local reproduction, pass `-delivery-context <file>` to
 `go run ./test/designstatus` (or set `GOOBERS_DESIGN_DELIVERY_CONTEXT` for
@@ -210,15 +212,14 @@ command instead. **CI:** each validation job maps to the same contract:
 | `checks` | Portal, canvas-extension, generated-contract, and manifest slice of `make ci` |
 | `deploy reference manifests` | Render and schema validation for the shipped reference deployment |
 | `lint (${{ matrix.goos }})` | `golangci-lint` across Linux, macOS, and Windows |
-| `darwin gate (build · vet)` | The macOS build + `go vet` slice of `verify-fast` |
+| `darwin gate (build · vet)` | Linux cross-compile `go build` + `go vet` (tests included) of the whole tree for darwin/arm64 and darwin/amd64, built with cgo off as the release builds macOS binaries; the only pre-merge macOS gate |
 | `windows gate (build · vet · runtime smoke)` | The Windows `go vet` + build slice of `verify-fast`, plus a runtime smoke |
 | `Go vulnerability scan` | Standalone `make vulncheck` gate for reachable standard-library and dependency vulnerabilities |
 | `unit race shard ${{ matrix.shard }} (linux)` | Hermetic whole-tree unit suite split into Linux race shards |
 | `unit coverage gate (linux)` | Whole-tree Go coverage profile and threshold gate, plus the per-test timing ledger |
-| `macOS runtime (unit · shipped · sandbox)` | Whole-tree behavioural suite and shipped-workflow contracts, plus required native Seatbelt confinement on PRs, consolidated onto one macOS allocation |
-| `shipped workflow contracts (${{ matrix.os }})` | Shipped workflow contract suite on Linux and Windows; the macOS leg is consolidated above |
+| `shipped workflow contracts (${{ matrix.os }})` | Shipped workflow contract suite on Linux and Windows; the macOS leg runs nightly (see below) |
 | `declared-dependency integration` | Full-tier `make test-integration-strict` gate with every inventoried executable provisioned, plus the envtest control-plane gate (`KUBEBUILDER_ASSETS`) |
-| `sandbox confinement (ubuntu-latest)` | Full-tier `make sandbox-check` gate with native bubblewrap availability required; macOS Seatbelt is consolidated above |
+| `sandbox confinement (ubuntu-latest)` | Full-tier `make sandbox-check` gate with native bubblewrap availability required; macOS Seatbelt runs nightly (see below) |
 | `linux node validation (#636/#639)` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
 | `make ci (fmt-check · vet · build · test · lint)` | Required aggregate status for all rows above; it runs no additional validation |
 
@@ -229,6 +230,66 @@ their corresponding Make targets. The vulnerability target also runs daily from
 `.github/workflows/vulnerability-scan.yml`, so newly disclosed findings surface
 without a code change.
 
+#### macOS runtime runs nightly
+
+No pull-request or push job uses a macOS runner. The macOS behavioural
+runtime (the unit suite without race or coverage, the shipped-workflow
+contracts, and native Seatbelt confinement) runs in
+`.github/workflows/macos-nightly.yml` once a night against `main`, and on
+demand with `workflow_dispatch` (pass `pr` to run a pull request's merge ref
+before it lands). Pre-merge, macOS is gated by the `darwin gate (build · vet)`
+cross-compile and the `lint (darwin)` leg.
+
+The pre-merge macOS job had become the run's long pole: ~21 min of job plus
+17-19 min waiting in the hosted macOS queue (run 36125334006). A macOS-only
+behaviour regression is now caught the night after it lands instead of before
+merge. Failures are filed by the existing mechanisms: `flake-watch.yml` scans
+the nightly's job log and files each failing test in the flake ledger, and
+`scheduled-failure-alarm.yml` opens an alarm after consecutive red nights.
+
+The history below records the earlier consolidation of three macOS jobs into
+one, which the nightly supersedes.
+
+The following sample was collected from ten successful pull-request `ci.yml`
+runs before and after the consolidation on 2026-09-21. Queue is
+the median `job.started_at - run.created_at` for the behavioral,
+shipped-contract, and sandbox macOS jobs in each run (the consolidated cohort
+has one such job); wall-clock is `run.updated_at - run.created_at`; and
+runner-minutes is the sum of those jobs' durations. The unrelated macOS build
+and lint jobs are excluded. Run IDs are included so the measurements are
+reproducible from GitHub Actions.
+
+| sample | queue (min) | wall-clock (min) | macOS gate runner-minutes | CI run |
+|---|---:|---:|---:|---:|
+| before 1 | 3.8 | 23.4 | 23.8 | 34653973504 |
+| before 2 | 3.4 | 24.0 | 18.1 | 34650766361 |
+| before 3 | 3.5 | 24.2 | 22.3 | 34649459317 |
+| before 4 | 6.7 | 26.4 | 14.2 | 34642148416 |
+| before 5 | 3.8 | 24.4 | 22.2 | 34642019967 |
+| before 6 | 9.7 | 31.6 | 16.4 | 34635300361 |
+| before 7 | 7.9 | 32.3 | 19.7 | 34634662857 |
+| before 8 | 11.4 | 29.5 | 14.6 | 34633981292 |
+| before 9 | 12.3 | 34.9 | 22.2 | 34633367445 |
+| before 10 | 3.6 | 28.8 | 17.2 | 34630207201 |
+| after 1 | 5.2 | 29.8 | 23.4 | 35567216154 |
+| after 2 | 4.2 | 28.9 | 23.8 | 35565604474 |
+| after 3 | 3.6 | 24.2 | 20.4 | 35561335021 |
+| after 4 | 4.3 | 37.2 | 32.6 | 35559023921 |
+| after 5 | 2.5 | 26.4 | 18.3 | 35558215404 |
+| after 6 | 5.2 | 29.0 | 23.6 | 35554670675 |
+| after 7 | 9.7 | 31.8 | 21.9 | 35553881756 |
+| after 8 | 4.0 | 26.1 | 22.0 | 35553555564 |
+| after 9 | 13.8 | 37.0 | 21.7 | 35551314833 |
+| after 10 | 4.6 | 36.5 | 22.6 | 35550807780 |
+
+The medians from the unrounded measurements are 5.3/27.6/18.9 before and
+4.4/29.4/22.3 after
+(queue/wall-clock/runner-minutes). Wall-clock increased 6.6%, below the
+10% material-regression threshold used for this decision, while the required
+macOS allocation count fell from three to one. The consolidation is therefore
+retained: it removes two scarce runner allocations without dropping any
+behavioral, workflow-contract, or sandbox command.
+
 `make test-conformance`, `make test-e2e`, `make test-envtest` and
 `make cover-check` remain as local and full-tier targets, but **no longer have
 dedicated CI jobs.** Each was an unsharded whole-tree run of a suite another
@@ -236,8 +297,8 @@ required job already runs, and together they cost ~48 of the ~142 runner-minutes
 a pull request consumed and set both ends of its critical path. What each one
 uniquely enforced moved rather than lapsed:
 
-- **coverage** → a `make cover-gate` step on `unit-macos`, which runs the suite
-  unsharded and so already emitted the whole-tree profile the gate needs.
+- **coverage** → the `make cover-gate` step on `unit-linux-coverage`, which runs
+  the suite unsharded and so emits the whole-tree profile the gate needs.
 - **envtest** → `KUBEBUILDER_ASSETS` provisioning on `integration`, which already
   selects `internal/operator` and already enforces the `-run=^TestIntegration`
   contract through a runtime AST scan. That job now asserts
@@ -306,13 +367,14 @@ reported by `make test-integration`; when adding a dependency, update
 | Runner | Command | PR status | What it gates |
 |---|---|---|---|
 | `ubuntu-latest` | `go run ./test/ci` | Required via the aggregate CI check | The full Linux Go and portal gate |
-| `macos-latest` | `go run ./test/ci` | Required via the aggregate CI check | The full macOS Go and portal gate |
+| `ubuntu-latest` (GOOS=darwin) | `go build ./...` + `go vet ./...` | Required via the aggregate CI check | macOS cross-compile and vet coverage |
+| `macos-latest` | `go run ./test/ci group unit` + `group shipped` + `make sandbox-check` | Nightly (`macos-nightly.yml`), not a PR check | The macOS behavioural runtime |
 | `windows-latest` | `go build ./...` + `go vet ./...` | Required via the aggregate CI check | Native Windows compile and vet coverage |
 | `ubuntu-latest` | `make vulncheck` | Required via the aggregate CI check | Reachable Go vulnerability findings |
 
 The required `make ci (fmt-check · vet · build · test · lint)` status keeps its
 existing name for branch-protection compatibility and fails when either full
-platform leg, the Windows compile slice, or the vulnerability scan fails. Go
+Linux leg, the darwin or Windows compile slice, or the vulnerability scan fails. Go
 module and build caches are scoped to each runner OS.
 
 ## Workflow
@@ -324,15 +386,15 @@ module and build caches are scoped to each runner OS.
 5. Run the `make ci` merge tier locally.
 6. Open a **pull request against `main`**, filling in the
    [PR template](.github/PULL_REQUEST_TEMPLATE.md).
-7. The required Ubuntu, macOS, and Windows CI checks must pass. Address review
+7. The required CI checks (Ubuntu, plus the macOS and Windows compile gates) must pass. Address review
    feedback; keep the branch up to date with `main`.
 
 ## Merge requirements
 
 `main` is protected. The active repository rules require:
 
-- **CI is green** — the required aggregate confirms the Ubuntu and macOS
-  portable CI checks, Windows compile smoke, vulnerability scan, and
+- **CI is green** — the required aggregate confirms the Ubuntu portable CI
+  checks, the darwin cross-compile gate, Windows compile smoke, vulnerability scan, and
   journal-conformance gate pass on the latest commit.
 - **Approvals** — none. The required approval count is zero, and
   [CODEOWNER](.github/CODEOWNERS) approval is not required. CODEOWNERS are still

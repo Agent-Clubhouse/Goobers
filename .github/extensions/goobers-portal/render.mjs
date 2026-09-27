@@ -2819,7 +2819,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     } finally {
       if (isCurrent()) {
         pendingWorkflowRuns.delete(key);
-        await loadSnapshot();
+        try {
+          await loadSnapshot();
+        } catch (err) {
+          failure ||= "Failed to refresh after running " + name + ": " + portalRequestError(err);
+        }
         if (isCurrent()) {
           if (failure) errorEl.textContent = failure;
           workflowRunRequests.delete(key);
@@ -3080,7 +3084,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const runPending = pendingWorkflowRuns.has(runKey);
       // Manual triggers only work against a live daemon (client.mjs's
       // triggerWorkflowNow() throws outside daemon mode) - don't offer a
-      // control guaranteed to fail for standalone/remote-polling sources.
+      // control guaranteed to fail for standalone or Actions-backed sources.
       const runSupported = data.mode === "daemon";
       const runBtn = document.createElement("button");
       runBtn.type = "button";
@@ -3102,7 +3106,9 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       runBtn.addEventListener("click", (ev) => {
         ev.stopPropagation();
         if (!runSupported || pendingWorkflowRuns.has(runKey)) return;
-        runWorkflowNow(gaggle, name);
+        void runWorkflowNow(gaggle, name).catch((err) => {
+          errorEl.textContent = "Failed to run " + name + ": " + portalRequestError(err);
+        });
       });
       runCell.appendChild(runBtn);
 

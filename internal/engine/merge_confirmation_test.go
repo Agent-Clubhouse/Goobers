@@ -15,7 +15,7 @@ import (
 )
 
 func TestEngineProjectsSurrenderedMergeConfirmation(t *testing.T) {
-	confirmation := providers.MergeConfirmation{RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", MergeSHA: "commit"}
+	confirmation := providers.MergeConfirmation{RepositoryAPIURL: "https://api.github.com/repos/acme/app", PullID: "9", MergeSHA: "commit"}
 	var suite testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&suite)
 	env.ExecuteWorkflow(func(ctx workflow.Context) (JournalProjection, error) {
@@ -48,7 +48,8 @@ func TestEngineProjectsSurrenderedMergeConfirmation(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got != confirmation || event.ExternalRef == nil || event.ExternalRef.ID != got.PullID || event.Runner["operation"] != "merge" {
+	if got != confirmation || event.ExternalRef == nil || event.ExternalRef.ID != got.PullID ||
+		event.ExternalRef.URL != "https://github.com/acme/app/pull/9" || event.Runner["operation"] != "merge" {
 		t.Fatalf("confirmation lost/misattributed: event=%+v confirmation=%+v", event, got)
 	}
 }

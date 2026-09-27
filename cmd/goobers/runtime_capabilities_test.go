@@ -101,6 +101,8 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// decide what to do next — the same class as claims/list.
 		"journalRunPhase": true, "journalConflictTouches": true, "journalUnpushedWork": true,
 		"journalEscalationCandidates": true, "journalBranchOwnership": true,
+		// An admitted stage rechecks current authorization immediately before land.
+		"journalMergeAuthority": true,
 	}
 	for _, action := range apiActions {
 		if apiMetadataRoutes[action.ID] {

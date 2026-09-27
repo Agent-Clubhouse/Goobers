@@ -25,15 +25,15 @@ import (
 
 const integrationGuidance = "tag this test with //go:build integration and run it in the integration tier"
 const shardWeightsPath = ".github/unit-shard-weights.json"
-const shardWeightsArtifactName = "test-timings-macOS"
-const shardWeightsPlatform = "darwin"
 
-// shardWeightsMaxAge bounds how long the checked-in package measurements may
-// go without a refresh before TestCheckedInShardWeightsAreFresh fails: the
-// weights have no automated writer, so a hard cadence is what keeps the LPT
-// scheduler balancing against current package costs instead of a stale
-// snapshot.
-const shardWeightsMaxAge = 30 * 24 * time.Hour
+// The weights table is race-mode (schemaVersion 2): package seconds merged from
+// the Linux race shards' own "unit-shard" timing parts, the runs it balances.
+// Version 1 carried the non-race coverage job's times, which under-weighted
+// race-heavy packages by up to ~30x; it is rejected rather than read.
+const shardWeightsSchemaVersion = 2
+const shardWeightsArtifactPattern = "test-timings-race-linux-*"
+const shardWeightsTimingJob = "unit-shard"
+const shardWeightsPlatform = "linux"
 
 type toolSpec struct {
 	name     string
@@ -55,10 +55,12 @@ type invocation struct {
 	timingJob    string
 	timingOutput string
 	shard        shardSpec
+	dryRun       bool
 	testArgs     []string
 }
 
-// shardSpec selects one of `total` disjoint package partitions (1-based index).
+// shardSpec selects one of `total` disjoint partitions (1-based index) of the
+// unit suite: whole packages plus pieces of split packages.
 // The zero value (total == 0) means "run every package" — no sharding.
 type shardSpec struct {
 	index int
@@ -75,15 +77,15 @@ type shardWeights struct {
 }
 
 type shardWeightsSource struct {
-	Run                    int64   `json:"run"`
-	Jobs                   []int64 `json:"jobs"`
-	Artifact               int64   `json:"artifact"`
-	ArtifactName           string  `json:"artifactName"`
-	Commit                 string  `json:"commit"`
-	GeneratedAt            string  `json:"generatedAt"`
-	Platform               string  `json:"platform"`
-	Architecture           string  `json:"architecture"`
-	MinimumRecordedSeconds float64 `json:"minimumRecordedSeconds"`
+	Run                    int64    `json:"run"`
+	Branch                 string   `json:"branch"`
+	Commit                 string   `json:"commit"`
+	GeneratedAt            string   `json:"generatedAt"`
+	TimingJobs             []string `json:"timingJobs"`
+	ArtifactPattern        string   `json:"artifactPattern"`
+	Platform               string   `json:"platform"`
+	Architecture           string   `json:"architecture"`
+	MinimumRecordedSeconds float64  `json:"minimumRecordedSeconds"`
 }
 
 func (w shardWeights) generatedAt() (time.Time, error) {
@@ -126,7 +128,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	invocation, err := parseInvocation(args)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/hermetic [--go-command <go>] [--timing-job <job> --timing-output <file>] -- <go test arguments>")
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/hermetic [--go-command <go>] [--timing-job <job> --timing-output <file>] [--shard i/n [--dry-run]] -- <go test arguments>")
 		return 2
 	}
 
@@ -136,7 +138,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	tools, compilerName, err := resolveTools(invocation.goCommand)
+	tools, compilerCommand, err := resolveTools(invocation.goCommand)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
 		return 1
@@ -170,31 +172,32 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	environment := toolEnvironment{
+		goPath: filepath.Join(toolDir, executableName("go")),
+		root:   root,
+		env:    hermeticEnvironment(os.Environ(), toolDir, compilerCommand, goroot),
+	}
+	plans := []testPlan{{label: "go test", testArgs: invocation.testArgs, timingOutput: invocation.timingOutput}}
 	if invocation.shard.enabled() {
-		sharded, count, err := shardTestArgs(invocation.goCommand, root, invocation.testArgs, invocation.shard)
+		sharded, selection, err := shardPlans(environment, invocation.testArgs, invocation.shard)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
 			return 1
 		}
-		_, _ = fmt.Fprintf(stdout, "hermetic tier: shard %d/%d runs %d packages\n",
-			invocation.shard.index, invocation.shard.total, count)
-		invocation.testArgs = sharded
+		assignTimingOutputs(sharded, invocation.timingOutput)
+		describeShard(stdout, invocation.shard, selection, sharded)
+		plans = sharded
+	}
+	if invocation.dryRun {
+		if err := describeDryRun(stdout, plans); err != nil {
+			_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 
-	goArgs := goCommandArgs(invocation)
-	command := exec.Command(filepath.Join(toolDir, executableName("go")), goArgs...)
-	command.Dir = root
-	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerName, goroot)
-
 	collector := &diagnosticCollector{allowed: allowed, tools: make(map[string]struct{})}
-	stdoutWriter := &diagnosticWriter{destination: stdout, collector: collector}
-	stderrWriter := &diagnosticWriter{destination: stderr, collector: collector}
-	command.Stdout = stdoutWriter
-	command.Stderr = stderrWriter
-	err = command.Run()
-	stdoutWriter.flush()
-	stderrWriter.flush()
-	if err == nil {
+	if executePlans(environment, invocation, plans, stdout, stderr, collector) {
 		return 0
 	}
 	for _, tool := range collector.missingTools() {
@@ -209,7 +212,8 @@ func parseInvocation(args []string) (invocation, error) {
 	goCommand := flags.String("go-command", "go", "Go executable")
 	timingJob := flags.String("timing-job", "", "stable timing job name")
 	timingOutput := flags.String("timing-output", "", "timing artifact path")
-	shard := flags.String("shard", "", "run one package partition as i/n (e.g. 2/3)")
+	shard := flags.String("shard", "", "run one package partition as i/n (e.g. 2/5)")
+	dryRun := flags.Bool("dry-run", false, "print the shard plan (listing split packages' tests) without running tests")
 	if err := flags.Parse(args); err != nil {
 		return invocation{}, err
 	}
@@ -223,9 +227,6 @@ func parseInvocation(args []string) (invocation, error) {
 	if err != nil {
 		return invocation{}, err
 	}
-	if spec.enabled() && *timingOutput != "" {
-		return invocation{}, errors.New("--shard cannot be combined with timing capture (timing needs the whole suite)")
-	}
 	if len(flags.Args()) == 0 {
 		return invocation{}, errors.New("go test arguments are required")
 	}
@@ -234,6 +235,7 @@ func parseInvocation(args []string) (invocation, error) {
 		timingJob:    *timingJob,
 		timingOutput: *timingOutput,
 		shard:        spec,
+		dryRun:       *dryRun,
 		testArgs:     flags.Args(),
 	}, nil
 }
@@ -261,34 +263,6 @@ func parseShard(raw string) (shardSpec, error) {
 	return shardSpec{index: index, total: total}, nil
 }
 
-// selectShard uses longest-processing-time-first assignment so measured slow
-// packages are distributed before smaller packages fill the remaining gaps.
-func selectShard(pkgs []string, spec shardSpec, weights shardWeights) []string {
-	ordered := append([]string(nil), pkgs...)
-	sort.Slice(ordered, func(i, j int) bool {
-		left := weights.packageSeconds(ordered[i])
-		right := weights.packageSeconds(ordered[j])
-		if left == right {
-			return ordered[i] < ordered[j]
-		}
-		return left > right
-	})
-
-	shards := make([][]string, spec.total)
-	totals := make([]float64, spec.total)
-	for _, pkg := range ordered {
-		target := 0
-		for index := 1; index < spec.total; index++ {
-			if totals[index] < totals[target] {
-				target = index
-			}
-		}
-		shards[target] = append(shards[target], pkg)
-		totals[target] += weights.packageSeconds(pkg)
-	}
-	return shards[spec.index-1]
-}
-
 func loadShardWeights(root string) (shardWeights, error) {
 	path := filepath.Join(root, shardWeightsPath)
 	data, err := os.ReadFile(path)
@@ -299,8 +273,8 @@ func loadShardWeights(root string) (shardWeights, error) {
 	if err := json.Unmarshal(data, &weights); err != nil {
 		return shardWeights{}, fmt.Errorf("parse shard weights %s: %w", path, err)
 	}
-	if weights.SchemaVersion != 1 {
-		return shardWeights{}, fmt.Errorf("shard weights %s: unsupported schemaVersion %d", path, weights.SchemaVersion)
+	if weights.SchemaVersion != shardWeightsSchemaVersion {
+		return shardWeights{}, fmt.Errorf("shard weights %s: unsupported schemaVersion %d, want %d (race-mode weights; regenerate per docs/guides/test-timing.md)", path, weights.SchemaVersion, shardWeightsSchemaVersion)
 	}
 	if !validShardWeight(weights.DefaultSeconds) {
 		return shardWeights{}, fmt.Errorf("shard weights %s: defaultSeconds must be finite and positive", path)
@@ -320,22 +294,17 @@ func loadShardWeights(root string) (shardWeights, error) {
 }
 
 func validateShardWeightSource(source shardWeightsSource) error {
-	if source.Run <= 0 || source.Artifact <= 0 {
-		return errors.New("source must identify positive run and artifact IDs")
+	if source.Run <= 0 || strings.TrimSpace(source.Branch) == "" {
+		return errors.New("source must identify a positive run ID and its branch")
 	}
-	if len(source.Jobs) != 1 || source.Jobs[0] <= 0 {
-		return errors.New("source jobs must contain exactly one positive canonical producer job ID")
+	if len(source.TimingJobs) != 1 || source.TimingJobs[0] != shardWeightsTimingJob || source.ArtifactPattern != shardWeightsArtifactPattern {
+		return fmt.Errorf("source must identify the race shards' %s timing parts (%s)", shardWeightsTimingJob, shardWeightsArtifactPattern)
 	}
-	if source.ArtifactName != shardWeightsArtifactName || source.Platform != shardWeightsPlatform || strings.TrimSpace(source.Architecture) == "" {
-		return fmt.Errorf("source must identify the canonical %s/%s artifact and a recorded architecture", shardWeightsArtifactName, shardWeightsPlatform)
+	if source.Platform != shardWeightsPlatform || strings.TrimSpace(source.Architecture) == "" {
+		return fmt.Errorf("source must identify the %s platform and a recorded architecture", shardWeightsPlatform)
 	}
-	if len(source.Commit) != 40 {
+	if !validLowerHexSHA(source.Commit) {
 		return errors.New("source commit must be a full 40-character lowercase hexadecimal SHA")
-	}
-	for _, char := range source.Commit {
-		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
-			return errors.New("source commit must be a full 40-character lowercase hexadecimal SHA")
-		}
 	}
 	if !validShardWeight(source.MinimumRecordedSeconds) {
 		return errors.New("source minimumRecordedSeconds must be finite and positive")
@@ -345,43 +314,6 @@ func validateShardWeightSource(source shardWeightsSource) error {
 
 func validShardWeight(seconds float64) bool {
 	return seconds > 0 && !math.IsInf(seconds, 0) && !math.IsNaN(seconds)
-}
-
-// shardTestArgs replaces the `./...` package spec in testArgs with the subset
-// of packages assigned to this shard, discovered via `go list`.
-func shardTestArgs(goCommand, root string, testArgs []string, spec shardSpec) ([]string, int, error) {
-	list := exec.Command(goCommand, "list", "./...")
-	list.Dir = root
-	output, err := list.Output()
-	if err != nil {
-		return nil, 0, fmt.Errorf("list packages for sharding: %w", err)
-	}
-	packages := strings.Fields(string(output))
-	if len(packages) == 0 {
-		return nil, 0, errors.New("go list ./... returned no packages to shard")
-	}
-	weights, err := loadShardWeights(root)
-	if err != nil {
-		return nil, 0, err
-	}
-	selected := selectShard(packages, spec, weights)
-	if len(selected) == 0 {
-		return nil, 0, fmt.Errorf("shard %d/%d selected no packages from %d", spec.index, spec.total, len(packages))
-	}
-	result := make([]string, 0, len(testArgs)+len(selected))
-	replaced := false
-	for _, arg := range testArgs {
-		if arg == "./..." && !replaced {
-			result = append(result, selected...)
-			replaced = true
-			continue
-		}
-		result = append(result, arg)
-	}
-	if !replaced {
-		return nil, 0, errors.New("--shard requires a ./... package spec in the go test arguments")
-	}
-	return result, len(selected), nil
 }
 
 func goCommandArgs(invocation invocation) []string {
@@ -448,14 +380,26 @@ func resolveTools(goCommand string) ([]resolvedTool, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("required race-detector C compiler %q is unavailable: %w", compilerCommand, err)
 	}
+	compilerPath, err = filepath.Abs(compilerPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve race-detector C compiler path %q: %w", compilerPath, err)
+	}
 	compilerName := filepath.Base(compilerCommand)
 	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(compilerName), ".exe") {
 		compilerName += ".exe"
 	}
-	if _, exists := toolNames(tools)[compilerName]; !exists {
+	compilerEnvironmentCommand := compilerName
+	if runtime.GOOS == "windows" {
+		// GCC distributions such as WinLibs resolve cc1, assembler/linker, and
+		// runtime DLLs relative to gcc.exe. Hard-linking or copying only gcc.exe
+		// into the isolated PATH loses that installation layout and makes cgo
+		// fail before tests start. Keep CC pinned to the one resolved executable
+		// instead of exposing the compiler's entire bin directory on PATH.
+		compilerEnvironmentCommand = compilerPath
+	} else if _, exists := toolNames(tools)[compilerName]; !exists {
 		tools = append(tools, resolvedTool{name: compilerName, path: compilerPath})
 	}
-	return tools, compilerName, nil
+	return tools, compilerEnvironmentCommand, nil
 }
 
 func platformToolSpecs(goos string) []toolSpec {
@@ -602,13 +546,13 @@ func resolveGoroot(goPath string) (string, error) {
 	return goroot, nil
 }
 
-func hermeticEnvironment(base []string, toolPath, compilerName, goroot string) []string {
+func hermeticEnvironment(base []string, toolPath, compilerCommand, goroot string) []string {
 	excluded := map[string]string{
 		"GOOBERS_OTLP_ENDPOINT": "",
 		"GOOBERS_OTLP_INSECURE": "",
 	}
 	overrides := map[string]string{
-		"CC":          compilerName,
+		"CC":          compilerCommand,
 		"GO":          executableName("go"),
 		"GOROOT":      goroot,
 		"GOENV":       "off",

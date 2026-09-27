@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/diagnostics/featureusage"
 )
 
 func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body interface{}, out interface{}) error {
@@ -73,6 +75,7 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 				return nil, err
 			}
 		}
+		featureusage.RecordProviderHTTP("github")
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
 			// Transport error (connection reset, DNS blip, timeout): retry with

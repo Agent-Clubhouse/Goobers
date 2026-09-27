@@ -69,6 +69,7 @@ function runStateLabel(state: RunNodeState): string {
 
 export function WorkflowTopologyGraph({
   graph,
+  initialZoom,
   onSelectStage,
   selectedStageId,
   preview = false,
@@ -82,6 +83,7 @@ export function WorkflowTopologyGraph({
   analytics,
 }: {
   graph: WorkflowGraph;
+  initialZoom?: number;
   onSelectStage?: (stageId: string, revealInspector?: boolean) => void;
   selectedStageId?: string;
   preview?: boolean;
@@ -118,8 +120,10 @@ export function WorkflowTopologyGraph({
     width: FALLBACK_VIEWPORT_WIDTH,
     height: FALLBACK_VIEWPORT_HEIGHT,
   });
-  const [fitActive, setFitActive] = useState(true);
-  const [zoom, setZoom] = useState(1);
+  const [fitActive, setFitActive] = useState(initialZoom === undefined);
+  const [zoom, setZoom] = useState(() =>
+    initialZoom === undefined ? 1 : clampGraphZoom(initialZoom),
+  );
   const zoomRef = useRef(zoom);
   const [dragging, setDragging] = useState(false);
   const [fullscreenMode, setFullscreenMode] =
@@ -196,6 +200,17 @@ export function WorkflowTopologyGraph({
       window.removeEventListener("resize", measure);
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (initialZoom === undefined) {
+      return;
+    }
+    const viewport = viewportRef.current;
+    if (viewport) {
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
+    }
+  }, [initialZoom]);
 
   useLayoutEffect(() => {
     if (!fitActive) {
@@ -375,7 +390,14 @@ export function WorkflowTopologyGraph({
     if (event.target instanceof Element && event.target.closest("button")) {
       return;
     }
-    if (event.pointerType !== "touch") {
+    // A single touch is left unclaimed so `touch-action: pan-y` can still
+    // hand the browser native vertical scrolling. But a second touch joining
+    // an already-active one is a pinch gesture, and leaving that unclaimed
+    // too lets the browser's own gesture recognizer commit to native
+    // page-zoom before this handler's own pinch-to-zoom (handlePointerMove)
+    // gets a chance to run — the recognizer decides from the first contact
+    // of the second finger, not from a later move event (#1681).
+    if (event.pointerType !== "touch" || pointersRef.current.size >= 1) {
       event.preventDefault();
     }
     event.currentTarget.focus({ preventScroll: true });

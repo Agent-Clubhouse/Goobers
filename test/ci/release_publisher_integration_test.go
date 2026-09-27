@@ -37,7 +37,18 @@ func publisherFixture(t *testing.T, tag string) (string, []string) {
 			t.Fatal(err)
 		}
 	}
-	names := []string{"install.sh", "feature-registry.json", "dsl-support-matrix.json", "goobers_portal_" + tag + ".tar.gz", "goobers-agent-toolkit_" + tag + ".zip", "goobers-onboarding_" + tag + ".zip"}
+	portalVersion := strings.TrimPrefix(tag, "v")
+	names := []string{
+		"install.sh",
+		"feature-registry.json",
+		"dsl-support-matrix.json",
+		"goobers_portal_" + tag + ".tar.gz",
+		"goobers-agent-toolkit_" + tag + ".zip",
+		"goobers-onboarding_" + tag + ".zip",
+		"goobers-portal-" + portalVersion + ".tgz",
+		"goobers-portal-" + portalVersion + ".tgz.sha256",
+		"portal-artifact.json",
+	}
 	for _, target := range []string{"linux_amd64", "linux_arm64", "darwin_amd64", "darwin_arm64"} {
 		names = append(names, "goobers_"+tag+"_"+target+".tar.gz")
 	}

@@ -845,4 +845,33 @@ CREATE INDEX idx_landing_intents_time ON landing_intents(occurred_at, run_id, se
 	`
 ALTER TABLE scheduler_ingest_cursor ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;
 `,
+	// v28 (#5358): repository identity is part of a provider work-item key.
+	// Existing rows remain explicitly unknown until their source journals are
+	// re-ingested; typed landing receipts can then restore the identity.
+	`
+ALTER TABLE run_cost_attribution RENAME TO run_cost_attribution_v27;
+
+CREATE TABLE run_cost_attribution (
+	run_id        TEXT NOT NULL,
+	provider      TEXT NOT NULL,
+	repository    TEXT NOT NULL DEFAULT '',
+	external_kind TEXT NOT NULL,
+	external_id   TEXT NOT NULL,
+	url           TEXT,
+	relationship TEXT NOT NULL,
+	PRIMARY KEY (run_id, provider, repository, external_kind, external_id, relationship)
+);
+
+INSERT INTO run_cost_attribution
+	(run_id, provider, external_kind, external_id, relationship)
+SELECT run_id, provider, external_kind, external_id, relationship
+FROM run_cost_attribution_v27;
+
+DROP TABLE run_cost_attribution_v27;
+
+CREATE INDEX idx_run_cost_attribution_external
+ON run_cost_attribution(provider, repository, external_kind, external_id, run_id);
+CREATE INDEX idx_run_cost_attribution_run
+ON run_cost_attribution(run_id);
+`,
 }

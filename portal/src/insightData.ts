@@ -275,17 +275,26 @@ export function useInsightCostRollup(
 export function useInsightExternalCosts(
   client: DaemonClient,
   window: InsightWindow,
+  gaggle?: string,
+  workflow?: string,
+  stage?: string,
   enabled = true,
 ): LiveQuery<InsightExternalCostSnapshot> {
   return useLiveQuery<InsightExternalCostSnapshot>({
-    cacheKey: dataCacheKey("insight-external-costs", window),
+    cacheKey: dataCacheKey(
+      "insight-external-costs",
+      window,
+      gaggle ?? "",
+      workflow ?? "",
+      stage ?? "",
+    ),
     enabled,
     dependencies: RUN_DATA_DEPENDENCIES,
     models: RUN_MODELS,
     isCurrent: (data) => data.window === window,
     errorMessage: "Unable to read pull request and issue costs.",
     load: async (signal) => {
-      const filters = insightCostFilters(window);
+      const filters = insightCostFilters(window, gaggle, workflow, stage);
       const result = await serializeInsightAggregate(client, signal, () =>
         client.getTelemetryCosts(filters, { signal }),
       );
@@ -382,6 +391,9 @@ export function insightWindowFilters(
 
 function insightCostFilters(
   window: InsightWindow,
+  gaggle?: string,
+  workflow?: string,
+  stage?: string,
   now = new Date(),
 ): TelemetryCostOptions {
   const until = now.toISOString();
@@ -389,6 +401,9 @@ function insightCostFilters(
     window === "all" ? MAX_COST_WINDOW_MILLISECONDS : WINDOW_MILLISECONDS[window];
   return {
     scope: "summary",
+    gaggle,
+    workflow,
+    stage,
     since: new Date(now.getTime() - duration).toISOString(),
     until,
   };

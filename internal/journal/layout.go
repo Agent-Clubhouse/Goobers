@@ -28,9 +28,9 @@ const (
 	dirSpans     = "spans"
 	// dirOutbox is the path-preserving (not content-addressed) export
 	// namespace nested under artifacts/ (#1552): runs/<id>/artifacts/outbox/
-	// <stage>/attempt-<N>/<relative path>. Unlike the rest of artifacts/,
-	// paths under here are not digest-bucketed, so a declared export stays
-	// browsable by name.
+	// <stage>/attempt-<N>/occurrence-<S>/<relative path>. The occurrence keeps
+	// gate repasses immutable even though they reuse attempt 1 (#5218). Unlike
+	// the rest of artifacts/, paths remain browsable by name.
 	dirOutbox = "outbox"
 )
 

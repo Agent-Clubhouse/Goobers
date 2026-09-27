@@ -27,6 +27,9 @@ type TelemetryCostRequest struct {
 	Provider   string
 	Scope      string
 	ExternalID string
+	Gaggle     string
+	Workflow   string
+	Stage      string
 	Since      time.Time
 	Until      time.Time
 }
@@ -129,6 +132,9 @@ func (s *Telemetry) TelemetryCosts(ctx context.Context, req TelemetryCostRequest
 	req.Provider = strings.TrimSpace(req.Provider)
 	req.Scope = strings.TrimSpace(req.Scope)
 	req.ExternalID = strings.TrimSpace(req.ExternalID)
+	req.Gaggle = strings.TrimSpace(req.Gaggle)
+	req.Workflow = strings.TrimSpace(req.Workflow)
+	req.Stage = strings.TrimSpace(req.Stage)
 	if req.Scope == "" {
 		req.Scope = TelemetryCostScopeSummary
 	}
@@ -139,7 +145,8 @@ func (s *Telemetry) TelemetryCosts(ctx context.Context, req TelemetryCostRequest
 		return TelemetryCostResult{}, err
 	}
 	query := rollup.CostQuery{
-		Provider: req.Provider, Since: req.Since, Until: req.Until,
+		Provider: req.Provider, Gaggle: req.Gaggle, Workflow: req.Workflow,
+		Stage: req.Stage, Since: req.Since, Until: req.Until,
 	}
 	if req.Scope != TelemetryCostScopeSummary {
 		query.ExternalKind = req.Scope
@@ -184,6 +191,12 @@ func validateTelemetryCostRequest(req TelemetryCostRequest) error {
 	}
 	if req.Scope != TelemetryCostScopeSummary && req.ExternalID == "" {
 		return fmt.Errorf("%w: pr and issue queries require an external id", ErrInvalidTelemetryRequest)
+	}
+	if req.Workflow != "" && req.Gaggle == "" {
+		return fmt.Errorf("%w: workflow requires a gaggle", ErrInvalidTelemetryRequest)
+	}
+	if req.Stage != "" && req.Workflow == "" {
+		return fmt.Errorf("%w: stage requires a workflow", ErrInvalidTelemetryRequest)
 	}
 	return nil
 }

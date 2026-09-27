@@ -128,11 +128,20 @@ const (
 	EventNotificationRequested EventType = "notification.requested"
 	// EventNotificationReceipt records one sink attempt or suppression result.
 	EventNotificationReceipt EventType = "notification.delivery.receipt"
+	// EventOperatorMessageRequested records an accepted operator message.
+	EventOperatorMessageRequested EventType = "operator-message.requested"
+	// EventOperatorMessageAcknowledged records operator acknowledgement.
+	EventOperatorMessageAcknowledged EventType = "operator-message.acknowledged"
+	// EventOperatorMessageOutcome records a terminal delivery or rejection.
+	EventOperatorMessageOutcome EventType = "operator-message.outcome"
 	// EventAgentLifecycle records structured nested-agent state transitions.
 	EventAgentLifecycle EventType = "agent.lifecycle"
 	// EventAgentMessage records orchestration-relevant peer communication
 	// without retaining the message body.
 	EventAgentMessage EventType = "agent.message"
+	// EventAgentProgress records a structured operator-readable progress update
+	// intentionally emitted by the agent or adapter for live status surfaces.
+	EventAgentProgress EventType = "agent.progress"
 	// EventBanditAssignment records the deterministic arm selected for a stage.
 	EventBanditAssignment EventType = "bandit.assignment"
 	// EventBanditObservation records the outcome used by an experiment.
@@ -174,8 +183,11 @@ const (
 	EventTickSkipped EventType = "tick.skipped"
 	// EventWorkflowStarved records a workflow crossing the scheduler's
 	// consecutive shared-pool skip threshold (SkipCount set), or a scheduled
-	// workflow whose trigger has gone silent for a multiple of its own
-	// schedule interval (#1868; SkipCount unset).
+	// workflow that has gone a multiple of its own schedule interval without
+	// producing a run (SkipCount unset) — either because its trigger went
+	// silent (#1868) or because it kept firing into a capacity refusal that
+	// never cleared (#5277) — or a workflow whose demand poll failed several
+	// consecutive times (#5605).
 	EventWorkflowStarved EventType = "workflow.starved"
 	// EventWorkflowRefused records a workflow the startup constraint solve
 	// marked unplaceable on the instance's declared runners: inventory
@@ -238,6 +250,17 @@ const (
 	// EventTelemetryRetentionPass records one successful automatic telemetry
 	// retention evaluation. Its operational summary is carried under Runner.
 	EventTelemetryRetentionPass EventType = "telemetry.retention.pass"
+	// EventServiceHealth records the periodic service-health observation
+	// (#5244): a structured snapshot of the instance's own identity, the
+	// executing account, and daemon uptime, emitted at startup and on a fixed
+	// cadence thereafter EVEN WHEN NO WORKFLOW IS RUNNING.
+	//
+	// Distinct from the fast informational liveness heartbeat (#488), which
+	// reports scheduler activity to stdout and is deliberately preserved at its
+	// own cadence. This one is a durable diagnostic record about the service
+	// itself, so an operator can answer "what has this instance been doing, as
+	// which account, since when" without a run to hang the question off.
+	EventServiceHealth EventType = "service.health"
 	// EventDaemonUpdateDrainStarted records the stable supervisor beginning a
 	// graceful drain for a validated binary handoff.
 	EventDaemonUpdateDrainStarted EventType = "daemon.update.drain_started"
@@ -446,8 +469,17 @@ type Event struct {
 	NotificationRequest *apiv1.NotificationRequest `json:"notificationRequest,omitempty"`
 	// NotificationReceipt is the typed payload on notification.delivery.receipt.
 	NotificationReceipt *apiv1.NotificationReceipt `json:"notificationReceipt,omitempty"`
+	// OperatorMessageRequest is the typed payload on operator-message.requested.
+	OperatorMessageRequest *apiv1.OperatorMessageRequest `json:"operatorMessageRequest,omitempty"`
+	// OperatorMessageAcknowledgement is the typed payload on operator-message.acknowledged.
+	OperatorMessageAcknowledgement *apiv1.OperatorMessageAcknowledgement `json:"operatorMessageAcknowledgement,omitempty"`
+	// OperatorMessageOutcome is the typed payload on operator-message.outcome.
+	OperatorMessageOutcome *apiv1.OperatorMessageOutcome `json:"operatorMessageOutcome,omitempty"`
 	// Agent carries normalized nested-agent provenance on agent events.
 	Agent *AgentProvenance `json:"agent,omitempty"`
+	// Progress carries a structured operator-readable progress update emitted by
+	// a nested agent or adapter without retaining hidden chain-of-thought.
+	Progress *AgentProgress `json:"progress,omitempty"`
 	// PeerMessage carries scrubbed coordination metadata, never raw content.
 	PeerMessage *PeerMessageMetadata `json:"peerMessage,omitempty"`
 
@@ -585,7 +617,8 @@ func (e Event) IsConformanceNormative() bool {
 		// Spans carry live-harness transcripts (LLM output); structural only
 		// per §3.3, never content-compared across runners.
 		return false
-	case EventNotificationRequested, EventNotificationReceipt:
+	case EventNotificationRequested, EventNotificationReceipt,
+		EventOperatorMessageRequested, EventOperatorMessageAcknowledged, EventOperatorMessageOutcome:
 		// Output transports are deployment-side effects, not deterministic
 		// workflow-machine transitions.
 		return false

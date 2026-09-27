@@ -133,6 +133,8 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 	if baseRef == "" {
 		baseRef = "main"
 	}
+	stopTelemetry := startCommandJournalTelemetry(layout, stderr)
+	defer stopTelemetry()
 	resetPath, err := manager.ResetPinned(context.Background(), worktree.PinnedResetOptions{
 		RepoURL: repoURL,
 		BaseRef: baseRef,

@@ -50,6 +50,7 @@ type EnvironmentConfig struct {
 	ExtraAllowlist []string
 	Unset          []string
 	SessionArgs    map[string][]string
+	PreflightArgs  map[string][]string
 }
 
 func baseEnv(extra, unset []string) []string {
@@ -150,6 +151,9 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 		if !ok {
 			continue
 		}
+		if !CredentialFitsEnvAudience(capability, envVar, req.Envelope.RepoRef.Provider) {
+			continue
+		}
 		if req.Credentials == nil {
 			return nil, fmt.Errorf("harness: %s: resolve %s: no credential set", cfg.adapterName, capability)
 		}
@@ -157,15 +161,12 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 		if err != nil {
 			// A missing grant is tolerated in two cases: an explicitly optional
 			// capability (the CLI can fall back to an existing user session,
-			// e.g. agent:model), or an Azure DevOps repo. ADO repo credentials
-			// are provisioned dynamically per stage through adoauth (azure-cli/
-			// workload/managed-identity shell out to `az`), NOT through the
-			// static capability→token grant map, so azure-cli auth deliberately
-			// configures no repo:push grant. The agent commits locally under the
-			// modify-repository policy action; the deterministic push-branch
-			// stage publishes the branch with an az-derived credential. A
-			// PAT-configured ADO repo still has a grant and injects normally —
-			// only the absence of one is tolerated, so GitHub stays fail-closed.
+			// e.g. agent:model), or an Azure DevOps repo. Since ADO-N17 every
+			// ADO auth kind backs the repository's grants in the daemon, so an
+			// ADO grant normally exists and injects like any other. The ADO
+			// tolerance stays only until ADO-N18 moves ADO stages onto the
+			// delivered credential and removes it. Only the absence of a grant
+			// is tolerated, so GitHub stays fail-closed.
 			if errors.Is(err, credentials.ErrNoCredentialForCapability) &&
 				(cfg.optionalCredentialCapabilities[capability] ||
 					req.Envelope.RepoRef.Provider == apiv1.ProviderADO) {
@@ -190,7 +191,75 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 		}
 		env = append(env, envVar+"="+token)
 	}
-	return env, nil
+	return appendRunAuthorityEnv(ctx, env, req), nil
+}
+
+// CredentialFitsEnvAudience reports whether a repository credential may be
+// exposed under envVar. GH_TOKEN and GITHUB_TOKEN are read by GitHub tooling
+// (the Copilot CLI's github tool, gh), which sends them to GitHub, so a
+// repository credential lands there only when the invocation's repository is
+// a GitHub repository; another provider's credential is never handed to
+// GitHub tooling. Every other variable (the command-scoped
+// GOOBERS_CRED_GITHUB_* ones) follows CredentialFitsProvider, so a github:*
+// capability's credential is never exposed on an Azure DevOps repository.
+// agent:model
+// is the model backend's own credential and is independent of the repository
+// provider. Agentic stages on other providers commit locally and publish
+// through a deterministic stage that authenticates against the routed
+// provider, so no credential is lost by withholding it.
+func CredentialFitsEnvAudience(capability, envVar string, provider apiv1.Provider) bool {
+	if capability == string(capabilitypkg.AgentModel) {
+		return true
+	}
+	if strings.EqualFold(envVar, "GH_TOKEN") || strings.EqualFold(envVar, "GITHUB_TOKEN") {
+		return providerIsGitHub(provider)
+	}
+	return CredentialFitsProvider(capability, provider)
+}
+
+// CredentialFitsProvider reports whether capability's credential may be
+// materialised for an invocation whose repository is on provider. A
+// capability in a provider's own namespace (github:*, ado:*) belongs to that
+// provider's repositories: an ado:* credential fits only an Azure DevOps
+// repository, and a github:* credential fits every repository except an Azure
+// DevOps one. A GitHub repository (or a legacy repository reference with no
+// provider) is its own namespace; Gitea resolves github:* capabilities against
+// its own repository token by design (the rebinding rule of
+// docs/design/ado-parity-dsl-2-0.md §3.1), so the credential stays with the
+// Gitea repository it was granted for. Provider-neutral capabilities (repo:push,
+// provider:*) resolve against the invocation's own repository, and
+// non-repository capabilities (agent:model, telemetry:read, ...) are
+// independent of it, so both always fit.
+func CredentialFitsProvider(capability string, provider apiv1.Provider) bool {
+	owner, ok := CapabilityProvider(capability)
+	if !ok {
+		return true
+	}
+	if owner == apiv1.ProviderGitHub {
+		return providerIsGitHub(provider) || provider == apiv1.ProviderGitea
+	}
+	return provider == owner
+}
+
+// CapabilityProvider returns the repository provider whose namespace
+// capability belongs to, and false for a provider-neutral or non-repository
+// capability.
+func CapabilityProvider(capability string) (apiv1.Provider, bool) {
+	namespace, _, found := strings.Cut(capability, ":")
+	if !found {
+		return "", false
+	}
+	switch provider := apiv1.Provider(namespace); provider {
+	case apiv1.ProviderGitHub, apiv1.ProviderADO:
+		return provider, true
+	}
+	return "", false
+}
+
+// providerIsGitHub treats the legacy empty provider as GitHub, as a
+// repository reference did before other providers existed.
+func providerIsGitHub(provider apiv1.Provider) bool {
+	return provider == "" || provider == apiv1.ProviderGitHub
 }
 
 func withoutEnvVars(env []string, names ...string) []string {
@@ -215,4 +284,52 @@ func isCopilotModelFallbackEnv(name string) bool {
 	return strings.EqualFold(name, "COPILOT_GITHUB_TOKEN") ||
 		strings.EqualFold(name, "GH_TOKEN") ||
 		strings.EqualFold(name, "GITHUB_TOKEN")
+}
+
+// The three shipped adapters all build their subprocess environments here.
+// Authority comes from the runtime context, never the ambient worker token.
+func appendRunAuthorityEnv(ctx context.Context, env []string, req RunRequest) []string {
+	env = appendPinnedExecutionEnv(ctx, env, req)
+	if !slices.Contains(req.Envelope.Capabilities, string(capabilitypkg.GitHubPRMerge)) && !slices.Contains(req.Envelope.Capabilities, string(capabilitypkg.ADOPRComplete)) {
+		return env
+	}
+	env = withoutEnvVars(env, executor.RunIDEnvVar, executor.GaggleEnvVar, executor.WorkflowEnvVar, executor.TaskEnvVar, "GOOBERS_JOURNAL_ENDPOINT", "GOOBERS_JOURNAL_TOKEN")
+	env = append(env,
+		executor.RunIDEnvVar+"="+req.Envelope.RunID,
+		executor.GaggleEnvVar+"="+req.Envelope.Gaggle,
+		executor.WorkflowEnvVar+"="+req.Envelope.WorkflowID,
+		executor.TaskEnvVar+"="+strings.TrimPrefix(req.Envelope.TaskID, req.Envelope.RunID+":"),
+	)
+	if plane, ok := executor.JournalPlaneFromContext(ctx); ok {
+		env = append(env, "GOOBERS_JOURNAL_ENDPOINT="+plane.Endpoint, "GOOBERS_JOURNAL_TOKEN="+plane.Token)
+	}
+	return env
+}
+
+func codexExecutionContextShellEnvironment(ctx context.Context, req RunRequest, shell map[string]string, instanceRoot string) map[string]string {
+	authority := appendRunAuthorityEnv(ctx, nil, req)
+	if len(authority) == 0 {
+		return shell
+	}
+	for _, entry := range authority {
+		name, value, _ := strings.Cut(entry, "=")
+		shell[name] = value
+	}
+	if instanceRoot != "" {
+		shell[executor.InstanceRootEnvVar] = instanceRoot
+	}
+	return shell
+}
+
+func appendPinnedExecutionEnv(ctx context.Context, env []string, req RunRequest) []string {
+	directory := executor.ConfigDirectoryFromContext(ctx)
+	if directory == "" || req.Envelope.ConfigGeneration == "" {
+		return env
+	}
+	env = withoutEnvVars(env, executor.InstanceIDEnvVar, executor.ConfigGenerationEnvVar, executor.ConfigDirectoryEnvVar)
+	return append(env,
+		executor.InstanceIDEnvVar+"="+req.Envelope.InstanceID,
+		executor.ConfigGenerationEnvVar+"="+req.Envelope.ConfigGeneration,
+		executor.ConfigDirectoryEnvVar+"="+directory,
+	)
 }

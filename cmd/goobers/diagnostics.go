@@ -413,6 +413,9 @@ func diagnosticsCredentials(cfg *instance.Config) []diagnostics.CredentialPresen
 			name = "mcp:" + grant.MCP
 		}
 		kind, source := diagnosticsTokenSource(grant.Token)
+		if grant.GitHubApp != nil {
+			kind, source = "github-app", grant.GitHubApp.Name
+		}
 		out = append(out, diagnostics.CredentialPresenceFor(name, kind, source, os.LookupEnv))
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Capability < out[j].Capability })

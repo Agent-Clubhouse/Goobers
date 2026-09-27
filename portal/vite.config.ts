@@ -22,6 +22,7 @@ const portalPackage = JSON.parse(
 export function createViteConfig(
   environment: PortalEnvironment = process.env,
   mode = "development",
+  platform: NodeJS.Platform = process.platform,
 ) {
   const gettingStarted = mode === "getting-started";
   const guidedProxy: ProxyOptions = {
@@ -100,6 +101,7 @@ export function createViteConfig(
       exclude: [...configDefaults.exclude, "e2e/**"],
       globals: true,
       setupFiles: "./src/test/setup.ts",
+      ...(platform === "win32" ? { maxWorkers: 2 } : {}),
     },
   };
 }

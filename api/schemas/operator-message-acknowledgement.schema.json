@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/operator-message-acknowledgement.schema.json",
+  "title": "OperatorMessageAcknowledgement",
+  "description": "A durable acknowledgement of an operator message.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "requestId", "idempotencyKey", "principalRef", "acknowledgedAt"],
+  "properties": {
+    "schema": { "description": "Versioned acknowledgement contract identifier.", "const": "goobers.dev/operator-message/acknowledgement/v1" },
+    "requestId": { "description": "Identity of the acknowledged request.", "type": "string", "minLength": 1, "maxLength": 256 },
+    "idempotencyKey": { "description": "Idempotency key of the acknowledged request.", "type": "string", "minLength": 1, "maxLength": 256 },
+    "principalRef": { "description": "Stable reference to the acknowledging principal.", "type": "string", "minLength": 1, "maxLength": 512 },
+    "acknowledgedAt": { "description": "Time at which acknowledgement occurred.", "type": "string", "format": "date-time" }
+  }
+}

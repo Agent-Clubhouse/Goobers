@@ -351,7 +351,7 @@
           "description": "Identity mechanism: `pat` reads the static token ref; `github-app` mints short-lived installation tokens (GitHub); `azure-cli` borrows the current local az login, `workload-identity` uses federated Azure workload identity, and `managed-identity` uses an Azure managed identity (all Azure DevOps). Every kind except `pat` forbids a token ref on the same repository."
         },
         "tenant": { "type": "string", "minLength": 1, "description": "Pins Azure CLI authentication to one tenant. Azure DevOps only." },
-        "clientId": { "type": "string", "minLength": 1, "description": "Selects a user-assigned managed identity. Valid only with kind `managed-identity`." },
+        "clientId": { "type": "string", "minLength": 1, "description": "Selects a user-assigned identity. Valid with kind `workload-identity` or `managed-identity`; for workload identity it overrides the ambient AZURE_CLIENT_ID while reusing the projected federated token." },
         "appId": {
           "$ref": "#/$defs/githubId",
           "description": "GitHub App identifier for kind `github-app`: the numeric App ID or the App's client ID string — GitHub accepts either as the App JWT issuer."
@@ -399,7 +399,6 @@
       "description": "One credential source for exactly one capability OR one named BYO MCP credential. Set exactly one of capability and mcp; each may be sourced only once per instance per harness scope — a (capability, mcp, harness) triple may be granted at most once.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["token"],
       "properties": {
         "capability": {
           "type": "string",
@@ -445,11 +444,57 @@
         "token": {
           "description": "Where this credential is read from — exactly one source, never an inline value.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "githubApp": {
+          "description": "Short-lived GitHub App installation-token source for a Copilot-scoped agent:model grant. The token is always requested for exactly one repository with only copilot_requests:write and metadata:read; stages never receive the private key.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "appId", "installationId", "repository", "repositoryId", "privateKey"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "description": "Stable identity name used in diagnostics and to distinguish the request/throttling boundary assigned to this instance or cluster."
+            },
+            "appId": { "$ref": "#/$defs/githubId", "description": "GitHub App identifier used as the App JWT issuer." },
+            "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID on the repository owner." },
+            "repository": {
+              "type": "string",
+              "pattern": "^[^/\\s]+/[^/\\s]+$",
+              "description": "Exact owner/name whose installation token is requested.",
+              "examples": ["example-org/example-repo"]
+            },
+            "repositoryId": { "$ref": "#/$defs/githubId", "description": "Positive immutable numeric ID used to restrict the installation-token request without owner/name ambiguity." },
+            "privateKey": {
+              "description": "Reference to the App's PEM private key. Inline key material is never accepted.",
+              "$ref": "#/$defs/tokenRef"
+            }
+          }
         }
       },
-      "oneOf": [
-        { "required": ["capability"], "not": { "required": ["mcp"] } },
-        { "required": ["mcp"], "not": { "required": ["capability"] } }
+      "allOf": [
+        {
+          "oneOf": [
+            { "required": ["capability"], "not": { "required": ["mcp"] } },
+            { "required": ["mcp"], "not": { "required": ["capability"] } }
+          ]
+        },
+        {
+          "oneOf": [
+            { "required": ["token"], "not": { "required": ["githubApp"] } },
+            { "required": ["githubApp"], "not": { "required": ["token"] } }
+          ]
+        },
+        {
+          "if": { "required": ["githubApp"] },
+          "then": {
+            "required": ["capability", "harness"],
+            "properties": {
+              "capability": { "const": "agent:model" },
+              "harness": { "const": "copilot" }
+            }
+          }
+        }
       ]
     },
     "daemonIdentity": {
@@ -610,6 +655,21 @@
         },
         "harnessSessionArgs": {
           "description": "Declares how a custom harness launcher receives the fresh session ID generated for each invocation, keyed by harness name. Values are literal argv entries appended to harnessCommand; at least one must contain `{sessionId}`. Configuring these arguments is an explicit launcher contract, so Goobers does not run the command-based contract probe.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "propertyNames": { "$ref": "#/$defs/harnessName" }
+        },
+        "harnessPreflightArgs": {
+          "description": "Literal arguments appended only to a custom harness launcher's authentication/session-contract preflight probe, keyed by harness name. They do not affect workflow execution. Use them to suppress optional launcher startup work during the bounded preflight without weakening the real agentic environment.",
           "type": "object",
           "additionalProperties": {
             "type": "array",
@@ -963,6 +1023,68 @@
         }
       }
     },
+    "otlp": {
+      "description": "Optional OTLP/gRPC collector push. Journal export supports GOOBERS_OTLP_ENDPOINT; diagnostic export requires an explicit endpoint. Local evidence is retained independently.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Explicit false disables this stream and overrides environment defaults; unset preserves endpoint-based opt-in." },
+        "journalLogs": { "type": "boolean", "default": true, "description": "Export newly committed native journal events as best-effort OTLP Logs when the native collector is enabled. False keeps native trace and metric export unchanged." },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Collector endpoint. GOOBERS_OTLP_ENDPOINT overrides this value only for the journal stream; diagnostics never inherits environment settings.",
+          "examples": ["http://127.0.0.1:4317"]
+        },
+        "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Non-loopback endpoints with insecure=true are refused at load — use a loopback sidecar collector, or a TLS endpoint. GOOBERS_OTLP_INSECURE overrides it." },
+        "headers": {
+          "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/tokenRef" }
+        },
+        "tls": {
+          "description": "Extends TLS trust beyond the system certificate pool for a collector this host does not already trust — a private CA, an optional client certificate for mTLS, and an SNI override. Conflicts with insecure: true. Every path is validated for SHAPE only at load; a bad path degrades to local-only telemetry with a loud instance-journal error rather than failing the daemon to start.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "caFile": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path to a PEM file appended to the system trust pool as an extra root. The system pool is still trusted; this only adds to it.",
+              "examples": ["/etc/goobers/otlp-ca.crt"]
+            },
+            "serverName": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Overrides the hostname used for SNI and certificate verification. A bare hostname only — no scheme, port, path, or userinfo. Empty uses the endpoint's own host.",
+              "examples": ["goobers-collector.goobers-system.svc.cluster.local"]
+            },
+            "certFile": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path to a PEM client certificate presented for mTLS. Requires keyFile; both or neither."
+            },
+            "keyFile": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path to the PEM private key for certFile. Requires certFile; both or neither."
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "insecure": { "const": true } }, "required": ["insecure"] },
+          "then": {
+            "properties": {
+              "endpoint": {
+                "pattern": "^([Hh][Tt][Tt][Pp][Ss]?://)?(127(\\.[0-9]{1,3}){3}|\\[[0-9A-Fa-f:.]+\\]|::1|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt])(:[0-9]{1,5})?/?$"
+              }
+            }
+          }
+        }
+      ]
+    },
     "telemetry": {
       "description": "Local rollup store, optional collector push, and journal retention.",
       "type": "object",
@@ -971,67 +1093,22 @@
         "enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Toggles span emission, local SQLite ingest, and any configured collector push. Disabling it also forbids an OTLP endpoint, since there would be nothing to push."
+          "description": "Toggles run span emission, local SQLite ingest, and journal collector push. Disabling it forbids enabled journal export. Independent diagnostic export and local instance evidence remain available."
         },
-        "otlp": {
-          "description": "Optional OTLP/gRPC collector push. Absent (and no GOOBERS_OTLP_ENDPOINT in the environment) means no push at all — local rollups are unaffected.",
+        "otlp": { "$ref": "#/$defs/otlp", "description": "Explicit OTLP/gRPC destination and transport credentials for this stream." },
+        "diagnostics": {
           "type": "object",
           "additionalProperties": false,
+          "description": "Independent instance diagnostic export. Never inherits journal destinations or OTLP environment settings; local evidence remains available.",
           "properties": {
-            "endpoint": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Collector endpoint. The GOOBERS_OTLP_ENDPOINT environment variable overrides this value at load.",
-              "examples": ["http://127.0.0.1:4317"]
-            },
-            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Non-loopback endpoints with insecure=true are refused at load — use a loopback sidecar collector, or a TLS endpoint. GOOBERS_OTLP_INSECURE overrides it." },
-            "headers": {
-              "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
-              "type": "object",
-              "additionalProperties": { "$ref": "#/$defs/tokenRef" }
-            },
-            "tls": {
-              "description": "Extends TLS trust beyond the system certificate pool for a collector this host does not already trust — a private CA, an optional client certificate for mTLS, and an SNI override. Conflicts with insecure: true. Every path is validated for SHAPE only at load; a bad path degrades to local-only telemetry with a loud instance-journal error rather than failing the daemon to start.",
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "caFile": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Path to a PEM file appended to the system trust pool as an extra root. The system pool is still trusted; this only adds to it.",
-                  "examples": ["/etc/goobers/otlp-ca.crt"]
-                },
-                "serverName": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Overrides the hostname used for SNI and certificate verification. A bare hostname only — no scheme, port, path, or userinfo. Empty uses the endpoint's own host.",
-                  "examples": ["goobers-collector.goobers-system.svc.cluster.local"]
-                },
-                "certFile": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Path to a PEM client certificate presented for mTLS. Requires keyFile; both or neither."
-                },
-                "keyFile": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Path to the PEM private key for certFile. Requires certFile; both or neither."
-                }
-              }
-            }
-          },
-          "allOf": [
-            {
-              "if": { "properties": { "insecure": { "const": true } }, "required": ["insecure"] },
-              "then": {
-                "properties": {
-                  "endpoint": {
-                    "pattern": "^([Hh][Tt][Tt][Pp][Ss]?://)?(127(\\.[0-9]{1,3}){3}|\\[[0-9A-Fa-f:.]+\\]|::1|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt])(:[0-9]{1,5})?/?$"
-                  }
-                }
-              }
-            }
-          ]
+            "otlp": { "$ref": "#/$defs/otlp", "description": "Explicit OTLP/gRPC destination and transport credentials for this stream." },
+            "organization": { "type": "string", "maxLength": 256, "description": "Operator-provided organization identity; collector authentication determines tenant access." },
+            "environment": { "type": "string", "maxLength": 256, "description": "Operator-provided deployment environment label." },
+            "ownerRef": { "type": "string", "maxLength": 256, "description": "Explicit routing reference; never inferred from a runtime account." },
+            "gaggleOwners": { "type": "object", "description": "Explicit per-gaggle owner routing references, overriding the instance default.", "maxProperties": 1000, "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 256 } },
+            "heartbeatInterval": { "type": "string", "description": "Fleet observation cadence, 10s through 1h; default 30s." },
+            "progressTimeout": { "type": "string", "description": "Eligible-work stall threshold, 1m through 168h; default 30m. Known stage deadlines take precedence." }
+          }
         },
         "retention": {
           "description": "Bounds terminal run journals and their rollup rows. Automatic pruning is OPT-OUT (product policy decision per issue #3056/#4253, mirroring retention.projectionFullFidelityDays's precedent): it defaults on at the 90-day/500-run policy unless enabled is explicitly false. `goobers telemetry prune --dry-run` can preview the same policy at any time regardless of enabled.",
@@ -1207,6 +1284,12 @@
               "type": "integer",
               "minimum": 1,
               "description": "Capacity of the volume recovery snapshots are written to. Omitted or zero means unbounded: no worst-case check is made. When set, config load refuses a maxSnapshots x maxArchiveBytes declared worst case that exceeds it (#4862)."
+            },
+            "onFull": {
+              "type": "string",
+              "enum": ["overflow", "refuse"],
+              "default": "overflow",
+              "description": "What a still-full inventory does to a worktree cleanup once every reclamation has run (#5370). `overflow` keeps the snapshot as a pinned mirror ref with a bundle-less record under recovery-overflow/, acknowledges the cleanup, and promotes the entry to a real bundle when a slot frees. `refuse` restores the pre-#5370 fail-closed behaviour, in which the cleanup is deferred and the owning run's branch cannot be reacquired."
             }
           }
         }

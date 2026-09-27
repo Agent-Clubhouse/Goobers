@@ -187,6 +187,112 @@ func TestPruneRetainedDeletesOnlyMergedTerminalRunBranches(t *testing.T) {
 	}
 }
 
+func TestPruneRetainedMergedBranchAnalysisReleasesRepositoryLock(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	manager := newTestManager(t)
+	repoDir, err := manager.WorkingCopy(ctx, repo)
+	if err != nil {
+		t.Fatalf("WorkingCopy: %v", err)
+	}
+	branch, tip := committedRunBranch(t, manager, repo, "blocked", "main")
+	if err := branch.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove branch worktree: %v", err)
+	}
+	runTestGit(t, repoDir, "update-ref", "refs/heads/main", tip)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	results := make(chan error, 1)
+	go func() {
+		_, _, err := PruneRetained(ctx, []*Manager{manager}, RetentionOptions{
+			IsRunTerminal: func(_, _ string) (bool, error) { return true, nil },
+			IsAncestor: func(context.Context, string, string, string) (bool, error) {
+				close(entered)
+				<-release
+				return false, nil
+			},
+		})
+		results <- err
+	}()
+
+	<-entered
+	lock := manager.lockFor(repoKey(repo))
+	if !lock.TryLock() {
+		t.Fatal("merged-branch analysis held repository lock")
+	}
+	lock.Unlock()
+	close(release)
+	if err := <-results; err != nil {
+		t.Fatalf("PruneRetained: %v", err)
+	}
+}
+
+func TestPruneRetainedSkipsMergedBranchWhenRunTipChanges(t *testing.T) {
+	testStaleMergedBranchCandidate(t, func(manager *Manager, repoDir, branch, tip string) {
+		runTestGit(t, repoDir, "update-ref", "refs/heads/"+branch, tip+"^")
+	}, nil)
+}
+
+func TestPruneRetainedSkipsMergedBranchWhenBaseTipChanges(t *testing.T) {
+	testStaleMergedBranchCandidate(t, func(manager *Manager, repoDir, branch, tip string) {
+		nextTip := strings.TrimSpace(runTestGit(t, repoDir, "commit-tree", tip+"^{tree}", "-p", tip, "-m", "base advance"))
+		runTestGit(t, repoDir, "update-ref", "refs/heads/main", nextTip)
+	}, nil)
+}
+
+func TestPruneRetainedSkipsMergedBranchWhenProtectionChanges(t *testing.T) {
+	var checks int
+	testStaleMergedBranchCandidate(t, nil, func(_, _ string) (bool, error) {
+		checks++
+		return checks > 1, nil
+	})
+	if checks < 2 {
+		t.Fatalf("protection checks = %d, want discovery and commit checks", checks)
+	}
+}
+
+func testStaleMergedBranchCandidate(t *testing.T, mutate func(*Manager, string, string, string), protection func(string, string) (bool, error)) {
+	t.Helper()
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	manager := newTestManager(t)
+	repoDir, err := manager.WorkingCopy(ctx, repo)
+	if err != nil {
+		t.Fatalf("WorkingCopy: %v", err)
+	}
+	branch, tip := committedRunBranch(t, manager, repo, "stale", "main")
+	if err := branch.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove branch worktree: %v", err)
+	}
+	runTestGit(t, repoDir, "update-ref", "refs/heads/main", tip)
+	originalHook := DeleteBranchHook
+	defer func() { DeleteBranchHook = originalHook }()
+	DeleteBranchHook = func() {
+		if mutate != nil {
+			mutate(manager, repoDir, "goobers/workflow/stale", tip)
+		}
+	}
+
+	results, warnings, err := PruneRetained(ctx, []*Manager{manager}, RetentionOptions{
+		Delete:            true,
+		IsRunTerminal:     func(_, _ string) (bool, error) { return true, nil },
+		IsBranchProtected: protection,
+		IsAncestor: func(context.Context, string, string, string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("PruneRetained = results %+v warnings %+v err %v", results, warnings, err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("stale candidate was deleted or reported: %+v", results)
+	}
+	if !branchExists(ctx, repoDir, "goobers/workflow/stale") {
+		t.Fatal("stale run branch was deleted")
+	}
+}
+
 func TestPruneRetainedReportsBranchDeletionFailureWithoutReclamation(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

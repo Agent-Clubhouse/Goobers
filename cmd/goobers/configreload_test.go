@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -194,7 +195,17 @@ spec:
 	stdout := waitForRunnableWorkflow(t, root, "reloaded-implement")
 	runID := runIDFromAcceptedTriggerStdout(t, layout, stdout)
 	mirrored := waitForConfigValue(t, "gaggle outbox mirror after reload", func() ([]byte, bool) {
-		data, err := os.ReadFile(filepath.Join(mirrorPath, runID, "local-ci", "attempt-1", "reports", "report.txt"))
+		matches, err := filepath.Glob(filepath.Join(mirrorPath, runID, "local-ci", "attempt-1", "occurrence-*", "reports", "report.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) == 0 {
+			return nil, false
+		}
+		if len(matches) != 1 {
+			t.Fatalf("gaggle outbox mirror paths = %v, want one immutable occurrence", matches)
+		}
+		data, err := os.ReadFile(matches[0])
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false
 		}
@@ -321,7 +332,7 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 	runGitT(t, sourceRepo, "add", ".")
 	runGitT(t, sourceRepo, "commit", "-m", "valid config")
 	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
-	waitForRunnableWorkflow(t, root, "reconciled-implement")
+	waitForCompletedWorkflow(t, root, "reconciled-implement")
 
 	if err := os.WriteFile(workflowPath, []byte("kind: Workflow\nmetadata: [\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -332,7 +343,57 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 	if rejected.Error == nil || rejected.Error.Code != "config_reload_rejected" {
 		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
 	}
-	waitForRunnableWorkflow(t, root, "reconciled-implement")
+	// The reloader publishes State=rejected from inside its poll, before the
+	// source apply rolls the rejected tree back off disk, so wait for the
+	// restored disk digest as well instead of reading it the moment health
+	// first reports the rejection.
+	var currentDigest string
+	status := waitForConfigValue(t, "rejected source generation status and restored disk", func() (readservice.DefinitionReloadStatus, bool) {
+		health := readDaemonHealth(t, address)
+		if health.DefinitionReload == nil || health.DefinitionReload.State != "rejected" {
+			return readservice.DefinitionReloadStatus{}, false
+		}
+		digest, err := configDirectoryDigest(layout.ConfigDir())
+		if err != nil {
+			return readservice.DefinitionReloadStatus{}, false
+		}
+		currentDigest = digest
+		return *health.DefinitionReload, digest == health.DefinitionReload.AppliedDigest
+	})
+	if currentDigest != status.AppliedDigest || status.ObservedDigest == status.AppliedDigest {
+		t.Fatalf("rejected source restoration: disk=%s status=%+v", currentDigest, status)
+	}
+	// The exact deterministic-stage generation fence that produced #5164's
+	// fleet-wide failures must now accept the restored last-applied tree.
+	t.Setenv(executor.InstanceRootEnvVar, root)
+	t.Setenv(executor.AppliedConfigDigestEnvVar, status.AppliedDigest)
+	if err := enforceAppliedStageConfig(); err != nil {
+		t.Fatalf("restored source still fences deterministic stages: %v", err)
+	}
+	t.Setenv(executor.InstanceRootEnvVar, "")
+	t.Setenv(executor.AppliedConfigDigestEnvVar, "")
+	waitForCompletedWorkflow(t, root, "reconciled-implement")
+
+	// An explicit apply of the same rejected revision must validate and roll
+	// back again, not confuse its digest with the prior observation and leave
+	// the invalid tree installed.
+	code, _, stderr := runArgs(t, "apply", root)
+	if code != 1 || !strings.Contains(stderr, "keeping last-known-good definitions") {
+		t.Fatalf("repeat apply: code=%d stderr=%q", code, stderr)
+	}
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloadRejected, 2)
+	if digest, err := configDirectoryDigest(layout.ConfigDir()); err != nil || digest != status.AppliedDigest {
+		t.Fatalf("repeat rejection left unapplied tree: digest=%s err=%v want=%s", digest, err, status.AppliedDigest)
+	}
+
+	validNext := strings.Replace(valid, "name: reconciled-implement", "name: reconciled-next", 1)
+	if err := os.WriteFile(workflowPath, []byte(validNext), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "valid config after rejection")
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 2)
+	waitForCompletedWorkflow(t, root, "reconciled-next")
 }
 
 func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
@@ -657,12 +718,20 @@ func TestUpReloadsResolvedGooberContentForNextRun(t *testing.T) {
 		configReloadInterval = previousReloadInterval
 		delegationSweepInterval = previousDelegationInterval
 	})
+	t.Chdir(t.TempDir())
 
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
 	address := freeLoopbackAddress(t)
 	setAPIListenAddress(t, root, address)
 	workflowPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
+	// Both concurrency caps admit all three runs this test starts (#5156). A
+	// run's journal turns terminal, which is what `goobers run` waits for,
+	// before the scheduler frees the run's slot: the starter first ingests
+	// the run's telemetry. With one slot, a busy machine can still be
+	// ingesting run N when the test triggers run N+1, and the scheduler
+	// refuses it as max-parallel. This test is about digests, not admission.
+	allowParallelFixtureRuns(t, layout, 3)
 	writeFixture(t, workflowPath, `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 dslVersion: "2.0"
@@ -672,6 +741,8 @@ spec:
   gaggle: example
   triggers:
     - type: manual
+  readiness:
+    maxConcurrentRuns: 3
   start: implement
   tasks:
     - name: implement
@@ -781,6 +852,19 @@ spec:
 	}
 }
 
+// allowParallelFixtureRuns raises the instance-wide run cap to n.
+func allowParallelFixtureRuns(t *testing.T, layout instance.Layout, n int) {
+	t.Helper()
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RunConditions.MaxParallelRuns = n
+	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func readDaemonHealth(t *testing.T, address string) readservice.Health {
 	t.Helper()
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -856,6 +940,20 @@ func waitForRunnableWorkflow(t *testing.T, root, workflow string) string {
 			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
 		}
 		return "", false
+	})
+}
+
+func waitForCompletedWorkflow(t *testing.T, root, workflow string) {
+	t.Helper()
+	waitForConfigValue(t, workflow+" to run to completion", func() (struct{}, bool) {
+		code, stdout, stderr := runArgs(t, "run", workflow, root)
+		if code == 0 {
+			return struct{}{}, true
+		}
+		if !strings.Contains(stderr, "unknown workflow") {
+			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
+		}
+		return struct{}{}, false
 	})
 }
 

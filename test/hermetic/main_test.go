@@ -104,6 +104,31 @@ func TestResolveToolsUsesConfiguredGoExecutable(t *testing.T) {
 	t.Fatal("resolved tools do not contain Go")
 }
 
+func TestResolveToolsPreservesWindowsCompilerInstallationPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows compiler layout contract")
+	}
+
+	tools, compilerCommand, err := resolveTools("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(compilerCommand) {
+		t.Fatalf("CC = %q, want an absolute path preserving the compiler installation", compilerCommand)
+	}
+	compilerName := strings.ToLower(filepath.Base(compilerCommand))
+	for _, tool := range tools {
+		if strings.EqualFold(executableName(tool.name), compilerName) {
+			t.Fatalf("compiler %q was relocated into the isolated PATH; CC must invoke it in place", tool.path)
+		}
+	}
+
+	environment := environmentMap(hermeticEnvironment(nil, t.TempDir(), compilerCommand, t.TempDir()))
+	if environment["CC"] != compilerCommand {
+		t.Fatalf("hermetic CC = %q, want %q", environment["CC"], compilerCommand)
+	}
+}
+
 func TestPlatformToolSpecsIncludeRequiredStackTools(t *testing.T) {
 	for _, tt := range []struct {
 		goos  string
@@ -425,7 +450,7 @@ func TestSelectShardPartitionsExactly(t *testing.T) {
 			}
 			seen := map[string]int{}
 			for index := 1; index <= total; index++ {
-				for _, pkg := range selectShard(packages, shardSpec{index: index, total: total}, weights) {
+				for _, pkg := range selectShardPackages(packages, shardSpec{index: index, total: total}, weights) {
 					seen[pkg]++
 				}
 			}
@@ -455,9 +480,9 @@ func TestSelectShardIsDeterministicRegardlessOfInputOrder(t *testing.T) {
 	reversed := []string{"e", "d", "c", "b", "a"}
 	spec := shardSpec{index: 1, total: 2}
 	weights := shardWeights{DefaultSeconds: 1}
-	if !reflect.DeepEqual(selectShard(forward, spec, weights), selectShard(reversed, spec, weights)) {
+	if !reflect.DeepEqual(selectShardPackages(forward, spec, weights), selectShardPackages(reversed, spec, weights)) {
 		t.Fatalf("selectShard depends on input order: %v vs %v",
-			selectShard(forward, spec, weights), selectShard(reversed, spec, weights))
+			selectShardPackages(forward, spec, weights), selectShardPackages(reversed, spec, weights))
 	}
 }
 
@@ -470,6 +495,10 @@ func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	splits, err := loadShardSplits(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	list := exec.Command("go", "list", "./...")
 	list.Dir = root
 	output, err := list.Output()
@@ -478,11 +507,9 @@ func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
 	}
 	packages := strings.Fields(string(output))
 
-	totals := make([]float64, 3)
-	for index := 1; index <= len(totals); index++ {
-		for _, pkg := range selectShard(packages, shardSpec{index: index, total: len(totals)}, weights) {
-			totals[index-1] += weights.packageSeconds(pkg)
-		}
+	totals := make([]float64, 0, linuxRaceShards)
+	for _, shard := range assignShards(shardItems(packages, weights, splits), linuxRaceShards) {
+		totals = append(totals, shard.seconds)
 	}
 	sort.Float64s(totals)
 	if ratio := totals[len(totals)-1] / totals[0]; ratio > 2 {
@@ -490,7 +517,7 @@ func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
 	}
 }
 
-func TestCheckedInShardWeightsAreFresh(t *testing.T) {
+func TestLinuxShardsIncludeJournalOTLPPackages(t *testing.T) {
 	root, err := findModuleRoot()
 	if err != nil {
 		t.Fatal(err)
@@ -499,20 +526,42 @@ func TestCheckedInShardWeightsAreFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	generated, err := weights.generatedAt()
+	list := exec.Command("go", "list", "./...")
+	list.Dir = root
+	list.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=1")
+	output, err := list.CombinedOutput()
+	if err != nil {
+		t.Fatalf("discover Linux unit packages: %v\n%s", err, output)
+	}
+	packages := strings.Fields(string(output))
+	splits, err := loadShardSplits(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if age := time.Since(generated); age > shardWeightsMaxAge {
-		t.Fatalf("%s was generated %s (%.0f days ago), want no older than %.0f days: "+
-			"regenerate it from a recent test-timings artifact with the documented testtiming weights command",
-			shardWeightsPath, generated.Format(time.RFC3339), age.Hours()/24, shardWeightsMaxAge.Hours()/24)
+	seen := make(map[string][]int)
+	for index, shard := range assignShards(shardItems(packages, weights, splits), linuxRaceShards) {
+		for _, pkg := range shard.packages {
+			seen[pkg] = append(seen[pkg], index+1)
+		}
+		for _, piece := range shard.pieces {
+			seen[piece.pkg] = append(seen[piece.pkg], index+1)
+		}
 	}
-}
-
-func TestShardWeightsRefreshCadenceIsThirtyDays(t *testing.T) {
-	if shardWeightsMaxAge != 30*24*time.Hour {
-		t.Fatalf("shardWeightsMaxAge = %s, want the documented 30-day manual refresh cadence", shardWeightsMaxAge)
+	for _, path := range []string{
+		"internal/journal", "internal/livejournal", "internal/telemetry",
+		"internal/instance", "api/schemas", "internal/engine", "internal/version",
+		"cmd/goobers", "test/ci", "test/hermetic",
+	} {
+		pkg := "github.com/goobers/goobers/" + path
+		want := 1
+		if split, ok := splits.Packages[pkg]; ok {
+			want = split.Pieces
+		}
+		if len(seen[pkg]) != want {
+			t.Errorf("%s belongs to shards %v, want %d Linux race shard item(s)", pkg, seen[pkg], want)
+		} else {
+			t.Logf("%s: Linux race shards %v of %d", pkg, seen[pkg], linuxRaceShards)
+		}
 	}
 }
 
@@ -527,7 +576,7 @@ func TestLoadShardWeightsRequiresGeneratedAt(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(root, ".github"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			document := `{"schemaVersion": 1, "defaultSeconds": 1, "source": ` + source + `, "packages": {}}`
+			document := `{"schemaVersion": 2, "defaultSeconds": 1, "source": ` + source + `, "packages": {}}`
 			if err := os.WriteFile(filepath.Join(root, shardWeightsPath), []byte(document), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -542,31 +591,51 @@ func TestLoadShardWeightsRequiresGeneratedAt(t *testing.T) {
 	}
 }
 
+// TestLoadShardWeightsRejectsNonRaceTable pins the race-mode switch: a
+// schemaVersion 1 table (non-race coverage-job seconds) must fail loudly rather
+// than balance the race shards by times that under-weight race-heavy packages.
+func TestLoadShardWeightsRejectsNonRaceTable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".github"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	document := `{"schemaVersion": 1, "defaultSeconds": 1, "source": {"generatedAt": "2026-09-12T20:48:16Z"}, "packages": {}}`
+	if err := os.WriteFile(filepath.Join(root, shardWeightsPath), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadShardWeights(root); err == nil || !strings.Contains(err.Error(), "schemaVersion 1") {
+		t.Fatalf("loadShardWeights error = %v, want a schemaVersion rejection", err)
+	}
+}
+
 func TestValidateShardWeightSourceRequiresVerifiableProvenance(t *testing.T) {
 	valid := shardWeightsSource{
-		Run: 10, Jobs: []int64{20}, Artifact: 30, ArtifactName: "test-timings-macOS",
-		Commit: strings.Repeat("a", 40), GeneratedAt: "2026-09-12T20:48:16Z",
-		Platform: "darwin", Architecture: "arm64", MinimumRecordedSeconds: 3,
+		Run: 10, Branch: "main", Commit: strings.Repeat("a", 40), GeneratedAt: "2026-09-12T20:48:16Z",
+		TimingJobs: []string{"unit-shard"}, ArtifactPattern: "test-timings-race-linux-*",
+		Platform: "linux", Architecture: "amd64", MinimumRecordedSeconds: 3,
+	}
+	if err := validateShardWeightSource(valid); err != nil {
+		t.Fatalf("validateShardWeightSource rejected the valid fixture: %v", err)
 	}
 	tests := []struct {
 		name   string
 		mutate func(*shardWeightsSource)
 	}{
 		{name: "run", mutate: func(source *shardWeightsSource) { source.Run = 0 }},
-		{name: "jobs", mutate: func(source *shardWeightsSource) { source.Jobs = nil }},
-		{name: "multiple jobs", mutate: func(source *shardWeightsSource) { source.Jobs = []int64{20, 21} }},
-		{name: "zero job", mutate: func(source *shardWeightsSource) { source.Jobs = []int64{0} }},
-		{name: "artifact", mutate: func(source *shardWeightsSource) { source.Artifact = 0 }},
-		{name: "artifact name", mutate: func(source *shardWeightsSource) { source.ArtifactName = "test-timings-Linux" }},
+		{name: "branch", mutate: func(source *shardWeightsSource) { source.Branch = " " }},
+		{name: "no timing jobs", mutate: func(source *shardWeightsSource) { source.TimingJobs = nil }},
+		{name: "coverage timing job", mutate: func(source *shardWeightsSource) { source.TimingJobs = []string{"unit"} }},
+		{name: "mixed timing jobs", mutate: func(source *shardWeightsSource) { source.TimingJobs = []string{"unit", "unit-shard"} }},
+		{name: "coverage artifact", mutate: func(source *shardWeightsSource) { source.ArtifactPattern = "test-timings-Linux" }},
 		{name: "short commit", mutate: func(source *shardWeightsSource) { source.Commit = "abc123" }},
-		{name: "platform", mutate: func(source *shardWeightsSource) { source.Platform = "linux" }},
+		{name: "platform", mutate: func(source *shardWeightsSource) { source.Platform = "darwin" }},
 		{name: "architecture", mutate: func(source *shardWeightsSource) { source.Architecture = "" }},
 		{name: "minimum", mutate: func(source *shardWeightsSource) { source.MinimumRecordedSeconds = 0 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			source := valid
-			source.Jobs = append([]int64(nil), valid.Jobs...)
+			source.TimingJobs = append([]string(nil), valid.TimingJobs...)
 			tt.mutate(&source)
 			if err := validateShardWeightSource(source); err == nil {
 				t.Fatalf("validateShardWeightSource accepted %+v", source)

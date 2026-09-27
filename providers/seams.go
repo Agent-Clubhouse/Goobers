@@ -94,9 +94,9 @@ type ExternalRef struct {
 	Operation         string                 `json:"operation"`     // create|update|label|milestone|close|comment|claim|review|merge|delete
 	Fields            map[string]FieldDigest `json:"fields,omitempty"`
 	RunID             string                 `json:"runId,omitempty"`         // set for claim mutations
-	Outcome           string                 `json:"outcome,omitempty"`       // success, failure, or conflict for claim attempts
+	Outcome           string                 `json:"outcome,omitempty"`       // success, failure, or contention for claim attempts
 	ErrorCode         string                 `json:"errorCode,omitempty"`     // stable classification; never raw provider error text
-	ProviderRunID     string                 `json:"providerRunId,omitempty"` // observed owner for a ledger/provider mismatch
+	ProviderRunID     string                 `json:"providerRunId,omitempty"` // provider owner on claim contention or ledger mismatch
 }
 
 // RateLimitEvent describes a single rate-limit backoff decision.

@@ -7,16 +7,30 @@ import (
 	"time"
 )
 
+type eventFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+}
+
 // appendEvent marshals, scrubs, writes, and fsyncs one event line to f, assigning
 // seq (the next value of *seq), schema, and time. It is the shared durability
 // core both Run and InstanceLog use, so a run's events.jsonl and the instance's
 // scheduler/events.jsonl honor the identical contract: one line, one fsync,
 // before the call returns (§4).
-func appendEvent(f *os.File, seq *uint64, scrubber Scrubber, now func() time.Time, ev Event) (Event, error) {
+func appendEvent(f eventFile, seq *uint64, scrubber Scrubber, now func() time.Time, ev Event, targets ...*commitTarget) (Event, error) {
 	*seq++
 	ev.Seq = *seq
 	ev.Schema = EventSchema
 	ev.Time = now()
+	if ev.Type == EventAgentProgress && ev.Progress != nil {
+		ev.Progress.Sequence = ev.Seq
+		if ev.Progress.OccurredAt.IsZero() {
+			ev.Progress.OccurredAt = ev.Time
+		}
+		if ev.Progress.UpdatedAt.IsZero() {
+			ev.Progress.UpdatedAt = ev.Progress.OccurredAt
+		}
+	}
 
 	line, err := marshalEvent(ev)
 	if err != nil {
@@ -24,12 +38,19 @@ func appendEvent(f *os.File, seq *uint64, scrubber Scrubber, now func() time.Tim
 		return Event{}, fmt.Errorf("journal: marshal event: %w", err)
 	}
 	line = scrubber.Scrub(line)
+	if len(line)+1 > maxEventBytes {
+		*seq--
+		return Event{}, fmt.Errorf("journal: event exceeds %d-byte limit", maxEventBytes)
+	}
 	line = append(line, '\n')
 	if _, err := f.Write(line); err != nil {
 		return Event{}, fmt.Errorf("journal: append event: %w", err)
 	}
 	if err := syncFile(f); err != nil {
 		return Event{}, fmt.Errorf("journal: fsync event: %w", err)
+	}
+	for _, target := range targets {
+		target.notify(ev, line[:len(line)-1])
 	}
 	return ev, nil
 }
@@ -45,7 +66,16 @@ func marshalEvent(ev Event) ([]byte, error) {
 	if ev.Type == EventNotificationReceipt && ev.NotificationReceipt == nil {
 		return nil, fmt.Errorf("%s requires a notification receipt", EventNotificationReceipt)
 	}
-	if ev.Type == EventAgentLifecycle || ev.Type == EventAgentMessage {
+	if ev.Type == EventOperatorMessageRequested && ev.OperatorMessageRequest == nil {
+		return nil, fmt.Errorf("%s requires an operator message request", EventOperatorMessageRequested)
+	}
+	if ev.Type == EventOperatorMessageAcknowledged && ev.OperatorMessageAcknowledgement == nil {
+		return nil, fmt.Errorf("%s requires an operator message acknowledgement", EventOperatorMessageAcknowledged)
+	}
+	if ev.Type == EventOperatorMessageOutcome && ev.OperatorMessageOutcome == nil {
+		return nil, fmt.Errorf("%s requires an operator message outcome", EventOperatorMessageOutcome)
+	}
+	if ev.Type == EventAgentLifecycle || ev.Type == EventAgentMessage || ev.Type == EventAgentProgress {
 		if err := ValidateAgentEvent(ev); err != nil {
 			return nil, err
 		}

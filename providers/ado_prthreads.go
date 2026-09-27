@@ -2,9 +2,11 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,10 +39,11 @@ const adoPRThreadCommentType = "text"
 // The returned Comment.ID is the composite "<pullID>/<threadId>/<commentId>" so
 // UpdatePullRequestThreadComment can address the exact comment later with no
 // extra state — the ADO update endpoint needs all three, unlike GitHub's
-// repo-wide comment ids. The author is mapped from the thread comment's
-// displayName (ADO renders thread authors as displayName), matching what
-// AuthenticatedLogin returns so a trusted-author filter recognizes a thread we
-// posted.
+// repo-wide comment ids. Comment.Author carries the thread comment's
+// displayName for display (ADO renders thread authors as displayName), and
+// Comment.AuthorID carries its author.id; a trusted-author check compares
+// AuthorID with AuthenticatedIdentity().ID, because display names are not
+// unique.
 func (p *ADOProvider) PostPullRequestThreadComment(ctx context.Context, repo RepositoryRef, pullID, body string) (Comment, error) {
 	return p.postAttributedPullRequestThreadComment(ctx, repo, pullID, body, "pull-request-comment")
 }
@@ -66,7 +69,13 @@ func (p *ADOProvider) postAttributedPullRequestThreadComment(ctx context.Context
 			"content":         body,
 			"commentType":     adoPRThreadCommentType,
 		}},
-		"status": "active",
+		// Goobers-authored threads are informational (verdict JSON, finding
+		// history, sticky remediation state, close/escalation notes, rebase
+		// transport) and never need to block a merge on their own — an
+		// "active" thread trips comment-resolution policies, while "closed"
+		// does not. Escalations are surfaced via labels, not by leaving a
+		// thread open to draw attention.
+		"status": "closed",
 	}
 	var thread adoPullRequestThread
 	if err := p.do(ctx, http.MethodPost, endpoint, payload, &thread); err != nil {
@@ -75,7 +84,7 @@ func (p *ADOProvider) postAttributedPullRequestThreadComment(ctx context.Context
 	if len(thread.Comments) == 0 {
 		return Comment{}, fmt.Errorf("ado pull request %s thread create returned no comments", pullID)
 	}
-	p.recordMutation(ctx, "pr", pullID, "comment")
+	p.recordMutation(ctx, "pr", pullID, "comment", repo)
 	return mapADOPullRequestThreadComment(pullID, thread.ID, thread.Comments[0]), nil
 }
 
@@ -137,7 +146,7 @@ func (p *ADOProvider) UpdatePullRequestThreadComment(ctx context.Context, repo R
 	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"content": body}, nil); err != nil {
 		return err
 	}
-	p.recordMutation(ctx, "pr", pullID, "comment")
+	p.recordMutation(ctx, "pr", pullID, "comment", repo)
 	return nil
 }
 
@@ -145,8 +154,13 @@ func (p *ADOProvider) UpdatePullRequestThreadComment(ctx context.Context, repo R
 // hazard-free carrier for the goobers:needs-remediation selector signal.
 // ListPullRequests already reads PR labels, so writing them here drives the
 // existing selection tiers unmodified, without any wit/workitems write (the
-// PR-as-work-item wrong-object hazard). ADO's label endpoint takes one label
-// per POST, so this issues one call per name.
+// PR-as-work-item wrong-object hazard).
+//
+// PR labels share ADO's case-insensitive tag namespace, so a label already on
+// the PR in any casing is skipped. ADO's label endpoint takes one label per
+// POST, so this issues one call per remaining name. A failed POST does not
+// stop the rest and nothing is rolled back: the labels that applied stay, and
+// the returned *PullRequestLabelAddError names each label that failed.
 func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryRef, pullID string, names []string) error {
 	if err := requireRepo(repo); err != nil {
 		return err
@@ -154,29 +168,74 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 	if pullID == "" {
 		return errPullIDRequired
 	}
-	for _, name := range names {
-		if strings.TrimSpace(name) == "" {
+	pending := adoPendingPullRequestLabels(names)
+	if len(pending) == 0 {
+		return nil
+	}
+	// A failed pre-read only loses the already-present skip: the POSTs still
+	// run, and ADO merges a label that exists in another casing server-side.
+	existing, readErr := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
+	// The PR-labels endpoint is published only under the -preview version;
+	// a plain "7.1" is rejected (VssInvalidPreviewVersionException).
+	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
+	if err != nil {
+		return err
+	}
+	var result PullRequestLabelAddError
+	for _, name := range pending {
+		if _, present := existing[strings.ToLower(name)]; present {
 			continue
 		}
-		// The PR-labels endpoint is published only under the -preview version;
-		// a plain "7.1" is rejected (VssInvalidPreviewVersionException).
-		endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
-		if err != nil {
-			return err
-		}
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]interface{}{"name": name}, nil); err != nil {
-			return err
+			result.Failed = append(result.Failed, name)
+			result.errs = append(result.errs, err)
+			continue
 		}
-		p.recordMutation(ctx, "pr", pullID, "label")
+		result.Applied = append(result.Applied, name)
+		p.recordMutation(ctx, "pr", pullID, "label", repo)
 	}
-	return nil
+	return adoPullRequestLabelAddResult(&result, readErr)
 }
 
-// pullRequestLabelsWithIDs fetches a PR's labels as a lowercased-name -> id
-// map. ADO returns labels only from this dedicated sub-endpoint for a single
-// PR (the PR object and $expand=labels both omit them — verified live); the
-// id is needed to delete a label whose name contains a colon.
-func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo RepositoryRef, pullID string) (map[string]string, error) {
+// adoPullRequestLabelAddResult is AddPullRequestLabels' outcome: nil when
+// every label applied, else the *PullRequestLabelAddError, joined with the
+// failed pre-read of existing labels when no label applied at all.
+func adoPullRequestLabelAddResult(result *PullRequestLabelAddError, readErr error) error {
+	if len(result.Failed) == 0 {
+		return nil
+	}
+	if readErr != nil && len(result.Applied) == 0 {
+		return errors.Join(fmt.Errorf("read existing pull request labels: %w", readErr), result)
+	}
+	return result
+}
+
+// adoPendingPullRequestLabels drops blank names and case-insensitive
+// duplicates from an AddPullRequestLabels request, keeping first-seen order.
+func adoPendingPullRequestLabels(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" || adoHasLabel(out, name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// adoPullRequestLabel is one label on a pull request: its id and the name in
+// the casing ADO returned (the first writer's).
+type adoPullRequestLabel struct {
+	ID   string
+	Name string
+}
+
+// pullRequestLabelsWithIDs fetches a PR's labels keyed by lower-cased name,
+// since ADO matches label names case-insensitively. ADO returns labels only
+// from this dedicated sub-endpoint for a single PR (the PR object and
+// $expand=labels both omit them — verified live); the id is needed to delete
+// a label whose name contains a colon.
+func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo RepositoryRef, pullID string) (map[string]adoPullRequestLabel, error) {
 	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
 	if err != nil {
 		return nil, err
@@ -190,24 +249,28 @@ func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo Reposit
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
 		return nil, err
 	}
-	m := make(map[string]string, len(out.Value))
+	m := make(map[string]adoPullRequestLabel, len(out.Value))
 	for _, l := range out.Value {
-		m[strings.ToLower(l.Name)] = l.ID
+		m[strings.ToLower(l.Name)] = adoPullRequestLabel{ID: l.ID, Name: l.Name}
 	}
 	return m, nil
 }
 
 // PullRequestLabelNames returns a PR's active label names via the dedicated
-// labels sub-endpoint (the single-PR GET omits them — verified live).
+// labels sub-endpoint (the single-PR GET omits them — verified live), sorted.
+// A label keeps the casing ADO returned, except that one Goobers owns
+// (goobersOwnedLabels) is folded to Goobers' spelling so callers' exact
+// compares match whoever wrote it first (see ado_labelcase.go).
 func (p *ADOProvider) PullRequestLabelNames(ctx context.Context, repo RepositoryRef, pullID string) ([]string, error) {
 	labels, err := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
 	if err != nil {
 		return nil, err
 	}
 	names := make([]string, 0, len(labels))
-	for name := range labels {
-		names = append(names, name)
+	for _, label := range labels {
+		names = append(names, canonicalADOLabel(label.Name, nil))
 	}
+	sort.Strings(names)
 	return names, nil
 }
 
@@ -234,12 +297,12 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 	if err != nil {
 		return err
 	}
-	id, present := labels[strings.ToLower(name)]
+	label, present := labels[strings.ToLower(name)]
 	if !present {
 		// Already absent — benign, mirror GitHub's 404-is-not-an-error removal.
 		return nil
 	}
-	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels", id)
+	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels", label.ID)
 	if err != nil {
 		return err
 	}
@@ -254,38 +317,101 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 	if err := readJSONResponse(resp, http.MethodDelete, endpoint, nil); err != nil {
 		return err
 	}
-	p.recordMutation(ctx, "pr", pullID, "label")
+	p.recordMutation(ctx, "pr", pullID, "label", repo)
 	return nil
+}
+
+// ADOIdentity is the Azure DevOps identity the provider's credential
+// authenticates as. ID is the stable key: it is connectionData's
+// authenticatedUser.id, the same GUID ADO records as a PR's createdBy.id (and,
+// pending live confirmation, a thread comment's author.id — see
+// docs/design/ado-provider-parity.md §4). Display names are not unique, so
+// every "is this me" check compares ID; DisplayName is for rendering and
+// UniqueName (the account UPN) for operator-facing reports.
+type ADOIdentity struct {
+	ID          string `json:"id"`
+	UniqueName  string `json:"uniqueName,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+// AuthenticatedIdentity returns the identity the provider's credential
+// authenticates as, read from the Azure DevOps connectionData endpoint. The
+// read is cached on the provider instance — one credential per instance — so
+// repeated "is this me" checks in one stage cost one round-trip. A failed read
+// is not cached. It errors when connectionData carries no authenticatedUser.id,
+// because an identity without its stable key cannot anchor a comparison.
+func (p *ADOProvider) AuthenticatedIdentity(ctx context.Context) (ADOIdentity, error) {
+	data, err := p.connectionData(ctx)
+	if err != nil {
+		return ADOIdentity{}, err
+	}
+	id := strings.TrimSpace(data.AuthenticatedUser.ID)
+	if id == "" {
+		return ADOIdentity{}, fmt.Errorf("authenticated ADO identity has no id")
+	}
+	return ADOIdentity{
+		ID:          id,
+		UniqueName:  strings.TrimSpace(data.AuthenticatedUser.Properties.Account.Value),
+		DisplayName: data.displayName(),
+	}, nil
 }
 
 // AuthenticatedLogin returns the display name of the identity the provider's
 // credential authenticates as, via the Azure DevOps connectionData endpoint. It
 // matches the GitHub AuthenticatedLogin signature so stage code can call it
 // uniformly. The display name (not the UPN) is returned deliberately: ADO PR
-// *thread* comment authors render as displayName, so this is what a trusted-
-// author filter must compare a posted thread against. (PR reviewers/authors,
-// by contrast, are keyed on UPN — a known ADO identity inconsistency.)
+// *thread* comment authors render as displayName. Display names are not
+// unique, so a check that must tell this identity apart from another compares
+// AuthenticatedIdentity().ID with Comment.AuthorID instead.
 func (p *ADOProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
-	endpoint, err := joinURL(p.BaseURL, p.Organization, "_apis", "connectionData")
+	data, err := p.connectionData(ctx)
 	if err != nil {
 		return "", err
 	}
-	endpoint, err = addQuery(endpoint, url.Values{"api-version": []string{"7.1-preview"}})
-	if err != nil {
-		return "", err
-	}
-	var data adoConnectionData
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &data); err != nil {
-		return "", err
-	}
-	login := strings.TrimSpace(data.AuthenticatedUser.ProviderDisplayName)
-	if login == "" {
-		login = strings.TrimSpace(data.AuthenticatedUser.CustomDisplayName)
-	}
+	login := data.displayName()
 	if login == "" {
 		return "", fmt.Errorf("authenticated ADO identity has no display name")
 	}
 	return login, nil
+}
+
+// connectionData reads the organization's connectionData once per provider
+// instance and caches the decoded response; a failed read is retried on the
+// next call. The lock covers only the cache check and store, never the HTTP
+// round-trip, so concurrent callers do not queue behind one slow request; two
+// callers racing on a cold cache may each read, and the identity they store is
+// the same.
+func (p *ADOProvider) connectionData(ctx context.Context) (adoConnectionData, error) {
+	if cached, ok := p.cachedConnectionData(); ok {
+		return cached, nil
+	}
+	endpoint, err := joinURL(p.BaseURL, p.Organization, "_apis", "connectionData")
+	if err != nil {
+		return adoConnectionData{}, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"api-version": []string{"7.1-preview"}})
+	if err != nil {
+		return adoConnectionData{}, err
+	}
+	var data adoConnectionData
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &data); err != nil {
+		return adoConnectionData{}, err
+	}
+	p.identityMu.Lock()
+	defer p.identityMu.Unlock()
+	if p.identity == nil {
+		p.identity = &data
+	}
+	return *p.identity, nil
+}
+
+func (p *ADOProvider) cachedConnectionData() (adoConnectionData, bool) {
+	p.identityMu.Lock()
+	defer p.identityMu.Unlock()
+	if p.identity == nil {
+		return adoConnectionData{}, false
+	}
+	return *p.identity, true
 }
 
 // GetPullRequest returns a single Azure DevOps pull request as a
@@ -346,6 +472,7 @@ func mapADOPullRequestThreadComment(pullID string, threadID int, comment adoPull
 	return Comment{
 		ID:         formatADOThreadCommentID(pullID, threadID, comment.ID),
 		Author:     author,
+		AuthorID:   strings.TrimSpace(comment.Author.ID),
 		AuthorType: "user",
 		Body:       comment.Content,
 		CreatedAt:  createdAt,
@@ -396,11 +523,26 @@ type adoPullRequestThreadComment struct {
 }
 
 // adoConnectionData is the minimal shape of the ADO connectionData response —
-// the authenticated identity's id and display names.
+// the authenticated identity's id, display names and account (UPN). The UPN
+// rides in properties.Account.$value because connectionData has no uniqueName.
 type adoConnectionData struct {
 	AuthenticatedUser struct {
 		ID                  string `json:"id"`
 		ProviderDisplayName string `json:"providerDisplayName"`
 		CustomDisplayName   string `json:"customDisplayName"`
+		Properties          struct {
+			Account struct {
+				Value string `json:"$value"`
+			} `json:"Account"`
+		} `json:"properties"`
 	} `json:"authenticatedUser"`
+}
+
+// displayName is the identity's provider display name, falling back to its
+// custom display name.
+func (d adoConnectionData) displayName() string {
+	if name := strings.TrimSpace(d.AuthenticatedUser.ProviderDisplayName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(d.AuthenticatedUser.CustomDisplayName)
 }

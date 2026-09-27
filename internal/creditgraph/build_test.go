@@ -1,6 +1,7 @@
 package creditgraph
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +141,56 @@ func TestBuildTraversesOutcomeDownToNestedExecution(t *testing.T) {
 	}
 	if len(graph.Gaps) != 0 {
 		t.Fatalf("fully instrumented run reported gaps: %+v", graph.Gaps)
+	}
+}
+
+func TestBuildProjectsRecordedRuntimeAndEnvironmentComponents(t *testing.T) {
+	digest := "sha256:runtime"
+	span, err := json.Marshal(telemetry.SpanRecord{
+		Schema: telemetry.SpanSchema,
+		Attributes: map[string]string{
+			telemetry.AttrHarnessVersion: "copilot-cli/1.0.86",
+			"deployment.environment":     "production",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []journal.Event{
+		{Seq: 1, Type: journal.EventRunStarted},
+		{Seq: 2, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Seq: 3, Type: journal.EventSpanRecorded, Stage: "implement", Attempt: 1,
+			DataSchema: telemetry.SpanSchema, Ref: &journal.Ref{Digest: digest}},
+		{Seq: 4, Type: journal.EventRunFinished, Status: "completed"},
+	}
+	graph, err := Build(Input{
+		RunID: "run-1", Workflow: "implementation", Events: events,
+		SpanData: map[string][]byte{digest: span},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimes := graph.NodesOfKind(KindRuntime)
+	environments := graph.NodesOfKind(KindEnvironment)
+	if len(runtimes) != 1 || runtimes[0].Label != "copilot-cli/1.0.86" ||
+		runtimes[0].Attributes["spanDigest"] != digest {
+		t.Fatalf("runtime nodes = %+v", runtimes)
+	}
+	if len(environments) != 1 || environments[0].Label != "production" ||
+		environments[0].Attributes["spanDigest"] != digest {
+		t.Fatalf("environment nodes = %+v", environments)
+	}
+	if !hasEdge(graph, "stage:implement#1", runtimes[0].ID, EdgeContains) ||
+		!hasEdge(graph, "stage:implement#1", environments[0].ID, EdgeContains) {
+		t.Fatalf("component edges = %+v", graph.Edges)
+	}
+
+	graph, err = Build(Input{RunID: "run-2", Workflow: "implementation", Events: events})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.NodesOfKind(KindRuntime)) != 0 || len(graph.NodesOfKind(KindEnvironment)) != 0 {
+		t.Fatalf("missing span provenance invented components: %+v", graph.Nodes)
 	}
 }
 

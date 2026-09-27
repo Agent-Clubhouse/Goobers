@@ -13,7 +13,7 @@ import (
 
 func TestRunnerProjectsSidecarMergeConfirmation(t *testing.T) {
 	workspace := t.TempDir()
-	confirmation := providers.MergeConfirmation{RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", MergeSHA: "commit"}
+	confirmation := providers.MergeConfirmation{RepositoryAPIURL: "https://api.github.com/repos/acme/app", PullID: "9", MergeSHA: "commit"}
 	data, err := json.Marshal(mutationFact{ReceiptID: "durable-merge-receipt", Provider: "github", Kind: "pr", ID: "9", Operation: "merge", MergeConfirmation: &confirmation})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +55,8 @@ func TestRunnerProjectsSidecarMergeConfirmation(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got != confirmation || events[1].ExternalRef == nil || events[1].ExternalRef.ID != got.PullID {
+	if got != confirmation || events[1].ExternalRef == nil || events[1].ExternalRef.ID != got.PullID ||
+		events[1].ExternalRef.URL != "https://github.com/acme/app/pull/9" {
 		t.Fatalf("journal dropped/crossed repository identity: %+v, event=%+v", got, events[1])
 	}
 }

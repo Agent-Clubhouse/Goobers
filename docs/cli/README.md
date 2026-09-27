@@ -56,6 +56,12 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
+| [`goobers config templates`](#goobers-config-templates) | manage tracked gaggle templates |
+| [`goobers config templates backprop`](#goobers-config-templates-backprop) | persist runtime edits into the user's config checkout |
+| [`goobers config templates check`](#goobers-config-templates-check) | check tracked templates without applying updates |
+| [`goobers config templates import`](#goobers-config-templates-import) | import an opt-in tracked gaggle template |
+| [`goobers config templates status`](#goobers-config-templates-status) | show cached template update availability |
+| [`goobers config templates update`](#goobers-config-templates-update) | merge template changes into the user's config source |
 | [`goobers config-seed`](#goobers-config-seed) | seed a private worker instance from a rendered configuration mirror |
 | [`goobers diagnostics`](#goobers-diagnostics) | collect a portable, redacted support bundle |
 | [`goobers diagnostics bundle`](#goobers-diagnostics-bundle) | write a portable, redacted support bundle |
@@ -73,10 +79,10 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
-| [`goobers fleet`](#goobers-fleet) | associate this instance with a Fleet service |
-| [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service |
-| [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets |
-| [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state |
+| [`goobers fleet`](#goobers-fleet) | associate this instance with a Fleet service (experimental; superseded) |
+| [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service (experimental; superseded) |
+| [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets (experimental; superseded) |
+| [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state (experimental; superseded) |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
@@ -779,6 +785,7 @@ Usage: goobers config <subcommand> [flags] [path]
 Inspect, materialize, and compare instance configuration.
 
 Subcommands:
+  templates    import, update, backprop, and check tracked gaggle templates
   show         render the effective instance config (secrets redacted)
   materialize  apply the recorded checked-in source to the runtime instance
   diff         compare active workflows with the shipped canonical workflows
@@ -876,6 +883,87 @@ instance root.
 ~~~console
 $ goobers config show
 $ goobers config show --json
+~~~
+
+## `goobers config templates`
+
+manage tracked gaggle templates
+
+~~~text
+Usage: goobers config templates <import|update|backprop|check|status> [flags] [instance-root]
+
+Manage opt-in, repository-backed gaggle copies. Existing gaggles are unchanged.
+Imports start disabled. Updates are explicit and never overwrite conflicting
+local edits. Backprop writes a reviewable user's config checkout, never the
+template repository, and does not commit or push.
+See docs/guides/gaggle-templates.md for package authoring and recovery.
+~~~
+
+## `goobers config templates backprop`
+
+persist runtime edits into the user's config checkout
+
+~~~text
+Usage: goobers config templates backprop --gaggle <name> [--source <config-root>] [instance-root]
+
+Persist runtime edits into the user's config checkout using the recorded
+deployment baseline. --source defaults to a local workflowSource; it must be
+separate from the runtime instance. Source changes merge or report conflicts.
+Stop the daemon first. No commit or push is performed: review and commit the
+reported files in YOUR repository. The shared template is never modified.
+~~~
+
+## `goobers config templates check`
+
+check tracked templates without applying updates
+
+~~~text
+Usage: goobers config templates check [instance-root]
+
+Check enrolled runtime gaggles for template changes and persist notify-only
+status. Fetches source branches but never changes definitions or accepted pins.
+Reports changed files, merge conflicts, pending backprop and check errors.
+Exit 0 means checks succeeded (updates may be available); 1 means a check failed.
+~~~
+
+## `goobers config templates import`
+
+import an opt-in tracked gaggle template
+
+~~~text
+Usage: goobers config templates import --repository <repo> --directory <path> --gaggle <name> [--ref <branch>] [--token-env <name>] [--source <config-root>] [instance-root]
+
+Import a self-contained gaggle from a committed local Git repository or HTTPS
+repository. The ref is a branch (default main); directory is repository-relative.
+HTTPS sources require a read-only token environment variable. No hooks run.
+Writes ordinary definitions plus .template/source.yaml and lock.json to the
+user's config source, and registers the gaggle in its manifest. Starts disabled.
+--source defaults to a local workflowSource, otherwise the instance config/.
+Stop the daemon first. Review, commit, and deploy the user's source afterwards.
+~~~
+
+## `goobers config templates status`
+
+show cached template update availability
+
+~~~text
+Usage: goobers config templates status [instance-root]
+
+Show cached template update state without network access. No prior check or a
+failed/stale check is not reported as up to date. Unenrolled gaggles are omitted.
+~~~
+
+## `goobers config templates update`
+
+merge template changes into the user's config source
+
+~~~text
+Usage: goobers config templates update --gaggle <name> [--source <config-root>] [instance-root]
+
+Fetch the tracked template branch and three-way merge the previous pristine
+template, local customizations, and updated template. Conflicts or validation
+errors leave the accepted files and lock unchanged. No automatic update.
+Stop the daemon first. Review, commit, and deploy the user's source afterwards.
 ~~~
 
 ## `goobers config-seed`
@@ -1841,10 +1929,15 @@ $ goobers fix --instance-schema --write ./instance
 
 ## `goobers fleet`
 
-associate this instance with a Fleet service
+associate this instance with a Fleet service (experimental; superseded)
 
 ~~~text
 Usage: goobers fleet <join|status|leave> [flags] [path]
+
+Experimental and superseded embedded Fleet connector: opt-in and locally
+operable, but not the supported production path. This connector remains
+provider-neutral and preserves Fleetless local operation; it does not add a
+hosted Fleet transport or Fleet-owned authorization to the repository.
 
 Associate a local Goobers instance with a Fleet service, inspect its durable
 connection state, or remove the association. Fleet identity and credentials
@@ -1862,15 +1955,16 @@ $ goobers fleet leave
 
 ## `goobers fleet join`
 
-discover and enroll this instance with a Fleet service
+discover and enroll this instance with a Fleet service (experimental; superseded)
 
 ~~~text
 Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
 
-Discover and enroll an instance with a Fleet service. By default the one-time
-enrollment grant is read from a protected terminal prompt and never accepted
-as a command-line value. --enrollment-token-file supports automation and is
-accepted only when the file is private to its owner.
+Experimental and superseded embedded Fleet connector. Discover and enroll an
+instance with a Fleet service. By default the one-time enrollment grant is read
+from a protected terminal prompt and never accepted as a command-line value.
+--enrollment-token-file supports automation and is accepted only when the file
+is private to its owner.
 
 When discovery advertises a local administrator principal, interactive use
 offers an explicit instance:read self-grant. Noninteractive use must choose
@@ -1887,13 +1981,14 @@ $ goobers fleet join --url https://fleet.example --enrollment-token-file ./grant
 
 ## `goobers fleet leave`
 
-remove this instance's Fleet association and protected secrets
+remove this instance's Fleet association and protected secrets (experimental; superseded)
 
 ~~~text
 Usage: goobers fleet leave [path]
 
-Remove the Fleet association, private key, and bearer credential. A running
-daemon observes the removal and stops reconnecting.
+Experimental and superseded embedded Fleet connector. Remove the Fleet
+association, private key, and bearer credential. A running daemon observes the
+removal and stops reconnecting.
 ~~~
 
 **Examples**
@@ -1904,14 +1999,14 @@ $ goobers fleet leave
 
 ## `goobers fleet status`
 
-show durable Fleet registration and connection state
+show durable Fleet registration and connection state (experimental; superseded)
 
 ~~~text
 Usage: goobers fleet status [--json] [path]
 
-Show the durable Fleet registration, connection, heartbeat, ACL version, and
-credential expiry state. Private key and bearer credential material are never
-printed.
+Experimental and superseded embedded Fleet connector. Show the durable Fleet
+registration, connection, heartbeat, ACL version, and credential expiry state.
+Private key and bearer credential material are never printed.
 ~~~
 
 **Examples**
@@ -2286,7 +2381,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -2340,8 +2435,12 @@ Merge a pull request, but only when every independent conjunct holds:
 verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's
 live head/base, and — for a sibling-overlap PR — completed single-lander
 election evidence (elected:true, #1071) — never a bare self-approval.
-Declared inputs: pullNumber, verdict, headSha, baseSha (all required),
-verdictAuthor (required for the default commit message; supplied by
+Declared inputs: pullNumber, verdict, headSha, baseSha (the SHA-pin,
+all required; in the shipped merge-review workflow, headSha/baseSha
+come from gather-sibling-context's selectedHeadSha/selectedBaseSha,
+passed through elect-lander — a fresh re-fetch, not whatever
+pr-select saw several stages earlier), verdictAuthor (required for
+the default commit message; supplied by
 apply-verdict), advisoryMode (default false — report only, no merge
 attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
@@ -2549,6 +2648,40 @@ Open the run's PR — or, on a repass through this stage, find and update
 the PR it already opened (idempotent: the run's branch name is stable
 across repasses, providers.BranchName). Writes prNumber/pull-request-url
 to the declared result file for a downstream stage's Task.InputsFrom.
+
+Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's
+stable branch), base (default GOOBERS_BASE_BRANCH, else "main"),
+resultFile, timeout. PR metadata is configured through these workflow
+inputs — there are no --title/--body flags — and a stage may bind them
+from an upstream stage's declared output with inputsFrom rather than a
+static value:
+
+    - name: open-pr
+      run:
+        command: ["goobers", "open-pr"]
+      inputs:
+        resultFile: "pr-result.json"
+      inputsFrom:
+        # bare key = the immediately preceding stage's output;
+        # "plan.prTitle" would name an earlier stage explicitly.
+        title: prTitle
+
+Title precedence: an explicitly set non-empty title wins; otherwise the
+claimed item's title, recovered from the run journal (so it survives a
+resume or repass); otherwise the generic "Automated implementation". An
+empty value is not an override — every empty input falls back.
+
+Body precedence: an explicitly set non-empty body is used as given and
+bypasses structured rendering; otherwise a structured body is rendered
+from the run journal's recorded review and local-CI evidence; otherwise a
+generic one-line body. A claimed item still augments an unstructured body
+— explicit or generic — with a "Fixes #<id>" back-reference, so explicit
+body text does not cost the issue linkage. The structured body carries
+its own linkage and is never appended to.
+
+A workflow that claims no item, or whose journal holds no recognized
+review/local-CI evidence, therefore gets generic metadata unless it sets
+these inputs. That is the fallback working, not a missing feature.
 Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.
 ~~~
 
@@ -3723,7 +3856,7 @@ a private release mirror).
 
 ~~~console
 $ goobers self-update --policy on-release
-$ goobers self-update --policy manual --target v0.5.0
+$ goobers self-update --policy manual --target v0.5.1
 ~~~
 
 ## `goobers service`
@@ -4091,6 +4224,8 @@ runs/ directory with their current phase, newest first (default path ".").
 Normal and daemon status identify the root path, durable instance ID, and owning PID,
 and warn when the root is marked historical or its identity cannot be verified.
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
+Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;
+source runs identify each continuation and its independent phase.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
@@ -4362,7 +4497,9 @@ its trace spans. Use --transcripts to show all recorded agent transcripts,
 or --transcript to select one stage. Use --summary for run metadata and
 review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's
 events until it finishes; --json --follow emits JSON Lines (default path
-"."). Remediation escalations include the typed outcome, attempted flag,
+"."). Continuation traces include source/continuation links, resume target,
+reused branch, injected input names, and historical repass accounting.
+Remediation escalations include the typed outcome, attempted flag,
 and attempted causes in the text summary and JSON `escalation.remediation`
 object. Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO
 error, 130 = interrupted while following.
@@ -4460,8 +4597,11 @@ candidates are routed to full remediation. A run dispatched for one
 pull request (goobers run --pr, or a pull_request webhook delivery)
 selects that PR and no other; when the target is not selectable the
 stage reports no-work naming the reason instead of falling back to
-another PR. Exit codes: 0 = updated, routed, or no-work;
-1 = business error; 2 = usage/IO error.
+another PR. On Azure DevOps this API-only lane is not applicable (ADO
+has no up-to-date policy to satisfy via API update): the stage makes
+no provider call and always routes to full remediation, which
+reselects a candidate itself. Exit codes: 0 = updated, routed,
+not-applicable, or no-work; 1 = business error; 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -4484,7 +4624,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable

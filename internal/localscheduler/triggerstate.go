@@ -61,6 +61,20 @@ func ReadTriggerEvaluations(schedulerDir string) (map[WorkflowIdentity]time.Time
 }
 
 func writeTriggerEvaluations(schedulerDir string, owner *stateOwner, evaluations map[WorkflowIdentity]time.Time) error {
+	return writeTriggerEvaluationsWithWriter(schedulerDir, owner, evaluations, journal.WriteFileAtomic)
+}
+
+// writeTriggerEvaluationsWithWriter keeps the durable-write boundary injectable
+// for the state-owner regression tests. Filesystem permissions do not provide a
+// portable failure mechanism (notably on Windows), while the ownership contract
+// specifically depends on committing a generation only after the atomic writer
+// reports that the bytes landed.
+func writeTriggerEvaluationsWithWriter(
+	schedulerDir string,
+	owner *stateOwner,
+	evaluations map[WorkflowIdentity]time.Time,
+	writeFile func(string, []byte, os.FileMode) error,
+) error {
 	stamp, err := owner.stamp(schedulerDir, triggerEvaluationsFileName)
 	if err != nil {
 		return err
@@ -91,7 +105,7 @@ func writeTriggerEvaluations(schedulerDir string, owner *stateOwner, evaluations
 	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
 		return fmt.Errorf("localscheduler: create trigger evaluation directory: %w", err)
 	}
-	if err := journal.WriteFileAtomic(filepath.Join(schedulerDir, triggerEvaluationsFileName), data, 0o644); err != nil {
+	if err := writeFile(filepath.Join(schedulerDir, triggerEvaluationsFileName), data, 0o644); err != nil {
 		return fmt.Errorf("localscheduler: persist trigger evaluations: %w", err)
 	}
 	// Only a landed write commits the claimed generation: a failed write must

@@ -13,8 +13,9 @@ release-pinned documentation, and
 creates a GitHub Release containing the archives, `SHA256SUMS`,
 `install.sh`, `goobers-agent-toolkit_<version>.zip`,
 `goobers-onboarding_<version>.zip`, `feature-registry.json`,
-`dsl-support-matrix.json`, and `RELEASE_NOTES.md`. The release body and attached
-notes are the same document:
+`dsl-support-matrix.json`, the reusable
+`goobers-portal-<version-without-v>.tgz` package and its provenance files, and
+`RELEASE_NOTES.md`. The release body and attached notes are the same document:
 curated highlights and the commit changelog followed by the DSL feature-support
 delta, DSL support-matrix delta, and external-consumer policy. Re-running the
 workflow updates the existing release and replaces its assets, so a partially
@@ -169,7 +170,9 @@ documentation into a platform-conventional archive, and writes a shared
 `goobers_portal_<version>.tar.gz` static asset artifact, the tagged install
 helper, portable agent toolkit, standalone onboarding payload, generated
 release notes, and shipped DSL feature and version-support snapshots into
-`dist/` (override with `-output`). It is a standalone Go tool — matching
+`dist/` (override with `-output`). The release workflow also creates the
+version-matched `@goobers/portal` npm tarball, its SHA-256 sidecar, and
+`portal-artifact.json` for embedding consumers such as Fleet. It is a standalone Go tool — matching
 `test/ci` and `test/coveragegate` — so it runs identically on any release
 runner without a shell dependency.
 
@@ -187,9 +190,12 @@ go run ./release -previous-features previous/feature-registry.json \
 Build metadata (`version`/`commit`/`date`) is injected via the same
 `internal/version` `-ldflags` path the [Makefile](../../Makefile) uses, so a
 released binary's `goobers --version` is byte-for-byte consistent with a local
-`make build`. Version defaults to `git describe --tags --always --dirty`; the
-build date defaults to the commit's committer date, so re-running the engine on
-the same commit is reproducible (`-trimpath` is always on).
+`make build`. Version defaults to
+`git describe --tags --match=v[0-9]* --always --dirty`, restricting metadata
+to Goobers product release tags so unrelated package tags cannot contaminate
+the executable version. The build date defaults to the commit's committer date,
+so re-running the engine on the same commit is reproducible (`-trimpath` is
+always on).
 
 ### Release-pinned onboarding documentation
 

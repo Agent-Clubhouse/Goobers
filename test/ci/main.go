@@ -82,10 +82,11 @@ var knownGroups = map[string]bool{
 	groupShipped:   true,
 }
 
-// uncoveredBuildTags names the four build tags with no coverage in any other
-// CI or Makefile command. Vet compiles their files without running the tagged
-// live-network, Docker, or authoring-capture tests (#4855).
-const uncoveredBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture"
+// uncoveredBuildTags names the build tags with no coverage in any other CI or
+// Makefile command. Vet compiles their files without running the tagged
+// live-network, Docker, or authoring-capture tests (#4855). liveadowrite is the
+// live ADO write leg (ADO-N16); its own workflow only runs once provisioned.
+const uncoveredBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture,liveadowrite"
 
 func versionLDFlags(metadata buildMetadata) string {
 	return fmt.Sprintf(
@@ -187,14 +188,27 @@ func groupChecksOnly(all []check, group string) []check {
 //     producing a profile that no gate consumes.
 //   - GOOBERS_CI_SHARD=i/n splits the unit suite across n runners (1-based i),
 //     dropping the coverage profile (partial per shard; the coverage *gate* is
-//     the separate full-tier cover-check). Timing capture stays with the
-//     unsharded owner (it only emits when GOOBERS_TEST_TIMING_FILE is set).
+//     the separate full-tier cover-check). The hermetic runner assigns whole
+//     packages and pieces of the split packages in .github/unit-shard-splits.json.
+//     With GOOBERS_TEST_TIMING_FILE set, a shard records its timings under the
+//     "unit-shard" job (one part file per go test invocation), so race-mode
+//     measurements can refresh the split table; the unsharded coverage job
+//     keeps the "unit" timing job and its budget report.
 //   - GOOBERS_CI_TEST_TIMEOUT raises the per-package timeout for slower
 //     platforms without weakening the suite or changing its package set.
+//   - GOOBERS_CI_COMPILE_ONLY=1 builds, vets and links every unit test binary
+//     but runs none of them (`go test -exec /usr/bin/true`; Linux and macOS only).
+//     The race-build-cache-warm job uses it to publish a Go build cache holding
+//     exactly what the race shards compile: every other flag is the shards'
+//     own, and build flags are what the cache keys on. It is never a gate —
+//     /usr/bin/true "passes" every package.
 func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 	raceEnabled := getenv("GOOBERS_CI_RACE") != "0"
-	coverageEnabled := getenv("GOOBERS_CI_COVERAGE") != "0"
-	shard := strings.TrimSpace(getenv("GOOBERS_CI_SHARD"))
+	unit := unitTestToggles{
+		coverage:    getenv("GOOBERS_CI_COVERAGE") != "0",
+		compileOnly: getenv("GOOBERS_CI_COMPILE_ONLY") == "1",
+		shard:       strings.TrimSpace(getenv("GOOBERS_CI_SHARD")),
+	}
 	testTimeout := strings.TrimSpace(getenv("GOOBERS_CI_TEST_TIMEOUT"))
 	// GOOBERS_LINT_GOOS cross-lints for another platform (e.g. darwin) from a
 	// Linux runner. It sets GOOS for the golangci-lint *subprocess* only — never
@@ -209,12 +223,8 @@ func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 		if !raceEnabled {
 			current.args = withoutArg(current.args, "-race")
 		}
-		if !coverageEnabled && current.label == "test" {
-			current.args = withoutArg(current.args, "-covermode=atomic")
-			current.args = withoutArg(current.args, "-coverprofile=coverage.out")
-		}
-		if shard != "" && current.label == "test" {
-			current.args = shardUnitArgs(current.args, shard)
+		if current.label == "test" {
+			current.args = unit.apply(current.args)
 		}
 		if testTimeout != "" && (current.label == "test" || current.label == "shipped-workflows") {
 			current.args = replaceFlagValue(current.args, "-timeout", testTimeout)
@@ -250,22 +260,76 @@ func withoutArg(args []string, drop string) []string {
 }
 
 // shardUnitArgs injects `--shard i/n` into the hermetic runner invocation
-// (before the `--` that separates hermetic flags from go-test arguments) and
-// drops the coverage profile, which is only meaningful over the whole tree.
+// (before the `--` that separates hermetic flags from go-test arguments),
+// drops the coverage profile, which is only meaningful over the whole tree,
+// and files any timing capture under the "unit-shard" job so a shard's partial
+// measurements are never read as the whole-suite "unit" timing.
 func shardUnitArgs(args []string, shard string) []string {
 	result := make([]string, 0, len(args)+2)
-	for _, arg := range args {
-		switch arg {
-		case "--":
+	separated := false
+	for index, arg := range args {
+		switch {
+		case arg == "--" && !separated:
+			separated = true
 			result = append(result, "--shard", shard, "--")
-		case "-covermode=atomic", "-coverprofile=coverage.out":
+		case arg == "-covermode=atomic" || arg == "-coverprofile=coverage.out":
 			// Partial coverage per shard is meaningless; skip it.
+		case !separated && index > 0 && args[index-1] == "--timing-job":
+			result = append(result, shardTimingJob)
 		default:
 			result = append(result, arg)
 		}
 	}
 	return result
 }
+
+// unitTestToggles are the runtime toggles that reshape only the unit suite's
+// hermetic invocation (the check labelled "test").
+type unitTestToggles struct {
+	coverage    bool
+	compileOnly bool
+	shard       string
+}
+
+func (u unitTestToggles) apply(args []string) []string {
+	if !u.coverage {
+		args = withoutArg(args, "-covermode=atomic")
+		args = withoutArg(args, "-coverprofile=coverage.out")
+	}
+	if u.shard != "" {
+		args = shardUnitArgs(args, u.shard)
+	}
+	if u.compileOnly {
+		args = compileOnlyUnitArgs(args)
+	}
+	return args
+}
+
+// compileOnlyExec is the `go test -exec` program of a compile-only run: it
+// ignores the test binary it is handed and exits 0, so every package is built,
+// vetted and linked exactly as a real run would do it, and nothing executes.
+// -exec is not an input to any compile or vet action ID, so the cache this
+// fills is the one a real run with the same flags reads.
+const compileOnlyExec = "/usr/bin/true"
+
+// compileOnlyUnitArgs adds `-exec /usr/bin/true` as the first go-test argument, just
+// after the `--` that ends the hermetic runner's own flags: go test treats
+// everything after the first package pattern as test-binary arguments.
+func compileOnlyUnitArgs(args []string) []string {
+	result := make([]string, 0, len(args)+2)
+	separated := false
+	for _, arg := range args {
+		result = append(result, arg)
+		if arg == "--" && !separated {
+			separated = true
+			result = append(result, "-exec", compileOnlyExec)
+		}
+	}
+	return result
+}
+
+// shardTimingJob names the timing a sharded unit run records.
+const shardTimingJob = "unit-shard"
 
 func configuredToolchain(getenv func(string) string) toolchain {
 	return toolchain{
@@ -280,7 +344,7 @@ func configuredToolchain(getenv func(string) string) toolchain {
 
 func resolveBuildMetadata(exec executor, tools toolchain, now func() time.Time, getenv func(string) string) buildMetadata {
 	return buildMetadata{
-		version: envOrCommand(getenv, "VERSION", exec, tools.gitCommand, []string{"describe", "--tags", "--always", "--dirty"}, "dev"),
+		version: envOrCommand(getenv, "VERSION", exec, tools.gitCommand, []string{"describe", "--tags", "--match", "v[0-9]*", "--always", "--dirty"}, "dev"),
 		commit:  envOrCommand(getenv, "COMMIT", exec, tools.gitCommand, []string{"rev-parse", "--short", "HEAD"}, "none"),
 		date:    envOrDefault(getenv, "DATE", now().UTC().Format("2006-01-02T15:04:05Z")),
 	}
@@ -476,35 +540,8 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		env:     testEnvironment,
 		group:   groupUnit,
 	}
-	// Deliberately NOT routed through test/hermetic, though every other suite is.
-	//
-	// It was tempting: the unit group sets
-	// GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS=1, so the shards never run these
-	// contracts, and the whole-tree `make test` pass behind the deleted
-	// `coverage` job was the only place they ran under the restricted PATH.
-	// But that pass only existed from 2026-08-16 (#3152) — before it, nothing in
-	// CI ran these contracts hermetically either, so there is no long-standing
-	// property here to preserve, only a five-day-old side effect of the job this
-	// change removes.
-	//
-	// And it does not work on Windows. hermetic links each allowlisted tool into
-	// a temp directory and points PATH at it; `git.exe` resolves its libexec
-	// helpers relative to its own install layout, so a linked-in-isolation git
-	// dies with "error launching git: The system cannot find the path specified."
-	// Measured on PR #3461: every reference-workflow contract failed at
-	// `git init` on windows-latest while ubuntu and macOS passed. Making these
-	// contracts hermetic therefore needs a fix in the hermetic runner's Windows
-	// tool materialisation first, and belongs in its own change.
-	shippedWorkflowCheck := check{
-		label:   "shipped-workflows",
-		command: tools.goCommand,
-		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
-		env:     testEnvironment,
-		group:   groupShipped,
-	}
-
+	result = append(result, shippedWorkflowChecks(tools, testEnvironment)...)
 	result = append(result,
-		shippedWorkflowCheck,
 		schemaDescriptionCoverageCheck,
 		testCheck,
 		check{
@@ -595,6 +632,36 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		}
 	}
 	return result
+}
+
+func shippedWorkflowChecks(tools toolchain, environment []string) []check {
+	// Deliberately NOT routed through test/hermetic, though every other suite is.
+	// hermetic links each allowlisted tool into a temp directory and points PATH
+	// at it; a linked-in-isolation git cannot find its libexec helpers on Windows.
+	return []check{
+		newShippedWorkflowCheck(tools, environment),
+		newReleaseImageProbeCheck(tools, environment),
+	}
+}
+
+func newShippedWorkflowCheck(tools toolchain, environment []string) check {
+	return check{
+		label:   "shipped-workflows",
+		command: tools.goCommand,
+		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
+		env:     environment,
+		group:   groupShipped,
+	}
+}
+
+func newReleaseImageProbeCheck(tools toolchain, environment []string) check {
+	return check{
+		label:   "release-image-probes",
+		command: tools.goCommand,
+		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./release", "-run", "^TestShippedImageProbesRunWithRealBinary$"},
+		env:     environment,
+		group:   groupShipped,
+	}
 }
 
 // Files are enumerated explicitly because the Go executor does not expand

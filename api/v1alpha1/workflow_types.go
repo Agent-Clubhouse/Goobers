@@ -811,6 +811,13 @@ type WorkflowSpec struct {
 	// DisplayName is the human-facing name shown on the portal.
 	// +optional
 	DisplayName string `json:"displayName,omitempty" yaml:"displayName,omitempty"`
+	// Enabled selects whether new runs may start for this workflow. Null or
+	// omitted means true (enabled). Setting false blocks new run starts
+	// without touching schedule or backlog configuration; in-flight runs
+	// finish normally.
+	// +optional
+	// +nullable
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// Triggers declare when the scheduler may start a run (WF-010). A single
 	// type=manual trigger declares a workflow that never auto-fires.
 	// +kubebuilder:validation:MinItems=1
@@ -825,6 +832,11 @@ type WorkflowSpec struct {
 	// MaxRepasses.
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// Backprop explicitly enrolls terminal runs in provenance-aware credit
+	// attribution. Omitted and enabled=false both preserve legacy execution
+	// without attribution work.
+	// +optional
+	Backprop *BackpropConfig `json:"backprop,omitempty" yaml:"backprop,omitempty"`
 	// OutboxMirrorPath is the default local filesystem root where this
 	// workflow mirrors durable journal outbox files. A task may override it.
 	// The configured path must be absolute, or start with "~/".
@@ -887,6 +899,18 @@ type WorkflowSpec struct {
 	// (docs/design/static-fan-out-fan-in.md).
 	// +optional
 	Parallels []Parallel `json:"parallels,omitempty" yaml:"parallels,omitempty"`
+}
+
+// BackpropConfig is the versioned workflow-level enrollment contract for
+// post-outcome credit attribution.
+type BackpropConfig struct {
+	// Enabled opts terminal runs into attribution.
+	// +kubebuilder:validation:Required
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Version pins the attribution contract interpreted for the run.
+	// +kubebuilder:validation:Enum=v1
+	// +kubebuilder:validation:Required
+	Version string `json:"version" yaml:"version"`
 }
 
 // BranchFailurePolicy declares what a parallel does when one of its branches

@@ -201,6 +201,40 @@ func TestReadStateFlagsIntakeWriteFailures(t *testing.T) {
 	}
 }
 
+// TestReadStateFlagsIntakeCountUnavailable is #2462's regression test.
+//
+// Before this, a failed intake Count silently left PendingIntake at its zero
+// value with no signal — indistinguishable from a genuinely empty intake
+// table, even though unapplied watermarks could be accumulating behind an
+// unavailable or locked store. PendingIntake still can't carry both meanings
+// in one int, so the degraded condition is what tells them apart, the same
+// way DegradedNoSweepCompleted already does for a never-completed sweep.
+func TestReadStateFlagsIntakeCountUnavailable(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	unavailable, err := store.ReadState(ctx, ReadStateInput{IntakeCountUnavailable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unavailable.PendingIntake != 0 {
+		t.Errorf("pendingIntake = %d, want 0 (the zero value) even when the count is unavailable", unavailable.PendingIntake)
+	}
+	if !slices.Contains(unavailable.Degraded, DegradedIntakeCountUnavailable) {
+		t.Errorf("degraded = %v, want it to contain %q", unavailable.Degraded, DegradedIntakeCountUnavailable)
+	}
+
+	// A genuine zero count must NOT carry the same degraded condition — the
+	// whole point is that a client can tell the two apart.
+	zero, err := store.ReadState(ctx, ReadStateInput{PendingIntake: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(zero.Degraded, DegradedIntakeCountUnavailable) {
+		t.Errorf("degraded = %v, a successful zero count must not be flagged unavailable", zero.Degraded)
+	}
+}
+
 // TestReadStateCarriesEpochAndRetentionFloor pins the two fields a live client
 // needs to decide whether its cursor is still valid.
 func TestReadStateCarriesEpochAndRetentionFloor(t *testing.T) {

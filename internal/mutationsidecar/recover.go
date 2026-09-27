@@ -98,13 +98,17 @@ func recoveryEvent(fact Fact) journal.Event {
 func mutationFingerprint(event journal.Event) (string, error) {
 	// Custody copies and normal projection prove the same semantic receipt.
 	if event.Type == journal.EventRunnerMutationRecovered {
-		event.Type = journal.EventRefTouched
-		if outcome, _ := event.Runner["outcome"].(string); outcome == "failure" || outcome == "conflict" {
+		switch outcome, _ := event.Runner["outcome"].(string); outcome {
+		case "failure", "conflict":
 			event.Type = journal.EventError
+		case "contention":
+			event.Type = journal.EventRunnerAnnotation
+		default:
+			event.Type = journal.EventRefTouched
 		}
 	}
 	fields := map[string]any{}
-	for _, key := range []string{"operation", "mergeConfirmation", "queueAdmission", "landingIntent", "claimRunId", "outcome", "providerRunId"} {
+	for _, key := range []string{"operation", "mergeConfirmation", "queueAdmission", "landingIntent", "claimRunId", "outcome", "providerRunId", "provider", "kind", "itemId", "annotation"} {
 		if value, ok := event.Runner[key]; ok {
 			fields[key] = value
 		}
@@ -131,10 +135,34 @@ func mutationFingerprint(event journal.Event) (string, error) {
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
+// Projection may add a URL derived from the typed landing evidence. Compare
+// that equivalent representation without changing the fingerprint stamped on
+// historical custody records, which must still verify against their raw bytes.
+func comparisonFingerprint(event journal.Event) (string, error) {
+	if event.ExternalRef != nil && event.ExternalRef.URL == "" {
+		data, err := json.Marshal(event.Runner)
+		if err != nil {
+			return "", err
+		}
+		var receipt Fact
+		if err := json.Unmarshal(data, &receipt); err != nil {
+			return "", err
+		}
+		ref := *event.ExternalRef
+		ref.URL = providers.MutationWorkItemURL(ref.Provider, ref.Kind, ref.ID, "", receipt.MergeConfirmation, receipt.QueueAdmission, receipt.LandingIntent)
+		event.ExternalRef = &ref
+	}
+	return mutationFingerprint(event)
+}
+
 func missingRecoveryEvents(facts []Fact, recorded []journal.Event, worktreeID string) ([]journal.Event, error) {
 	receipts := map[string]string{}
 	for _, event := range recorded {
-		if event.ExternalRef == nil || (event.Type != journal.EventRefTouched && event.Type != journal.EventError && event.Type != journal.EventRunnerMutationRecovered) {
+		outcome, _ := event.Runner["outcome"].(string)
+		isContentionReceipt := outcome == "contention" &&
+			(event.Type == journal.EventRunnerAnnotation || event.Type == journal.EventRunnerMutationRecovered)
+		if !isContentionReceipt &&
+			(event.ExternalRef == nil || (event.Type != journal.EventRefTouched && event.Type != journal.EventError && event.Type != journal.EventRunnerMutationRecovered)) {
 			continue
 		}
 		id, _ := event.Runner["mutationReceiptId"].(string)
@@ -147,6 +175,10 @@ func missingRecoveryEvents(facts []Fact, recorded []journal.Event, worktreeID st
 		}
 		if stamped, present := event.Runner["mutationRecoveryFingerprint"]; present && stamped != fingerprint {
 			return nil, fmt.Errorf("journal mutation receipt fingerprint does not match its contents")
+		}
+		fingerprint, err = comparisonFingerprint(event)
+		if err != nil {
+			return nil, err
 		}
 		if prior, ok := receipts[id]; ok && prior != fingerprint {
 			return nil, fmt.Errorf("conflicting journal mutation receipt identity")
@@ -163,13 +195,17 @@ func missingRecoveryEvents(facts []Fact, recorded []journal.Event, worktreeID st
 		if err != nil {
 			return nil, err
 		}
+		comparison, err := comparisonFingerprint(event)
+		if err != nil {
+			return nil, err
+		}
 		if prior, ok := receipts[fact.ReceiptID]; ok {
-			if prior != fingerprint {
+			if prior != comparison {
 				return nil, fmt.Errorf("conflicting mutation receipt identity; preserving worktree")
 			}
 			continue
 		}
-		receipts[fact.ReceiptID] = fingerprint
+		receipts[fact.ReceiptID] = comparison
 		event.Runner["mutationRecoveryFingerprint"] = fingerprint
 		event.Runner["recoveredFromWorktree"] = worktreeID
 		event.Type = journal.EventRunnerMutationRecovered

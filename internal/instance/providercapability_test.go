@@ -62,6 +62,37 @@ func TestWorkflowRequiredProviderCapabilitiesDerivesFromStages(t *testing.T) {
 	}
 }
 
+// TestUpdateBehindPRDerivesNoCapabilityOnADO pins ADO-N15: the ADO override
+// for update-behind-pr is a present-but-empty entry, so a workflow whose only
+// deterministic stage is update-behind-pr requires nothing on ADO (the
+// override REPLACES the GitHub-shaped default) while still requiring
+// pr.compare and pr.update-branch on GitHub, where the default derivation
+// applies unchanged.
+func TestUpdateBehindPRDerivesNoCapabilityOnADO(t *testing.T) {
+	wf := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Tasks: []apiv1.Task{
+			deterministicStage("update", "update-behind-pr"),
+		},
+	}}
+	wf.Name = "pr-remediation"
+
+	if got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderADO); len(got) != 0 {
+		t.Fatalf("required on ADO = %v, want none", got)
+	}
+
+	got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderGitHub)
+	want := []providers.Capability{providers.CapPRCompare, providers.CapPRUpdateBranch}
+	if len(got) != len(want) {
+		t.Fatalf("required on GitHub = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("required on GitHub = %v, want %v", got, want)
+		}
+	}
+}
+
 // TestBacklogQueryAloneDerivesNoProviderCapabilityRequirement pins the fix
 // for CONF-6's original over-broad requirement: backlog-query's
 // HasOpenWorkItemBlocker call only fires when a work item's BlockedByCount
@@ -178,6 +209,59 @@ func TestCheckProviderCapabilityRequirementsRejectsRealADOGap(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "implementation") || !strings.Contains(err.Error(), "ado") {
 		t.Errorf("error must name the workflow and the provider: %v", err)
+	}
+}
+
+// ProviderCapabilityProblems must report every unmet requirement of every
+// workflow, so the provider compile-matrix gate (ADO-N1) cannot have one gap
+// mask another; CheckProviderCapabilityRequirements still returns the first.
+func TestProviderCapabilityProblemsReportsEveryWorkflowAndCapability(t *testing.T) {
+	remediation := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Tasks: []apiv1.Task{
+			deterministicStage("threads", "gather-review-threads"),
+			deterministicStage("update", "update-behind-pr"),
+		},
+	}}
+	remediation.Name = "pr-remediation"
+	review := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Tasks:  []apiv1.Task{deterministicStage("threads", "gather-review-threads")},
+	}}
+	review.Name = "review"
+	set := &ConfigSet{Gaggles: []apiv1.Gaggle{adoGaggle("web")}, Workflows: []apiv1.Workflow{remediation, review}}
+
+	got := ProviderCapabilityProblems(set)
+	// update-behind-pr contributes no problem here (ADO-N15): its ADO
+	// override derives no capability at all, so pr.update-branch never
+	// reaches ProviderCapabilityProblems for this workflow.
+	want := []ProviderCapabilityProblem{
+		{Gaggle: "web", Workflow: "pr-remediation", Capability: providers.CapPRReviewThreads, Provider: "ado"},
+		{Gaggle: "web", Workflow: "review", Capability: providers.CapPRReviewThreads, Provider: "ado"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("problems = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("problems = %+v, want %+v", got, want)
+		}
+	}
+	err := CheckProviderCapabilityRequirements(set)
+	if err == nil || err.Error() != want[0].Error() {
+		t.Fatalf("CheckProviderCapabilityRequirements = %v, want the first problem %q", err, want[0].Error())
+	}
+	wantMessage := `workflow "pr-remediation" requires provider capability "pr.review.threads" which provider "ado" does not declare`
+	if err.Error() != wantMessage {
+		t.Fatalf("diagnostic = %q, want the unchanged CONF-6 wording %q", err.Error(), wantMessage)
+	}
+}
+
+func TestProviderCapabilityProblemBacklogWording(t *testing.T) {
+	problem := ProviderCapabilityProblem{Workflow: "w", Capability: providers.CapBacklogBlockers, Provider: "ado", Backlog: true}
+	want := `workflow "w" requires provider capability "backlog.blockers" which backlog provider "ado" does not declare`
+	if problem.Error() != want {
+		t.Fatalf("Error() = %q, want %q", problem.Error(), want)
 	}
 }
 

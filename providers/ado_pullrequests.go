@@ -53,7 +53,13 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
 			return PullRequestResult{}, err
 		}
-		return adoPullRequestResult(out), nil
+		// #5266: record the confirmed effect. A successful create or update
+		// previously returned without recording anything, so Work Items —
+		// which lists RECORDED provider effects — had no receipt for a PR that
+		// demonstrably existed. Recorded only after p.do returns nil: a failed
+		// or conflicting request must not count as a confirmed mutation.
+		p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "update", req.Repository)
+		return p.adoPullRequestResult(req.Repository, out), nil
 	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
@@ -70,15 +76,34 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestResult{}, err
 	}
-	return adoPullRequestResult(out), nil
+	p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "create", req.Repository)
+	return p.adoPullRequestResult(req.Repository, out), nil
 }
 
-func adoPullRequestResult(pr adoPullRequest) PullRequestResult {
-	prURL := pr.URL
+func (p *ADOProvider) adoPullRequestResult(repo RepositoryRef, pr adoPullRequest) PullRequestResult {
+	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: p.pullRequestWebURL(repo, pr)}
+}
+
+// pullRequestWebURL resolves the browser-navigable URL for a pull request
+// (ADO-N39). ADO's API responses only sometimes populate _links.web.href; when
+// it's empty the raw pr.URL is an _apis/git/... endpoint that 404s in a
+// browser and, worse, is indistinguishable in shape from any other
+// repository's PR — a config that targets repo A could silently be satisfied
+// by a PR in repo B. Building the browser URL from the server-returned
+// repository/project identity keeps a cross-repository PR's URL failing the
+// caller's repository match instead of passing an opaque API URL through.
+func (p *ADOProvider) pullRequestWebURL(repo RepositoryRef, pr adoPullRequest) string {
 	if pr.Links.Web.Href != "" {
-		prURL = pr.Links.Web.Href
+		return pr.Links.Web.Href
 	}
-	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: prURL}
+	if pr.Repository.Name != "" && pr.Repository.Project.Name != "" {
+		base := strings.TrimSuffix(p.BaseURL, "/")
+		if base == "" {
+			base = "https://dev.azure.com"
+		}
+		return base + "/" + p.Organization + "/" + pr.Repository.Project.Name + "/_git/" + pr.Repository.Name + "/pullrequest/" + strconv.Itoa(pr.PullRequestID)
+	}
+	return p.entityWebURL(repo, "pr", strconv.Itoa(pr.PullRequestID))
 }
 
 // FindPullRequestByBranch resolves the open Azure DevOps pull request whose
@@ -116,7 +141,11 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 		return errPullIDRequired
 	}
 	for _, reviewer := range req.Reviewers {
-		endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "reviewers", reviewer)
+		identityID, err := p.resolveIdentityID(ctx, reviewer)
+		if err != nil {
+			return err
+		}
+		endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "reviewers", identityID)
 		if err != nil {
 			return err
 		}
@@ -127,13 +156,15 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 	return nil
 }
 
-// adoLabelNames maps ADO PR labels to their bare names.
+// adoLabelNames maps ADO PR labels to their bare names, with the labels
+// Goobers owns folded to Goobers' spelling (ADO keeps the first writer's
+// casing; see ado_labelcase.go).
 func adoLabelNames(labels []adoLabel) []string {
 	names := make([]string, 0, len(labels))
 	for _, l := range labels {
 		names = append(names, l.Name)
 	}
-	return names
+	return canonicalADOLabels(names, nil)
 }
 
 // PollPullRequest reports an Azure DevOps pull request's review decision and
@@ -156,10 +187,6 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
 		return PullRequestPollResult{}, err
 	}
-	prURL := pr.URL
-	if pr.Links.Web.Href != "" {
-		prURL = pr.Links.Web.Href
-	}
 	result := PullRequestPollResult{
 		Number:             pr.PullRequestID,
 		Title:              pr.Title,
@@ -174,7 +201,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		BaseSHA:            pr.LastMergeTargetCommit.CommitID,
 		Body:               pr.Description,
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
-		URL:                prURL,
+		URL:                p.pullRequestWebURL(req.Repository, pr.adoPullRequest),
 		Integrity:          apiintegrity.Unapproved,
 	}
 	projectName := pr.Repository.Project.Name
@@ -224,56 +251,30 @@ func (p *ADOProvider) policyEvaluations(ctx context.Context, projectName, projec
 // per-policy detail.
 //
 // The returned CheckState gates on the set of policies the agent loop can act
-// on — every required blocking policy EXCEPT those whose configuration id is in
-// humanOnly. Human/merge-time policies (merge strategy, proof-of-presence,
-// required/minimum reviewers, comment resolution) can never be satisfied by
-// re-implementing; reducing on them would peg the state to failing forever and
-// starve the fix loop, so a loop declares their configuration ids as human-only
-// and they are recorded in the detail list for transparency but never drive the
-// gate. When no gating policy has concluded green yet (none applies, or one is
-// still queued/running) the state is pending — fail-closed: correctness is
-// unproven until a gating policy passes.
+// on. Evaluations are classified by policy type id (design
+// ado-parity-dsl-2-0.md §5.1, ADO-N19): minimum- and required-reviewer
+// policies never gate — an unmet one is a wait on a human, reported per check
+// as AwaitingHuman, never CI pending and never a remediation trigger. Every
+// other required blocking policy gates EXCEPT those whose configuration id is
+// in humanOnly: other human/merge-time policies (merge strategy,
+// proof-of-presence, …) can never be satisfied by re-implementing, so a loop
+// declares their configuration ids as human-only and they are recorded in the
+// detail list for transparency but never drive the gate. When no gating policy
+// has concluded green yet (none applies, or one is still queued/running) the
+// state is pending — fail-closed: correctness is unproven until a gating
+// policy passes — unless ADO evaluated only reviewer policies, in which case
+// there is no CI to wait for. A successful authoritative query that returns
+// no blocking policies is also passing: the repository has no hosted policy
+// gate. A not-applicable blocking evaluation is omitted from details but still
+// distinguishes an unresolved hosted gate from a true zero-policy repository,
+// while a broken gate fails closed.
 func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, projectID, pullID string, humanOnly map[string]bool) (CheckState, []CheckDetail, error) {
 	evals, err := p.policyEvaluations(ctx, projectName, projectID, pullID)
 	if err != nil {
 		return "", nil, err
 	}
-	checks := make([]CheckDetail, 0, len(evals))
-	gateFailing, gatePending, gatePassing, sawGate := false, false, false, false
-	for _, ev := range evals {
-		if !ev.Configuration.IsEnabled || !ev.Configuration.IsBlocking {
-			continue
-		}
-		state := adoPolicyCheckState(ev.Status)
-		if state == "" {
-			continue
-		}
-		checks = append(checks, CheckDetail{
-			Name:       adoPolicyName(ev),
-			State:      state,
-			Conclusion: ev.Status,
-		})
-		if humanOnly[ev.Configuration.ID.String()] {
-			continue
-		}
-		sawGate = true
-		switch state {
-		case CheckStateFailing:
-			gateFailing = true
-		case CheckStatePending:
-			gatePending = true
-		case CheckStatePassing:
-			gatePassing = true
-		}
-	}
-	switch {
-	case gateFailing:
-		return CheckStateFailing, checks, nil
-	case sawGate && gatePassing && !gatePending:
-		return CheckStatePassing, checks, nil
-	default:
-		return CheckStatePending, checks, nil
-	}
+	state, checks := p.reducePolicyEvaluations(evals, projectName, humanOnly)
+	return state, checks, nil
 }
 
 // ClosePullRequest abandons an Azure DevOps pull request — the ADO equivalent of
@@ -295,7 +296,7 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"status": "abandoned"}, &out); err != nil {
 		return ClosePullRequestResult{}, err
 	}
-	p.recordMutation(ctx, "pr", req.PullID, "close")
+	p.recordMutation(ctx, "pr", req.PullID, "close", req.Repository)
 	if req.Comment != "" {
 		if _, err := p.postAttributedPullRequestThreadComment(ctx, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
 			return ClosePullRequestResult{}, err
@@ -312,10 +313,37 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	}, nil
 }
 
+// latestPullRequestIteration returns the highest iteration ID for the given
+// pull request. ADO iteration IDs are monotonically increasing but the
+// iterations list is not guaranteed to be sorted, so callers must scan for
+// the max rather than take the last entry.
+func (p *ADOProvider) latestPullRequestIteration(ctx context.Context, repo RepositoryRef, pullID string) (int, error) {
+	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
+	if err != nil {
+		return 0, err
+	}
+	var iterations adoPullRequestIterationsResponse
+	if err := p.do(ctx, http.MethodGet, iterationsEndpoint, nil, &iterations); err != nil {
+		return 0, err
+	}
+	latestIteration := 0
+	for _, iteration := range iterations.Value {
+		if iteration.ID > latestIteration {
+			latestIteration = iteration.ID
+		}
+	}
+	if latestIteration == 0 {
+		return 0, fmt.Errorf("ado pull request %s returned no iterations", pullID)
+	}
+	return latestIteration, nil
+}
+
 // PublishPullRequestStatus posts an Azure DevOps pull-request status so a
 // status-check branch policy can gate on goobers-supplied evidence — a reviewer
 // verdict or local-CI result — making ADO's policy engine the source of truth
-// for PR correctness (#772).
+// for PR correctness (#772). Statuses are posted against the latest PR
+// iteration rather than the PR itself: a status policy with reset-on-push
+// rejects PR-level statuses with 403, and iteration-scoped statuses satisfy it.
 func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequestStatusRequest) (PullRequestStatusResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestStatusResult{}, err
@@ -326,7 +354,11 @@ func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequ
 	if req.Name == "" {
 		return PullRequestStatusResult{}, fmt.Errorf("status name is required")
 	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "statuses")
+	latestIteration, err := p.latestPullRequestIteration(ctx, req.Repository, req.PullID)
+	if err != nil {
+		return PullRequestStatusResult{}, err
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "iterations", strconv.Itoa(latestIteration), "statuses")
 	if err != nil {
 		return PullRequestStatusResult{}, err
 	}
@@ -351,7 +383,7 @@ func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequ
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestStatusResult{}, err
 	}
-	p.recordMutation(ctx, "pr", req.PullID, "status")
+	p.recordMutation(ctx, "pr", req.PullID, "status", req.Repository)
 	return PullRequestStatusResult{ID: out.ID}, nil
 }
 
@@ -411,14 +443,10 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			continue
 		}
 		labels := adoLabelNames(pr.Labels)
-		prURL := pr.URL
-		if pr.Links.Web.Href != "" {
-			prURL = pr.Links.Web.Href
-		}
 		out = append(out, PullRequestSummary{
 			ID:                 strconv.Itoa(pr.PullRequestID),
 			Number:             pr.PullRequestID,
-			URL:                prURL,
+			URL:                p.pullRequestWebURL(req.Repository, pr),
 			Author:             author,
 			RequestedReviewers: requestedReviewers,
 			Head:               head,
@@ -435,6 +463,23 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 	return out, nil
 }
 
+// ListOpenPullRequests returns the head branch and labels of every active pull
+// request in the repository, across all pages. It is the open-PR-count
+// throttle's read (readiness.maxOpenPRs), the ADO counterpart of
+// GitHubProvider.ListOpenPullRequests: the scheduler buckets the heads by
+// run-branch namespace and drops human-parked PRs by label.
+func (p *ADOProvider) ListOpenPullRequests(ctx context.Context, repo RepositoryRef) ([]OpenPRSummary, error) {
+	prs, err := p.ListPullRequests(ctx, ListPullRequestsRequest{Repository: repo})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OpenPRSummary, 0, len(prs))
+	for _, pr := range prs {
+		out = append(out, OpenPRSummary{Head: pr.Head, Labels: pr.Labels})
+	}
+	return out, nil
+}
+
 // PullRequestFiles lists the cumulative changes in the latest pull request
 // iteration, relative to the common source/target commit.
 func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, pullID string) ([]ChangedFile, error) {
@@ -444,22 +489,9 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 	if pullID == "" {
 		return nil, errPullIDRequired
 	}
-	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
+	latestIteration, err := p.latestPullRequestIteration(ctx, repo, pullID)
 	if err != nil {
 		return nil, err
-	}
-	var iterations adoPullRequestIterationsResponse
-	if err := p.do(ctx, http.MethodGet, iterationsEndpoint, nil, &iterations); err != nil {
-		return nil, err
-	}
-	latestIteration := 0
-	for _, iteration := range iterations.Value {
-		if iteration.ID > latestIteration {
-			latestIteration = iteration.ID
-		}
-	}
-	if latestIteration == 0 {
-		return nil, fmt.Errorf("ado pull request %s returned no iterations", pullID)
 	}
 
 	changesEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations", strconv.Itoa(latestIteration), "changes")
@@ -519,6 +551,7 @@ type adoPullRequest struct {
 	LastMergeSourceCommit adoCommitRef  `json:"lastMergeSourceCommit"`
 	LastMergeTargetCommit adoCommitRef  `json:"lastMergeTargetCommit"`
 	Links                 adoPRLinks    `json:"_links"`
+	Repository            adoRepository `json:"repository"`
 }
 
 type adoPullRequestsResponse struct {
@@ -526,13 +559,13 @@ type adoPullRequestsResponse struct {
 }
 
 // adoPullRequestDetail extends adoPullRequest with the fields a single-PR GET
-// returns that a list does not: description, reviewers (for review-decision
-// mapping), and the repository/project identity needed to key policy
-// evaluations.
+// returns that a list does not: description and reviewers (for
+// review-decision mapping). The embedded adoPullRequest already carries
+// Repository, which this type relies on for the project identity needed to
+// key policy evaluations.
 type adoPullRequestDetail struct {
 	adoPullRequest
-	Description string        `json:"description"`
-	Repository  adoRepository `json:"repository"`
+	Description string `json:"description"`
 	// MergeStatus/MergeID/LastMergeCommit/CompletionOptions/
 	// AutoCompleteSetBy back the landing surfaces (CONF-3 #2076, design
 	// doc §4): MergeStatus is the completion job's own outcome
@@ -600,9 +633,17 @@ type adoPolicyEvaluation struct {
 		IsEnabled  bool        `json:"isEnabled"`
 		IsBlocking bool        `json:"isBlocking"`
 		Type       struct {
+			// ID is the well-known policy type id that classifies the
+			// evaluation (build, status, reviewers, …); see adoPolicyKindOf.
+			ID          string `json:"id"`
 			DisplayName string `json:"displayName"`
 		} `json:"type"`
 	} `json:"configuration"`
+	// Context carries type-specific evaluation detail. For a build policy,
+	// BuildID names the build that was evaluated.
+	Context struct {
+		BuildID json.Number `json:"buildId"`
+	} `json:"context"`
 }
 
 // stringSet builds a lookup set from a slice, ignoring empty entries.
@@ -635,13 +676,16 @@ func adoPullRequestState(status string) string {
 }
 
 // adoPolicyCheckState maps an Azure DevOps policy-evaluation status to a
-// provider-neutral check state. An empty return means the evaluation is not
-// applicable and should be ignored.
+// provider-neutral check state. An empty return omits a not-applicable
+// evaluation from check details; pollPullRequestPolicies still records that a
+// blocking evaluation exists so it cannot be mistaken for a zero-policy repo.
 func adoPolicyCheckState(status string) CheckState {
 	switch strings.ToLower(status) {
 	case "approved":
 		return CheckStatePassing
 	case "rejected":
+		return CheckStateFailing
+	case "broken":
 		return CheckStateFailing
 	case "queued", "running":
 		return CheckStatePending

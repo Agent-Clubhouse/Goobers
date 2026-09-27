@@ -782,9 +782,10 @@ func (c *recordingOTLPMetricCollector) Export(
 }
 
 type countingMetricExporter struct {
-	mu        sync.Mutex
-	exported  metricNames
-	shutdowns atomic.Int64
+	mu           sync.Mutex
+	exported     metricNames
+	journalDrops map[string]int64
+	shutdowns    atomic.Int64
 }
 
 func (e *countingMetricExporter) Temporality(kind metric.InstrumentKind) metricdata.Temporality {
@@ -804,9 +805,35 @@ func (e *countingMetricExporter) Export(_ context.Context, collected *metricdata
 	for _, scope := range collected.ScopeMetrics {
 		for _, m := range scope.Metrics {
 			e.exported[m.Name] = struct{}{}
+			if m.Name != MetricJournalExportsDropped {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			if e.journalDrops == nil {
+				e.journalDrops = make(map[string]int64)
+			}
+			for _, point := range sum.DataPoints {
+				cause, ok := point.Attributes.Value(attribute.Key(MetricAttrJournalDropCause))
+				if ok {
+					e.journalDrops[cause.AsString()] = point.Value
+				}
+			}
 		}
 	}
 	return nil
+}
+
+func (e *countingMetricExporter) journalDropCounts() map[string]int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	counts := make(map[string]int64, len(e.journalDrops))
+	for cause, count := range e.journalDrops {
+		counts[cause] = count
+	}
+	return counts
 }
 
 func (e *countingMetricExporter) ForceFlush(context.Context) error { return nil }

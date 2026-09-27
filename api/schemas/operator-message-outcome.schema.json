@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/operator-message-outcome.schema.json",
+  "title": "OperatorMessageOutcome",
+  "description": "A terminal delivery or rejection outcome for an operator message.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "requestId", "idempotencyKey", "completedAt", "status"],
+  "properties": {
+    "schema": { "description": "Versioned terminal outcome contract identifier.", "const": "goobers.dev/operator-message/outcome/v1" },
+    "requestId": { "description": "Identity of the terminal request.", "type": "string", "minLength": 1, "maxLength": 256 },
+    "idempotencyKey": { "description": "Idempotency key of the terminal request.", "type": "string", "minLength": 1, "maxLength": 256 },
+    "completedAt": { "description": "Time at which the terminal disposition was recorded.", "type": "string", "format": "date-time" },
+    "status": { "description": "Typed terminal disposition.", "type": "string", "enum": ["delivered", "failed", "rejected", "expired"] },
+    "code": { "description": "Stable machine-readable outcome code.", "type": "string", "minLength": 1, "maxLength": 128 },
+    "detail": { "description": "Optional scrubbed human-readable outcome detail.", "type": "string", "maxLength": 4096 },
+    "request": { "description": "Original request retained when rejection occurs before acceptance.", "$ref": "operator-message-request.schema.json" }
+  }
+}

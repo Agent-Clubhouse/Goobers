@@ -346,6 +346,11 @@ type RunnerConfig struct {
 	// fresh session ID generated for each invocation. Arguments may contain the
 	// {sessionId} placeholder and are appended to the configured launcher.
 	HarnessSessionArgs map[string][]string `json:"harnessSessionArgs,omitempty" yaml:"harnessSessionArgs,omitempty"`
+	// HarnessPreflightArgs are literal arguments appended only to a harness's
+	// authentication/session-contract preflight probe. They do not affect
+	// workflow execution. Use them to make a custom launcher enter a bounded,
+	// non-agentic startup mode without weakening the real agentic environment.
+	HarnessPreflightArgs map[string][]string `json:"harnessPreflightArgs,omitempty" yaml:"harnessPreflightArgs,omitempty"`
 	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
 	// the daemon is reported unhealthy. Empty defaults to two minutes.
 	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`
@@ -808,7 +813,8 @@ type RepoAuthConfig struct {
 	Kind string `json:"kind" yaml:"kind"`
 	// Tenant optionally pins Azure CLI authentication to one tenant (ADO).
 	Tenant string `json:"tenant,omitempty" yaml:"tenant,omitempty"`
-	// ClientID optionally selects a user-assigned managed identity (ADO).
+	// ClientID optionally selects a user-assigned identity for ADO workload or
+	// managed identity authentication.
 	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
 	// AppID identifies the GitHub App for kind github-app: the numeric App
 	// ID or the app's client ID string — GitHub accepts either as the App
@@ -1269,7 +1275,31 @@ type CredentialGrant struct {
 	Harness string `json:"harness,omitempty" yaml:"harness,omitempty"`
 	// Token is the source of the credential — exactly one supported TokenRef
 	// source, like a repo's token; inline secret values are never permitted.
-	Token TokenRef `json:"token" yaml:"token"`
+	// Set exactly one of Token and GitHubApp.
+	Token TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
+	// GitHubApp mints a short-lived installation token for Copilot model
+	// requests. It is restricted to an agent:model grant scoped to the
+	// copilot harness. The private key remains runner-owned; stages receive
+	// only the minted token and its stated expiry.
+	GitHubApp *AgentModelGitHubAppConfig `json:"githubApp,omitempty" yaml:"githubApp,omitempty"`
+}
+
+// AgentModelGitHubAppConfig declares a least-privilege GitHub App source for
+// the Copilot harness's agent:model credential.
+type AgentModelGitHubAppConfig struct {
+	// Name is the stable operator-facing identity for diagnostics and
+	// per-instance/per-cluster throttling attribution.
+	Name           string   `json:"name" yaml:"name"`
+	AppID          GitHubID `json:"appId" yaml:"appId"`
+	InstallationID GitHubID `json:"installationId" yaml:"installationId"`
+	// Repository is the exact owner/name whose installation token is minted.
+	Repository string `json:"repository" yaml:"repository"`
+	// RepositoryID is the immutable numeric GitHub repository ID used to
+	// down-scope the installation-token request.
+	RepositoryID GitHubID `json:"repositoryId" yaml:"repositoryId"`
+	// PrivateKey references the App's PEM key; inline key material is never
+	// accepted.
+	PrivateKey *TokenRef `json:"privateKey" yaml:"privateKey"`
 }
 
 // TelemetryConfig configures the local telemetry rollup store and optional
@@ -1280,6 +1310,8 @@ type TelemetryConfig struct {
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
 	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
+	// Diagnostics has its own opt-in collector; it never inherits journal export.
+	Diagnostics *DiagnosticsConfig `json:"diagnostics,omitempty" yaml:"diagnostics,omitempty"`
 	// Retention bounds terminal run journals and their rollup rows. Automatic
 	// daemon pruning is opt-out (#4253, ruling on #3056): it defaults on, at
 	// DefaultTelemetryRetentionWindow/DefaultTelemetryRetentionMaxRuns,
@@ -1358,9 +1390,14 @@ func (c TelemetryRetentionConfig) MaxRunLimit() int {
 // OTLPConfig configures an optional OTLP/gRPC collector. Endpoint absence
 // disables collector push. Header values are always indirect secret refs.
 type OTLPConfig struct {
-	Endpoint string              `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
-	Insecure bool                `json:"insecure,omitempty" yaml:"insecure,omitempty"`
-	Headers  map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
+	// ExportEnabled explicitly disables push, overriding environment configuration.
+	// Nil preserves the legacy endpoint-based opt-in.
+	ExportEnabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// JournalLogs defaults to true for an explicitly configured native collector.
+	JournalLogs *bool               `json:"journalLogs,omitempty" yaml:"journalLogs,omitempty"`
+	Endpoint    string              `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	Insecure    bool                `json:"insecure,omitempty" yaml:"insecure,omitempty"`
+	Headers     map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
 	// TLS configures trust for a collector that presents a certificate the
 	// system trust store does not already recognize (e.g. a private CA),
 	// and optionally a client certificate for mTLS. It is additive: absent,
@@ -1766,6 +1803,33 @@ type RecoverySnapshotConfig struct {
 	// could not possibly fit is refused at load rather than at the write that
 	// eventually fills the volume.
 	MaxVolumeBytes int64 `json:"maxVolumeBytes,omitempty" yaml:"maxVolumeBytes,omitempty"`
+	// OnFull selects what happens when the inventory is still full after
+	// every reclamation has run (#5370). Omitted means
+	// RecoveryOnFullOverflow.
+	OnFull string `json:"onFull,omitempty" yaml:"onFull,omitempty"`
+}
+
+// What a legitimately full recovery inventory does to a cleanup.
+const (
+	// RecoveryOnFullOverflow keeps the snapshot as a pinned ref with a
+	// bundle-less overflow record and acknowledges the cleanup. It is the
+	// default because refusing protects nothing — the objects are already in
+	// the mirror before any slot is consulted — while stopping the instance:
+	// the run branch cannot be reacquired and unrelated runs then fail at
+	// `create worktree`.
+	RecoveryOnFullOverflow = "overflow"
+	// RecoveryOnFullRefuse keeps the pre-#5370 fail-closed behaviour: the
+	// publish is refused and the cleanup deferred. It exists for an operator
+	// who would rather wedge execution than hold work at the ref tier.
+	RecoveryOnFullRefuse = "refuse"
+)
+
+// OnFullEffective resolves the configured full-inventory behaviour.
+func (c RecoverySnapshotConfig) OnFullEffective() string {
+	if c.OnFull == RecoveryOnFullRefuse {
+		return RecoveryOnFullRefuse
+	}
+	return RecoveryOnFullOverflow
 }
 
 // MaxSnapshotsEffective resolves the configured inventory cap.
@@ -2018,6 +2082,9 @@ func (c *Config) ResolveOTLPConfig(lookupEnv func(string) (string, bool)) (OTLPC
 	if c.Telemetry.OTLP != nil {
 		resolved = *c.Telemetry.OTLP
 	}
+	if resolved.ExportEnabled != nil && !*resolved.ExportEnabled {
+		return resolved, resolved.Validate()
+	}
 	if endpoint, ok := lookupEnv(OTLPEndpointEnv); ok {
 		endpoint = strings.TrimSpace(endpoint)
 		if endpoint == "" {
@@ -2193,11 +2260,22 @@ func (c EngineHITLConfig) HITLWindow() time.Duration {
 
 // Enabled reports whether collector push is configured.
 func (c OTLPConfig) Enabled() bool {
-	return c.Endpoint != ""
+	return (c.ExportEnabled == nil || *c.ExportEnabled) && c.Endpoint != ""
+}
+
+// JournalLogsEnabled reports whether live journal events use the native collector.
+func (c OTLPConfig) JournalLogsEnabled() bool {
+	return c.Enabled() && (c.JournalLogs == nil || *c.JournalLogs)
 }
 
 // Validate checks the collector endpoint, transport, and credential references.
 func (c OTLPConfig) Validate() error {
+	if c.ExportEnabled != nil && !*c.ExportEnabled {
+		return nil
+	}
+	if c.ExportEnabled != nil && *c.ExportEnabled && c.Endpoint == "" {
+		return fmt.Errorf("endpoint is required when export is enabled")
+	}
 	if c.Endpoint == "" {
 		if c.Insecure || len(c.Headers) != 0 || c.TLS != nil {
 			return fmt.Errorf("endpoint is required when insecure mode, headers, or tls are configured")

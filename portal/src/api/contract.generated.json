@@ -102,6 +102,17 @@
       "recoverySafe": false
     },
     {
+      "id": "portalAsset",
+      "method": "GET",
+      "path": "/assets/{path...}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": true
+    },
+    {
       "id": "gaggles",
       "method": "GET",
       "path": "/api/v1/gaggles",
@@ -646,6 +657,17 @@
       "id": "journalEscalationCandidates",
       "method": "POST",
       "path": "/api/v1/journal/escalation-candidates",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "journalMergeAuthority",
+      "method": "POST",
+      "path": "/api/v1/journal/merge-authority",
       "actionClass": "workflow-execution",
       "remoteInvocable": false,
       "cost": "mutation",

@@ -44,6 +44,34 @@ func TestWorkflowSchemaAcceptsExecutionPolicyFields(t *testing.T) {
 	}
 }
 
+// TestWorkflowSchemaAcceptsReportPRStatusPolicyAction is part of the ADO-N23
+// rs-* matrix: report-pr-status must be a declarable policyActions enum
+// value, alongside the (optional, advisory) ado:pr:status capability name.
+func TestWorkflowSchemaAcceptsReportPRStatusPolicyAction(t *testing.T) {
+	v := newV(t)
+	workflow := []byte(`{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "report-pr-status-policy"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "manual"}],
+			"start": "report",
+			"tasks": [{
+				"name": "report",
+				"type": "deterministic",
+				"goal": "publish PR status",
+				"run": {"command": ["goobers", "report-pr-status"]},
+				"policyActions": ["report-pr-status"],
+				"capabilities": ["github:pr:write", "ado:pr:status"]
+			}]
+		}
+	}`)
+	if err := v.ValidateJSON("workflow.schema.json", workflow); err != nil {
+		t.Fatalf("report-pr-status policy action should validate: %v", err)
+	}
+}
+
 func TestWorkflowSchemaRejectsSyncBaseInScratchWorkspace(t *testing.T) {
 	v := newV(t)
 	workflow := `{

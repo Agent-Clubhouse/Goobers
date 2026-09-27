@@ -209,14 +209,38 @@ func branchInputsFromError(taskName, inputKey, value string) error {
 // inputsFromError builds the stage-closed failure for an unresolvable
 // reference. InputsFrom is a contract, not a hint, so a miss fails the stage
 // rather than silently omitting the input.
-func inputsFromError(taskName, inputKey, value string, completed stageOutputs, qualified bool) error {
+//
+// Every arm names the KEYS that were available and never their values (#5247):
+// an author needs to know what they could have bound, while a diagnostic that
+// printed the values would leak an entire upstream result into a failure
+// message that lands in journals, comments and logs.
+//
+// The middle arm exists because of resolveInputsFrom's deliberate fallthrough.
+// A dotted value whose prefix is not a stage that ran is treated as a WHOLE
+// bare key — that is what keeps a legacy dotted output key such as "a.b"
+// working — but it means a typo'd or not-yet-run stage prefix silently
+// degrades into a bare lookup and then misses. Reporting "upstream output
+// \"plan.prTitle\" not found" for that case describes the lookup that was
+// performed while hiding the rule that chose it, which is the single most
+// confusing way this can fail.
+func inputsFromError(
+	taskName, inputKey, value string,
+	upstream apiv1.ResultEnvelope,
+	completed stageOutputs,
+	qualified bool,
+) error {
 	if stage, key, ok := splitQualified(value); ok && qualified {
 		if produced, seen := completed[stage]; seen {
 			return fmt.Errorf("task %q: inputsFrom %q: stage %q produced no output %q (it emitted: %s)",
 				taskName, inputKey, stage, key, joinKeys(produced.outputs))
 		}
+		return fmt.Errorf(
+			"task %q: inputsFrom %q: no stage %q has produced outputs in this run, so %q was treated as a "+
+				"single output key of the preceding stage, which emitted: %s",
+			taskName, inputKey, stage, value, joinKeys(upstream.Outputs))
 	}
-	return fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", taskName, inputKey, value)
+	return fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found (the preceding stage emitted: %s)",
+		taskName, inputKey, value, joinKeys(upstream.Outputs))
 }
 
 func joinKeys(outputs map[string]any) string {
@@ -417,6 +441,11 @@ func InputsFromIntegrity(value string, upstream apiv1.ResultEnvelope, completed 
 
 // InputsFromError exports inputsFromError, so an unresolvable reference reads
 // identically to an operator whichever runner walked the definition.
-func InputsFromError(taskName, inputKey, value string, completed StageOutputs, qualified bool) error {
-	return inputsFromError(taskName, inputKey, value, completed, qualified)
+func InputsFromError(
+	taskName, inputKey, value string,
+	upstream apiv1.ResultEnvelope,
+	completed StageOutputs,
+	qualified bool,
+) error {
+	return inputsFromError(taskName, inputKey, value, upstream, completed, qualified)
 }

@@ -44,11 +44,19 @@ func (f *fakeADOWorkItemCloser) UpdateWorkItem(_ context.Context, req providers.
 
 func (f *fakeADOWorkItemCloser) UpdateWorkItemStatus(_ context.Context, req providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error) {
 	f.statusReqs = append(f.statusReqs, req)
-	return providers.WorkItem{}, nil
+	f.item.State = "closed"
+	labels := make([]string, 0, len(f.item.Labels)+1)
+	for _, label := range f.item.Labels {
+		if !strings.HasPrefix(label, "goobers/status:") {
+			labels = append(labels, label)
+		}
+	}
+	f.item.Labels = append(labels, "goobers/status:"+string(req.Status))
+	return f.item, nil
 }
 
-func (f *fakeADOWorkItemCloser) AuthenticatedLogin(context.Context) (string, error) {
-	return "goobers", nil
+func (f *fakeADOWorkItemCloser) AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error) {
+	return providers.ADOIdentity{ID: "self-guid", DisplayName: "goobers"}, nil
 }
 
 func (f *fakeADOWorkItemCloser) ListPullRequestThreadComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
@@ -115,6 +123,9 @@ func TestPerformPostMergeADOClosesReferencedWorkItem(t *testing.T) {
 	if want := "Merged in pull request #359."; closer.commentReqs[0].Comment != want {
 		t.Errorf("comment = %q, want %q", closer.commentReqs[0].Comment, want)
 	}
+	if got := strings.Join(closer.commentReqs[0].RemoveLabels, ","); got != "goobers:claimed,goobers:ready" {
+		t.Errorf("removed labels = %q, want terminal ADO lifecycle labels", got)
+	}
 	if closer.commentReqs[0].Repository.Project != backlogRef.Project {
 		t.Errorf("comment targeted project %q, want backlog project %q", closer.commentReqs[0].Repository.Project, backlogRef.Project)
 	}
@@ -148,6 +159,61 @@ func TestPerformPostMergeADOIdempotentWhenAlreadyDone(t *testing.T) {
 	}
 	if len(closer.commentReqs) != 0 {
 		t.Errorf("dedupe comment writes = %d, want 0 (comment already present)", len(closer.commentReqs))
+	}
+}
+
+func TestPerformPostMergeADOReconcilesAutoCompletedWorkItemLabels(t *testing.T) {
+	closer := &fakeADOWorkItemCloser{
+		item: providers.WorkItem{
+			ID:     "1456",
+			State:  "closed",
+			Labels: []string{"goobers/status:in-review", providers.LabelClaimed, providers.LabelReady},
+		},
+		comments: []providers.Comment{{Body: "Merged in pull request #359."}},
+	}
+
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.statusReqs) != 1 || closer.statusReqs[0].Status != providers.WorkItemStatusDone {
+		t.Fatalf("status requests = %+v, want done reconciliation", closer.statusReqs)
+	}
+	if len(closer.commentReqs) != 1 {
+		t.Fatalf("cleanup writes = %d, want 1", len(closer.commentReqs))
+	}
+	if closer.commentReqs[0].Comment != "" {
+		t.Fatalf("cleanup comment = %q, want no duplicate comment", closer.commentReqs[0].Comment)
+	}
+	if got := strings.Join(closer.commentReqs[0].RemoveLabels, ","); got != "goobers:claimed,goobers:ready" {
+		t.Fatalf("removed labels = %q, want terminal ADO lifecycle labels", got)
+	}
+}
+
+func TestPerformPostMergeADORemovesStaleStatusAlongsideDone(t *testing.T) {
+	closer := &fakeADOWorkItemCloser{
+		item: providers.WorkItem{
+			ID:     "1456",
+			State:  "closed",
+			Labels: []string{"goobers/status:done", "goobers/status:in-review", "goobers:approved"},
+		},
+		comments: []providers.Comment{{Body: "Merged in pull request #359."}},
+	}
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.statusReqs) != 1 || closer.statusReqs[0].Status != providers.WorkItemStatusDone {
+		t.Fatalf("status requests = %+v, want done reconciliation", closer.statusReqs)
+	}
+	if got := strings.Join(closer.item.Labels, ","); got != "goobers:approved,goobers/status:done" {
+		t.Fatalf("labels = %q, want only the terminal status label", got)
 	}
 }
 
@@ -203,6 +269,40 @@ func TestPerformPostMergeADOPublishesReceiptSummaryAndAllocation(t *testing.T) {
 		!strings.Contains(closer.commentReqs[0].Comment, "**Total Goobers cost for this PR:** 10.00 AIC") ||
 		!strings.Contains(closer.commentReqs[0].Comment, "**Cost attributed to this issue:** 10.00 AIC") {
 		t.Fatalf("work item close-out comments = %+v, want total and allocation", closer.commentReqs)
+	}
+}
+
+// TestPerformPostMergeADOCostTrustsPRThreadsByIdentityGUID pins ADO-N5 on the
+// post-merge cost path: a PR thread comment from another identity that shares
+// this identity's display name can neither suppress the cost summary with the
+// summary marker nor plant a receipt that is counted, while a receipt this
+// identity wrote (matching GUID) still is.
+func TestPerformPostMergeADOCostTrustsPRThreadsByIdentityGUID(t *testing.T) {
+	own := costComment(t, "goobers", "merge-review", "run-review", 30, 2_000_000_000)
+	own.AuthorID = "self-guid"
+	planted := costComment(t, "goobers", "implementation", "run-planted", 99, 50_000_000_000)
+	planted.AuthorID = "other-guid"
+	marker := providers.Comment{Author: "goobers", AuthorID: "other-guid", Body: "done\n\n" + postMergeCostSummaryMarker}
+	closer := &fakeADOWorkItemCloser{
+		item:       providers.WorkItem{ID: "1456", State: "open"},
+		prComments: []providers.Comment{own, planted, marker},
+	}
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(
+		context.Background(), closer, closer, backlogRef, poll, "359", "",
+		providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "code", Name: "repo"},
+		&stdout, &stderr,
+	)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.prCommentReqs) != 1 {
+		t.Fatalf("PR summary comments = %q, want exactly one: a marker from a same-named identity must not suppress it", closer.prCommentReqs)
+	}
+	if !strings.Contains(closer.prCommentReqs[0], "**2.00 AIC**") {
+		t.Fatalf("PR summary = %q, want 2.00 AIC: a receipt from a same-named identity must not be counted", closer.prCommentReqs[0])
 	}
 }
 

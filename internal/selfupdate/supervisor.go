@@ -128,7 +128,7 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 			return stopForService(process, opts)
 		case childErr := <-process.Done():
 			if childErr == nil {
-				return errors.New("supervised daemon exited unexpectedly")
+				return nil
 			}
 			return fmt.Errorf("supervised daemon exited: %w", childErr)
 		case <-ticker.C:

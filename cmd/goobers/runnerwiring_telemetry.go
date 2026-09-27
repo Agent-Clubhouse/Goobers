@@ -35,22 +35,12 @@ func buildTelemetryClient(
 		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
 		Scrubber:       scrubber,
 		Batch:          true,
+		JournalRoot:    l.Root,
 	}
-	if otlp.Enabled() {
-		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry, stores)
-		if err != nil {
-			return nil, err
-		}
-		cfg.Exporter = telemetry.ExporterOTLP
-		cfg.OTLPEndpoint = otlp.Endpoint
-		cfg.OTLPInsecure = otlp.Insecure
-		cfg.OTLPHeaders = headers
-		if otlp.TLS != nil {
-			cfg.OTLPCAFile = otlp.TLS.CAFile
-			cfg.OTLPServerName = otlp.TLS.ServerName
-			cfg.OTLPCertFile = otlp.TLS.CertFile
-			cfg.OTLPKeyFile = otlp.TLS.KeyFile
-		}
+	// Only the durable identity is trustworthy; legacy roots remain unidentified.
+	cfg.JournalInstanceID, _ = l.ReadIdentity()
+	if err := configureOTLP(ctx, &cfg, otlp, registry, stores); err != nil {
+		return nil, err
 	}
 	// telemetry.New may return a non-nil *Client alongside an error wrapping
 	// telemetry.ErrOTLPUnavailable (invalid TLS material) — that Client is
@@ -106,4 +96,25 @@ type teeRegistrar struct {
 func (t teeRegistrar) Register(secret []byte) {
 	t.run.Register(secret)
 	t.shared.Register(secret)
+}
+
+func configureOTLP(ctx context.Context, cfg *telemetry.Config, otlp instance.OTLPConfig, registry *journal.RegistryScrubber, stores credentials.StoreResolver) error {
+	cfg.JournalLogs = otlp.JournalLogsEnabled()
+	if otlp.Enabled() {
+		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry, stores)
+		if err != nil {
+			return err
+		}
+		cfg.Exporter = telemetry.ExporterOTLP
+		cfg.OTLPEndpoint = otlp.Endpoint
+		cfg.OTLPInsecure = otlp.Insecure
+		cfg.OTLPHeaders = headers
+		if otlp.TLS != nil {
+			cfg.OTLPCAFile = otlp.TLS.CAFile
+			cfg.OTLPServerName = otlp.TLS.ServerName
+			cfg.OTLPCertFile = otlp.TLS.CertFile
+			cfg.OTLPKeyFile = otlp.TLS.KeyFile
+		}
+	}
+	return nil
 }

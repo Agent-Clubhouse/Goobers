@@ -930,6 +930,40 @@ func TestAdapterForAppliesLauncherOverride(t *testing.T) {
 	}
 }
 
+func TestAdapterForAppliesPreflightArgsOnlyToAuthProbe(t *testing.T) {
+	const preflightOnly = "--minimal-preflight"
+	environment := harness.EnvironmentConfig{
+		PreflightArgs: map[string][]string{
+			string(apiv1.HarnessCopilot): {preflightOnly},
+		},
+	}
+	override := map[string][]string{
+		string(apiv1.HarnessCopilot): {"forwarding-launcher", "copilot"},
+	}
+	adapter, err := adapterFor(apiv1.HarnessCopilot, environment, override, nil)
+	if err != nil {
+		t.Fatalf("adapterFor: %v", err)
+	}
+	copilot, ok := adapter.(*harness.CopilotAdapter)
+	if !ok {
+		t.Fatalf("adapter = %T, want *harness.CopilotAdapter", adapter)
+	}
+	if !slices.Contains(copilot.AuthCheckArgs, preflightOnly) {
+		t.Fatalf("auth probe args = %q, want %q", copilot.AuthCheckArgs, preflightOnly)
+	}
+	if !slices.Contains(copilot.AuthProbeExtraArgs, preflightOnly) {
+		t.Fatalf("lightweight auth probe args = %q, want %q", copilot.AuthProbeExtraArgs, preflightOnly)
+	}
+	if slices.Contains(copilot.ExtraArgs, preflightOnly) {
+		t.Fatalf("normal run args unexpectedly contain preflight-only argument %q", preflightOnly)
+	}
+	environment.PreflightArgs[string(apiv1.HarnessCopilot)][0] = "--mutated"
+	if !slices.Contains(copilot.AuthCheckArgs, preflightOnly) ||
+		!slices.Contains(copilot.AuthProbeExtraArgs, preflightOnly) {
+		t.Fatal("adapter retained mutable preflight configuration")
+	}
+}
+
 func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
@@ -1748,7 +1782,11 @@ func TestBuildCredentialsStoreBackedRepoToken(t *testing.T) {
 	}
 }
 
-func TestBuildCredentialsAllowsTokenlessADOIdentity(t *testing.T) {
+// TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants pins ADO-N17
+// (#5656): a tokenless Azure DevOps identity repo backs every credentialed
+// capability from its own daemon-side source, and a sibling GitHub repo's
+// token never crosses into the ADO gaggle's grants.
+func TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants(t *testing.T) {
 	t.Setenv("GH_TOKEN", "must-not-cross-gaggle-boundary")
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "other", Name: "repo", Token: instance.TokenRef{Env: "GH_TOKEN"}},
@@ -1764,8 +1802,13 @@ func TestBuildCredentialsAllowsTokenlessADOIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != 0 {
-		t.Fatalf("tokenless ADO grants = %#v, want none", grants)
+	if len(grants) != len(credentialedCapabilities) {
+		t.Fatalf("ADO identity grants = %#v, want one per credentialed capability", grants)
+	}
+	for _, grant := range grants {
+		if grant.Ref != "acme/widgets/web" {
+			t.Fatalf("grant %+v is not backed by the ADO repo's own source", grant)
+		}
 	}
 }
 
@@ -2048,6 +2091,55 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 	}
 	if mints < 2 {
 		t.Fatalf("mints = %d, want the source consulted per resolve", mints)
+	}
+}
+
+func TestBuildCredentialsGitHubAppMintsAgentModelTokenWithExpiry(t *testing.T) {
+	prev := newAgentModelGitHubAppTokenSource
+	expiresAt := time.Now().Add(45 * time.Minute).UTC()
+	var gotApp *instance.AgentModelGitHubAppConfig
+	newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		gotApp = app
+		return func(context.Context) (string, time.Time, error) {
+			return "minted-copilot-token", expiresAt, nil
+		}, nil
+	}
+	t.Cleanup(func() { newAgentModelGitHubAppTokenSource = prev })
+
+	app := &instance.AgentModelGitHubAppConfig{
+		Name:           "copilot-primary",
+		AppID:          "123456",
+		InstallationID: "42",
+		Repository:     "acme/web",
+		RepositoryID:   "987654321",
+		PrivateKey:     &instance.TokenRef{File: "/run/secrets/copilot-app.pem"},
+	}
+	cfg := &instance.Config{Credentials: []instance.CredentialGrant{{
+		Capability: string(capability.AgentModel),
+		Harness:    string(apiv1.HarnessCopilot),
+		GitHubApp:  app,
+	}}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	if gotApp != app {
+		t.Fatalf("minting source built for %+v, want configured agent:model App", gotApp)
+	}
+	if len(grants) != 1 || grants[0].Capability != credentials.HarnessScopedCapability(string(capability.AgentModel), string(apiv1.HarnessCopilot)) {
+		t.Fatalf("grants = %+v, want one Copilot-scoped agent:model grant", grants)
+	}
+	expiring, ok := resolver.(credentials.ExpiringResolver)
+	if !ok {
+		t.Fatal("credential resolver does not propagate source expiry")
+	}
+	ref := credentialRefName(credentials.HarnessScopedCapability(string(capability.AgentModel), string(apiv1.HarnessCopilot)))
+	token, gotExpiry, err := expiring.ResolveWithExpiry(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("ResolveWithExpiry: %v", err)
+	}
+	if token != "minted-copilot-token" || !gotExpiry.Equal(expiresAt) {
+		t.Fatalf("resolved (%q, %v), want minted token expiring %v", token, gotExpiry, expiresAt)
 	}
 }
 
@@ -3046,6 +3138,20 @@ func TestBuildGooberCredentialGrantsHarnessPrecedence(t *testing.T) {
 	}
 }
 
+func TestBuildGooberCredentialGrantsIsIdempotentForSelectedGoober(t *testing.T) {
+	selected := buildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, []credentials.Grant{
+		{Capability: credentials.HarnessScopedCapability("agent:model", "copilot"), Ref: "copilot-ref"},
+		{Capability: credentials.HarnessScopedCapability("agent:model", "claude-code"), Ref: "claude-ref"},
+	})
+	again := buildGooberCredentialGrants("worker", "copilot", []string{"agent:model"}, selected)
+	if len(again) != 1 || again[0].Goober != "worker" || again[0].Capability != "agent:model" || again[0].Ref != "copilot-ref" {
+		t.Fatalf("re-scoped grants = %+v, want the already-selected plain grant", again)
+	}
+	if got := buildGooberCredentialGrants("sibling", "copilot", []string{"agent:model"}, selected); len(got) != 0 {
+		t.Fatalf("sibling reached worker-bound grant: %+v", got)
+	}
+}
+
 // --- #312: escalation-notifier wiring ---
 
 type escTestRegistrar struct{ registered [][]byte }
@@ -3080,7 +3186,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil, nil)
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -3103,7 +3209,7 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 		t.Fatalf("NewInjector: %v", err)
 	}
 	giteaRepo := &instance.RepoRef{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "CI_POLL_TOKEN"}}
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil, nil)
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -3137,7 +3243,7 @@ func TestBuildCIPollExecutorWiresADOQuotaState(t *testing.T) {
 		t.Fatalf("NewInjector: %v", err)
 	}
 	quota := localscheduler.NewProviderQuotaState()
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, quota)
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, quota, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}

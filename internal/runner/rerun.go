@@ -147,14 +147,16 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		}
 
 		startIn := StartInput{
-			RunID:        in.RunID,
-			Machine:      in.Machine,
-			GooberDigest: in.GooberDigest,
-			Gaggle:       id.Gaggle,
-			Trigger:      id.Trigger,
-			RepoRef:      in.RepoRef,
-			Item:         item,
-			RunControls:  runControls,
+			configGeneration: id.ConfigGeneration,
+			instanceID:       id.InstanceID,
+			RunID:            in.RunID,
+			Machine:          in.Machine,
+			GooberDigest:     in.GooberDigest,
+			Gaggle:           id.Gaggle,
+			Trigger:          id.Trigger,
+			RepoRef:          in.RepoRef,
+			Item:             item,
+			RunControls:      runControls,
 		}
 		_, err = r.acquirePinnedWorkspace(ctx, jr, &startIn)
 		if err != nil {

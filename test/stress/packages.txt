@@ -13,6 +13,16 @@
 #             hand-maintained name prefix would.
 #   pass=D    REQUIRED. The reviewed wall-clock cost of one race-instrumented
 #             pass over the whole package, measured on a hosted runner.
+#   exclude=NAME[,NAME...]
+#             Exact top-level test name(s) never scheduled into any shard's
+#             `-run` set, so they are never repeated under the race
+#             detector at all (they still run once, normally, in ordinary
+#             CI). Use it for a deterministic, non-concurrent test — a
+#             static/type-aware scan, a golden-file compare, anything with
+#             no goroutines to race — that a repeat count cannot make more
+#             informative but that a slow single pass can make a shard time
+#             out. Excluding happens before the round-robin split, so the
+#             remaining tests stay evenly balanced across shards.
 #
 # `pass` is what keeps the enrollment honest: `test/stress` refuses a list
 # whose implied per-shard budget — count x pass / shards, plus the build
@@ -29,11 +39,18 @@
 # cmd/goobers is the largest and most concurrency-heavy package in the repo and
 # the dominant source of flake reports, so it must not sit at the token count=2
 # it was reduced to when its full twenty-repetition race suite stopped fitting
-# the per-package budget. One race pass costs about twenty minutes on a hosted
-# runner, so twenty repetitions only fit once the suite is split: thirty-two
-# shards put each nightly job at 12m30s of test execution plus the 10m build
-# reserve, three quarters of its 30m timeout, while restoring the full
-# repetition count every other enrolled package gets.
-./cmd/goobers pass=20m shards=32
+# the per-package budget. A recent race pass over the whole package costs
+# 990-1370s (~16.5-22.8m) on a hosted runner (recalibrated from recent CI race
+# jobs, up from the 20m this entry previously declared), so at pass=23m
+# twenty repetitions split across thirty-two shards put each nightly job at
+# 20*23m/32 = 14m22.5s of test execution plus the 10m build reserve = 24.375m,
+# about 81% of its 30m timeout with ~5.6m of margin, while restoring the full
+# repetition count every other enrolled package gets. TestIntentionalJournal-
+# AppendDiscardsUseObservableHelper is a type-aware static scan of every
+# tracked production Go file with no concurrency to exercise (added by
+# #5018); repeating it up to 20x under -race panicked one shard with
+# "test timed out after 30m0s" every night since 2026-09-13 (#5158), so it is
+# excluded from stress here and continues to run once, normally, in CI.
+./cmd/goobers pass=23m shards=32 exclude=TestIntentionalJournalAppendDiscardsUseObservableHelper
 ./internal/harness pass=45s
 ./internal/httpapi pass=45s

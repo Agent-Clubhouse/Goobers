@@ -14,3 +14,4 @@ those actions.
 
 Finish by writing a successful result envelope with a concise summary. If the
 issue cannot be completed safely, return a failure instead of a partial change.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 type fakeExecutor struct {
@@ -74,6 +77,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"validate-configs",
 		"build-operator",
 		"shipped-workflows",
+		"release-image-probes",
 		"schema-description-coverage",
 		"test",
 		"lint",
@@ -133,6 +137,12 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		!reflect.DeepEqual(shippedCheck.args, wantShippedArgs) {
 		t.Fatalf("shipped workflow check = %#v, want args %q", shippedCheck, wantShippedArgs)
 	}
+	releaseImageProbeCheck := checkByLabel(t, gotChecks, "release-image-probes")
+	wantReleaseImageProbeArgs := []string{"test", "-race", "-timeout", "20m", "-count=1", "./release", "-run", "^TestShippedImageProbesRunWithRealBinary$"}
+	if releaseImageProbeCheck.label != "release-image-probes" ||
+		!reflect.DeepEqual(releaseImageProbeCheck.args, wantReleaseImageProbeArgs) {
+		t.Fatalf("release image probe check = %#v, want args %q", releaseImageProbeCheck, wantReleaseImageProbeArgs)
+	}
 	schemaCoverageCheck := checkByLabel(t, gotChecks, "schema-description-coverage")
 	if schemaCoverageCheck.label != "schema-description-coverage" ||
 		!reflect.DeepEqual(schemaCoverageCheck.args, []string{"test", "-v", "-run", "^TestDescriptionCoverage$", "./api/schemas"}) {
@@ -140,7 +150,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 
 	buildTagsCheck := checkByLabel(t, gotChecks, "uncovered-build-tags")
-	const wantBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture"
+	const wantBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture,liveadowrite"
 	wantBuildTagsArgs := []string{
 		"vet", "-tags", wantBuildTags, "./...",
 	}
@@ -333,7 +343,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check runtime-acquisitions tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check runtime-acquisitions tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows release-image-probes schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -728,6 +738,21 @@ func TestChecksWrapUnitTestWhenTimingOutputIsConfigured(t *testing.T) {
 	t.Fatal("checks do not include the test step")
 }
 
+func TestShardedTimingIsFiledUnderTheShardJob(t *testing.T) {
+	t.Parallel()
+	all := checks(nil, toolchain{goCommand: "go", npmCommand: "npm", gitCommand: "git"}, buildMetadata{}, "linux", "test-timings/unit-race.json")
+	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(name string) string {
+		if name == "GOOBERS_CI_SHARD" {
+			return "4/5"
+		}
+		return ""
+	})
+	want := "run ./test/hermetic --go-command go --timing-job unit-shard --timing-output test-timings/unit-race.json --shard 4/5 -- -race -timeout 30m -count=1 ./..."
+	if args := strings.Join(labelArgs(unit, "test"), " "); args != want {
+		t.Fatalf("sharded timed test args = %q, want %q", args, want)
+	}
+}
+
 func TestExecuteChecksPrintsElapsedPerTarget(t *testing.T) {
 	t.Parallel()
 	times := []time.Time{
@@ -813,13 +838,60 @@ func TestResolveBuildMetadataUsesOverridesAndFallbacks(t *testing.T) {
 
 	exec = &fakeExecutor{
 		failCommands: map[string]bool{
-			"git describe --tags --always --dirty": true,
-			"git rev-parse --short HEAD":           true,
+			"git describe --tags --match v[0-9]* --always --dirty": true,
+			"git rev-parse --short HEAD":                           true,
 		},
 	}
 	got = resolveBuildMetadata(exec, toolchain{gitCommand: "git"}, now, func(string) string { return "" })
 	if got.version != "dev" || got.commit != "none" {
 		t.Fatalf("fallback metadata = %#v", got)
+	}
+}
+
+func TestResolveBuildMetadataIgnoresNearerPortalTag(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := testgit.Command(args...)
+		cmd.Dir = repo
+		cmd.Env = append(cmd.Env,
+			"GIT_AUTHOR_NAME=Goobers Test",
+			"GIT_AUTHOR_EMAIL=goobers@example.invalid",
+			"GIT_COMMITTER_NAME=Goobers Test",
+			"GIT_COMMITTER_EMAIL=goobers@example.invalid",
+		)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+
+	runGit("init", "--quiet")
+	if err := os.WriteFile(filepath.Join(repo, "version.txt"), []byte("product\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "version.txt")
+	runGit("commit", "--quiet", "-m", "product release")
+	runGit("tag", "v0.4.1")
+
+	if err := os.WriteFile(filepath.Join(repo, "portal.txt"), []byte("portal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "portal.txt")
+	runGit("commit", "--quiet", "-m", "portal release")
+	runGit("tag", "portal-v9.9.9")
+
+	t.Chdir(repo)
+	got := resolveBuildMetadata(
+		processExecutor{stdout: io.Discard, stderr: io.Discard},
+		toolchain{gitCommand: "git"},
+		time.Now,
+		func(string) string { return "" },
+	)
+	if !strings.HasPrefix(got.version, "v0.4.1-1-g") {
+		t.Fatalf("version = %q, want metadata derived from v0.4.1", got.version)
+	}
+	if strings.Contains(got.version, "portal") {
+		t.Fatalf("version was contaminated by the nearer portal tag: %q", got.version)
 	}
 }
 
@@ -989,7 +1061,7 @@ func TestGroupChecksOnlyIsolatesHeavyweights(t *testing.T) {
 	}{
 		{groupLint, []string{"lint"}},
 		{groupUnit, []string{"schema-description-coverage", "test"}},
-		{groupShipped, []string{"shipped-workflows"}},
+		{groupShipped, []string{"shipped-workflows", "release-image-probes"}},
 	} {
 		var got []string
 		for _, current := range groupChecksOnly(all, tc.group) {
@@ -1081,6 +1153,31 @@ func TestApplyRuntimeTogglesKeepsCoverageByDefault(t *testing.T) {
 		if !slices.Contains(args, coverageArg) {
 			t.Errorf("unit test dropped %s by default: %q", coverageArg, args)
 		}
+	}
+}
+
+// TestApplyRuntimeTogglesCompileOnlyKeepsEveryBuildFlag pins what makes the
+// race-build-cache-warm job's cache useful to the shards: a compile-only run
+// differs from a shard's invocation only by -exec (not a build input) and the
+// shard selector, so every compile and vet action ID it caches is one a shard
+// asks for.
+func TestApplyRuntimeTogglesCompileOnlyKeepsEveryBuildFlag(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	warmEnv := map[string]string{"GOOBERS_CI_COMPILE_ONLY": "1", "GOOBERS_CI_COVERAGE": "0"}
+	shardEnv := map[string]string{"GOOBERS_CI_SHARD": "2/5"}
+	warm := labelArgs(applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(name string) string { return warmEnv[name] }), "test")
+	shard := labelArgs(applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(name string) string { return shardEnv[name] }), "test")
+
+	separator := slices.Index(warm, "--")
+	if separator < 0 || separator+2 >= len(warm) || warm[separator+1] != "-exec" || warm[separator+2] != compileOnlyExec {
+		t.Fatalf("compile-only args must start the go-test arguments with -exec %s: %q", compileOnlyExec, warm)
+	}
+	goTestArgs := func(args []string) []string {
+		return args[slices.Index(args, "--")+1:]
+	}
+	if got, want := warm[separator+3:], goTestArgs(shard); !slices.Equal(got, want) {
+		t.Errorf("compile-only go test arguments (minus -exec) = %q, want the race shards' %q", got, want)
 	}
 }
 

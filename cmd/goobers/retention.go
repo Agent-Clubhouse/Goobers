@@ -110,11 +110,18 @@ func sweepWorktreeRetention(ctx context.Context, l instance.Layout, setup *sched
 	return pruneConfiguredRetention(ctx, l, setup, io.Discard, io.Discard)
 }
 
-func sweepMigrationBackups(l instance.Layout, setup *schedulerSetup, now time.Time) error {
+// snapshotMigrationBackupGaggles captures the startup generation before config
+// reload can replace the scheduler setup's runtime maps in place. Background
+// retention must iterate this immutable roster rather than those live maps.
+func snapshotMigrationBackupGaggles(setup *schedulerSetup) []string {
+	return configuredGaggleNames(setup.Definitions)
+}
+
+func sweepMigrationBackups(l instance.Layout, gaggleNames []string, now time.Time) error {
 	if err := journal.PruneMigrationBackups(l.RunsDir(), now); err != nil {
 		return err
 	}
-	for gaggle := range setup.WorktreesByGaggle {
+	for _, gaggle := range gaggleNames {
 		if err := journal.PruneMigrationBackups(l.ForGaggle(gaggle).RunsDir(), now); err != nil {
 			return fmt.Errorf("prune migration backups for gaggle %s: %w", gaggle, err)
 		}
@@ -162,15 +169,33 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 	if repaired {
 		pf(stderr, "warning: corrected invalid worktree retention grace state; enforcement deferred until %s\n", state.EnforceAt.UTC().Format(time.RFC3339))
 	}
-	dryRun := cfg.DryRun || retentionPassIsDryRun(state, cfg.ImmediateFirstEnable(), now)
+	resolvedDryRun := resolveWorktreeRetentionDryRun(cfg, state, now)
+	dryRun := resolvedDryRun.combined()
 
 	managers, runsByRoot, err := retentionManagers(l, setup)
 	if err != nil {
 		return err
 	}
 	recoveryErr := errors.Join(
-		retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, dryRun, stdout, stderr),
+		retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, dryRun, resolvedDryRun.operator, resolvedDryRun.grace, stdout, stderr),
 		reapConfiguredRecovery(ctx, l, cfg, dryRun, stdout, stderr),
+		// Overflow retirement deletes a recoverable snapshot's ref, exactly as
+		// the retain-floor path above does, so it observes the combined
+		// decision. The contentless carve-out does not apply: the rules it
+		// uses (explicit abandonment, terminal run, retain floor) all describe
+		// entries that hold reviewable content.
+		retireExpiredRecoveryOverflow(ctx, l, setup, managers, runsByRoot, dryRun, stdout, stderr),
+		reconcileIncompleteRecovery(ctx, l, cfg, resolvedDryRun.operator, resolvedDryRun.grace, stdout, stderr),
+		// Promotion runs LAST of the recovery steps, after retirement and the
+		// reap have actually freed slots in this same pass. It honours the
+		// operator's explicit dryRun alone, on #5354's own reasoning: the
+		// grace window exists to give an operator time to see state before it
+		// is deleted, and promotion deletes nothing recoverable — it writes a
+		// bundle for objects that already exist and then removes a metadata
+		// record the bundle now carries. Withholding it during the window
+		// would leave an instance's most recent work at the weaker tier for
+		// exactly the week after it was captured.
+		promoteRecoveryOverflow(ctx, l, setup, managers, resolvedDryRun.operator, stdout, stderr),
 	)
 	protectedBranches, err := retentionProtectedBranches(runsByRoot, setup)
 	if err != nil {

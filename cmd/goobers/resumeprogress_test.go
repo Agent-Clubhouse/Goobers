@@ -102,6 +102,8 @@ func TestStartStartupTerminalFinalizeClosesWithNoCandidates(t *testing.T) {
 // when shutdown arrives first: whatever the background pass did not reach
 // gets one bounded turn after drain (#5199).
 func TestStartupTerminalFinalizerFinishesWhatCancellationLeft(t *testing.T) {
+	t.Chdir(t.TempDir())
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

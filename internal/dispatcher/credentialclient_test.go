@@ -41,6 +41,41 @@ func TestCredentialResolveReturnsMintedValues(t *testing.T) {
 	}
 }
 
+// ResolveStage returns the non-secret authorization scheme the plane states
+// for an Azure DevOps repository credential alongside the minted values, and
+// an empty scheme when the plane states none.
+func TestCredentialResolveStageReturnsTheRepoAuthScheme(t *testing.T) {
+	scheme := "bearer"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body := map[string]any{
+			"credentials": []map[string]string{{"capability": "repo:push", "value": "tok-abc"}},
+		}
+		if scheme != "" {
+			body["repoAuthScheme"] = scheme
+		}
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	defer server.Close()
+
+	client := &CredentialResolveClient{BaseURL: server.URL}
+	resolution, err := client.ResolveStage(context.Background(), "run-1", "push-branch", []string{"repo:push"})
+	if err != nil {
+		t.Fatalf("ResolveStage: %v", err)
+	}
+	if resolution.RepoAuthScheme != "bearer" || len(resolution.Credentials) != 1 || resolution.Credentials[0].Value != "tok-abc" {
+		t.Fatalf("resolution = %+v, want repo:push with scheme bearer", resolution)
+	}
+
+	scheme = ""
+	resolution, err = client.ResolveStage(context.Background(), "run-1", "push-branch", []string{"repo:push"})
+	if err != nil {
+		t.Fatalf("ResolveStage: %v", err)
+	}
+	if resolution.RepoAuthScheme != "" {
+		t.Fatalf("RepoAuthScheme = %q, want none when the plane states none", resolution.RepoAuthScheme)
+	}
+}
+
 // No declared capabilities must mean NO request at all — a stage that needs
 // nothing must not cause the daemon to mint anything.
 func TestCredentialResolveSkipsTheCallWhenNothingIsDeclared(t *testing.T) {

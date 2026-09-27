@@ -38,7 +38,33 @@
         "path": { "type": "string", "pattern": "^/" },
         "code": { "type": "string", "minLength": 1 },
         "severity": { "type": "string", "enum": ["error", "warning", "info"] },
-        "message": { "type": "string", "minLength": 1 }
+        "message": { "type": "string", "minLength": 1 },
+        "safety": {
+          "description": "Additive warning-only workflow safety analysis; never affects execution.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "id", "gaggle", "workflow", "stage", "witnessPath", "confidence", "coverage", "impact", "action", "limitations"],
+          "properties": {
+            "version": { "description": "Version of the workflow safety catalog and diagnostic detail contract.", "const": "goobers.dev/workflow-safety/v1" },
+            "id": { "description": "Deterministic finding identity incorporating rule, scope, witness, workflow configuration, inherited gaggle controls, and binary identity.", "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "gaggle": { "description": "Gaggle containing the analyzed workflow.", "type": "string" },
+            "workflow": { "description": "Workflow whose compiled graph produced this advisory.", "type": "string" },
+            "stage": { "description": "Task, gate, or parallel stage associated with the advisory.", "type": "string" },
+            "file": { "description": "Workflow source file relative to the validated configuration tree, when available.", "type": "string" },
+            "line": { "description": "One-based YAML line of the associated stage, when available.", "type": "integer", "minimum": 1 },
+            "col": { "description": "One-based YAML column of the associated stage, when available.", "type": "integer", "minimum": 1 },
+            "witnessPath": { "description": "Ordered stage and outcome hops demonstrating the risk or the analysis boundary.", "type": "array", "items": { "type": "string" } },
+            "confidence": { "description": "Strength of the static evidence; uncertainty and unknown behavior are not proofs of absence or safety.", "type": "string", "enum": ["high", "uncertain", "unknown"] },
+            "coverage": { "description": "Whether this finding concerns modeled behavior, partial knowledge, or an incomplete analysis path.", "type": "string", "enum": ["modeled", "partial", "incomplete"] },
+            "impact": { "description": "Operator-facing consequence of the witnessed risk or coverage gap.", "type": "string" },
+            "action": { "description": "Suggested configuration repair or manual inspection; analysis never applies it automatically.", "type": "string" },
+            "limitations": { "description": "Qualifications separating static wiring and author assertions from verified live execution.", "type": "string" },
+            "budget": { "description": "Policy repass bound derived from the available run controls for a feedback or cycle finding.", "type": "integer", "minimum": 1 },
+            "budgetSource": { "description": "Origin of the reported retry bound, including any unavailable instance-override qualification.", "type": "string" },
+            "suppressedCode": { "description": "Original safety rule code retained when a scoped suppression emits SAF007.", "type": "string" },
+            "suppressionReason": { "description": "Nonempty author-provided justification for the scoped suppression.", "type": "string" }
+          }
+        }
       },
       "anyOf": [
         { "required": ["line", "col"] },

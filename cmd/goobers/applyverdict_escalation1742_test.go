@@ -162,11 +162,12 @@ func TestApplyVerdictFailReplacesNeedsRemediationWithEscalation(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", headSHA)
 	t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", baseSHA)
 	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
-		Decision:  apiv1.VerdictFail,
-		Summary:   "human intervention required",
-		Rationale: "the approach cannot be remediated automatically",
-		HeadSHA:   headSHA,
-		BaseSHA:   baseSHA,
+		Decision:   apiv1.VerdictFail,
+		ReasonCode: apiv1.VerdictReasonUnsalvageableDesign,
+		Summary:    "human intervention required",
+		Rationale:  "the approach cannot be remediated automatically; ordinary code changes cannot repair this design",
+		HeadSHA:    headSHA,
+		BaseSHA:    baseSHA,
 		Findings: []apiv1.Finding{{
 			Severity: apiv1.SeverityError,
 			Class:    apiv1.FindingSubstantive,
@@ -231,11 +232,12 @@ func TestApplyVerdictRepeatFailRefreshesEscalationBaseSnapshot(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", headSHA)
 	t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", pinnedBase)
 	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
-		Decision:  apiv1.VerdictFail,
-		Summary:   "the defect remains",
-		Rationale: "repeat review reached the same rejection",
-		HeadSHA:   headSHA,
-		BaseSHA:   pinnedBase,
+		Decision:   apiv1.VerdictFail,
+		ReasonCode: apiv1.VerdictReasonUnsalvageableDesign,
+		Summary:    "the defect remains",
+		Rationale:  "repeat review reached the same rejection; ordinary code changes cannot repair the underlying design",
+		HeadSHA:    headSHA,
+		BaseSHA:    pinnedBase,
 		Findings: []apiv1.Finding{{
 			Severity: apiv1.SeverityError,
 			Class:    apiv1.FindingSubstantive,

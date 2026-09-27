@@ -55,6 +55,10 @@ func TestOtherLandingReceiptFailuresPreserveAcknowledgedOutcome(t *testing.T) {
 			r := &receiptFailureRecorder{failure: failure}
 			var mutations atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if strings.HasSuffix(req.URL.Path, "/connectionData") {
+					writeJSON(t, w, map[string]any{"authenticatedUser": map[string]any{"id": "creator"}})
+					return
+				}
 				mutating := req.Method != http.MethodGet
 				if scenario == "github-enqueue" {
 					var body struct{ Query string }

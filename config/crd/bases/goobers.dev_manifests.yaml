@@ -48,13 +48,19 @@ spec:
             properties:
               connections:
                 description: |-
-                  Connections are the named, reusable links (with Key Vault-backed creds)
-                  that gaggles/goobers reference. Declared once here.
+                  Connections are the named, reusable links that gaggles reference by
+                  connectionRef. Declared once here. They are not yet used to source
+                  credentials; see Connection.
                 items:
                   description: |-
                     Connection declares a named, reusable link to an external system. Manifests
-                    declare connections once; gaggles/goobers reference them by name. Credentials
-                    are always SecretRefs.
+                    declare connections once; gaggles reference them by name (connectionRef).
+
+                    Connections are accepted but not yet used to source credentials: no runtime
+                    path reads connectionRef or SecretRef, and validate reports REF012 for every
+                    declared connectionRef. Credentials come from instance.yaml repos[],
+                    credentials[] and secretStores. Connection-level credentials are planned
+                    (docs/design/provider-access-layer.md).
                   properties:
                     endpoint:
                       description: Endpoint optionally overrides the default service
@@ -67,8 +73,9 @@ spec:
                         ado, azure-adx, entra).
                       type: string
                     secretRef:
-                      description: SecretRef holds the credentials for this connection
-                        (Key Vault reference).
+                      description: |-
+                        SecretRef names the secret for this connection. It is required but not
+                        yet read at runtime; see Connection.
                       properties:
                         key:
                           description: Key optionally selects a single field within
@@ -76,13 +83,12 @@ spec:
                           type: string
                         keyVault:
                           description: |-
-                            KeyVault optionally names the Key Vault holding the secret; when empty the
-                            gaggle's default vault is used.
+                            KeyVault optionally names the Key Vault holding the secret. Like the rest
+                            of SecretRef it is not read at runtime; declare vaults in instance.yaml
+                            secretStores instead.
                           type: string
                         name:
-                          description: |-
-                            Name of the connection/secret this reference resolves through. For Key
-                            Vault-backed secrets this is the Key Vault secret name.
+                          description: Name of the referenced secret.
                           type: string
                       required:
                       - name

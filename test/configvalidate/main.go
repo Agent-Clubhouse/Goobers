@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 const instanceYAML = `apiVersion: goobers.dev/v1alpha1
@@ -57,6 +60,7 @@ repos:
 `
 
 const docsUpdaterInertWarning = "WARNING Workflow/docs-updater: workflow \"docs-updater\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run docs-updater`"
+const preReviewExperimentInertWarning = "WARNING Workflow/implementation-pre-review-experiment: workflow \"implementation-pre-review-experiment\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run implementation-pre-review-experiment`"
 
 type checkedInTree struct {
 	path            string
@@ -72,6 +76,7 @@ var checkedInTrees = []checkedInTree{
 		strict:     true,
 		allowedWarnings: []string{
 			docsUpdaterInertWarning,
+			preReviewExperimentInertWarning,
 		},
 	},
 	{path: "config-examples"},
@@ -214,6 +219,12 @@ func validationWarnings(output string) []string {
 	var warnings []string
 	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
 		if strings.HasPrefix(line, "WARNING ") {
+			code, _, _ := strings.Cut(strings.TrimPrefix(line, "WARNING "), " ")
+			// Keep advisories visible in output without turning this wrapper
+			// into a stricter gate than the validator's safety contract.
+			if slices.Contains(workflowsafety.Codes(), code) {
+				continue
+			}
 			warnings = append(warnings, line)
 		}
 	}

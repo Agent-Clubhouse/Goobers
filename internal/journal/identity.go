@@ -103,6 +103,9 @@ type RunIdentity struct {
 	// instruction content, skills, model, and harness configuration. Optional
 	// for runs created before this pin was introduced.
 	GooberDigest string `json:"gooberDigest,omitempty"`
+	// ConfigGeneration selects the immutable config-as-code archive admitted for this run.
+	// Empty preserves historical unpinned execution.
+	ConfigGeneration string `json:"configGeneration,omitempty"`
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string `json:"gaggle"`
 	// Driver names the component walking this run's stages. Empty — the only

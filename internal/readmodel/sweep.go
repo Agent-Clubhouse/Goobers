@@ -29,6 +29,17 @@ type SweepCursor struct {
 	ForwardNext           bool
 }
 
+// SweepRootCursor is one runs root's durable position in the forward repair
+// walk. Forward positions are per root so a large or hot gaggle cannot prevent
+// another gaggle from receiving repair budget.
+type SweepRootCursor struct {
+	Root                 string
+	AfterName            string
+	CycleStartedAt       time.Time
+	LastCycleCompletedAt time.Time
+	EntriesThisCycle     int
+}
+
 // SweepCursor reads the repair walk's position.
 func (s *Store) SweepCursor(ctx context.Context) (SweepCursor, error) {
 	var (
@@ -102,6 +113,84 @@ func (s *Store) SaveSweepCursor(ctx context.Context, cursor SweepCursor) error {
 		nullTimeValue(cursor.ReverseCycleBefore), cursor.ForwardNext)
 	if err != nil {
 		return fmt.Errorf("readmodel: save sweep cursor: %w", err)
+	}
+	return nil
+}
+
+// SweepRootCursors returns the durable forward-repair positions for all roots
+// that have received repair budget. A configured root absent from this result
+// has not been visited yet and starts at the beginning.
+func (s *Store) SweepRootCursors(ctx context.Context) ([]SweepRootCursor, error) {
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
+		SELECT root, after_name, cycle_started_at, last_cycle_completed_at,
+		       entries_this_cycle
+		FROM sweep_root_cursor
+		ORDER BY root`)
+	if err != nil {
+		return nil, fmt.Errorf("readmodel: read sweep root cursors: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var cursors []SweepRootCursor
+	for rows.Next() {
+		var (
+			cursor    SweepRootCursor
+			started   sql.NullString
+			completed sql.NullString
+		)
+		if err := rows.Scan(
+			&cursor.Root,
+			&cursor.AfterName,
+			&started,
+			&completed,
+			&cursor.EntriesThisCycle,
+		); err != nil {
+			return nil, fmt.Errorf("readmodel: scan sweep root cursor: %w", err)
+		}
+		if cursor.CycleStartedAt, err = optionalTimeValue(started); err != nil {
+			return nil, err
+		}
+		if cursor.LastCycleCompletedAt, err = optionalTimeValue(completed); err != nil {
+			return nil, err
+		}
+		cursors = append(cursors, cursor)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("readmodel: read sweep root cursor rows: %w", err)
+	}
+	return cursors, nil
+}
+
+// SaveSweepRootCursor records one root's forward-repair position.
+func (s *Store) SaveSweepRootCursor(ctx context.Context, cursor SweepRootCursor) error {
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO sweep_root_cursor (
+			root, after_name, cycle_started_at, last_cycle_completed_at,
+			entries_this_cycle
+		) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(root) DO UPDATE SET
+			after_name = excluded.after_name,
+			cycle_started_at = excluded.cycle_started_at,
+			last_cycle_completed_at = excluded.last_cycle_completed_at,
+			entries_this_cycle = excluded.entries_this_cycle`,
+		cursor.Root,
+		cursor.AfterName,
+		nullTimeValue(cursor.CycleStartedAt),
+		nullTimeValue(cursor.LastCycleCompletedAt),
+		cursor.EntriesThisCycle,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: save sweep root cursor for %s: %w", cursor.Root, err)
 	}
 	return nil
 }

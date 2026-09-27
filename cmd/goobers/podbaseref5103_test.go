@@ -68,7 +68,7 @@ func TestRecoveryCustodyResolvesBaseAfterGatherPRContextStyleCheckout(t *testing
 
 	// gather-pr-context selects PR #5154 and checks out its head branch
 	// directly (gatherprcontext.go's checkoutExistingBranch), replacing HEAD.
-	if _, err := checkoutExistingBranch(ws, prBranch, ""); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), ws, prBranch, tokenGitAuthEnvironment("")); err != nil {
 		t.Fatalf("gather-pr-context style checkout of %q: %v", prBranch, err)
 	}
 	if got := checkedOutBranch(t, ws); got != prBranch {

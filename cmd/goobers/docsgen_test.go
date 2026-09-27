@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -133,6 +134,7 @@ func TestWriteCLIDocsWritesAndPrunes(t *testing.T) {
 	if err := writeCLIDocs(dir); err != nil {
 		t.Fatalf("writeCLIDocs (initial): %v", err)
 	}
+
 	if _, err := os.Stat(filepath.Join(dir, "man", "goobers-init.1")); err != nil {
 		t.Fatalf("expected goobers-init.1 to be written: %v", err)
 	}
@@ -175,6 +177,54 @@ func TestWriteCLIDocsWritesAndPrunes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "man", "goobers-init.1")); err != nil {
 		t.Errorf("real page missing after rewrite: %v", err)
+	}
+}
+
+const (
+	// generateDocsCommand is the hidden entrypoint `make docs` and the release
+	// packager invoke on a built binary.
+	generateDocsCommand = "__generate-docs"
+	// docsGeneratorReexecEnv tells TestMain that this process is a re-exec of
+	// the test binary standing in for the CLI docs generator.
+	docsGeneratorReexecEnv = "GOOBERS_TEST_REEXEC_DOCS_GENERATOR"
+)
+
+// TestCLIDocsGeneratorContract pins the contract the release packager relies
+// on (release/docs.go): a separate goobers process invoked as
+// `__generate-docs <dir>` writes the full generated docs tree and exits 0.
+// TestGenerateDocsCommand covers the same command in-process; this test
+// covers the process boundary (argv dispatch, exit status, files on disk).
+//
+// It re-execs this test binary, which TestMain hands to the real CLI
+// dispatcher, rather than running `go build -trimpath ./cmd/goobers`: that
+// nested build shared no build cache with the -race or coverage test binary
+// and cost minutes per CI job. -trimpath cannot change what the generator
+// writes (nothing it renders reads source paths or build info), and the
+// release workflow already diffs a real release binary's `__generate-docs`
+// output against the packaged docs.
+func TestCLIDocsGeneratorContract(t *testing.T) {
+	dir := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	generate := exec.Command(executable, generateDocsCommand, dir)
+	generate.Env = append(os.Environ(), docsGeneratorReexecEnv+"=1")
+	if output, err := generate.CombinedOutput(); err != nil {
+		t.Fatalf("run CLI docs generator: %v\n%s", err, output)
+	}
+	for _, rel := range []string{
+		"cli/README.md",
+		"completion/goobers.bash",
+		"completion/goobers.fish",
+		"completion/_goobers",
+		"man/goobers.1",
+		"feature-matrix.md",
+		"provider-capability-matrix.md",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("generator contract missing %s: %v", rel, err)
+		}
 	}
 }
 

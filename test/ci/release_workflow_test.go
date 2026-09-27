@@ -24,6 +24,7 @@ func TestReleasePublicationRequiresNativeArtifactSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var workflow struct {
 		Jobs map[string]struct {
 			Needs    yaml.Node `yaml:"needs"`
@@ -70,6 +71,39 @@ func TestReleasePublicationRequiresNativeArtifactSmoke(t *testing.T) {
 	}
 	if marker, ok := firstUnorderedMarker(job, markers); !ok {
 		t.Fatalf("publication bypasses executable smoke guard %q", marker)
+	}
+}
+
+func TestReleaseBuildPublishesReusablePortalPackage(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	build := workflowJob(string(data), "build")
+	markers := []string{
+		"- name: Build Portal artifacts",
+		`export GOOBERS_PORTAL_PACKAGE_VERSION="${GITHUB_REF_NAME#v}"`,
+		"npm --prefix portal run package:portal",
+		"npm --prefix portal run test:package",
+		`portal_package="goobers-portal-${portal_version}.tgz"`,
+		`cp "portal/.portal-package/$portal_package" dist/`,
+		"cp portal/.portal-package/package/portal-artifact.json dist/",
+		`sha256sum "$portal_package" "$portal_package.sha256" portal-artifact.json >> SHA256SUMS`,
+	}
+	if marker, ok := firstUnorderedMarker(build, markers); !ok {
+		t.Fatalf("release build does not publish the reusable Portal package: missing or unordered %q", marker)
+	}
+	validation := workflowJob(string(data), "validate-release")
+	for _, required := range []string{
+		`(cd dist && sha256sum --check "$portal_package.sha256")`,
+		`.packageVersion == $version and .commit == $commit and .dirty == false`,
+		`tar -xOf "dist/$portal_package" package/portal-artifact.json`,
+	} {
+		if !strings.Contains(validation, required) {
+			t.Errorf("release validation lacks reusable Portal check %q", required)
+		}
 	}
 }
 

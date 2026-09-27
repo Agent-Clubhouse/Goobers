@@ -73,7 +73,7 @@ func TestReadCopilotResponseCompletionAcceptsFencedEnvelope(t *testing.T) {
 	capture := newTranscriptBuffer(1 << 16)
 	_, _ = capture.Write([]byte("```json\n{\"status\":\"success\",\"outputs\":{},\"summary\":\"done\",\"metrics\":{}}\n```"))
 
-	payload, err := readCopilotResponseCompletion(ModeInvoke, capture)
+	payload, err := readCopilotResponseCompletion(capture)
 	if err != nil {
 		t.Fatalf("readCopilotResponseCompletion returned error: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestReadCopilotResponseCompletionStillRejectsNonJSON(t *testing.T) {
 	capture := newTranscriptBuffer(1 << 16)
 	_, _ = capture.Write([]byte("I was unable to complete the task."))
 
-	_, err := readCopilotResponseCompletion(ModeInvoke, capture)
+	_, err := readCopilotResponseCompletion(capture)
 	if !errors.Is(err, ErrNoCompletion) {
 		t.Fatalf("error = %v, want ErrNoCompletion", err)
 	}

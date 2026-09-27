@@ -59,8 +59,12 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's\n" +
 	"live head/base, and — for a sibling-overlap PR — completed single-lander\n" +
 	"election evidence (elected:true, #1071) — never a bare self-approval.\n" +
-	"Declared inputs: pullNumber, verdict, headSha, baseSha (all required),\n" +
-	"verdictAuthor (required for the default commit message; supplied by\n" +
+	"Declared inputs: pullNumber, verdict, headSha, baseSha (the SHA-pin,\n" +
+	"all required; in the shipped merge-review workflow, headSha/baseSha\n" +
+	"come from gather-sibling-context's selectedHeadSha/selectedBaseSha,\n" +
+	"passed through elect-lander — a fresh re-fetch, not whatever\n" +
+	"pr-select saw several stages earlier), verdictAuthor (required for\n" +
+	"the default commit message; supplied by\n" +
 	"apply-verdict), advisoryMode (default false — report only, no merge\n" +
 	"attempted), mergeMethod (merge/squash/rebase; default squash),\n" +
 	"commitMessage (default: PR title + review rationale + referenced\n" +
@@ -86,6 +90,22 @@ func ciReadyForMerge(poll providers.PullRequestPollResult) bool {
 		return true
 	}
 	return poll.MergeableState == providers.MergeableStateUnstable
+}
+
+func mergePRProviderCapability(root string, repo providers.RepositoryRef) (capability.Capability, error) {
+	if repo.Provider != providers.ProviderADO {
+		return capability.GitHubPRMerge, nil
+	}
+	usesPAT, err := adoStageUsesPAT(root, repo)
+	if err != nil {
+		return "", fmt.Errorf("resolve ADO completion authentication: %w", err)
+	}
+	if usesPAT {
+		if _, err := providerToken(capability.ADOPRComplete); err != nil {
+			return "", err
+		}
+	}
+	return capability.ADOPRComplete, nil
 }
 
 func runMergePR(args []string, stdout, stderr io.Writer) int {
@@ -116,21 +136,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// require. dispatcher is the provider-neutral landing seam (CONF-1 #2074)
 	// every poll/compare/detect/enqueue/merge call flows through, so every
 	// registered provider runs one shared code path.
-	providerCapability := capability.GitHubPRMerge
-	if isADO {
-		// Merge/completion authority on ADO rides on the dedicated
-		// capability.ADOPRComplete ("ado:pr:complete") — the ADO counterpart to
-		// github:pr:merge — so the decider≠executor capability isolation
-		// (docs/design/v0/pr-lifecycle-loop.md §7) is preserved on ADO too.
-		// Resolve that grant fail-closed FIRST (mirroring the github:pr:merge
-		// check on the GitHub branch), then construct the completion-authorized
-		// provider: a stage carrying only ado:pr:write must never silently
-		// acquire completion authority (merge-wiring-plan §3).
-		if _, err := providerToken(capability.ADOPRComplete); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		providerCapability = capability.ADOPRComplete
+	providerCapability, err := mergePRProviderCapability(root, repo)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	stageProvider, err := newMergeReviewProvider(root, repo, false,
 		withStageProviderCapability(providerCapability),
@@ -141,6 +150,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+
 	dispatcher := providers.NewDispatcher(stageProvider)
 	var prProvider mergeProvider
 	if !isADO {
@@ -382,11 +392,11 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		// serializes on, matching #528's structuredMergeCommitMessage
 		// rationale just above.
 		var policy providers.MergePolicy
-		policy, policyErr = detectMergePolicy(ctx, dispatcher, l.SchedulerDir(), repo, poll.BaseBranch, stderr)
+		policy, policyErr = detectMergePolicy(ctx, dispatcher, l.SchedulerDir(), repo, poll.BaseBranch, pullNumber, stderr)
 		if policyErr != nil {
 			return nil
 		}
-		lander, err := mergepolicy.ForPolicy(policy)
+		lander, err := mergeLanderForCurrentAuthority(policy, providerCapability)
 		if err != nil {
 			policyErr = err
 			return nil
@@ -441,12 +451,9 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var cleanup *mergeBranchCleanup
-	// Branch cleanup is unavailable on ADO: its PollPullRequest does not populate
-	// HeadRepository, so it could only fail "did not report a head repository".
-	// Gate OFF
-	// (no-op); ADO source-branch deletion rides on the enqueue/merge
-	// deleteSourceBranch flag, out of scope for this epic (merge-wiring-plan
-	// §1a/§8). GitHub and Gitea use the shared provider-neutral cleanup path.
+	// ADO deletes the source branch through completionOptions.deleteSourceBranch;
+	// its PollPullRequest does not populate HeadRepository, so the shared
+	// provider-neutral cleanup path remains limited to GitHub and Gitea.
 	if !isADO && landResult.Outcome == mergepolicy.OutcomeMerged {
 		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
 		cleanup = &outcome
@@ -534,11 +541,12 @@ type adoRecoveredVerdict struct {
 }
 
 // adoThreadVerdictReader is the ADO read surface the pre-lock verdict recovery
-// needs: the authenticated identity to trust a thread against, and the PR's
-// thread comments (the ADO analog of GitHub's PR comments — apply-verdict posts
-// the verdict there, ListComments would address work-item comments instead).
+// needs: the authenticated identity to trust a thread against (by GUID,
+// ADO-N5), and the PR's thread comments (the ADO analog of GitHub's PR
+// comments — apply-verdict posts the verdict there, ListComments would address
+// work-item comments instead).
 type adoThreadVerdictReader interface {
-	AuthenticatedLogin(ctx context.Context) (string, error)
+	adoIdentityReader
 	ListPullRequestThreadComments(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.Comment, error)
 }
 
@@ -563,7 +571,7 @@ func recoverADOPassVerdict(
 	if !ok {
 		return nil
 	}
-	author, err := reader.AuthenticatedLogin(ctx)
+	self, err := reader.AuthenticatedIdentity(ctx)
 	if err != nil {
 		pf(stderr, "warning: resolve merge-review verdict author for pr #%s: %v\n", pullID, err)
 		return nil
@@ -575,7 +583,9 @@ func recoverADOPassVerdict(
 	}
 	var recovered *adoRecoveredVerdict
 	for _, comment := range comments {
-		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, author) {
+		// Trust is by identity GUID: another identity sharing the display
+		// name must not be able to supply the verdict (ADO-N5).
+		if !adoCommentAuthoredBy(comment, self) || !isMergeReviewStatusComment(comment.Body) {
 			continue
 		}
 		candidate, ok := parseVerdictComment(comment.Body)
@@ -584,7 +594,7 @@ func recoverADOPassVerdict(
 		}
 		// Comments arrive oldest first, so the last trusted pass wins — the
 		// verdict from the most recent review of this pull request.
-		recovered = &adoRecoveredVerdict{Verdict: candidate, Author: author}
+		recovered = &adoRecoveredVerdict{Verdict: candidate, Author: self.DisplayName}
 	}
 	return recovered
 }

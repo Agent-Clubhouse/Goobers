@@ -65,6 +65,13 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if err != nil {
 		return err
 	}
+	// The in-pod checkout is materialized outside worktree.Manager, so it never
+	// received the managed mirror's harness excludes. Register them here, before
+	// anything reads the working tree: both podWorkspaceNeedsRecovery's
+	// `status --porcelain` and the capture below select untracked files, so
+	// without this a stage that only wrote its own result file and mutation
+	// sidecar publishes a bookkeeping-only archive and consumes a slot (#5119).
+	executor.ExcludeStageArtifacts(ctx, repository, os.Getenv(executor.InputEnvVar(executor.InputResultFile)))
 	needed, err := podWorkspaceNeedsRecovery(ctx, repository, base)
 	if err != nil {
 		return err

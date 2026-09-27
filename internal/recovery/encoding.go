@@ -29,6 +29,19 @@ func Encode(record Record) ([]byte, error) {
 // Decode rejects oversized, ambiguous, unknown-version and malformed metadata.
 // No partial record is returned on failure. It does not read referenced objects.
 func Decode(reader io.Reader) (Record, error) {
+	return decodeRecord(reader, Record.Validate)
+}
+
+// decodeRestorable accepts a record from either durability tier: a retained
+// record with its archive binding, or an overflow record that declares none
+// (#5370). It exists for the journal observation path, which reconstructs an
+// identity that may have been published to either tier and must not refuse
+// the one that never had an archive.
+func decodeRestorable(reader io.Reader) (Record, error) {
+	return decodeRecord(reader, Record.validateRestorable)
+}
+
+func decodeRecord(reader io.Reader, validate func(Record) error) (Record, error) {
 	data, err := io.ReadAll(io.LimitReader(reader, MaxRecordBytes+1))
 	if err != nil {
 		return Record{}, fmt.Errorf("read recovery record: %w", err)
@@ -48,7 +61,7 @@ func Decode(reader io.Reader) (Record, error) {
 	if err := decoder.Decode(&record); err != nil {
 		return Record{}, fmt.Errorf("decode recovery record: %w", err)
 	}
-	if err := record.Validate(); err != nil {
+	if err := validate(record); err != nil {
 		return Record{}, err
 	}
 	return record, nil

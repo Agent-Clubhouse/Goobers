@@ -1294,7 +1294,10 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 	for i, ref := range refs {
 		result, ok := response.Repository[fmt.Sprintf("r%d", i)]
 		if !ok || result.StatusCheckRollup == nil {
-			states[ref] = CheckStatePending
+			// GitHub omits statusCheckRollup when a commit has no checks.
+			// That is an unblocked state, not a queue waiting for checks to
+			// materialize.
+			states[ref] = CheckStatePassing
 			continue
 		}
 		switch result.StatusCheckRollup.State {
@@ -1372,9 +1375,12 @@ func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo Repository
 	switch {
 	case failing:
 		return CheckStateFailing, details, nil
-	case pending || len(details) == 0:
+	case pending:
 		return CheckStatePending, details, nil
 	default:
+		// GitHub permits a PR with no statuses or check runs to merge. Treat
+		// the empty set as passing rather than polling indefinitely for a
+		// workflow that may never exist.
 		return CheckStatePassing, details, nil
 	}
 }

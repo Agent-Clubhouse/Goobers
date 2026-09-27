@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,7 @@ import (
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/version"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
@@ -93,6 +95,25 @@ var apiReadCacheLockSweepInterval = time.Hour
 const sweepErrorReportEvery = 12
 
 var httpShutdownGrace = 5 * time.Second
+
+// shutdownHTTPServers shuts the API listener down and, if one is running,
+// the webhook listener, each against its own fresh grace-period context
+// (#4571). Before this both calls shared a single context: the first
+// Shutdown could consume the entire deadline, leaving the second with none
+// and making it return context deadline exceeded immediately — turning an
+// otherwise-successful drain into exit status 1. webhookServer may be nil,
+// in which case webhookErr is always nil.
+func shutdownHTTPServers(apiServer, webhookServer *httpapi.Server, grace time.Duration) (apiErr, webhookErr error) {
+	apiCtx, apiCancel := context.WithTimeout(context.Background(), grace)
+	apiErr = apiServer.Shutdown(apiCtx)
+	apiCancel()
+	if webhookServer != nil {
+		webhookCtx, webhookCancel := context.WithTimeout(context.Background(), grace)
+		webhookErr = webhookServer.Shutdown(webhookCtx)
+		webhookCancel()
+	}
+	return apiErr, webhookErr
+}
 
 const daemonAPIAddressFileName = "api.address"
 
@@ -359,6 +380,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 }
 
 func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, args []string, stdout, stderr io.Writer) int {
+	stdout = syncStartupStdout(stdout) // #4570
 	// #4252: process-start reference point for logGateFlip's elapsed-time
 	// readout on every named startup gate below.
 	processStart := time.Now()
@@ -484,9 +506,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// current phase once livenessTimeout has passed without readiness,
 	// giving an operator something to correlate a stuck dashboard/`status
 	// --daemon` against instead of only a stale heartbeat.
-	tracker := &startupPhaseTracker{}
+	tracker := newStartupPhaseTracker(livenessTimeout)
 	go watchStartupReadiness(ctx, stdout, tracker, ready.Load, livenessTimeout)
 	retentionGate := &retentionSweepGate{}
+	telemetryRetentionGate := &retentionSweepGate{}
 
 	// Single-instance lock (#23 AC3): a second `up` on the same instance root
 	// must fail fast with a clear message, not silently race the first.
@@ -547,15 +570,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			return
 		}
 		stopDaemon()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-		defer shutdownCancel()
-		if err := apiServer.Shutdown(shutdownCtx); err != nil {
-			pf(stderr, "error: %v\n", err)
+		apiErr, webhookErr := shutdownHTTPServers(apiServer, webhookServer, httpShutdownGrace)
+		if apiErr != nil {
+			pf(stderr, "error: %v\n", apiErr)
 		}
-		if webhookServer != nil {
-			if err := webhookServer.Shutdown(shutdownCtx); err != nil {
-				pf(stderr, "error: shut down webhook listener: %v\n", err)
-			}
+		if webhookErr != nil {
+			pf(stderr, "error: shut down webhook listener: %v\n", webhookErr)
 		}
 	}()
 	apiAddressPublished := true
@@ -574,11 +594,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// expired-claim reap — setup's included — a no-op until the renewal set
 	// has been rebuilt from ledger + liveness below.
 	claimRecoveryGate := localscheduler.NewRecoveryGate()
+	schedulerSetupStarted := time.Now()
 	setupOptions := []schedulerSetupOption{
 		withDesktopNotifications(notifications, stderr),
-		withStartupProgress(func(message string) {
-			pf(stdout, "startup: %s\n", message)
-		}),
+		withStartupProgress(newSchedulerSetupProgress(stdout, schedulerSetupStarted, time.Now)),
 		withClaimRecoveryGate(claimRecoveryGate),
 	}
 	if *skipPreflight {
@@ -624,6 +643,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	configLoaded.Store(true)
 	logGateFlip(stdout, processStart, "configLoaded")
 	storageGate, storageThresholds := startDaemonStorageHealth(setup)
+	// #5343/#4911 AC5: the same reading, sampled on the daemon's own cadence,
+	// feeds the read model AND the deduplicated high-water warning below.
+	recoveryInventory := startDaemonRecoveryInventoryHealth(ctx, l, setup)
 	// #3651: the normal stop path calls this explicitly below so a flush or
 	// close failure fails the command; the defer only covers early returns,
 	// and Shutdown itself runs at most once.
@@ -779,11 +801,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// nothing here. Found by auditing which topologies attach which sources
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
-		ReadModel:          setup.ReadModel,
-		RetentionStats:     setup.RetentionStats,
-		InstanceLogStats:   setup.InstanceLog.Stats,
-		StorageHealthStats: storageGate.Stats,
-		WorkItemLookup:     statusWorkItemLookup(l.Root, setup.Definitions),
+		ReadModel:              setup.ReadModel,
+		RetentionStats:         setup.RetentionStats,
+		InstanceLogStats:       setup.InstanceLog.Stats,
+		StorageHealthStats:     storageGate.Stats,
+		RecoveryInventoryStats: recoveryInventory.Stats,
+		WorkItemLookup:         statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -825,6 +848,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	defer stopReadServiceWorker(stopActiveSampler, "active-run sampler", stderr)
 	stopSchedulerProjector := reads.StartSchedulerStateProjector(0)
 	defer stopReadServiceWorker(stopSchedulerProjector, "scheduler-state projector", stderr)
+	stopDaemonHealth := startDaemonHealth(ctx, root, currentDaemon, setup, recoveryInventory.Stats, reads, ready.Load, engineClient)
+	defer stopDaemonHealth()
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
 	// swaps in the OIDC authenticator plus the role-floor authorizer, and
@@ -946,6 +971,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// can always answer them. An instance with no rollup answers "no
 		// telemetry rollup yet", exactly as the local path does.
 		httpapi.WithTelemetryDefectAggregateService(newDaemonTelemetryDefectAggregateService(l)),
+		httpapi.WithPortalAssetHandler(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			serveDaemonInstanceAsset(response, request, l.Root)
+		})),
 		// The readiness-gate endpoint and the recovery gate it is exempt from
 		// (#5019): wired unconditionally, like the containment above,
 		// because every daemon build has a Layout and a startup phase
@@ -1070,20 +1098,22 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// the previous daemon process is still executing on the engine, and its
 	// claims must be renewed — not reaped — across the restart. Only a
 	// renewal pass whose ledger write completed opens the gate; a failed pass
-	// leaves it closed and the periodic tick below retries both halves.
+	// leaves it closed and refuses startup: an expired lease is claimable
+	// even with reaping gated, so crash resume must not execute without it.
 	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, engineClient, setup.RunnerRegistry.RunIDs)
 	if err != nil {
 		pf(stderr, "error: build claim liveness probe: %v\n", err)
 		return 1
 	}
 	defer closeClaimLiveness()
-	if probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
+	if probeErr, renewErr := rebuildStartupClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
 		if daemonStartupStoppedByShutdown(ctx, renewErr) {
 			return 0
 		}
 		if !isJournaledClaimsLockTimeout(renewErr) {
-			pf(stdout, "warning: rebuild claim renewal set: %v\n", renewErr)
+			pf(stderr, "error: rebuild claim renewal set before crash resume: %v\n", renewErr)
 		}
+		return 1
 	} else if probeErr != nil {
 		if daemonStartupStoppedByShutdown(ctx, probeErr) {
 			return 0
@@ -1128,18 +1158,35 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}
 
+	worktreeAccumulation, err := measureWorktreeAccumulation(setup.WorktreesByGaggle, setup.LegacyWorktrees)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	tracker.setWorktreeAccumulation(worktreeAccumulation)
+	budget := tracker.budgetSnapshot(time.Now())
+	pf(stdout, "%s startup budget: worktrees=%d recovery-runs=%d total=%d budget=%s state=%s\n",
+		startupTimestamp(), budget.Accumulation.Worktrees, budget.Accumulation.RecoveryRuns,
+		budget.Accumulation.total(), budget.Budget, budget.State)
+
 	// Reap crash-orphaned worktrees before anything tries to resume into one
 	// of their keys (issue #136): a mid-stage crash otherwise leaves a
 	// worktree directory that makes worktree.Create refuse forever (fixed
 	// separately by adopt-and-reset, but Reap is still what actually reclaims
 	// the disk space and the git worktree-list registration).
+	//
+	// cleanup-pending worktrees are already surrendered and have their own
+	// bounded retry loop that starts immediately after readiness. Retrying the
+	// entire durable queue here made restart time proportional to historical
+	// cleanup failures, including entries whose handoff remains unavailable.
 	for gaggle, manager := range setup.WorktreesByGaggle {
 		manager := manager
 		var warnings []worktree.ReapWarning
 		reapErr := runStartupPhase(stdout, tracker, "worktree-reap-crash-orphan", gaggle, func() error {
 			var reapErr error
 			_, warnings, reapErr = manager.Reap(ctx, worktree.ReapOptions{
-				IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
+				DeferCleanupPending: true,
+				IsRunTerminal:       worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
 			})
 			return reapErr
 		})
@@ -1157,7 +1204,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		reapErr := runStartupPhase(stdout, tracker, "worktree-reap-crash-orphan", "legacy", func() error {
 			var reapErr error
 			_, warnings, reapErr = setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
-				IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
+				DeferCleanupPending: true,
+				IsRunTerminal:       worktreeRunTerminal(l.RunsDir()),
 			})
 			return reapErr
 		})
@@ -1183,11 +1231,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// coalescing with the periodic 6h sweep via retentionGate so at most one
 	// ever runs at a time.
 	pf(stdout, "%s startup phase=retention-sweep status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#4373)")
-	telemetryRetentionConfig, telemetryErr := runStartupTelemetryRetention(stdout, tracker, l, setup)
-	if telemetryErr != nil {
-		pf(stderr, "error: prune retained telemetry: %v\n", telemetryErr)
+	telemetryRetentionConfig, migrationBackupGaggles := configuredTelemetryRetention(setup)
+	if telemetryErr := reconcileStartupTelemetryRetention(stdout, tracker, l, setup); telemetryErr != nil {
+		pf(stderr, "error: reconcile retained telemetry: %v\n", telemetryErr)
 		return 1
 	}
+	pf(stdout, "%s startup phase=telemetry-retention-prune status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#5233)")
 
 	// Prune crash-abandoned orphan runs and run-creation staging directories
 	// before anything else touches the runs tree (#2035): a mid-Create crash's
@@ -1295,19 +1344,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			setup.LegacyRunner,
 			engineGuards,
 			setup.InstanceLog,
-			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
-				// The stalled run's gaggle is only knowable from its runs-tree
-				// scope; cleanup must target that gaggle's own repo (#2692).
-				project, err := terminalGaggleProject(runLayout)
-				if err != nil {
-					return nil, err
-				}
-				prepare, err := buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
-				if err != nil {
-					return nil, err
-				}
-				return prepare.runnerPreparer(), nil
-			},
+			stalledSweepDependencies(setup),
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
 			now,
@@ -1412,10 +1449,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	// Renew resumed runs' claims immediately rather than waiting up to
 	// claimRecoverInterval for the first periodic tick (#2014): the startup
-	// recovery sweep above already ran BEFORE resume tracked anything, on the
-	// prior process's now possibly-stale leases, so a resumed run's claim
-	// could otherwise sit unrenewed — and so reapable — for most of a sweep
-	// interval right when a restart just made that most likely. The resumed
+	// recovery sweep used startup-only durable local journal evidence before
+	// resume tracked anything. Refresh that grace after the recovery work,
+	// using only actual execution liveness from this point onward. The resumed
 	// runs are tracked by the registry now, so the ledger-driven pass covers
 	// exactly them (plus any engine-live holders — idempotent). Best-effort,
 	// same as the periodic sweep: a renewal failure here does not fail daemon
@@ -1488,20 +1524,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 		workflowSourceAppTokens = minted
 	}
-	var sourceReconcileMu sync.Mutex
-	var sourceRevision string
-	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
-		sourceReconcileMu.Lock()
-		defer sourceReconcileMu.Unlock()
-		var resp applyResponse
-		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, workflowSourceAppTokens, setup.SharedRegistry, setup.SecretStores)
-			if syncErr != nil {
-				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
-				return resp
-			}
-			resp.Revision = revision
+	var sourceApplier *workflowSourceApplier
+	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+		sourceApplier = &workflowSourceApplier{
+			root: root, source: *source, appTokens: workflowSourceAppTokens, setup: setup, reloader: reloader,
 		}
+	}
+	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
+		if sourceApplier != nil {
+			return sourceApplier.Apply(applyCtx, now)
+		}
+		var resp applyResponse
 		applied, oldDigest, newDigest, rejected, reloadErr := reloader.pollOnce(now)
 		resp.Applied = applied
 		resp.OldDigest = oldDigest
@@ -1509,8 +1542,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		resp.Rejected = rejected
 		if reloadErr != nil {
 			resp.Error = reloadErr.Error()
-		} else if resp.Revision != "" {
-			sourceRevision = resp.Revision
 		}
 		return resp
 	}
@@ -1607,9 +1638,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-telemetryRetentionTicker.C:
-				err := runPeriodicTelemetryRetention(ctx, setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, journalGenerationCleanupErrors, now)
-				telemetryRetentionErrors.report(err)
-				migrationBackupCleanupErrors.report(sweepMigrationBackups(l, setup, now))
+				runGatedTelemetryRetentionSweep(ctx, l, setup, migrationBackupGaggles, telemetryRetentionConfig, telemetryRetentionGate, telemetryRetentionErrors, journalGenerationCleanupErrors, migrationBackupCleanupErrors, now)
 			}
 		}
 	}()
@@ -1642,6 +1671,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}()
 
 	storageHealthTickerDone := startStorageHealthTicker(ctx, setup, storageGate, storageThresholds.CheckInterval)
+	recoveryInventoryTickerDone := startRecoveryInventoryTicker(ctx, l, setup, recoveryInventory, recoveryInventorySampleInterval)
 	mergedPRCostSweeps := startMergedPRCostSweepRuntime(ctx, setup)
 
 	apiReadCacheLockSweepTickerDone := startAPIReadCacheLockSweepTicker(ctx, l)
@@ -1735,37 +1765,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// local ref watcher provides low-latency wakeups.
 	configDone := make(chan error, 1)
 	configLoopEnabled := *watchConfig
-	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+	if sourceApplier != nil {
 		configLoopEnabled = true
 		sourceLoop := &configSourceReconciler{
-			source: *source,
-			errors: newSweepErrorReporter(setup.InstanceLog, "config_reconcile_failed"),
-			wake:   sourceReconcileWake,
-			reconcile: func(reconcileCtx context.Context, now time.Time) error {
-				sourceReconcileMu.Lock()
-				defer sourceReconcileMu.Unlock()
-				revision, changed, _, syncErr := instance.SyncGitWorkflowSourceIfChanged(
-					reconcileCtx,
-					root,
-					*source,
-					sourceRevision,
-					workflowSourceAppTokens,
-					setup.SharedRegistry,
-					setup.SecretStores,
-				)
-				if syncErr != nil {
-					return fmt.Errorf("sync workflow source: %w", syncErr)
-				}
-				if !changed {
-					return nil
-				}
-				_, _, _, _, reloadErr := reloader.pollOnce(now)
-				if reloadErr != nil {
-					return reloadErr
-				}
-				sourceRevision = revision
-				return nil
-			},
+			source:    sourceApplier.source,
+			errors:    newSweepErrorReporter(setup.InstanceLog, "config_reconcile_failed"),
+			wake:      sourceReconcileWake,
+			reconcile: sourceApplier.Reconcile,
 		}
 		go func() { configDone <- sourceLoop.Run(ctx) }()
 	} else if *watchConfig {
@@ -1786,15 +1792,27 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	readyNow := webhookGate.Start()
 	if readyNow {
+		tracker.completeBudget(time.Now())
 		ready.Store(true)
 		pf(stdout, "%s startup phase=ready status=done target=%q address=%s\n", startupTimestamp(), "api", apiServer.Address())
 	}
 	// Now that the API is up and status/dashboard reads no longer block on
 	// it, run the broad retention sweep deferred above (#4373).
-	// startupRetentionSweepDone is always closed, whether or not readiness
-	// was actually reached, so the shutdown join below never blocks on a
-	// sweep that was never launched.
+	// The completion channels are always closed, whether or not readiness was
+	// reached, so shutdown never waits on a sweep that was never launched.
 	startupRetentionSweepDone := startDeferredRetentionSweep(ctx, l, setup, retentionGate, worktreeRetentionErrors, readyNow)
+	startupTelemetryRetentionSweepDone := startDeferredTelemetryRetentionSweep(
+		ctx,
+		l,
+		setup,
+		migrationBackupGaggles,
+		telemetryRetentionConfig,
+		telemetryRetentionGate,
+		telemetryRetentionErrors,
+		journalGenerationCleanupErrors,
+		migrationBackupCleanupErrors,
+		readyNow,
+	)
 	terminalCleanupRetryCtx, stopTerminalCleanupRetry := context.WithCancel(context.Background())
 	defer stopTerminalCleanupRetry()
 	terminalCleanupRetryDone := startTerminalCleanupRetry(terminalCleanupRetryCtx, cleanupRetries, terminalCleanupRetryErrors, readyNow)
@@ -1815,6 +1833,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// stdout itself, so it adds no concurrent writer. It never applies an
 	// update and never affects the daemon's health or exit status.
 	updateNotices, updateCheckDone, updatePendingState := startUpdateCheck(ctx, root, setup.Config, stderr)
+	templateNotices, templateChecksDone := startTemplateChecks(ctx, root)
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
 		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
@@ -1839,6 +1858,13 @@ daemonLoop:
 		select {
 		case update := <-updateNotices:
 			update.report(stdout, stderr)
+		case update := <-templateNotices:
+			update.report(stdout, stderr)
+			if reloader.readModel != nil {
+				if err := reloader.readModel.PublishDefinitionsChanged(ctx); err != nil {
+					pf(stderr, "warning: template status changed but portal invalidation failed: %v\n", err)
+				}
+			}
 		case connectorErr := <-fleetConnectorDone:
 			fleetConnectorDone = nil
 			fleetConnectorStarted = false
@@ -1903,10 +1929,13 @@ daemonLoop:
 	<-sharedVisibilityDone
 	<-stalledTickerDone
 	<-updateCheckDone
+	<-templateChecksDone
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-storageHealthTickerDone
+	<-recoveryInventoryTickerDone
 	<-startupRetentionSweepDone
+	<-startupTelemetryRetentionSweepDone
 	<-mergedPRCostSweeps.tickerDone
 	<-startupMergedPRCostSweepDone
 	<-apiReadCacheLockSweepTickerDone
@@ -1954,13 +1983,7 @@ daemonLoop:
 	// first, makes those already-admitted runs fail even though this process is
 	// deliberately waiting for them.
 	ready.Store(false)
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-	shutdownErr := apiServer.Shutdown(shutdownCtx)
-	var webhookShutdownErr error
-	if webhookServer != nil {
-		webhookShutdownErr = webhookServer.Shutdown(shutdownCtx)
-	}
-	shutdownCancel()
+	shutdownErr, webhookShutdownErr := shutdownHTTPServers(apiServer, webhookServer, httpShutdownGrace)
 	apiStopped = true
 	if shutdownErr != nil {
 		apiFailed = true
@@ -1980,6 +2003,7 @@ daemonLoop:
 	if apiFailed || webhookFailed || configFailed || schedulerFailed {
 		return 1
 	}
+	stopDaemonHealth()
 	if !drainResult.forced {
 		if err := journalDaemonCleanShutdown(setup.InstanceLog, currentDaemon); err != nil {
 			pf(stderr, "error: %v\n", err)
@@ -2094,6 +2118,32 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 	})
 	<-done
 	return daemonDrainResult{forced: true, terminated: terminated}
+}
+
+// stalledSweepDependencies is the daemon-owned wiring the stalled-run sweep
+// needs when it has to terminalize a run no live Runner owns.
+func stalledSweepDependencies(setup *schedulerSetup) *stalledSweepDeps {
+	return &stalledSweepDeps{
+		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
+			// The stalled run's gaggle is only knowable from its runs-tree
+			// scope; cleanup must target that gaggle's own repo (#2692).
+			project, err := terminalGaggleProject(runLayout)
+			if err != nil {
+				return nil, err
+			}
+			prepare, err := buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
+			if err != nil {
+				return nil, err
+			}
+			return prepare.runnerPreparer(), nil
+		},
+		// The same observer the daemon's own runner carries (daemon.go's
+		// runnerCfg.JournalAdvanced), so a run this sweep terminalizes reaches
+		// the read model exactly as one that finishes under a live runner does.
+		// Without it the terminal append records no intake watermark and the
+		// projector never re-reads the run (#5278).
+		JournalAdvanced: telemetryingest.RunIntakeObserver(setup.Watermarks, setup.InstanceLog),
+	}
 }
 
 func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localscheduler.Option) *localscheduler.Scheduler {

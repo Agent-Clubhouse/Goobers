@@ -50,6 +50,15 @@ type MintedCredential struct {
 	Value      string `json:"value"`
 }
 
+// CredentialResolution is one resolve answer: the minted credentials, plus
+// the non-secret authorization scheme ("basic" or "bearer") the plane states
+// for an Azure DevOps repository credential (httpapi.CredentialResolveResponse
+// RepoAuthScheme). RepoAuthScheme is empty for every other provider.
+type CredentialResolution struct {
+	Credentials    []MintedCredential
+	RepoAuthScheme string
+}
+
 // CredentialResolveClient resolves a stage's declared credential capabilities
 // against the daemon's credential plane (distributed-state-and-coordination.md
 // §11). The plane exists FOR stage pods: a pod authenticated as its run
@@ -111,15 +120,23 @@ func (e *CredentialResolveRefusal) Deterministic() bool {
 // untyped error, so errors.As on the refusal type separates the plane's
 // judgement from the transport's.
 func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage string, capabilities []string) ([]MintedCredential, error) {
+	resolution, err := c.ResolveStage(ctx, runID, stage, capabilities)
+	return resolution.Credentials, err
+}
+
+// ResolveStage is Resolve returning the whole answer, including the
+// authorization scheme the plane states for an Azure DevOps repository
+// credential. Its request, retry and refusal behaviour are Resolve's.
+func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage string, capabilities []string) (CredentialResolution, error) {
 	if len(capabilities) == 0 {
-		return nil, nil
+		return CredentialResolution{}, nil
 	}
 	base := strings.TrimRight(c.BaseURL, "/")
 	if base == "" {
-		return nil, errors.New("dispatcher: credential client has no base URL")
+		return CredentialResolution{}, errors.New("dispatcher: credential client has no base URL")
 	}
 	if runID == "" || stage == "" {
-		return nil, fmt.Errorf("dispatcher: credential resolve requires run and stage (got run %q stage %q)", runID, stage)
+		return CredentialResolution{}, fmt.Errorf("dispatcher: credential resolve requires run and stage (got run %q stage %q)", runID, stage)
 	}
 	body, err := json.Marshal(struct {
 		RunID        string   `json:"runId"`
@@ -127,12 +144,12 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 		Capabilities []string `json:"capabilities,omitempty"`
 	}{RunID: runID, Stage: stage, Capabilities: capabilities})
 	if err != nil {
-		return nil, fmt.Errorf("dispatcher: encode credential resolve request: %w", err)
+		return CredentialResolution{}, fmt.Errorf("dispatcher: encode credential resolve request: %w", err)
 	}
 	endpoint := base + apicontract.CredentialResolvePath
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("dispatcher: build credential resolve request: %w", err)
+		return CredentialResolution{}, fmt.Errorf("dispatcher: build credential resolve request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if c.Token != "" {
@@ -151,7 +168,7 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 	// run's stage is entitled to, and the plane mints a fresh short-lived
 	// credential per call rather than consuming a one-shot grant. A repeated
 	// resolve can only return the same entitlement again.
-	var credentials []MintedCredential
+	var resolution CredentialResolution
 	retryErr := withRetry(ctx, deadline, func(ctx context.Context) (bool, error) {
 		// A fresh request per attempt: an *http.Request body is consumed by
 		// the first send, so a retried request would post an empty body and
@@ -162,13 +179,13 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 		if err != nil {
 			return retryable, err
 		}
-		credentials = resolved
+		resolution = resolved
 		return false, nil
 	})
 	if retryErr != nil {
-		return nil, retryErr
+		return CredentialResolution{}, retryErr
 	}
-	return credentials, nil
+	return resolution, nil
 }
 
 // resolveOnce performs one resolve attempt and classifies its failure.
@@ -178,17 +195,17 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 // outcome and must fail fast, while a plane that could not answer (5xx,
 // including 503 credentials_unavailable) or could not be reached at all is the
 // control-plane restart this retry exists to ride out.
-func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.Request, endpoint string) ([]MintedCredential, bool, error) {
+func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.Request, endpoint string) (CredentialResolution, bool, error) {
 	resp, err := client.Do(request)
 	if err != nil {
 		// A transport fault never reached the plane: a refused dial or a
 		// dropped connection is exactly what a restarting daemon looks like.
-		return nil, true, fmt.Errorf("dispatcher: credential resolve to %s: %w", endpoint, err)
+		return CredentialResolution{}, true, fmt.Errorf("dispatcher: credential resolve to %s: %w", endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, true, fmt.Errorf("dispatcher: read credential resolve response: %w", err)
+		return CredentialResolution{}, true, fmt.Errorf("dispatcher: read credential resolve response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		// The body may name the refused capability, which is the whole
@@ -198,21 +215,22 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 		if len(detail) > 400 {
 			detail = detail[:400] + "…"
 		}
-		return nil, retryableStatus(resp.StatusCode), &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
+		return CredentialResolution{}, retryableStatus(resp.StatusCode), &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
 	}
 	var decoded struct {
-		Credentials []MintedCredential `json:"credentials"`
+		Credentials    []MintedCredential `json:"credentials"`
+		RepoAuthScheme string             `json:"repoAuthScheme"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return nil, false, fmt.Errorf("dispatcher: decode credential resolve response: %w", err)
+		return CredentialResolution{}, false, fmt.Errorf("dispatcher: decode credential resolve response: %w", err)
 	}
 	// A granted capability that resolved to an EMPTY value is a fault, not a
 	// silent no-op: the stage would run believing it was credentialed and fail
 	// somewhere far away, against the provider.
 	for _, cred := range decoded.Credentials {
 		if strings.TrimSpace(cred.Value) == "" {
-			return nil, false, fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)
+			return CredentialResolution{}, false, fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)
 		}
 	}
-	return decoded.Credentials, false, nil
+	return CredentialResolution{Credentials: decoded.Credentials, RepoAuthScheme: decoded.RepoAuthScheme}, false, nil
 }

@@ -51,7 +51,7 @@ func RenewRetention(ctx context.Context, path string, deadline time.Time, maxByt
 	// Match publication's inventory-before-snapshot lock order. A retention
 	// sweep must be able to move/remove a reservation without a concurrent
 	// renewal writing through the old directory name or replacing its lock.
-	inventoryLock, err := platformlock.TryAcquire(filepath.Join(filepath.Dir(directory), ".inventory.lock"))
+	inventoryLock, err := acquireInventoryLock(ctx, filepath.Dir(directory))
 	if err != nil {
 		return Record{}, err
 	}

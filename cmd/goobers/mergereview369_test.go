@@ -102,7 +102,9 @@ func TestAuthorScopeAnyPreservesManagedSiblingSet(t *testing.T) {
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-managed")
 	routeMergeReviewTestRepo(t)
 	t.Setenv(executor.InputEnvVar("authorScope"), authorScopeAny)
-	t.Setenv(executor.InputEnvVar("headPrefixes"), "goobers/implementation/,goobers/docs-updater/")
+	// The tutor PR is in scope, as in the shipped workflow: since #5602 the
+	// managed sibling set is the set this instance can land, not the namespace.
+	t.Setenv(executor.InputEnvVar("headPrefixes"), "goobers/implementation/,goobers/docs-updater/,goobers/tutor/")
 
 	selectDir := t.TempDir()
 	t.Chdir(selectDir)

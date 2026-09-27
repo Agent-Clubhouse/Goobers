@@ -264,7 +264,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		t.Fatal("required-ci aggregate has no needs list")
 	}
 	for _, gate := range []string{
-		"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "unit-macos",
+		"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage",
 		"shipped", "deadcode", "windows-smoke", "vulnerability-scan",
 		"integration", "sandbox", "linux-validation",
 	} {
@@ -296,30 +296,46 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		strings.Contains(unitLinuxCoverage, "GOOBERS_CI_SHARD") {
 		t.Error("Linux coverage gate must own the unsharded whole-tree profile and timing artifact")
 	}
-	unitMacOS := workflowJob(workflow, "unit-macos")
+	// No pull-request or push job may wait on the hosted macOS queue (17-19 min
+	// per run, on top of a 21 min job). Pre-merge, macOS is the Linux
+	// cross-compile gate, built the way the release builds the darwin
+	// binaries (CGO_ENABLED=0 on Linux); the runtime moved to the nightly.
+	if strings.Contains(workflow, "runs-on: macos") || strings.Contains(workflow, "os: macos") {
+		t.Error("ci.yml must not allocate a macOS runner; the macOS runtime runs in macos-nightly.yml")
+	}
+	darwinBuild := workflowJob(workflow, "darwin-build")
+	if !strings.Contains(darwinBuild, "runs-on: ubuntu-latest") {
+		t.Error("darwin-build must cross-compile on Linux")
+	}
+	for _, arch := range []string{"arm64", "amd64"} {
+		for _, command := range []string{"build", "vet"} {
+			want := "- name: go " + command + " (darwin/" + arch + ")\n        env:\n          GOOS: darwin\n          GOARCH: " + arch +
+				"\n          CGO_ENABLED: \"0\"\n        run: go " + command + " ./..."
+			if !strings.Contains(darwinBuild, want) {
+				t.Errorf("darwin-build must run go %s for darwin/%s with cgo off, as the release builds it", command, arch)
+			}
+		}
+	}
+	nightlyData, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "macos-nightly.yml"))
+	if err != nil {
+		t.Fatalf("read macOS nightly workflow: %v", err)
+	}
+	nightly := string(nightlyData)
 	for _, required := range []string{
-		"name: macOS runtime (unit · shipped · sandbox)",
+		"schedule:",
 		"runs-on: macos-latest",
 		"GOOBERS_CI_RACE: \"0\"",
 		"GOOBERS_CI_COVERAGE: \"0\"",
-		"go run ./test/ci group unit",
-		"go run ./test/ci group shipped",
-		"make sandbox-check",
+		"run: go run ./test/ci group unit",
+		"- name: Shipped-workflow contracts (macOS)\n        if: ${{ !cancelled() }}",
+		"GOOBERS_CI_TEST_TIMEOUT: \"20m\"",
+		"run: go run ./test/ci group shipped",
+		"- name: Require native Seatbelt sandbox confinement (macOS)\n        if: ${{ !cancelled() }}",
+		"run: make sandbox-check",
 	} {
-		if !strings.Contains(unitMacOS, required) {
-			t.Errorf("consolidated macOS runtime job must contain %q", required)
+		if !strings.Contains(nightly, required) {
+			t.Errorf("macOS nightly must keep the macOS runtime check %q", required)
 		}
-	}
-	if got := strings.Count(unitMacOS, "if: ${{ !cancelled()"); got != 2 {
-		t.Errorf("consolidated macOS runtime job has %d post-failure checks, want shipped plus PR-only sandbox", got)
-	}
-	for _, portable := range []string{"make cover-gate", "GOOBERS_TEST_TIMING_FILE", "Upload coverage profile", "Upload test timing"} {
-		if strings.Contains(unitMacOS, portable) {
-			t.Errorf("consolidated macOS runtime job must leave portable responsibility %q on Linux", portable)
-		}
-	}
-	if got := strings.Count(workflow, "runs-on: macos-latest"); got != 1 {
-		t.Errorf("CI workflow allocates %d direct macOS jobs, want exactly unit-macos", got)
 	}
 	if strings.Contains(workflowJob(workflow, "shipped"), "os: macos-latest") ||
 		strings.Contains(workflowJob(workflow, "sandbox"), "macos-latest") {
@@ -396,14 +412,117 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 		t.Error("platform lint matrix must retain Linux, macOS, and Windows build-tag coverage")
 	}
 
+	// Jobs that finish well inside the long pole wait for preflight: gating
+	// them costs no wall clock and saves their minutes when preflight fails.
+	// It also keeps preflight the first Linux job to save the shared setup-go
+	// cache key (a short un-gated job would win that race with a near-empty
+	// cache).
 	for _, job := range []string{
 		"deadcode", "checks", "deploy-reference", "lint", "darwin-build",
-		"unit", "unit-linux-coverage", "unit-macos", "shipped", "integration",
+		"unit-linux-coverage", "shipped", "integration",
 		"windows-smoke", "vulnerability-scan", "sandbox", "linux-validation",
 	} {
 		section := workflowJob(workflow, job)
 		if !strings.Contains(section, "needs: [preflight]") {
-			t.Errorf("expensive job %q must wait for preflight admission", job)
+			t.Errorf("job %q must wait for preflight admission", job)
+		}
+	}
+	// The long-pole jobs start immediately: gating them put preflight's
+	// duration on every run's critical path. A preflight failure cancels them
+	// on pull requests instead; that canceller is what makes un-gating safe.
+	for _, job := range []string{"unit"} {
+		header := strings.SplitN(workflowJob(workflow, job), "\n    steps:", 2)[0]
+		if strings.Contains(header, "needs:") {
+			t.Errorf("long-pole job %q must not wait for preflight; it serializes preflight in front of the critical path", job)
+		}
+	}
+	if workflowJob(workflow, "cancel-on-preflight-failure") == "" {
+		t.Error("un-gated long-pole jobs need cancel-on-preflight-failure, or a preflight red leaves them burning minutes")
+	}
+}
+
+// A matrix job's result only settles once every leg has, so with fail-fast off
+// cancel-on-unit-failure waited for the slowest race shard before firing. On a
+// pull request a red shard must cancel its siblings; on main pushes and merge
+// groups every shard keeps running, like the cancellers themselves.
+func TestUnitRaceShardsFailFastOnPullRequestsOnly(t *testing.T) {
+	t.Parallel()
+	unit := loadCIWorkflow(t).Jobs["unit"]
+	if len(unit.Strategy.Matrix.Shard) < 2 {
+		t.Fatalf("unit has %d shards; the fail-fast invariant would pass vacuously", len(unit.Strategy.Matrix.Shard))
+	}
+	if want := "${{ github.event_name == 'pull_request' }}"; unit.Strategy.FailFast != want {
+		t.Errorf("unit strategy fail-fast = %q, want %q", unit.Strategy.FailFast, want)
+	}
+}
+
+// Nothing stops a pull-request run after one job fails, so the rest of the
+// run keeps burning runner-minutes on a result that is already red. Every
+// required job gets a canceller. It must be per job: a `needs` list waits for
+// ALL of its jobs, so a shared canceller would fire only after the slowest one.
+// It must hold the only actions: write token and run no repository code, and
+// it must never fire on main pushes, where the full failure signal is wanted.
+func TestCIWorkflowCancelsPullRequestRunOnFirstFailure(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+
+	required := loadCIWorkflow(t).Jobs["required-ci"].Needs
+	if len(required) == 0 {
+		t.Fatal("required-ci has no needs; the canceller invariant would pass vacuously")
+	}
+	for _, job := range required {
+		canceller := "cancel-on-" + job + "-failure"
+		section := workflowJob(workflow, canceller)
+		if section == "" {
+			t.Errorf("required job %q has no %s job", job, canceller)
+			continue
+		}
+		for _, want := range []string{
+			"    needs: [" + job + "]\n",
+			"!cancelled() && needs." + job + ".result == 'failure'",
+			"github.event_name != 'push'",
+			"github.event_name != 'merge_group'",
+			"    permissions:\n      actions: write\n    steps:",
+			`gh run cancel "$RUN_ID"`,
+			"RUN_ID: ${{ github.run_id }}",
+		} {
+			if !strings.Contains(section, want) {
+				t.Errorf("%s must contain %q", canceller, want)
+			}
+		}
+		// failure() is also true when an ANCESTOR failed, which would start
+		// every downstream canceller after one preflight red.
+		if strings.Contains(section, "failure()") {
+			t.Errorf("%s must test its own job's result, not failure()", canceller)
+		}
+		if strings.Contains(section, "actions/checkout") {
+			t.Errorf("%s holds actions: write and must not check out or run repository code", canceller)
+		}
+	}
+	for _, name := range workflowJobNames(workflow) {
+		// race-build-cache-prune deletes superseded cache entries on main and is
+		// held to the same no-repository-code rule by
+		// TestRaceBuildCachePruneRunsNoRepositoryCode.
+		if strings.HasPrefix(name, "cancel-on-") || name == raceCachePruneJob {
+			continue
+		}
+		if strings.Contains(workflowJob(workflow, name), "\n      actions: write") {
+			t.Errorf("job %q holds actions: write; only the cancellers and %s may", name, raceCachePruneJob)
+		}
+	}
+
+	// The aggregate must read a job cancelled by a canceller as failure. Its
+	// check() is fail-closed on any non-success result, and it must still run
+	// after the run is cancelled, which is what always() guarantees.
+	requiredCI := workflowJob(workflow, "required-ci")
+	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' }}", `if [ "$2" != "success" ]; then`} {
+		if !strings.Contains(requiredCI, want) {
+			t.Errorf("required-ci must contain %q so a cancelled job reds the required check", want)
 		}
 	}
 }
@@ -466,7 +585,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		header := strings.SplitN(section, "\n    steps:", 2)[0]
 		if section == "" {
@@ -476,7 +595,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 		}
 	}
 	for _, job := range []string{
-		"deadcode", "darwin-build", "integration",
+		"deadcode", "integration",
 		"vulnerability-scan", "required-ci",
 		"sandbox", "linux-validation",
 	} {
@@ -494,11 +613,13 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	// derives the push lane from the workflow itself, so a new job that lacks
 	// the `!= 'push'` guard fails here until it is either guarded or watched.
 	//
-	// dependency-cache-warm and escalate-main-failure are exempt by name:
-	// the former is push-only, continue-on-error, and gates nothing; the latter
-	// is the escalation itself.
+	// The cache warmers (and the race cache's pruner) and escalate-main-failure
+	// are exempt by name: the former are push-only, continue-on-error, and gate
+	// nothing; the latter is the escalation itself.
 	exemptFromEscalation := map[string]bool{
 		"dependency-cache-warm": true,
+		raceCacheWarmJob:        true,
+		raceCachePruneJob:       true,
 		"escalate-main-failure": true,
 	}
 	for _, job := range workflowJobNames(workflow) {
@@ -518,7 +639,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [preflight, checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]",
+		"needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
 		"issues: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",
@@ -531,7 +652,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 			t.Errorf("main failure escalation job must contain %q", want)
 		}
 	}
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'failure'"
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must detect a failed %q job", job)
@@ -576,7 +697,7 @@ func TestMainFailureEscalationClosesResolvedIssue(t *testing.T) {
 	if !found {
 		t.Fatal("escalate-main-failure must have a step that closes the resolved main failure issue")
 	}
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'success'"
 		if !strings.Contains(closeStep, want) {
 			t.Errorf("close step must require %q: only a fully-green push lane resolves the incident", want)

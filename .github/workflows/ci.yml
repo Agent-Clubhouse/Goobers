@@ -15,8 +15,8 @@ name: CI
 #   shipped    shipped-workflow contract suite on Linux and Windows
 #
 # dedicated jobs: darwin-build, deadcode, deploy-reference, integration,
-#   linux-validation, sandbox, unit-linux-coverage, unit-macos,
-#   vulnerability-scan, windows-smoke
+#   linux-validation, sandbox, unit-linux-coverage, vulnerability-scan,
+#   windows-smoke
 #
 # Those two lists together are exactly required-ci's `needs:` — this header is
 # not prose that can quietly drift from the workflow it describes:
@@ -29,11 +29,19 @@ name: CI
 # (asserted by test/ci's group tests).
 #
 # Race posture: a data race is a source-level property, not OS behaviour, so the
-# full -race suite runs on Linux (sharded for wall-clock). One consolidated
-# macOS runtime job runs the same behavioural suite without race or coverage
-# instrumentation, then the macOS shipped-workflow and native Seatbelt checks.
-# That preserves macOS-specific behaviour while using one of the five hosted
-# macOS slots per PR instead of three.
+# full -race suite runs on Linux (sharded for wall-clock; the heaviest packages
+# are split by test across shards, see the `unit` job).
+#
+# macOS posture: no job in this workflow uses a macOS runner. Pre-merge, macOS
+# is gated by `darwin-build`, a Linux cross-compile + vet of the whole tree
+# (tests included) for darwin/arm64 and darwin/amd64, the same way the release
+# builds the macOS binaries, plus the GOOS=darwin leg of `lint`. The macOS
+# behavioural runtime (the unit suite without race or coverage, the
+# shipped-workflow contracts, and native Seatbelt confinement) runs nightly in
+# macos-nightly.yml. The hosted macOS queue cost PRs 17-19 min of waiting on
+# top of a 21 min job, so macOS-only behaviour bugs are caught nightly instead
+# of pre-merge: a failing test there is filed by flake-watch, and repeated
+# red nights by the scheduled failure alarm.
 #
 # Windows is gated as a REQUIRED, GREEN build+vet+runtime smoke (#633) plus the
 # shipped-workflow contract suite. The broad Windows behavioural tier is NOT
@@ -44,7 +52,7 @@ name: CI
 #
 # Pull requests and merge groups run that complete matrix. A push to main also
 # validates the exact landed SHA with checks, lint, the Linux race shards, the
-# macOS behavioral suite, shipped-workflow contracts, and the Windows gate.
+# darwin cross-compile gate, shipped-workflow contracts, and the Windows gate.
 # Failures on the landed tree are automatically escalated as critical issues.
 #
 # Every workflow in this directory — including the dormant ones, whose
@@ -56,7 +64,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, edited]
+    # No `edited`: a PR title/body edit changes no code, and re-running this
+    # workflow for it used to cancel the in-flight run on the same SHA
+    # (51 of 61 edit-triggered runs, Sep 2026). The only body-dependent check,
+    # design delivery against closingIssuesReferences, re-evaluates on edits
+    # in design-delivery.yml instead.
+    types: [opened, synchronize, reopened]
   merge_group:
     branches: [main]
 
@@ -106,9 +119,18 @@ jobs:
   # Their Makefile targets (test-e2e, test-envtest, cover-check) are retained
   # for local and full-tier use; only the redundant PR-leg jobs are gone.
 
-  # Node-free admission gate. Expensive and scarce-runner jobs do not acquire
-  # runners until the fast source lint, formatting, module hygiene, repository
-  # policy, vet, command builds, and config validation pass.
+  # Node-free admission gate. Jobs that finish well inside the long pole do not
+  # acquire runners until the fast source lint, formatting, module hygiene,
+  # repository policy, vet, command builds, and config validation pass. The
+  # long-pole job (`unit`) starts at once instead, because gating it put
+  # preflight's ~4.4 min on every run's critical path; on a pull
+  # request a preflight failure cancels them (cancel-on-preflight-failure).
+  #
+  # Preflight is also the job that writes the shared Linux setup-go cache
+  # entry: setup-go saves once per key, and the first job to finish wins. Every
+  # other Linux job is either gated behind preflight or runs much longer than it,
+  # so preflight's full module and build cache is what gets saved. Un-gating a
+  # short Linux job would let it win and pin a near-empty cache.
   preflight:
     name: preflight (lint · format · policy · vet · build)
     runs-on: ubuntu-latest
@@ -205,23 +227,11 @@ jobs:
 
       - name: Collect design delivery context
         if: github.event_name == 'pull_request'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          gh api graphql \
-            -F owner="$GITHUB_REPOSITORY_OWNER" \
-            -F name="${GITHUB_REPOSITORY#*/}" \
-            -F number="$PR_NUMBER" \
-            -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number repository{nameWithOwner}} pageInfo{hasNextPage}}}}}' \
-            | jq --arg base "$BASE_REVISION" --arg repo "$GITHUB_REPOSITORY" '
-              .data.repository.pullRequest.closingIssuesReferences
-              | if . == null or .pageInfo.hasNextPage then error("closing issue references unavailable or truncated")
-                else {baseRevision: $base, closingIssues: [.nodes[] | select(.repository.nameWithOwner == $repo) | "#\(.number)"]}
-                end' > "$RUNNER_TEMP/design-delivery-context.json"
+        uses: ./.github/actions/design-delivery-context
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          base-revision: ${{ github.event.pull_request.base.sha }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -399,13 +409,17 @@ jobs:
 
   # darwin build+vet gate, cross-compiled on Linux (mirrors windows-smoke).
   # Compiles and vets the whole tree — including the //go:build darwin files
-  # (internal/{sandbox,executor}) — for macOS, so a darwin-specific build or vet
-  # regression is caught without spending a macOS runner. The behavioural macOS
-  # runtime is exercised by the unit/shipped/sandbox macOS jobs.
+  # (internal/{sandbox,executor}) and every _test.go file, which vet
+  # type-checks — for both released macOS architectures, so a darwin-specific
+  # build or vet regression is caught without spending a macOS runner. This is
+  # the only pre-merge macOS gate. It is equivalent to how macOS ships: the
+  # release cross-compiles the darwin binaries on Linux with CGO_ENABLED=0
+  # (release/main.go buildReleaseBinary), and the tree has no cgo. The macOS
+  # behavioural runtime (unit suite, shipped-workflow contracts, native
+  # Seatbelt) runs nightly in macos-nightly.yml, off the PR critical path.
   darwin-build:
     name: darwin gate (build · vet)
     needs: [preflight]
-    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -436,26 +450,59 @@ jobs:
         env:
           GOOS: darwin
           GOARCH: arm64
+          CGO_ENABLED: "0"
         run: go build ./...
 
       - name: go vet (darwin/arm64)
         env:
           GOOS: darwin
           GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: go vet ./...
+
+      - name: go build (darwin/amd64)
+        env:
+          GOOS: darwin
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build ./...
+
+      - name: go vet (darwin/amd64)
+        env:
+          GOOS: darwin
+          GOARCH: amd64
+          CGO_ENABLED: "0"
         run: go vet ./...
 
   # The long pole: the -race unit suite. Split into shards across Linux runners
   # (test/ci group unit + GOOBERS_CI_SHARD; the hermetic runner partitions
-  # `go list ./...` deterministically, proven disjoint + exhaustive by
-  # TestSelectShardPartitionsExactly). Full git history is required — the DSL
-  # SemVer-compatibility tests read the latest reachable tag.
+  # `go list ./...` deterministically by LPT over .github/unit-shard-weights.json).
+  # A package too heavy for any one shard (cmd/goobers, release) is listed in
+  # .github/unit-shard-splits.json and scheduled as equal pieces: the shard
+  # holding a piece enumerates the package with `go test -list`, partitions its
+  # top-level tests by the recorded per-test seconds, and runs its piece with
+  # an exact -run/-skip filter concurrently with its whole packages. Unmeasured
+  # (new) tests get the package's mean weight and are always assigned.
+  # TestSelectShardPartitionsExactly and TestSplitShardsRunEveryTestExactlyOnce
+  # prove the shards disjoint and exhaustive. Five shards: the split drops the
+  # modelled critical path from ~23 to ~10 min, and a sixth shard buys nothing
+  # (the largest single tests and per-job setup become the floor).
+  # Full git history is required — the DSL SemVer-compatibility tests read the
+  # latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
-    needs: [preflight]
+    # Not gated on preflight: the shards are the long pole, and waiting for
+    # preflight added its ~4.4 min to every run's wall clock. A preflight
+    # failure cancels the run instead (cancel-on-preflight-failure).
     strategy:
-      fail-fast: false
+      # On a pull request, one red shard cancels its siblings: the matrix
+      # result is then `failure` at once, so cancel-on-unit-failure (which
+      # depends on every leg) fires without waiting for the slowest shard. Main pushes and merge groups keep every shard running,
+      # matching the cancellers: there the full failure signal is wanted and
+      # escalate-main-failure reports it.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        shard: ["1/3", "2/3", "3/3"]
+        shard: ["1/5", "2/5", "3/5", "4/5", "5/5"]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -531,10 +578,61 @@ jobs:
             exit 1
           fi
 
+      # Race-instrumented builds share no action IDs with the non-race build
+      # setup-go's cache holds, so without this every shard spent its first
+      # minutes compiling cold. race-build-cache-warm publishes, from main, a
+      # cache holding exactly what the shards compile; it is restored on top of
+      # setup-go's (entries are content-addressed, so the overlay is safe). A
+      # shard never saves: a pull-request entry is invisible to every other pull
+      # request, and five ~1 GB uploads per run would evict everything else.
+      # Keep both steps byte-identical to race-build-cache-warm's
+      # (TestRaceBuildCacheKeyDerivationIsShared).
+      - name: Resolve race build cache key
+        id: race-build-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The Go build cache is only valid for the toolchain and C compiler
+          # (runner image) that wrote it. go.sum and the commit only choose the
+          # closest entry: every cache hit is still verified by action ID.
+          sum=$(sha256sum go.sum | cut -c1-16)
+          prefix="go-race-build-v1-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-$(go env GOVERSION)"
+          {
+            echo "path=$(go env GOCACHE)"
+            echo "restore-go=${prefix}-"
+            echo "restore-sum=${prefix}-${sum}-"
+            echo "key=${prefix}-${sum}-${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore race build cache
+        id: race-build-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.race-build-key.outputs.path }}
+          key: ${{ steps.race-build-key.outputs.key }}
+          # Newest entry for this go.sum, else newest for this toolchain.
+          restore-keys: |
+            ${{ steps.race-build-key.outputs.restore-sum }}
+            ${{ steps.race-build-key.outputs.restore-go }}
+
+      # The shard also records race-mode test timings (job "unit-shard", one
+      # part file per go test invocation) so the split table can be refreshed
+      # from the runs it balances: `go run ./test/testtiming splits` merges the
+      # parts. See docs/guides/test-timing.md.
       - name: Unit suite (-race, shard ${{ matrix.shard }})
         env:
           GOOBERS_CI_SHARD: ${{ matrix.shard }}
+          GOOBERS_TEST_TIMING_FILE: test-timings/unit-race.json
         run: go run ./test/ci group unit
+
+      - name: Upload race shard timing
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-timings-race-linux-${{ strategy.job-index }}
+          path: test-timings/unit-race.part*.json
+          if-no-files-found: warn
 
   # Linux runs the whole behavioural unit suite (no -race) separately from the
   # race shards so its coverage profile includes Linux-only files.
@@ -629,6 +727,14 @@ jobs:
           run-id: ${{ steps.previous-timing.outputs.result }}
           github-token: ${{ github.token }}
 
+      # Execute actual pinned v0.4.1 packages against current diagnostic data.
+      # This runs outside the hermetic unit sandbox so the pinned release can
+      # resolve its own module versions; failure blocks the required gate.
+      - name: Diagnostics downgrade and re-upgrade compatibility
+        timeout-minutes: 15
+        shell: bash
+        run: go run ./test/diagnosticsrollback
+
       - name: Unit suite and Linux coverage profile
         env:
           GOOBERS_CI_RACE: "0"
@@ -655,93 +761,8 @@ jobs:
           path: test-timings/unit-${{ runner.os }}.json
           if-no-files-found: warn
 
-  # One macOS allocation owns every required Darwin runtime check. The whole
-  # behavioural suite runs without race or coverage instrumentation (both are
-  # authoritative on Linux), followed on the same runner by shipped-workflow
-  # contracts and the PR-only native Seatbelt gate. Explicit !cancelled()
-  # conditions preserve independent failure evidence from the later checks.
-  unit-macos:
-    name: macOS runtime (unit · shipped · sandbox)
-    needs: [preflight]
-    runs-on: macos-latest
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download modules
-        timeout-minutes: 12
-        # Explicit bash: the Windows runner defaults to PowerShell, which
-        # cannot parse this loop.
-        shell: bash
-        run: |
-          for attempt in 1 2 3; do
-            if go mod download; then exit 0; fi
-            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
-            sleep $((attempt * 5))
-          done
-          echo "::error::go mod download failed after 3 attempts"
-          exit 1
-
-      # See the identically-named step in the `unit` job for why this is
-      # needed: TestFeatureRegistryAgainstLatestRelease builds the latest
-      # release tag's own go.mod/go.sum inside a temp worktree, and this job's
-      # hermetic runner sets GOPROXY=off before that test runs.
-      - name: Prime module cache for latest release tag
-        timeout-minutes: 12
-        shell: bash
-        run: |
-          latest_tag=$(git tag --list 'v*' --sort=-v:refname \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-          if [ -z "$latest_tag" ]; then
-            echo "::warning::no version-shaped release tag found; skipping release-tag module priming"
-            exit 0
-          fi
-          echo "priming module cache for release tag: $latest_tag"
-          release_tree="$(mktemp -d)/release"
-          git worktree add --detach -q "$release_tree" "$latest_tag"
-          status=1
-          for attempt in 1 2 3; do
-            if (cd "$release_tree" && go mod download); then
-              status=0
-              break
-            fi
-            echo "::warning::go mod download (release tag $latest_tag) attempt $attempt/3 failed; retrying"
-            sleep $((attempt * 5))
-          done
-          git worktree remove --force "$release_tree"
-          if [ "$status" -ne 0 ]; then
-            echo "::error::go mod download for release tag $latest_tag failed after 3 attempts"
-            exit 1
-          fi
-
-      - name: Unit suite (behavioral, no -race)
-        env:
-          GOOBERS_CI_RACE: "0"
-          GOOBERS_CI_COVERAGE: "0"
-        run: go run ./test/ci group unit
-
-      - name: Shipped-workflow contracts (macOS)
-        if: ${{ !cancelled() }}
-        env:
-          GOOBERS_CI_RACE: "0"
-          GOOBERS_CI_TEST_TIMEOUT: "20m"
-        run: go run ./test/ci group shipped
-
-      - name: Require native Seatbelt sandbox confinement (macOS)
-        if: ${{ !cancelled() && github.event_name != 'push' }}
-        run: make sandbox-check
-
   # Shipped-workflow contract suite. Linux runs it with -race and Windows runs
-  # it without -race. The macOS leg is consolidated into unit-macos above.
+  # it without -race. The macOS leg runs nightly in macos-nightly.yml.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
     needs: [preflight]
@@ -806,7 +827,7 @@ jobs:
           cache: true
 
       - name: Set up Java
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
         with:
           distribution: temurin
           java-version: "21"
@@ -940,6 +961,40 @@ jobs:
           fi
           echo "KUBEBUILDER_ASSETS=$assets" >> "$GITHUB_ENV"
 
+      # Cancellation needs a real Temporal server. RequireEnv otherwise skips
+      # it even under TESTDEP_STRICT, so provision and assert execution below.
+      - name: Provision Temporal cancellation dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cancellation-regression"
+          cd "$RUNNER_TEMP/cancellation-regression"
+          curl --fail --location --retry 3 --max-time 120 \
+            https://github.com/temporalio/cli/releases/download/v1.8.2/temporal_cli_1.8.2_linux_amd64.tar.gz -o temporal.tar.gz
+          echo 'd8421bda989e6514b4bdb4d63a9012a8a05a806892e881a5aad8510496349a94  temporal.tar.gz' | sha256sum --check
+          tar -xzf temporal.tar.gz temporal
+          echo "GOOBERS_TEMPORAL_CLI=$PWD/temporal" >> "$GITHUB_ENV"
+
+      - name: Debian bookworm cancellation and snapshot regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Build once on the host; run with Debian's real git and userspace.
+          # Static test binaries avoid depending on the host's newer glibc.
+          CGO_ENABLED=0 go test -c -tags=integration -o "$RUNNER_TEMP/cancellation-regression/engine.test" ./internal/engine
+          CGO_ENABLED=0 go test -c -tags=integration -o "$RUNNER_TEMP/cancellation-regression/recovery.test" ./internal/recovery
+          docker run --rm -v "$RUNNER_TEMP/cancellation-regression:/regression:ro" \
+            -e TESTDEP_STRICT=1 -e GOOBERS_TEMPORAL_CLI=/regression/temporal \
+            debian:bookworm bash -euc '
+              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends git ca-certificates
+              git --version
+              /regression/engine.test -test.v -test.run="^TestIntegrationDispatchCancellation" -test.count=3 -test.timeout=5m
+              /regression/recovery.test -test.v -test.run="^TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex$" -test.count=3 -test.timeout=2m
+            ' 2>&1 | tee debian-cancellation.log
+          grep -q -- '--- PASS: TestIntegrationDispatchCancellationWaitsForPodCleanup' debian-cancellation.log
+          grep -q -- '--- PASS: TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex' debian-cancellation.log
+
       - name: Run strict integration tier
         env:
           GOOBERS_JAVA_E2E: "1"
@@ -947,6 +1002,8 @@ jobs:
         run: |
           set -euo pipefail
           make test-integration-strict 2>&1 | tee integration-tier.log
+          grep -q -- '--- PASS: TestIntegrationDispatchCancellationWaitsForPodCleanup' integration-tier.log
+          grep -q -- '--- PASS: TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex' integration-tier.log
           # Assert the envtest reconcile actually EXECUTED. It is the only test
           # in CI that stands up a real API server, and the only thing that
           # caught #3168 (both shipped CRDs rejected: uniqueItems forbidden and
@@ -1047,7 +1104,7 @@ jobs:
       # same java-version, same checked-out pom — publishes the entry every PR's
       # `integration` job already looks for.
       - name: Set up Java
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
         with:
           distribution: temurin
           java-version: "21"
@@ -1080,6 +1137,150 @@ jobs:
           # marker ages out — a partially warmed repository that poisons the
           # consumers instead of helping them.
           find ~/.m2/repository -name '*.lastUpdated' -delete 2>/dev/null || true
+
+  # Default-branch writer of the race build cache the `unit` shards restore.
+  # setup-go's cache cannot serve them: it is saved once per go.sum by the first
+  # Linux job to finish (preflight, a non-race build) and never rewritten, and
+  # -race changes every action ID. This job compiles, vets and links every unit
+  # test binary with the shards' exact flags and runs none of them
+  # (GOOBERS_CI_COMPILE_ONLY), then saves only the entries that build used, so
+  # the entry is one full race build (~1 GB compressed) rather than an
+  # ever-growing union. It restores the previous entry first, so only what the
+  # push changed recompiles.
+  #
+  # Main only: GitHub scopes an entry written by a pull-request run to that pull
+  # request, where no other run can read it. It gates nothing: continue-on-error,
+  # absent from required-ci and escalate-main-failure, and a shard that misses
+  # simply compiles as it did before.
+  race-build-cache-warm:
+    name: warm race build cache
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    outputs:
+      saved-key: ${{ steps.race-build-save.outcome == 'success' && steps.race-build-key.outputs.key || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # No setup-go cache: its entry is preflight's non-race build, which this
+      # job would only have to prune again.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Download modules
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
+      - name: Resolve race build cache key
+        id: race-build-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The Go build cache is only valid for the toolchain and C compiler
+          # (runner image) that wrote it. go.sum and the commit only choose the
+          # closest entry: every cache hit is still verified by action ID.
+          sum=$(sha256sum go.sum | cut -c1-16)
+          prefix="go-race-build-v1-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-$(go env GOVERSION)"
+          {
+            echo "path=$(go env GOCACHE)"
+            echo "restore-go=${prefix}-"
+            echo "restore-sum=${prefix}-${sum}-"
+            echo "key=${prefix}-${sum}-${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore race build cache
+        id: race-build-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.race-build-key.outputs.path }}
+          key: ${{ steps.race-build-key.outputs.key }}
+          # Newest entry for this go.sum, else newest for this toolchain.
+          restore-keys: |
+            ${{ steps.race-build-key.outputs.restore-sum }}
+            ${{ steps.race-build-key.outputs.restore-go }}
+
+      # Age every restored entry so the go command re-stamps each one it uses
+      # (it only refreshes an mtime older than an hour), and record when the
+      # build starts. trim.txt is set to now so the go command's daily trim
+      # cannot delete the aged entries before the build reaches them.
+      - name: Mark restored entries unused
+        env:
+          RACE_BUILD_CACHE: ${{ steps.race-build-key.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RACE_BUILD_CACHE"
+          find "$RACE_BUILD_CACHE" -mindepth 2 -type f -exec touch -m -d '2000-01-01T00:00:00Z' {} +
+          date +%s > "$RACE_BUILD_CACHE/trim.txt"
+          touch "$RUNNER_TEMP/race-build-start"
+
+      - name: Compile every race unit test binary (no tests run)
+        env:
+          GOOBERS_CI_COMPILE_ONLY: "1"
+          GOOBERS_CI_COVERAGE: "0"
+        run: go run ./test/ci group unit
+
+      - name: Drop entries this build did not use
+        env:
+          RACE_BUILD_CACHE: ${{ steps.race-build-key.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          before=$(du -sm "$RACE_BUILD_CACHE" | cut -f1)
+          find "$RACE_BUILD_CACHE" -mindepth 2 -type f ! -newer "$RUNNER_TEMP/race-build-start" -delete
+          echo "race build cache: ${before} MB -> $(du -sm "$RACE_BUILD_CACHE" | cut -f1) MB after dropping unused entries"
+
+      - name: Save race build cache
+        id: race-build-save
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.race-build-key.outputs.path }}
+          key: ${{ steps.race-build-key.outputs.key }}
+
+  # Each main push saves a new race build cache entry under its own commit key,
+  # and the repository's cache quota (10 GB) is already full: left alone, a
+  # ~1 GB entry per push would evict every other cache within hours. Once the
+  # new entry is saved, the superseded ones on the same ref go. Consumers only
+  # ever restore the newest entry, so nothing reads the ones deleted here.
+  # Separate from the warm job so the token that can delete caches never sits
+  # in a job that compiles repository code.
+  race-build-cache-prune:
+    name: prune superseded race build caches
+    needs: [race-build-cache-warm]
+    if: ${{ needs.race-build-cache-warm.outputs.saved-key != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      actions: write
+    steps:
+      - name: Delete superseded race build cache entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: ${{ needs.race-build-cache-warm.outputs.saved-key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" \
+            --key go-race-build-v1- --limit 100 --json id,key \
+            --jq '.[] | select(.key != env.KEEP) | .id' |
+          while read -r id; do
+            gh cache delete "$id" --repo "$GITHUB_REPOSITORY" \
+              || echo "::warning::could not delete race build cache entry $id"
+          done
 
   # DELETED alongside e2e/envtest/coverage. `make test-conformance` was
   # `-run '^TestConformance' ./...`, and -run filters EXECUTION, not
@@ -1197,7 +1398,19 @@ jobs:
       # portal build smoke test — that's covered elsewhere.
       - name: Install make (windows)
         timeout-minutes: 8
-        run: choco install make --no-progress -y
+        # Explicit bash, and retried like the other network fetches in this
+        # workflow (#3139): the Windows runner defaults to PowerShell, which
+        # cannot parse this loop, and choco hits the Chocolatey feed with no
+        # retry of its own.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if choco install make --no-progress -y; then exit 0; fi
+            echo "::warning::choco install make attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::choco install make failed after 3 attempts"
+          exit 1
 
       - name: make build (windows)
         run: make build-operator
@@ -1205,10 +1418,16 @@ jobs:
       - name: Windows platform runtime
         env:
           GOOBERS_RUN_WSL_INTEGRATION_TEST: "1"
-        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
+        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock
 
       - name: Windows service transitions
         run: go test ./internal/winsvc
+
+      - name: Windows bounded diagnostic history
+        run: go test -v ./internal/diagnostics/history ./internal/diagnostics/featureusage -count=1
+
+      - name: Windows offline diagnostic evidence
+        run: go test ./internal/diagnostics -run '^TestOperational' -count=1
 
       - name: Windows host image preparation
         run: go test ./release/internal/imageinputs -count=1
@@ -1249,6 +1468,12 @@ jobs:
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
 
+      # Exercise native Logs delivery and real journal-writing CLI lifetimes.
+      # Keep the large CLI/engine suites filtered; test/ci checks this selection
+      # against every test in the journal export regression files.
+      - name: Windows journal OTLP export
+        run: go test ./internal/journal ./internal/livejournal ./internal/telemetry ./internal/instance ./api/schemas ./internal/engine ./cmd/goobers -run '^(TestCommitted.*|TestJournalLogs.*|TestClientShutdownExportsFinalJournalDropCauses|TestOTLPJournalLogs.*|TestInstanceSchemaJournalLogs|TestProjectionDoesNotExportHistoricalJournalEvents|TestConfigureOTLPJournalLogsGate|TestJournalRedactExportsLiveOTLPLog|TestClaimsReleaseExportsLiveOTLPLog|TestClaimLockDiagnosticsExportLiveOTLPLogs|TestCommandJournalTelemetrySharesRootLifetime|TestRunNoWaitReturnsAfterStandaloneDispatch)$' -count=1 -timeout=3m
+
       # The whole package, not one named test. #3064 added this step scoped to
       # TestCreateLegacyRuntimeAliasCreatesJunction only, which passed while the
       # four migration tests that actually exercise alias *resolution* stayed
@@ -1286,7 +1511,10 @@ jobs:
       - name: Windows read model and stores
         # Config mirrors must exercise native file replacement, read-only
         # cleanup, and Unix-source asset identity on Windows, not just compile.
-        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets
+        # Immutable generations also require native archive, shared-lease,
+        # retention and relative-path execution coverage (#5382).
+        # The rollback runner must also open native drive-letter SQLite paths.
+        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./test/diagnosticsrollback
 
       - name: Windows worktree and event stream
         env:
@@ -1329,7 +1557,7 @@ jobs:
       # Credential-plane alias tests drive actual runtime migration and Windows
       # directory junction/SameFile behavior; cross-compilation cannot cover it.
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed|TestOTLPJournalDiagnosticRoutingMatrix|TestFleetHealthProductionExportAndLocalEvidence|TestFleetProducerThroughCollectorKeepsTenantHealthAndOwners|TestFleetUsageProductionStartupReachesStrictBackend|TestRemoteFeatureEvidenceCrossesRealJournalPlaneAndDeduplicates|TestRemoteExecutionDeadlineReachesCurrentActiveStage|TestFeatureDriversFollowAdmittedSelectionAndReload|TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
@@ -1387,7 +1615,7 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -1400,7 +1628,6 @@ jobs:
           DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
           UNIT_RESULT: ${{ needs.unit.result }}
           UNIT_LINUX_COVERAGE_RESULT: ${{ needs.unit-linux-coverage.result }}
-          UNIT_MACOS_RESULT: ${{ needs.unit-macos.result }}
           SHIPPED_RESULT: ${{ needs.shipped.result }}
           DEADCODE_RESULT: ${{ needs.deadcode.result }}
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
@@ -1427,9 +1654,6 @@ jobs:
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
           check "unit coverage gate (linux)"         "$UNIT_LINUX_COVERAGE_RESULT"
-          # unit-macos also carries the macOS shipped-workflow and native
-          # Seatbelt validations on the same scarce runner allocation.
-          check "unit + shipped + sandbox runtime (macos)" "$UNIT_MACOS_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
           check "dead-code analysis"                 "$DEADCODE_RESULT"
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
@@ -1528,6 +1752,270 @@ jobs:
           path: bin/linux-validation-evidence/
           if-no-files-found: warn
 
+  # Cancel-on-failure (pull requests only). The jobs above are independent
+  # and nothing stops the rest of a run once one of them has failed: 36% of a
+  # failed PR run's job-minutes were spent after its first job failure
+  # (80 failed runs, Sep 19-25). Each required job gets a canceller that only
+  # acquires a runner when that job fails, and then cancels the whole run.
+  #
+  # - One canceller per job, not one for all: a job's `needs` waits for every
+  #   listed job (and every leg of a matrix job) to finish, so a shared
+  #   canceller would fire only after the slowest one, when nothing is left
+  #   to save.
+  # - `actions: write` is granted only here. These jobs check out nothing and
+  #   run no repository code, so the job that runs untrusted PR code never
+  #   holds a token that can cancel or rerun workflows. On a fork PR the
+  #   token is read-only, the cancel is refused, and the run behaves as before.
+  # - The required check stays correct: required-ci runs under always(), so
+  #   it still runs after the cancel, and its fail-closed check() reads every
+  #   `cancelled` job as not passed. `make ci` goes red, never green.
+  # - The condition reads the job's own result, not failure(): failure() is
+  #   also true when an ANCESTOR failed, so a preflight failure would start
+  #   every downstream canceller at once, one runner-minute each.
+  # - Main pushes are excluded (`!= 'push'`): there the full failure signal
+  #   is wanted, and escalate-main-failure reports per-job reds.
+  #   merge_group is excluded too; this is a pull-request economy only.
+  #
+  # test/ci pins one canceller for every required-ci need
+  # (TestCIWorkflowCancelsPullRequestRunOnFirstFailure).
+  cancel-on-preflight-failure:
+    name: cancel run on failure (preflight)
+    needs: [preflight]
+    if: ${{ !cancelled() && needs.preflight.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-checks-failure:
+    name: cancel run on failure (checks)
+    needs: [checks]
+    if: ${{ !cancelled() && needs.checks.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-deploy-reference-failure:
+    name: cancel run on failure (deploy-reference)
+    needs: [deploy-reference]
+    if: ${{ !cancelled() && needs.deploy-reference.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-lint-failure:
+    name: cancel run on failure (lint)
+    needs: [lint]
+    if: ${{ !cancelled() && needs.lint.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-darwin-build-failure:
+    name: cancel run on failure (darwin-build)
+    needs: [darwin-build]
+    if: ${{ !cancelled() && needs.darwin-build.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-unit-failure:
+    name: cancel run on failure (unit)
+    needs: [unit]
+    if: ${{ !cancelled() && needs.unit.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-unit-linux-coverage-failure:
+    name: cancel run on failure (unit-linux-coverage)
+    needs: [unit-linux-coverage]
+    if: ${{ !cancelled() && needs.unit-linux-coverage.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-shipped-failure:
+    name: cancel run on failure (shipped)
+    needs: [shipped]
+    if: ${{ !cancelled() && needs.shipped.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-deadcode-failure:
+    name: cancel run on failure (deadcode)
+    needs: [deadcode]
+    if: ${{ !cancelled() && needs.deadcode.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-windows-smoke-failure:
+    name: cancel run on failure (windows-smoke)
+    needs: [windows-smoke]
+    if: ${{ !cancelled() && needs.windows-smoke.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-vulnerability-scan-failure:
+    name: cancel run on failure (vulnerability-scan)
+    needs: [vulnerability-scan]
+    if: ${{ !cancelled() && needs.vulnerability-scan.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-integration-failure:
+    name: cancel run on failure (integration)
+    needs: [integration]
+    if: ${{ !cancelled() && needs.integration.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-sandbox-failure:
+    name: cancel run on failure (sandbox)
+    needs: [sandbox]
+    if: ${{ !cancelled() && needs.sandbox.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
+  cancel-on-linux-validation-failure:
+    name: cancel run on failure (linux-validation)
+    needs: [linux-validation]
+    if: ${{ !cancelled() && needs.linux-validation.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
   # Watches EVERY job that validates a landed main SHA. `deploy-reference` was
   # the one push-lane job reporting into a void: it could go red on main with no
   # issue filed. (e2e, envtest and coverage were the other three; deleting them
@@ -1549,7 +2037,7 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [preflight, checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]
+    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -1565,7 +2053,7 @@ jobs:
             needs.lint.result == 'failure' ||
             needs.unit.result == 'failure' ||
             needs.unit-linux-coverage.result == 'failure' ||
-            needs.unit-macos.result == 'failure' ||
+            needs.darwin-build.result == 'failure' ||
             needs.shipped.result == 'failure' ||
             needs.windows-smoke.result == 'failure'
           }}
@@ -1625,7 +2113,7 @@ jobs:
             needs.lint.result == 'success' &&
             needs.unit.result == 'success' &&
             needs.unit-linux-coverage.result == 'success' &&
-            needs.unit-macos.result == 'success' &&
+            needs.darwin-build.result == 'success' &&
             needs.shipped.result == 'success' &&
             needs.windows-smoke.result == 'success'
           }}

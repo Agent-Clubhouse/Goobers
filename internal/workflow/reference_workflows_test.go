@@ -233,7 +233,7 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 		goobers[g.Name] = g.Spec
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml", "test-suite-quality.yaml"} {
+	for _, file := range []string{"implementation.yaml", "implementation-pre-review-experiment.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml", "test-suite-quality.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 			if err != nil {
@@ -628,6 +628,57 @@ func TestReferenceWorkflowsImplementationCIPollDeclaresRequiredCapability(t *tes
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }
 
+// TestReferenceWorkflowsCIPollRetriesOnDispatchFailure is #5462's regression
+// guard (a workaround, not a full fix — see #5462). The credential is
+// resolved once at ci-poll stage entry from a process-level token cache and
+// then held static for the whole poll (up to pollTimeoutSeconds, default
+// 30m); a run whose poll is still running as that cached token nears its
+// own expiry can 401 mid-poll. Retrying re-dispatches the stage, which
+// calls the token source again — proven live to recover, because the cache
+// re-mints once the held token is past its expiry skew, where a bare retry
+// of the same already-expired token cannot. `retry.maxAttempts` here is
+// internal/runner's per-stage attempt loop (run.go's dispatch retry,
+// charged before any gate ever evaluates this task's result) — a completely
+// different budget from the gate-level repass count ci-gate's own
+// onTimeout re-entry spends (#5558), so this does not double-charge it. It
+// does not cover a poll long enough to outlive even a freshly re-minted
+// token.
+func TestReferenceWorkflowsCIPollRetriesOnDispatchFailure(t *testing.T) {
+	for _, name := range []string{
+		"implementation.yaml",
+		"implementation-pre-review-experiment.yaml",
+		"implementation-recovery.yaml",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", name)
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read workflow: %v", err)
+			}
+			var w apiv1.Workflow
+			if err := yaml.Unmarshal(raw, &w); err != nil {
+				t.Fatalf("unmarshal workflow: %v", err)
+			}
+			for _, task := range w.Spec.Tasks {
+				if task.Inputs["kind"] != "ci-poll" {
+					continue
+				}
+				if task.Retry == nil {
+					t.Fatalf("ci-poll task %q declares no retry; want maxAttempts>1 so a dispatch-level failure (e.g. an expired credential's 401) re-dispatches instead of failing the run", task.Name)
+				}
+				if task.Retry.MaxAttempts < 2 {
+					t.Fatalf("ci-poll task %q retry.maxAttempts = %d, want >= 2", task.Name, task.Retry.MaxAttempts)
+				}
+				if task.Retry.BackoffSeconds <= 0 {
+					t.Fatalf("ci-poll task %q retry.backoffSeconds = %d, want > 0 so a re-dispatch doesn't immediately race the same failure", task.Name, task.Retry.BackoffSeconds)
+				}
+				return
+			}
+			t.Fatalf("%s has no inputs.kind=ci-poll task", name)
+		})
+	}
+}
+
 // TestReferenceWorkflowsImplementationBoundsModuleDownloadSeparatelyFromImplement
 // is #4179's regression guard: a stalled `go mod download` inside the agentic
 // implement session used to burn the whole implement budget invisibly (one
@@ -696,6 +747,87 @@ func TestReferenceWorkflowsImplementationBoundsModuleDownloadSeparatelyFromImple
 	}
 	if implement.TimeoutSeconds != 0 && implement.TimeoutSeconds <= warmCache.TimeoutSeconds {
 		t.Fatalf("implement.timeoutSeconds = %d, want it uncapped or greater than warm-module-cache's %d — the two must stay on separate budgets", implement.TimeoutSeconds, warmCache.TimeoutSeconds)
+	}
+}
+
+func TestReferenceWorkflowsPreReviewValidationExperiment(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows")
+	load := func(name string) apiv1.Workflow {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		var w apiv1.Workflow
+		if err := yaml.Unmarshal(raw, &w); err != nil {
+			t.Fatalf("unmarshal %s: %v", name, err)
+		}
+		return w
+	}
+
+	for _, name := range []string{"implementation.yaml", "implementation-recovery.yaml"} {
+		canonical := load(name)
+		for _, task := range canonical.Spec.Tasks {
+			if task.Name == "implement" || task.Name == "remediate-ci" {
+				if task.Next != "review" {
+					t.Fatalf("%s %s.next = %q, want unchanged direct review", name, task.Name, task.Next)
+				}
+			}
+		}
+	}
+
+	experiment := load("implementation-pre-review-experiment.yaml")
+	if len(experiment.Spec.Triggers) != 1 || experiment.Spec.Triggers[0].Type != apiv1.TriggerManual {
+		t.Fatalf("experiment triggers = %+v, want manual-only opt-in", experiment.Spec.Triggers)
+	}
+	tasks := make(map[string]apiv1.Task, len(experiment.Spec.Tasks))
+	for _, task := range experiment.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	for _, producer := range []string{"implement", "remediate-ci"} {
+		if got := tasks[producer].Next; got != "pre-review-validation" {
+			t.Fatalf("%s.next = %q, want pre-review-validation", producer, got)
+		}
+	}
+	validation, ok := tasks["pre-review-validation"]
+	if !ok {
+		t.Fatal("pre-review-validation task not found")
+	}
+	if validation.Run == nil || !slices.Equal(validation.Run.Command, []string{"make", "verify-fast"}) {
+		t.Fatalf("pre-review-validation command = %v, want [make verify-fast]", validation.Run)
+	}
+	if validation.TimeoutSeconds <= 0 || validation.Retry == nil || validation.Retry.MaxAttempts != 1 {
+		t.Fatalf("pre-review-validation bounds = timeout %d retry %+v, want bounded single policy attempt", validation.TimeoutSeconds, validation.Retry)
+	}
+	if validation.Next != "pre-review-validation-gate" {
+		t.Fatalf("pre-review-validation.next = %q, want pre-review-validation-gate", validation.Next)
+	}
+
+	var validationGate *apiv1.Gate
+	for i := range experiment.Spec.Gates {
+		if experiment.Spec.Gates[i].Name == "pre-review-validation-gate" {
+			validationGate = &experiment.Spec.Gates[i]
+			break
+		}
+	}
+	if validationGate == nil {
+		t.Fatal("pre-review-validation-gate not found")
+	}
+	if validationGate.Automated == nil || validationGate.Automated.Check != "failure-class" {
+		t.Fatalf("pre-review-validation-gate automated check = %+v, want failure-class", validationGate.Automated)
+	}
+	for outcome, want := range map[string]string{
+		"pass":     "review",
+		"fail":     "implement",
+		"infra":    "pre-review-validation",
+		"escalate": "park-escalated",
+	} {
+		if got := validationGate.Branches[outcome]; got != want {
+			t.Fatalf("pre-review-validation-gate %s branch = %q, want %q", outcome, got, want)
+		}
+	}
+	if !slices.Contains(tasks["implement"].ContextFrom, "pre-review-validation") {
+		t.Fatal("implement contextFrom does not include pre-review-validation diagnostics")
 	}
 }
 

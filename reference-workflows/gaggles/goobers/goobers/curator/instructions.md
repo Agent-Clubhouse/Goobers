@@ -362,3 +362,4 @@ structured or bulk data belongs in artifacts, and each item's details remain in
 its explanatory issue comment. Do not report `reconciled` or `bounced`: the
 deterministic reconciliation stage and provider label-event ledger record those
 actions directly.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

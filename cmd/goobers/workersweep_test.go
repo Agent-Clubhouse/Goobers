@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -203,6 +204,26 @@ func (r *recordingSweeper) SweepOrphans(_ context.Context, states dispatcher.Run
 	return r.disposed, r.err
 }
 
+type recurringSweepCall struct {
+	number int
+	ctx    context.Context
+}
+
+type recurringSweeper struct {
+	calls chan recurringSweepCall
+	next  int
+}
+
+func (r *recurringSweeper) SweepOrphans(ctx context.Context, _ dispatcher.RunStates) ([]string, error) {
+	r.next++
+	call := recurringSweepCall{number: r.next, ctx: ctx}
+	r.calls <- call
+	if call.number == 1 {
+		return nil, errors.New("temporary apiserver failure")
+	}
+	return []string{"terminal-from-prior-worker"}, nil
+}
+
 // The boot wiring: the worker sweeps with a Temporal-backed resolver and
 // reports what it disposed.
 func TestSweepWorkerStageOrphansReportsDisposal(t *testing.T) {
@@ -259,6 +280,48 @@ func TestSweepWorkerStageOrphansIsNeverFatal(t *testing.T) {
 			t.Fatalf("a worker with no dispatcher must not sweep at all; stdout=%q stderr=%q", stdout.String(), stderr.String())
 		}
 	})
+}
+
+func TestPeriodicWorkerStageOrphanSweepRetriesAndStopsWithWorker(t *testing.T) {
+	withFakeSweepDial(t, &fakeSweepDescriber{})
+	ctx, cancel := context.WithCancel(context.Background())
+	sweeper := &recurringSweeper{calls: make(chan recurringSweepCall, 8)}
+	var stdout, stderr synchronizedBuffer
+	done := startPeriodicWorkerStageOrphanSweeps(
+		ctx, sweeper, "127.0.0.1:7233", "default", &stdout, &stderr, 25*time.Millisecond,
+	)
+
+	first := <-sweeper.calls
+	second := <-sweeper.calls
+	if first.number != 1 || second.number != 2 {
+		t.Fatalf("sweep sequence = %d, %d", first.number, second.number)
+	}
+	deadline := time.Now().Add(10 * time.Millisecond)
+	for (!strings.Contains(stderr.String(), "temporary apiserver failure") ||
+		!strings.Contains(stdout.String(), "terminal-from-prior-worker")) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.Contains(stderr.String(), "temporary apiserver failure") ||
+		!strings.Contains(stdout.String(), "terminal-from-prior-worker") {
+		t.Fatalf("recurring sweep reports: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("periodic sweep did not stop after worker cancellation")
+	}
+	if first.ctx.Err() == nil && second.ctx.Err() == nil {
+		// Each sweep gets the worker context as its parent. At least the latest
+		// completed call must observe cancellation after shutdown.
+		t.Fatal("periodic sweeps were detached from the worker context")
+	}
+	select {
+	case call := <-sweeper.calls:
+		t.Fatalf("sweep %d ran after shutdown", call.number)
+	case <-time.After(20 * time.Millisecond):
+	}
 }
 
 // sweepStubClient is a client.Client that answers only the call the sweep

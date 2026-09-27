@@ -540,3 +540,207 @@ func (m markerFor) Get(_ context.Context, runID string) (intake.Marker, bool, er
 	}
 	return intake.Marker{RunID: runID, SourceSeq: 1}, true, nil
 }
+
+// writeRunningRun creates a run directory whose journal has no terminal event.
+func writeRunningRun(t *testing.T, root, runID string) string {
+	t.Helper()
+	writer, err := journal.Create(root, journal.RunIdentity{
+		RunID: runID, Gaggle: "alpha", Workflow: "wf", WorkflowVersion: 1,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal for %s: %v", runID, err)
+	}
+	if err := writer.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "build", Attempt: 1,
+	}); err != nil {
+		t.Fatalf("append stage.started: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	return filepath.Join(root, runID)
+}
+
+// finishRun appends a terminal event to an existing journal WITHOUT recording
+// any intake watermark — exactly what the stalled-run sweep's own terminalizer
+// did before #5278 wired its JournalAdvanced observer.
+func finishRun(t *testing.T, dir string, phase journal.RunPhase) {
+	t.Helper()
+	run, _, err := journal.Recover(dir)
+	if err != nil {
+		t.Fatalf("recover journal %s: %v", dir, err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(phase),
+	}); err != nil {
+		t.Fatalf("append run.finished: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+}
+
+// TestSweepRefreshesAProjectedRowWhoseJournalWentTerminal is #5278.
+//
+// The projector is watermark-driven, and the stalled-run sweep's ad-hoc
+// terminalizer appended run.finished without one, so the projector never looked
+// again. The forward walk only DISCOVERS unprojected runs, so nothing revisited
+// the row either: it claimed `running` while its journal said otherwise, for as
+// long as the row existed — up to sixteen days on the cloud instance.
+func TestSweepRefreshesAProjectedRowWhoseJournalWentTerminal(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	root := t.TempDir()
+	runID := fmt.Sprintf("%032x", 7)
+	dir := writeRunningRun(t, root, runID)
+
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 10})
+	if err := sweeper.Step(ctx); err != nil {
+		t.Fatalf("discovery step: %v", err)
+	}
+	row, ok, err := store.GetRun(ctx, runID)
+	if err != nil || !ok {
+		t.Fatalf("run not projected: %v %v", ok, err)
+	}
+	if row.Phase != journal.PhaseRunning {
+		t.Fatalf("projected phase = %q, want the running row this test starts from", row.Phase)
+	}
+
+	// The terminal append nothing observes.
+	finishRun(t, dir, journal.PhaseEscalated)
+
+	if err := sweeper.Step(ctx); err != nil {
+		t.Fatalf("refresh step: %v", err)
+	}
+	row, ok, err = store.GetRun(ctx, runID)
+	if err != nil || !ok {
+		t.Fatalf("run vanished: %v %v", ok, err)
+	}
+	if row.Phase != journal.PhaseEscalated {
+		t.Errorf("row phase = %q, want %q — a row whose journal is terminal must not keep "+
+			"claiming running just because nobody recorded a watermark for it",
+			row.Phase, journal.PhaseEscalated)
+	}
+	if !row.Terminal {
+		t.Error("refreshed row is not marked terminal")
+	}
+	if row.FinishedAt == nil {
+		t.Error("refreshed row carries no finishedAt; the whole row must be re-derived, not just its phase column")
+	}
+}
+
+// A large first gaggle must not hold every later gaggle behind its entire
+// history. Each Step still observes the global batch budget, but a root that
+// fills its share yields the next tick to the next root with its own durable
+// position. This is the multi-gaggle failure from #5308.
+func TestSweepRotatesAcrossRootsBeforeLargeRootIsExhausted(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	largeRoot := t.TempDir()
+	staleRoot := t.TempDir()
+	for i := 0; i < 12; i++ {
+		if err := os.Mkdir(filepath.Join(largeRoot, fmt.Sprintf("%032x", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runID := fmt.Sprintf("%032x", 100)
+	dir := writeRunningRun(t, staleRoot, runID)
+	if err := store.UpsertRun(ctx, readmodel.Projection{Run: readmodel.RunRow{
+		RunID: runID, Gaggle: "beta", Workflow: "merge-review",
+		Phase: journal.PhaseRunning, StartedAt: time.Now().UTC(),
+	}}); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+	finishRun(t, dir, journal.PhaseCompleted)
+
+	sweeper := New(store, store, nil, Options{
+		RunsDirs: []string{largeRoot, staleRoot}, BatchSize: 4,
+	})
+	for step := 1; step <= 2; step++ {
+		if err := sweeper.Step(ctx); err != nil {
+			t.Fatalf("step %d: %v", step, err)
+		}
+	}
+
+	row, ok, err := store.GetRun(ctx, runID)
+	if err != nil || !ok {
+		t.Fatalf("stale-root row missing: found=%v err=%v", ok, err)
+	}
+	if row.Phase != journal.PhaseCompleted {
+		t.Fatalf("second root phase = %q, want completed; first root monopolized repair", row.Phase)
+	}
+
+	cursors, err := store.SweepRootCursors(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byRoot := make(map[string]readmodel.SweepRootCursor, len(cursors))
+	for _, cursor := range cursors {
+		byRoot[cursor.Root] = cursor
+	}
+	if byRoot[largeRoot].AfterName == "" {
+		t.Fatal("large root lost its durable position when repair yielded")
+	}
+	if byRoot[staleRoot].LastCycleCompletedAt.IsZero() {
+		t.Fatal("second root received no independent cursor or completed cycle")
+	}
+	global, err := store.SweepCursor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !global.LastCycleCompletedAt.IsZero() {
+		t.Fatal("global cycle completed before every configured root completed")
+	}
+}
+
+// A row that is genuinely running is re-checked and left alone: the refresh
+// must not manufacture a terminal state for a run that has not reached one.
+func TestSweepLeavesAGenuinelyRunningRowAlone(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	root := t.TempDir()
+	runID := fmt.Sprintf("%032x", 8)
+	writeRunningRun(t, root, runID)
+
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 10})
+	for i := 0; i < 3; i++ {
+		if err := sweeper.Step(ctx); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	row, ok, err := store.GetRun(ctx, runID)
+	if err != nil || !ok {
+		t.Fatalf("run not projected: %v %v", ok, err)
+	}
+	if row.Phase != journal.PhaseRunning {
+		t.Errorf("row phase = %q, want running — the run never reached a terminal event", row.Phase)
+	}
+	if sweeper.Stats().Refreshed != 0 {
+		t.Errorf("Refreshed = %d, want 0 for a run that is still running", sweeper.Stats().Refreshed)
+	}
+}
+
+// An already-terminal row costs no journal read at all: the budget argument for
+// skipping already-projected runs still holds for the corpus that dominates it.
+func TestSweepDoesNotRereadAlreadyTerminalRows(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	root := t.TempDir()
+	runID := fmt.Sprintf("%032x", 9)
+	writeRun(t, root, runID)
+
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 10})
+	for i := 0; i < 3; i++ {
+		if err := sweeper.Step(ctx); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	if got := sweeper.Stats().Refreshed; got != 0 {
+		t.Errorf("Refreshed = %d, want 0 — a terminal row agrees with its journal already", got)
+	}
+	if got := sweeper.Stats().Projected; got != 1 {
+		t.Errorf("Projected = %d, want 1 — the run is discovered once, not re-derived each cycle", got)
+	}
+}

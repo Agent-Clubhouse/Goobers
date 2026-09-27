@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -56,7 +58,9 @@ const traceHelp = "Usage: goobers trace [--json] [--follow] [--summary | --verdi
 	"or --transcript to select one stage. Use --summary for run metadata and\n" +
 	"review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's\n" +
 	"events until it finishes; --json --follow emits JSON Lines (default path\n" +
-	"\".\"). Remediation escalations include the typed outcome, attempted flag,\n" +
+	"\".\"). Continuation traces include source/continuation links, resume target,\n" +
+	"reused branch, injected input names, and historical repass accounting.\n" +
+	"Remediation escalations include the typed outcome, attempted flag,\n" +
 	"and attempted causes in the text summary and JSON `escalation.remediation`\n" +
 	"object. Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO\n" +
 	"error, 130 = interrupted while following.\n"
@@ -138,20 +142,8 @@ func runTraceWithFactories(
 		return 2
 	}
 
-	if *showTranscripts || transcriptSelected {
-		transcripts, err := reads.RunTranscripts(ctx, runID, selectedStage)
-		if err != nil {
-			pf(stderr, "error: %v in run %q\n", err, runID)
-			return 2
-		}
-		if err := printTranscripts(stdout, transcripts, selectedStage); err != nil {
-			pf(stderr, "error: %v in run %q\n", err, runID)
-			if errors.Is(err, errTranscriptNotFound) {
-				return 1
-			}
-			return 2
-		}
-		return 0
+	if handled, code := maybePrintTraceTranscripts(ctx, reads, runID, selectedStage, *showTranscripts || transcriptSelected, stdout, stderr); handled {
+		return code
 	}
 
 	ledger, err := reads.RunEvents(ctx, runID)
@@ -218,6 +210,11 @@ func runTraceWithFactories(
 	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, telemetryAttempts, now)
 	terminal := terminalCause(detail, ledger.Events)
 	verdicts := loadVerdictViews(ctx, reads, runID, ledger.Events)
+	agentProgress, err := reads.RunAgentProgress(ctx, runID)
+	if err != nil {
+		pf(stderr, "error: agent progress: %v\n", err)
+		return 2
+	}
 	if *jsonOutput {
 		result := traceJSONResult{
 			Identity:      identity,
@@ -231,7 +228,10 @@ func runTraceWithFactories(
 			Events:        traceJSONEvents(ledger.Events),
 			Spans:         spans,
 			Verdicts:      verdicts,
+			Attribution:   loadTraceAttribution(l, runID),
 			Recovery:      recoveryState,
+			AgentProgress: agentProgress,
+			Lineage:       detail.Lineage,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			pf(stderr, "error: encode trace: %v\n", err)
@@ -244,10 +244,7 @@ func runTraceWithFactories(
 		return 0
 	}
 	if *summary {
-		printTraceRunSummary(stdout, detail, state, repasses, now)
-		printRecoveryView(stdout, recoveryState)
-		pln(stdout, "")
-		renderVerdicts(stdout, verdicts)
+		printTraceSummary(stdout, detail, state, repasses, now, l, runID, recoveryState, verdicts)
 		return 0
 	}
 	ciFailures, err := traceCIFailures(ctx, reads, runID, ledger.Events)
@@ -257,6 +254,7 @@ func runTraceWithFactories(
 	}
 
 	printTraceTimeline(stdout, timeline, terminal)
+	printAgentProgressSummaries(stdout, agentProgress)
 	if escalation != nil {
 		printEscalationSummary(stdout, *escalation)
 	}
@@ -277,6 +275,7 @@ func runTraceWithFactories(
 		pf(stdout, "outcome:  gate=%s verdict=%s target=%s\n", detail.Outcome.Gate, detail.Outcome.Verdict, detail.Outcome.Target)
 	}
 	pf(stdout, "repasses: %d\n", repasses)
+	printRunLineage(stdout, detail.Lineage)
 	pln(stdout, "\nevents:")
 	for _, event := range ledger.Events {
 		pln(stdout, "  "+formatEvent(traceJournalEvent(event)))
@@ -285,6 +284,31 @@ func runTraceWithFactories(
 	printCIFailures(stdout, ciFailures)
 	printSpans(stdout, spans)
 	return 0
+}
+
+func maybePrintTraceTranscripts(
+	ctx context.Context,
+	reads readservice.OfflineRuns,
+	runID, selectedStage string,
+	show bool,
+	stdout, stderr io.Writer,
+) (bool, int) {
+	if !show {
+		return false, 0
+	}
+	transcripts, err := reads.RunTranscripts(ctx, runID, selectedStage)
+	if err != nil {
+		pf(stderr, "error: %v in run %q\n", err, runID)
+		return true, 2
+	}
+	if err := printTranscripts(stdout, transcripts, selectedStage); err != nil {
+		pf(stderr, "error: %v in run %q\n", err, runID)
+		if errors.Is(err, errTranscriptNotFound) {
+			return true, 1
+		}
+		return true, 2
+	}
+	return true, 0
 }
 
 func followTrace(
@@ -299,8 +323,10 @@ func followTrace(
 	defer ticker.Stop()
 
 	var lastSeq uint64
+	var lastProgressRender string
 	for {
 		lifecycleStartSeq := traceLifecycleStartSeq(events)
+		terminalReached := false
 		for _, event := range events {
 			if event.Seq <= lastSeq {
 				continue
@@ -313,8 +339,21 @@ func followTrace(
 			}
 			lastSeq = event.Seq
 			if event.Type == journal.EventRunFinished && event.Seq > lifecycleStartSeq {
-				return nil
+				terminalReached = true
 			}
+		}
+		if !jsonOutput {
+			summaries, err := reads.RunAgentProgress(ctx, runID)
+			if err != nil {
+				return fmt.Errorf("agent progress: %w", err)
+			}
+			lastProgressRender, err = writeFollowAgentProgress(stdout, summaries, lastProgressRender)
+			if err != nil {
+				return err
+			}
+		}
+		if terminalReached {
+			return nil
 		}
 
 		select {
@@ -328,6 +367,27 @@ func followTrace(
 		}
 		events = ledger.Events
 	}
+}
+
+func writeFollowAgentProgress(
+	stdout io.Writer,
+	summaries []readservice.AgentProgressSummary,
+	lastRender string,
+) (string, error) {
+	var buf bytes.Buffer
+	printAgentProgressSummaries(&buf, summaries)
+	if buf.Len() == 0 {
+		return lastRender, nil
+	}
+	rendered := buf.String()
+	if rendered == lastRender {
+		return lastRender, nil
+	}
+	_, err := io.WriteString(stdout, rendered)
+	if err != nil {
+		return lastRender, err
+	}
+	return rendered, nil
 }
 
 func traceLifecycleStartSeq(events []readservice.RunEvent) uint64 {
@@ -376,18 +436,57 @@ func traceEventsTerminal(events []readservice.RunEvent) bool {
 }
 
 type traceJSONResult struct {
-	Recovery      *recoveryView           `json:"recovery,omitempty"`
-	Identity      journal.RunIdentity     `json:"identity"`
-	Phase         journal.RunPhase        `json:"phase"`
-	State         *journal.State          `json:"state,omitempty"`
-	Repasses      int                     `json:"repasses"`
-	Timeline      []traceTimelineStage    `json:"timeline"`
-	TerminalCause *traceTerminalCause     `json:"terminalCause,omitempty"`
-	Escalation    *escalationSummary      `json:"escalation,omitempty"`
-	Outcome       *readservice.RunOutcome `json:"outcome,omitempty"`
-	Events        []traceJSONEvent        `json:"events"`
-	Spans         []rollup.SpanSummary    `json:"spans"`
-	Verdicts      []verdictView           `json:"verdicts"`
+	Recovery      *recoveryView                      `json:"recovery,omitempty"`
+	Identity      journal.RunIdentity                `json:"identity"`
+	Phase         journal.RunPhase                   `json:"phase"`
+	State         *journal.State                     `json:"state,omitempty"`
+	Repasses      int                                `json:"repasses"`
+	Timeline      []traceTimelineStage               `json:"timeline"`
+	TerminalCause *traceTerminalCause                `json:"terminalCause,omitempty"`
+	Escalation    *escalationSummary                 `json:"escalation,omitempty"`
+	Outcome       *readservice.RunOutcome            `json:"outcome,omitempty"`
+	Events        []traceJSONEvent                   `json:"events"`
+	Spans         []rollup.SpanSummary               `json:"spans"`
+	Verdicts      []verdictView                      `json:"verdicts"`
+	AgentProgress []readservice.AgentProgressSummary `json:"agentProgress,omitempty"`
+	Attribution   *creditgraph.RunRecord             `json:"attribution,omitempty"`
+	Lineage       *readservice.RunLineage            `json:"lineage,omitempty"`
+}
+
+func loadTraceAttribution(layout instance.Layout, runID string) *creditgraph.RunRecord {
+	runDir, err := layout.FindRunDir(runID)
+	if err != nil {
+		return nil
+	}
+	record, err := creditgraph.ReadRunRecord(runDir)
+	if err != nil {
+		return nil
+	}
+	return &record
+}
+
+func printTraceAttributionSummary(stdout io.Writer, attribution *creditgraph.RunRecord) {
+	if attribution != nil {
+		pf(stdout, "backprop: %s (%s)\n", attribution.Status, attribution.ContractVersion)
+	}
+}
+
+func printTraceSummary(
+	stdout io.Writer,
+	detail readservice.RunDetail,
+	state *journal.State,
+	repasses int,
+	now time.Time,
+	layout instance.Layout,
+	runID string,
+	recoveryState *recoveryView,
+	verdicts []verdictView,
+) {
+	printTraceRunSummary(stdout, detail, state, repasses, now)
+	printTraceAttributionSummary(stdout, loadTraceAttribution(layout, runID))
+	printRecoveryView(stdout, recoveryState)
+	pln(stdout, "")
+	renderVerdicts(stdout, verdicts)
 }
 
 func printTraceRunSummary(stdout io.Writer, detail readservice.RunDetail, state *journal.State, repasses int, now time.Time) {
@@ -399,6 +498,32 @@ func printTraceRunSummary(stdout io.Writer, detail readservice.RunDetail, state 
 		pf(stdout, "last activity: %s (%s)\n", formatLastActivity(now, state.UpdatedAt), state.UpdatedAt.Format(time.RFC3339))
 	}
 	pf(stdout, "repasses: %d\n", repasses)
+	printRunLineage(stdout, detail.Lineage)
+}
+
+func printRunLineage(stdout io.Writer, lineage *readservice.RunLineage) {
+	if lineage == nil {
+		return
+	}
+	if lineage.Source != nil {
+		pf(stdout, "source:   %s (%s)\n", lineage.Source.ID, lineage.Source.Phase)
+		pf(stdout, "resume:   target=%s branch=%s historicalRepasses=%d\n",
+			lineage.ResumeTarget, lineage.WorkspaceBranch, lineage.HistoricalRepassCount)
+		if len(lineage.InjectedInputs) > 0 {
+			names := make([]string, len(lineage.InjectedInputs))
+			for i, input := range lineage.InjectedInputs {
+				names[i] = input.Name
+			}
+			pf(stdout, "inputs:   %s\n", strings.Join(names, ", "))
+		}
+	}
+	if len(lineage.Continuations) > 0 {
+		continuations := make([]string, len(lineage.Continuations))
+		for i, continuation := range lineage.Continuations {
+			continuations[i] = fmt.Sprintf("%s (%s)", continuation.ID, continuation.Phase)
+		}
+		pf(stdout, "continued by: %s\n", strings.Join(continuations, ", "))
+	}
 }
 
 type traceJSONEvent struct {
@@ -585,41 +710,9 @@ func formatEvent(ev journal.Event) string {
 	prefix := fmt.Sprintf("[%d] %s", ev.Seq, ev.Type)
 	switch ev.Type {
 	case journal.EventStageStarted, journal.EventStageHeartbeat, journal.EventStageFinished:
-		s := fmt.Sprintf("%s stage=%s attempt=%d", prefix, ev.Stage, ev.Attempt)
-		if ev.AttemptClass != "" {
-			s += fmt.Sprintf(" class=%s", ev.AttemptClass)
-		}
-		if ev.Status != "" {
-			s += fmt.Sprintf(" status=%s", ev.Status)
-		}
-		if len(ev.Outputs) > 0 {
-			outputs, err := json.Marshal(ev.Outputs)
-			if err != nil {
-				s += " outputs=<invalid>"
-			} else {
-				s += " outputs=" + string(outputs)
-			}
-		}
-		return s
+		return formatStageEvent(prefix, ev)
 	case journal.EventGateEvaluated:
-		s := fmt.Sprintf("%s gate=%s verdict=%s target=%s", prefix, ev.Gate, ev.Verdict, ev.Target)
-		if reason, _ := ev.Runner["reason"].(string); reason != "" {
-			s += " reason=" + reason
-		}
-		for _, field := range []struct {
-			key   string
-			label string
-		}{
-			{"resolvedFindingIdentities", "resolved"},
-			{"suppressedFindingIdentities", "suppressed"},
-			{"reopenedFindingIdentities", "reopened"},
-			{"disprovenFindingIdentities", "disproven"},
-		} {
-			if ids := runnerStringList(ev.Runner[field.key]); len(ids) > 0 {
-				s += fmt.Sprintf(" %s=%s", field.label, strings.Join(ids, ","))
-			}
-		}
-		return s
+		return formatGateEvaluatedEvent(prefix, ev)
 	case journal.EventArtifactRecorded, journal.EventInputSnapshot:
 		s := fmt.Sprintf("%s name=%s", prefix, ev.Name)
 		if ev.Ref != nil {
@@ -648,48 +741,252 @@ func formatEvent(ev journal.Event) string {
 			prefix, ev.Actor, ev.Target, ev.Status, ev.WorkflowVersion, ev.WorkflowDigest,
 		)
 	case journal.EventRunnerAnnotation:
-		kind, _ := ev.Runner["kind"].(string)
-		action, _ := ev.Runner["action"].(string)
-		reason, _ := ev.Runner["reason"].(string)
-		s := prefix
-		if kind != "" {
-			s += " kind=" + kind
-		}
-		if action != "" {
-			s += " action=" + action
-		}
-		if reason != "" {
-			s += " reason=" + reason
-		}
-		if stage, _ := ev.Runner["stage"].(string); stage != "" {
-			s += " stage=" + stage
-		}
-		if kind == "learning.episode.injected" {
-			for _, field := range []string{"episodeId", "sourceRunId", "sourceSeq", "gate", "target", "sourceAttempt", "nextAttempt", "classification", "recommendedAction"} {
-				if value, ok := ev.Runner[field]; ok && fmt.Sprint(value) != "" {
-					s += fmt.Sprintf(" %s=%v", field, value)
-				}
-			}
-			if ids := runnerStringList(ev.Runner["findingIdentities"]); len(ids) > 0 {
-				s += " findings=" + strings.Join(ids, ",")
-			}
-		}
-		return s
+		return formatRunnerAnnotationEvent(prefix, ev)
 	case journal.EventRunnerPlacement:
-		s := prefix
-		for _, key := range []string{"runner", "node", "host", "os", "image", "pod"} {
-			if value, _ := ev.Runner[key].(string); value != "" {
-				s += " " + key + "=" + value
-			}
-		}
-		return s
+		return formatRunnerPlacementEvent(prefix, ev)
 	case journal.EventRunStarted, journal.EventRunFinished:
 		if ev.Status != "" {
 			return fmt.Sprintf("%s status=%s", prefix, ev.Status)
 		}
 		return prefix
+	case journal.EventAgentProgress:
+		return formatAgentProgressEvent(prefix, ev)
 	default:
 		return prefix
+	}
+}
+
+func formatStageEvent(prefix string, ev journal.Event) string {
+	s := fmt.Sprintf("%s stage=%s attempt=%d", prefix, ev.Stage, ev.Attempt)
+	if ev.AttemptClass != "" {
+		s += fmt.Sprintf(" class=%s", ev.AttemptClass)
+	}
+	if ev.Status != "" {
+		s += fmt.Sprintf(" status=%s", ev.Status)
+	}
+	if len(ev.Outputs) == 0 {
+		return s
+	}
+	outputs, err := json.Marshal(ev.Outputs)
+	if err != nil {
+		return s + " outputs=<invalid>"
+	}
+	return s + " outputs=" + string(outputs)
+}
+
+func formatGateEvaluatedEvent(prefix string, ev journal.Event) string {
+	s := fmt.Sprintf("%s gate=%s verdict=%s target=%s", prefix, ev.Gate, ev.Verdict, ev.Target)
+	if reason, _ := ev.Runner["reason"].(string); reason != "" {
+		s += " reason=" + reason
+	}
+	for _, field := range []struct {
+		key   string
+		label string
+	}{
+		{"resolvedFindingIdentities", "resolved"},
+		{"suppressedFindingIdentities", "suppressed"},
+		{"reopenedFindingIdentities", "reopened"},
+		{"disprovenFindingIdentities", "disproven"},
+	} {
+		if ids := runnerStringList(ev.Runner[field.key]); len(ids) > 0 {
+			s += fmt.Sprintf(" %s=%s", field.label, strings.Join(ids, ","))
+		}
+	}
+	return s
+}
+
+func formatRunnerAnnotationEvent(prefix string, ev journal.Event) string {
+	kind, _ := ev.Runner["kind"].(string)
+	action, _ := ev.Runner["action"].(string)
+	reason, _ := ev.Runner["reason"].(string)
+	s := prefix
+	if kind != "" {
+		s += " kind=" + kind
+	}
+	if action != "" {
+		s += " action=" + action
+	}
+	if reason != "" {
+		s += " reason=" + reason
+	}
+	if stage, _ := ev.Runner["stage"].(string); stage != "" {
+		s += " stage=" + stage
+	}
+	if kind != "learning.episode.injected" {
+		return s
+	}
+	for _, field := range []string{"episodeId", "sourceRunId", "sourceSeq", "gate", "target", "sourceAttempt", "nextAttempt", "classification", "recommendedAction"} {
+		if value, ok := ev.Runner[field]; ok && fmt.Sprint(value) != "" {
+			s += fmt.Sprintf(" %s=%v", field, value)
+		}
+	}
+	if ids := runnerStringList(ev.Runner["findingIdentities"]); len(ids) > 0 {
+		s += " findings=" + strings.Join(ids, ",")
+	}
+	return s
+}
+
+func formatRunnerPlacementEvent(prefix string, ev journal.Event) string {
+	s := prefix
+	for _, key := range []string{"runner", "node", "host", "os", "image", "pod"} {
+		if value, _ := ev.Runner[key].(string); value != "" {
+			s += " " + key + "=" + value
+		}
+	}
+	return s
+}
+
+func formatAgentProgressEvent(prefix string, ev journal.Event) string {
+	if ev.Progress == nil {
+		return prefix
+	}
+	p := ev.Progress
+	s := fmt.Sprintf("%s agentId=%s stage=%s attempt=%d seq=%d kind=%s source=%s fidelity=%s",
+		prefix, p.AgentID, p.Stage, p.Attempt, p.Sequence, p.Kind, p.Source, p.Fidelity)
+	if p.Summary != "" {
+		s += fmt.Sprintf(" summary=%q", p.Summary)
+	}
+	if len(p.Plan) > 0 {
+		s += fmt.Sprintf(" plan=[%s]", strings.Join(p.Plan, "; "))
+	}
+	if p.Decision != "" {
+		s += fmt.Sprintf(" decision=%q", p.Decision)
+	}
+	if p.Blocker != "" {
+		s += fmt.Sprintf(" blocker=%q", p.Blocker)
+	}
+	if p.Question != "" {
+		s += fmt.Sprintf(" question=%q", p.Question)
+	}
+	if p.NextAction != "" {
+		s += fmt.Sprintf(" nextAction=%q", p.NextAction)
+	}
+	if len(p.Evidence) == 0 {
+		return s
+	}
+	evLabels := make([]string, 0, len(p.Evidence))
+	for _, e := range p.Evidence {
+		evLabels = append(evLabels, e.ID)
+	}
+	return s + fmt.Sprintf(" evidence=[%s]", strings.Join(evLabels, ","))
+}
+
+func printAgentProgressSummaries(stdout io.Writer, summaries []readservice.AgentProgressSummary) {
+	if len(summaries) == 0 {
+		return
+	}
+	pln(stdout, "\nagent progress & status:")
+	for _, s := range summaries {
+		renderAgentProgressSummary(stdout, s, "  ")
+	}
+}
+
+func renderAgentProgressSummary(stdout io.Writer, s readservice.AgentProgressSummary, indent string) {
+	roleStr := ""
+	if s.Role != "" {
+		roleStr = " (" + s.Role + ")"
+	}
+	pf(stdout, "%sagent: %s stage=%s attempt=%d%s fidelity=%s\n",
+		indent, s.AgentID, s.Stage, s.Attempt, roleStr, s.Fidelity)
+	renderAgentProgressCurrent(stdout, s, indent)
+	if s.Degraded {
+		pf(stdout, "%s  status: %s\n", indent, s.DegradedText)
+	}
+	renderLatestAgentProgress(stdout, s.Latest, indent)
+	renderAgentProgressHistory(stdout, s.History, indent)
+	for _, child := range s.Children {
+		renderAgentProgressSummary(stdout, child, indent+"  ")
+	}
+}
+
+func renderAgentProgressCurrent(stdout io.Writer, summary readservice.AgentProgressSummary, indent string) {
+	if summary.Current == nil {
+		return
+	}
+	statusLine := "lifecycle"
+	if summary.Current.Source != "" {
+		statusLine = summary.Current.Source
+	}
+	if summary.Current.Lifecycle != "" {
+		statusLine += " " + string(summary.Current.Lifecycle)
+	} else if summary.Current.Kind != "" {
+		statusLine += " " + string(summary.Current.Kind)
+	}
+	pf(stdout, "%s  current [%s seq=%d]: %s\n", indent, statusLine, summary.Current.Sequence, summary.Current.Summary)
+}
+
+func renderLatestAgentProgress(stdout io.Writer, progress *journal.AgentProgress, indent string) {
+	if progress == nil {
+		return
+	}
+	pf(stdout, "%s  latest [%s seq=%d source=%s]:\n", indent, progress.Kind, progress.Sequence, progress.Source)
+	renderAgentProgressField(stdout, indent, "summary", progress.Summary)
+	renderAgentProgressList(stdout, indent, "plan", progress.Plan)
+	renderAgentProgressList(stdout, indent, "progress", progress.Progress)
+	renderAgentProgressField(stdout, indent, "decision", progress.Decision)
+	renderAgentProgressField(stdout, indent, "blocker", progress.Blocker)
+	renderAgentProgressField(stdout, indent, "question", progress.Question)
+	renderAgentProgressField(stdout, indent, "next_action", progress.NextAction)
+	renderAgentProgressEvidence(stdout, indent, progress.Evidence)
+}
+
+func renderAgentProgressField(stdout io.Writer, indent, label, value string) {
+	if value == "" {
+		return
+	}
+	pf(stdout, "%s    %-12s %s\n", indent, label+":", value)
+}
+
+func renderAgentProgressList(stdout io.Writer, indent, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	renderAgentProgressField(stdout, indent, label, strings.Join(values, "; "))
+}
+
+func renderAgentProgressEvidence(stdout io.Writer, indent string, evidence []journal.AgentProgressEvidence) {
+	if len(evidence) == 0 {
+		return
+	}
+	evs := make([]string, 0, len(evidence))
+	for _, item := range evidence {
+		label := item.ID
+		if item.Label != "" {
+			label += " (" + item.Label + ")"
+		}
+		evs = append(evs, label)
+	}
+	renderAgentProgressField(stdout, indent, "evidence", strings.Join(evs, ", "))
+}
+
+func renderAgentProgressHistory(stdout io.Writer, history []journal.AgentProgress, indent string) {
+	if len(history) <= 1 {
+		return
+	}
+	pf(stdout, "%s  history (%d records):\n", indent, len(history))
+	for _, record := range history {
+		pf(stdout, "%s    - [#%d %s %s] %s\n", indent, record.Sequence, record.Kind, record.Source, historyDescription(record))
+	}
+}
+
+func historyDescription(record journal.AgentProgress) string {
+	switch {
+	case record.Summary != "":
+		return record.Summary
+	case record.Decision != "":
+		return record.Decision
+	case record.Blocker != "":
+		return record.Blocker
+	case record.Question != "":
+		return record.Question
+	case record.NextAction != "":
+		return record.NextAction
+	case len(record.Progress) > 0:
+		return strings.Join(record.Progress, "; ")
+	case len(record.Plan) > 0:
+		return strings.Join(record.Plan, "; ")
+	default:
+		return string(record.Kind)
 	}
 }
 

@@ -118,6 +118,13 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
+	wantInstanceID, err := instance.ReadRootIdentity(layout.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built.InstanceID != wantInstanceID {
+		t.Fatalf("dispatcher.Config.InstanceID = %q, want durable root identity %q", built.InstanceID, wantInstanceID)
+	}
 	if !slices.Contains(built.EnvPassthrough, "OPERATOR_DECLARED_VAR") {
 		t.Fatalf("dispatcher.Config.EnvPassthrough = %v, want the instance's runner.envPassthrough — "+
 			"without it the operator's env:default-deny hatch is dead on the pod substrate (#3725/#736)", built.EnvPassthrough)

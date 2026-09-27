@@ -1582,3 +1582,27 @@ func TestMergePRKeepsUnrecognized405AsProviderFailure(t *testing.T) {
 		t.Fatalf("result = %+v, must not classify an unrelated 405 as a merge refusal", result)
 	}
 }
+
+// #2732: merge-pr's own help documented headSha/baseSha as required inputs
+// but never said where they come from, even though it names apply-verdict as
+// verdictAuthor's producer two lines later. The shipped merge-review
+// workflow (reference-workflows/.../merge-review.yaml:359-360, and the same
+// wiring in config-examples/gaggles/{acme-web,acme-web-claude}) maps
+// merge-pr's headSha/baseSha inputsFrom elect-lander's passed-through
+// selectedHeadSha/selectedBaseSha, which gather-sibling-context originally
+// produces (cmd/goobers/prsiblingcontext.go: a fresh re-fetch of the
+// selected PR's current SHAs, deliberately not whatever pr-select saw
+// several stages earlier). pr-select does write headSha/baseSha into its
+// own result file, but does not declare them as expectedOutputs and no
+// shipped workflow wires merge-pr from pr-select's output.
+func TestMergePRHelpNamesSHAPinProducer(t *testing.T) {
+	if !strings.Contains(mergePRHelp, "headSha") || !strings.Contains(mergePRHelp, "baseSha") {
+		t.Fatalf("mergePRHelp = %q, want it to still declare headSha/baseSha as inputs", mergePRHelp)
+	}
+	if !strings.Contains(mergePRHelp, "gather-sibling-context") {
+		t.Fatalf("mergePRHelp = %q, want it to name gather-sibling-context as the origin of headSha/baseSha", mergePRHelp)
+	}
+	if !strings.Contains(mergePRHelp, "elect-lander") {
+		t.Fatalf("mergePRHelp = %q, want it to name elect-lander as what passes headSha/baseSha through to merge-pr", mergePRHelp)
+	}
+}

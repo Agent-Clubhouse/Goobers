@@ -20,3 +20,4 @@ never mutate the repository, issue, or PR.
    pytest gate.
 3. Return `pass` when the change is ready for CI, or `needs-changes` with a
    concrete rationale.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

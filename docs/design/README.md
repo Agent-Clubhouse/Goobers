@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 13 |
+| `draft` | 15 |
 | `approved` | 19 |
 | `implemented` | 27 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **69** |
+| **Total** | **71** |
 
 ## `docs/adr/`
 
@@ -32,6 +32,7 @@ word — read the page, not this table, before depending on it.
 
 | Document | Status | Owner / area | Tracking | Delivered by | Remaining | Superseded by | Verified |
 |---|---|---|---|---|---|---|---|
+| [Design: ADO parity on DSL 2.0 — near-term plan for v0.5.0](ado-parity-dsl-2-0.md) | `draft` | — | #2061 | — | — | — | 47de1f0d6 (2026-09-25) |
 | [Azure DevOps Provider Parity — the PR lifecycle on ADO](ado-provider-parity.md) | `implemented` | — | — | #2745 | — | — | — |
 | [Agentic mutation-capability audit](agentic-mutation-capability-audit.md) | `historical` | — | — | — | — | — | — |
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `implemented` | — | — | #983, #1003 | — | — | 09db115bb (2026-09-06) |
@@ -69,6 +70,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Plan-driven dynamic fan-out](plan-driven-dynamic-fan-out.md) | `draft` | workflow DSL, runner, journal, conformance | #1310 | — | — | — | — |
 | [Portal read architecture — a rethink](portal-read-architecture.md) | `implemented` | — | — | #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952 | — | — | — |
 | [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `implemented` | — | — | #2305, #2884 | — | — | — |
+| [Design: Provider access layer — unified providers, connections and explicit credentials (DSL 3.0)](provider-access-layer.md) | `draft` | — | #2061 | — | — | — | 47de1f0d6 (2026-09-25) |
 | [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `implemented` | — | — | #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499 | — | — | — |
 | [Design: Separate GitHub repository sink for docs-updater](separate-docs-repository-sink.md) | `approved` | — | — | — | — | — | — |
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — | — | — | — |

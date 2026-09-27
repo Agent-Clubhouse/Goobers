@@ -93,7 +93,7 @@ func TestBacklogScanWindowWrapsInsteadOfReportingTheBacklogDrained(t *testing.T)
 	items, window, err := listBacklogScanWindow(
 		context.Background(), server.provider(),
 		providers.RepositoryRef{Owner: "acme", Name: "app"},
-		[]string{"goobers:approved"}, "", nil,
+		[]string{"goobers:approved"}, nil, "", nil,
 		backlogScanCeiling, backlogScanCursor{Cursor: "158"}, false,
 	)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestBacklogScanWindowCursorPastEndOfSetStillCoversTheBacklog(t *testing.T) 
 	items, window, err := listBacklogScanWindow(
 		context.Background(), server.provider(),
 		providers.RepositoryRef{Owner: "acme", Name: "app"},
-		[]string{"goobers:approved"}, "", nil,
+		[]string{"goobers:approved"}, nil, "", nil,
 		backlogScanCeiling, backlogScanCursor{Cursor: "400"}, false,
 	)
 	if err != nil {
@@ -170,7 +170,7 @@ func TestBacklogScanWindowBudgetTruncationAdvancesCursorWithoutWrapping(t *testi
 	items, window, err := listBacklogScanWindow(
 		context.Background(), server.provider(),
 		providers.RepositoryRef{Owner: "acme", Name: "app"},
-		[]string{"goobers:approved"}, "", nil,
+		[]string{"goobers:approved"}, nil, "", nil,
 		backlogScanCeiling, backlogScanCursor{}, false,
 	)
 	if err != nil {
@@ -199,7 +199,7 @@ func TestBacklogScanWindowDoesNotWrapFromTheZeroCursor(t *testing.T) {
 	items, window, err := listBacklogScanWindow(
 		context.Background(), server.provider(),
 		providers.RepositoryRef{Owner: "acme", Name: "app"},
-		[]string{"goobers:approved"}, "", nil,
+		[]string{"goobers:approved"}, nil, "", nil,
 		backlogScanCeiling, backlogScanCursor{}, false,
 	)
 	if err != nil {
@@ -223,7 +223,7 @@ func TestBacklogScanWindowBoundsCandidateSpendAcrossTheWrap(t *testing.T) {
 	_, window, err := listBacklogScanWindow(
 		context.Background(), server.provider(),
 		providers.RepositoryRef{Owner: "acme", Name: "app"},
-		[]string{"goobers:approved"}, "", nil,
+		[]string{"goobers:approved"}, nil, "", nil,
 		backlogScanCeiling, backlogScanCursor{Cursor: "4950"}, false,
 	)
 	if err != nil {

@@ -13,8 +13,8 @@ import (
 )
 
 // Advance when changed projection semantics require replay of unchanged
-// journals, and append a migration marking the store unready for that replay.
-const currentProjectionVersion = 3
+// journals. Store open marks the projection unready while older rows remain.
+const currentProjectionVersion = 4
 
 // UpsertRun writes a projection in ONE transaction.
 //

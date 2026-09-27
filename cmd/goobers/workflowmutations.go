@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -78,6 +79,11 @@ func (s *workflowMutationService) SetWorkflowEnabled(ctx context.Context, input 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := gaggletemplate.LockConfig(s.layout.ConfigDir())
+	if err != nil {
+		return httpapi.WorkflowEnabledResult{}, fmt.Errorf("config is being replaced; retry workflow edit: %w", err)
+	}
+	defer func() { _ = release() }()
 
 	source, ok := handle.workflowSource(gaggle, name)
 	if !ok {

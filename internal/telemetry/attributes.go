@@ -25,6 +25,8 @@ const (
 	AttrStageType                     = "goobers.stage.type"
 	AttrAttemptNumber                 = "goobers.attempt.n"
 	AttrAttemptKind                   = "goobers.attempt.kind"
+	AttrBuildID                       = "goobers.build.id"
+	AttrWorkerIdentity                = "goobers.worker.identity"
 	AttrItemID                        = "goobers.item.id"
 	AttrItemURL                       = "goobers.item.url"
 	AttrOutcome                       = "goobers.outcome"
@@ -79,6 +81,8 @@ func AllAttributes() []Attribute {
 		AttrStageType,
 		AttrAttemptNumber,
 		AttrAttemptKind,
+		AttrBuildID,
+		AttrWorkerIdentity,
 		AttrItemID,
 		AttrItemURL,
 		AttrOutcome,
@@ -193,6 +197,8 @@ type TaskAttributes struct {
 	HarnessVersion  string
 	Attempt         int
 	AttemptKind     string
+	BuildID         string
+	WorkerIdentity  string
 	ItemID          string
 	ItemURL         string
 }

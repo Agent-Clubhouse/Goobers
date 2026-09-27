@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/secretstore"
 )
@@ -73,7 +74,7 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 		return "", fmt.Errorf("envelope for run %s stage %s names no goober", env.RunID, env.TaskID)
 	}
 
-	kit, err := w.buildKit(env, kitModeFor(attempt))
+	kit, err := w.buildKitContext(ctx, env, kitModeFor(attempt))
 	if err != nil {
 		return "", err
 	}
@@ -111,7 +112,7 @@ func kitModeFor(attempt dispatcher.Attempt) agentickit.Mode {
 	return agentickit.ModeInvoke
 }
 
-func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
+func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
 	l := instance.NewLayout(w.instanceRoot)
 	if w.seams == nil {
 		return nil, fmt.Errorf("agentic kit writer for run %s stage %s has no config snapshot store; refusing to resolve a kit from ambient config", env.RunID, env.TaskID)
@@ -119,9 +120,13 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 	// The whole point of the pin: this resolves the config tree the RUN was
 	// admitted against, or refuses by name (#3884). Never the tree that
 	// happens to be mounted at attempt time.
-	snapshot, err := w.seams.snapshotForPin(env.Gaggle, env.WorkflowID, env.GooberDigest)
+	snapshot, release, err := w.seams.snapshotForInvocation(ctx, env)
 	if err != nil {
 		return nil, err
+	}
+	defer release()
+	if snapshot.configDir != "" {
+		l = l.WithConfigDir(snapshot.configDir)
 	}
 	cfg, set := snapshot.cfg, snapshot.set
 
@@ -160,8 +165,22 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 	if err != nil {
 		return nil, fmt.Errorf("derive credential grants: %w", err)
 	}
-	wireGrants := make([]agentickit.Grant, 0, len(grants))
-	for _, g := range grants {
+	// Resolve harness scoping BEFORE the claim check crosses into the pod.
+	// Besides making the plane's plain `agent:model` response line up with the
+	// kit's capability->ref map, this is the least-authority shape: a Copilot
+	// pod never receives even the reference for a Claude Code credential (or
+	// vice versa). buildGooberCredentialGrants is deliberately idempotent, so
+	// the shared executor constructor can safely scope this already-bound set
+	// once more in the pod.
+	harnessName := spec.Harness
+	if harnessName == "" {
+		harnessName = apiv1.HarnessCopilot
+	}
+	credentialKeys := append([]string(nil), spec.Capabilities...)
+	credentialKeys = append(credentialKeys, mcpconfig.BYOCredentialKeys(spec.MCPServers)...)
+	selectedGrants := buildGooberCredentialGrants(env.Goober, string(harnessName), credentialKeys, grants)
+	wireGrants := make([]agentickit.Grant, 0, len(selectedGrants))
+	for _, g := range selectedGrants {
 		// Shape only — Ref names where a credential lives, never its value.
 		wireGrants = append(wireGrants, agentickit.Grant{Goober: g.Goober, Capability: g.Capability, Ref: g.Ref})
 	}
@@ -171,16 +190,17 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 	}
 
 	return &agentickit.Kit{
-		Envelope:           env,
-		Mode:               mode,
-		Goobers:            scoped,
-		Instructions:       instructions,
-		Assets:             assets,
-		EnvCapabilities:    envCapabilities,
-		Grants:             wireGrants,
-		SandboxPosture:     string(instance.EffectiveAgenticSandbox(cfg, nil)),
-		HarnessCommand:     slices.Clone(cfg.Runner.HarnessCommand[string(spec.Harness)]),
-		HarnessEnvUnset:    slices.Clone(cfg.Runner.HarnessEnvUnset),
-		HarnessSessionArgs: slices.Clone(cfg.Runner.HarnessSessionArgs[string(spec.Harness)]),
+		Envelope:             env,
+		Mode:                 mode,
+		Goobers:              scoped,
+		Instructions:         instructions,
+		Assets:               assets,
+		EnvCapabilities:      envCapabilities,
+		Grants:               wireGrants,
+		SandboxPosture:       string(instance.EffectiveAgenticSandbox(cfg, nil)),
+		HarnessCommand:       slices.Clone(cfg.Runner.HarnessCommand[string(spec.Harness)]),
+		HarnessEnvUnset:      slices.Clone(cfg.Runner.HarnessEnvUnset),
+		HarnessSessionArgs:   slices.Clone(cfg.Runner.HarnessSessionArgs[string(spec.Harness)]),
+		HarnessPreflightArgs: slices.Clone(cfg.Runner.HarnessPreflightArgs[string(spec.Harness)]),
 	}, nil
 }

@@ -137,7 +137,11 @@ func TestSelfUpdateCommandReportsAlreadyActiveResult(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("resultFile"), resultFile)
 
 	prepare := func(_ context.Context, opts selfupdate.PrepareOptions) (selfupdate.PrepareResult, error) {
-		return selfupdate.PrepareResult{Policy: opts.Policy, Target: "v1.2.3"}, nil
+		return selfupdate.PrepareResult{
+			Policy:                    opts.Policy,
+			Target:                    "v1.2.3",
+			CurrentVersionUnparseable: true,
+		}, nil
 	}
 	var stdout, stderr bytes.Buffer
 	code := runSelfUpdateWith([]string{root}, &stdout, &stderr, "self-update", prepare)
@@ -148,10 +152,14 @@ func TestSelfUpdateCommandReportsAlreadyActiveResult(t *testing.T) {
 	if !strings.Contains(stdout.String(), "target v1.2.3 is already active") {
 		t.Fatalf("stdout = %q, want already-active message", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "current version is not valid SemVer") {
+		t.Fatalf("stdout = %q, want recovery explanation", stdout.String())
+	}
 	var result struct {
-		UpdateRequested bool   `json:"updateRequested"`
-		Policy          string `json:"policy"`
-		Target          string `json:"target"`
+		UpdateRequested           bool   `json:"updateRequested"`
+		Policy                    string `json:"policy"`
+		Target                    string `json:"target"`
+		CurrentVersionUnparseable bool   `json:"currentVersionUnparseable"`
 	}
 	raw, err := os.ReadFile(resultFile)
 	if err != nil {
@@ -160,7 +168,10 @@ func TestSelfUpdateCommandReportsAlreadyActiveResult(t *testing.T) {
 	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.UpdateRequested || result.Policy != selfupdate.PolicyOnRelease || result.Target != "v1.2.3" {
+	if result.UpdateRequested ||
+		result.Policy != selfupdate.PolicyOnRelease ||
+		result.Target != "v1.2.3" ||
+		!result.CurrentVersionUnparseable {
 		t.Fatalf("result = %+v", result)
 	}
 }

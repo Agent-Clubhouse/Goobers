@@ -3,13 +3,16 @@ package journal
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 )
 
@@ -32,6 +35,7 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 	// leave the primary engine path uncovered.
 	identity := testIdentity()
 	identity.Driver = DriverEngine
+	identity.ConfigGeneration = Digest([]byte("execution-config"))
 	run, err := Create(root, identity, map[string][]byte{
 		"issue.md": []byte("issue body"),
 	}, WithScrubber(scrub), WithClock(fixedClock()))
@@ -111,6 +115,44 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			ID: "message-1", SenderID: "worker-1", RecipientID: "coordinator",
 			OccurredAt: fixedClock()(), Purpose: "completion",
 		}},
+		{Type: EventOperatorMessageRequested, OperatorMessageRequest: ptr(testOperatorMessageRequest("message-1", "message-key"))},
+		{Type: EventOperatorMessageRequested, OperatorMessageRequest: ptr(func() apiv1.OperatorMessageRequest {
+			request := testOperatorMessageRequest("artifact-message-1", "artifact-message-key")
+			request.Content = apiv1.OperatorMessageContent{Artifact: &apiv1.ArtifactPointer{
+				Path:      art.Path,
+				Digest:    art.Digest,
+				MediaType: "text/plain",
+				Size:      art.Size,
+			}}
+			return request
+		}())},
+		{Type: EventOperatorMessageAcknowledged, OperatorMessageAcknowledgement: &apiv1.OperatorMessageAcknowledgement{
+			Schema: apiv1.OperatorMessageAcknowledgementSchema, RequestID: "message-1",
+			IdempotencyKey: "message-key", PrincipalRef: "user:operator",
+			AcknowledgedAt: fixedClock()().Add(time.Minute),
+		}},
+		{Type: EventOperatorMessageOutcome, OperatorMessageOutcome: &apiv1.OperatorMessageOutcome{
+			Schema: apiv1.OperatorMessageOutcomeSchema, RequestID: "message-1",
+			IdempotencyKey: "message-key", CompletedAt: fixedClock()().Add(2 * time.Minute),
+			Status: apiv1.OperatorMessageDelivered,
+		}},
+		{Type: EventAgentProgress, Progress: &AgentProgress{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      testIdentity().RunID,
+			Stage:      "impl",
+			Attempt:    1,
+			Sequence:   1,
+			Kind:       AgentProgressSummary,
+			Source:     AgentProgressSourceModel,
+			OccurredAt: fixedClock()(),
+			UpdatedAt:  fixedClock()(),
+			Fidelity:   AgentFidelityFull,
+			Summary:    "Validated the parser and will patch the failing branch.",
+			Plan:       []string{"Confirm root cause", "Patch parser"},
+			Progress:   []string{"Confirmed failing branch", "Parsing the root cause"},
+			Evidence:   []AgentProgressEvidence{{Type: "tool", ID: "grep-1", Label: "failing test"}},
+		}},
 	} {
 		if err := run.Append(ev); err != nil {
 			t.Fatalf("Append %s: %v", ev.Type, err)
@@ -183,11 +225,64 @@ func TestSchemaRejectsMalformedEvent(t *testing.T) {
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"gate.overridden","gate":"review","verdict":"pass","target":"","actor":"operator","rationale":"manual inspection","status":"escalated","workflowVersion":1,"workflowDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"notification.requested"}`),
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"notification.delivery.receipt"}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"operator-message.requested"}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"operator-message.acknowledged"}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"operator-message.outcome"}`),
 	}
 	for i, b := range bad {
 		if err := v.ValidateJSON("journal-event.schema.json", b); err == nil {
 			t.Errorf("case %d: schema accepted malformed event: %s", i, b)
 		}
+	}
+}
+
+func TestSchemaRejectsOversizedAgentProgressFields(t *testing.T) {
+	v, err := validate.New()
+	if err != nil {
+		t.Fatalf("build validator: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		field string
+		value any
+	}{
+		{name: "summary", field: "summary", value: strings.Repeat("x", AgentProgressMaxSummaryRunes+1)},
+		{name: "plan item", field: "plan", value: []string{strings.Repeat("x", AgentProgressMaxListItemRunes+1)}},
+		{name: "progress item", field: "progress", value: []string{strings.Repeat("x", AgentProgressMaxListItemRunes+1)}},
+		{name: "evidence type", field: "evidence", value: []map[string]any{{"type": strings.Repeat("x", AgentProgressMaxEvidenceTypeRunes+1)}}},
+		{name: "evidence id", field: "evidence", value: []map[string]any{{"id": strings.Repeat("x", AgentProgressMaxEvidenceIDRunes+1)}}},
+		{name: "evidence label", field: "evidence", value: []map[string]any{{"label": strings.Repeat("x", AgentProgressMaxEvidenceLabelRunes+1)}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			progress := map[string]any{
+				"schema":     "goobers.dev/journal/agent-progress/v1",
+				"agentId":    "worker-1",
+				"runId":      "run-1",
+				"stage":      "work",
+				"attempt":    1,
+				"sequence":   1,
+				"kind":       "summary",
+				"source":     "model",
+				"occurredAt": "2026-07-13T05:00:00Z",
+			}
+			progress[test.field] = test.value
+			event, err := json.Marshal(map[string]any{
+				"schema":   EventSchema,
+				"seq":      1,
+				"branch":   0,
+				"time":     "2026-07-13T05:00:00Z",
+				"type":     EventAgentProgress,
+				"progress": progress,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := v.ValidateJSON("journal-event.schema.json", event); err == nil {
+				t.Fatalf("schema accepted oversized %s", test.name)
+			}
+		})
 	}
 }
 
@@ -198,7 +293,10 @@ func TestMarshalEventRejectsGateOverrideWithoutTarget(t *testing.T) {
 }
 
 func TestMarshalEventRejectsNotificationWithoutTypedPayload(t *testing.T) {
-	for _, eventType := range []EventType{EventNotificationRequested, EventNotificationReceipt} {
+	for _, eventType := range []EventType{
+		EventNotificationRequested, EventNotificationReceipt, EventOperatorMessageRequested,
+		EventOperatorMessageAcknowledged, EventOperatorMessageOutcome,
+	} {
 		if _, err := marshalEvent(Event{Type: eventType}); err == nil {
 			t.Fatalf("marshalEvent accepted %s without its typed payload", eventType)
 		}

@@ -152,7 +152,7 @@ export function WorkflowPicker({
             <button
               aria-controls="gaggle-selected-workflow"
               aria-selected={selected}
-              className={`gaggle-workflow-choice${selected ? " is-selected" : ""}`}
+              className={`gaggle-workflow-choice${selected ? " is-selected" : ""}${workflow.enabled ? "" : " definition-disabled"}`}
               key={workflow.identity.name}
               onClick={() => onSelect(workflow.identity.name)}
               onKeyDown={(event) => onTabKeyDown(event, index)}
@@ -163,7 +163,13 @@ export function WorkflowPicker({
               tabIndex={selected ? 0 : -1}
               type="button"
             >
-              <strong>{workflow.displayName}</strong>
+              <span className="definition-nameplate">
+                <strong>{workflow.displayName}</strong>
+                {!workflow.enabled && (
+                  <span className="definition-disabled-badge">Disabled</span>
+                )}
+              </span>
+              <code>{workflow.identity.gaggle} / {workflow.identity.name}</code>
               <small>
                 {workflow.stageCount} {workflow.stageCount === 1 ? "stage" : "stages"} ·{" "}
                 {formatTriggers(workflow)}
@@ -204,6 +210,9 @@ function SelectedWorkflow({
         <div>
           <p className="section-kicker">Workflow preview</p>
           <h3>{summary.displayName}</h3>
+          <code className="gaggle-workflow-identity">
+            {summary.identity.gaggle} / {summary.identity.name}
+          </code>
           <p>{summary.purpose || "No purpose is documented for this workflow."}</p>
           <small>
             {summary.stageCount} {summary.stageCount === 1 ? "stage" : "stages"} ·{" "}
@@ -221,7 +230,7 @@ function SelectedWorkflow({
             Open full workflow
           </a>
           <ScopePivot
-            label={`${gaggleDisplayName} / ${summary.displayName}`}
+            label={`${summary.identity.gaggle} / ${summary.identity.name}`}
             scope={{
               gaggle: summary.identity.gaggle,
               workflow: summary.identity.name,

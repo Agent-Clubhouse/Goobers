@@ -737,7 +737,7 @@ func TestSweepStalledRunsTerminalizesRemovedGaggleRoot(t *testing.T) {
 		return nil
 	}
 	runners := newDaemonRunnerRegistry()
-	if err := sweepStalledRuns(context.Background(), layout, runners, nil, nil, log, prepare, notify, nil, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, runners, nil, nil, log, &stalledSweepDeps{PrepareTerminal: prepare}, notify, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -802,5 +802,59 @@ func assertWatchdogPhase(t *testing.T, runsDir, runID string, want journal.RunPh
 	}
 	if phase != want {
 		t.Fatalf("run %s phase = %s, want %s", runID, phase, want)
+	}
+}
+
+// TestSweepStalledRunsReportsItsOwnJournalAdvance is #5278.
+//
+// When no live Runner owns a stalled run — every run left behind by a previous
+// daemon — the sweep builds its own terminalizer. That terminalizer appended
+// run.finished with no JournalAdvanced observer, so no intake watermark was
+// recorded, so the read model's projector never re-read the run. Repair only
+// DISCOVERS unprojected runs, so nothing revisited the row either: `runs list`
+// reported the run as `running` while its journal said terminal, permanently.
+//
+// The assertion is on the observer, not on the read model, because the observer
+// IS the seam: the daemon's own runner carries it (daemon.go's
+// runnerCfg.JournalAdvanced), and a terminalizer that omits it is invisible to
+// every derived reader downstream, whatever those readers do.
+func TestSweepStalledRunsReportsItsOwnJournalAdvance(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	eventTime := now.Add(-time.Hour)
+	createWatchdogRun(t, layout.RunsDir(), "orphaned-run", "backlog-curation", &eventTime, time.Time{})
+
+	var observed []string
+	var highest uint64
+	deps := &stalledSweepDeps{
+		JournalAdvanced: func(runID string, seq uint64) {
+			observed = append(observed, runID)
+			if seq > highest {
+				highest = seq
+			}
+		},
+	}
+
+	// nil registry and nil fallback runner: exactly the case where the sweep has
+	// to construct a terminalizer of its own.
+	if err := sweepStalledRuns(
+		context.Background(), layout, nil, nil, nil, nil, deps, nil, nil, now, 45*time.Minute, 0,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	assertWatchdogPhase(t, layout.RunsDir(), "orphaned-run", journal.PhaseEscalated)
+	if len(observed) == 0 {
+		t.Fatal("the sweep terminalized a run without reporting the journal advance; " +
+			"nothing downstream can learn the run ended")
+	}
+	for _, runID := range observed {
+		if runID != "orphaned-run" {
+			t.Errorf("observed advance for %q, want only orphaned-run", runID)
+		}
+	}
+	if highest == 0 {
+		t.Error("reported sequence 0; the intake watermark must carry a real sequence, " +
+			"or an append racing a projection is acknowledged as though applied")
 	}
 }

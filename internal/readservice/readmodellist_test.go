@@ -106,6 +106,52 @@ func TestReadModelRefusesUnsupportedFilterWithoutJournalFallback(t *testing.T) {
 	}
 }
 
+func TestReadModelListsSelectedWorkflowPhase(t *testing.T) {
+	ctx := context.Background()
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), "read.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	for _, row := range []readmodel.RunRow{
+		{
+			RunID: "matching-run", Gaggle: "pvt-jeffstei", Workflow: "implementation",
+			Phase: journal.PhaseRunning, StartedAt: fixedTime, LastActivity: fixedTime,
+		},
+		{
+			RunID: "terminal-run", Gaggle: "pvt-jeffstei", Workflow: "implementation",
+			Phase: journal.PhaseCompleted, Terminal: true,
+			StartedAt: fixedTime.Add(-time.Minute), LastActivity: fixedTime,
+		},
+	} {
+		if err := store.UpsertRun(ctx, readmodel.Projection{Run: row}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service, err := NewLocal(LocalSources{
+		Layout:      instance.NewLayout(t.TempDir()),
+		Definitions: testDefinitions(),
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.EnableReadModelReads()
+
+	page, err := service.ListRuns(ctx, RunListOptions{
+		Gaggle: "pvt-jeffstei", Workflow: "implementation",
+		Phase: journal.PhaseRunning, Limit: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Runs) != 1 || page.Runs[0].ID != "matching-run" {
+		t.Fatalf("filtered runs = %+v, want matching-run", page.Runs)
+	}
+}
+
 // TestReadModelPathHidesNoWorkByDefault is #2188's regression test for the
 // read-model-served path specifically: listRunsFromReadModel must stay
 // bounded and still hide no-work runs by default, since that is the common,

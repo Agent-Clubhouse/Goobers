@@ -89,20 +89,28 @@ type WorkItem struct {
 	// such concept or for an item that is not closed — callers that need to
 	// distinguish "done" from "dropped as out of scope" must treat empty as
 	// unknown, never as either answer.
-	StateReason    string                 `json:"stateReason,omitempty"`
-	Status         WorkItemStatus         `json:"status,omitempty"`
-	Assignee       string                 `json:"assignee,omitempty"`
-	Links          []Link                 `json:"links,omitempty"`
-	Parent         *WorkItemRef           `json:"parent,omitempty"`
-	Hierarchy      map[string]interface{} `json:"hierarchy,omitempty"`
-	URL            string                 `json:"url,omitempty"`
-	CreatedAt      *time.Time             `json:"createdAt,omitempty"`
-	UpdatedAt      *time.Time             `json:"updatedAt,omitempty"`
-	ReadyAt        *time.Time             `json:"readyAt,omitempty"`
-	Fields         fieldpredicate.Fields  `json:"fields,omitempty"`
-	BlockedByCount int                    `json:"-"`
-	Raw            interface{}            `json:"raw,omitempty"`
-	Integrity      apiintegrity.Grade     `json:"integrity,omitempty"`
+	StateReason string         `json:"stateReason,omitempty"`
+	Status      WorkItemStatus `json:"status,omitempty"`
+	Assignee    string         `json:"assignee,omitempty"`
+	// AssigneeAliases lists additional identity forms for the same assignee
+	// beyond Assignee itself (#5556). GitHub and Gitea logins are already a
+	// single stable identity and leave this empty; Azure DevOps surfaces
+	// both a human-readable displayName (in Assignee) and a distinct stable
+	// uniqueName account identifier, which lands here when present. Compare
+	// a configured identity value against an item's assignee with
+	// AssigneeMatches, not Assignee alone.
+	AssigneeAliases []string               `json:"assigneeAliases,omitempty"`
+	Links           []Link                 `json:"links,omitempty"`
+	Parent          *WorkItemRef           `json:"parent,omitempty"`
+	Hierarchy       map[string]interface{} `json:"hierarchy,omitempty"`
+	URL             string                 `json:"url,omitempty"`
+	CreatedAt       *time.Time             `json:"createdAt,omitempty"`
+	UpdatedAt       *time.Time             `json:"updatedAt,omitempty"`
+	ReadyAt         *time.Time             `json:"readyAt,omitempty"`
+	Fields          fieldpredicate.Fields  `json:"fields,omitempty"`
+	BlockedByCount  int                    `json:"-"`
+	Raw             interface{}            `json:"raw,omitempty"`
+	Integrity       apiintegrity.Grade     `json:"integrity,omitempty"`
 }
 
 // WorkItemLabel describes a provider-native issue label.
@@ -122,6 +130,31 @@ type EnsureWorkItemLabelsResult struct {
 func (w WorkItem) HasLabel(label string) bool {
 	for _, itemLabel := range w.Labels {
 		if itemLabel == label {
+			return true
+		}
+	}
+	return false
+}
+
+// AssigneeMatches reports whether this work item's current assignee
+// identity matches a configured identity value — what a respectAssignee
+// eligibility filter (cmd/goobers/backlogquery.go, runnerwiring_counters.go,
+// run_continue.go) or a backlog-assignment roster entry
+// (cmd/goobers/backlogassignment.go) needs to decide (#5556). The match is
+// case-insensitive and accepts either w.Assignee or any of w.AssigneeAliases,
+// so a workflow author's assignedTo/roster entry configured with either an
+// Azure DevOps account's display name or its stable uniqueName still
+// matches. An empty configured value matches only an unassigned item,
+// preserving the existing unassigned-only mode.
+func (w WorkItem) AssigneeMatches(configured string) bool {
+	if configured == "" {
+		return w.Assignee == ""
+	}
+	if strings.EqualFold(w.Assignee, configured) {
+		return true
+	}
+	for _, alias := range w.AssigneeAliases {
+		if strings.EqualFold(alias, configured) {
 			return true
 		}
 	}
@@ -153,8 +186,13 @@ type WorkItemLabelTransition struct {
 
 // Comment is a comment on a backlog work item (a GitHub issue comment).
 type Comment struct {
-	ID         string             `json:"id"`
-	Author     string             `json:"author,omitempty"`
+	ID     string `json:"id"`
+	Author string `json:"author,omitempty"`
+	// AuthorID is the provider's stable identifier for the author, when the
+	// provider exposes one distinct from the display-oriented Author. Azure
+	// DevOps sets it to the author's identity GUID (display names are not
+	// unique); GitHub and Gitea leave it empty.
+	AuthorID   string             `json:"authorId,omitempty"`
 	AuthorType string             `json:"authorType,omitempty"`
 	Body       string             `json:"body"`
 	CreatedAt  *time.Time         `json:"createdAt,omitempty"`
@@ -468,7 +506,31 @@ type PullRequestHeadMovedError struct {
 }
 
 func (e PullRequestHeadMovedError) Error() string {
-	return fmt.Sprintf("pull request head moved from %s to %s", e.Expected, e.Actual)
+	actual := e.Actual
+	if actual == "" {
+		// A server-side head pin (ADO's TF401192) refuses the mutation without
+		// naming the new head.
+		actual = "a newer commit"
+	}
+	return fmt.Sprintf("pull request head moved from %s to %s", e.Expected, actual)
+}
+
+// PullRequestPolicyNotMetError reports that the forge refused to complete a
+// pull request because a required branch policy is not yet satisfied (ADO's
+// GitPullRequestUpdateRejectedByPolicyException, returned as 403). It is a
+// business refusal, not a credential failure: the same identity succeeds
+// once the policy is met, and Goobers never retries with a policy bypass.
+type PullRequestPolicyNotMetError struct {
+	PullID  string
+	Message string
+}
+
+func (e PullRequestPolicyNotMetError) Error() string {
+	msg := fmt.Sprintf("pull request %s completion refused: branch policy not met", e.PullID)
+	if e.Message != "" {
+		msg += ": " + e.Message
+	}
+	return msg
 }
 
 // MergeableStateUnstable is GitHub's mergeable_state value meaning the PR is
@@ -485,6 +547,11 @@ type CheckDetail struct {
 	Conclusion string     `json:"conclusion,omitempty"`
 	URL        string     `json:"url"`
 	Summary    string     `json:"summary"`
+	// AwaitingHuman marks a check that only a person can satisfy, such as an
+	// Azure DevOps minimum- or required-reviewer policy that is still
+	// queued. Such a check is never CI pending and never a remediation
+	// trigger. Providers without such checks leave it false.
+	AwaitingHuman bool `json:"awaitingHuman,omitempty"`
 }
 
 // CheckAnnotation is one provider-native diagnostic attached to a check run.
@@ -720,6 +787,12 @@ const (
 type RepoMergePolicyRequest struct {
 	Repository RepositoryRef `json:"repository"`
 	Branch     string        `json:"branch"`
+	// PullID optionally names the pull request about to land. A provider
+	// that can evaluate policy per pull request (Azure DevOps policy
+	// evaluations) decides from that pull request's own evaluations and
+	// falls back to the branch scan only when none are available. Providers
+	// whose policy is per branch ignore it.
+	PullID string `json:"pullId,omitempty"`
 }
 
 // RepoMergePolicyResult reports req.Branch's detected merge policy.
@@ -876,6 +949,11 @@ type PollMergeQueueEntryResult struct {
 	// progress is legible in logs rather than an opaque "still pending".
 	QueueState    string `json:"queueState,omitempty"`
 	QueuePosition int    `json:"queuePosition,omitempty"`
+	// AwaitingHuman, on a pending entry, reports that the only thing still
+	// holding the landing is a human approval (on Azure DevOps: auto-complete
+	// is armed and only reviewer policies are unmet). The entry is still
+	// pending; this only lets a watcher say why.
+	AwaitingHuman bool `json:"awaitingHuman,omitempty"`
 }
 
 // ListPullRequestsRequest filters open pull requests for merge-review's
@@ -1000,8 +1078,15 @@ type ListWorkItemsRequest struct {
 	Labels         []string                  `json:"labels,omitempty"`
 	LabelPredicate *labelpredicate.Predicate `json:"-"`
 	FieldPredicate *fieldpredicate.Predicate `json:"-"`
-	State          string                    `json:"state,omitempty"`
-	Assignee       string                    `json:"assignee,omitempty"`
+	// CompareLabels lists labels the caller compares the returned items'
+	// labels against exactly, beyond Labels and LabelPredicate (for example
+	// a client-side label predicate's excluded or CEL-referenced labels). It
+	// never filters: a provider whose labels match case-insensitively (Azure
+	// DevOps) returns a read label equal to one of these ignoring case in
+	// this spelling. GitHub and Gitea ignore it.
+	CompareLabels []string `json:"-"`
+	State         string   `json:"state,omitempty"`
+	Assignee      string   `json:"assignee,omitempty"`
 	// UpdatedSince, when set, restricts results to items updated at or after it.
 	UpdatedSince *time.Time `json:"updatedSince,omitempty"`
 	Limit        int        `json:"limit,omitempty"`

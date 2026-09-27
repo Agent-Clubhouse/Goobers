@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -64,7 +62,7 @@ func RetainAbandonedPreparation(ctx context.Context, request RetentionRequest, l
 	record := Record{Version: 1, RunID: request.RunID, RepositoryKey: request.RepositoryKey,
 		Ref: snapshotRef, BaseSHA: parent, SnapshotSHA: commit, PatchDigest: digest,
 		CreatedAt: request.IdentityTime, RetainUntil: request.RetainUntil}
-	retained, recordPath, err := publishAbandonedPreparation(ctx, request, record)
+	retained, recordPath, overflowed, err := publishAbandonedPreparation(ctx, request, record)
 	if err != nil {
 		return err
 	}
@@ -73,31 +71,65 @@ func RetainAbandonedPreparation(ctx context.Context, request RetentionRequest, l
 		return err
 	}
 	event.Runner["recoveryCapture"] = true
+	if overflowed {
+		event.Runner["recoveryOverflow"] = true
+	}
 	if err := log.Append(event); err != nil {
 		return fmt.Errorf("acknowledge abandoned preparation: %w", err)
 	}
-	if err := request.acknowledgeArchive(ctx, retained, recordPath); err != nil {
-		return err
+	if !overflowed {
+		if err := request.acknowledgeArchive(ctx, retained, recordPath); err != nil {
+			return err
+		}
 	}
 	return deleteExactRecoveryRef(ctx, request.Repository, ref, commit)
 }
 
-func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, prepared Record) (Record, string, error) {
-	entries, err := ReadInventory(ctx, request.InventoryRoot, request.MaxSnapshots)
+// publishAbandonedPreparation reports whether it had to fall back to the
+// overflow tier, so the caller journals the same recoveryOverflow marker
+// Retain does and skips the archive custody hook there is no archive for.
+func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, prepared Record) (Record, string, bool, error) {
+	prepared, err := matchAbandonedReservation(ctx, request, prepared)
 	if err != nil {
-		repaired, repairErr := repairAbandonedReservation(ctx, request, prepared)
-		if repairErr != nil {
-			return Record{}, "", errors.Join(err, fmt.Errorf("repair matching recovery reservation: %w", repairErr))
-		}
-		if !repaired {
-			return Record{}, "", err
-		}
-		// Preserve ReadInventory's all-or-nothing contract. Repairing this
-		// exact reservation must not hide a second partial or corrupt entry.
-		entries, err = ReadInventory(ctx, request.InventoryRoot, request.MaxSnapshots)
-		if err != nil {
-			return Record{}, "", err
-		}
+		return Record{}, "", false, err
+	}
+	_, path, err := PublishToInventoryWithEviction(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes, request.EvictFull)
+	if errors.Is(err, ErrInventoryFull) && request.OverflowRoot != "" {
+		// No retention sidecar in the overflow tier: the record itself is
+		// republished with the current deadline, which is the same effect
+		// RenewRetention has for a retained entry.
+		prepared.RetainUntil = request.RetainUntil
+		overflowed, overflowPath, overflowErr := PublishOverflow(ctx, request.Repository, request.OverflowRoot, prepared)
+		return overflowed, overflowPath, overflowErr == nil, overflowErr
+	}
+	if err != nil {
+		return Record{}, "", false, err
+	}
+	renewed, err := RenewRetention(ctx, path, request.RetainUntil, request.MaxArchiveBytes)
+	return renewed, path, false, err
+}
+
+// matchAbandonedReservation returns the immutable capture identity this
+// preparation was already published under, or prepared unchanged when it has
+// none. The same prepared commit can cross the stage-to-terminal boundary:
+// its identity and bytes are kept and only the retention sidecar is renewed.
+//
+// It reads TOLERANTLY (#5177 AC3, #5354). This caller is not asking whether
+// recovery state exists — it is asking about ONE identity it exclusively
+// owns, and it is about to publish that identity whatever the answer. A
+// second reservation it has nothing to do with, left incomplete by some other
+// run's crashed publish, used to make the strict read fail closed here and so
+// failed EVERY later worktree cleanup on the instance, forever, until an
+// operator deleted files by hand. Reservations the scan cannot interpret are
+// never a match, so skipping them cannot change this decision; they are
+// reported and reclaimed by ReconcileIncompleteReservations instead. Strict
+// ReadInventory remains right for callers deciding whether it is safe to
+// discard work, which is why it is still what recovery-abandon, the expiry
+// sweep and the publication API use.
+func matchAbandonedReservation(ctx context.Context, request RetentionRequest, prepared Record) (Record, error) {
+	entries, err := readAbandonedInventory(ctx, request)
+	if err != nil {
+		return Record{}, err
 	}
 	for _, entry := range entries {
 		prior := entry.Record
@@ -105,48 +137,29 @@ func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, 
 			continue
 		}
 		if prior.Ref != prepared.Ref || prior.BaseSHA != prepared.BaseSHA || prior.PatchDigest != prepared.PatchDigest {
-			return Record{}, "", ErrRecordConflict
+			return Record{}, ErrRecordConflict
 		}
-		// The same prepared commit can cross the stage-to-terminal boundary.
-		// Keep its immutable capture identity and bytes; renew only the sidecar.
-		prepared = prior
-		break
+		return prior, nil
 	}
-	_, path, err := PublishToInventoryWithEviction(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes, request.EvictFull)
-	if err != nil {
-		return Record{}, "", err
-	}
-	renewed, err := RenewRetention(ctx, path, request.RetainUntil, request.MaxArchiveBytes)
-	return renewed, path, err
+	return prepared, nil
 }
 
-// repairAbandonedReservation completes only the deterministic reservation for
-// the prepared snapshot. A crash may leave its verified bundle durable before
-// record.json is renamed into place. The live, exclusively owned preparation
-// supplies that missing identity, and PublishToInventory verifies any existing
-// archive before publishing metadata. Foreign and corrupt reservations remain
-// untouched and keep the subsequent whole-inventory read fail-closed.
-func repairAbandonedReservation(ctx context.Context, request RetentionRequest, prepared Record) (bool, error) {
-	directory := filepath.Join(request.InventoryRoot, inventoryDirectoryName(prepared))
-	info, err := os.Lstat(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+// readAbandonedInventory tolerates broken entries and, when the scan itself
+// refuses because the directory already holds more entries than the cap
+// (the "130 of 128" wedge), reconciles stale incomplete reservations once and
+// retries. That is the only read this cleanup needs, and an inventory wedged
+// above its cap by debris is exactly the state that must heal itself.
+func readAbandonedInventory(ctx context.Context, request RetentionRequest) ([]InventoryEntry, error) {
+	entries, _, err := ReadInventoryTolerant(ctx, request.InventoryRoot, request.MaxSnapshots)
+	if err == nil {
+		return entries, nil
 	}
-	if err != nil || !info.IsDir() {
-		return false, nil
+	if _, reconcileErr := ReconcileIncompleteReservations(ctx, request.InventoryRoot, request.MaxSnapshots, IncompleteReservationGrace, true); reconcileErr != nil {
+		return nil, errors.Join(err, fmt.Errorf("reconcile incomplete recovery reservations: %w", reconcileErr))
 	}
-	if _, err := ReadRecord(filepath.Join(directory, RecordFileName)); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return false, nil
+	entries, _, retryErr := ReadInventoryTolerant(ctx, request.InventoryRoot, request.MaxSnapshots)
+	if retryErr != nil {
+		return nil, errors.Join(err, retryErr)
 	}
-	_, _, err = PublishToInventoryWithEviction(
-		ctx,
-		request.Repository,
-		request.InventoryRoot,
-		request.CleanupRoots,
-		prepared,
-		request.MaxSnapshots,
-		request.MaxArchiveBytes,
-		request.EvictFull,
-	)
-	return err == nil, err
+	return entries, nil
 }

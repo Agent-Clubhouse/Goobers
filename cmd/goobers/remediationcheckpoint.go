@@ -429,7 +429,8 @@ type remediationCheckpointBaseCheckStateReader func(context.Context, string) (pr
 type remediationCheckpointFeatures struct {
 	CopyListedLabels         bool
 	StabilizeLiveReads       bool
-	CheckoutToken            func() (string, error)
+	CheckoutAuth             gitAuthEnvironmentResolver
+	CheckoutToken            string
 	CommentNoun              string
 	FindStructuralCollisions remediationCheckpointStructuralCollisionFinder
 	NoopEscalationReason     remediationCheckpointNoopGuard
@@ -446,10 +447,9 @@ type remediationCheckpointFeatures struct {
 func githubRemediationCheckpointFeatures(provider remediationProvider, repo providers.RepositoryRef, pushToken string) remediationCheckpointFeatures {
 	return remediationCheckpointFeatures{
 		StabilizeLiveReads: true,
-		CheckoutToken: func() (string, error) {
-			return pushToken, nil
-		},
-		CommentNoun: "comments",
+		CheckoutAuth:       tokenGitAuthEnvironment(pushToken),
+		CheckoutToken:      pushToken,
+		CommentNoun:        "comments",
 		FindStructuralCollisions: func(ctx context.Context, current providers.PullRequestSummary, base, headPrefix string, locations []rebaseConflictLocation, pushToken, rebaseBaseSHA string) ([]structuralCollision, error) {
 			return findStructuralCollisions(ctx, provider, repo, current, base, headPrefix, locations, ".", pushToken, rebaseBaseSHA)
 		},
@@ -474,14 +474,16 @@ func githubRemediationCheckpointFeatures(provider remediationProvider, repo prov
 	}
 }
 
-func adoRemediationCheckpointFeatures() remediationCheckpointFeatures {
+func adoRemediationCheckpointFeatures(root string, repo providers.RepositoryRef) (remediationCheckpointFeatures, error) {
+	gitAuth, err := adoRemediationGitAuthEnvironment(root, repo)
+	if err != nil {
+		return remediationCheckpointFeatures{}, err
+	}
 	return remediationCheckpointFeatures{
 		CopyListedLabels: true,
-		CheckoutToken: func() (string, error) {
-			return providerToken(capability.RepoPush)
-		},
-		CommentNoun: "thread comments",
-	}
+		CheckoutAuth:     gitAuth,
+		CommentNoun:      "thread comments",
+	}, nil
 }
 
 type issueCommentCheckpointTransport struct {
@@ -1329,6 +1331,7 @@ type remediationCheckpointRunEnv struct {
 	transport      remediationCheckpointTransport
 	features       remediationCheckpointFeatures
 	pushToken      string
+	gitAuth        gitAuthEnvironmentResolver
 	selectedNumber int
 	base           string
 	headPrefix     string
@@ -1584,7 +1587,7 @@ func (env *remediationCheckpointRunEnv) checkoutAndDigest(
 		refreshBranch = refreshBranch || localHeadSHA != env.current.HeadSHA
 	}
 	if refreshBranch {
-		fetchedSHA, err := checkoutExistingBranch(".", env.current.Head, env.pushToken)
+		fetchedSHA, err := checkoutExistingBranchWithAuth(env.ctx, ".", env.current.Head, env.gitAuth)
 		if err != nil {
 			pf(env.stderr, "error: checkout PR #%d's branch %q: %v\n", env.selectedNumber, env.current.Head, err)
 			return "", attemptMatchesLiveHead, 1, false
@@ -1595,7 +1598,7 @@ func (env *remediationCheckpointRunEnv) checkoutAndDigest(
 		}
 	}
 	if forceBaseRefresh {
-		if _, err := fetchExistingBranch(".", env.current.Base, env.pushToken); err != nil {
+		if _, err := fetchExistingBranchWithAuth(env.ctx, ".", env.current.Base, env.gitAuth); err != nil {
 			pf(env.stderr, "error: refresh PR #%d's base branch %q: %v\n", env.selectedNumber, env.current.Base, err)
 			return "", attemptMatchesLiveHead, 1, false
 		}
@@ -1927,7 +1930,11 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		}
 		reader = provider
 		transport = threadCheckpointTransport{provider: provider, repo: repo, pullID: strconv.Itoa(selectedNumber)}
-		features = adoRemediationCheckpointFeatures()
+		features, err = adoRemediationCheckpointFeatures(root, repo)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 	} else {
 		token, err := providerToken(capability.GitHubPRWrite)
 		if err != nil {
@@ -1986,16 +1993,12 @@ func runRemediationCheckpointCore(
 		return env.recordInfrastructureNoop()
 	}
 	if !mode.forced {
-		if env.features.CheckoutToken == nil {
+		if env.features.CheckoutAuth == nil {
 			pf(stderr, "error: checkpoint provider does not support a repository checkout\n")
 			return 1
 		}
-		pushToken, err := env.features.CheckoutToken()
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		env.pushToken = pushToken
+		env.gitAuth = env.features.CheckoutAuth
+		env.pushToken = env.features.CheckoutToken
 	}
 	observation, code, ok := env.stabilize(mode)
 	if !ok {

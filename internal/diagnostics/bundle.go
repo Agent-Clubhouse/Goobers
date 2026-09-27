@@ -88,6 +88,7 @@ func Summary(bundle Bundle) string {
 		summaryConfiguration,
 		summaryCredentials,
 		summaryRuns,
+		summaryOperational,
 		summaryNotes,
 		summaryContract,
 	} {

@@ -151,7 +151,13 @@ func filterLiveBlockedOnSiblingBlockers(ctx context.Context, provider remediatio
 //
 // The escape hatch is the label itself: removing it clears the hold
 // immediately, and the reason text says so.
-func blockedOnSiblingSelectionHold(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, string, error) {
+//
+// unlandable names open PRs this instance cannot land (#5602). A recorded
+// blocker in it does not hold: a record written before #5602 can name a PR
+// that is only ever reviewed as advisory, and waiting on it parks the PR until
+// a human closes that sibling. A record whose every blocker is unlandable is
+// a record naming blockers, all resolved — not the missing-record case above.
+func blockedOnSiblingSelectionHold(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, unlandable map[int]bool) (bool, string, error) {
 	if !hasAnyLabel(pr.Labels, []string{blockedOnSiblingLabel}) {
 		return false, "", nil
 	}
@@ -166,7 +172,7 @@ func blockedOnSiblingSelectionHold(ctx context.Context, provider remediationProv
 			blockedOnSiblingLabel,
 		), nil
 	}
-	live, err := filterLiveBlockedOnSiblingBlockers(ctx, provider, repo, state.Blockers)
+	live, err := filterLiveBlockedOnSiblingBlockers(ctx, provider, repo, withoutDemoted(state.Blockers, unlandable))
 	if err != nil {
 		return false, "", err
 	}

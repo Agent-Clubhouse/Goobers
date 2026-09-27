@@ -51,6 +51,16 @@ describe("Go daemon wire contract", () => {
     expect(checkedFixtures.triggerResponse).not.toHaveProperty("runId");
     expect(checkedFixtures.triggerStatus).toMatchObject({ state: "dispatched", runId: "0123456789abcdef0123456789abcdef" });
     expect(checkedFixtures.cancelResult).toEqual({ code: "cancellation_requested" });
+    // Recovery-inventory occupancy is emitted by the Go Instance struct, so
+    // this pins the field names the Overview card reads rather than letting a
+    // rename pass as an absent optional (#5343).
+    expect(checkedFixtures.instance.recoveryInventory).toMatchObject({
+      state: "warning",
+      used: 104,
+      limit: 128,
+      unreadable: 2,
+      highWaterPercent: 80,
+    });
     expect(checkedFixtures.goobers.items[0].harness).toBe("claude-code");
     expect(checkedFixtures.runDetail.graphStatus).toBe("pinned");
     expect(checkedFixtures.runEvents.events[0].type).toBe("stage.finished");

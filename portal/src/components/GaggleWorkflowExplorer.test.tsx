@@ -43,6 +43,7 @@ describe("GaggleWorkflowExplorer", () => {
         name: "Open full workflow",
       }),
     ).toHaveAttribute("href", "#/workflow/core/implementation");
+    expect(screen.getAllByText("core / implementation").length).toBeGreaterThanOrEqual(2);
     expect(
       screen.getByText(
         "Definitions share this gaggle's resources, but do not imply an execution order.",
@@ -226,6 +227,7 @@ function workflowSummary(name: string, displayName: string): WorkflowSummary {
   return {
     identity: { gaggle: "core", name },
     displayName,
+    enabled: true,
     purpose: `${displayName} purpose`,
     triggers: [{ type: "manual" }],
     readiness: {},

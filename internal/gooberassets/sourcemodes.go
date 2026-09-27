@@ -9,7 +9,8 @@ import (
 	"path/filepath"
 )
 
-const sourceModeSuffix = ".goobers-source-modes.json"
+// SourceModeSuffix identifies validated logical asset modes beside a bundle.
+const SourceModeSuffix = ".goobers-source-modes.json"
 const sourceModeLimit = 4 << 20
 
 type sourceModes struct {
@@ -33,14 +34,12 @@ func WriteSourceModes(source string, modes map[string]fs.FileMode) error {
 	if err := bundle.applySourceModes(modes); err != nil {
 		return err
 	}
-	data, err := json.Marshal(sourceModes{Version: 1, Modes: modes, Fingerprint: bundle.Fingerprint()})
+	data, err := bundle.SourceModeMetadata()
 	if err != nil {
 		return err
 	}
-	if len(data) > sourceModeLimit {
-		return errors.New("asset source mode metadata exceeds limit")
-	}
-	f, err := os.OpenFile(source+sourceModeSuffix, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+
+	f, err := os.OpenFile(source+SourceModeSuffix, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -50,7 +49,7 @@ func WriteSourceModes(source string, modes map[string]fs.FileMode) error {
 }
 
 func restoreSourceModes(source string, bundle *Bundle) error {
-	f, err := openAsset(source + sourceModeSuffix)
+	f, err := openAsset(source + SourceModeSuffix)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -69,6 +68,10 @@ func restoreSourceModes(source string, bundle *Bundle) error {
 	if err != nil {
 		return err
 	}
+	return restoreSourceModeData(bundle, data)
+}
+
+func restoreSourceModeData(bundle *Bundle, data []byte) error {
 	var metadata sourceModes
 	if len(data) > sourceModeLimit || json.Unmarshal(data, &metadata) != nil || metadata.Version != 1 {
 		return errors.New("unsupported asset source mode metadata")
@@ -100,4 +103,33 @@ func (b *Bundle) applySourceModes(modes map[string]fs.FileMode) error {
 
 func validSourceMode(mode fs.FileMode, directory bool) bool {
 	return mode & ^(fs.ModePerm|fs.ModeDir) == 0 && mode.IsDir() == directory
+}
+
+// SourceModeMetadata serializes the complete logical asset identity without
+// modifying source files. It is bounded identically to WriteSourceModes.
+func (b *Bundle) SourceModeMetadata() ([]byte, error) {
+	if b == nil {
+		return nil, errors.New("source modes require an existing asset bundle")
+	}
+	modes := map[string]fs.FileMode{".": b.rootMode}
+	for _, entry := range b.entries {
+		modes[filepath.ToSlash(entry.path)] = entry.mode
+	}
+	data, err := json.Marshal(sourceModes{Version: 1, Modes: modes, Fingerprint: b.Fingerprint()})
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > sourceModeLimit {
+		return nil, errors.New("asset source mode metadata exceeds limit")
+	}
+	return data, nil
+}
+
+// ValidateSourceModeMetadata verifies complete paths, logical modes and contents
+// against a copied bundle, leaving the caller's immutable bundle untouched.
+func ValidateSourceModeMetadata(bundle *Bundle, data []byte) error {
+	if bundle == nil {
+		return errors.New("source modes require an existing asset bundle")
+	}
+	return restoreSourceModeData(FromWire(bundle.ToWire()), data)
 }

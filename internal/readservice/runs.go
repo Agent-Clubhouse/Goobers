@@ -90,6 +90,7 @@ type OfflineRuns interface {
 	RunTelemetryStageAttempts(context.Context, string) ([]rollup.StageAttempt, error)
 	RunEscalation(context.Context, string) (*TraceEscalation, error)
 	RunTraceRepassCount(context.Context, string) (int, error)
+	RunAgentProgress(context.Context, string) ([]AgentProgressSummary, error)
 }
 
 // NewOfflineRuns constructs the in-process run reader used for historic CLI
@@ -159,30 +160,34 @@ type WorkflowRunActivity struct {
 // RunSummary is the journal-derived diagnostic summary shared by run lists and
 // run detail.
 type RunSummary struct {
-	ActiveStages      []readmodel.ActiveStage   `json:"activeStages,omitempty"`
-	ActivityTruncated bool                      `json:"activityTruncated,omitempty"`
-	EngineFallback    *readmodel.EngineFallback `json:"engineFallback,omitempty"`
-	ID                string                    `json:"id"`
-	Workflow          string                    `json:"workflow"`
-	WorkflowVersion   int                       `json:"workflowVersion"`
-	WorkflowDigest    string                    `json:"workflowDigest,omitempty"`
-	Gaggle            string                    `json:"gaggle"`
-	Trigger           journal.Trigger           `json:"trigger"`
-	Phase             journal.RunPhase          `json:"phase"`
-	Terminal          bool                      `json:"terminal"`
-	CurrentStage      string                    `json:"currentStage,omitempty"`
-	StartedAt         time.Time                 `json:"startedAt"`
-	FinishedAt        *time.Time                `json:"finishedAt,omitempty"`
-	DurationMillis    int64                     `json:"durationMillis"`
-	LastActivityAt    time.Time                 `json:"lastActivityAt"`
+	RetryBackoff      readmodel.RetryBackoffState `json:"retryBackoff"`
+	RequiredMCP       *readmodel.RequiredMCPState `json:"requiredMcp,omitempty"`
+	WaitingForGate    bool                        `json:"waitingForGate,omitempty"`
+	ActiveStages      []readmodel.ActiveStage     `json:"activeStages,omitempty"`
+	ActivityTruncated bool                        `json:"activityTruncated,omitempty"`
+	EngineFallback    *readmodel.EngineFallback   `json:"engineFallback,omitempty"`
+	ID                string                      `json:"id"`
+	Workflow          string                      `json:"workflow"`
+	WorkflowVersion   int                         `json:"workflowVersion"`
+	WorkflowDigest    string                      `json:"workflowDigest,omitempty"`
+	Gaggle            string                      `json:"gaggle"`
+	Trigger           journal.Trigger             `json:"trigger"`
+	Phase             journal.RunPhase            `json:"phase"`
+	Terminal          bool                        `json:"terminal"`
+	CurrentStage      string                      `json:"currentStage,omitempty"`
+	StartedAt         time.Time                   `json:"startedAt"`
+	FinishedAt        *time.Time                  `json:"finishedAt,omitempty"`
+	DurationMillis    int64                       `json:"durationMillis"`
+	LastActivityAt    time.Time                   `json:"lastActivityAt"`
 	// Stale is true only for a running run when both its last activity and the
 	// daemon scheduler heartbeat are older than runner.livenessTimeout.
-	Stale            bool   `json:"stale"`
-	LastSeq          uint64 `json:"lastSeq"`
-	RepassCount      int    `json:"repassCount"`
-	RetryCount       int    `json:"retryCount"`
-	PolicyRetryCount int    `json:"policyRetryCount"`
-	InfraRetryCount  int    `json:"infraRetryCount"`
+	Stale            bool        `json:"stale"`
+	LastSeq          uint64      `json:"lastSeq"`
+	RepassCount      int         `json:"repassCount"`
+	RetryCount       int         `json:"retryCount"`
+	PolicyRetryCount int         `json:"policyRetryCount"`
+	InfraRetryCount  int         `json:"infraRetryCount"`
+	Lineage          *RunLineage `json:"lineage,omitempty"`
 	// NoWork is true for a completed run that touched exactly one stage and
 	// that stage's terminal status was apiv1.ResultNoWork (#2188) — a routine
 	// schedule tick that found nothing to do, as opposed to a genuine
@@ -196,6 +201,26 @@ type RunSummary struct {
 	Operator       OperatorRunSummary `json:"operator"`
 	Stages         []string           `json:"-"`
 	stageAttempts  map[string][]StageAttempt
+}
+
+// RunLineage is the canonical continuation projection shared by every read
+// surface. RunSummary counters remain scoped to this run; historical repasses
+// are informational and never consume the continuation's fresh budget.
+type RunLineage struct {
+	Source                *LineageRun        `json:"source,omitempty"`
+	Continuations         []LineageRun       `json:"continuations,omitempty"`
+	ResumeTarget          string             `json:"resumeTarget,omitempty"`
+	WorkspaceBranch       string             `json:"workspaceBranch,omitempty"`
+	WorkspaceBranchSHA    string             `json:"workspaceBranchSha,omitempty"`
+	InjectedInputs        []journal.InputRef `json:"injectedInputs,omitempty"`
+	HistoricalRepassCount int                `json:"historicalRepassCount"`
+}
+
+// LineageRun identifies a directly related run without conflating its outcome
+// with the outcome of the run being viewed.
+type LineageRun struct {
+	ID    string           `json:"id"`
+	Phase journal.RunPhase `json:"phase,omitempty"`
 }
 
 // OperatorRunSummary answers the operational questions that otherwise require
@@ -257,9 +282,13 @@ type OperatorReview struct {
 type RunDetail struct {
 	ReadStateEnvelope
 	RunSummary
-	Graph       *workflow.Graph  `json:"graph,omitempty"`
-	GraphStatus string           `json:"graphStatus"`
-	Escalation  *EscalationCause `json:"escalation,omitempty"`
+	Graph       *workflow.Graph `json:"graph,omitempty"`
+	GraphStatus string          `json:"graphStatus"`
+	// AgentProgress is the current attempt-scoped nested-agent status surface
+	// for this run: current lifecycle-or-progress cards plus ordered structured
+	// history, with lifecycle-only degradation made explicit.
+	AgentProgress []AgentProgressSummary `json:"agentProgress,omitempty"`
+	Escalation    *EscalationCause       `json:"escalation,omitempty"`
 	// TerminalCause is the same projection as Escalation, computed for every
 	// non-completed terminal phase (#4246). Escalation stays escalated-only so
 	// consumers keyed on "this run escalated" keep their meaning.
@@ -370,47 +399,50 @@ type EventList struct {
 // populated for the schema this build owns; Raw retains an unknown event's
 // complete scrubbed JSON for forward-compatible inspection.
 type RunEvent struct {
-	Schema              string                  `json:"schema"`
-	Seq                 uint64                  `json:"seq"`
-	Type                journal.EventType       `json:"type"`
-	Branch              int                     `json:"branch"`
-	Time                time.Time               `json:"time"`
-	KnownSchema         bool                    `json:"knownSchema"`
-	Category            RunEventCategory        `json:"category"`
-	ReplayChapter       bool                    `json:"replayChapter"`
-	Stage               string                  `json:"stage,omitempty"`
-	Attempt             int                     `json:"attempt,omitempty"`
-	AttemptClass        string                  `json:"attemptClass,omitempty"`
-	Gate                string                  `json:"gate,omitempty"`
-	Verdict             string                  `json:"verdict,omitempty"`
-	Target              string                  `json:"target,omitempty"`
-	Escalated           bool                    `json:"escalated,omitempty"`
-	Status              string                  `json:"status,omitempty"`
-	Actor               string                  `json:"actor,omitempty"`
-	Action              string                  `json:"action,omitempty"`
-	Decision            string                  `json:"decision,omitempty"`
-	Rationale           string                  `json:"rationale,omitempty"`
-	Complete            bool                    `json:"complete,omitempty"`
-	InstructionAddendum string                  `json:"instructionAddendum,omitempty"`
-	WorkflowVersion     int                     `json:"workflowVersion,omitempty"`
-	WorkflowDigest      string                  `json:"workflowDigest,omitempty"`
-	Outputs             map[string]any          `json:"outputs,omitempty"`
-	Artifacts           []ArtifactMetadata      `json:"artifacts,omitempty"`
-	Artifact            *ArtifactMetadata       `json:"artifact,omitempty"`
-	Name                string                  `json:"name,omitempty"`
-	ExternalRef         *journal.ExternalRef    `json:"externalRef,omitempty"`
-	Error               *journal.ErrorDetail    `json:"error,omitempty"`
-	Redaction           *journal.RedactionInfo  `json:"redaction,omitempty"`
-	Runner              map[string]any          `json:"runner,omitempty"`
-	Workflow            string                  `json:"workflow,omitempty"`
-	RunID               string                  `json:"runId,omitempty"`
-	Reason              string                  `json:"reason,omitempty"`
-	Parallel            string                  `json:"parallel,omitempty"`
-	BranchName          string                  `json:"branchName,omitempty"`
-	BranchStatus        journal.BranchStatus    `json:"branchStatus,omitempty"`
-	Completeness        []journal.BranchOutcome `json:"completeness,omitempty"`
-	Raw                 json.RawMessage         `json:"raw,omitempty"`
-	JournalEvent        *journal.Event          `json:"-"`
+	Schema              string                       `json:"schema"`
+	Seq                 uint64                       `json:"seq"`
+	Type                journal.EventType            `json:"type"`
+	Branch              int                          `json:"branch"`
+	Time                time.Time                    `json:"time"`
+	KnownSchema         bool                         `json:"knownSchema"`
+	Category            RunEventCategory             `json:"category"`
+	ReplayChapter       bool                         `json:"replayChapter"`
+	Stage               string                       `json:"stage,omitempty"`
+	Attempt             int                          `json:"attempt,omitempty"`
+	AttemptClass        string                       `json:"attemptClass,omitempty"`
+	Gate                string                       `json:"gate,omitempty"`
+	Verdict             string                       `json:"verdict,omitempty"`
+	Target              string                       `json:"target,omitempty"`
+	Escalated           bool                         `json:"escalated,omitempty"`
+	Status              string                       `json:"status,omitempty"`
+	Actor               string                       `json:"actor,omitempty"`
+	Action              string                       `json:"action,omitempty"`
+	Decision            string                       `json:"decision,omitempty"`
+	Rationale           string                       `json:"rationale,omitempty"`
+	Complete            bool                         `json:"complete,omitempty"`
+	InstructionAddendum string                       `json:"instructionAddendum,omitempty"`
+	WorkflowVersion     int                          `json:"workflowVersion,omitempty"`
+	WorkflowDigest      string                       `json:"workflowDigest,omitempty"`
+	Outputs             map[string]any               `json:"outputs,omitempty"`
+	Artifacts           []ArtifactMetadata           `json:"artifacts,omitempty"`
+	Artifact            *ArtifactMetadata            `json:"artifact,omitempty"`
+	Agent               *journal.AgentProvenance     `json:"agent,omitempty"`
+	Progress            *journal.AgentProgress       `json:"progress,omitempty"`
+	PeerMessage         *journal.PeerMessageMetadata `json:"peerMessage,omitempty"`
+	Name                string                       `json:"name,omitempty"`
+	ExternalRef         *journal.ExternalRef         `json:"externalRef,omitempty"`
+	Error               *journal.ErrorDetail         `json:"error,omitempty"`
+	Redaction           *journal.RedactionInfo       `json:"redaction,omitempty"`
+	Runner              map[string]any               `json:"runner,omitempty"`
+	Workflow            string                       `json:"workflow,omitempty"`
+	RunID               string                       `json:"runId,omitempty"`
+	Reason              string                       `json:"reason,omitempty"`
+	Parallel            string                       `json:"parallel,omitempty"`
+	BranchName          string                       `json:"branchName,omitempty"`
+	BranchStatus        journal.BranchStatus         `json:"branchStatus,omitempty"`
+	Completeness        []journal.BranchOutcome      `json:"completeness,omitempty"`
+	Raw                 json.RawMessage              `json:"raw,omitempty"`
+	JournalEvent        *journal.Event               `json:"-"`
 }
 
 // ArtifactMetadata deliberately omits journal-relative paths. Content is
@@ -1115,6 +1147,7 @@ func (s *Local) runSummariesForStage(
 	if err := s.decorateOperatorClaims(ctx, summaries, observedAt); err != nil {
 		return nil, err
 	}
+	decorateRunLineageFromSummaries(summaries)
 	return summaries, nil
 }
 
@@ -1177,10 +1210,12 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 		escalation = cause
 	}
 	transitions, transitionsStatus := readmodel.ProjectTransitions(recordEvents(run.records), graph)
+	agentProgress := summarizeAgentProgress(run.identity.RunID, run.records)
 	return RunDetail{
 		RunSummary:        summary,
 		Graph:             graph,
 		GraphStatus:       status,
+		AgentProgress:     agentProgress,
 		Escalation:        escalation,
 		TerminalCause:     cause,
 		Outcome:           runOutcome(summary, run.records),
@@ -1619,6 +1654,19 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	return summarizeRunForStage(run, observedAt, "")
 }
 
+func continuationLineageFromIdentity(identity journal.RunIdentity) *RunLineage {
+	if identity.ContinuedFromRunID == "" {
+		return nil
+	}
+	return &RunLineage{
+		Source:             &LineageRun{ID: identity.ContinuedFromRunID},
+		ResumeTarget:       identity.RequestedTarget,
+		WorkspaceBranch:    identity.WorkspaceBranch,
+		WorkspaceBranchSHA: identity.WorkspaceBranchSHA,
+		InjectedInputs:     append([]journal.InputRef(nil), identity.Inputs...),
+	}
+}
+
 func summarizeRunForStage(
 	run runRead,
 	observedAt time.Time,
@@ -1626,8 +1674,7 @@ func summarizeRunForStage(
 ) (RunSummary, error) {
 	phase := journal.PhaseRunning
 	var finishedAt *time.Time
-	var engineFallback *readmodel.EngineFallback
-	var activity readmodel.StageActivity
+	var observations runOperationalObservations
 	var lastSeq uint64
 	var lastActivityAt time.Time
 	currentStage := ""
@@ -1668,7 +1715,7 @@ func summarizeRunForStage(
 		if !event.KnownSchema() {
 			continue
 		}
-		activity = activity.After(event)
+		observations.after(event)
 		if event.Stage != "" {
 			seenStages[event.Stage] = struct{}{}
 		}
@@ -1685,7 +1732,6 @@ func summarizeRunForStage(
 				lastHeartbeat = event.Time
 			}
 		case journal.EventRunnerAnnotation:
-			engineFallback = engineFallback.After(event)
 			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
 				currentStage = queue
 			}
@@ -1861,34 +1907,35 @@ func summarizeRunForStage(
 		return RunSummary{}, err
 	}
 
-	return RunSummary{
-		ID:                run.identity.RunID,
-		Workflow:          run.identity.Workflow,
-		WorkflowVersion:   run.identity.WorkflowVersion,
-		WorkflowDigest:    run.identity.WorkflowDigest,
-		Gaggle:            run.identity.Gaggle,
-		Trigger:           run.identity.Trigger,
-		Phase:             phase,
-		Terminal:          phase != journal.PhaseRunning,
-		CurrentStage:      currentStage,
-		StartedAt:         run.identity.StartedAt,
-		FinishedAt:        finishedAt,
-		DurationMillis:    duration,
-		LastActivityAt:    lastActivityAt,
-		LastSeq:           lastSeq,
-		RepassCount:       repasses,
-		RetryCount:        retries,
-		PolicyRetryCount:  policyRetries,
-		InfraRetryCount:   infraRetries,
-		NoWork:            noWork,
-		TerminalReason:    terminalReason,
-		Operator:          operator,
-		EngineFallback:    engineFallback,
-		ActiveStages:      activity.Active,
-		ActivityTruncated: activity.Truncated,
-		Stages:            stages,
-		stageAttempts:     stageAttempts,
-	}, nil
+	return withRunActivity(RunSummary{
+		ID:               run.identity.RunID,
+		Workflow:         run.identity.Workflow,
+		WorkflowVersion:  run.identity.WorkflowVersion,
+		WorkflowDigest:   run.identity.WorkflowDigest,
+		Gaggle:           run.identity.Gaggle,
+		Trigger:          run.identity.Trigger,
+		Phase:            phase,
+		Terminal:         phase != journal.PhaseRunning,
+		CurrentStage:     currentStage,
+		StartedAt:        run.identity.StartedAt,
+		FinishedAt:       finishedAt,
+		DurationMillis:   duration,
+		LastActivityAt:   lastActivityAt,
+		LastSeq:          lastSeq,
+		RepassCount:      repasses,
+		RetryCount:       retries,
+		PolicyRetryCount: policyRetries,
+		InfraRetryCount:  infraRetries,
+		Lineage:          continuationLineageFromIdentity(run.identity),
+		NoWork:           noWork,
+		TerminalReason:   terminalReason,
+		Operator:         operator,
+		EngineFallback:   observations.engineFallback,
+		RequiredMCP:      observations.requiredMCP,
+		RetryBackoff:     observations.retryBackoff,
+		Stages:           stages,
+		stageAttempts:    stageAttempts,
+	}, observations.activity), nil
 }
 
 // isNoWorkTick reports whether a run is a routine no-work tick: a completed
@@ -2528,6 +2575,16 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.InstructionAddendum = event.InstructionAddendum
 	projected.WorkflowVersion = event.WorkflowVersion
 	projected.WorkflowDigest = event.WorkflowDigest
+	projected.Agent = event.Agent
+	if event.Progress != nil {
+		progress := *event.Progress
+		progress.Sequence = event.Seq
+		if progress.UpdatedAt.IsZero() {
+			progress.UpdatedAt = progress.OccurredAt
+		}
+		projected.Progress = &progress
+	}
+	projected.PeerMessage = event.PeerMessage
 	projected.Outputs = scalarOutputs(event.Outputs)
 	for _, ref := range event.Artifacts {
 		if metadata, ok := artifacts.match(
@@ -3083,6 +3140,9 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 	if err := s.annotateRunStaleness(out.Runs); err != nil {
 		return RunList{}, err
 	}
+	if err := s.decorateRunLineage(ctx, out.Runs); err != nil {
+		return RunList{}, err
+	}
 	return annotated[RunList](ctx, s, out), nil
 }
 
@@ -3103,7 +3163,201 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 		}
 		out.Stale = runIsStale(out.RunSummary, s.now().UTC(), lastTickAt, s.sources.LivenessTimeout)
 	}
+	summaries := []RunSummary{out.RunSummary}
+	if err := s.decorateRunLineage(ctx, summaries); err != nil {
+		return RunDetail{}, err
+	}
+	if !s.readModelReads {
+		lineage, err := s.offlineRunLineage(ctx, summaries[0])
+		if err != nil {
+			return RunDetail{}, err
+		}
+		summaries[0].Lineage = lineage
+	}
+	out.RunSummary = summaries[0]
 	return annotated[RunDetail](ctx, s, out), nil
+}
+
+func (s *Local) offlineRunLineage(ctx context.Context, target RunSummary) (*RunLineage, error) {
+	if s.sources.Telemetry != nil {
+		return s.telemetryRunLineage(ctx, target)
+	}
+	ids, err := s.RunIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]RunSummary, 0, len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		run, err := s.openRun(id)
+		if err != nil {
+			continue
+		}
+		summary, err := summarizeRun(run, s.now().UTC())
+		if err != nil {
+			continue
+		}
+		summaries = append(summaries, summary)
+	}
+	decorateRunLineageFromSummaries(summaries)
+	for _, summary := range summaries {
+		if summary.ID == target.ID {
+			return summary.Lineage, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *Local) telemetryRunLineage(ctx context.Context, target RunSummary) (*RunLineage, error) {
+	children, err := s.sources.Telemetry.ContinuationRuns(ctx, []string{target.ID})
+	if err != nil {
+		return nil, err
+	}
+	lineage := target.Lineage
+	for _, child := range children[target.ID] {
+		if lineage == nil {
+			lineage = &RunLineage{}
+		}
+		lineage.Continuations = append(lineage.Continuations, LineageRun{
+			ID: child.RunID, Phase: journal.RunPhase(child.Status),
+		})
+	}
+	if lineage == nil || lineage.Source == nil {
+		return lineage, nil
+	}
+
+	sourceID := lineage.Source.ID
+	seen := make(map[string]struct{})
+	for sourceID != "" {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[sourceID]; duplicate {
+			break
+		}
+		seen[sourceID] = struct{}{}
+		run, err := s.openRun(sourceID)
+		if err != nil {
+			break
+		}
+		summary, err := summarizeRun(run, s.now().UTC())
+		if err != nil {
+			break
+		}
+		if sourceID == lineage.Source.ID {
+			lineage.Source.Phase = summary.Phase
+		}
+		lineage.HistoricalRepassCount += summary.RepassCount
+		if summary.Lineage == nil || summary.Lineage.Source == nil {
+			break
+		}
+		sourceID = summary.Lineage.Source.ID
+	}
+	return lineage, nil
+}
+
+func (s *Local) decorateRunLineage(ctx context.Context, runs []RunSummary) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	type continuationReader interface {
+		GetRun(context.Context, string) (readmodel.RunRow, bool, error)
+		ContinuationRuns(context.Context, []string) (map[string][]readmodel.RunRow, error)
+	}
+	if projected, ok := s.sources.ReadModel.(continuationReader); ok && s.readModelReads {
+		sourceIDs := make([]string, len(runs))
+		for i := range runs {
+			sourceIDs[i] = runs[i].ID
+		}
+		children, err := projected.ContinuationRuns(ctx, sourceIDs)
+		if err != nil {
+			return err
+		}
+		for i := range runs {
+			if rows := children[runs[i].ID]; len(rows) > 0 {
+				if runs[i].Lineage == nil {
+					runs[i].Lineage = &RunLineage{}
+				}
+				for _, row := range rows {
+					runs[i].Lineage.Continuations = append(runs[i].Lineage.Continuations,
+						LineageRun{ID: row.RunID, Phase: row.Phase})
+				}
+			}
+			if runs[i].Lineage == nil || runs[i].Lineage.Source == nil {
+				continue
+			}
+			sourceID := runs[i].Lineage.Source.ID
+			seen := make(map[string]struct{})
+			for sourceID != "" {
+				if _, duplicate := seen[sourceID]; duplicate {
+					break
+				}
+				seen[sourceID] = struct{}{}
+				row, found, err := projected.GetRun(ctx, sourceID)
+				if err != nil {
+					return err
+				}
+				if !found {
+					break
+				}
+				if sourceID == runs[i].Lineage.Source.ID {
+					runs[i].Lineage.Source.Phase = row.Phase
+				}
+				runs[i].Lineage.HistoricalRepassCount += row.RepassCount
+				sourceID = row.Operator.ContinuedFromRunID
+			}
+		}
+		return nil
+	}
+
+	return nil
+}
+
+func decorateRunLineageFromSummaries(runs []RunSummary) {
+	byID := make(map[string]*RunSummary, len(runs))
+	for i := range runs {
+		byID[runs[i].ID] = &runs[i]
+	}
+	for i := range runs {
+		lineage := runs[i].Lineage
+		if lineage == nil || lineage.Source == nil {
+			continue
+		}
+		sourceID := lineage.Source.ID
+		if source := byID[sourceID]; source != nil {
+			lineage.Source.Phase = source.Phase
+			if source.Lineage == nil {
+				source.Lineage = &RunLineage{}
+			}
+			source.Lineage.Continuations = append(source.Lineage.Continuations,
+				LineageRun{ID: runs[i].ID, Phase: runs[i].Phase})
+		}
+		seen := make(map[string]struct{})
+		for sourceID != "" {
+			if _, duplicate := seen[sourceID]; duplicate {
+				break
+			}
+			seen[sourceID] = struct{}{}
+			source := byID[sourceID]
+			if source == nil {
+				break
+			}
+			lineage.HistoricalRepassCount += source.RepassCount
+			if source.Lineage == nil || source.Lineage.Source == nil {
+				break
+			}
+			sourceID = source.Lineage.Source.ID
+		}
+	}
+	for i := range runs {
+		if runs[i].Lineage != nil {
+			sort.Slice(runs[i].Lineage.Continuations, func(a, b int) bool {
+				return runs[i].Lineage.Continuations[a].ID < runs[i].Lineage.Continuations[b].ID
+			})
+		}
+	}
 }
 
 func (s *Local) annotateRunStaleness(runs []RunSummary) error {

@@ -36,6 +36,7 @@ const (
 	// authenticated sibling of InstancePath, not a replacement for /readyz.
 	InstanceReadinessPath        = InstancePath + "/readiness"
 	PortalConfigPath             = V1Prefix + "/portal/config"
+	PortalAssetPath              = "/assets/{path...}"
 	GagglesPath                  = V1Prefix + "/gaggles"
 	GaggleGoobersPath            = V1Prefix + "/gaggles/{gaggle}/goobers"
 	GaggleWorkflowsPath          = V1Prefix + "/gaggles/{gaggle}/workflows"
@@ -230,6 +231,8 @@ const (
 	// scan (decomposition.FindEscalationCandidates), run daemon-side instead
 	// of exposed to a pod as raw run-directory traversal (#4342).
 	JournalEscalationCandidatesPath = V1Prefix + "/journal/escalation-candidates"
+	// JournalMergeAuthorityPath checks a pinned stage against current merge policy.
+	JournalMergeAuthorityPath = V1Prefix + "/journal/merge-authority"
 	// JournalBranchOwnershipPath answers "does this run's journal actually
 	// own this branch, and if so its identity and terminal/ref facts" —
 	// reconcile-branches's own check before a candidate branch is preserved
@@ -260,6 +263,7 @@ const (
 	RouteInstanceReadiness        RouteID = "readiness"
 	RouteInstance                 RouteID = "instance"
 	RoutePortalConfig             RouteID = "portalConfig"
+	RoutePortalAsset              RouteID = "portalAsset"
 	RouteGaggles                  RouteID = "gaggles"
 	RouteGaggleGoobers            RouteID = "gaggleGoobers"
 	RouteGaggleWorkflows          RouteID = "gaggleWorkflows"
@@ -335,6 +339,7 @@ const (
 	RouteJournalConflictTouches      RouteID = "journalConflictTouches"
 	RouteJournalUnpushedWork         RouteID = "journalUnpushedWork"
 	RouteJournalEscalationCandidates RouteID = "journalEscalationCandidates"
+	RouteJournalMergeAuthority       RouteID = "journalMergeAuthority"
 	RouteJournalBranchOwnership      RouteID = "journalBranchOwnership"
 )
 
@@ -449,6 +454,7 @@ var v1Routes = []Route{
 	{ID: RouteWorkerConfigDivergence, Method: http.MethodPost, Path: WorkerConfigDivergencePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RoutePortalConfig, Method: http.MethodGet, Path: PortalConfigPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RoutePortalAsset, Method: http.MethodGet, Path: PortalAssetPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
 	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
@@ -571,6 +577,7 @@ var v1Routes = []Route{
 	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalEscalationCandidates, Method: http.MethodPost, Path: JournalEscalationCandidatesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 

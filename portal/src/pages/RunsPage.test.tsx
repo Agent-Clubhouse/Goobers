@@ -192,10 +192,23 @@ describe("runs history page", () => {
   });
 
   it("shows how to start the first run when no runs exist", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
     expect(await screen.findByText("No runs recorded")).toBeInTheDocument();
-    expect(screen.getByText("goobers run <workflow> <instance>")).toBeInTheDocument();
+    const command =
+      "goobers run <gaggle>/<workflow> 'C:\\Goobers\\instances\\local-dev'";
+    expect(
+      await screen.findByText(command),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Copy command" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(command));
+    expect(screen.queryByText("Journal", { selector: ".page-kicker" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
   });
 
@@ -228,7 +241,9 @@ describe("runs history page", () => {
       "href",
       "#/runs?status=all",
     );
-    expect(screen.getByText("goobers status <instance>")).toBeInTheDocument();
+    expect(
+      screen.getByText("goobers status 'C:\\Goobers\\instances\\local-dev'"),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("link", { name: "Clear all filters" }));
     expect(

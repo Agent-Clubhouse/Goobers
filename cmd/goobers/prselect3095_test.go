@@ -40,7 +40,7 @@ func TestBlockedOnSiblingSelectionHoldFailsClosedOnMissingRecord(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("no label is never held", func(t *testing.T) {
-		held, reason, err := blockedOnSiblingSelectionHold(ctx, provider, repo, unlabelled)
+		held, reason, err := blockedOnSiblingSelectionHold(ctx, provider, repo, unlabelled, nil)
 		if err != nil {
 			t.Fatalf("blockedOnSiblingSelectionHold: %v", err)
 		}
@@ -50,7 +50,7 @@ func TestBlockedOnSiblingSelectionHoldFailsClosedOnMissingRecord(t *testing.T) {
 	})
 
 	t.Run("label with no readable record is held", func(t *testing.T) {
-		held, reason, err := blockedOnSiblingSelectionHold(ctx, provider, repo, labelled)
+		held, reason, err := blockedOnSiblingSelectionHold(ctx, provider, repo, labelled, nil)
 		if err != nil {
 			t.Fatalf("blockedOnSiblingSelectionHold: %v", err)
 		}
@@ -66,7 +66,7 @@ func TestBlockedOnSiblingSelectionHoldFailsClosedOnMissingRecord(t *testing.T) {
 
 	t.Run("label with a live blocker is held and names it", func(t *testing.T) {
 		server.addComment(10, blockedOnSiblingCommentFor(t, 9))
-		held, reason, err := blockedOnSiblingSelectionHold(ctx, provider, repo, labelled)
+		held, reason, err := blockedOnSiblingSelectionHold(ctx, provider, repo, labelled, nil)
 		if err != nil {
 			t.Fatalf("blockedOnSiblingSelectionHold: %v", err)
 		}

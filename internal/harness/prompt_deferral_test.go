@@ -12,7 +12,10 @@ func TestReviewerDeferralPromptRequiresRunnerCapability(t *testing.T) {
 		req := RunRequest{Mode: ModeReview, Envelope: apiv1.InvocationEnvelope{ReviewerDeferralAllowed: allowed}}
 		for name, render := range map[string]func(RunRequest) string{
 			"file": renderPrompt, "response": renderResponseCompletionPrompt,
-			"file recovery": renderCompletionRecoveryPrompt, "response recovery": renderResponseCompletionRecoveryPrompt,
+			"file recovery": func(req RunRequest) string { return renderCompletionRepairPrompt(req, nil) },
+			"response recovery": func(req RunRequest) string {
+				return renderResponseCompletionRepairPrompt(req, nil)
+			},
 		} {
 			prompt := render(req)
 			if got := strings.Contains(prompt, `"needs-changes"|"defer"`); got != allowed {

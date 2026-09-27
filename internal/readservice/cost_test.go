@@ -46,6 +46,7 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 
 	got, err := service.TelemetryCosts(context.Background(), TelemetryCostRequest{
 		Provider: "github", Scope: TelemetryCostScopePullRequest, ExternalID: "4398",
+		Gaggle: "core", Workflow: "implementation", Stage: "review",
 		Since: since, Until: until,
 	})
 	if err != nil {
@@ -53,6 +54,7 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 	}
 	wantQuery := rollup.CostQuery{
 		Provider: "github", ExternalKind: rollup.CostExternalKindPR, ExternalID: "4398",
+		Gaggle: "core", Workflow: "implementation", Stage: "review",
 		Since: since, Until: until,
 	}
 	if !reflect.DeepEqual(store.costReq, wantQuery) {
@@ -149,6 +151,8 @@ func TestTelemetryCostsValidatesBeforeStoreAndHonorsCancellation(t *testing.T) {
 		{Scope: TelemetryCostScopeSummary, ExternalID: "1", Since: since, Until: since.Add(time.Hour)},
 		{Scope: TelemetryCostScopeSummary, Since: since, Until: since},
 		{Scope: TelemetryCostScopeSummary, Since: since, Until: since.Add(MaxTelemetryCostWindow + time.Second)},
+		{Scope: TelemetryCostScopeSummary, Workflow: "implementation", Since: since, Until: since.Add(time.Hour)},
+		{Scope: TelemetryCostScopeSummary, Gaggle: "core", Stage: "review", Since: since, Until: since.Add(time.Hour)},
 	}
 	for _, req := range tests {
 		store := &fakeTelemetryStore{}

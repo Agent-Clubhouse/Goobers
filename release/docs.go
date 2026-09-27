@@ -17,6 +17,8 @@ import (
 
 const releaseDocsVersionFile = "docs/RELEASE.md"
 
+var releaseDocsGeneratorBuilder = buildReleaseDocsGenerator
+
 const (
 	readmeSourceReleaseInstall = "## Install\n\n" +
 		"Install the latest stable release on Linux or macOS:\n\n" +
@@ -30,7 +32,11 @@ const (
 		"places `goobers` in `$HOME/.local/bin`. See\n" +
 		"[Release installation and verification](docs/guides/releases.md) for\n" +
 		"prerequisites, version pinning, install-directory overrides, pre-releases, and\n" +
-		"the Windows path.\n\n"
+		"the Windows path.\n\n" +
+		"Confirm the installed release before initializing an instance:\n\n" +
+		"```sh\n" +
+		"goobers version\n" +
+		"```\n\n"
 	readmeSourceInstall = "## Quick start\n\n" +
 		"Tour the full workflow locally without credentials or network writes:\n\n" +
 		"```sh\n" +
@@ -108,7 +114,8 @@ const (
 		"goobers init --guided --instance-path ~/goobers/instances/my-repository\n" +
 		"```\n\n" +
 		"The legacy installer `--guided` option prints migration guidance and makes no changes; guided setup belongs to the installed `goobers` binary.\n\n"
-	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
+	quickstartSourceOnboardingAssets = "## 2. Graduate to the token-bearing quickstart template\n\n" +
+		"Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
 		"against a disposable GitHub repository you control. This path requires a\n" +
 		"GitHub token and an authenticated agent harness. The shipped template's\n" +
 		"goobers default to `harness: copilot`; to run it on Claude Code instead, pass\n" +
@@ -178,7 +185,7 @@ const (
 		"2. Create a fine-grained GitHub PAT in\n" +
 		"   [GitHub's token settings](https://github.com/settings/personal-access-tokens/new).\n" +
 		"   **Set Resource owner to the account or organization that owns\n" +
-		"   `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal\n" +
+		"   `<owner>/<repo>` (for example, `your-org`); keep the default personal\n" +
 		"   account when it owns the repository.** Choose **Only select repositories**\n" +
 		"   and select exactly the disposable repository. Grant only **Contents: Read\n" +
 		"   and write**, **Issues: Read and write**, and **Pull requests: Read and\n" +
@@ -342,19 +349,9 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 	if runtime.GOOS == "windows" {
 		generator += ".exe"
 	}
-	build := exec.Command(
-		"go", "build", "-trimpath", "-ldflags", ldflags,
-		"-o", generator, "./cmd/goobers",
-	)
-	build.Dir = repoRoot
-	build.Env = append(os.Environ(),
-		"GOOS="+runtime.GOOS,
-		"GOARCH="+runtime.GOARCH,
-		"CGO_ENABLED=0",
-	)
-	if output, err := build.CombinedOutput(); err != nil {
+	if err := releaseDocsGeneratorBuilder(repoRoot, generator, ldflags); err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("build release docs generator: %w\n%s", err, output)
+		return "", nil, err
 	}
 
 	generate := exec.Command(generator, "__generate-docs", docsDir)
@@ -390,6 +387,23 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 			len(broken), strings.Join(broken, ", "))
 	}
 	return payloadDir, cleanup, nil
+}
+
+func buildReleaseDocsGenerator(repoRoot, generator, ldflags string) error {
+	build := exec.Command(
+		"go", "build", "-trimpath", "-ldflags", ldflags,
+		"-o", generator, "./cmd/goobers",
+	)
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(),
+		"GOOS="+runtime.GOOS,
+		"GOARCH="+runtime.GOARCH,
+		"CGO_ENABLED=0",
+	)
+	if output, err := build.CombinedOutput(); err != nil {
+		return fmt.Errorf("build release docs generator: %w\n%s", err, output)
+	}
+	return nil
 }
 
 // releaseRootFiles are the repository-root documents every archive carries
@@ -851,10 +865,7 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 		}
 		content := string(data)
 		for _, section := range rewrite.sections {
-			if strings.Count(content, section.source) != 1 {
-				return fmt.Errorf("release onboarding source section drifted in %s", rewrite.path)
-			}
-			content = strings.Replace(content, section.source, section.installed, 1)
+			content = strings.ReplaceAll(content, section.source, section.installed)
 		}
 		if rewrite.sourceCommandPrefix != "" {
 			content = strings.ReplaceAll(content, rewrite.sourceCommandPrefix, rewrite.installedCommandName)

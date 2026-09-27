@@ -23,6 +23,27 @@ describe("workflows page", () => {
     }
   });
 
+  it("greys out disabled gaggles and workflows without blocking navigation", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const gaggleToggle = await screen.findByRole("button", { name: /Core product/ });
+    expect(gaggleToggle).toHaveClass("definition-disabled");
+    expect(within(gaggleToggle).getByText("Disabled")).toBeInTheDocument();
+
+    await user.click(gaggleToggle);
+    const inventory = screen.getByRole("region", { name: "Core product workflow definitions" });
+    const workflowRow = within(inventory)
+      .getByText("Implementation")
+      .closest(".workflow-row");
+    expect(workflowRow).not.toBeNull();
+    expect(workflowRow).toHaveClass("definition-disabled");
+    expect(within(inventory).getAllByText("Disabled").length).toBeGreaterThan(0);
+
+    await user.click(within(inventory).getByRole("link", { name: "Details" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/workflow/core/implementation"));
+  });
+
   it("renders page structure before a cold inventory load finishes", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const realListGaggles = client.listGaggles.bind(client);

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/credreadiness"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -26,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workflowsafety"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -44,12 +47,11 @@ import (
 //
 // This runs in BOTH the operator-invoked `goobers validate --check-harness` and
 // the automatic daemon-startup preflight (adapterFor wires it into every
-// CopilotAdapter, so preflightAgenticHarnesses picks it up too — #238). It costs
-// a real Copilot request (~a few AI credits, a couple of seconds), but
-// preflightAgenticHarnesses runs once per process lifetime (once per `up` daemon
-// boot, once per `run`), only for harnesses an agentic stage actually
-// references — trivial next to the ~30-minute burned live-run a signed-out
-// harness causes when the failure surfaces mid-run instead (the #284 incident).
+// CopilotAdapter, so preflightAgenticHarnesses picks it up too — #238). Direct
+// Copilot and version-1 forwarding launchers use this model-request fallback;
+// version-2 launchers can replace it with their declared non-agentic auth probe.
+// The fallback runs once per process lifetime (once per `up` daemon boot, once
+// per `run`), only for harnesses an agentic stage actually references.
 var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}
 
 // harnessPreflightTimeout bounds a single harness preflight (its version check
@@ -497,7 +499,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 }
 
 func validateConfigPaths(options validateOptions, stdout io.Writer, diagnostics *diagnosticCollector) (configFile, configDir string) {
-	l := instance.NewLayout(options.root)
+	l := layoutFor(options.root)
 	if !options.sourceTree {
 		return l.ConfigFile(), l.ConfigDir()
 	}
@@ -532,12 +534,19 @@ func emitStaticRealityFindings(
 	return placementErrors, capabilityErrors
 }
 
-var strictNeutralWarningCodes = []validate.WarningCode{
-	validate.WarningDeprecatedDSLVersion,
-	validate.WarningConnectionRefUnhonored,
-	validate.RunnerAVExclusionsUnverified,
-	validate.WarningImplicitWritableWorkspace,
-}
+var strictNeutralWarningCodes = func() []validate.WarningCode {
+	codes := []validate.WarningCode{
+		validate.WarningDeprecatedDSLVersion,
+		validate.WarningConnectionRefUnhonored,
+		validate.RunnerAVExclusionsUnverified,
+		validate.WarningImplicitWritableWorkspace,
+		validate.WarningGaggleMixedProvider,
+	}
+	for _, code := range workflowsafety.Codes() {
+		codes = append(codes, validate.WarningCode(code))
+	}
+	return codes
+}()
 
 func strictNeutralWarningCodeText() string {
 	codes := make([]string, 0, len(strictNeutralWarningCodes))
@@ -971,7 +980,21 @@ func remotesNameRepository(remotes []string, owner, name string) bool {
 // scp-like git@host:owner/name, and ADO's org/project/_git/repo — without a
 // per-provider parser; a local mirror path that carries neither coordinate
 // simply fails to match and downgrades to the advisory warning.
+//
+// A legacy *.visualstudio.com ADO remote is the one shape that breaks that
+// generic segment walk: the organization lives in the host, not a path
+// segment, so "owner" (the organization) would never be found among the
+// path's segments. providers.ParseADORemoteURL, which recognizes only
+// host-anchored ADO forms (never a bare slug or local path), is tried first
+// for exactly that reason (ADO-N35). Only a positive ADO match returns early;
+// everything else — including an ADO remote whose coordinate differs — falls
+// through to the generic walk, so the check only ever widens and GitHub,
+// Gitea, local-path and dev.azure.com remotes behave as before.
 func remoteURLNamesRepository(remote, owner, name string) bool {
+	if org, _, repo, ok := providers.ParseADORemoteURL(remote); ok &&
+		strings.EqualFold(org, owner) && strings.EqualFold(repo, name) {
+		return true
+	}
 	path := remote
 	if scheme := strings.Index(path, "://"); scheme >= 0 {
 		path = path[scheme+len("://"):]
@@ -1379,10 +1402,80 @@ var harnessAdapterFor = adapterFor
 
 // perHarnessModelCredential adapts agentModelCredentialResolver to the
 // per-harness resolver shape checkHarnessesAtSources takes (#5148).
-func perHarnessModelCredential(cfg *instance.Config, stores credentials.StoreResolver) func(apiv1.Harness) (func(context.Context) (string, error), string, error) {
-	return func(h apiv1.Harness) (func(context.Context) (string, error), string, error) {
-		return agentModelCredentialResolver(cfg, stores, h)
+func perHarnessModelCredential(cfg *instance.Config, stores credentials.StoreResolver) func(apiv1.Harness) (harnessModelCredential, error) {
+	return func(h apiv1.Harness) (harnessModelCredential, error) {
+		resolve, label, err := agentModelCredentialExpiringResolver(cfg, stores, h)
+		if err != nil {
+			return harnessModelCredential{}, err
+		}
+		grant, _ := agentModelGrant(cfg, h)
+		if grant != nil && grant.GitHubApp != nil {
+			return harnessModelCredential{
+				ResolveExpiring: credreadiness.ExpiringResolve(resolve),
+				Kind:            credreadiness.SourceGitHubApp,
+				Source:          grant.GitHubApp.Name,
+				RefFound:        true,
+				Label:           label,
+			}, nil
+		}
+		ref, ok := agentModelCredentialRef(cfg, h)
+		return harnessModelCredential{ResolveExpiring: credreadiness.ExpiringResolve(resolve), Ref: ref, RefFound: ok, Label: label}, nil
 	}
+}
+
+// harnessModelCredential is one harness's agent:model grant as --check-harness
+// sees it: the resolver the preflight probe uses, plus the ref's identity so
+// the readiness report can name the SOURCE without ever naming its value
+// (#5261).
+type harnessModelCredential struct {
+	Resolve         func(context.Context) (string, error)
+	ResolveExpiring credreadiness.ExpiringResolve
+	Ref             credentials.TokenRef
+	Kind            credreadiness.SourceKind
+	Source          string
+	RefFound        bool
+	Label           string
+}
+
+// readiness observes this grant's credential source under the identity running
+// the check. A grant with no configured ref is reported as unobservable rather
+// than skipped: "there is nothing to check here" and "this was checked and is
+// fine" are the two answers #5261 exists to keep apart.
+func (c harnessModelCredential) readiness(ctx context.Context, now time.Time) credreadiness.Check {
+	if !c.RefFound {
+		return credreadiness.Check{
+			Name:     "agent:model",
+			Kind:     credreadiness.SourceUnsupported,
+			Status:   credreadiness.StatusUnobservable,
+			Category: credreadiness.CategoryAuthentication,
+			Detail:   "no agent:model grant is configured, so no credential source was checked",
+		}
+	}
+	var resolve credreadiness.ExpiringResolve
+	if c.ResolveExpiring != nil {
+		resolve = c.ResolveExpiring
+	} else if c.Resolve != nil {
+		// Token refs state no expiry -- only minting sources do -- so the
+		// zero time here is the accurate answer, and credreadiness reports it
+		// as an unknown validity window rather than as unbounded validity.
+		resolve = func(ctx context.Context) (string, time.Time, error) {
+			value, err := c.Resolve(ctx)
+			return value, time.Time{}, err
+		}
+	}
+	var check credreadiness.Check
+	if c.Kind != "" {
+		check = credreadiness.ProbeSource(ctx, "agent:model", c.Kind, c.Source, resolve, nil, now)
+	} else {
+		check = credreadiness.Probe(ctx, "agent:model", c.Ref, resolve, nil, now)
+	}
+	if check.Kind.UserScoped() && check.Status.Asserted() {
+		// The check passed, but it passed for THIS identity. Saying so is the
+		// whole point: an operator reading their own keychain or CLI login is
+		// not evidence that the service account running the work can.
+		check.Detail = "readable by the observing identity; a service identity may not share this source"
+	}
+	return check
 }
 
 // checkHarnessesAtSources preflights every distinct harness referenced by set's
@@ -1403,17 +1496,32 @@ func checkHarnessesAtSources(
 	sourceFile func(apiv1.Goober) string,
 	environment harness.EnvironmentConfig,
 	harnessCommand map[string][]string,
-	credentialResolverFor func(apiv1.Harness) (func(ctx context.Context) (string, error), string, error),
+	credentialResolverFor func(apiv1.Harness) (harnessModelCredential, error),
 	collectors ...*diagnosticCollector,
 ) bool {
-	seen := map[apiv1.Harness]bool{}
+	observer := credreadiness.CurrentObserver()
+	readiness := credreadiness.Report{Observer: observer, CheckedAt: time.Now()}
+	seen := map[string]bool{}
 	ok := true
 	for _, g := range goobers {
 		h := g.Spec.Harness
-		if h == "" || seen[h] {
+		if h == "" {
 			continue
 		}
-		seen[h] = true
+		// One harness can be configured in both API-key and ambient ChatGPT
+		// modes. Each distinct option set needs its own auth preflight.
+		options, marshalErr := json.Marshal(g.Spec.HarnessOptions)
+		if marshalErr != nil {
+			pf(stdout, "HARNESS %s: encode harness options: %v\n", h, marshalErr)
+			addDiagnostic(collectors, ".", "/spec/harnessOptions", "HARNESS001", string(validate.Error), marshalErr.Error())
+			ok = false
+			continue
+		}
+		seenKey := string(h) + "\x00" + string(options)
+		if seen[seenKey] {
+			continue
+		}
+		seen[seenKey] = true
 		file := "."
 		if sourceFile != nil {
 			file = sourceFile(g)
@@ -1421,17 +1529,22 @@ func checkHarnessesAtSources(
 
 		var modelCredential func(context.Context) (string, error)
 		credentialLabel := "no agent:model grant configured"
-		if credentialResolverFor != nil {
-			resolve, label, err := credentialResolverFor(h)
+		var credential harnessModelCredential
+		haveCredential := false
+		ambientCodex := h == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(g.Spec.HarnessOptions)
+		if credentialResolverFor != nil && !ambientCodex {
+			resolved, err := credentialResolverFor(h)
 			if err != nil {
 				pf(stdout, "HARNESS %s: %v\n", h, err)
 				addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
 				ok = false
 				continue
 			}
-			modelCredential = resolve
-			if label != "" {
-				credentialLabel = label
+			credential = resolved
+			haveCredential = true
+			modelCredential = resolved.Resolve
+			if resolved.Label != "" {
+				credentialLabel = resolved.Label
 			}
 		}
 
@@ -1447,7 +1560,7 @@ func checkHarnessesAtSources(
 		// just CLI presence — a fine-grained PAT lacking the "Copilot Requests"
 		// permission (#284) passes --version but fails the probe.
 		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
-		_, err = adapter.Preflight(ctx)
+		_, err = preflightAdapterConfig(ctx, adapter, g.Spec)
 		cancel()
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
@@ -1457,8 +1570,55 @@ func checkHarnessesAtSources(
 		}
 
 		pf(stdout, "HARNESS %s: OK (agent:model: %s)\n", h, credentialLabel)
+		if haveCredential {
+			// Reported separately from the OK above because it answers a
+			// different question. The preflight says this harness signed in
+			// here; the readiness line says WHICH source that credential came
+			// from and whether it can be observed under the identity running
+			// the check -- which is not the identity a scheduled run uses
+			// (#5261).
+			readinessCtx, cancelReadiness := context.WithTimeout(context.Background(), harnessPreflightTimeout)
+			check := credential.readiness(readinessCtx, readiness.CheckedAt)
+			cancelReadiness()
+			readiness.Checks = append(readiness.Checks, check)
+			pf(stdout, "  credential %s [observed as %s]\n", check.Summarize(), observer)
+		}
 	}
+	printCredentialReadiness(stdout, readiness, observer)
 	return ok
+}
+
+// printCredentialReadiness summarizes the credential sources this run actually
+// observed. It is reported separately from each harness's OK because it answers
+// a different question, and it never upgrades to a readiness claim on its own:
+//
+//   - A report whose observing identity could not be established asserts
+//     nothing, because there is no identity to attribute the claim to.
+//   - An unobservable source keeps the whole report unready. That is the
+//     absence of evidence, which is exactly what must not round up to a pass
+//     (#5261).
+//
+// The claim is explicitly scoped to the observing identity. A scheduled run
+// executes as a service account that may not be able to read these sources at
+// all, and this output is not evidence about that identity.
+func printCredentialReadiness(stdout io.Writer, report credreadiness.Report, observer credreadiness.Observer) {
+	if len(report.Checks) == 0 {
+		return
+	}
+	if !report.AssertsFor(observer) {
+		pf(stdout, "CREDENTIALS: not asserted — the observing identity could not be established\n")
+		return
+	}
+	unready := report.Unready()
+	if report.Ready() {
+		pf(stdout, "CREDENTIALS: %d source(s) usable as %s; not evidence for another identity\n",
+			len(report.Checks), observer)
+		return
+	}
+	pf(stdout, "CREDENTIALS: %d of %d source(s) not usable as %s\n", len(unready), len(report.Checks), observer)
+	for _, check := range unready {
+		pf(stdout, "  %s\n", check.Summarize())
+	}
 }
 
 func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity, message string) {

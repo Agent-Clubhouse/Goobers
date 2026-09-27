@@ -57,6 +57,9 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 						cfg.Runner.HarnessSessionArgs = map[string][]string{
 							string(selected): {"--session-file", "{sessionId}.jsonl"},
 						}
+						cfg.Runner.HarnessPreflightArgs = map[string][]string{
+							string(selected): {"--minimal-preflight"},
+						}
 					}
 				}
 				if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
@@ -113,10 +116,87 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 					if !slices.Equal(kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)]) {
 						t.Fatalf("kit harness session args = %v, want %v", kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)])
 					}
+					if !slices.Equal(kit.HarnessPreflightArgs, cfg.Runner.HarnessPreflightArgs[string(selected)]) {
+						t.Fatalf("kit harness preflight args = %v, want %v", kit.HarnessPreflightArgs, cfg.Runner.HarnessPreflightArgs[string(selected)])
+					}
 					assertPodLauncher(t, kit, selected, declared, cfg.Runner.HarnessEnvUnset)
 				}
 			})
 		}
+	}
+}
+
+// A stage pod receives one goober's effective credential grants, not the raw
+// instance-wide source list. In particular, two harness-scoped agent:model
+// grants must never make both credential references visible to either pod,
+// and the selected grant must use the same plain capability key the daemon
+// credential plane materializes.
+func TestWorkerKitNarrowsHarnessScopedCredentialForPod(t *testing.T) {
+	for _, tc := range []struct {
+		harness apiv1.Harness
+		wantRef string
+		other   string
+	}{
+		{apiv1.HarnessCopilot, "credential:agent:model#harness:copilot", "credential:agent:model#harness:claude-code"},
+		{apiv1.HarnessClaudeCode, "credential:agent:model#harness:claude-code", "credential:agent:model#harness:copilot"},
+	} {
+		t.Run(string(tc.harness), func(t *testing.T) {
+			t.Setenv("COPILOT_PAT", "copilot-secret")
+			t.Setenv("CLAUDE_TOKEN", "claude-secret")
+			root := initDemo(t)
+			layout := instance.NewLayout(root)
+			cfg, err := instance.LoadConfig(layout.ConfigFile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Credentials = []instance.CredentialGrant{
+				{Capability: "agent:model", Harness: "copilot", Token: instance.TokenRef{Env: "COPILOT_PAT"}},
+				{Capability: "agent:model", Harness: "claude-code", Token: instance.TokenRef{Env: "CLAUDE_TOKEN"}},
+			}
+			if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			definition := filepath.Join(layout.ConfigDir(), "gaggles", pinGaggle, "goobers", pinGoober, "goober.yaml")
+			writeFileContent(t, definition, strings.Replace(readFileContent(t, definition), "harness: copilot", "harness: "+string(tc.harness), 1))
+
+			writer := agenticKitWriter{instanceRoot: root, seams: workerReloadSeams(t, root), blobEndpoint: "http://blobs.invalid"}
+			kit, err := writer.buildKitContext(t.Context(), apiv1.InvocationEnvelope{
+				RunID: "scoped-model-run", TaskID: "implement", WorkflowID: pinWorkflow,
+				Gaggle: pinGaggle, Goober: pinGoober,
+			}, agentickit.ModeInvoke)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var modelGrants []agentickit.Grant
+			for _, grant := range kit.Grants {
+				if grant.Capability == "agent:model" {
+					modelGrants = append(modelGrants, grant)
+				}
+				if grant.Ref == tc.other {
+					t.Fatalf("kit disclosed the other harness credential reference: %+v", kit.Grants)
+				}
+				if strings.Contains(grant.Capability, "#harness:") {
+					t.Fatalf("kit retained a storage-scoped capability instead of the plane's plain key: %+v", grant)
+				}
+			}
+			if len(modelGrants) != 1 || modelGrants[0].Goober != pinGoober || modelGrants[0].Ref != tc.wantRef {
+				t.Fatalf("agent:model grants = %+v, want one grant for %s backed by %s", modelGrants, pinGoober, tc.wantRef)
+			}
+
+			// Exercise the pod-side association against exactly what the plane
+			// returns: a plain agent:model value.
+			resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{"agent:model": "minted-for-selected-harness"}}
+			for _, grant := range kit.Grants {
+				resolver.byRef[grant.Ref] = append(resolver.byRef[grant.Ref], grant.Capability)
+			}
+			if got, err := resolver.Resolve(context.Background(), tc.wantRef); err != nil || got != "minted-for-selected-harness" {
+				t.Fatalf("selected pod credential = %q, %v", got, err)
+			}
+			if _, err := resolver.Resolve(context.Background(), tc.other); err == nil {
+				t.Fatal("the pod resolver reached the other harness credential")
+			}
+		})
 	}
 }
 
@@ -128,6 +208,9 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 	podHarnessRegistry = func(caps map[string]string, environment harness.EnvironmentConfig, commands map[string][]string, root, bin string, deferDiscovery bool, credential func(context.Context) (string, error), ephemeral bool) (*harness.Registry, error) {
 		if !slices.Equal(environment.Unset, envUnset) {
 			t.Fatalf("pod harness env unset = %v, want %v", environment.Unset, envUnset)
+		}
+		if !slices.Equal(environment.PreflightArgs[string(selected)], kit.HarnessPreflightArgs) {
+			t.Fatalf("pod harness preflight args = %v, want %v", environment.PreflightArgs[string(selected)], kit.HarnessPreflightArgs)
 		}
 		// Build the real adapters from the actual pod-constructor arguments, then
 		// replace only the external process adapter before its preflight executes.
@@ -150,6 +233,7 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 			if len(declared) > 0 && !slices.Equal(declared, []string{"copilot"}) {
 				expectedAuthArgs = forwardingLauncherAuthCheckArgs()
 			}
+			expectedAuthArgs = append(slices.Clone(expectedAuthArgs), kit.HarnessPreflightArgs...)
 			if !slices.Equal(a.AuthCheckArgs, expectedAuthArgs) {
 				t.Fatal("model authentication preflight was altered")
 			}

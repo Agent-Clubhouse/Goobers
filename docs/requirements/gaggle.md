@@ -56,6 +56,11 @@ a monorepo.
   own Kubernetes namespace, workload identity, and telemetry partition — the cloud
   drop-in for the same isolation seam `GAG-011` implements locally. Owning
   requirements: `SEC-001`/`SEC-002`; this ID defers to them. *(Tier 3, V2)*
+- **GAG-013 (MAY/MUST):** A Gaggle MAY declare `spec.enabled`. Omitted or null means
+  enabled by default. When it is explicitly `false`, the scheduler MUST NOT start new
+  runs for that gaggle, while its schedule/backlog declarations remain intact and any
+  already-started runs finish normally. *(All tiers; local runner shipped, tier-3
+  parity required by `GAG-010`)*
 
 ## Relationships
 
@@ -67,6 +72,14 @@ default is true. False suppresses new provider-visible cost receipts and merge
 cost summaries without disabling local journal usage accounting or normal issue
 close-out. This is a binary-level publication policy shared by supported DSL
 pins, not an extra workflow stage.
+
+### Start enablement
+
+Optional `spec.enabled` is a nullable boolean that controls whether the scheduler
+may start NEW runs for the gaggle. Null or omission means enabled. `false`
+preserves the gaggle's declared schedule/backlog topology but blocks new starts
+until the field is removed or set back to `true`; already-started runs keep
+running to completion.
 
 ### Resource relationships
 

@@ -595,21 +595,14 @@ func appendMaxOpenPRWarnings(
 		}
 		var message string
 		switch {
-		case project.Owner == "" && project.Name == "" && len(cfg.Repos) > 0 && cfg.Repos[0].Provider == string(apiv1.ProviderADO):
-			message = fmt.Sprintf(
-				"readiness.maxOpenPRs cannot be enforced for ADO project repository %q: "+
-					"the cap counts GitHub pull requests, so no open-PR count is available and admission fails open",
-				instanceRepoName(cfg.Repos[0]))
 		case project.Owner == "" && project.Name == "" && len(cfg.Repos) > 0:
 			message = fmt.Sprintf(
 				"readiness.maxOpenPRs has no project repository binding, so the cap binds to instance repos[0] repository %q",
 				instanceRepoName(cfg.Repos[0]))
-		case project.Provider == apiv1.ProviderADO:
-			message = fmt.Sprintf(
-				"readiness.maxOpenPRs cannot be enforced for ADO project repository %q: "+
-					"the cap counts GitHub pull requests, so no open-PR count is available and admission fails open",
-				projectRepoName(project))
-		case project.Provider == apiv1.ProviderGitHub:
+		case project.Provider == apiv1.ProviderGitHub || project.Provider == apiv1.ProviderADO:
+			// Both forges enforce the cap by polling the bound repository's
+			// open PRs (ADO since ADO-N30); only a missing binding leaves the
+			// count unknown.
 			if _, configured := configuredRepoForProject(cfg, project); configured {
 				continue
 			}

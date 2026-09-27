@@ -100,7 +100,11 @@ const testOnlyExports = {
     "orderedReplayEvents",
     "replayChapterKind",
   ],
-  "src/runDetailData.ts": ["loadRunDetail", "isVerdictArtifact"],
+  "src/runDetailData.ts": [
+    "humanize",
+    "loadRunDetail",
+    "isVerdictArtifact",
+  ],
   "src/runsHistory.ts": ["RUNS_PAGE_SIZE"],
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
   "src/theme.ts": ["themeStorageKey", "persistTheme"],

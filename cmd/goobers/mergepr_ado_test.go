@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -142,8 +144,21 @@ func newADOMergePRServer(t *testing.T, headSHA, baseSHA string) (*httptest.Serve
 // serverURL. Returns (instanceRoot, workDir) — workDir is cwd, where the result
 // file lands.
 func adoMergePREnv(t *testing.T, serverURL string, withoutGrant bool, inputs map[string]string) (string, string) {
+	return adoMergePREnvWithAuth(t, serverURL, withoutGrant, "pat", inputs)
+}
+
+func adoMergePREnvWithAuth(t *testing.T, serverURL string, withoutGrant bool, authKind string, inputs map[string]string) (string, string) {
 	t.Helper()
 	instanceRoot := initDemo(t)
+	instanceConfig := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos:\n" +
+		"  - provider: ado\n    owner: myorg\n    project: myproject\n    name: myrepo\n" +
+		"    auth:\n      kind: " + authKind + "\n"
+	if authKind == "pat" {
+		instanceConfig += "    token:\n      env: TEST_ADO_PAT\n"
+	}
+	if err := os.WriteFile(filepath.Join(instanceRoot, "instance.yaml"), []byte(instanceConfig), 0o600); err != nil {
+		t.Fatalf("write ADO instance config: %v", err)
+	}
 
 	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderADO))
 	t.Setenv(executor.RepoOwnerEnvVar, "myorg")
@@ -253,6 +268,28 @@ func TestMergePRADORequiresCompletionCapability(t *testing.T) {
 	}
 	if n := atomic.LoadInt64(&state.getCalls) + atomic.LoadInt64(&state.patchCalls); n != 0 {
 		t.Fatalf("ADO server received %d PR requests, want 0 (must fail before any provider call)", n)
+	}
+}
+
+func TestMergePRAzureCLIUsesConfiguredAuthenticationWithoutTokenGrant(t *testing.T) {
+	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+	root, dir := adoMergePREnvWithAuth(t, server.URL, true, "azure-cli", map[string]string{
+		"pullNumber": "359",
+		"verdict":    "pass",
+		"headSha":    "headsha1",
+		"baseSha":    "basesha1",
+	})
+
+	code, stdout, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true", result)
+	}
+	if atomic.LoadInt64(&state.patchCalls) != 1 {
+		t.Fatalf("completion PATCH called %d times, want 1", state.patchCalls)
 	}
 }
 

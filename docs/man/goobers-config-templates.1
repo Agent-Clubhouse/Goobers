@@ -1,0 +1,18 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CONFIG TEMPLATES" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers config templates \- manage tracked gaggle templates
+.SH SYNOPSIS
+\fBgoobers config templates\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers config templates <import|update|backprop|check|status> [flags] [instance-root]
+
+Manage opt-in, repository-backed gaggle copies. Existing gaggles are unchanged.
+Imports start disabled. Updates are explicit and never overwrite conflicting
+local edits. Backprop writes a reviewable user's config checkout, never the
+template repository, and does not commit or push.
+See docs/guides/gaggle-templates.md for package authoring and recovery.
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

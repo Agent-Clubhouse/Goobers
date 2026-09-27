@@ -15,7 +15,7 @@ import (
 
 // fakePodAPI is a minimal in-memory dispatcher.PodAPI for testing
 // waitForRunningPod against a controllable pod set, without a real cluster.
-// CreatePod/GetPod/GetDeployment are unused by e2ekillinject.go and exist
+// CreatePod/GetPod/GetDeployment/GetPersistentVolumeClaim are unused by e2ekillinject.go and exist
 // only to satisfy the interface.
 type fakePodAPI struct {
 	listFunc func() []corev1.Pod
@@ -47,6 +47,9 @@ func (f *fakePodAPI) ListPods(_ context.Context, _ string, selector map[string]s
 	return out, nil
 }
 func (f *fakePodAPI) GetDeployment(context.Context, string, string) (*appsv1.Deployment, error) {
+	return nil, nil
+}
+func (f *fakePodAPI) GetPersistentVolumeClaim(context.Context, string, string) (*corev1.PersistentVolumeClaim, error) {
 	return nil, nil
 }
 

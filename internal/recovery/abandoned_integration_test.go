@@ -56,13 +56,23 @@ func TestIntegrationAbandonedPreparationRequiresDurableHandoff(t *testing.T) {
 	if got := recoveryTestGit(t, repository, "rev-parse", "refs/heads/"+branch); got != commit {
 		t.Fatal("preparation deleted before repaired publication acknowledgement")
 	}
+	// An unrelated partial reservation — crash debris from some other run's
+	// publish — must NOT fail this handoff. It used to: the read was strict,
+	// so one such directory failed every later worktree cleanup on the
+	// instance until an operator deleted files by hand (#5177 AC3). This
+	// handoff owns one identity, is about to publish it either way, and can
+	// never match an entry it cannot read. The debris still consumes a slot
+	// and is left untouched here; reclaiming it is reconciliation's job.
 	foreign := filepath.Join(inventory, "foreign-partial")
 	if err := os.Mkdir(foreign, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	request.MaxSnapshots = 2
-	if err := RetainAbandonedPreparation(context.Background(), request, log); err == nil || errors.Is(err, blocked) {
-		t.Fatalf("foreign partial reservation did not remain fail-closed: %v", err)
+	if err := RetainAbandonedPreparation(context.Background(), request, log); !errors.Is(err, blocked) {
+		t.Fatalf("unrelated partial reservation failed an independent handoff: %v", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("handoff removed an unrelated reservation: %v", err)
 	}
 	if err := os.Remove(foreign); err != nil {
 		t.Fatal(err)

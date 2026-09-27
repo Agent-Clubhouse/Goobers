@@ -1,15 +1,30 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/providers"
 )
+
+// prClaimProvider is the narrow surface pr-claim needs: a single-PR poll to
+// verify the claimed PR's live state and source head. Unlike
+// remediationProvider (the full pr-remediation lane surface, GitHub/Gitea-
+// only), GetPullRequest alone is a call every registered provider —
+// including ADO's GetPullRequest, a thin adapter over its PollPullRequest
+// (providers/ado_prthreads.go) — implements through the shared stage-provider
+// seam, so pr-claim's terminal-state guard runs on GitHub, Gitea and ADO
+// alike (#5655).
+type prClaimProvider interface {
+	GetPullRequest(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.PullRequestSummary, error)
+}
 
 const prRemediationLifecycleResultFile = "pr-remediation-lifecycle.json"
 
@@ -67,11 +82,11 @@ func runPRRemediationLifecycle(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "load remediation repository", err, prRemediationLifecycleResultFile)
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	token, err := prClaimProviderToken(repo)
 	if err != nil {
 		return failProviderStage(stderr, "load remediation credential", err, prRemediationLifecycleResultFile)
 	}
-	provider, err := remediationStageProvider(root, repo, token, false)
+	provider, err := remediationStageSurface[prClaimProvider](root, repo, token)
 	if err != nil {
 		return failProviderStage(stderr, "initialize remediation provider", err, prRemediationLifecycleResultFile)
 	}
@@ -82,6 +97,17 @@ func runPRRemediationLifecycle(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "refresh remediation pull request", err, prRemediationLifecycleResultFile)
 	}
 	if strings.EqualFold(pr.State, "open") && !pr.Merged {
+		// ADO-only: a PR must never read as open on an empty source head
+		// observed through the ADO poll (#5655, ADO-N14) — an empty head
+		// means the poll did not actually resolve a live source commit, so
+		// the guard fails closed rather than letting the lane proceed
+		// against an unverified source. Scoped to ADO because GitHub's
+		// GetPullRequest has always left this unchecked, and changing that
+		// is out of this item's scope (no GitHub/Gitea behaviour change).
+		if repo.Provider == providers.ProviderADO && strings.TrimSpace(pr.HeadSHA) == "" {
+			return failProviderStage(stderr, "refresh remediation pull request",
+				fmt.Errorf("pull request #%d has no source head SHA", number), prRemediationLifecycleResultFile)
+		}
 		return writePRRemediationLifecycleResult(prRemediationLifecycleResult{
 			SelectedNumber: strconv.Itoa(number),
 			Open:           true,
@@ -141,4 +167,17 @@ func writePRRemediationLifecycleResult(result prRemediationLifecycleResult, stdo
 	}
 	pf(stdout, "claimed PR #%s is still open\n", result.SelectedNumber)
 	return 0
+}
+
+// prClaimProviderToken loads the GitHub-capability credential pr-claim hands
+// to the GitHub and Gitea providers. ADO resolves its own credential from
+// repos[].auth inside the stage factory (newRegisteredADOProviderForStage)
+// and ignores this token, so ADO skips it — mirroring rebase-pr and
+// push-remediated — and an ADO repository whose auth is not a PAT still
+// reaches the PR poll.
+func prClaimProviderToken(repo providers.RepositoryRef) (string, error) {
+	if repo.Provider == providers.ProviderADO {
+		return "", nil
+	}
+	return providerToken(capability.GitHubPRWrite)
 }

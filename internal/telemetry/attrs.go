@@ -126,6 +126,8 @@ func taskAttributeSet(a TaskAttributes) []attribute.KeyValue {
 		)
 	}
 	attrs = appendOptionalString(attrs, AttrAttemptKind, a.AttemptKind)
+	attrs = appendOptionalString(attrs, AttrBuildID, a.BuildID)
+	attrs = appendOptionalString(attrs, AttrWorkerIdentity, a.WorkerIdentity)
 	attrs = appendOptionalString(attrs, AttrItemID, a.ItemID)
 	return appendOptionalString(attrs, AttrItemURL, a.ItemURL)
 }

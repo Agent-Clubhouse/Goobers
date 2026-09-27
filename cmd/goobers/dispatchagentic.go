@@ -139,6 +139,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		}
 	}
 
+	ctx = podAgenticMergeAuthorityContext(ctx, kit.Envelope)
 	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
 	if err != nil {
 		return fail("agentic_executor_unavailable", err)
@@ -305,6 +306,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		}
 	}
 	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(os.Getenv(dispatcher.JournalTokenEnv)))
 	for _, c := range minted {
 		resolver.vals[c.Capability] = c.Value
 		// Register before use so the value is scrubbed out of transcripts and
@@ -329,6 +331,13 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	for _, c := range minted {
 		envVar, ok := kit.EnvCapabilities[c.Capability]
 		if !ok || envVar == "" || c.Value == "" {
+			continue
+		}
+		// The same provider rule the harness applies to its subprocess
+		// environment: the pod's own preflight and model discovery read these
+		// variables too, so a repository credential is set only where its
+		// provider's tooling reads it.
+		if !harness.CredentialFitsEnvAudience(c.Capability, envVar, kit.Envelope.RepoRef.Provider) {
 			continue
 		}
 		if err := os.Setenv(envVar, c.Value); err != nil {
@@ -364,8 +373,9 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		commands = map[string][]string{string(spec.Harness): kit.HarnessCommand}
 	}
 	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, harness.EnvironmentConfig{
-		Unset:       kit.HarnessEnvUnset,
-		SessionArgs: map[string][]string{string(spec.Harness): kit.HarnessSessionArgs},
+		Unset:         kit.HarnessEnvUnset,
+		SessionArgs:   map[string][]string{string(spec.Harness): kit.HarnessSessionArgs},
+		PreflightArgs: map[string][]string{string(spec.Harness): kit.HarnessPreflightArgs},
 	}, commands, "", "", false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)

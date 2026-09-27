@@ -56,6 +56,36 @@ func TestLoadPackagesAcceptsReviewedCountOverride(t *testing.T) {
 	}
 }
 
+func TestLoadPackagesAcceptsExclude(t *testing.T) {
+	t.Parallel()
+	packages, err := loadPackages(strings.NewReader(`
+./cmd/goobers pass=23m shards=32 exclude=TestIntentionalJournalAppendDiscardsUseObservableHelper
+./internal/runner pass=1m exclude=TestAlpha,TestBeta
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []packageSpec{
+		{
+			Package:    "./cmd/goobers",
+			Count:      stressCount,
+			Shards:     32,
+			PassBudget: 23 * time.Minute,
+			Exclude:    "TestIntentionalJournalAppendDiscardsUseObservableHelper",
+		},
+		{
+			Package:    "./internal/runner",
+			Count:      stressCount,
+			Shards:     1,
+			PassBudget: time.Minute,
+			Exclude:    "TestAlpha,TestBeta",
+		},
+	}
+	if !slices.Equal(packages, want) {
+		t.Fatalf("loadPackages() = %+v, want %+v", packages, want)
+	}
+}
+
 func TestLoadPackagesRejectsInvalidEnrollment(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -78,6 +108,9 @@ func TestLoadPackagesRejectsInvalidEnrollment(t *testing.T) {
 		{name: "excessive shards", list: "./internal/runner shards=65 pass=1s\n", want: "shards must be"},
 		{name: "over budget", list: "./cmd/goobers pass=20m\n", want: "exceeds the 30m0s per-shard timeout"},
 		{name: "over budget shards", list: "./cmd/goobers pass=20m shards=8\n", want: "raise shards="},
+		{name: "empty exclude", list: "./internal/runner pass=1s exclude=\n", want: "exclude must list"},
+		{name: "blank exclude entries", list: "./internal/runner pass=1s exclude=, ,\n", want: "exclude must list"},
+		{name: "invalid exclude name", list: "./internal/runner pass=1s exclude=notATest\n", want: "invalid test name"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -801,6 +834,56 @@ func TestShardRunPatternPartitionsListedTests(t *testing.T) {
 		Shards:  9,
 	}); err == nil || !strings.Contains(err.Error(), "selected no tests") {
 		t.Fatalf("shardRunPattern(empty shard) error = %v", err)
+	}
+}
+
+// TestShardRunPatternDropsExcludedTests is the regression test for #5158: a
+// test named by `exclude=` must never appear in any shard's `-run` pattern,
+// whether or not the package is split into shards, so it is never repeated
+// under the race detector.
+func TestShardRunPatternDropsExcludedTests(t *testing.T) {
+	t.Setenv("GOOBERS_STRESS_HELPER", "pass")
+	runner := processRunner{
+		command:   helperCommand,
+		goCommand: "go",
+		outputDir: t.TempDir(),
+		stdout:    &bytes.Buffer{},
+		stderr:    &bytes.Buffer{},
+		now:       time.Now,
+	}
+	// The helper lists TestAlpha, TestBeta, TestGamma, TestDelta.
+	unsharded, err := runner.shardRunPattern(context.Background(), shardSpec{
+		Package: "./cmd/goobers",
+		Shards:  1,
+		Exclude: "TestBeta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "^(?:TestAlpha|TestGamma|TestDelta)$"; unsharded != want {
+		t.Fatalf("shardRunPattern(unsharded, exclude) = %q, want %q", unsharded, want)
+	}
+
+	patterns := make([]string, 0, 2)
+	for index := range 2 {
+		pattern, err := runner.shardRunPattern(context.Background(), shardSpec{
+			ID:      shardID("./cmd/goobers", index, 2),
+			Package: "./cmd/goobers",
+			Index:   index,
+			Shards:  2,
+			Exclude: "TestBeta",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		patterns = append(patterns, pattern)
+	}
+	// With TestBeta excluded before the round-robin split, the remaining
+	// three tests (Alpha, Gamma, Delta) split 2/1 instead of drifting the
+	// original 2/2 split around a hole.
+	want := []string{"^(?:TestAlpha|TestDelta)$", "^(?:TestGamma)$"}
+	if !slices.Equal(patterns, want) {
+		t.Fatalf("shard run patterns (exclude) = %v, want %v", patterns, want)
 	}
 }
 

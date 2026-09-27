@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -112,6 +113,15 @@ func writeAttributedCreditRun(t *testing.T, root, runID string) {
 	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	definition, err := json.Marshal(map[string]any{
+		"Name": "default-implement", "Version": 1, "dslVersion": "3.0",
+		"Spec": map[string]any{
+			"backprop": map[string]any{"enabled": true, "version": "v1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
 		RunID:           runID,
 		Workflow:        "default-implement",
@@ -121,7 +131,11 @@ func writeAttributedCreditRun(t *testing.T, root, runID string) {
 		Gaggle:          "example",
 		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
 		StartedAt:       time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC),
-	}, nil)
+	}, map[string][]byte{
+		journal.PinnedWorkflowDefinitionInputName: definition,
+	}, journal.WithInputIntegrity(map[string]apiv1.Integrity{
+		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +189,11 @@ func writeAttributedCreditRun(t *testing.T, root, runID string) {
 		Time: now.Add(2 * time.Second),
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if wrote, err := creditgraph.WriteRunRecord(filepath.Join(layout.RunsDir(), runID), nil); err != nil {
+		t.Fatal(err)
+	} else if !wrote {
+		t.Fatal("attribution record was not written for enrolled fixture")
 	}
 	span := telemetry.SpanRecord{
 		Schema:    telemetry.SpanSchema,
@@ -529,6 +548,8 @@ type telemetryParityReader struct {
 	*readservice.Telemetry
 }
 
+var _ readservice.Reader = (*telemetryParityReader)(nil)
+
 func (r *telemetryParityReader) Health(context.Context) (readservice.Health, error) {
 	return readservice.Health{Ready: true}, nil
 }
@@ -551,6 +572,14 @@ func (r *telemetryParityReader) RunEvents(context.Context, string) (readservice.
 
 func (r *telemetryParityReader) StageAttempts(context.Context, string, string) (readservice.AttemptList, error) {
 	return readservice.AttemptList{}, readservice.ErrNotFound
+}
+
+func (r *telemetryParityReader) AddressableAgents(context.Context, string) ([]readservice.AddressableAgent, error) {
+	return nil, readservice.ErrNotFound
+}
+
+func (r *telemetryParityReader) ResolveAgentAddress(context.Context, string, string) (readservice.AgentResolution, error) {
+	return readservice.AgentResolution{}, readservice.ErrNotFound
 }
 
 func (r *telemetryParityReader) Artifact(context.Context, string, string) (readservice.ArtifactContent, error) {

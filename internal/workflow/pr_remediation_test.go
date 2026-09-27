@@ -12,6 +12,29 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// mergeReviewGatherHeadPrefixes returns the headPrefixes the shipped
+// merge-review workflow gives its gather-sibling-context stage (#5602).
+func mergeReviewGatherHeadPrefixes(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "merge-review.yaml"))
+	if err != nil {
+		t.Fatalf("read merge-review.yaml: %v", err)
+	}
+	var w apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("unmarshal merge-review.yaml: %v", err)
+	}
+	for _, task := range w.Spec.Tasks {
+		if task.Name == "gather-sibling-context" {
+			if got := task.Inputs["headPrefixes"]; got != "" {
+				return got
+			}
+		}
+	}
+	t.Fatal("merge-review gather-sibling-context declares no headPrefixes")
+	return ""
+}
+
 // loadPRRemediation reads and compiles the REAL shipped pr-remediation
 // definition against the REAL implementer/reviewer goobers, the same
 // divergence-guard approach TestReferenceWorkflowsCompile takes (#124): a
@@ -176,6 +199,11 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	}
 	if got := siblings.Inputs["minSeverity"]; got != "info" {
 		t.Errorf("gather-sibling-context minSeverity = %q, want info", got)
+	}
+	// #5602: the sibling set is the set merge-review can land, so the scope
+	// must be merge-review's own headPrefixes.
+	if got, want := siblings.Inputs["headPrefixes"], mergeReviewGatherHeadPrefixes(t); got != want {
+		t.Errorf("gather-sibling-context headPrefixes = %q, want merge-review's %q", got, want)
 	}
 	if got := siblings.Next; got != "rebase-pr" {
 		t.Errorf("gather-sibling-context next = %q, want rebase-pr", got)

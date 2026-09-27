@@ -166,45 +166,54 @@ func TestUpSurfacesWebhookStartupFailure(t *testing.T) {
 }
 
 func TestUpWebhookAuthenticatesRoutesDeduplicatesAndAppliesReadiness(t *testing.T) {
-	root := initDeterministicDemo(t)
-	l := instance.NewLayout(root)
-	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	webhookWorkflow := strings.Replace(
-		deterministicWorkflowYAML,
-		"    - type: schedule\n      schedule: \"@every 24h\"\n",
-		"    - type: webhook\n      events: [issues]\n  readiness:\n    maxRunsPerHour: 1\n",
-		1,
-	)
-	if webhookWorkflow == deterministicWorkflowYAML {
-		t.Fatal("deterministic workflow fixture did not contain expected schedule trigger")
-	}
-	if err := os.WriteFile(workflowPath, []byte(webhookWorkflow), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testUpWebhookAuthenticatesRoutesDeduplicatesAndAppliesReadiness(t, freeLoopbackAddress)
+}
 
-	address := freeLoopbackAddress(t)
+// TestUpWebhookEndToEndSurvivesLoopbackPortCollision pins #5475: the first
+// address handed to the daemon is already bound, as when another socket takes
+// the port freeLoopbackAddress just released, and the end-to-end webhook test
+// must still run rather than fail before the daemon starts.
+func TestUpWebhookEndToEndSurvivesLoopbackPortCollision(t *testing.T) {
+	collided := false
+	testUpWebhookAuthenticatesRoutesDeduplicatesAndAppliesReadiness(t, func(t *testing.T) string {
+		if collided {
+			return freeLoopbackAddress(t)
+		}
+		collided = true
+		return holdLoopbackAddress(t).Addr().String()
+	})
+	if !collided {
+		t.Fatal("collision fixture was never used")
+	}
+}
+
+func testUpWebhookAuthenticatesRoutesDeduplicatesAndAppliesReadiness(t *testing.T, pickAddress func(*testing.T) string) {
 	const (
 		secretEnv = "GOOBERS_TEST_WEBHOOK_SECRET"
 		secret    = "end-to-end-webhook-secret"
 	)
 	t.Setenv(secretEnv, secret)
-	configureWebhook(t, root, address, secretEnv)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	started := &daemonStartedWriter{started: make(chan struct{})}
-	var stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() {
-		done <- runUpContext(ctx, []string{"--quiet", root}, started, &stderr)
-	}()
-	select {
-	case <-started.started:
-	case code := <-done:
-		t.Fatalf("daemon exited before startup: code = %d, stderr = %q", code, stderr.String())
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for daemon startup")
-	}
+	daemon := startUpOnFreeLoopback(t, pickAddress, func(address string) string {
+		root := initDeterministicDemo(t)
+		workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+		webhookWorkflow := strings.Replace(
+			deterministicWorkflowYAML,
+			"    - type: schedule\n      schedule: \"@every 24h\"\n",
+			"    - type: webhook\n      events: [issues]\n  readiness:\n    maxRunsPerHour: 1\n",
+			1,
+		)
+		if webhookWorkflow == deterministicWorkflowYAML {
+			t.Fatal("deterministic workflow fixture did not contain expected schedule trigger")
+		}
+		if err := os.WriteFile(workflowPath, []byte(webhookWorkflow), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		configureWebhook(t, root, address, secretEnv)
+		return root
+	})
+	defer daemon.cancel()
+	l := instance.NewLayout(daemon.root)
+	address, cancel, done, stderr := daemon.address, daemon.cancel, daemon.done, daemon.stderr
 
 	body := []byte(`{"action":"labeled"}`)
 	if status := postWebhook(t, address, "wrong-secret", "issues", "invalid-1", body); status != http.StatusUnauthorized {

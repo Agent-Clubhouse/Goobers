@@ -35,8 +35,11 @@ spec:
   #         url: "https://acme.example/runbooks"
   #       - label: "On-call"
   #         url: "https://acme.example/oncall"
-  # Named, reusable connections. Credentials are Key Vault references — never
-  # inline tokens (CFG-009, SEC-010).
+  # Named, reusable connections. Never put an inline token here (CFG-009,
+  # SEC-010). Connections and secretRef are accepted but not yet used to source
+  # credentials: tokens come from instance.yaml repos[] and credentials[], and
+  # a Key Vault secret is read through instance.yaml secretStores (see
+  # docs/guides/secret-stores.md).
   connections:
     - name: github-main
       type: repo

@@ -1,0 +1,18 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CONFIG TEMPLATES BACKPROP" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers config templates backprop \- persist runtime edits into the user's config checkout
+.SH SYNOPSIS
+\fBgoobers config templates backprop\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers config templates backprop --gaggle <name> [--source <config-root>] [instance-root]
+
+Persist runtime edits into the user's config checkout using the recorded
+deployment baseline. --source defaults to a local workflowSource; it must be
+separate from the runtime instance. Source changes merge or report conflicts.
+Stop the daemon first. No commit or push is performed: review and commit the
+reported files in YOUR repository. The shared template is never modified.
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

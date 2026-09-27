@@ -11,7 +11,7 @@ Open GitHub's [fine-grained personal access token settings](https://github.com/s
 and complete these fields before generating the token:
 
 1. **Resource owner:** select the account or organization that owns the target
-   repository — for example, `odsp-microsoft` when the repository is under that
+   repository — for example, `your-org` when the repository is under that
    organization. Keep the default personal account when it owns the target;
    otherwise change it. A token created under the wrong resource owner cannot
    access the target repository, even when its permissions look correct.
@@ -129,9 +129,9 @@ daemonIdentity:
   privateKey: { file: /secrets/goobersbot.pem }
   slug: goobersbot
   installations:
-    - owner: Agent-Clubhouse
+    - owner: your-org
       installationId: 1111111
-    - owner: masra91
+    - owner: another-owner
       installationId: 2222222
 ```
 
@@ -179,6 +179,31 @@ session, configure a separate fine-grained PAT with **Copilot Requests:
 Read-only**. A PAT without that account permission fails the auth preflight (or
 the first agentic stage when preflight is disabled) even when ordinary
 repository operations work.
+
+For a headless Copilot deployment, `agent:model` may instead mint short-lived
+GitHub App installation tokens. Scope the grant explicitly to the Copilot
+harness; Goobers requests each token for exactly one repository with only
+`copilot_requests:write` and `metadata:read`, propagates GitHub's expiry through
+the credential plane, and refreshes before expiry:
+
+```yaml
+credentials:
+  - capability: agent:model
+    harness: copilot
+    githubApp:
+      name: copilot-primary
+      appId: 123456
+      installationId: 789012
+      repository: example-org/example-repo
+      repositoryId: 123456789
+      privateKey:
+        file: /run/secrets/copilot-app.pem
+```
+
+The private key is runner-owned and is never injected into a stage. Deployments
+that require stronger key isolation can keep the App key in an external broker
+and use the existing rotating `token.file` source instead; token files are
+re-read whenever the credential is resolved.
 
 Goobers still models model access as **`agent:model`**. When no token grant is
 configured, the Copilot adapter uses the stored CLI session and removes ambient
@@ -285,6 +310,30 @@ IS configured it wins, because it is the credential every stage will actually
 run with: stage environments are built from a default-deny allowlist that
 carries none of those three variables, so a probe that preferred the ambient one
 would validate an account no stage ever uses.
+
+### Which repository credentials each harness variable may carry
+
+An agentic stage's repository credentials follow the provider of the run's
+repository (#5664, #5737). A credential is exposed to a harness subprocess
+only where the tooling that reads it talks to that provider:
+
+| Harness variable | Carries | Exposed when the run's repository is on |
+|---|---|---|
+| `GH_TOKEN` / `GITHUB_TOKEN` | the repository credential of a declared repository capability (`repo:push`, `provider:*`, `github:*` other than the two command-scoped ones below, `ado:pr:complete`) | GitHub only (a repository reference without a provider counts as GitHub) |
+| `GOOBERS_CRED_GITHUB_ISSUES_APPROVE`, `GOOBERS_CRED_GITHUB_MILESTONES_WRITE` | the command-scoped `github:issues:approve` / `github:milestones:write` credential, read only by `goobers` commands that route to the run's repository | GitHub and Gitea (Gitea resolves `github:*` capabilities against its own repository token); never Azure DevOps |
+| `COPILOT_GITHUB_TOKEN` (and each harness's other model variable) | the `agent:model` credential | every provider — it authenticates the model backend, not the repository |
+| an external MCP server's `credentialRefs` entry with `capability:` | that capability's credential | the provider the capability belongs to: `github:*` on GitHub and Gitea, `ado:*` on Azure DevOps only; provider-neutral capabilities (`repo:push`, `provider:*`, `contents:read`) on every provider |
+| an external MCP server's `credentialRefs` entry with `kind: byo` | the operator's named credential | every provider |
+
+A variable that does not fit is simply not set, and the stage runs without it.
+Agentic stages on Azure DevOps and Gitea commit locally and publish through a
+deterministic stage that authenticates against the routed provider, so they do
+not need `GH_TOKEN` / `GITHUB_TOKEN`. On Gitea, `goobers` commands such as
+`set-milestone` keep reading their command-scoped `GOOBERS_CRED_GITHUB_*`
+variable, which carries the Gitea repository token. An MCP server is different: it declared that it needs
+the credential, so a `capability:` reference that does not fit the run's
+provider fails the stage before the harness starts, and the error names the
+server and the reference. Give such a server a `kind: byo` credential instead.
 
 ### Mixed-harness instances: scoping `agent:model` per harness
 
@@ -411,9 +460,13 @@ requests (Read and write), Checks + Commit statuses (Read-only, for
 
 **Limits.**
 
-- `agent:model` cannot come from an App: "Copilot Requests" is an account
-  permission on a personal fine-grained PAT. Keep the `credentials:` entry (or
-  stored Copilot CLI login) from the section above.
+- This `repos[].auth.kind: github-app` binding is for the **repository**
+  token only. `agent:model` for the Copilot harness needs its own, separate
+  `credentials:` entry with a `githubApp:` block scoped to
+  `copilot_requests:write` (see [Agentic (Copilot-harness)
+  stages](#agentic-copilot-harness-stages-stored-login-or-agentmodel-token)
+  above) — an App installation cannot back both at once with one
+  installation grant.
 - GitHub forbids self-approval: `github:pr:review` on goober-authored PRs
   still needs a second identity (the App counts as one identity).
 - Per-capability `credentials:` overrides still work and still win over the

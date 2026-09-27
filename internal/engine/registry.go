@@ -188,7 +188,8 @@ type StartSpec struct {
 	// the config snapshot whose tree resolves this digest — refusing by name
 	// (retriable) when it holds no such tree — instead of substituting its
 	// current instructions. See docs/reference/engine-parity.md.
-	GooberDigest string
+	GooberDigest     string
+	ConfigGeneration string
 	// HITL pins this run's human-in-the-loop posture (#3883, decision 005
 	// R8). Nil — the value every run started before the protocol existed
 	// carries, and the value an instance that did not opt in carries — means
@@ -270,6 +271,7 @@ func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s St
 		Placements:             s.Placements,
 		RunControls:            s.RunControls,
 		GooberDigest:           s.GooberDigest,
+		ConfigGeneration:       s.ConfigGeneration,
 		HITL:                   s.HITL,
 
 		BacklogQueryAssignedTo:    s.BacklogQueryAssignedTo,

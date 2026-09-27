@@ -415,7 +415,9 @@ func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
 			return true
 		}
 	}
-	return failureclass.IsDependencyTransportDenial(message) || failureclass.IsWindowsSharingViolation(message)
+	return failureclass.IsDependencyTransportDenial(message) ||
+		failureclass.IsWindowsSharingViolation(message) ||
+		failureclass.IsStaleManagedWorktreePath(message)
 }
 
 func containsAll(message string, tokens []string) bool {

@@ -202,7 +202,7 @@ Required capability: `telemetry:read`.
 | `timeoutSeconds` | Positive wall-clock limit for one attempt. |
 | `limits` | Agent/runtime budgets such as duration, token, and cost limits. |
 | `expectedOutputs` | Scalar output or artifact names later states rely on. |
-| `continueOnError` | Journals failure but advances to `next`; failed-stage outputs are discarded. |
+| `continueOnError` | Marks a failure as best-effort, discards its scalar outputs, and advances to `next`; a failed task already advances to a declared next gate without this flag, while preserving its outputs for classification/remediation. |
 | `workspace` | Task-level `repo`, `repo-readonly`, or `scratch`. |
 | `outbox` | Up to 32 workspace-relative files/directories to export durably. |
 | `outboxMirrorPath` | Task override for the local outbox mirror root. |

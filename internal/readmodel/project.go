@@ -108,6 +108,8 @@ type RunRow struct {
 // OperatorFacts are journal-derived facts needed by operator run summaries.
 // They are stored with the run row so bounded list reads never reopen journals.
 type OperatorFacts struct {
+	RetryBackoff          RetryBackoffState
+	RequiredMCP           *RequiredMCPState
 	QueueEligibility      *QueueEligibilityEvidence
 	Activity              StageActivity
 	EngineFallback        *EngineFallback
@@ -123,6 +125,11 @@ type OperatorFacts struct {
 	ReviewFindings        []apiv1.Finding
 	ReviewProblem         string
 	PROpenerStage         string
+	ContinuedFromRunID    string
+	ContinuationTarget    string
+	WorkspaceBranch       string
+	WorkspaceBranchSHA    string
+	InjectedInputs        []journal.InputRef
 }
 
 // StageRow is one projected (run, stage) pair.
@@ -307,6 +314,11 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	row.TriggerKind = string(identity.Trigger.Kind)
 	row.TriggerRef = identity.Trigger.Ref
 	row.StartedAt = identity.StartedAt
+	row.Operator.ContinuedFromRunID = identity.ContinuedFromRunID
+	row.Operator.ContinuationTarget = identity.RequestedTarget
+	row.Operator.WorkspaceBranch = identity.WorkspaceBranch
+	row.Operator.WorkspaceBranchSHA = identity.WorkspaceBranchSHA
+	row.Operator.InjectedInputs = append([]journal.InputRef(nil), identity.Inputs...)
 	if identity.Trigger.Kind == journal.TriggerItem && row.Operator.IssueTitle == "" {
 		row.Operator.IssueNumber = identity.Trigger.Ref
 	}
@@ -345,6 +357,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			continue
 		}
 		row.Operator.Activity = row.Operator.Activity.After(event)
+		row.Operator.RetryBackoff = row.Operator.RetryBackoff.After(event)
 		if event.Stage != "" {
 			seenStages[event.Stage] = struct{}{}
 		}
@@ -363,13 +376,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				row.Operator.LastHeartbeatAt = &at
 			}
 		case journal.EventRunnerAnnotation:
-			row.Operator.EngineFallback = row.Operator.EngineFallback.After(event)
-			if queue, ok := RunnerQueueStatus(event); ok {
-				row.CurrentStage = queue
-			}
-			if suggestion, ok := RunnerResetSuggestion(event); ok {
-				row.CurrentStage = suggestion
-			}
+			row.observeRunnerAnnotation(event)
 		case journal.EventRunResumed:
 			// A resume reopens a terminal run. Clearing finished_at matters:
 			// leaving it would make a live run look finished to every list.
@@ -1156,5 +1163,16 @@ func terminalGatePhase(target string) (journal.RunPhase, bool) {
 		return journal.PhaseEscalated, true
 	default:
 		return "", false
+	}
+}
+
+func (r *RunRow) observeRunnerAnnotation(event journal.Event) {
+	r.Operator.EngineFallback = r.Operator.EngineFallback.After(event)
+	r.Operator.RequiredMCP = r.Operator.RequiredMCP.After(event)
+	if queue, ok := RunnerQueueStatus(event); ok {
+		r.CurrentStage = queue
+	}
+	if suggestion, ok := RunnerResetSuggestion(event); ok {
+		r.CurrentStage = suggestion
 	}
 }

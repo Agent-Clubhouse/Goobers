@@ -103,9 +103,20 @@ func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
 	if !status.SchedulerReady && d.startup != nil {
 		phase, _, since := d.startup.snapshot()
 		if phase != "" {
+			now := time.Now()
+			if d.now != nil {
+				now = d.now()
+			}
+			budget := d.startup.budgetSnapshot(now)
 			status.Startup = &httpapi.StartupStatus{
-				Phase: phase,
-				Since: since,
+				Phase:             phase,
+				Since:             since,
+				WorktreeCount:     budget.Accumulation.Worktrees,
+				RecoveryRunCount:  budget.Accumulation.RecoveryRuns,
+				AccumulationCount: budget.Accumulation.total(),
+				BudgetSeconds:     budget.Budget.Seconds(),
+				BudgetUsedPercent: budget.UsedPercent,
+				BudgetState:       budget.State,
 			}
 		}
 	}

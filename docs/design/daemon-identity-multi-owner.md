@@ -26,7 +26,7 @@ repository … is not accessible to the parent installation"), because the mint 
 correctly down-scoped to a repo the configured installation does not cover.
 
 Found live on a tier-3 cloud instance (v0.2.1, 2026-08-20 cutover) whose repos are
-`Agent-Clubhouse/Goobers` (installation A) and `masra91/Goobers-Site` (installation B) — same App,
+`Agent-Clubhouse/Goobers` (installation A) and `example-user/Goobers-Site` (installation B) — same App,
 same bot login, different minting scopes. The operational workaround (remove `daemonIdentity`
 entirely, fall back to per-repo tokens) works but degrades PR attribution to the branch-prefix
 heuristic; §6 explains why that degradation is the expensive, drift-shaped kind.
@@ -98,7 +98,7 @@ daemonIdentity:
   installations:                      # owner-scoped installation routing (#3415)
     - owner: Agent-Clubhouse
       installationId: 1111111
-    - owner: masra91
+    - owner: example-user
       installationId: 2222222
 ```
 

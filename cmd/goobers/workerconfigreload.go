@@ -90,7 +90,10 @@ func (w *workerSeams) currentSnapshotLocked() (*workerConfigSnapshot, error) {
 // loadConfigSnapshot reads one whole view of the config tree and reports
 // whether the tree held still for the entire read. It never publishes.
 func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) {
-	l := instance.NewLayout(w.root)
+	return w.loadConfigSnapshotAt(instance.NewLayout(w.root))
+}
+
+func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnapshot, bool, error) {
 	digest, err := configDirectoryDigest(l.ConfigDir())
 	if err != nil {
 		return nil, false, fmt.Errorf("worker: digest config directory: %w", err)
@@ -114,6 +117,15 @@ func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) 
 	}
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
+	gaggleDigests := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		gaggle := set.Gaggles[i].Name
+		gaggleDigest, err := deterministicStageConfigDigest(l.ConfigDir(), gaggle)
+		if err != nil {
+			return nil, false, fmt.Errorf("worker: %w", err)
+		}
+		gaggleDigests[gaggle] = gaggleDigest
+	}
 
 	// Capture — not reference — the config-tree content this snapshot's kits
 	// and goober digests are derived from, so it stays answerable after the
@@ -131,7 +143,9 @@ func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) 
 		return nil, false, fmt.Errorf("worker: digest config directory: %w", err)
 	}
 	snapshot := &workerConfigSnapshot{
+		configDir:     l.ConfigDir(),
 		digest:        digest,
+		gaggleDigests: gaggleDigests,
 		cfg:           cfg,
 		set:           set,
 		instructions:  instructions,

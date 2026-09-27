@@ -2,6 +2,8 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -44,38 +46,22 @@ func (p *ADOProvider) getPullRequestDetail(ctx context.Context, repo RepositoryR
 	return out, nil
 }
 
-// branchPolicyConfigurations fetches every policy configuration for repo's
-// project. DetectMergePolicy (CONF-3 #2076) filters the result client-side
-// to the scopes that actually apply to a specific branch.
-func (p *ADOProvider) branchPolicyConfigurations(ctx context.Context, repo RepositoryRef) ([]adoPolicyConfiguration, error) {
-	endpoint, err := joinURL(p.BaseURL, p.Organization, p.project(repo), "_apis", "policy", "configurations")
-	if err != nil {
-		return nil, err
-	}
-	endpoint, err = addQuery(endpoint, url.Values{"api-version": []string{"7.1"}})
-	if err != nil {
-		return nil, err
-	}
-	var out adoPolicyConfigurationsResponse
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
-		return nil, err
-	}
-	return out.Value, nil
-}
-
-// DetectMergePolicy reports req.Branch's active merge policy (CONF-3
-// #2076, design doc §4: pr.landing.detect-policy ≙ branch policies on the
-// target ref) from ADO's policy configurations: any enabled, non-deleted,
-// blocking policy scoped to req.Branch means completion must go through
-// auto-complete (pr.landing.enqueue) so ADO's own policy-evaluation queue
-// gates the merge; no such policy means an immediate completion (pr.merge)
-// is safe. This mirrors GitHub's DetectMergePolicy (branch rules ->
-// merge_queue rule present) with ADO's own policy model substituted for
-// rulesets — ADO has no literal merge-queue concept, so "policy-gated"
-// stands in for it. A policy config with an empty scope list (no
-// repository/ref restriction at all) is treated as not applying to a
-// specific branch, matching how ADO's UI always requires a scope when a
-// branch policy is created. A read, so it does not emit a mutation event.
+// DetectMergePolicy reports whether a pull request into req.Branch must land
+// through auto-complete (MergePolicyMergeQueue, pr.landing.enqueue) or may be
+// completed directly (MergePolicyDirect, pr.merge) — CONF-3 #2076, and design
+// ado-parity-dsl-2-0.md §5.1 (ADO-N19). ADO has no literal merge queue: an
+// armed auto-complete lets ADO's own policy engine gate the landing.
+//
+// When req.PullID is set, that pull request's policy evaluations decide: they
+// already apply prefix scopes, path filters and lazy evaluation, so any
+// enabled, blocking evaluation that is not approved or notApplicable means
+// auto-complete, and otherwise the pull request is completed directly with a
+// head pin. Without a PullID, or when the pull request has no blocking
+// evaluation yet (a policy added after it was opened may be evaluated late),
+// the project's policy configurations are scanned across every page: an
+// enabled, blocking, non-deleted configuration whose scope covers the target
+// ref (Exact by equality, Prefix by ref folder, an empty scope repo-wide)
+// means auto-complete. A read, so it does not emit a mutation event.
 func (p *ADOProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicyRequest) (RepoMergePolicyResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return RepoMergePolicyResult{}, err
@@ -83,23 +69,22 @@ func (p *ADOProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicy
 	if req.Branch == "" {
 		return RepoMergePolicyResult{}, fmt.Errorf("branch is required")
 	}
+	if req.PullID != "" {
+		policy, decided, err := p.mergePolicyFromEvaluations(ctx, req.Repository, req.PullID)
+		if err != nil {
+			return RepoMergePolicyResult{}, err
+		}
+		if decided {
+			return RepoMergePolicyResult{Policy: policy}, nil
+		}
+	}
 	configs, err := p.branchPolicyConfigurations(ctx, req.Repository)
 	if err != nil {
 		return RepoMergePolicyResult{}, err
 	}
 	targetRef := "refs/heads/" + strings.TrimPrefix(req.Branch, "refs/heads/")
-	repoID := req.Repository.ID
 	for _, c := range configs {
-		if !c.IsEnabled || !c.IsBlocking || c.IsDeleted {
-			continue
-		}
-		for _, scope := range c.Settings.Scope {
-			if scope.RepositoryID != "" && repoID != "" && scope.RepositoryID != repoID {
-				continue
-			}
-			if scope.RefName != "" && scope.RefName != targetRef {
-				continue
-			}
+		if adoConfigurationGatesRef(c, req.Repository.ID, targetRef) {
 			return RepoMergePolicyResult{Policy: MergePolicyMergeQueue}, nil
 		}
 	}
@@ -141,21 +126,30 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	if err != nil {
 		return EnqueuePullRequestResult{}, err
 	}
-	// lastMergeSourceCommit is read-only on ADO's PR-update endpoint (it rejects
-	// any attempt to set it), so the head pin is enforced by comparing the freshly
-	// fetched detail — a fetch→compare→PATCH window ADO's API forces, unlike
-	// GitHub's server-enforced expected_head_sha. An empty commit id means ADO has
-	// not computed the merge preview yet (mergeStatus "notSet"): there is nothing
-	// to compare against, and auto-complete re-evaluates the source at completion
-	// time, so the pin is asserted only once ADO has resolved the source commit.
-	if req.ExpectedHeadSHA != "" && detail.LastMergeSourceCommit.CommitID != "" &&
-		!strings.EqualFold(detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA) {
-		return EnqueuePullRequestResult{}, fmt.Errorf("pull request head moved to %s, expected %s", detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA)
+	// Auto-complete cannot be pinned to a head: ADO rejects lastMergeSourceCommit
+	// on an auto-complete PATCH with 400 (live probe F6, design
+	// ado-parity-dsl-2-0.md §5), so the pin here is a client-side compare of the
+	// freshly fetched detail. An empty commit id means ADO has not computed the
+	// merge preview yet (mergeStatus "notSet"): there is nothing to compare
+	// against, and auto-complete re-evaluates the source at completion time, so
+	// the pin is asserted only once ADO has resolved the source commit.
+	if err := adoCheckFetchedHead(detail, req.ExpectedHeadSHA); err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	// autoCompleteSetBy must name the caller: ADO accepts only the
+	// credential's own identity (or omitting the field) and returns 400 for
+	// any other id (live probe F3, design ado-parity-dsl-2-0.md §5) — the PR
+	// creator's id (N5's earlier assumption) is wrong whenever some other
+	// identity opened the pull request.
+	identity, err := p.AuthenticatedIdentity(ctx)
+	if err != nil {
+		return EnqueuePullRequestResult{}, fmt.Errorf("ado: resolve authenticated identity for auto-complete: %w", err)
 	}
 	body := map[string]interface{}{
-		"autoCompleteSetBy": map[string]string{"id": detail.CreatedBy.ID},
+		"autoCompleteSetBy": map[string]string{"id": identity.ID},
 		"completionOptions": adoCompletionOptions{
-			MergeStrategy: adoMergeStrategy(req.MergeMethod),
+			MergeStrategy:      adoMergeStrategy(req.MergeMethod),
+			DeleteSourceBranch: true,
 		},
 	}
 	repositoryAPIURL, err := p.repoURL(req.Repository)
@@ -175,7 +169,7 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	}
 	// ADO has no queue-entry ID. Record the acknowledged auto-complete
 	// mutation, but do not invent a GitHub-style admission or merge receipt.
-	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == detail.CreatedBy.ID {
+	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == identity.ID {
 		if err := recordLandingReceipt(ctx, p.mutationRecorder, ExternalRef{
 			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "enqueue", LandingIntent: intent,
 		}); err != nil {
@@ -207,17 +201,21 @@ func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueu
 	if err != nil {
 		return PollMergeQueueEntryResult{}, err
 	}
-	labels := make([]string, 0, len(detail.Labels))
-	for _, l := range detail.Labels {
-		labels = append(labels, l.Name)
-	}
+	labels := adoLabelNames(detail.Labels)
 	switch {
 	case strings.EqualFold(detail.Status, "completed"):
 		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: detail.LastMergeCommit.CommitID, Labels: labels}, nil
 	case strings.EqualFold(detail.Status, "abandoned"):
 		return PollMergeQueueEntryResult{State: MergeQueueEntryEvicted, Labels: labels}, nil
 	case detail.AutoCompleteSetBy != nil:
-		return PollMergeQueueEntryResult{State: MergeQueueEntryPending, Labels: labels}, nil
+		// Armed and still active: report whether only a human approval is
+		// holding it (design ado-parity-dsl-2-0.md §5.1, live probe F4), so
+		// merge-queue-poll can say so rather than report a bare pending.
+		awaitingHuman, err := p.autoCompleteAwaitingHuman(ctx, req.Repository, req.PullID, detail)
+		if err != nil {
+			return PollMergeQueueEntryResult{}, err
+		}
+		return PollMergeQueueEntryResult{State: MergeQueueEntryPending, Labels: labels, AwaitingHuman: awaitingHuman}, nil
 	default:
 		// Active, no auto-complete armed: ADO cleared it (policy
 		// rejection, or a human/other automation cleared it manually) —
@@ -287,24 +285,13 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
-	// lastMergeSourceCommit is read-only on ADO's PR-update endpoint (it rejects
-	// any attempt to set it), so the head pin is enforced by comparing the freshly
-	// fetched detail — a fetch→compare→PATCH window ADO's API forces, unlike
-	// GitHub's server-enforced expected_head_sha. An empty commit id means ADO has
-	// not computed the merge preview yet (mergeStatus "notSet"): there is nothing
-	// to compare against, so the pin is asserted only once ADO has resolved the
-	// source commit (a residual gap on the direct-merge path tracked separately).
-	if req.ExpectedHeadSHA != "" && detail.LastMergeSourceCommit.CommitID != "" &&
-		!strings.EqualFold(detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA) {
-		return MergePullRequestResult{}, fmt.Errorf("pull request head moved to %s, expected %s", detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA)
+	// The client-side compare is only an early exit. The completion PATCH
+	// carries the head pin itself (adoCompletionBody), and ADO refuses a stale
+	// pin server-side with 409 TF401192 (live probe F6).
+	if err := adoCheckFetchedHead(detail, req.ExpectedHeadSHA); err != nil {
+		return MergePullRequestResult{}, err
 	}
-	body := map[string]interface{}{
-		"status": "completed",
-		"completionOptions": adoCompletionOptions{
-			MergeStrategy:      adoMergeStrategy(req.MergeMethod),
-			MergeCommitMessage: req.CommitMessage,
-		},
-	}
+	body := adoCompletionBody(req)
 	repositoryAPIURL, err := p.repoURL(req.Repository)
 	if err != nil {
 		return MergePullRequestResult{}, err
@@ -315,7 +302,7 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	}
 	var out adoPullRequestDetail
 	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
-		return MergePullRequestResult{}, err
+		return MergePullRequestResult{}, adoCompletionError(err, req)
 	}
 	final, err := p.awaitMergeCompletion(ctx, req.Repository, req.PullID, out)
 	if err != nil {
@@ -423,11 +410,17 @@ type adoPolicyConfiguration struct {
 	IsBlocking bool `json:"isBlocking"`
 	IsDeleted  bool `json:"isDeleted"`
 	Settings   struct {
-		Scope []struct {
-			RepositoryID string `json:"repositoryId"`
-			RefName      string `json:"refName"`
-		} `json:"scope"`
+		Scope []adoPolicyScope `json:"scope"`
 	} `json:"settings"`
+}
+
+// adoPolicyScope is one settings.scope entry of a policy configuration.
+// MatchKind is "Exact" (the default), "Prefix" (a ref folder) or
+// "DefaultBranch"; an empty RefName covers every ref of the repository.
+type adoPolicyScope struct {
+	RepositoryID string `json:"repositoryId"`
+	RefName      string `json:"refName"`
+	MatchKind    string `json:"matchKind"`
 }
 
 type adoPolicyConfigurationsResponse struct {
@@ -446,4 +439,67 @@ type adoCommitDiffsResponse struct {
 			IsFolder bool   `json:"isFolder"`
 		} `json:"item"`
 	} `json:"changes"`
+}
+
+// adoCheckFetchedHead compares the freshly fetched source commit against the
+// caller's pinned head. An empty pin or an unresolved source commit (ADO has
+// not computed the merge preview yet) has nothing to compare.
+func adoCheckFetchedHead(detail adoPullRequestDetail, expected string) error {
+	actual := detail.LastMergeSourceCommit.CommitID
+	if expected == "" || actual == "" || strings.EqualFold(actual, expected) {
+		return nil
+	}
+	return PullRequestHeadMovedError{Expected: expected, Actual: actual}
+}
+
+// adoCompletionBody builds the direct-completion PATCH. When the caller pins
+// a head, lastMergeSourceCommit carries it so ADO enforces the pin at
+// completion time (live probe F6). The body never asks ADO to skip branch
+// policies: a policy refusal is reported, never overridden.
+func adoCompletionBody(req MergePullRequestRequest) map[string]interface{} {
+	body := map[string]interface{}{
+		"status": "completed",
+		"completionOptions": adoCompletionOptions{
+			MergeStrategy:      adoMergeStrategy(req.MergeMethod),
+			DeleteSourceBranch: true,
+			MergeCommitMessage: req.CommitMessage,
+		},
+	}
+	if req.ExpectedHeadSHA != "" {
+		body["lastMergeSourceCommit"] = adoCommitRef{CommitID: req.ExpectedHeadSHA}
+	}
+	return body
+}
+
+// adoCompletionError maps ADO's completion refusals onto typed errors
+// (design ado-parity-dsl-2-0.md §5, ADO-N9): 409 TF401192 means the pinned
+// head is stale, and 403 GitPullRequestUpdateRejectedByPolicyException means
+// a required branch policy is not met. Neither is retried, and the policy
+// refusal is deliberately not left as a raw 403, which would classify as an
+// authentication failure. Any other error is returned unchanged.
+func adoCompletionError(err error, req MergePullRequestRequest) error {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) {
+		return err
+	}
+	switch {
+	case responseErr.statusCode == http.StatusConflict && strings.Contains(responseErr.body, "TF401192"):
+		return PullRequestHeadMovedError{Expected: req.ExpectedHeadSHA}
+	case responseErr.statusCode == http.StatusForbidden &&
+		strings.Contains(responseErr.body, "GitPullRequestUpdateRejectedByPolicyException"):
+		return PullRequestPolicyNotMetError{PullID: req.PullID, Message: adoErrorMessage(responseErr.body)}
+	}
+	return err
+}
+
+// adoErrorMessage extracts the human-readable "message" field from an ADO
+// error body, or "" when the body is not the usual JSON error shape.
+func adoErrorMessage(body string) string {
+	var parsed struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(body), &parsed) != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Message)
 }

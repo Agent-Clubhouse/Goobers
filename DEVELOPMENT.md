@@ -10,7 +10,7 @@ in the [README](README.md).
 | --- | --- | --- |
 | `api/` | Definition types, invocation/result/verdict envelopes, and YAML schema | Active |
 | `cmd/goobers` | Product binary: `init`, `validate`, `up`, `run`, `status`, and `trace` | Active |
-| `providers/` | Backlog and repository providers for GitHub and Azure DevOps | Active |
+| `providers/` | Backlog and repository providers for GitHub, Azure DevOps, and Gitea (experimental) | Active |
 | `internal/` | Engine, journal, scheduler, telemetry, and application packages | Active |
 | `portal/` | TypeScript and React observability portal | Active |
 | `reference-workflows/` | Canonical workflows used to operate Goobers against this repository | Active |

@@ -22,8 +22,8 @@
 > PATs; otherwise isolated). The concrete repos/accounts live in the operator's private
 > instance config — this doc is the generic design.
 >
-> **2026-07-27 addendum:** a live grounding walkthrough (the `clubhouse-site` gaggle reading
-> `Clubhouse`/`Goobers` via `additionalRepos`) found that MGV-10 (#1285, shipped) never
+> **2026-07-27 addendum:** a live grounding walkthrough (the `example-gaggle` gaggle reading
+> `example-repo`/`Goobers` via `additionalRepos`) found that MGV-10 (#1285, shipped) never
 > actually resolved OQ-1 below — it built read-only *capability routing* on top of the
 > existing single-token-per-repo model instead of giving OQ-1's DSL surface a real answer.
 > §4 G6 and the resolved OQ-1 below are that answer. See §5 for the new MGV-13..19 work
@@ -83,7 +83,7 @@ backwards-compatible:
   context) and one (or few) it *writes*. The scope key carries the capability, so a repo
   entry can be granted a read-only token (Contents:read) while another carries a write token
   (Contents/PR/Issues:write). Two concrete cases the design must serve (§4.5):
-  - **Site gaggle:** the site repo is read-write (curated content); the Goobers and Clubhouse
+  - **Site gaggle:** the site repo is read-write (curated content); the Goobers and example-repo
     repos are read-only reference sources.
   - **`docs-updater` (#472):** N read-only reference/source repos feed a docs-drift signal,
     and the output *sink* is a single per-repo choice — in-repo, a **separate docs repo**
@@ -189,15 +189,15 @@ regression is caught even before the OS rungs land.
 ### G6 — Credential decoupling: tokens as first-class objects, not repo-owned (resolves OQ-1)
 
 **The gap.** MGV-10 (#1285) gave `additionalRepos` consumers a *read-only capability*, not a
-*read-only credential*. Concretely: `clubhouse-site`'s `additionalRepos: [Clubhouse, Goobers]`
+*read-only credential*. Concretely: `example-gaggle`'s `additionalRepos: [example-repo, Goobers]`
 resolves its checkout token by `(owner, name)` lookup against those repos' **own** `RepoRef`
-entries — the exact same `clubhouse_pat` / `dev5-github-token` their owning gaggles use to
+entries — the exact same `example_pat` / `example-token` their owning gaggles use to
 push and open PRs. `AdditionalReadGrants` (`internal/credentials/scoping.go`) only ever
 *emits* a `contents:read` capability grant for that consumer, never a write grant — but the
 `Ref` it hands out points at the same fully-write-scoped secret. Read-only is enforced
 **by construction in the routing code**, not because the credential material itself is
 narrower. A leaked env var, log line, or workspace file from the site gaggle is a live,
-fully write-capable token to Clubhouse or Goobers, not a read-only one. This is a real
+fully write-capable token to example-repo or Goobers, not a read-only one. This is a real
 defense-in-depth gap, not a hypothetical: it's the same class of blast-radius problem TBH-1
 (`docs/design/trust-boundary-hardening.md`) exists to close for daemon-initiated mutations,
 just on the credential-provisioning side instead.
@@ -276,7 +276,7 @@ conformance-test extension, docs) are **low** and independently shippable. See �
 | MGV-16 | #1797 | G6 — generalize `internal/githubapp` down-scoped token minting as a provisionable read-only credential source (shares plumbing with UNOP-7/#1780) | Low (additive, net-new capability) | **approvable** once MGV-13 lands |
 | MGV-17 | #1798 | G6 — `goobers validate`/`lint` migration diagnostic: warn (not yet fail) on `additionalRepos` entries lacking an explicit credential, ahead of MGV-14 | Low (additive, non-disruptive) | **approvable** |
 | MGV-18 | #1799 | G6 — isolation-conformance test extension (builds on MGV-9): real distinct read-credential bytes, no derivable write grant even adversarially, leaked read-credential can't authenticate a push | Low (test-only) | **approvable** |
-| MGV-19 | #1800 | G6 — instance-config authoring docs for the new credential model, worked `clubhouse-site` example | Low (docs-only) | **approvable** |
+| MGV-19 | #1800 | G6 — instance-config authoring docs for the new credential model, worked `example-gaggle` example | Low (docs-only) | **approvable** |
 
 > **Isolation debt (not work items in this sprint, tracked as outstanding security posture, §4.5 G5):** OS-native sandbox rungs #165/#166/#167 (#35), and per-gaggle workload identity + store secret ACLs #685 (V2). MGV-9 proves *scoping*; these enforce it.
 >

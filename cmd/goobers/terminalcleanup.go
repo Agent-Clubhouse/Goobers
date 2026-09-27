@@ -28,8 +28,8 @@ func finalizeTerminalRunForRecovery(l instance.Layout, log *journal.InstanceLog,
 // claims.json and the provider cannot disagree for a full backlog-curation
 // interval after a run that terminates without reaching issue-close-out — the
 // `no-work` outcome being the case that makes that a certainty rather than an
-// edge case. A nil release (repo-less instance, non-GitHub provider) is exactly
-// finalizeTerminalRun.
+// edge case. A nil release (repo-less instance or unsupported provider) is
+// exactly finalizeTerminalRun.
 func finalizeTerminalRunWithClaimMarkers(
 	l instance.Layout,
 	log *journal.InstanceLog,
@@ -54,6 +54,14 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 		return err
 	}
 	results, worktreeErr := wtMgr.FinalizeRun(context.Background(), runID)
+	// After existing worktrees are finalized, and before renewal: a run whose
+	// worktrees were all removed while it was still nonterminal has its only
+	// implementation on the mirror's run branch, and nothing but this capture
+	// publishes it. Deferring the failure keeps the run active for a retry
+	// exactly as a refused terminal handoff does.
+	if captureErr := captureTerminalRunBranch(l, wtMgr, runID); captureErr != nil {
+		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: capture terminal run branch for %s: %w", worktree.ErrCleanupDeferred, runID, captureErr))
+	}
 	if renewErr := renewTerminalRecovery(l, runID); renewErr != nil {
 		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: renew terminal recovery for %s: %w", worktree.ErrCleanupDeferred, runID, renewErr))
 	}

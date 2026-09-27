@@ -280,22 +280,7 @@ func init() {
 				"goobers netpol-render --out ./deploy/netpol --write-baseline",
 				"goobers netpol-render --out ./deploy/netpol --check",
 			),
-		groupCommand(
-			"config",
-			runConfig,
-			subcommand("config diff", "diff", apicontract.ActionConfigTime, runConfigDiff).
-				withHelp("compare active workflows with canonical definitions", configDiffHelp).
-				withExamples("goobers config diff ./instance", "goobers config diff --against ./reference-workflows ./instance"),
-			subcommand("config materialize", "materialize", apicontract.ActionConfigTime, runConfigMaterialize).
-				withHelp("apply the recorded checked-in source to the runtime instance", configMaterializeHelp).
-				withExamples("goobers config materialize", "goobers config materialize ./instance"),
-			subcommand("config show", "show", apicontract.ActionReadOnlyNavigation, runConfigShow).
-				withHelp("render the effective instance config (secrets redacted)", configShowHelp).
-				withExamples("goobers config show", "goobers config show --json"),
-		).
-			withSynopsis(synopsisByID["config"]).
-			withHelp("inspect, materialize, and compare instance configuration", configHelp).
-			withExamples("goobers config show", "goobers config materialize ./instance", "goobers config diff ./instance"),
+		configCLICommand(synopsisByID["config"]),
 		groupCommand(
 			"speech",
 			runSpeech,
@@ -313,17 +298,17 @@ func init() {
 			"fleet",
 			runFleet,
 			subcommand("fleet join", "join", apicontract.ActionConfigTime, runFleetJoin).
-				withHelp("discover and enroll this instance with a Fleet service", fleetJoinHelp).
+				withHelp("discover and enroll this instance with a Fleet service (experimental; superseded)", fleetJoinHelp).
 				withExamples("goobers fleet join --url https://fleet.example", "goobers fleet join --url https://fleet.example --enrollment-token-file ./grant.txt --grant-local-admin"),
 			subcommand("fleet status", "status", apicontract.ActionReadOnlyNavigation, runFleetStatus).
-				withHelp("show durable Fleet registration and connection state", fleetStatusHelp).
+				withHelp("show durable Fleet registration and connection state (experimental; superseded)", fleetStatusHelp).
 				withExamples("goobers fleet status", "goobers fleet status --json"),
 			subcommand("fleet leave", "leave", apicontract.ActionMaintenance, runFleetLeave).
-				withHelp("remove this instance's Fleet association and protected secrets", fleetLeaveHelp).
+				withHelp("remove this instance's Fleet association and protected secrets (experimental; superseded)", fleetLeaveHelp).
 				withExamples("goobers fleet leave"),
 		).
 			withSynopsis(synopsisByID["fleet"]).
-			withHelp("associate this instance with a Fleet service", fleetHelp).
+			withHelp("associate this instance with a Fleet service (experimental; superseded)", fleetHelp).
 			withExamples("goobers fleet join --url https://fleet.example", "goobers fleet status", "goobers fleet leave"),
 		coreCommand("up", apicontract.ActionDaemonLifecycle, runUp).
 			withSynopsis(synopsisByID["up"]).
@@ -344,7 +329,7 @@ func init() {
 			// actually accept (#4887). It previously pinned v0.1.0, which
 			// every build since has been newer than, so the shipped example
 			// failed verbatim for every reader who ran it.
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.0"),
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.1"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",

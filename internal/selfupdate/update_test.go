@@ -58,7 +58,11 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 			smokes := 0
 			runner := commandFunc(func(_ context.Context, _ string, env []string, name string, args ...string) ([]byte, error) {
 				if name == current {
-					return []byte(`{"version":"v1","commit":"old"}`), nil
+					currentVersion := "v1"
+					if policy == PolicyOnRelease {
+						currentVersion = "dev"
+					}
+					return []byte(`{"version":"` + currentVersion + `","commit":"old"}`), nil
 				}
 				if name == "git" && args[0] == "clone" {
 					if args[len(args)-2] != "https://github.com/acme/goobers.git" {
@@ -109,6 +113,9 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 			if !result.UpdateRequested || request.Policy != policy || request.Status != "requested" || smokes != 3 {
 				t.Fatalf("result = %+v, request = %+v, smokes = %d", result, request, smokes)
 			}
+			if got, want := result.CurrentVersionUnparseable, policy == PolicyOnRelease; got != want {
+				t.Fatalf("result.CurrentVersionUnparseable = %t, want %t", got, want)
+			}
 		})
 	}
 }
@@ -155,6 +162,37 @@ func TestPrepareNoOpsWhenReleaseNotNewer(t *testing.T) {
 	}
 	if _, err := os.Stat(requestPath(root)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("update request exists after no-op: %v", err)
+	}
+}
+
+func TestCompareReleaseVersionRecoversUnparseableCurrentBuilds(t *testing.T) {
+	t.Parallel()
+	for _, current := range []string{"dev", "portal-v0.2.3-109-g5ab654b70"} {
+		t.Run(current, func(t *testing.T) {
+			newer, unparseable, err := compareReleaseVersion(current, "v0.4.1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !newer || !unparseable {
+				t.Fatalf("compareReleaseVersion(%q, v0.4.1) = (%t, %t), want (true, true)", current, newer, unparseable)
+			}
+		})
+	}
+}
+
+func TestCompareReleaseVersionPreservesOrderingAndCandidateValidation(t *testing.T) {
+	t.Parallel()
+	newer, unparseable, err := compareReleaseVersion("v0.4.1", "v0.4.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newer || unparseable {
+		t.Fatalf("older release comparison = (%t, %t), want (false, false)", newer, unparseable)
+	}
+
+	if _, _, err := compareReleaseVersion("dev", "portal-v0.2.3"); err == nil ||
+		!strings.Contains(err.Error(), "parse candidate version") {
+		t.Fatalf("invalid candidate error = %v, want candidate parse failure", err)
 	}
 }
 

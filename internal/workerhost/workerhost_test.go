@@ -12,7 +12,11 @@ import (
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
+
+	"github.com/goobers/goobers/internal/attemptidentity"
 )
 
 type fakeWorker struct {
@@ -87,6 +91,26 @@ func TestNewRequiresTaskQueues(t *testing.T) {
 // one worker per named queue, all under the versioned identity and the
 // configured drain window, stopped on context cancellation, clean exit when
 // nothing was in flight.
+func TestWorkerOptionsUseBuildIDVersioning(t *testing.T) {
+	h, err := New(Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: "v9.9.9-test"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	opts := h.workerOptions()
+	if !opts.DeploymentOptions.UseVersioning {
+		t.Fatal("DeploymentOptions.UseVersioning = false, want true")
+	}
+	if opts.DeploymentOptions.Version.DeploymentName != "goobers" {
+		t.Fatalf("DeploymentOptions.Version.DeploymentName = %q, want %q", opts.DeploymentOptions.Version.DeploymentName, "goobers")
+	}
+	if opts.DeploymentOptions.Version.BuildID != "v9.9.9-test" {
+		t.Fatalf("DeploymentOptions.Version.BuildID = %q, want %q", opts.DeploymentOptions.Version.BuildID, "v9.9.9-test")
+	}
+	if opts.DeploymentOptions.DefaultVersioningBehavior != workflow.VersioningBehaviorPinned {
+		t.Fatalf("DefaultVersioningBehavior = %v, want %v", opts.DeploymentOptions.DefaultVersioningBehavior, workflow.VersioningBehaviorPinned)
+	}
+}
+
 func TestRunServesEveryQueueAndDrains(t *testing.T) {
 	fleet := &fakeFleet{}
 	h := newTestHost(t, Config{
@@ -131,12 +155,85 @@ func TestRunServesEveryQueueAndDrains(t *testing.T) {
 		if !strings.Contains(w.opts.Identity, fmt.Sprintf("#%d", os.Getpid())) {
 			t.Errorf("identity %q does not carry the pid", w.opts.Identity)
 		}
+		if !w.opts.DeploymentOptions.UseVersioning {
+			t.Errorf("DeploymentOptions.UseVersioning = false, want true")
+		}
+		if w.opts.DeploymentOptions.Version.DeploymentName != "goobers" {
+			t.Errorf("DeploymentOptions.Version.DeploymentName = %q, want goobers", w.opts.DeploymentOptions.Version.DeploymentName)
+		}
+		if w.opts.DeploymentOptions.Version.BuildID != "v9.9.9-test" {
+			t.Errorf("DeploymentOptions.Version.BuildID = %q, want configured build version", w.opts.DeploymentOptions.Version.BuildID)
+		}
+		if w.opts.DeploymentOptions.DefaultVersioningBehavior != workflow.VersioningBehaviorPinned {
+			t.Errorf("DefaultVersioningBehavior = %v, want %v", w.opts.DeploymentOptions.DefaultVersioningBehavior, workflow.VersioningBehaviorPinned)
+		}
 		if w.opts.WorkerStopTimeout != 7*time.Second {
 			t.Errorf("WorkerStopTimeout = %v, want the drain timeout", w.opts.WorkerStopTimeout)
 		}
 		if len(w.opts.Interceptors) != 1 {
 			t.Errorf("interceptors = %d, want the in-flight tracker", len(w.opts.Interceptors))
 		}
+	}
+}
+
+func TestWorkerOptionsSkipVersioningWhenBuildVersionUnset(t *testing.T) {
+	h, err := New(Config{TaskQueues: []string{"goobers-engine"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	opts := h.workerOptions()
+	if opts.DeploymentOptions.UseVersioning {
+		t.Fatal("DeploymentOptions.UseVersioning = true, want false when no build version is configured")
+	}
+}
+
+func TestRunSetsAndRestoresPlacementEnv(t *testing.T) {
+	originalBuild, hadBuild := os.LookupEnv(placementBuildEnv)
+	originalWorker, hadWorker := os.LookupEnv(placementWorkerEnv)
+	defer func() {
+		if hadBuild {
+			_ = os.Setenv(placementBuildEnv, originalBuild)
+		} else {
+			_ = os.Unsetenv(placementBuildEnv)
+		}
+		if hadWorker {
+			_ = os.Setenv(placementWorkerEnv, originalWorker)
+		} else {
+			_ = os.Unsetenv(placementWorkerEnv)
+		}
+	}()
+
+	fleet := &fakeFleet{}
+	h := newTestHost(t, Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: "v9.9.9-test"}, fleet)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx) }()
+
+	waitFor(t, func() bool {
+		fleet.mu.Lock()
+		defer fleet.mu.Unlock()
+		return len(fleet.workers) == 1 && fleet.workers[0].isStarted()
+	})
+
+	if got := os.Getenv(placementBuildEnv); got != "v9.9.9-test" {
+		t.Fatalf("GOOBERS_RUNNER_BUILD = %q, want %q", got, "v9.9.9-test")
+	}
+	wantWorker := Identity("v9.9.9-test")
+	if got := os.Getenv(placementWorkerEnv); got != wantWorker {
+		t.Fatalf("GOOBERS_RUNNER_WORKER = %q, want %q", got, wantWorker)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := os.Getenv(placementBuildEnv); got != originalBuild {
+		t.Fatalf("restored GOOBERS_RUNNER_BUILD = %q, want %q", got, originalBuild)
+	}
+	if got := os.Getenv(placementWorkerEnv); got != originalWorker {
+		t.Fatalf("restored GOOBERS_RUNNER_WORKER = %q, want %q", got, originalWorker)
 	}
 }
 
@@ -199,6 +296,49 @@ type fakeNextActivity struct {
 	t       *testing.T
 }
 
+type identityNextActivity struct {
+	interceptor.ActivityInboundInterceptorBase
+	t *testing.T
+}
+
+type failingActivity struct {
+	interceptor.ActivityInboundInterceptorBase
+}
+
+type metadataFailingActivity struct {
+	interceptor.ActivityInboundInterceptorBase
+}
+
+type cancelingActivity struct {
+	interceptor.ActivityInboundInterceptorBase
+}
+
+func (f *failingActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
+	return nil, errors.New("attempt failed")
+}
+
+func (f *cancelingActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
+	return nil, temporal.NewCanceledError("activity canceled")
+}
+
+func (f *metadataFailingActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
+	return nil, temporal.NewApplicationErrorWithOptions("dispatch failed", "InfrastructureFailure", temporal.ApplicationErrorOptions{
+		NextRetryDelay: time.Minute,
+		Details:        []interface{}{time.Now().Add(time.Hour)},
+	})
+}
+
+func (f *identityNextActivity) ExecuteActivity(ctx context.Context, _ *interceptor.ExecuteActivityInput) (interface{}, error) {
+	identity, ok := attemptidentity.FromContext(ctx)
+	if !ok {
+		f.t.Fatal("activity context has no execution identity")
+	}
+	if identity.BuildID != "build-7" || identity.WorkerIdentity != "worker-7" {
+		f.t.Fatalf("identity = %+v, want build-7/worker-7", identity)
+	}
+	return "result", nil
+}
+
 func (f *fakeNextActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
 	if got := f.tracker.inFlight(); got != 1 {
 		f.t.Errorf("in-flight during execution = %d, want 1", got)
@@ -215,6 +355,82 @@ func TestActivityTrackerCountsExecutionWindow(t *testing.T) {
 	}
 	if got := tracker.inFlight(); got != 0 {
 		t.Fatalf("in-flight after completion = %d, want 0", got)
+	}
+}
+
+func TestActivityTrackerPropagatesAttemptIdentity(t *testing.T) {
+	tracker := &activityTracker{buildID: "build-7", worker: "worker-7"}
+	next := &identityNextActivity{t: t}
+	inbound := tracker.InterceptActivity(context.Background(), next)
+	got, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{})
+	if err != nil {
+		t.Fatalf("ExecuteActivity: %v", err)
+	}
+	if got != "result" {
+		t.Fatalf("result = %v, want result", got)
+	}
+}
+
+func TestActivityTrackerAttachesIdentityToFailedAttempt(t *testing.T) {
+	tracker := &activityTracker{buildID: "build-8", worker: "worker-8"}
+	inbound := tracker.InterceptActivity(context.Background(), &failingActivity{})
+	_, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{})
+	if err == nil {
+		t.Fatal("ExecuteActivity succeeded, want failure")
+	}
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("error = %T, want Temporal application error", err)
+	}
+	var identity attemptidentity.Identity
+	if decodeErr := appErr.Details(&identity); decodeErr != nil {
+		t.Fatalf("decode identity: %v", decodeErr)
+	}
+	if identity.BuildID != "build-8" || identity.WorkerIdentity != "worker-8" {
+		t.Fatalf("identity = %+v, want build-8/worker-8", identity)
+	}
+}
+
+func TestActivityTrackerPreservesCancellation(t *testing.T) {
+	tracker := &activityTracker{buildID: "build-cancel", worker: "worker-cancel"}
+	inbound := tracker.InterceptActivity(context.Background(), &cancelingActivity{})
+	_, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{})
+	if err == nil {
+		t.Fatal("ExecuteActivity succeeded, want cancellation")
+	}
+	if !temporal.IsCanceledError(err) {
+		t.Fatalf("error = %T, want a canceled Temporal error", err)
+	}
+}
+
+func TestActivityTrackerPreservesFailedAttemptMetadata(t *testing.T) {
+	tracker := &activityTracker{buildID: "build-9", worker: "worker-9"}
+	inbound := tracker.InterceptActivity(context.Background(), &metadataFailingActivity{})
+	_, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{})
+	if err == nil {
+		t.Fatal("ExecuteActivity succeeded, want failure")
+	}
+	var wrapped *temporal.ApplicationError
+	if !errors.As(err, &wrapped) {
+		t.Fatalf("error = %T, want Temporal application error", err)
+	}
+	var identity attemptidentity.Identity
+	if decodeErr := wrapped.Details(&identity); decodeErr != nil {
+		t.Fatalf("decode identity: %v", decodeErr)
+	}
+	if identity.BuildID != "build-9" || identity.WorkerIdentity != "worker-9" {
+		t.Fatalf("identity = %+v, want build-9/worker-9", identity)
+	}
+	var original *temporal.ApplicationError
+	if !errors.As(errors.Unwrap(wrapped), &original) {
+		t.Fatal("wrapped error lost original application error")
+	}
+	if original.NextRetryDelay() != time.Minute {
+		t.Fatalf("retry delay = %v, want 1m", original.NextRetryDelay())
+	}
+	var retryAt time.Time
+	if decodeErr := original.Details(&retryAt); decodeErr != nil {
+		t.Fatalf("decode retry detail: %v", decodeErr)
 	}
 }
 

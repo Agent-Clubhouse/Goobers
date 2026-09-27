@@ -35,6 +35,26 @@ func writeStatusRun(t *testing.T, root, runID, workflow, gaggle string, startedA
 	writeStatusRunWithPhase(t, root, runID, workflow, gaggle, startedAt, journal.PhaseRunning)
 }
 
+func TestStatusSurfacesBackpropEnrollment(t *testing.T) {
+	config := &apiv1.BackpropConfig{Enabled: true, Version: "v1"}
+	got := statusWorkflowBackprop(config)
+	if !got.Enabled || got.Version != "v1" {
+		t.Fatalf("status backprop = %+v", got)
+	}
+	var output strings.Builder
+	renderStatusFleetSummary(&output, statusFleetSummary{
+		SuccessRateWindow: 20,
+		Workflows: []statusWorkflowSummary{{
+			Workflow: "implementation",
+			Gaggle:   "goobers",
+			Backprop: got,
+		}},
+	}, time.Now())
+	if !strings.Contains(output.String(), "backprop: enabled (v1)") {
+		t.Fatalf("status output = %q", output.String())
+	}
+}
+
 func TestStatusLimitUsesExistingReadModelWithoutRunJournalWalk(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
@@ -1431,6 +1451,14 @@ func TestStatusWorkflowFailureRateCountsWorktreeRemoveFailedAsFailure(t *testing
 	}
 }
 
+func TestStatusCompletedRecoveryObservationWarningIsNotRemovalFailure(t *testing.T) {
+	run := completedRunBlockedByWorktreeRemoveFailed("observed", "site-build", "goobers-site", time.Now().UTC())
+	run.Operator.LatestError = &journal.ErrorDetail{Code: "recovery_observation_failed", Message: "inventory temporarily unavailable after cleanup"}
+	if statusRunIsRateFailure(run) {
+		t.Fatal("completed workflow with post-cleanup observation warning was misdiagnosed as a removal failure")
+	}
+}
+
 // TestStatusWorkflowFailureRateCoexistsWithFailureStreak proves both #4263's
 // consecutive-streak alarm and #4880's rate alarm can fire together as
 // independent signals — one does not replace or suppress the other — and
@@ -1690,6 +1718,34 @@ func TestRenderStatusSeparatesReaderLimitationsFromRunBlockers(t *testing.T) {
 	}
 	if !strings.Contains(got, "diagnostics limited (not a run blocker): "+limitation) {
 		t.Fatalf("status = %q, want the labelled diagnostics line", got)
+	}
+}
+
+func TestRenderStatusShowsContinuationLineage(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	runs := []runSummary{{
+		RunID: "continued-run", Workflow: "implementation", Gaggle: "goobers",
+		Phase: journal.PhaseFailed, StartedAt: now, LastActivityAt: now,
+		Lineage: &readservice.RunLineage{
+			Source:                &readservice.LineageRun{ID: "source-run", Phase: journal.PhaseEscalated},
+			ResumeTarget:          "implement",
+			WorkspaceBranch:       "goobers/implementation/source",
+			HistoricalRepassCount: 2,
+			InjectedInputs: []journal.InputRef{
+				{Name: "operator-note"},
+				{Name: "failure-context"},
+			},
+		},
+		Operator: readservice.OperatorRunSummary{
+			Trajectory: "terminal", Liveness: "terminal",
+			Claim: readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
+		},
+	}}
+	var output strings.Builder
+	renderStatus(&output, runs, now)
+	if !strings.Contains(output.String(),
+		"continuation: source source-run (escalated); target implement; branch goobers/implementation/source; historical repasses 2; injected inputs failure-context, operator-note") {
+		t.Fatalf("status output = %q", output.String())
 	}
 }
 

@@ -935,10 +935,13 @@ Repair does not need to be cheap; it needs to be **rate-limited and always makin
 progress**.
 
 - A **fixed I/O budget** (configured entries/second), walking continuously and
-  cycling, with a durable cursor in `projection_state`. Cost is **constant per
-  unit time**, independent of history; what scales with history is *cycle time*
-  (`H / rate`) — at 40,665 entries and 2,000/s, ~20 s. `readState` reports
-  `lastSweepCompletedAt`.
+  cycling, with a durable forward cursor **per runs root** and a round-robin
+  scheduler cursor. The budget is global: adding a gaggle divides progress
+  fairly rather than multiplying I/O, and a large or continuously growing root
+  cannot starve a later root. Cost is **constant per unit time**, independent of
+  history; what scales with history is *cycle time* (`H / rate`) — at 40,665
+  entries and 2,000/s, ~20 s. `lastSweepCompletedAt` advances only after every
+  configured root has completed a cycle, and `readState` reports it.
 - **Repair reconciles both directions.** "On disk but not projected" is only
   half of it. A **projected row whose journal is gone above the projection
   floor** — an operator `rm`, an abandoned restore, an unlink whose removal

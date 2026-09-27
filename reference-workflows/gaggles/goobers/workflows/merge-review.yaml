@@ -194,6 +194,13 @@ spec:
         # reviewer's classification. Empty string when nothing overlaps (same
         # always-emitted, possibly-empty shape as reviewDigest above).
         - overlappingSiblingsCsv
+        # unlandableSiblingsCsv (#5602): open PRs under the branch namespace
+        # that this instance cannot land (outside headPrefixes, or opted out
+        # with goobers:no-merge-review). They are left out of the sibling set
+        # above, and elect-lander and apply-verdict drop them from any blocker
+        # set the reviewer still names, so an overlap cluster never waits on a
+        # PR that can only get an advisory review. Empty string when none.
+        - unlandableSiblingsCsv
         # scopeGateParked (#1313/#1814): whether this PR is currently barred
         # from merging for exceeding the size threshold. Review still runs so
         # remediation receives fresh findings and can converge.
@@ -224,6 +231,8 @@ spec:
         # gather-sibling-context emits it on the review-gate branch,
         # elect-lander passes it through on the parked branch.
         overlappingSiblings: overlappingSiblingsCsv
+        # #5602: the same unlandable set the election dropped, by the same path.
+        unlandableSiblings: unlandableSiblingsCsv
         # #1814: preserve the deterministic scope decision through verdict
         # publication so scope-gate can guard only the merge path.
         scopeGateParked: scopeGateParked
@@ -288,6 +297,9 @@ spec:
         # green file-collision reaches sequencing even if the reviewer
         # under-named the blockers). Passed through below for apply-verdict.
         overlappingSiblings: overlappingSiblingsCsv
+        # #5602: PRs this instance cannot land never precede the lander.
+        # Passed through below for apply-verdict.
+        unlandableSiblings: unlandableSiblingsCsv
         # #1814: the needs-changes/election path must retain the same merge
         # gate state as a direct review pass.
         scopeGateParked: scopeGateParked
@@ -333,6 +345,7 @@ spec:
         # Passed through so apply-verdict on the parked (not-elected) branch
         # resolves the same deterministic overlap set (#990).
         - overlappingSiblingsCsv
+        - unlandableSiblingsCsv
         - scopeGateParked
       next: elect-gate
 

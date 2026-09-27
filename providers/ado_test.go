@@ -27,6 +27,51 @@ func handleADOTestStateCategories(t *testing.T, mux *http.ServeMux) {
 	})
 }
 
+// TestADOProviderSendsMsaPassThroughOnlyForBearer verifies the ADO-N4 fix:
+// a Bearer-authenticated REST request carries X-VSS-ForceMsaPassThrough
+// (required against a non-Entra-backed org or an MSA account, live probe
+// F1 in docs/design/ado-parity-dsl-2-0.md Appendix A), while a PAT (Basic)
+// request never does — PAT already works everywhere, and the header is
+// untested for Basic.
+func TestADOProviderSendsMsaPassThroughOnlyForBearer(t *testing.T) {
+	mux := http.NewServeMux()
+	var gotAuth, gotPassThrough string
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPassThrough = r.Header.Get("X-VSS-ForceMsaPassThrough")
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	listReq := ListPullRequestsRequest{Repository: RepositoryRef{Name: "repo", Project: "project"}}
+
+	bearerProvider := NewADOProvider("org", "project", "", func(p *ADOProvider) {
+		p.BaseURL = server.URL
+		p.credentialSource = &rotatingADOCredentialSource{token: "bearer-token"}
+	})
+	if _, err := bearerProvider.ListPullRequests(context.Background(), listReq); err != nil {
+		t.Fatalf("ListPullRequests (bearer): %v", err)
+	}
+	if gotAuth != "Bearer bearer-token" {
+		t.Fatalf("Authorization = %q, want Bearer bearer-token", gotAuth)
+	}
+	if gotPassThrough != "true" {
+		t.Fatalf("X-VSS-ForceMsaPassThrough = %q, want true for a bearer request", gotPassThrough)
+	}
+
+	patProvider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	if _, err := patProvider.ListPullRequests(context.Background(), listReq); err != nil {
+		t.Fatalf("ListPullRequests (PAT): %v", err)
+	}
+	if gotAuth != basicAuth("goobers", "token") {
+		t.Fatalf("Authorization = %q, want Basic PAT auth", gotAuth)
+	}
+	if gotPassThrough != "" {
+		t.Fatalf("X-VSS-ForceMsaPassThrough = %q, want absent for a PAT request", gotPassThrough)
+	}
+}
+
 func TestADOProviderOpenPullRequestCreatesThenUpdates(t *testing.T) {
 	type requestBody struct {
 		SourceRefName string `json:"sourceRefName"`
@@ -169,7 +214,7 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
@@ -194,6 +239,69 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 	if item.Parent == nil || item.Parent.Type != "parent" || item.Parent.ID != "41" {
 		t.Fatalf("expected hierarchy parent to be preserved: %#v", item.Parent)
+	}
+}
+
+// TestADOProviderAssigneeCarriesUniqueNameAlias verifies that a work item
+// whose identity's displayName and uniqueName differ keeps Assignee as the
+// display name (today's working behavior, per #5556 — an existing
+// display-name-configured assignedTo/roster must not silently stop
+// matching) while surfacing the stable uniqueName account identifier as an
+// AssigneeAliases entry, so AssigneeMatches can accept either form.
+func TestADOProviderAssigneeCarriesUniqueNameAlias(t *testing.T) {
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 42}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"id":  42,
+			"rev": 3,
+			"url": "https://dev.azure.com/org/project/_workitems/edit/42",
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "User Story",
+				"System.Title":        "Fix API",
+				"System.State":        "Active",
+				"System.AssignedTo":   map[string]interface{}{"displayName": "Alex Example", "uniqueName": "alex@example.com"},
+			},
+		})
+	})
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		State:      "Active",
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems returned error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d", len(items))
+	}
+	item := items[0]
+	if item.Assignee != "Alex Example" {
+		t.Fatalf("Assignee = %q, want the display name %q unchanged", item.Assignee, "Alex Example")
+	}
+	if len(item.AssigneeAliases) != 1 || item.AssigneeAliases[0] != "alex@example.com" {
+		t.Fatalf("AssigneeAliases = %#v, want [%q]", item.AssigneeAliases, "alex@example.com")
+	}
+	// Both the display name and the uniqueName (in any case) must match.
+	if !item.AssigneeMatches("Alex Example") {
+		t.Fatal("AssigneeMatches(display name) = false, want true")
+	}
+	if !item.AssigneeMatches("alex@example.com") {
+		t.Fatal("AssigneeMatches(uniqueName) = false, want true")
+	}
+	if !item.AssigneeMatches("ALEX@EXAMPLE.COM") {
+		t.Fatal("AssigneeMatches(uniqueName, different case) = false, want true (case-insensitive)")
+	}
+	if item.AssigneeMatches("someone-else@example.com") {
+		t.Fatal("AssigneeMatches(unrelated identity) = true, want false")
 	}
 }
 
@@ -305,7 +413,7 @@ func TestADOListWorkItemsLimitCountsMatchingLabels(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 
@@ -364,7 +472,7 @@ func TestADOListWorkItemsOversizedScanFindsMatchBeyondTruncationBoundary(t *test
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 	repo := RepositoryRef{Name: "repo", Project: "project"}
@@ -414,7 +522,7 @@ func TestADOListWorkItemsOversizedScanAppliesToStateFilterToo(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 	repo := RepositoryRef{Name: "repo", Project: "project"}
@@ -462,7 +570,7 @@ func TestADOListWorkItemsProjectsAndFiltersNativeFields(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 
@@ -501,7 +609,7 @@ func TestADOListWorkItemsUnavailableNativeFieldFails(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 
@@ -562,7 +670,9 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 			t.Fatalf("unexpected pullrequests method %s", r.Method)
 		}
 	})
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/reviewers/qa-1", func(w http.ResponseWriter, r *http.Request) {
+	// A GUID-shaped reviewer skips identity resolution and is used verbatim,
+	// so this broad workflow test needs no identities-lookup fixture.
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/reviewers/11111111-1111-1111-1111-111111111111", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPut)
 		reviewerPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
@@ -616,10 +726,10 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	if err != nil || pr.Number != 12 {
 		t.Fatalf("OpenPullRequest = %#v, %v", pr, err)
 	}
-	if err := provider.RequestReview(context.Background(), ReviewRequest{Repository: repo, PullID: "12", Reviewers: []string{"qa-1"}}); err != nil {
+	if err := provider.RequestReview(context.Background(), ReviewRequest{Repository: repo, PullID: "12", Reviewers: []string{"11111111-1111-1111-1111-111111111111"}}); err != nil {
 		t.Fatalf("RequestReview returned error: %v", err)
 	}
-	if reviewerPath != "/org/project/_apis/git/repositories/repo/pullrequests/12/reviewers/qa-1" {
+	if reviewerPath != "/org/project/_apis/git/repositories/repo/pullrequests/12/reviewers/11111111-1111-1111-1111-111111111111" {
 		t.Fatalf("reviewer path = %q", reviewerPath)
 	}
 	item, err := provider.UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{Repository: repo, ID: "42", Status: WorkItemStatusInProgress})
@@ -632,6 +742,7 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	if len(patchBody) != 2 ||
 		patchBody[0].Op != "test" ||
 		patchBody[0].Path != "/rev" ||
+		patchBody[1].Op != "replace" ||
 		patchBody[1].Path != "/fields/System.Tags" ||
 		patchBody[1].Value != "route/backend; goobers/status:in-progress" {
 		t.Fatalf("patch body = %#v", patchBody)
@@ -852,13 +963,25 @@ func TestADOProviderPullRequestFiles(t *testing.T) {
 
 func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 	var wiqlCalls int
+	var categoryCalls int
 	mux := http.NewServeMux()
 	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypecategories/Microsoft.RequirementCategory", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		categoryCalls++
+		writeJSON(t, w, map[string]interface{}{
+			"name":                "Requirement Category",
+			"referenceName":       "Microsoft.RequirementCategory",
+			"defaultWorkItemType": map[string]string{"name": "Issue"},
+		})
+	})
 	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		var patch []adoPatchOperation
 		decodeJSON(t, r, &patch)
-		if len(patch) < 3 || patch[0].Value != "New work" || patch[2].Value != "route/backend; goobers/status:claimed" {
+		if len(patch) < 4 || patch[0].Value != "New work" ||
+			patch[2].Path != "/multilineFieldsFormat/System.Description" || patch[2].Value != "Markdown" ||
+			patch[3].Value != "route/backend; goobers/status:claimed" {
 			t.Fatalf("unexpected create patch: %#v", patch)
 		}
 		writeJSON(t, w, map[string]interface{}{
@@ -897,7 +1020,7 @@ func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 			},
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOTestWorkItemsBatch(t, mux))
 	defer server.Close()
 
 	runner := &adoAuthRunner{}
@@ -914,6 +1037,9 @@ func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 	})
 	if err != nil || item.ID != "51" || item.Status != WorkItemStatusClaimed {
 		t.Fatalf("CreateWorkItem = %#v, %v", item, err)
+	}
+	if categoryCalls != 1 {
+		t.Fatalf("workitemtypecategories calls = %d, want 1", categoryCalls)
 	}
 	if provider.Kind() != ProviderADO {
 		t.Fatalf("Kind = %q", provider.Kind())
@@ -962,5 +1088,86 @@ func TestADOProviderErrorPaths(t *testing.T) {
 	}
 	if _, err := provider.PullRequestFiles(context.Background(), repo, ""); err == nil {
 		t.Fatal("expected missing pull id to return an error")
+	}
+}
+
+// TestADOProviderRequestReviewResolvesIdentity covers ADO-N37: a reviewer
+// that isn't already GUID-shaped must be resolved to an identity GUID via the
+// identities API before it lands in the reviewers path, a GUID reviewer must
+// skip that lookup entirely, and an unresolvable reviewer must error rather
+// than be silently skipped.
+func TestADOProviderRequestReviewResolvesIdentity(t *testing.T) {
+	const reviewerGUID = "22222222-2222-2222-2222-222222222222"
+	var (
+		identitiesFilterValue string
+		reviewerPath          string
+		voteBody              map[string]int
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/_apis/identities", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		if got := r.URL.Query().Get("searchFilter"); got != "General" {
+			t.Fatalf("searchFilter = %q", got)
+		}
+		identitiesFilterValue = r.URL.Query().Get("filterValue")
+		switch identitiesFilterValue {
+		case "reviewer@example-org.com":
+			writeJSON(t, w, map[string]interface{}{"value": []map[string]string{{"id": reviewerGUID}}})
+		case "nobody@example-org.com":
+			writeJSON(t, w, map[string]interface{}{"value": []map[string]string{}})
+		default:
+			t.Fatalf("unexpected identities filterValue %q", identitiesFilterValue)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/reviewers/"+reviewerGUID, func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPut)
+		reviewerPath = r.URL.Path
+		decodeJSON(t, r, &voteBody)
+		w.WriteHeader(http.StatusOK)
+	})
+	preResolvedGUID := "33333333-3333-3333-3333-333333333333"
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/reviewers/"+preResolvedGUID, func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPut)
+		w.WriteHeader(http.StatusOK)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Name: "repo", Project: "project"}
+
+	// A UPN resolves via the identities fixture and the PUT path carries the
+	// resulting GUID, with vote:0 in the body.
+	if err := provider.RequestReview(context.Background(), ReviewRequest{
+		Repository: repo, PullID: "12", Reviewers: []string{"reviewer@example-org.com"},
+	}); err != nil {
+		t.Fatalf("RequestReview returned error: %v", err)
+	}
+	if identitiesFilterValue != "reviewer@example-org.com" {
+		t.Fatalf("identities filterValue = %q", identitiesFilterValue)
+	}
+	if want := "/org/project/_apis/git/repositories/repo/pullrequests/12/reviewers/" + reviewerGUID; reviewerPath != want {
+		t.Fatalf("reviewer path = %q, want %q", reviewerPath, want)
+	}
+	if voteBody["vote"] != 0 {
+		t.Fatalf("vote body = %#v, want vote:0", voteBody)
+	}
+
+	// A GUID reviewer skips the identities lookup entirely.
+	identitiesFilterValue = ""
+	if err := provider.RequestReview(context.Background(), ReviewRequest{
+		Repository: repo, PullID: "12", Reviewers: []string{preResolvedGUID},
+	}); err != nil {
+		t.Fatalf("RequestReview with a GUID reviewer returned error: %v", err)
+	}
+	if identitiesFilterValue != "" {
+		t.Fatalf("expected no identities lookup for a GUID reviewer, got filterValue %q", identitiesFilterValue)
+	}
+
+	// An unresolvable reviewer errors rather than being silently skipped.
+	if err := provider.RequestReview(context.Background(), ReviewRequest{
+		Repository: repo, PullID: "12", Reviewers: []string{"nobody@example-org.com"},
+	}); err == nil {
+		t.Fatal("expected an unresolvable reviewer to return an error")
 	}
 }

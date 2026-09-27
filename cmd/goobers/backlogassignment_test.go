@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/providers"
 )
 
 func TestBacklogAssignmentConstantCapStopsAtCeiling(t *testing.T) {
@@ -28,6 +30,48 @@ func TestBacklogAssignmentConstantCapStopsAtCeiling(t *testing.T) {
 	report := readAssignmentReport(t)
 	if len(report.Assignments) != 2 || report.Unassigned != 2 {
 		t.Fatalf("report = %+v, want two assignments and two remaining", report)
+	}
+}
+
+// TestPlanBacklogAssignmentsDisplayNameRosterCountsOpenItems is a regression
+// guard for #5556: a roster entry configured with an Azure DevOps display
+// name must keep counting an item whose provider-reported Assignee is that
+// same display name — the working, unchanged behavior #5556 explicitly
+// preserves — even though WorkItem now also carries an AssigneeAliases
+// uniqueName alongside it.
+func TestPlanBacklogAssignmentsDisplayNameRosterCountsOpenItems(t *testing.T) {
+	roster := []assignmentRosterEntry{{Assignee: "Alex Example", MaxOpen: 1}}
+	scoped := []providers.WorkItem{
+		{ID: "1", Assignee: "Alex Example", AssigneeAliases: []string{"alex@example.com"}},
+	}
+	eligible := []providers.WorkItem{
+		{ID: "2", Assignee: ""},
+	}
+	plan := planBacklogAssignments(assignmentStrategyConstantCap, roster, eligible, scoped, defaultAssignmentMaxItems)
+	if len(plan) != 0 {
+		t.Fatalf("plan = %+v, want no assignments: the display-name roster's one open item already fills maxOpen=1", plan)
+	}
+}
+
+// TestPlanBacklogAssignmentsUniqueNameRosterCountsDisplayNameItem is the
+// regression test for #5556: a roster entry configured with an Azure
+// DevOps account's stable uniqueName must count an item whose
+// provider-reported Assignee is that account's display name, matching via
+// the item's AssigneeAliases. Before AssigneeMatches, planBacklogAssignments
+// indexed load purely by an exact-string map lookup on item.Assignee, so a
+// uniqueName-configured roster entry never matched a display-name-carrying
+// item and load stayed at zero — over-assigning past maxOpen.
+func TestPlanBacklogAssignmentsUniqueNameRosterCountsDisplayNameItem(t *testing.T) {
+	roster := []assignmentRosterEntry{{Assignee: "alex@example.com", MaxOpen: 1}}
+	scoped := []providers.WorkItem{
+		{ID: "1", Assignee: "Alex Example", AssigneeAliases: []string{"alex@example.com"}},
+	}
+	eligible := []providers.WorkItem{
+		{ID: "2", Assignee: ""},
+	}
+	plan := planBacklogAssignments(assignmentStrategyConstantCap, roster, eligible, scoped, defaultAssignmentMaxItems)
+	if len(plan) != 0 {
+		t.Fatalf("plan = %+v, want no assignments: the uniqueName roster's one open item (matched via AssigneeAliases) already fills maxOpen=1", plan)
 	}
 }
 

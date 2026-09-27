@@ -27,6 +27,7 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "configGeneration": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Content address of this run’s immutable execution configuration archive." },
     "gooberDigest": {
       "description": "Content digest of the participating resolved goobers, including instruction content, skills, model, and harness configuration.",
       "type": "string",

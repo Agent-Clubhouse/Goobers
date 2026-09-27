@@ -109,6 +109,13 @@ func (f *fakeStore) SaveSweepCursor(_ context.Context, _ readmodel.SweepCursor) 
 	return nil
 }
 
+func (f *fakeStore) SaveSweepRootCursor(_ context.Context, cursor readmodel.SweepRootCursor) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "sweep-root-cursor:"+cursor.Root)
+	return nil
+}
+
 func (f *fakeStore) MarkUnpublished(
 	_ context.Context,
 	runID string,
@@ -155,6 +162,10 @@ func (f *fakeStore) PruneChangeFeed(_ context.Context, _ int) (int64, error) {
 
 func (f *fakeStore) SweepCursor(context.Context) (readmodel.SweepCursor, error) {
 	return readmodel.SweepCursor{}, nil
+}
+
+func (f *fakeStore) SweepRootCursors(context.Context) ([]readmodel.SweepRootCursor, error) {
+	return nil, nil
 }
 
 func (f *fakeStore) ProjectionFloor(context.Context) (time.Time, bool, error) {
@@ -225,9 +236,10 @@ func TestRepairMutationsShareTheProjectionCommitLoop(t *testing.T) {
 		t.Errorf("observed %d simultaneous projector and repair writes; repair bypassed "+
 			"the sole-writer commit loop", got)
 	}
-	if got := store.commitOrder(); len(got) != 2 ||
-		got[0] != "run-a" || got[1] != "sweep-cursor" {
-		t.Errorf("commit order = %v, want [run-a sweep-cursor]", got)
+	if got := store.commitOrder(); len(got) != 3 ||
+		got[0] != "run-a" || !strings.HasPrefix(got[1], "sweep-root-cursor:") ||
+		got[2] != "sweep-cursor" {
+		t.Errorf("commit order = %v, want [run-a sweep-root-cursor:<root> sweep-cursor]", got)
 	}
 }
 

@@ -60,6 +60,7 @@ type Store interface {
 	NonTerminalRuns(ctx context.Context, limit int) ([]readmodel.RunRow, error)
 	RemoveRun(ctx context.Context, runID string) error
 	SaveSweepCursor(ctx context.Context, cursor readmodel.SweepCursor) error
+	SaveSweepRootCursor(ctx context.Context, cursor readmodel.SweepRootCursor) error
 	MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error
 	ClearUnpublished(ctx context.Context, runID string) error
 	Tombstone(ctx context.Context, runID string, startedAt time.Time, reason string) error
@@ -303,6 +304,13 @@ func (p *Projector) RemoveRun(ctx context.Context, runID string) error {
 func (p *Projector) SaveSweepCursor(ctx context.Context, cursor readmodel.SweepCursor) error {
 	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
 		return store.SaveSweepCursor(ctx, cursor)
+	}})
+}
+
+// SaveSweepRootCursor commits one root's repair progress through the sole-writer loop.
+func (p *Projector) SaveSweepRootCursor(ctx context.Context, cursor readmodel.SweepRootCursor) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.SaveSweepRootCursor(ctx, cursor)
 	}})
 }
 

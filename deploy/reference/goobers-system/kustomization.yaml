@@ -29,9 +29,16 @@ resources:
   - blobs-pvc.yaml
 
 # Image parameterization (§1: a registry the cluster can pull from). Containers
-# reference the bare name `goobers`; point this at your registry — no real
-# registry is hardcoded anywhere in this tree.
-images:
-  - name: goobers
-    newName: registry.example.com/CHANGE-ME/goobers # CHANGE-ME
-    newTag: CHANGE-ME
+# reference the bare name `goobers`, and this base leaves it bare — no real
+# registry is hardcoded anywhere in this tree. A base's job is to be
+# transformable: a consumer's own `images:` overlay retargets this name.
+#
+# #3287: this base used to carry its own `registry.example.com/CHANGE-ME`
+# placeholder `images:` transformer here. A remote-base consumer (pinned,
+# unforked, so upstream fixes flow) cannot edit the base, and by the time its
+# own overlay's `images:` transformer ran, the base's transformer had already
+# rewritten every container off the bare name — so the consumer's own
+# `- name: goobers` overlay silently matched nothing and did not retarget the
+# containers, while the rest of its resources retargeted correctly. See
+# ../examples/goobers-system-registry/ for the placeholder pattern, now moved
+# out of the base and into an example overlay you copy and edit.

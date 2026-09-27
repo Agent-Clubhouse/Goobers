@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
@@ -44,6 +45,78 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 	}
 	l.reg.Register([]byte(token))
 	return newOpenPRProvider(token, apiReadCacheOptionForSnapshot(l.schedulerDir, "")).ListOpenPullRequests(ctx, repo)
+}
+
+// newADOOpenPRProvider builds the ADO provider the open-PR lister polls from
+// the configured repository's own auth block; a package var so tests
+// substitute a fake.
+var newADOOpenPRProvider = func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error) {
+	return adoauth.Provider(repo, nil, reg, nil, nil, stores)
+}
+
+// adoOpenPRLister lists an Azure DevOps repository's active PRs for the
+// readiness.maxOpenPRs cap (ADO-N30). The provider is built on the first poll
+// and reused; its credential source resolves and scrubs the token per
+// request. A build error is returned from the poll, which leaves the count
+// unknown so Admit fails open, the same as a GitHub token-resolution failure.
+type adoOpenPRLister struct {
+	repo   instance.RepoRef
+	reg    runner.SecretRegistrar
+	stores credentials.StoreResolver
+
+	mu       sync.Mutex
+	provider localscheduler.OpenPRLister
+}
+
+func (l *adoOpenPRLister) ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
+	provider, err := l.ensureProvider()
+	if err != nil {
+		return nil, err
+	}
+	return provider.ListOpenPullRequests(ctx, repo)
+}
+
+func (l *adoOpenPRLister) ensureProvider() (localscheduler.OpenPRLister, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.provider != nil {
+		return l.provider, nil
+	}
+	provider, err := newADOOpenPRProvider(l.repo, l.reg, l.stores)
+	if err != nil {
+		return nil, fmt.Errorf("build ADO open-pr-list provider for %s/%s/%s: %w", l.repo.Owner, l.repo.Project, l.repo.Name, err)
+	}
+	l.provider = provider
+	return provider, nil
+}
+
+// openPRListerForRepo picks the open-PR lister for the repository a capped
+// gaggle is bound to, with the RepositoryRef it polls and the key that
+// deduplicates refreshers. GitHub resolves the owner/name token per poll; ADO
+// uses the configured repo's own auth and addresses the PR list by project.
+// A nil lister means the gaggle gets no refresher, so its count stays unknown
+// and Admit fails open: that is an ADO project with no configured binding,
+// whose auth cannot be known. Any other provider is refused.
+func openPRListerForRepo(gaggle string, repo instance.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, stores credentials.StoreResolver) (localscheduler.OpenPRLister, providers.RepositoryRef, string, error) {
+	switch repo.Provider {
+	case string(providers.ProviderADO):
+		if repo.Project == "" {
+			return nil, providers.RepositoryRef{}, "", nil
+		}
+		repoRef := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
+		key := repo.Provider + ":" + repo.Owner + "/" + repo.Project + "/" + repo.Name
+		return &adoOpenPRLister{repo: repo, reg: reg, stores: stores}, repoRef, key, nil
+	case "", string(providers.ProviderGitHub):
+		credentialRef := repo.Owner + "/" + repo.Name
+		lister := &resolvingOpenPRLister{ref: credentialRef, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
+		repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
+		return lister, repoRef, repo.Provider + ":" + credentialRef, nil
+	default:
+		// Validate the repository selected for this capped gaggle, not
+		// cfg.Repos[0]: mixed-provider instances may bind different workflows
+		// to different forges.
+		return nil, providers.RepositoryRef{}, "", fmt.Errorf("workflow readiness.maxOpenPRs for gaggle %q is only supported on github and ado repositories, not %q", gaggle, repo.Provider)
+	}
 }
 
 // buildOpenPRRefresher constructs the #353 open-PR-count refreshers only when
@@ -90,23 +163,15 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 			// the first repo's PRs.
 			repo = instance.RepoRef{Owner: project.Owner, Name: project.Name, Provider: string(project.Provider)}
 		}
-		if repo.Provider == string(providers.ProviderADO) {
-			// The cap counts GitHub PR heads; an ADO-projected gaggle has no
-			// list to poll, so its count stays "unknown" (Admit fails open).
+		lister, repoRef, key, err := openPRListerForRepo(gaggle, repo, resolver, reg, schedulerDir, stores)
+		if err != nil {
+			return nil, err
+		}
+		if lister == nil {
 			continue
 		}
-		// ListOpenPullRequests is currently a GitHub-only surface. Validate the
-		// repository selected for this capped gaggle, not cfg.Repos[0]: mixed-
-		// provider instances may bind different workflows to different forges.
-		if repo.Provider != "" && repo.Provider != string(providers.ProviderGitHub) {
-			return nil, fmt.Errorf("workflow readiness.maxOpenPRs for gaggle %q is only supported on github repositories, not %q", gaggle, repo.Provider)
-		}
-		credentialRef := repo.Owner + "/" + repo.Name
-		key := repo.Provider + ":" + credentialRef
 		refresher := byRepo[key]
 		if refresher == nil {
-			lister := &resolvingOpenPRLister{ref: credentialRef, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
-			repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
 			// Exclude human-parked PRs from the cap (#986): goobers:merge-escalated is
 			// the daemon's "parked pending a human" signal on a PR — it cannot be
 			// drained autonomously, so counting it against MaxOpenPRs only starves new
@@ -129,6 +194,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 // escalationCommenter above), honoring credentials.Resolver's re-read-on-
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
+	observation     backlogPollObservation
 	mu              sync.Mutex
 	ref             string
 	repo            providers.RepositoryRef
@@ -182,6 +248,9 @@ func (b *backlogCounter) newCounterProvider(ctx context.Context) (backlogCountPr
 		)
 		return providers.NewGiteaProvider(baseURL, token, telemetryOpt), func() {}, nil
 	}
+	if b.repo.Provider != providers.ProviderGitHub {
+		return nil, func() {}, fmt.Errorf("backlog count is not supported for provider %q", b.repo.Provider)
+	}
 	return newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
 }
 
@@ -202,7 +271,9 @@ func (b *backlogCounter) giteaCounterBaseURL() (string, error) {
 	return b.giteaBaseURL, nil
 }
 
-func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
+func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr error) {
+	observation := backlogPollObservation{}
+	defer func() { b.retainBacklogObservation(observation, count, pollErr) }()
 	provider, cleanup, err := b.newCounterProvider(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
@@ -235,9 +306,9 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 		b.cursor = ""
 	}
 	b.mu.Unlock()
-	count := 0
+	observation.complete = cursor == "" && !pageInfo.HasNext
 	for _, item := range items {
-		if b.respectAssignee && item.Assignee != b.assignedTo {
+		if b.respectAssignee && !item.AssigneeMatches(b.assignedTo) {
 			continue
 		}
 		matched, err := b.labelPredicate.Matches(item.Labels)
@@ -456,7 +527,7 @@ func buildRefillDemandCounter(
 	}
 	counter := &backlogCounter{
 		ref:             repoRef.Owner + "/" + repoRef.Name,
-		repo:            providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		repo:            backlogCounterRepoRef(cfg, repoRef),
 		labels:          requireLabels,
 		labelPredicate:  predicate,
 		fieldPredicate:  fieldPredicate,
@@ -497,7 +568,7 @@ func buildScheduleDemandCounter(
 	}
 	return &remediationDemandCounter{
 		ref:          repoRef.Owner + "/" + repoRef.Name,
-		repo:         providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		repo:         backlogCounterRepoRef(cfg, repoRef),
 		base:         base,
 		headPrefix:   headPrefix,
 		gaggle:       wf.Spec.Gaggle,

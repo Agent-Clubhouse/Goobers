@@ -14,18 +14,23 @@ const MaxActiveStageTimings = 1024
 // ActiveStage records a start, not a frozen elapsed duration. The client clock
 // can advance a quiet run without waiting for another journal event.
 type ActiveStage struct {
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	Branch    int       `json:"branch,omitempty"`
-	Attempt   int       `json:"attempt,omitempty"`
-	Goober    string    `json:"goober,omitempty"`
-	StartedAt time.Time `json:"startedAt"`
+	ExecutionObservedAt *time.Time `json:"executionObservedAt,omitempty"`
+	ExecutionDeadline   *time.Time `json:"executionDeadline,omitempty"`
+	ExecutionID         string     `json:"executionId,omitempty"`
+	ExecutionOverlap    bool       `json:"executionOverlap,omitempty"`
+	Name                string     `json:"name"`
+	Kind                string     `json:"kind"`
+	Branch              int        `json:"branch,omitempty"`
+	Attempt             int        `json:"attempt,omitempty"`
+	Goober              string     `json:"goober,omitempty"`
+	StartedAt           time.Time  `json:"startedAt"`
 }
 
 // StageActivity is folded identically by SQLite projection and journal reads.
 type StageActivity struct {
-	Active    []ActiveStage
-	Truncated bool
+	WaitingForGate bool
+	Active         []ActiveStage
+	Truncated      bool
 }
 
 // After applies one known-schema event without mutating the prior snapshot.
@@ -34,9 +39,13 @@ func (s StageActivity) After(e journal.Event) StageActivity {
 	if !e.KnownSchema() {
 		return s
 	}
+	s.WaitingForGate = journal.GateParkingAfter(s.WaitingForGate, e)
 	switch e.Type {
 	case journal.EventRunFinished, journal.EventRunResumed, journal.EventGateOverridden:
 		return StageActivity{}
+	}
+	if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == "execution-deadline.v1" {
+		return s.withExecutionDeadline(e)
 	}
 	name, kind, start, finish := activityEvent(e)
 	if name == "" || (!start && !finish) {

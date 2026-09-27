@@ -129,7 +129,7 @@ func newADOBackend(t *testing.T) (backend, func()) {
 			{"name": "Active", "category": "InProgress"},
 		}})
 	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(withADOWorkItemsBatch(t, mux))
 	p := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) { p.BaseURL = srv.URL })
 	return backend{
 		name:     "ado",
@@ -193,7 +193,7 @@ func newADOLimitMeansMatchesBackend(t *testing.T) (backend, func()) {
 			{"name": "Active", "category": "InProgress"},
 		}})
 	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(withADOWorkItemsBatch(t, mux))
 	p := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) { p.BaseURL = srv.URL })
 	return backend{
 		name: "ado", provider: p,

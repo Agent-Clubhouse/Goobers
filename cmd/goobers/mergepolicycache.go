@@ -56,7 +56,18 @@ func mergePolicyCacheKey(repo providers.RepositoryRef, branch string) string {
 // subsequent callers. A cache miss/expiry/corruption never fails the
 // caller differently than a genuine detection failure would — it just
 // means a live call happens now instead of being skipped.
-func detectMergePolicy(ctx context.Context, provider *providers.Dispatcher, schedulerDir string, repo providers.RepositoryRef, branch string, stderr io.Writer) (providers.MergePolicy, error) {
+//
+// pullID names the pull request about to land. Azure DevOps decides per pull
+// request from its policy evaluations (design ado-parity-dsl-2-0.md §5.1), so
+// that decision is never served from, nor written to, the branch-keyed cache.
+func detectMergePolicy(ctx context.Context, provider *providers.Dispatcher, schedulerDir string, repo providers.RepositoryRef, branch, pullID string, stderr io.Writer) (providers.MergePolicy, error) {
+	if repo.Provider == providers.ProviderADO && pullID != "" {
+		result, err := provider.DetectMergePolicy(ctx, providers.RepoMergePolicyRequest{Repository: repo, Branch: branch, PullID: pullID})
+		if err != nil {
+			return "", err
+		}
+		return result.Policy, nil
+	}
 	key := mergePolicyCacheKey(repo, branch)
 	if entry, ok := loadMergePolicyCacheEntry(schedulerDir, key, stderr); ok {
 		return entry.Policy, nil

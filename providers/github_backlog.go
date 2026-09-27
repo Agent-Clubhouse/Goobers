@@ -431,6 +431,11 @@ func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemR
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return WorkItem{}, err
 	}
+	// #5245: refuse declared graph edges before any mutation, rather than
+	// creating the item and dropping them.
+	if err := checkCreateWorkItemGraphFields(req); err != nil {
+		return WorkItem{}, err
+	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
 	if err != nil {
 		return WorkItem{}, err

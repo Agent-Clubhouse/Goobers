@@ -40,11 +40,13 @@ type runInterventionService struct {
 }
 
 type interventionDefinitionSet struct {
-	runners       map[string]*runner.Runner
-	legacyRunner  *runner.Runner
-	machines      map[localscheduler.WorkflowIdentity]*workflow.Machine
-	gooberDigests map[localscheduler.WorkflowIdentity]string
-	repoRefs      map[localscheduler.WorkflowIdentity]apiv1.RepoRef
+	featureDrivers   map[localscheduler.WorkflowIdentity]string
+	runners          map[string]*runner.Runner
+	legacyRunner     *runner.Runner
+	machines         map[localscheduler.WorkflowIdentity]*workflow.Machine
+	gooberDigests    map[localscheduler.WorkflowIdentity]string
+	repoRefs         map[localscheduler.WorkflowIdentity]apiv1.RepoRef
+	backlogObservers map[localscheduler.WorkflowIdentity]backlogObservationReader
 }
 
 type interventionDefinitionRegistry struct {
@@ -77,11 +79,13 @@ func (r *interventionDefinitionRegistry) Snapshot() interventionDefinitionSet {
 
 func interventionDefinitions(definitions *schedulerDefinitions, legacyRunner *runner.Runner) interventionDefinitionSet {
 	return interventionDefinitionSet{
-		runners:       definitions.Runners,
-		legacyRunner:  legacyRunner,
-		machines:      definitions.Machines,
-		gooberDigests: definitions.GooberDigests,
-		repoRefs:      definitions.RepoRefs,
+		runners:          definitions.Runners,
+		featureDrivers:   featureDriverConfiguration(definitions.Entries),
+		legacyRunner:     legacyRunner,
+		machines:         definitions.Machines,
+		gooberDigests:    definitions.GooberDigests,
+		repoRefs:         definitions.RepoRefs,
+		backlogObservers: admittedBacklogObservers(definitions.Entries),
 	}
 }
 
@@ -567,14 +571,11 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		}
 		return s.resolveEngineDriven(runID, found.dir, identity.Gaggle, identity.Workflow, reader)
 	}
-	key := localscheduler.WorkflowIdentity{Gaggle: identity.Gaggle, Workflow: identity.Workflow}
-	machine := definitions.machines[key]
-	if machine == nil {
-		return resolvedInterventionRun{}, interventionConflict(
-			"workflow_unavailable",
-			fmt.Sprintf("workflow %q for run %q is no longer available", identity.Workflow, runID),
-		)
+	execution, err := s.interventionExecution(identity, definitions, fallbackRunner)
+	if err != nil {
+		return resolvedInterventionRun{}, err
 	}
+	fallbackRunner, machine, gooberDigest, repoRef := execution.runner, execution.machine, execution.gooberDigest, execution.repoRef
 	// Never reinterpret a historical run under the current workflow merely
 	// because the name still matches (#3376, same rule as the daemon resume
 	// scan's interruptedRunMachine): when the config drifted after this run
@@ -589,7 +590,10 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 			machine = pinned
 		}
 	}
-	runRunner, _ := s.runnerRegistry.Resolve(runID, identity.Gaggle, fallbackRunner)
+	runRunner, owned := s.runnerRegistry.Resolve(runID, identity.Gaggle, fallbackRunner)
+	if identity.ConfigGeneration != "" && !owned {
+		runRunner = fallbackRunner
+	}
 	if runRunner == nil {
 		return resolvedInterventionRun{}, httpapi.NewInterventionError(
 			http.StatusInternalServerError, "runner_unavailable", "run owner is unavailable", nil,
@@ -620,8 +624,8 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		runID:        runID,
 		runner:       runRunner,
 		machine:      machine,
-		gooberDigest: definitions.gooberDigests[key],
-		repoRef:      definitions.repoRefs[key],
+		gooberDigest: gooberDigest,
+		repoRef:      repoRef,
 		runDir:       found.dir,
 		gaggle:       identity.Gaggle,
 		workflow:     identity.Workflow,

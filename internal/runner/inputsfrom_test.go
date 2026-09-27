@@ -90,7 +90,7 @@ func TestResolveInputsFromDoesNotFallBackWithinAKnownStage(t *testing.T) {
 
 func TestInputsFromErrorNamesWhatTheStageActuallyEmitted(t *testing.T) {
 	completed := stageOutputs{"pr-select": {outputs: map[string]any{"head": "f", "base": "main"}}}
-	err := inputsFromError("gather", "pullNumber", "pr-select.selectedNumber", completed, true)
+	err := inputsFromError("gather", "pullNumber", "pr-select.selectedNumber", apiv1.ResultEnvelope{}, completed, true)
 	if err == nil {
 		t.Fatal("want an error")
 	}

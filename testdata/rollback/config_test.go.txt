@@ -1,0 +1,85 @@
+package instance
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// Copied into the immutable v0.4.1 source archive by the rollback script.
+// This uses that release's real strict decoder, schema and export resolver.
+func TestDiagnosticsRollbackPriorConfig(t *testing.T) {
+	fixture := os.Getenv("GOOBERS_ROLLBACK_FIXTURE")
+	if fixture == "" {
+		t.Fatal("GOOBERS_ROLLBACK_FIXTURE is required")
+	}
+	root := filepath.Join(fixture, "config")
+	for _, key := range []string{OTLPEndpointEnv, OTLPInsecureEnv} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"diagnostics-on", "diagnostics-disabled", "journal-disabled", "both-disabled"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadConfig(filepath.Join(root, name+".yaml"))
+			field := "diagnostics"
+			if name == "journal-disabled" {
+				field = "enabled"
+			}
+			if err == nil || !strings.Contains(err.Error(), `unknown field "`+field+`"`) {
+				t.Fatalf("prior strict decoder must reject new %s field even when disabled: %v", field, err)
+			}
+		})
+	}
+	// Merely deleting enabled:false while retaining the destination changes
+	// consent: the previous release's endpoint-only contract turns export ON.
+	unsafe, err := LoadConfig(filepath.Join(root, "endpoint-only.yaml"))
+	if err != nil || unsafe.Telemetry.OTLP == nil || !unsafe.Telemetry.OTLP.Enabled() {
+		t.Fatalf("expected old endpoint-based opt-in, got %v", err)
+	}
+	before, err := os.ReadFile(filepath.Join(root, "before.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := filepath.Join(root, "restored-instance.yaml")
+	if err := os.WriteFile(restored, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(restored)
+	if err != nil {
+		t.Fatalf("prior reader refused restored pre-upgrade config: %v", err)
+	}
+	if cfg.SelfIdentity != "rollback-bot" || cfg.RunConditions.MaxParallelRuns != 2 || (cfg.Telemetry.OTLP != nil && cfg.Telemetry.OTLP.Enabled()) {
+		t.Fatal("restored identity, admission limit or disabled export changed")
+	}
+	// Old environment overrides remain live after restoring the file. A service
+	// must restore its environment too; empty and unset are not interchangeable.
+	t.Run("ambient-endpoint-reenables-old-export", func(t *testing.T) {
+		t.Setenv(OTLPEndpointEnv, "https://ambient.example.test:4317")
+		ambient, err := LoadConfig(restored)
+		if err != nil || ambient.Telemetry.OTLP == nil || !ambient.Telemetry.OTLP.Enabled() {
+			t.Fatalf("old environment opt-in changed: %v", err)
+		}
+	})
+	for _, name := range []string{"gaggle-paused", "workflow-paused"} {
+		_, report, err := LoadConfigDir(filepath.Join(root, name))
+		if err == nil || report == nil || !report.HasErrors() || !strings.Contains(fmt.Sprintf("%+v", report), "enabled") {
+			t.Fatalf("prior schema must reject unsupported pause switch %s: %v (%+v)", name, err, report)
+		}
+	}
+	set, report, err := LoadConfigDir(filepath.Join(root, "definitions-before"))
+	if err != nil {
+		t.Fatalf("prior reader refused restored pre-upgrade definition tree: %v (%+v)", err, report)
+	}
+	if len(set.Gaggles) != 1 || len(set.Workflows) != 1 || len(set.Workflows[0].Spec.Triggers) != 1 || string(set.Workflows[0].Spec.Triggers[0].Type) != "manual" {
+		t.Fatal("restored fixture must remain manual-only; removed pause flags are not an admission fence")
+	}
+	after, err := os.ReadFile(restored)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("old decoder mutated the restored file: %v", err)
+	}
+}

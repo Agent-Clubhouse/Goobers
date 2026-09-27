@@ -89,33 +89,61 @@ func TestSweepOrphans(t *testing.T) {
 	}
 }
 
-// The owner scope: a worker sweeps only the pods IT created. Decision 003
-// wires SweepOrphans on the worker, and a cluster runs more than one — without
-// the scope, worker B's restart lists worker A's stage pods and a resolver
-// that cannot see A's attempts disposes A's live work.
-func TestSweepOrphansIgnoresAnotherOwnersPods(t *testing.T) {
+func TestSweepOrphansReclaimsTerminalPodsAcrossOwnersAndLeavesActiveWork(t *testing.T) {
 	pods := &fakePodAPI{}
 	mine := testConfig()
 	mine.Owner = "goobers-worker-0"
 	theirs := testConfig()
 	theirs.Owner = "goobers-worker-1"
 	seedStagePod(t, mine, pods, "run-mine", "pod-mine")
-	seedStagePod(t, theirs, pods, "run-theirs", "pod-theirs")
+	seedStagePod(t, theirs, pods, "run-theirs-done", "pod-theirs-done")
+	seedStagePod(t, theirs, pods, "run-theirs-live", "pod-theirs-live")
+	seedStagePod(t, theirs, pods, "run-theirs-unknown", "pod-theirs-unknown")
 
 	d, err := New(mine, pods, nil, confirmGate{confirmed: true}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// BOTH runs answer terminal: only the owner scope can keep the sibling's
-	// pod alive here.
 	deleted, err := d.SweepOrphans(context.Background(), stateTable{
-		"run-mine": RunStateTerminal, "run-theirs": RunStateTerminal,
+		"run-mine":        RunStateTerminal,
+		"run-theirs-done": RunStateTerminal,
+		"run-theirs-live": RunStateLive,
+		// run-theirs-unknown deliberately remains indeterminate.
 	})
 	if err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
 	}
-	if len(deleted) != 1 || deleted[0] != "pod-mine" {
-		t.Fatalf("deleted %v, want exactly pod-mine — a sweep must not reach another worker's stage pods", deleted)
+	deletedSet := make(map[string]bool, len(deleted))
+	for _, name := range deleted {
+		deletedSet[name] = true
+	}
+	if len(deleted) != 2 || !deletedSet["pod-mine"] || !deletedSet["pod-theirs-done"] {
+		t.Fatalf("deleted %v, want terminal pods from both worker generations", deleted)
+	}
+	for _, name := range pods.deleted {
+		if name == "pod-theirs-live" || name == "pod-theirs-unknown" {
+			t.Fatalf("sweep interfered with active or indeterminate work: deleted %s", name)
+		}
+	}
+}
+
+func TestSweepOrphansDoesNotCrossInstanceBoundary(t *testing.T) {
+	pods := &fakePodAPI{}
+	mine := testConfig()
+	other := testConfig()
+	other.InstanceID = "fedcba9876543210fedcba9876543210"
+	seedStagePod(t, mine, pods, "run-mine", "pod-mine")
+	seedStagePod(t, other, pods, "run-other", "pod-other")
+
+	d, err := New(mine, pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := d.SweepOrphans(context.Background(), stateTable{
+		"run-mine": RunStateTerminal, "run-other": RunStateTerminal,
+	})
+	if err != nil || len(deleted) != 1 || deleted[0] != "pod-mine" {
+		t.Fatalf("deleted %v, %v; want only this instance's terminal pod", deleted, err)
 	}
 }
 
@@ -131,19 +159,19 @@ func TestSweepOrphansRequiresResolver(t *testing.T) {
 
 // An ownerless dispatcher stamps no owner label, so its selector would match
 // every worker's pods. It must refuse rather than sweep the namespace.
-func TestSweepOrphansRequiresOwner(t *testing.T) {
+func TestSweepOrphansRequiresStableInstanceScope(t *testing.T) {
 	cfg := testConfig()
-	cfg.Owner = ""
+	cfg.InstanceID = ""
 	d, err := New(cfg, &fakePodAPI{}, nil, confirmGate{confirmed: true}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	_, err = d.SweepOrphans(context.Background(), stateTable{})
 	if err == nil {
-		t.Fatal("an ownerless sweep was accepted — its selector matches every worker's stage pods")
+		t.Fatal("a sweep without a stable instance scope was accepted")
 	}
-	if !strings.Contains(err.Error(), "Owner") {
-		t.Fatalf("refusal %q does not name the missing owner", err)
+	if !strings.Contains(err.Error(), "InstanceID") {
+		t.Fatalf("refusal %q does not name the missing instance scope", err)
 	}
 }
 

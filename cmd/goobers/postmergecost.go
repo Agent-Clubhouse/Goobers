@@ -157,12 +157,22 @@ func reconcileIssueCommentCostSummary(
 	return report, updateErr == nil, errors.Join(collectErr, updateErr)
 }
 
+// adoPRThreadCostReader lists a PR's thread comments with their authors
+// attributed by identity GUID (ADO-N5), so the shared display-name trust check
+// (isTrustedCostComment against self.DisplayName) only accepts receipts and
+// summary markers this identity wrote — never another identity that shares
+// its display name.
 type adoPRThreadCostReader struct {
 	provider adoPostMergePRComments
+	self     providers.ADOIdentity
 }
 
 func (r adoPRThreadCostReader) ListComments(ctx context.Context, repo providers.RepositoryRef, pullNumber string) ([]providers.Comment, error) {
-	return r.provider.ListPullRequestThreadComments(ctx, repo, pullNumber)
+	comments, err := r.provider.ListPullRequestThreadComments(ctx, repo, pullNumber)
+	if err != nil {
+		return nil, err
+	}
+	return adoAttributeCommentsByID(comments, r.self), nil
 }
 
 func collectADOPostMergeCostReport(
@@ -174,21 +184,23 @@ func collectADOPostMergeCostReport(
 	issueIDs []string,
 	stderr io.Writer,
 ) postMergeCostReport {
-	author, err := prProvider.AuthenticatedLogin(ctx)
+	self, err := prProvider.AuthenticatedIdentity(ctx)
 	if err != nil {
 		pf(stderr, "warning: resolve cost receipt author: %v\n", err)
 		return postMergeCostReport{}
 	}
+	// PR threads are attributed by GUID in the reader; work-item comments
+	// keep the display-name comparison (their author ids are not mapped).
 	report, collectErr := collectPostMergeCostReport(
 		ctx,
-		adoPRThreadCostReader{provider: prProvider},
+		adoPRThreadCostReader{provider: prProvider, self: self},
 		issueProvider,
 		repo,
 		backlogRepo,
 		pullNumber,
 		issueIDs,
-		author,
-		author,
+		self.DisplayName,
+		self.DisplayName,
 	)
 	if collectErr != nil {
 		pf(stderr, "warning: %v\n", collectErr)

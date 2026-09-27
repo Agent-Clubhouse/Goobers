@@ -614,6 +614,7 @@ export async function loadSnapshot(resolved, runFilters = {}) {
 
     const runItems = await hydrateRunAssociationRefs(resolved, runs.runs || []);
     return {
+        mode: "daemon",
         baseUrl,
         health,
         instance,

@@ -163,6 +163,16 @@ var missingCapabilityCodeMarkers = []string{
 	"TOOL_MISSING",
 	"TOOL_UNAVAILABLE",
 	"TOOL_NOT_AVAILABLE",
+	// #5262: the substring rule above recognizes MISSING_TOOLS but not
+	// MISSING_REQUIRED_TOOLS — the qualifier breaks the match, so a producer
+	// naming its missing tools the more natural way fell through to the #544
+	// blocked terminal and parked every item the run had claimed. These three
+	// forms close that gap in both word orders, singular and plural; the
+	// classification is identical to the codes above, because a required tool
+	// that is absent is the same system defect however the producer spells it.
+	"MISSING_REQUIRED_TOOL",
+	"REQUIRED_TOOL_MISSING",
+	"REQUIRED_TOOLS_MISSING",
 }
 
 func isMissingCapabilityCode(code string) bool {

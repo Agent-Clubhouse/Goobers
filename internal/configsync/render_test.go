@@ -14,6 +14,7 @@ import (
 )
 
 func TestWriteManifests(t *testing.T) {
+	requireManifestPublication(t)
 	out := t.TempDir()
 	set := &RenderSet{Namespace: DefaultNamespace, Objects: []client.Object{managedGaggle("web"), managedGaggle("api")}}
 	written, err := set.WriteManifests(out)
@@ -47,6 +48,7 @@ func TestWriteManifests(t *testing.T) {
 }
 
 func TestWriteManifests_InterruptedPublicationKeepsPreviousGeneration(t *testing.T) {
+	requireManifestPublication(t)
 	for _, tc := range []struct {
 		name  string
 		hooks publicationHooks
@@ -129,6 +131,7 @@ func TestWriteManifests_InterruptedPublicationKeepsPreviousGeneration(t *testing
 }
 
 func TestWriteManifests_RejectsCorruptStagedGeneration(t *testing.T) {
+	requireManifestPublication(t)
 	out := filepath.Join(t.TempDir(), "rendered")
 	previous := &RenderSet{Namespace: DefaultNamespace, Objects: []client.Object{managedGaggle("previous")}}
 	if _, err := previous.WriteManifests(out); err != nil {
@@ -164,6 +167,7 @@ func TestWriteManifests_RejectsCorruptStagedGeneration(t *testing.T) {
 // the current desired state: a previously-rendered object dropped from the set
 // has its file removed, so ArgoCD prunes it from the cluster.
 func TestWriteManifests_PrunesStale(t *testing.T) {
+	requireManifestPublication(t)
 	out := t.TempDir()
 	full := &RenderSet{Namespace: DefaultNamespace, Objects: []client.Object{managedGaggle("web"), managedGaggle("api")}}
 	if _, err := full.WriteManifests(out); err != nil {

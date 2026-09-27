@@ -9,6 +9,13 @@ two generic integration paths:
   after the normal headless authentication preflight proves that a generated
   `--session-id` produces the corresponding non-empty native Copilot transcript.
 
+Contract version 2 adds an optional integration path for launchers that can
+validate authentication without starting an agent or contacting a model. A v2
+launcher declares bounded `authProbe.args`; Goobers appends them to the same
+configured launcher prefix used by normal stages and supplies the same resolved
+`agent:model` credential environment. A nonzero exit, timeout, or runner error
+fails closed with the existing actionable sign-in diagnostic.
+
 For mode 3 stage pods, the worker carries only the selected goober's configured
 argv in the content-addressed execution kit, for both task invocations and
 reviewer gates. Each target image must provide that executable and any launcher
@@ -26,8 +33,12 @@ Stderr diagnostics are captured separately and are never parsed as the contract.
 A nonzero exit is treated as an absent handshake and proceeds to the behavioral
 `adapter-managed` proof. Truncated output, malformed successful output, unknown
 fields, and unsupported versions or modes fail closed before workflow dispatch.
-Successful contracts and behavioral
-proofs are cached for that Goobers process. Changing a wrapper requires
+Version 1 retains the current prompt probe and, for `adapter-managed`, its
+behavioral native-transcript proof. Version 2 requires `authProbe`; its explicit
+`sessionMode` declaration is the launcher's compatibility assertion for the
+normal runtime path, while authentication is checked separately without a model
+request. Successful contracts and behavioral proofs are cached for that Goobers
+process. Changing a wrapper requires
 restarting that process. A separate worker or stage process performs
 its own proof; verification is never written to configuration or shared storage.
 
@@ -46,6 +57,8 @@ runner:
     copilot: ["forwarding-launcher", "copilot"]
   harnessSessionArgs:
     copilot: ["--session-file", "{sessionId}.jsonl"]
+  harnessPreflightArgs:
+    copilot: ["<launcher-specific-argument>"]
 ```
 
 Removals apply to harness execution, version/authentication preflight, and
@@ -61,6 +74,14 @@ the corresponding native Copilot transcript. Use it when a launcher already
 has a stable session argument but cannot implement `--goobers-launcher-contract`.
 Only the Copilot harness currently supports this setting.
 
+`runner.harnessPreflightArgs` appends literal arguments only to the bounded
+authentication probe. For v1 launchers they follow the fallback prompt
+arguments; for v2 launchers they follow the declared `authProbe.args`. Ordinary
+workflow invocations never receive them. Use this for a forwarding launcher
+that can skip optional startup work during preflight while retaining its full
+integration set for agentic runs. The setting requires a corresponding
+`harnessCommand`; only the Copilot harness currently supports it.
+
 Model discovery is not sent through a custom launcher. Goobers connects the
 Copilot SDK directly to `copilot` for that server-mode exchange, then uses the
 configured launcher for authentication preflight and workflow execution. This
@@ -75,6 +96,26 @@ not silently add a requirement that `copilot` also be on `PATH`.
 ```json
 {"version":1,"sessionMode":"adapter-managed"}
 ```
+
+The lightweight authentication form is:
+
+```json
+{
+  "version": 2,
+  "sessionMode": "adapter-managed",
+  "authProbe": {
+    "args": ["auth", "status"]
+  }
+}
+```
+
+`authProbe.args` must contain 1 to 16 nonempty literal arguments, each at most
+1 KiB and without NUL bytes. The launcher must implement this invocation as an
+authentication-only check of the same credential and transport path used by a
+normal invocation. It must not start an agent, send a prompt, consume an AI
+request, select or create a session, or modify the workspace. Launchers that
+cannot make that guarantee must continue returning version 1 and use the
+existing prompt fallback.
 
 Supported session ownership modes:
 
@@ -104,10 +145,12 @@ on its complete configured launch prefix.
 
 The handshake is an explicit compatibility declaration. The behavioral fallback
 is proof only of direct local session forwarding, not of every launcher feature.
-Configured launchers therefore use native-session usage accounting and do not
-receive optional Copilot flags inferred only from the reported CLI version.
-Validate a new launcher end to end with a harmless workflow in its target OS and
-isolation posture.
+Goobers separately probes whether a launcher accepts the version-supported
+`--usage-output-file` option together with `--version`, without starting an
+agent. Launchers that pass receive authoritative usage-file accounting;
+launchers that do not retain native-session usage accounting. Validate a new
+launcher end to end with a harmless workflow in its target OS and isolation
+posture.
 
 ## Durable partial transcripts
 
@@ -144,3 +187,78 @@ one, the final bytes travel inline over the journal connection. This does not
 grant additional authentication scopes. Checkpoint and finalization calls have
 separate 10-second and 30-second deadlines. Failed or uncertain checkpoint writes
 are surfaced as capture errors rather than silently advancing the source cursor.
+
+## Required MCP readiness before model dispatch
+
+Direct Copilot invocations with the default arguments on macOS and Linux use
+one owned headless process and one native SDK session for both the required
+`goobers-io` check and model turns. Startup and each readiness phase have a
+15-second cap within the invocation's total timeout. The adapter initializes
+that session's tools, checks the server's connection, and requires all five
+`goobers-io` tools in its inventory before sending the model prompt. A separate
+throwaway MCP connection is not readiness evidence for this session.
+
+The controlled session's permission handler permits only the declared tools,
+keeps file requests within the workspace and the sandbox's existing narrow
+linked-worktree Git grants (including symlink checks), and does
+not approve URL access, managed approvals, or sandbox bypass. `--allow-all-tools`
+is not treated as `--allow-all-paths` or `--allow-all-urls`. Custom permission
+arguments keep the ordinary CLI execution path. Unsupported or ambiguous
+permission requests fail closed in this unattended session.
+
+A `runner.annotation` with kind `required-mcp-readiness` records the `server`,
+`source`, `category`, `connection`, `inventory`, and `authorization` observations
+with phase `before-model`, schema version 1, and the adapter identity. Server
+errors, tool responses, credentials, and task content are excluded. Bounded
+per-stage conditions are projected into the existing read model and status run
+summaries without opening journals. A verified recovery clears an active
+condition; unobservable authorization cannot clear an earlier authorization
+failure. The 1.0.66 partial check can clear only transport/tool-availability
+failures. Truncated or absent observations are explicit coverage limitations.
+Fleet consumers must combine observations in time order within the same
+workflow/stage/branch/adapter/server context, so a newer run's recovery can
+clear an older run's failure without clearing a different stage.
+
+When the runtime supports native tool execution, the adapter invokes only
+`get_run_info` through the session's authorization pipeline. This read-only
+probe creates no input-inspection receipts or artifacts. An observed denial is
+`tool_authorization_failure`; a server requiring authentication is
+`authentication_failure`. These are ordinary failed attempts, not free
+infrastructure retries. Missing servers/tools and transport failures stop
+before a model turn and use the runner's existing bounded infrastructure retry
+allowance, independently of policy attempts. Exhausting that allowance fails
+the stage; the adapter does not add an internal retry loop.
+
+Copilot CLI 1.0.66 supports the connection and inventory checks but returns
+JSON-RPC method-not-found for the native authorization probe. For that specific
+structured response, the adapter records connection and inventory as `ready`,
+authorization as `unobservable`, and the overall category as
+`check_unobservable`, then permits the turn on the same session. This preserves
+working deployments while preventing the observed registered-but-absent case;
+it cannot promise to prevent authorization surprises on that runtime. Other
+probe errors do not take this compatibility path. A fully `ready` observation
+requires a successful native authorization probe.
+
+Claude, Windows Copilot, custom Copilot launchers, and custom Copilot arguments
+retain their existing execution paths and explicitly report
+`check_unobservable`. Their existing post-turn checks remain in place. Direct
+controlled Copilot sessions also inspect their actual server list after the
+turn, because CLI-global lifecycle logs do not reliably describe SDK sessions.
+After any completion-recovery turn, a bounded five-second finalization collects
+session usage and gracefully shuts down the native session before reading
+native captures. The usage RPC preserves per-model accounting even when a
+persistent headless session has not yet written its ordinary CLI shutdown
+record. Missing or invalid usage is not invented; capture/finalization errors
+remain visible to the stage.
+
+The opt-in read-only live checks send no model prompt:
+
+```sh
+GOOBERS_COPILOT_MCP_READINESS=1 go test -tags integration ./internal/harness \
+  -run '^TestIntegrationCopilotRequiredMCP' -count=1 -v
+```
+
+They require an installed Copilot CLI and check absent-server rejection,
+connection/tool inventory, native authorization capability, and post-turn
+session evidence. The always-on adapter tests cover model-dispatch counts,
+authorization rejection, timeout bounds, and the partial-observation policy.

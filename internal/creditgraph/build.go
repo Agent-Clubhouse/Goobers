@@ -76,6 +76,7 @@ func Build(input Input) (*Graph, error) {
 	if err := b.addAgents(input.Events); err != nil {
 		return nil, err
 	}
+	b.addRuntimeComponents(input)
 	if err := b.addSpans(input); err != nil {
 		return nil, err
 	}
@@ -83,6 +84,41 @@ func Build(input Input) (*Graph, error) {
 	b.addEvaluators(input.Events)
 	b.reportUnresolvedToolCalls()
 	return b.graph, nil
+}
+
+func (b *builder) addRuntimeComponents(input Input) {
+	for _, event := range input.Events {
+		if event.Type != journal.EventSpanRecorded || event.Ref == nil || event.DataSchema != telemetry.SpanSchema {
+			continue
+		}
+		data, ok := input.SpanData[event.Ref.Digest]
+		if !ok {
+			continue
+		}
+		var span telemetry.SpanRecord
+		if json.Unmarshal(data, &span) != nil {
+			continue
+		}
+		parent := runNodeID(b.graph.RunID)
+		if event.Stage != "" {
+			parent = b.ensureStage(event.Stage, event.Attempt, false)
+		}
+		b.addRecordedComponent(parent, KindRuntime, "harness", span.Attributes[telemetry.AttrHarnessVersion], event)
+		b.addRecordedComponent(parent, KindEnvironment, "deployment", span.Attributes["deployment.environment"], event)
+	}
+}
+
+func (b *builder) addRecordedComponent(parent string, kind NodeKind, component, value string, event journal.Event) {
+	if value == "" || event.Ref == nil {
+		return
+	}
+	id := string(kind) + ":" + event.Ref.Digest + ":" + component
+	b.addNode(Node{
+		ID: id, Kind: kind, Label: value, Stage: event.Stage, Attempt: event.Attempt,
+		Provenance: ProvenanceRecorded,
+		Attributes: map[string]string{"component": component, "spanDigest": event.Ref.Digest},
+	})
+	b.addEdge(parent, id, EdgeContains, ProvenanceRecorded)
 }
 
 func (b *builder) collectSpanProvenance(events []journal.Event) {
@@ -470,7 +506,7 @@ func (b *builder) addToolCall(record genaiRecord, ownerID, spanDigest, lastModel
 		b.gap(id, KindToolCall, "tool call follows no recorded model invocation")
 	}
 	if record.ToolCall.Name != "" {
-		b.addEdge(id, b.ensureTool(record.ToolCall.Name), EdgeUses, ProvenanceRecorded)
+		b.addEdge(id, b.ensureTool(record.ToolCall.Name, spanDigest), EdgeUses, ProvenanceRecorded)
 	}
 	if callID == "" {
 		b.gap(id, KindToolCall, "tool call carries no call id, so its result cannot be joined")
@@ -515,14 +551,39 @@ func spanCallKey(spanDigest, callID string) string {
 	return spanDigest + "\x00" + callID
 }
 
-func (b *builder) ensureTool(name string) string {
+func (b *builder) ensureTool(name, spanDigest string) string {
 	if id, ok := b.toolNodes[name]; ok {
+		node := &b.graph.Nodes[b.graph.index[id]]
+		digests := toolSpanDigests(node.Attributes)
+		for _, digest := range digests {
+			if digest == spanDigest {
+				return id
+			}
+		}
+		digests = append(digests, spanDigest)
+		encoded, _ := json.Marshal(digests)
+		node.Attributes["spanDigests"] = string(encoded)
 		return id
 	}
 	id := "tool:" + name
 	b.toolNodes[name] = id
-	b.addNode(Node{ID: id, Kind: KindTool, Label: name, Provenance: ProvenanceRecorded})
+	encoded, _ := json.Marshal([]string{spanDigest})
+	b.addNode(Node{
+		ID: id, Kind: KindTool, Label: name, Provenance: ProvenanceRecorded,
+		Attributes: map[string]string{"spanDigest": spanDigest, "spanDigests": string(encoded)},
+	})
 	return id
+}
+
+func toolSpanDigests(attributes map[string]string) []string {
+	var digests []string
+	if encoded := attributes["spanDigests"]; encoded != "" {
+		_ = json.Unmarshal([]byte(encoded), &digests)
+	}
+	if len(digests) == 0 && attributes["spanDigest"] != "" {
+		digests = []string{attributes["spanDigest"]}
+	}
+	return digests
 }
 
 func (b *builder) reportUnresolvedToolCalls() {
@@ -593,6 +654,7 @@ func (b *builder) addEvaluators(events []journal.Event) {
 		if event.Type == journal.EventGateOverridden {
 			attributes["overridden"] = "true"
 		}
+		attributes["journalSequence"] = strconv.FormatUint(event.Seq, 10)
 		recorded := event.Gate != "" && event.Verdict != ""
 		b.addNode(Node{
 			ID: id, Kind: KindEvaluator, Label: event.Gate,

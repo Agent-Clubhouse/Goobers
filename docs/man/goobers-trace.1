@@ -13,7 +13,9 @@ its trace spans. Use --transcripts to show all recorded agent transcripts,
 or --transcript to select one stage. Use --summary for run metadata and
 review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's
 events until it finishes; --json --follow emits JSON Lines (default path
-"."). Remediation escalations include the typed outcome, attempted flag,
+"."). Continuation traces include source/continuation links, resume target,
+reused branch, injected input names, and historical repass accounting.
+Remediation escalations include the typed outcome, attempted flag,
 and attempted causes in the text summary and JSON `escalation.remediation`
 object. Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO
 error, 130 = interrupted while following.

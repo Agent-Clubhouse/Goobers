@@ -3,7 +3,10 @@ package harness
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/goobers/goobers/internal/diagnostics/executiondeadline"
+	"github.com/goobers/goobers/internal/diagnostics/featureusage"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -30,6 +33,8 @@ func (e *Executor) beginTranscriptCapture(stage string, req *RunRequest) (journa
 }
 
 func (e *Executor) runAdapter(ctx context.Context, req RunRequest, nested NestedPolicyCapability) (Outcome, error) {
+	defer featureusage.RecordAdapter(e.recorder, e.adapter.Name(), req.Envelope.TaskID)
+	ctx = executiondeadline.WithRecorder(ctx, e.recorder, strings.TrimPrefix(req.Envelope.TaskID, req.Envelope.RunID+":"), req.Attempt)
 	if nested != nil {
 		return nested.RunNested(ctx, req)
 	}

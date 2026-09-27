@@ -85,3 +85,53 @@ func TestRecoveryRepositoriesDoesNotCreateOrFollowPin(t *testing.T) {
 		t.Fatalf("non-directory accepted: %t %v", found, err)
 	}
 }
+
+// TestRecoveryRepositoriesVisitsThroughAliasedPinnedRoot pins the fix for a
+// live wedge: an instance migrated from the pre-gaggle layout keeps its
+// instance-root workcopies entry as an alias to the gaggle's own directory, so
+// the node-wide pinned root the daemon hands this manager is a symlink. Judging
+// that alias by the rule meant for the custody directories refused every
+// recovery repository visit, which silently disabled snapshot retirement for
+// the whole instance.
+func TestRecoveryRepositoriesVisitsThroughAliasedPinnedRoot(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "gaggles", "one", "workcopies")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "workcopies")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	m, err := NewManager(t.TempDir(), WithPinnedRoot(alias))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const repo = "https://example.invalid/owner/repo.git"
+	key := repoKey(repo)
+	mirror := m.repoDirForKey(key)
+	pin := filepath.Join(alias, key, "pin")
+	for _, path := range []string{mirror, pin} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, err := lock.TryAcquire(filepath.Join(alias, key, "pin.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Release(); err != nil {
+		t.Fatal(err)
+	}
+	var visited []string
+	found, err := m.WithRecoveryRepositories(context.Background(), repo, func(paths []string) error {
+		visited = slices.Clone(paths)
+		return nil
+	})
+	if err != nil || !found {
+		t.Fatalf("aliased pinned root refused the visit: %t %v", found, err)
+	}
+	if !slices.Equal(visited, []string{mirror, pin}) {
+		t.Fatalf("incomplete repositories through the alias: %v", visited)
+	}
+}

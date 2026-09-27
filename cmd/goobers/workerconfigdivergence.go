@@ -165,6 +165,8 @@ type remoteWorkerDivergenceAppender struct {
 type localWorkerDivergenceAppender struct{ layout instance.Layout }
 
 func (a localWorkerDivergenceAppender) Append(event journal.Event) error {
+	stopTelemetry := startCommandJournalTelemetry(a.layout, os.Stderr)
+	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(a.layout.SchedulerDir())
 	if err != nil {
 		return err

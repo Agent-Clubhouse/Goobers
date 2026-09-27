@@ -73,6 +73,9 @@ type RetentionOptions struct {
 	// IsBranchProtected reports whether a branch is still referenced by a
 	// nonterminal run, even when the run encoded in its name is terminal.
 	IsBranchProtected func(managerRoot, branch string) (bool, error)
+	// IsAncestor overrides the ancestry check for deterministic retention
+	// tests. Production uses commitIsAncestor.
+	IsAncestor func(context.Context, string, string, string) (bool, error)
 }
 
 // RetentionResult reports one candidate. Deleted is true only after successful
@@ -115,6 +118,11 @@ type retainedWorktree struct {
 type localBranch struct {
 	name string
 	tip  string
+}
+
+type retentionRunBranch struct {
+	localBranch
+	runID string
 }
 
 // PruneRetained applies one storage cap across all managers and prunes merged
@@ -414,10 +422,7 @@ func pruneMergedBranches(ctx context.Context, managers []*Manager, opts Retentio
 				}
 				return results, warnings, fmt.Errorf("worktree: stat managed repository %s: %w", repoDir, err)
 			}
-			lock := manager.lockFor(key)
-			lock.Lock()
-			repoResults, repoWarnings, err := pruneRepoMergedBranches(ctx, manager, repoDir, opts)
-			lock.Unlock()
+			repoResults, repoWarnings, err := pruneRepoMergedBranches(ctx, manager, key, repoDir, opts)
 			results = append(results, repoResults...)
 			warnings = append(warnings, repoWarnings...)
 			if err != nil {
@@ -444,24 +449,20 @@ func pruneMergedBranches(ctx context.Context, managers []*Manager, opts Retentio
 // don't.
 var DeleteBranchHook = func() {}
 
-func pruneRepoMergedBranches(ctx context.Context, manager *Manager, repoDir string, opts RetentionOptions) ([]RetentionResult, []RetentionWarning, error) {
+func pruneRepoMergedBranches(ctx context.Context, manager *Manager, key, repoDir string, opts RetentionOptions) ([]RetentionResult, []RetentionWarning, error) {
 	branches, err := localBranches(ctx, repoDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("worktree: list local branches in %s: %w", repoDir, err)
 	}
 	var bases []localBranch
-	type runBranch struct {
-		localBranch
-		runID string
-	}
-	var runs []runBranch
+	var runs []retentionRunBranch
 	for _, branch := range branches {
 		runID, ok := manager.runIDForBranch(branch.name)
 		if !ok {
 			bases = append(bases, branch)
 			continue
 		}
-		runs = append(runs, runBranch{localBranch: branch, runID: runID})
+		runs = append(runs, retentionRunBranch{localBranch: branch, runID: runID})
 	}
 
 	var results []RetentionResult
@@ -491,8 +492,9 @@ branches:
 			continue
 		}
 		merged := false
+		var selectedBase localBranch
 		for _, base := range bases {
-			merged, err = commitIsAncestor(ctx, repoDir, branch.tip, base.tip)
+			merged, err = retentionIsAncestor(ctx, repoDir, branch.tip, base.tip, opts)
 			if err != nil {
 				// A cleanup git subprocess timeout (#4325) skips only this
 				// one branch — reported for retry on the next sweep —
@@ -509,6 +511,7 @@ branches:
 				return results, warnings, fmt.Errorf("worktree: inspect whether branch %s is merged into %s: %w", branch.name, base.name, err)
 			}
 			if merged {
+				selectedBase = base
 				break
 			}
 		}
@@ -522,8 +525,11 @@ branches:
 		}
 		if opts.Delete {
 			DeleteBranchHook()
-			if err := runCleanupGit(ctx, repoDir, "branch delete", "branch", "-D", "--", branch.name); err != nil {
+			deleted, err := commitMergedBranch(ctx, manager, key, repoDir, branch, selectedBase, opts)
+			if err != nil {
 				result.Err = err
+			} else if !deleted {
+				continue
 			} else {
 				result.Deleted = true
 			}
@@ -531,6 +537,60 @@ branches:
 		results = append(results, result)
 	}
 	return results, warnings, nil
+}
+
+func retentionIsAncestor(ctx context.Context, repoDir, ancestor, descendant string, opts RetentionOptions) (bool, error) {
+	if opts.IsAncestor != nil {
+		return opts.IsAncestor(ctx, repoDir, ancestor, descendant)
+	}
+	return commitIsAncestor(ctx, repoDir, ancestor, descendant)
+}
+
+func commitMergedBranch(ctx context.Context, manager *Manager, key, repoDir string, branch retentionRunBranch, base localBranch, opts RetentionOptions) (bool, error) {
+	lock := manager.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+
+	current, err := localBranches(ctx, repoDir)
+	if err != nil {
+		return false, err
+	}
+	currentBranches := make(map[string]string, len(current))
+	for _, currentBranch := range current {
+		currentBranches[currentBranch.name] = currentBranch.tip
+	}
+	if currentBranches[branch.name] != branch.tip || currentBranches[base.name] != base.tip {
+		return false, nil
+	}
+	if opts.IsRunTerminal != nil {
+		terminal, err := opts.IsRunTerminal(manager.Root, branch.runID)
+		if err != nil {
+			return false, err
+		}
+		if !terminal {
+			return false, nil
+		}
+	}
+	if opts.IsBranchProtected != nil {
+		protected, err := opts.IsBranchProtected(manager.Root, branch.name)
+		if err != nil {
+			return false, err
+		}
+		if protected {
+			return false, nil
+		}
+	}
+	merged, err := retentionIsAncestor(ctx, repoDir, branch.tip, base.tip, opts)
+	if err != nil {
+		return false, err
+	}
+	if !merged {
+		return false, nil
+	}
+	if err := runCleanupGit(ctx, repoDir, "branch delete", "branch", "-D", "--", branch.name); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func localBranches(ctx context.Context, repoDir string) ([]localBranch, error) {

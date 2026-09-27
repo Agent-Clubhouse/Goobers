@@ -29,21 +29,22 @@ function Harness({
   graph,
   initial,
   terminal,
+  onInspect,
   onSeek,
-  workflow,
 }: {
   events: RunEvent[];
   graph?: WorkflowGraph;
   initial: number;
   terminal: boolean;
+  onInspect?: (seq: number) => void;
   onSeek?: (seq: number) => void;
-  workflow?: string;
 }) {
   const [seq, setSeq] = useState(initial);
   return (
     <ReplayScrubber
       events={events}
       graph={graph}
+      onInspect={onInspect}
       onSeek={(next) => {
         onSeek?.(next);
         setSeq(next);
@@ -51,7 +52,6 @@ function Harness({
       runId="run-1"
       selectedSeq={seq}
       terminal={terminal}
-      workflow={workflow}
     />
   );
 }
@@ -96,7 +96,7 @@ describe("replay scrubber", () => {
       vi.advanceTimersByTime(2_000);
     });
     expect(onSeek).toHaveBeenCalledWith(2);
-    expect(screen.getByText(/Raw event 2 of 2 · Sequence 2/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next raw event" })).toBeDisabled();
   });
 
   it("scrubs by compressed elapsed time and supports keyboard event stepping", () => {
@@ -181,6 +181,26 @@ describe("replay scrubber", () => {
     expect(chapter).toHaveAttribute("aria-current", "step");
   });
 
+  it("opens selected chapter details through the inspection callback", () => {
+    const onInspect = vi.fn();
+    render(
+      <Harness
+        events={[
+          ev(1, "2026-01-01T00:00:00Z", {
+            stage: "implement",
+          }),
+        ]}
+        initial={1}
+        onInspect={onInspect}
+        terminal
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Go to Workflow transition chapter/ }));
+    expect(onInspect).toHaveBeenCalledWith(1);
+    expect(screen.queryByRole("region", { name: "Selected replay event" })).not.toBeInTheDocument();
+  });
+
   it("labels chapters and stage segments with the run's own stage and goober (#2538)", () => {
     const graph: WorkflowGraph = {
       name: "implementation",
@@ -203,7 +223,6 @@ describe("replay scrubber", () => {
         graph={graph}
         initial={1}
         terminal
-        workflow="implementation"
       />,
     );
 
@@ -212,11 +231,6 @@ describe("replay scrubber", () => {
         name: /Go to Workflow transition chapter at event 1: .*implement · builder-goober\./,
       }),
     ).toBeInTheDocument();
-
-    const scope = screen.getByRole("group", { name: "Workflow, stage kind, and goober" });
-    expect(within(scope).getByText("implementation")).toBeInTheDocument();
-    expect(within(scope).getByText("implement")).toBeInTheDocument();
-    expect(within(scope).getByText("builder-goober")).toBeInTheDocument();
 
     expect(
       screen.getByRole("note", { name: "Stage implement, owned by builder-goober" }),
@@ -518,7 +532,7 @@ describe("replay scrubber", () => {
     act(() => {
       vi.advanceTimersByTime(10_000);
     });
-    expect(screen.getByText(/Sequence 2/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next raw event" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
   });
 });

@@ -22,3 +22,4 @@ isolated worktree checked out from the target Python repository.
    stage runs the gaggle's declared `ciCommand` authoritatively.
 4. Commit your change to the run branch. A separate deterministic stage pushes
    it; you never push or open the PR yourself.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

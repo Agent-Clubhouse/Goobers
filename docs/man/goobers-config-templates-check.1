@@ -1,0 +1,17 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CONFIG TEMPLATES CHECK" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers config templates check \- check tracked templates without applying updates
+.SH SYNOPSIS
+\fBgoobers config templates check\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers config templates check [instance-root]
+
+Check enrolled runtime gaggles for template changes and persist notify-only
+status. Fetches source branches but never changes definitions or accepted pins.
+Reports changed files, merge conflicts, pending backprop and check errors.
+Exit 0 means checks succeeded (updates may be available); 1 means a check failed.
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

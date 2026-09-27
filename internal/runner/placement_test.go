@@ -41,6 +41,8 @@ func TestSelfPlacementSeparatesNodeFromHost(t *testing.T) {
 	t.Setenv(EnvPlacementNode, "")
 	t.Setenv(EnvPlacementPod, "")
 	t.Setenv(EnvPlacementImage, "")
+	t.Setenv(EnvPlacementBuild, "")
+	t.Setenv(EnvPlacementWorker, "")
 	bare := selfPlacement()
 	if bare.Runner != journal.PlacementRunnerSelf || bare.OS != runtime.GOOS {
 		t.Fatalf("bare placement = %+v, want runner=self os=%s", bare, runtime.GOOS)
@@ -50,6 +52,9 @@ func TestSelfPlacementSeparatesNodeFromHost(t *testing.T) {
 	}
 	if bare.Host != hostname {
 		t.Fatalf("bare placement host = %q, want hostname %q", bare.Host, hostname)
+	}
+	if bare.Build != "" || bare.Worker != "" {
+		t.Fatalf("bare placement invented build/worker identity: %+v", bare)
 	}
 	if bare.Pod != "" || bare.Image != "" {
 		t.Fatalf("bare placement invented pod/image identity: %+v", bare)

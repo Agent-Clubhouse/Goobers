@@ -126,12 +126,16 @@ func runSelfUpdateWith(
 		return failProviderStage(stderr, "self-update", err, resultFile)
 	}
 	if err := writeProviderStageResult(resultFile, map[string]interface{}{
-		"updateRequested":    result.UpdateRequested,
-		"policy":             result.Policy,
-		"target":             result.Target,
-		"skippedInvalidTags": result.SkippedInvalidTags,
+		"updateRequested":           result.UpdateRequested,
+		"policy":                    result.Policy,
+		"target":                    result.Target,
+		"currentVersionUnparseable": result.CurrentVersionUnparseable,
+		"skippedInvalidTags":        result.SkippedInvalidTags,
 	}); err != nil {
 		return failProviderStage(stderr, "write self-update result", err, resultFile)
+	}
+	if result.CurrentVersionUnparseable {
+		pf(stdout, "self-update: current version is not valid SemVer; allowing recovery to release %s\n", result.Target)
 	}
 	if result.SkippedInvalidTags > 0 {
 		pf(stdout, "self-update: skipped %d release tag(s) that did not parse as SemVer\n", result.SkippedInvalidTags)

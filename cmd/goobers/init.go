@@ -386,6 +386,8 @@ func printDefaultedTargetNote(stderr io.Writer, err error, narg int) {
 }
 
 func ensureInitCompleted(root string) error {
+	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(root), os.Stderr)
+	defer stopTelemetry()
 	instanceLog, _, err := journal.OpenInstanceLog(instance.NewLayout(root).SchedulerDir())
 	if err != nil {
 		return err

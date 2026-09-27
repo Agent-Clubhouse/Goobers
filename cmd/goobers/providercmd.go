@@ -139,7 +139,22 @@ func isJournaledClaimsLockTimeout(err error) bool {
 // layoutFor is instance.NewLayout, named for readability at each provider-
 // chain subcommand's call site.
 func layoutFor(root string) instance.Layout {
-	return instance.NewLayout(root)
+	layout := instance.NewLayout(root)
+	if os.Getenv(executor.ConfigGenerationEnvVar) != "" && sameInstanceRoot(root, os.Getenv(executor.InstanceRootEnvVar)) {
+		if directory := os.Getenv(executor.ConfigDirectoryEnvVar); directory != "" {
+			return layout.WithConfigDir(directory)
+		}
+	}
+	return layout
+}
+
+func sameInstanceRoot(root, admitted string) bool {
+	first, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	second, err := filepath.Abs(admitted)
+	return err == nil && first == second
 }
 
 // providerStageRoot resolves the instance root a provider-chain subcommand
@@ -234,6 +249,9 @@ func validateRoutedRepo(routed providers.RepositoryRef) error {
 // independently, so it stays covered by the run's registrar-based secret
 // scrubbing rather than becoming a second, unregistered copy of the secret.
 func providerToken(cap capability.Capability) (string, error) {
+	if err := requireCurrentStageMergeAuthority(cap); err != nil {
+		return "", err
+	}
 	envVar := executor.CredentialEnvVar(string(cap))
 	token := os.Getenv(envVar)
 	if token == "" {
@@ -374,6 +392,26 @@ const (
 	// errorCodeBranchMergeQueued is GitHub's transient GH006 rejection when
 	// the branch being updated belongs to a pull request in the merge queue.
 	errorCodeBranchMergeQueued = "github_branch_merge_queued"
+	// errorCodeHeadMoved is a landing refused because the pull request's head
+	// moved past the pinned commit (providers.PullRequestHeadMovedError; on
+	// ADO, the server-side 409 TF401192 of ADO-N9). Not retryable: the stale
+	// verdict must be re-reviewed at the new head, never landed.
+	errorCodeHeadMoved = "provider_head_moved"
+	// errorCodePolicyNotMet is a completion refused because a required branch
+	// policy is not yet satisfied (providers.PullRequestPolicyNotMetError; on
+	// ADO, the 403 GitPullRequestUpdateRejectedByPolicyException). It is not
+	// an auth failure, and is never retried with a policy bypass.
+	errorCodePolicyNotMet = "provider_policy_not_met"
+	// errorCodeBranchPolicyProtected is a direct push (or force-push)
+	// refused because the target branch is protected by an enabled ADO
+	// branch policy (policyProtectedPushError, from git's own TF402455 /
+	// GitRefUpdateRejectedByPolicyException rejection of the raw `git
+	// push`, ADO-N26). Distinct from errorCodePolicyNotMet, which is the
+	// REST completion API's own 403 refusal of a pull request that is
+	// already open — this is the git-protocol refusal of a push that never
+	// became a PR at all. Never an auth failure and never retried: retrying
+	// (as a ref race or with a fresh credential) hits the identical policy.
+	errorCodeBranchPolicyProtected = "branch_policy_protected"
 	// errorCodeProvider is the fallback for a provider-originated failure
 	// that doesn't classify into any of the above (e.g. a non-401/403/5xx
 	// status such as a 422 validation error). Still typed and diagnosable —
@@ -427,6 +465,17 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if strings.Contains(message, "gh006") && strings.Contains(message, "added to a merge queue") {
 		return errorCodeBranchMergeQueued, true, nil
 	}
+	if code, ok := classifyLandingRefusal(err); ok {
+		return code, false, nil
+	}
+	// Checked ahead of IsAuthenticationError (ADO-N26): a policy-protected
+	// push's underlying git failure carries no HTTP status a credential
+	// classifier could recognize, but its message text alone must never be
+	// misread as a credential problem either.
+	var policyPush *policyProtectedPushError
+	if errors.As(err, &policyPush) {
+		return errorCodeBranchPolicyProtected, false, nil
+	}
 	if providers.IsAuthenticationError(err) {
 		return errorCodeAuthFailed, false, nil
 	}
@@ -469,6 +518,21 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 		return telemetry.ErrCodeInfraJournal, true, nil
 	}
 	return errorCodeProvider, false, nil
+}
+
+// classifyLandingRefusal names the typed landing refusals (ADO-N9) ahead of
+// the auth and status-code readings, so a policy refusal's 403 is never
+// reported as an auth failure.
+func classifyLandingRefusal(err error) (string, bool) {
+	var headMoved providers.PullRequestHeadMovedError
+	if errors.As(err, &headMoved) {
+		return errorCodeHeadMoved, true
+	}
+	var policy providers.PullRequestPolicyNotMetError
+	if errors.As(err, &policy) {
+		return errorCodePolicyNotMet, true
+	}
+	return "", false
 }
 
 // runProviderStageCommand is the command-boundary result contract for provider
@@ -819,6 +883,8 @@ func acquireClaimLock(lockPath, operation string, timeout time.Duration, started
 }
 
 func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration time.Duration) error {
+	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {
 		return fmt.Errorf("open instance log for slow claim lock: %w", err)
@@ -842,6 +908,8 @@ func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration 
 }
 
 func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext, timeoutErr *claimsLockTimeoutError) error {
+	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {
 		return fmt.Errorf("open instance log for claim lock timeout: %w", err)

@@ -59,7 +59,7 @@ func TestScaffoldGaggleCreatesEmptyGaggle(t *testing.T) {
 	if !strings.Contains(stdout, "2 gaggle(s), 1 goober(s), 1 workflow(s)") {
 		t.Fatalf("validate did not load the new gaggle: %q", stdout)
 	}
-	for _, warning := range warningLines(stdout) {
+	for _, warning := range warningLines(withoutSafetyWarnings(stdout)) {
 		if strings.HasPrefix(warning, "WARNING "+placeholderFindingCode+" ") ||
 			strings.Contains(warning, "has no schedule trigger") {
 			continue
@@ -255,13 +255,13 @@ func TestScaffoldGaggleRenameRewritesIdentity(t *testing.T) {
 	}
 
 	// The whole point: validate is clean (module the pre-existing,
-	// unavoidable manual-trigger and placeholder warnings the starter
+	// unavoidable manual-trigger, placeholder, and advisory warnings the starter
 	// scaffold always carries).
 	code, stdout, stderr = runArgs(t, "validate", root)
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	for _, warning := range warningLines(stdout) {
+	for _, warning := range warningLines(withoutSafetyWarnings(stdout)) {
 		if strings.HasPrefix(warning, "WARNING "+placeholderFindingCode+" ") ||
 			strings.Contains(warning, "has no schedule trigger") {
 			continue

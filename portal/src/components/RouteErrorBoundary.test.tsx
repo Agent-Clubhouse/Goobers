@@ -29,6 +29,8 @@ describe("RouteErrorBoundary", () => {
     );
 
     expect(screen.getByRole("alert")).toHaveTextContent("This page hit an error");
+    expect(screen.getByText("Error details")).toBeInTheDocument();
+    expect(screen.getByText(/Error: boom/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
     consoleError.mockRestore();
   });

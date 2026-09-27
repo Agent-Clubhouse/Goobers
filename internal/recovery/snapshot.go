@@ -58,13 +58,18 @@ func CaptureSnapshot(ctx context.Context, repository, runID string, identityTime
 	if err := snapshotIndex(ctx, repository, environment); err != nil {
 		return "", err
 	}
-	for _, args := range [][]string{
-		// With an empty source index, an explicit "." pathspec is unmatched
-		// and Git fails before capturing new files. The normalized worktree
-		// root and private index already scope this update to the repository.
-		{"add", "--update", "--"},
-		{"--literal-pathspecs", "add", "--all", "--force", "--sparse", "--pathspec-file-nul", "--pathspec-from-file=" + paths},
-	} {
+	selected, err := os.Stat(paths)
+	if err != nil {
+		return "", fmt.Errorf("inspect recovery snapshot paths: %w", err)
+	}
+	// With an empty source index, an explicit "." pathspec is unmatched.
+	commands := [][]string{{"add", "--update", "--"}}
+	// An empty pathspec file makes forced `add --all` capture the whole
+	// worktree, including ignored build outputs. Only add selected paths.
+	if selected.Size() > 0 {
+		commands = append(commands, []string{"--literal-pathspecs", "add", "--all", "--force", "--sparse", "--pathspec-file-nul", "--pathspec-from-file=" + paths})
+	}
+	for _, args := range commands {
 		if err := recoveryGitWithEnv(ctx, repository, io.Discard, environment, args...); err != nil {
 			return "", fmt.Errorf("capture recovery index: %w", err)
 		}

@@ -205,7 +205,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("release", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		version          = fs.String("version", "", "release version (default: git describe --tags --always --dirty)")
+		version          = fs.String("version", "", "release version (default: nearest v[0-9]* product tag from git describe)")
 		commit           = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
 		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
 		outDir           = fs.String("output", "dist", "output directory for release assets")
@@ -239,7 +239,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		skipUnbuildable:       *skip,
 	}
 
-	opts.version = firstNonEmpty(*version, os.Getenv("GOOBERS_VERSION"), gitOutput("describe", "--tags", "--always", "--dirty"), "dev")
+	opts.version = firstNonEmpty(*version, os.Getenv("GOOBERS_VERSION"), gitOutput("describe", "--tags", "--match", "v[0-9]*", "--always", "--dirty"), "dev")
 	opts.commit = firstNonEmpty(*commit, gitOutput("rev-parse", "--short", "HEAD"), "none")
 	opts.date = firstNonEmpty(*date, gitOutput("show", "-s", "--format=%cI", "HEAD"), "unknown")
 

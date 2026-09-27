@@ -23,7 +23,7 @@ func costPublicationAllowed(root, gaggle string, repo providers.RepositoryRef, s
 }
 
 func resolveCostPublication(root, gaggle string, repo providers.RepositoryRef) (bool, error) {
-	layout := instance.NewLayout(root)
+	layout := layoutFor(root)
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil && (root != "" || gaggle != "" || !errors.Is(err, os.ErrNotExist)) {
 		return false, errors.New("instance configuration is unreadable or invalid")

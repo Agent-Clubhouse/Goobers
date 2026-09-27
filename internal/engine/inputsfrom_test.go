@@ -151,7 +151,8 @@ func TestInputsFromErrorNamesTheRightMiss(t *testing.T) {
 	completed := newCompletedStages()
 	recordStage(completed, "build", map[string]interface{}{"sha": "abc", "artifact": "x.tar"}, apiv1.IntegrityTrusted)
 
-	qualified := inputsFromError("deploy", "digest", "build.digest", completed, true).Error()
+	upstream := apiv1.ResultEnvelope{Outputs: map[string]interface{}{"tag": "v1", "ref": "main"}}
+	qualified := inputsFromError("deploy", "digest", "build.digest", upstream, completed, true).Error()
 	for _, want := range []string{`stage "build" produced no output "digest"`, "artifact, sha"} {
 		if !strings.Contains(qualified, want) {
 			t.Errorf("qualified miss = %q, want it to contain %q — a stage that RAN must name what it emitted",
@@ -162,13 +163,26 @@ func TestInputsFromErrorNamesTheRightMiss(t *testing.T) {
 		t.Errorf("emitted-key list is not sorted deterministically: %q", qualified)
 	}
 
-	unknown := inputsFromError("deploy", "digest", "nosuchstage.digest", completed, true).Error()
-	if !strings.Contains(unknown, `upstream output "nosuchstage.digest" not found`) {
-		t.Errorf("unknown-prefix miss = %q, want the legacy bare-key wording — the value was resolved as a bare key, "+
-			"so the message must say so", unknown)
+	// #5247: this arm's wording changed deliberately. The old message was the
+	// legacy "upstream output %q not found", whose stated intent was to say the
+	// value had been resolved as a bare key — which it never actually did. A
+	// dotted value whose prefix is not a stage that ran silently degrades into a
+	// whole-key lookup (the fallthrough that keeps a legacy dotted key like
+	// "a.b" working), and reporting only "not found" describes the lookup while
+	// hiding the rule that chose it. The message now states the rule and names
+	// the keys that WERE available.
+	unknown := inputsFromError("deploy", "digest", "nosuchstage.digest", upstream, completed, true).Error()
+	for _, want := range []string{
+		`no stage "nosuchstage" has produced outputs in this run`,
+		`"nosuchstage.digest" was treated as a single output key`,
+		"ref, tag",
+	} {
+		if !strings.Contains(unknown, want) {
+			t.Errorf("unknown-prefix miss = %q, want it to contain %q", unknown, want)
+		}
 	}
 
-	legacy := inputsFromError("deploy", "digest", "build.digest", completed, false).Error()
+	legacy := inputsFromError("deploy", "digest", "build.digest", upstream, completed, false).Error()
 	if !strings.Contains(legacy, `upstream output "build.digest" not found`) {
 		t.Errorf("legacy-version miss = %q, want the bare-key wording — under a pre-#562 version the value was "+
 			"never a stage reference", legacy)

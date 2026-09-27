@@ -37,6 +37,39 @@ project:
   branch: main
 ```
 
+## Repository remote URL forms
+
+`goobers connect`, `push-branch`'s credential routing, and `validate`'s
+target-repository match all recognize the same set of Azure DevOps remote/URL
+shapes, normalized to the `organization`/`project`/`repository` coordinate
+above:
+
+- `https://dev.azure.com/<organization>/<project>/_git/<repository>`, and the
+  short form Azure DevOps itself emits when project and repository share a
+  name, `https://dev.azure.com/<organization>/_git/<repository>`
+- the legacy pre-rename host, `https://<organization>.visualstudio.com/[DefaultCollection/]<project>/_git/<repository>`
+- `git@ssh.dev.azure.com:v3/<organization>/<project>/<repository>` (or
+  `ssh://git@ssh.dev.azure.com/v3/...`), and its legacy
+  `<organization>@vs-ssh.visualstudio.com:v3/<organization>/<project>/<repository>`
+  equivalent
+- for `goobers connect` only, the bare three-part slug,
+  `<organization>/<project>/<repository>`; `push-branch` and `validate` never
+  treat a bare slug or a local mirror path as Azure DevOps
+
+Matching is case-insensitive on the host and on the configured organization,
+project and repository names, and tolerates a username-only origin
+(`https://<organization>@dev.azure.com/...`). An origin that embeds a password
+(`https://user:secret@dev.azure.com/...`) is refused by `push-branch`; remove
+the password from the remote and configure the repository's `auth` instead. A
+legacy `*.visualstudio.com` remote is accepted for matching and credential
+routing only — Goobers never rewrites an operator's configured remote, and
+every URL Goobers itself generates stays the canonical `dev.azure.com` form.
+
+SSH remotes are matched for routing only: `push-branch` still resolves the
+repository's configured Azure DevOps credential for an SSH origin, but the SSH
+transport ignores that HTTP credential, so the push authenticates with the
+operator's SSH key.
+
 ## Unattended authentication
 
 Use workload identity federation in Kubernetes or CI:
@@ -44,10 +77,14 @@ Use workload identity federation in Kubernetes or CI:
 ```yaml
 auth:
   kind: workload-identity
+  # clientId: optional-user-assigned-identity-client-id
 ```
 
 The standard `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and
-`AZURE_FEDERATED_TOKEN_FILE` settings configure the identity.
+`AZURE_FEDERATED_TOKEN_FILE` settings configure the identity. Set `clientId`
+when one projected workload token is trusted by multiple user-assigned
+identities and this repository must use a different identity than the ambient
+`AZURE_CLIENT_ID`.
 
 Use managed identity on a supported Azure host:
 
@@ -56,6 +93,15 @@ auth:
   kind: managed-identity
   # clientId: optional-user-assigned-identity-client-id
 ```
+
+The daemon resolves these identities (see
+[Where the credential resolves](#where-the-credential-resolves)), so the
+workload identity or managed identity must be available to the daemon's own
+process or pod, not only to an interactive shell. The Kubernetes reference
+describes the
+[daemon pod's workload identity](../../deploy/reference/README.md#azure-devops-workload-identity-for-the-daemon).
+The service principal or managed identity must be added to the Azure DevOps
+organization at Basic access; Stakeholder access cannot use Repos.
 
 ## PAT compatibility
 
@@ -77,6 +123,25 @@ repos:
 Omitting `auth` while configuring `token` preserves the legacy PAT behavior.
 Token files must pass Goobers' private-file permission check.
 
+Global PATs stop working on 2026-12-01. Prefer `azure-cli`, workload identity
+or managed identity. Where a PAT is still needed, use an organization-scoped
+PAT held in a declared [secret store](secret-stores.md):
+
+```yaml
+repos:
+  - provider: ado
+    owner: my-organization
+    project: my-project
+    name: my-repository
+    auth:
+      kind: pat
+    token:
+      store: my-vault/ado-pat
+```
+
+The daemon resolves a store-backed PAT for the repository's grants and for
+the ci-poll executor.
+
 Select scopes for the operations you enable, not full access:
 
 | Operation | PAT scope |
@@ -96,6 +161,50 @@ and [PR status API](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/
 For the PAT-based onboarding path, `connect --seed` uses the same named token
 for Git reachability and Boards creation. `validate --check-repos` separately
 checks Boards read access. See the [production onboarding guide](arbitrary-repo-onboarding.md#3-initialize-the-instance).
+
+## Where the credential resolves
+
+Every auth kind resolves in the daemon. The daemon registers the repository's
+credential source as the source of the repository's grants, the same way it
+does for a GitHub App, and mints a value when a stage starts:
+
+| Kind | Resolved by the daemon from | Value | Scheme | Stated expiry |
+| --- | --- | --- | --- | --- |
+| `azure-cli` | the daemon's own Azure CLI login | Microsoft Entra token, refreshed before expiry | `bearer` | yes |
+| `workload-identity` | the daemon's federated workload identity (`AZURE_*`) | Microsoft Entra token, refreshed before expiry | `bearer` | yes |
+| `managed-identity` | the daemon host's managed identity | Microsoft Entra token, refreshed before expiry | `bearer` | yes |
+| `pat` | `token.env`, `token.file`, `token.keychain` or `token.store` | the PAT | `basic` | no (unbounded) |
+
+Each kind backs every repository capability: `repo:push`, `provider:pr:write`,
+`provider:ci:cancel`, `ado:pr:complete`, and the `github:*` capabilities that
+DSL 2.0 routes to the Azure DevOps repository, unless a `credentials:` entry
+or `daemonIdentity` sources a capability from its own token. A stage receives a credential only
+for the capabilities it declares:
+
+- A local stage receives `GOOBERS_CRED_<CAPABILITY>`.
+- A stage pod resolves the same values from the daemon's credential plane at
+  stage start.
+- A deterministic stage that received at least one credential, local or in a
+  pod, also receives `GOOBERS_REPO_AUTH_SCHEME` (`basic` or `bearer`), so it
+  never infers the scheme from the token's shape. Agentic stages do not
+  receive it.
+
+The daemon tracks each Entra token's expiry and refreshes it shortly before it
+lapses, but the stage does not receive the expiry. A delivered token can
+therefore have only a few minutes left.
+
+The workload and managed identity sources that back grants are built on first
+use, so a host without the identity can still run read-only commands such as
+`goobers status`. The daemon's gaggle runtime still builds the identity at
+startup to authenticate its worktree git operations, so a daemon whose
+workload-identity projection is missing fails to start.
+
+A reference repository (`additionalRepos`) that authenticates as a Microsoft
+Entra identity keeps using the gaggle's own repository source for its checkout.
+
+Built-in stage commands still build their Azure DevOps connection from the
+repository's configured `auth` block. They move to the delivered credential in a
+later release.
 
 ## Publishing review and CI evidence
 
@@ -123,12 +232,43 @@ the instance config surface documented above.
 - Entra tokens are cached with an expiry-aware refresh window.
 - A 401 invalidates an expiring credential and retries exactly once.
 - PAT sources are not retried as though they were refreshable.
-- REST and Git credential representations are registered with the journal and
-  telemetry scrubber.
+- The daemon registers every value it resolves with the journal and telemetry
+  scrubber when it mints it, in each form the value can travel in: the raw
+  token, the `Bearer` header value, and the base64 `Basic` header value.
+  Providers that the daemon constructs with a registrar register the same
+  forms for each request.
+- A stage command that builds its own Azure DevOps connection from the `auth`
+  block does not register what it resolves with the exact-value scrubber;
+  the pattern scrubber still applies to its output.
 - Git receives credentials through its child environment, never command-line
   arguments, repository remotes, or persisted Git configuration.
 - Credential-source failures fail closed; Goobers never falls back to another
   configured identity.
+- A push into an ADO branch protected by an enabled policy is not a
+  credential failure. ADO's Git server rejects the raw `git push` itself —
+  `! [remote rejected] ... (TF402455: Pushes to this branch are not
+  permitted...)`, with `GitRefUpdateRejectedByPolicyException` in the
+  underlying exception text — and `push-branch` and the remediation/rebase
+  force-pushes classify that rejection as `branch_policy_protected`, never
+  `auth_failed`, and never retry it as a ref race or with a fresh credential:
+  the fix is to land the change through a pull request, not to re-run with a
+  different token.
+
+### MSA passthrough header
+
+Every `azure-cli`, workload-identity, and managed-identity credential is a
+Bearer token. On an organization that is not Microsoft Entra-backed, or for a
+Microsoft account (MSA) on an Entra-backed one, a request carrying only a
+valid Bearer token gets a sign-in redirect or a `401` (`TF400813`) instead of
+a response. Goobers sends `X-VSS-ForceMsaPassThrough: true` alongside every
+Bearer `Authorization` header — on REST calls and as a second Git
+`http.<url>.extraheader` config value — so Bearer requests work the same way
+against both kinds of organization. Microsoft's own `az devops` tooling sends
+this header on every request for the same reason.
+
+A PAT (`Basic`) credential never carries this header: PAT authentication
+already succeeds on every organization, so the header would be untested and
+unnecessary there.
 
 ## Azure Boards work items
 
@@ -138,14 +278,36 @@ filters. Common `open`/`closed` filtering uses each returned item's process stat
 category so custom state names remain correct. Workflow definitions continue to
 use the provider-neutral work-item model. Azure Boards tags are exposed as
 labels, `System.AssignedTo` is mapped by display name, and comments use the
-work-item comments API.
+work-item comments API. An `assignedTo`/roster identity match (e.g.
+`respectAssignee`, backlog-assignment) accepts either the account's display
+name or its stable `uniqueName` account identifier, case-insensitively.
 
 Close and reopen mutations select the target work-item state by the process
 state category instead of assuming one process template's state names. Numeric
 GitHub milestones have no Azure Boards equivalent and are rejected; existing
-iteration paths are left unchanged. Claims write `goobers:claimed` plus an
-internal run-owner tag in one revision-tested patch, so concurrent schedulers
-settle on one visible owner without overwriting unrelated tags.
+iteration paths are left unchanged. A claim posts a claim breadcrumb comment on
+the work item, re-reads the comment thread so concurrent schedulers settle on
+the earliest breadcrumb, and then adds the visible `goobers:claimed` tag in a
+revision-tested patch that leaves unrelated tags alone. Releasing a claim posts
+a release breadcrumb and removes the tag. When a run ends without a close-out
+stage (for example a `no-work` outcome or an abort), the daemon's terminal
+cleanup performs the same release against the gaggle's backlog project before
+it frees the local claim, and it never ends a claim that a newer run now
+holds. Claims taken for a work item on a `goobers:ready` selector do not
+record a ready time on Azure DevOps, because Goobers does not yet read tag
+history from work-item updates.
+
+Only breadcrumbs written by the identity the credential authenticates as
+count: the comment's `createdBy.id` must equal the `authenticatedUser.id` that
+`connectionData` returns for the credential. A breadcrumb posted by any other
+identity is ignored, and a claim fails if that identity cannot be read.
+
+> **Rotating the identity orphans its claims.** Claims are matched by identity
+> GUID, not by display name. If you switch the credential to a different
+> identity (for example from a PAT to a service principal), the new identity
+> does not see claims the old one made, and it cannot release them. Let
+> in-flight runs finish, or release their claims, before you rotate. Remove any
+> leftover `goobers:claimed` tags by hand afterwards.
 
 Repository and pull-request parity remains incremental. Keep human branch
 policies authoritative for ADO repo operations that the provider does not yet

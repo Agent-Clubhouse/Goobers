@@ -2,7 +2,9 @@ package readservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -11,20 +13,13 @@ import (
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry"
-	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 const attributionListPageSize = 200
 
 var interventionEvidencePattern = regexp.MustCompile(`^intervention: stage (.+) attempt ([0-9]+) failed and attempt ([0-9]+) succeeded$`)
-
-// AgentInvocationReader supplies model and harness provenance for a run.
-type AgentInvocationReader interface {
-	AgentInvocations(context.Context, string) ([]rollup.AgentInvocation, error)
-}
 
 // StoredAttributionQuery scopes the stored run evidence to aggregate.
 type StoredAttributionQuery struct {
@@ -34,16 +29,15 @@ type StoredAttributionQuery struct {
 	Until    time.Time
 }
 
-// StoredAttributionCohorts reconstructs per-run credit attribution from
-// journaled span and artifact evidence, then re-aggregates it by cohort.
+// StoredAttributionCohorts reads enrolled per-run attribution records and
+// re-aggregates them by cohort.
 func StoredAttributionCohorts(
 	ctx context.Context,
 	root string,
 	reads readmodel.Reader,
-	invocations AgentInvocationReader,
 	query StoredAttributionQuery,
 ) ([]creditgraph.CohortAggregation, error) {
-	observations, err := storedAttributionObservations(ctx, root, reads, invocations, query)
+	observations, err := storedAttributionObservations(ctx, root, reads, query)
 	if err != nil {
 		return nil, err
 	}
@@ -54,14 +48,13 @@ func storedAttributionObservations(
 	ctx context.Context,
 	root string,
 	reads readmodel.Reader,
-	invocations AgentInvocationReader,
 	query StoredAttributionQuery,
 ) ([]creditgraph.AttributionObservation, error) {
-	if reads == nil || invocations == nil || strings.TrimSpace(root) == "" {
+	if reads == nil || strings.TrimSpace(root) == "" {
 		return nil, nil
 	}
 	layout := instance.NewLayout(root)
-	rows, err := adverseRuns(ctx, reads, query)
+	rows, err := terminalRuns(ctx, reads, query)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +63,7 @@ func storedAttributionObservations(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		observation, ok, err := storedAttributionObservation(ctx, layout, invocations, row)
+		observation, ok, err := storedAttributionObservation(ctx, layout, row)
 		if err != nil {
 			return nil, err
 		}
@@ -81,7 +74,7 @@ func storedAttributionObservations(
 	return observations, nil
 }
 
-func adverseRuns(ctx context.Context, reads readmodel.Reader, query StoredAttributionQuery) ([]readmodel.RunRow, error) {
+func terminalRuns(ctx context.Context, reads readmodel.Reader, query StoredAttributionQuery) ([]readmodel.RunRow, error) {
 	options := readmodel.ListOptions{
 		Gaggle:   query.Gaggle,
 		Workflow: query.Workflow,
@@ -99,7 +92,7 @@ func adverseRuns(ctx context.Context, reads readmodel.Reader, query StoredAttrib
 			return nil, fmt.Errorf("list attribution runs: %w", err)
 		}
 		for _, row := range page.Runs {
-			if isAdverseAttributedRun(row) {
+			if row.Terminal {
 				rows = append(rows, row)
 			}
 		}
@@ -110,30 +103,30 @@ func adverseRuns(ctx context.Context, reads readmodel.Reader, query StoredAttrib
 	}
 }
 
-func isAdverseAttributedRun(row readmodel.RunRow) bool {
-	if !row.Terminal {
-		return false
-	}
-	if row.OutcomeTarget == "@abort" || row.OutcomeTarget == "@escalate" {
-		return true
-	}
-	switch strings.ToLower(strings.TrimSpace(row.OutcomeVerdict)) {
-	case "fail", "failure", "reject", "rejected", "needs-changes":
-		return true
-	default:
-		return row.Phase == journal.PhaseEscalated
-	}
-}
-
 func storedAttributionObservation(
 	ctx context.Context,
 	layout instance.Layout,
-	invocations AgentInvocationReader,
 	row readmodel.RunRow,
 ) (creditgraph.AttributionObservation, bool, error) {
 	runDir, err := layout.FindRunDir(row.RunID)
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("open attribution run %q: %w", row.RunID, err)
+	}
+	record, err := creditgraph.ReadRunRecord(runDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return creditgraph.AttributionObservation{}, false, nil
+	}
+	if err != nil {
+		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution record %q: %w", row.RunID, err)
+	}
+	observation := creditgraph.AttributionObservation{
+		RunID: record.RunID, Workflow: record.Workflow, EffectiveVersion: record.EffectiveVersion,
+		Workload: record.Workload, Status: record.Status, Failure: record.Failure,
+		Attribution: record.Attribution,
+		Evidence:    append([]creditgraph.AttributionEvidenceLink(nil), record.Evidence...),
+	}
+	if record.Status == creditgraph.RecordFailed {
+		return observation, true, nil
 	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
@@ -158,6 +151,9 @@ func storedAttributionObservation(
 		}
 		data, err := reader.SpanBytes(*event.Ref)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution span %q/%d: %w", row.RunID, event.Seq, err)
 		}
 		spanData[event.Ref.Digest] = data
@@ -172,60 +168,13 @@ func storedAttributionObservation(
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("build attribution graph %q: %w", row.RunID, err)
 	}
-	attribution := creditgraph.Attribute(graph)
-	runInvocations, err := invocations.AgentInvocations(ctx, row.RunID)
-	if err != nil {
-		return creditgraph.AttributionObservation{}, false, fmt.Errorf("load attribution provenance %q: %w", row.RunID, err)
-	}
-	return creditgraph.AttributionObservation{
-		RunID:            row.RunID,
-		EffectiveVersion: effectiveVersionHash(row, runInvocations),
-		Workload:         workloadKey(row),
-		Attribution:      attribution,
-		Evidence:         buildAttributionEvidence(layout.Root, runDir, records, graph, attribution),
-	}, true, nil
-}
-
-func effectiveVersionHash(row readmodel.RunRow, invocations []rollup.AgentInvocation) string {
-	model, harness := singleModelHarness(invocations)
-	version := rollup.EffectiveVersion{
-		WorkflowDigest: row.WorkflowDigest,
-		GooberDigest:   row.GooberDigest,
-		Model:          model,
-		HarnessVersion: harness,
-	}
-	if version.WorkflowDigest == "" && version.GooberDigest == "" && version.Model == "" && version.HarnessVersion == "" {
-		return learning.EffectiveVersion(row.WorkflowDigest, row.GooberDigest)
-	}
-	return version.Hash()
-}
-
-func singleModelHarness(invocations []rollup.AgentInvocation) (string, string) {
-	type pair struct {
-		model   string
-		harness string
-	}
-	pairs := map[pair]struct{}{}
-	for _, invocation := range invocations {
-		pairs[pair{
-			model:   strings.TrimSpace(invocation.Model),
-			harness: strings.TrimSpace(invocation.HarnessVersion),
-		}] = struct{}{}
-	}
-	if len(pairs) != 1 {
-		return "", ""
-	}
-	for candidate := range pairs {
-		return candidate.model, candidate.harness
-	}
-	return "", ""
-}
-
-func workloadKey(row readmodel.RunRow) string {
-	if strings.TrimSpace(row.TriggerKind) != "" {
-		return row.TriggerKind
-	}
-	return "unknown"
+	attribution := record.Attribution
+	observation.Attribution = attribution
+	observation.Evidence = append(
+		observation.Evidence,
+		buildAttributionEvidence(layout.Root, runDir, records, graph, attribution)...,
+	)
+	return observation, true, nil
 }
 
 type attributionEventIndex struct {

@@ -11,8 +11,10 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
@@ -63,6 +65,10 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 	registry, scrubber := journal.DefaultScrubber()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	if !claimsPlaneSelected() {
+		stopTelemetry := startCommandJournalTelemetry(layout, stderr)
+		defer stopTelemetry()
+	}
 	var commit string
 	var err error
 	if issueSelection {
@@ -141,8 +147,17 @@ func restoreDownloadedRecovery(ctx context.Context, key, issue string, consume f
 
 func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, recordPath, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
 	record, err := recovery.ReadRetainedRecord(recordPath)
+	// An overflow record carries the same identity without an archive
+	// binding, so it is read by its own reader and restored from the mirror
+	// ref instead of from a bundle beside it (#5370).
+	overflow := false
 	if err != nil {
-		return "", err
+		var overflowErr error
+		record, overflowErr = recovery.ReadOverflowRecord(recordPath)
+		if overflowErr != nil {
+			return "", err
+		}
+		overflow = true
 	}
 	if !time.Now().Before(record.RetainUntil) {
 		return "", fmt.Errorf("recovery retention deadline has expired")
@@ -169,30 +184,25 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 		// captured and restored under the historical main-only assumption.
 		baseRef = "refs/heads/main"
 	}
-	base, err := recovery.FetchCurrentBase(ctx, destination, remoteURL, baseRef, recoveryAuthenticationEnvironment(environment))
+	base, err := recoveryFetchCurrentBase(ctx, destination, remoteURL, baseRef, recoveryAuthenticationEnvironment(environment))
 	if err != nil {
 		return "", err
 	}
+
 	const maxRecoveryBytes = 512 << 20
-	archive := filepath.Join(filepath.Dir(recordPath), recovery.BundleFileName)
-	if err := recovery.ImportSnapshotBundle(ctx, destination, archive, record, maxRecoveryBytes); err != nil {
+	if err := importRecoveryObjects(ctx, layout, cfg, destination, recordPath, record, overflow, maxRecoveryBytes); err != nil {
 		return "", err
 	}
 	return recovery.RestoreSnapshot(ctx, destination, record, base, branch, maxRecoveryBytes)
 }
 
+var recoveryFetchCurrentBase = recovery.FetchCurrentBase
+
 func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, cfg *instance.Config, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
-	// Pods receive a resolved repository capability, not the daemon's app
-	// private key/token cache. Scope that credential to the configured URL.
-	if claimsPlaneSelected() && (project.Provider == apiv1.ProviderGitHub || project.Provider == apiv1.ProviderGitea) {
-		token, err := providerToken(capability.RepoPush)
-		if err != nil {
-			return nil, err
+	if os.Getenv(executor.RunIDEnvVar) != "" || claimsPlaneSelected() {
+		if env, err := stageRecoveryGitEnvironment(ctx, cfg, project, remoteURL, registry); err != nil || env != nil {
+			return env, err
 		}
-		if project.Provider == apiv1.ProviderGitea {
-			return providers.GiteaGitAuthEnvironment(token, remoteURL, registry), nil
-		}
-		return providers.GitHubGitAuthEnvironment(token, remoteURL, registry), nil
 	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
@@ -210,6 +220,48 @@ func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, 
 		return gitEnv(ctx, remoteURL)
 	}
 	return nil, nil
+}
+
+var recoveryADOCredentialSource = adoauth.Source
+
+func stageRecoveryGitEnvironment(ctx context.Context, cfg *instance.Config, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
+	switch project.Provider {
+	case apiv1.ProviderGitHub:
+		token, err := providerToken(capability.RepoPush)
+		if err != nil {
+			return nil, err
+		}
+		return providers.GitHubGitAuthEnvironment(token, remoteURL, registry), nil
+	case apiv1.ProviderGitea:
+		token, err := providerToken(capability.RepoPush)
+		if err != nil {
+			return nil, err
+		}
+		return providers.GiteaGitAuthEnvironment(token, remoteURL, registry), nil
+	case apiv1.ProviderADO:
+		repo, ok := configuredRepoForProject(cfg, project)
+		if !ok {
+			return nil, fmt.Errorf("ADO recovery repository %s/%s is not configured", project.Owner, project.Name)
+		}
+		kind := instance.ADOAuthPAT
+		if repo.Auth != nil {
+			kind = repo.Auth.Kind
+		}
+		if kind != instance.ADOAuthPAT {
+			source, err := recoveryADOCredentialSource(repo, nil, nil)
+			if err != nil {
+				return nil, err
+			}
+			return providers.ADOGitAuthEnvironment(ctx, source, registry, remoteURL)
+		}
+		token, err := providerToken(capability.RepoPush)
+		if err != nil {
+			return nil, err
+		}
+		return providers.ADOGitAuthEnvironment(ctx, providers.NewADOPATCredentialSource("goobers", token), registry, remoteURL)
+	default:
+		return nil, nil
+	}
 }
 
 // Credential resolvers return a complete process environment. Only transport

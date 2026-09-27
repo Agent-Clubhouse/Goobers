@@ -109,10 +109,10 @@ package feed is not necessary for the first consumer:
 | Source copying or Git dependency | Initially simple | Blurs build/version/provenance boundaries; not the chosen delivery |
 
 The portal-package workflow uploads the tarball, manifest and hash as a CI
-artifact for PR/development builds. A maintainer can dispatch a versioned release
-from clean main; stable releases use the portal version, prereleases can use an
-explicit SemVer version. Existing release assets are not overwritten.
-No npm registry publication or new Azure infrastructure is involved.
+artifact for PR/development builds. Versioned packages are published only by the
+normal Goobers release workflow, use the Goobers release version, and are
+attached to that release. No separate `portal-v*` release or npm registry
+publication is used.
 
 For a consuming repository, download an **exact** release tag/asset, verify the
 SHA-256 against the reviewed pin, and install its tarball with `npm install

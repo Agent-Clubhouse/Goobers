@@ -7,6 +7,7 @@ this index and fails on drift, so adding, removing, renaming, or retitling a gui
 cannot leave it outside the documented navigation surfaces.
 
 - [Azure DevOps authentication](ado-authentication.md)
+- [Azure DevOps limitations](ado-limitations.md)
 - [Onboard an arbitrary repository (tiers 1-2)](arbitrary-repo-onboarding.md)
 - [Coordinate a shared backlog with assignees](assignment-aware-backlogs.md)
 - [Partition-aware backlog health](backlog-health.md)
@@ -29,6 +30,8 @@ cannot leave it outside the documented navigation surfaces.
 - [EvalSuite PR review checklist](evals-review-checklist.md)
 - [External telemetry connectors](external-telemetry-connectors.md)
 - [Flake management](flake-management.md)
+- [Fleet diagnostics reference collector and queries](fleet-diagnostics-reference.md)
+- [Tracked gaggle templates](gaggle-templates.md)
 - [Guide: GitHub token scopes for V0 (local runner)](github-token-scopes.md)
 - [GitHub webhook triggers](github-webhooks.md)
 - [The goobers-io MCP: run identity and artifact I/O for agentic stages](goobers-io-mcp.md)
@@ -39,6 +42,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Investigation artifacts](investigation-artifacts.md)
 - [Instance isolation mandates](isolation-mandates.md)
 - [Export local traces to Jaeger](jaeger-quickstart.md)
+- [Export committed journals through OTLP Logs](journal-otlp.md)
 - [Large-repo mode](large-repo-mode.md)
 - [Learn Goobers: operate, harden, and extend an Instance](learn-goobers-operations.md)
 - [Learn Goobers](learn-goobers.md)
@@ -59,6 +63,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Releases & packaging](releases.md)
 - [Retained implementation recovery](retained-implementation.md)
 - [Reviewer dispositions](reviewer-dispositions.md)
+- [Configuration generations for admitted runs](run-config-generations.md)
 - [CI runtime acquisitions](runtime-acquisition.md)
 - [Scheduled backlog re-sweep](scheduled-backlog-resweep.md)
 - [Run-journal schema compatibility](schema-migrations.md)
@@ -73,4 +78,5 @@ cannot leave it outside the documented navigation surfaces.
 - [Windows large-repo runbook](windows-large-repo-runbook.md)
 - [Windows git/worktree audit & policy (#643)](windows-worktree-notes.md)
 - [Workflow CD credential-isolation pen test](workflow-cd-isolation-pen-test.md)
+- [Advisory workflow safety lint](workflow-safety.md)
 - [Worktree and local-branch retention](worktree-retention.md)

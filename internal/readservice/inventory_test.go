@@ -20,6 +20,7 @@ import (
 )
 
 func inventoryDefinitions() *instance.ConfigSet {
+	disabled := false
 	return &instance.ConfigSet{
 		Manifest: &apiv1.Manifest{
 			ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
@@ -42,6 +43,7 @@ func inventoryDefinitions() *instance.ConfigSet {
 				ObjectMeta: metav1.ObjectMeta{Name: "alpha"},
 				Spec: apiv1.GaggleSpec{
 					DisplayName: "Alpha Team",
+					Enabled:     &disabled,
 					Project: apiv1.RepoRef{
 						Provider:      apiv1.ProviderGitHub,
 						Owner:         "example",
@@ -80,7 +82,7 @@ func inventoryDefinitions() *instance.ConfigSet {
 			},
 		},
 		Workflows: []apiv1.Workflow{
-			testInventoryWorkflow("beta", "deploy", "Beta Deploy", "", apiv1.TaskDeterministic),
+			testInventoryWorkflow("beta", "deploy", "Beta Deploy", "", apiv1.TaskDeterministic, &disabled),
 			testInventoryWorkflow("alpha", "deploy", "Alpha Deploy", "builder", apiv1.TaskAgentic),
 		},
 	}
@@ -131,7 +133,7 @@ func TestInstanceFleetPortalMetadata(t *testing.T) {
 	}
 }
 
-func testInventoryWorkflow(gaggle, name, displayName, goober string, kind apiv1.TaskType) apiv1.Workflow {
+func testInventoryWorkflow(gaggle, name, displayName, goober string, kind apiv1.TaskType, enabled ...*bool) apiv1.Workflow {
 	task := apiv1.Task{
 		Name:   "implement",
 		Type:   kind,
@@ -149,12 +151,20 @@ func testInventoryWorkflow(gaggle, name, displayName, goober string, kind apiv1.
 		Spec: apiv1.WorkflowSpec{
 			Gaggle:      gaggle,
 			DisplayName: displayName,
+			Enabled:     firstBool(enabled...),
 			Triggers:    []apiv1.Trigger{{Type: apiv1.TriggerManual}},
 			Readiness:   apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
 			Start:       task.Name,
 			Tasks:       []apiv1.Task{task},
 		},
 	}
+}
+
+func firstBool(values ...*bool) *bool {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
 }
 
 func newInventoryService(t *testing.T, definitions *instance.ConfigSet, report *validate.Report) (*Local, instance.Layout) {
@@ -319,6 +329,9 @@ func TestInventoryProjectsScopedWorkflowIdentityGraphOwnershipAndActiveCounts(t 
 	if len(gaggles.Items) != 2 || gaggles.Items[0].Name != "alpha" || gaggles.Items[1].Name != "beta" {
 		t.Fatalf("gaggles = %+v", gaggles.Items)
 	}
+	if gaggles.Items[0].Enabled || !gaggles.Items[1].Enabled {
+		t.Fatalf("gaggle enabled projection = %t/%t, want alpha disabled beta enabled", gaggles.Items[0].Enabled, gaggles.Items[1].Enabled)
+	}
 	if gaggles.Items[0].ActiveRunCount != 2 || gaggles.Items[1].ActiveRunCount != 1 {
 		t.Fatalf("scoped active counts = %d/%d", gaggles.Items[0].ActiveRunCount, gaggles.Items[1].ActiveRunCount)
 	}
@@ -349,6 +362,9 @@ func TestInventoryProjectsScopedWorkflowIdentityGraphOwnershipAndActiveCounts(t 
 	}
 	if alpha.Identity.Gaggle != "alpha" || beta.Identity.Gaggle != "beta" {
 		t.Fatalf("workflow identities = %+v / %+v", alpha.Identity, beta.Identity)
+	}
+	if !alpha.Enabled || beta.Enabled {
+		t.Fatalf("workflow enabled projection = %t/%t, want alpha enabled beta disabled", alpha.Enabled, beta.Enabled)
 	}
 	if alpha.Definition.Version != currentWorkflowVersion || alpha.Definition.Digest == "" ||
 		alpha.Graph.Digest != alpha.Definition.Digest {

@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "694ab200654f122e8df99b78aafee9ac3fbb498dc05ea17c8398966add951e6e",
+  "snapshotSha256": "c8e8eb0a33f877df9ccb4108b3dc7864a61953badc2fec9430818f519725fbd6",
   "changes": [
     {
       "version": 1,
@@ -36,6 +36,14 @@
     {
       "version": 9,
       "description": "Add recovery-resume and recovery-restore (#4494) to workflow admission, requiring repo:push to fetch the configured current main when restoring retained implementation in a stage. Both are newly inventoried workflow commands; no previously inventoried command capability, result-file or claim-mutation contract changes. Standalone operator recovery-restore retains its configured authentication path. Existing configurations retain their admission behavior."
+    },
+    {
+      "version": 10,
+      "description": "Require open-pr to declare the exact ado:work-items:write capability separately from provider:pr:write before it may create the native Azure Boards ArtifactLink. All shipped open-pr workflows are updated in the same change; GitHub open-pr still uses only its provider-neutral PR credential at runtime."
+    },
+    {
+      "version": 11,
+      "description": "Make open-pr's ado:work-items:write use optional at static admission because the command is provider-neutral. GitHub workflows again compile without Azure Boards authority; ADO workflows can declare the capability, and the ADO-only runtime linker still fails closed when its dedicated credential is absent."
     }
   ]
 }

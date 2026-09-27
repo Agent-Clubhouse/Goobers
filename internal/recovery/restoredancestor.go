@@ -29,7 +29,7 @@ func VerifyLandedRestoration(ctx context.Context, repository string, record Reco
 // Commit messages only narrow the bounded candidate search. Each candidate's
 // complete tree is verified by replaying the retained patch onto its parent.
 func FindRestoredAncestor(ctx context.Context, repository string, record Record, head string, maxPatchBytes int64) (string, error) {
-	if err := record.Validate(); err != nil {
+	if err := record.validateRestorable(); err != nil {
 		return "", err
 	}
 	if !gitObjectID.MatchString(head) || maxPatchBytes <= 0 {

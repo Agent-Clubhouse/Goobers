@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,6 +22,32 @@ const codexCompletedStream = `{"type":"thread.started","thread_id":"thread-1"}
 type codexSequenceRunner struct {
 	results  []ProcessResult
 	requests []ProcessRequest
+}
+
+type ambientCodexRunner struct {
+	requests []ProcessRequest
+	login    ProcessResult
+}
+
+func (r *ambientCodexRunner) Run(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+	r.requests = append(r.requests, req)
+	command := strings.Join(req.Command, " ")
+	result := ProcessResult{ExitCode: 0}
+	switch {
+	case strings.Contains(command, "--version"):
+		result.Transcript = []byte("codex-cli 0.154.0\n")
+	case strings.Contains(command, "login status"):
+		result = r.login
+	case strings.Contains(command, " exec "):
+		result.Transcript = []byte(codexCompletedStream)
+		if err := WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {
+			return result, err
+		}
+	}
+	if req.StdoutCapture != nil {
+		_, _ = req.StdoutCapture.Write(result.Transcript)
+	}
+	return result, nil
 }
 
 func (r *codexSequenceRunner) Run(_ context.Context, req ProcessRequest) (ProcessResult, error) {
@@ -72,7 +99,7 @@ func TestCodexAdapterRunUsesIsolatedHeadlessContract(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	for _, want := range []string{
-		"codex", "exec", "--json", "--ephemeral", "--ignore-rules", "--disable", "hooks",
+		"codex", "exec", "--json", "--ignore-rules", "--disable", "hooks",
 		"--sandbox", "workspace-write", "--skip-git-repo-check", "-C", workspace,
 		`projects.` + tomlQuote(filepath.Clean(workspace)) + `.trust_level="untrusted"`,
 		"--model", "gpt-5-codex", `model_reasoning_effort="high"`, "-",
@@ -298,7 +325,7 @@ func TestCodexAdapterRejectsDeclaredGoobersIOCollision(t *testing.T) {
 func TestCodexAdapterIncludesRecoveryUsage(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &codexSequenceRunner{results: []ProcessResult{
-		{ExitCode: 0, Transcript: []byte(`{"type":"turn.completed","usage":{"input_tokens":90,"output_tokens":5}}` + "\n")},
+		{ExitCode: 0, Transcript: []byte(`{"type":"thread.started","thread_id":"thread-recovery"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":90,"output_tokens":5}}` + "\n")},
 		{ExitCode: 0, Transcript: []byte(`{"type":"turn.completed","usage":{"input_tokens":30,"output_tokens":7}}` + "\n")},
 	}}
 	adapter := &CodexAdapter{
@@ -322,6 +349,82 @@ func TestCodexAdapterIncludesRecoveryUsage(t *testing.T) {
 	}
 	if got := out.Metrics[telemetry.AttrGenAIUsageOutputTokens]; got != 12 {
 		t.Fatalf("output tokens = %v, want 12", got)
+	}
+	if got := runner.requests[1].Command; !slices.Contains(got, "resume") ||
+		!slices.Contains(got, "thread-recovery") {
+		t.Fatalf("recovery command = %v, want resumed original thread", got)
+	}
+}
+
+func TestCodexAdapterRepairsStructuredOutputsWithoutRepeatingSideEffects(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{name: "object", value: map[string]any{"nested": true}},
+		{name: "array", value: []any{"nested"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			sideEffects := 0
+			runner := &fakeProcessRunner{
+				result: ProcessResult{ExitCode: 0, Transcript: []byte(codexCompletedStream)},
+				act: func(req ProcessRequest) error {
+					if slices.Contains(req.Command, "resume") {
+						return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{
+							Status:  apiv1.ResultSuccess,
+							Outputs: map[string]any{"findingResponses": "[]"},
+						})
+					}
+					sideEffects++
+					return WriteCompletion(req.Dir, DefaultResultPath, map[string]any{
+						"status":  "success",
+						"outputs": map[string]any{"findingResponses": tc.value},
+					})
+				},
+			}
+			adapter := &CodexAdapter{
+				Command: []string{"codex"},
+				Runner:  runner,
+				EnvCapabilities: map[string]string{
+					"agent:model": codexModelEnv,
+				},
+			}
+			out, err := adapter.Run(context.Background(), RunRequest{
+				Envelope:       testEnvelope(workspace, "agent:model"),
+				Workspace:      workspace,
+				CompletionPath: DefaultResultPath,
+				Credentials:    pushCredentials(t, "agent:model", "sk-test-codex"),
+				ValidateCompletion: func(payload []byte) error {
+					var completion struct {
+						Outputs map[string]any `json:"outputs"`
+					}
+					if err := json.Unmarshal(payload, &completion); err != nil {
+						return err
+					}
+					if _, ok := completion.Outputs["findingResponses"].(string); !ok {
+						return errors.New(`jsonschema: '/outputs/findingResponses' expected string, but got structured value`)
+					}
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if sideEffects != 1 {
+				t.Fatalf("completed side effects = %d, want 1", sideEffects)
+			}
+			if !slices.Contains(runner.lastReq.Command, "resume") ||
+				!slices.Contains(runner.lastReq.Command, "thread-1") {
+				t.Fatalf("repair command = %v, want resumed original thread", runner.lastReq.Command)
+			}
+			if !strings.Contains(string(runner.lastReq.Stdin), "/outputs/findingResponses") {
+				t.Fatalf("repair prompt = %q, want validation path", runner.lastReq.Stdin)
+			}
+			if len(out.InvalidCompletionPayload) == 0 {
+				t.Fatal("initial invalid completion was not preserved")
+			}
+		})
 	}
 }
 
@@ -376,6 +479,163 @@ func TestCodexAdapterRejectsStoredLogin(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "OpenAI API key is required") {
 		t.Fatalf("Run error = %v", err)
+	}
+}
+
+func TestCodexAuthOptionsValidate(t *testing.T) {
+	adapter := &CodexAdapter{}
+	for _, test := range []struct {
+		name    string
+		options map[string]interface{}
+		want    string
+	}{
+		{name: "ambient", options: map[string]interface{}{"auth": "ambient-chatgpt"}},
+		{name: "default", options: map[string]interface{}{}},
+		{name: "unknown auth", options: map[string]interface{}{"auth": "oauth"}, want: `invalid auth value "oauth"`},
+		{name: "unknown option", options: map[string]interface{}{"credentialStore": "keyring"}, want: `unknown harness option "credentialStore"`},
+		{name: "file flag type", options: map[string]interface{}{"allowFileBackedCredentials": "yes"}, want: `must be a boolean`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := adapter.ValidateConfig("", testHarnessOptions(t, test.options))
+			if test.want == "" && err != nil {
+				t.Fatalf("ValidateConfig: %v", err)
+			}
+			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("ValidateConfig error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCodexAmbientChatGPTUsesLoginAndNeverAPIKey(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(codexModelEnv, "sk-inherited-must-not-leak")
+	workspace := t.TempDir()
+	runner := &ambientCodexRunner{login: ProcessResult{ExitCode: 0, Transcript: []byte("Logged in using ChatGPT\n")}}
+	adapter := &CodexAdapter{
+		Command:         []string{executable},
+		Runner:          runner,
+		EnvCapabilities: map[string]string{"agent:model": codexModelEnv},
+		ModelCredential: func(context.Context) (string, error) {
+			t.Fatal("ambient mode resolved agent:model API credential")
+			return "", nil
+		},
+	}
+	_, err = adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		HarnessOptions: testHarnessOptions(t, map[string]interface{}{"auth": "ambient-chatgpt"}),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var login, invocation ProcessRequest
+	for _, req := range runner.requests {
+		if strings.Contains(strings.Join(req.Command, " "), "login status") {
+			login = req
+		}
+		if slices.Contains(req.Command, "exec") {
+			invocation = req
+		}
+		for _, entry := range req.Env {
+			if strings.HasPrefix(entry, codexModelEnv+"=") {
+				t.Fatalf("ambient request exposed CODEX_API_KEY: %v", req.Env)
+			}
+		}
+	}
+	if !strings.Contains(strings.Join(login.Command, " "), `cli_auth_credentials_store="keyring"`) {
+		t.Fatalf("login status did not require keyring: %v", login.Command)
+	}
+	if !slices.Contains(invocation.Command, "--ignore-user-config") || !strings.Contains(strings.Join(invocation.Command, "\n"), `cli_auth_credentials_store="keyring"`) {
+		t.Fatalf("ambient invocation was not isolated and keyring-bound: %v", invocation.Command)
+	}
+}
+
+func TestCodexAmbientChatGPTRetainsNonModelScopedEnvironment(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	telemetryDir := t.TempDir()
+	runner := &ambientCodexRunner{login: ProcessResult{ExitCode: 0, Transcript: []byte("Logged in using ChatGPT\n")}}
+	adapter := &CodexAdapter{
+		Command: []string{executable},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model":   codexModelEnv,
+			"contents:read": "CONTEXT_TOKEN",
+		},
+	}
+	_, err = adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model", "contents:read"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		TelemetryDir:   telemetryDir,
+		Credentials:    pushCredentials(t, "contents:read", "context-secret"),
+		HarnessOptions: testHarnessOptions(t, map[string]interface{}{"auth": "ambient-chatgpt"}),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var invocation ProcessRequest
+	for _, req := range runner.requests {
+		if slices.Contains(req.Command, "exec") {
+			invocation = req
+		}
+	}
+	for _, want := range []string{"CONTEXT_TOKEN=context-secret", telemetry.StageTelemetryEnv + "=" + telemetryDir} {
+		if !slices.Contains(invocation.Env, want) {
+			t.Fatalf("ambient invocation dropped scoped environment %q: %v", want, invocation.Env)
+		}
+	}
+	for _, entry := range invocation.Env {
+		if strings.HasPrefix(entry, codexModelEnv+"=") {
+			t.Fatalf("ambient invocation exposed CODEX_API_KEY: %v", invocation.Env)
+		}
+	}
+}
+
+func TestCodexAmbientFileBackedOptInDoesNotForceKeyring(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &ambientCodexRunner{login: ProcessResult{ExitCode: 0, Transcript: []byte("Logged in using ChatGPT\n")}}
+	adapter := &CodexAdapter{Command: []string{executable}, Runner: runner}
+	if _, err := adapter.PreflightConfig(context.Background(), "", testHarnessOptions(t, map[string]interface{}{
+		"auth":                       "ambient-chatgpt",
+		"allowFileBackedCredentials": true,
+	})); err != nil {
+		t.Fatalf("PreflightConfig: %v", err)
+	}
+	for _, req := range runner.requests {
+		if strings.Contains(strings.Join(req.Command, " "), "login status") && strings.Contains(strings.Join(req.Command, " "), "cli_auth_credentials_store") {
+			t.Fatalf("file-backed opt-in unexpectedly forced keyring: %v", req.Command)
+		}
+	}
+}
+
+func TestCodexAmbientChatGPTRejectsNonChatGPTStatus(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []ProcessResult{
+		{ExitCode: 0, Transcript: []byte("Logged in using API key\n")},
+		{ExitCode: 0, Transcript: []byte("Logged in\n")},
+		{ExitCode: 1, Transcript: []byte("Not logged in\n")},
+	} {
+		runner := &ambientCodexRunner{login: status}
+		adapter := &CodexAdapter{Command: []string{executable}, Runner: runner}
+		_, err := adapter.PreflightConfig(context.Background(), "", testHarnessOptions(t, map[string]interface{}{"auth": "ambient-chatgpt"}))
+		if err == nil || !strings.Contains(err.Error(), "ambient-chatgpt") && !strings.Contains(err.Error(), "login status") {
+			t.Fatalf("PreflightConfig error = %v", err)
+		}
 	}
 }
 

@@ -55,6 +55,7 @@ func TestRenewRetentionHonorsCancellationAndPublicationLock(t *testing.T) {
 }
 
 func TestRenewRetentionHonorsInventoryLock(t *testing.T) {
+	setInventoryLockWaitForTest(t, time.Millisecond)
 	root := t.TempDir()
 	record := storageTestRecord()
 	record.ArchiveDigest = fmt.Sprintf("sha256:%x", sha256.Sum256(make([]byte, record.ArchiveBytes)))

@@ -2,6 +2,7 @@ package harness
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -133,28 +134,42 @@ func renderResponseCompletionContract(req RunRequest) string {
 		completionKind, schemaHint)
 }
 
-func renderCompletionRecoveryPrompt(req RunRequest) string {
+func renderCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	completionKind, schemaHint := completionContract(req)
+	problem := "Your previous turn ended without writing the mandatory completion file."
+	if errors.Is(validationErr, ErrInvalidCompletion) {
+		problem = fmt.Sprintf(
+			"Your previous turn wrote a completion file that failed schema validation: %s.",
+			validationErr,
+		)
+	}
 	return fmt.Sprintf(
-		"Your previous turn ended without writing the mandatory completion file. "+
+		"%s "+
 			"Do not repeat completed work or make unrelated changes. Inspect the current state, then write "+
 			"the final %s as valid JSON to `%s` "+
 			"(relative to the working directory), matching this shape:\n\n%s\n\n"+
 			"Report the actual outcome; do not claim success unless the task is complete. "+
 			"Do not finish this turn until the file exists and is valid JSON.",
-		completionKind, req.CompletionPath, schemaHint,
+		problem, completionKind, req.CompletionPath, schemaHint,
 	)
 }
 
-func renderResponseCompletionRecoveryPrompt(req RunRequest) string {
+func renderResponseCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	completionKind, schemaHint := completionContract(req)
+	problem := "Your previous turn ended without returning the mandatory completion as valid JSON."
+	if errors.Is(validationErr, ErrInvalidCompletion) {
+		problem = fmt.Sprintf(
+			"Your previous turn returned a completion that failed schema validation: %s.",
+			validationErr,
+		)
+	}
 	return fmt.Sprintf(
-		"Your previous turn ended without returning the mandatory completion as valid JSON. "+
+		"%s "+
 			"Do not repeat completed work or make unrelated changes. Inspect the current state, then return "+
 			"the final %s as the entire response, matching this shape:\n\n%s\n\n"+
 			"Do not write a completion file or wrap the JSON in Markdown. "+
 			"Report the actual outcome; do not claim success unless the task is complete.",
-		completionKind, schemaHint,
+		problem, completionKind, schemaHint,
 	)
 }
 
@@ -189,9 +204,9 @@ const resultShapeHint = `{"status": "success"|"failure"|"blocked"|"no-work", "ou
 
 Use "no-work" only when the task completed without error but found nothing to act on; the runner then completes the workflow without running downstream stages. On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success and no-work. Do not populate "artifacts" or "transcript" — the runner records and digests them.
 
-Do not populate "metrics" unless you have numeric measurements. Every metrics value must be a JSON number, never a string, boolean, array, or object. Confidence labels, trust decisions, and issue references belong in "summary" or scalar "outputs", not in metrics.
+Every key in "outputs" — whatever name you give it — must be a bare string, number, boolean, or null. Never an array or object, for any key: outputs accepts scalars only, and a structured value is schema-rejected. If you have structured detail, fold it into "summary" or encode it as a scalar string; do not put it in "artifacts" — that field takes only digested pointers the runner produces, not model-supplied content. For example, on a "blocked" status, if you can name specific blocking issue numbers, set outputs.blockedBy to a single comma-separated string (e.g. "441,442") — never an array or object.
 
-On a "blocked" status, if you can name specific blocking issue numbers, set outputs.blockedBy to a single comma-separated string (e.g. "441,442") — never an array or object; outputs accepts scalars only and a structured value is schema-rejected.`
+Do not populate "metrics" unless you have numeric measurements. Every metrics value must be a JSON number, never a string, boolean, array, or object. Confidence labels, trust decisions, and issue references belong in "summary" or scalar "outputs", not in metrics.`
 
 // verdictShapeHint shows finding.severity as an explicit enum: the schema's
 // finding is additionalProperties:false with severity ∈

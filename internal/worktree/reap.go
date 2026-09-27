@@ -20,6 +20,11 @@ type ReapOptions struct {
 	// they age past this duration. Zero leaves kept worktrees alone
 	// indefinitely — Reap then only clears genuine crash orphans.
 	StaleAfter time.Duration
+	// DeferCleanupPending leaves surrendered cleanup-pending worktrees for the
+	// bounded RetryCleanupPending loop. Daemon startup uses this so a large or
+	// persistently blocked cleanup queue cannot delay readiness; broad
+	// housekeeping callers retain the default immediate-retry behavior.
+	DeferCleanupPending bool
 	// IsRunTerminal reports whether a markerless, git-deregistered worktree
 	// belongs to a terminal run. Nil leaves that ambiguous shape untouched.
 	IsRunTerminal func(worktreeID string) (bool, error)
@@ -96,6 +101,10 @@ type ReapResult struct {
 type ReapWarning struct {
 	Path string
 	Err  error
+	// Class names the remediation this failure calls for (#5264). Additive and
+	// zero-valued (CleanupWarningUnknown) unless the producer classified it, so
+	// every existing Reap warning keeps its exact current meaning.
+	Class CleanupWarningClass
 }
 
 // Reap scans every managed working copy under Root for worktrees whose
@@ -184,49 +193,23 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
 			// A corrupt marker may be either legacy (full ID directory) or
 			// current (hashed directory). Preserve both possible paths.
-			seen[runID] = true
-			seen[worktreeDirectoryName(runID)] = true
+			markSeenMarkerDirectory(seen, runID, nil)
 			continue
 		}
 		directory, err := mk.directoryName()
 		if err != nil {
 			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
-			seen[runID] = true
-			seen[worktreeDirectoryName(runID)] = true
+			markSeenMarkerDirectory(seen, runID, nil)
 			continue
 		}
-		seen[directory] = true
+		markSeenMarkerDirectory(seen, runID, &mk)
 
-		var reason ReapReason
-		switch mk.Status {
-		case statusActive:
-			if processAlive(mk.PID) && !pidReused(mk) {
-				// The owner is alive, so this is not a crash orphan. It is
-				// still reapable when the owning run has settled: the only
-				// way an active marker outlives its own run is a normal
-				// removal that failed and will never be retried (#5035).
-				abandoned, err := opts.runAbandoned(mk)
-				if err != nil {
-					warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
-					continue
-				}
-				if !abandoned {
-					continue
-				}
-				reason = ReapReasonAbandoned
-			} else {
-				reason = ReapReasonOrphaned
-			}
-		case statusCleanupPending:
-			// Remove already recorded that the stage surrendered this tree.
-			// Retry immediately even while the owning daemon PID remains live.
-			reason = ReapReasonCleanupPending
-		case statusKept:
-			if opts.StaleAfter <= 0 || time.Since(mk.retainedAt()) <= opts.StaleAfter {
-				continue
-			}
-			reason = ReapReasonStale
-		default:
+		reason, err := markerReapReason(mk, opts)
+		if err != nil {
+			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
+			continue
+		}
+		if reason == "" {
 			continue
 		}
 
@@ -260,6 +243,113 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 	results = append(results, markerless...)
 	warnings = append(warnings, markerlessWarnings...)
 	return results, warnings, nil
+}
+
+func markSeenMarkerDirectory(seen map[string]bool, runID string, mk *marker) {
+	if mk != nil {
+		if directory, err := mk.directoryName(); err == nil {
+			seen[directory] = true
+			return
+		}
+	}
+	seen[runID] = true
+	seen[worktreeDirectoryName(runID)] = true
+}
+
+// CountReapCandidates reports the union of marker-backed and markerless
+// worktrees that Reap scans under root.
+func CountReapCandidates(root string) (int, error) {
+	repositories, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("worktree: list root %s: %w", root, err)
+	}
+
+	total := 0
+	for _, repository := range repositories {
+		if !repository.IsDir() {
+			continue
+		}
+		count, err := countReapCandidatesForRepo(root, repository.Name())
+		if err != nil {
+			return 0, err
+		}
+		total += count
+	}
+	return total, nil
+}
+
+func countReapCandidatesForRepo(root, key string) (int, error) {
+	markersDir := filepath.Join(root, key, "markers")
+	markers, err := os.ReadDir(markersDir)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("worktree: list markers for %s: %w", key, err)
+	}
+
+	count := 0
+	seen := make(map[string]bool, len(markers))
+	for _, entry := range markers {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		count++
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		mk, err := readMarker(filepath.Join(markersDir, entry.Name()))
+		if err != nil {
+			markSeenMarkerDirectory(seen, runID, nil)
+			continue
+		}
+		markSeenMarkerDirectory(seen, runID, &mk)
+	}
+
+	runsDir := filepath.Join(root, key, "runs")
+	runs, err := os.ReadDir(runsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return count, nil
+		}
+		return 0, fmt.Errorf("worktree: list runs for %s: %w", key, err)
+	}
+	for _, entry := range runs {
+		if entry.IsDir() && !seen[entry.Name()] {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func markerReapReason(mk marker, opts ReapOptions) (ReapReason, error) {
+	switch mk.Status {
+	case statusActive:
+		if !processAlive(mk.PID) || pidReused(mk) {
+			return ReapReasonOrphaned, nil
+		}
+		// The owner is alive, so this is not a crash orphan. It is still
+		// reapable when the owning run has settled: the only way an active
+		// marker outlives its own run is a normal removal that failed and
+		// will never be retried (#5035).
+		abandoned, err := opts.runAbandoned(mk)
+		if err != nil {
+			return "", err
+		}
+		if abandoned {
+			return ReapReasonAbandoned, nil
+		}
+	case statusCleanupPending:
+		// Remove already recorded that the stage surrendered this tree.
+		// Retry immediately even while the owning daemon PID remains live,
+		// unless the caller delegates this queue to RetryCleanupPending.
+		if !opts.DeferCleanupPending {
+			return ReapReasonCleanupPending, nil
+		}
+	case statusKept:
+		if opts.StaleAfter > 0 && time.Since(mk.retainedAt()) > opts.StaleAfter {
+			return ReapReasonStale, nil
+		}
+	}
+	return "", nil
 }
 
 // reapMarkerlessWorktrees diffs the actual worktree directories under key's

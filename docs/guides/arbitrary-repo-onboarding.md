@@ -118,7 +118,7 @@ source and target repository.
 
 Use [GitHub's fine-grained personal access token settings](https://github.com/settings/personal-access-tokens/new).
 When creating the token, **select the Resource owner that owns the target
-repository** — for example, `odsp-microsoft` for a repository under that
+repository** — for example, `your-org` for a repository under that
 organization — **rather than leaving your default personal account selected**.
 Then choose **Only select repositories** and select exactly the target
 repository. The repository token needs the permissions used by the two
@@ -143,7 +143,6 @@ values in YAML:
 ```sh
 export GOOBERS_GITHUB_TOKEN=github_pat_...
 export GOOBERS_COPILOT_TOKEN=github_pat_...
-export COPILOT_GITHUB_TOKEN="$GOOBERS_COPILOT_TOKEN"
 ```
 
 PowerShell:
@@ -151,16 +150,14 @@ PowerShell:
 ```powershell
 $env:GOOBERS_GITHUB_TOKEN = "github_pat_..."
 $env:GOOBERS_COPILOT_TOKEN = "github_pat_..."
-$env:COPILOT_GITHUB_TOKEN = $env:GOOBERS_COPILOT_TOKEN
 ```
 
 `GOOBERS_COPILOT_TOKEN` is the source named by `instance.yaml`. Goobers injects
 it as `COPILOT_GITHUB_TOKEN` only into agentic subprocesses that declare
-`agent:model`. The separate `COPILOT_GITHUB_TOKEN` export lets the harness
-preflight authenticate before that capability credential is resolved. The
-preflight copies the ambient value only into its tool-disabled sign-in probe;
-it does not expose the token to unrelated stages. Alternatively, run `copilot
-login` as the daemon's OS account and persist that account's credential store.
+`agent:model`. Since #4292, the sign-in preflight resolves this same
+`agent:model` credential directly, so no separate ambient `COPILOT_GITHUB_TOKEN`
+export is needed. Alternatively, run `copilot login` as the daemon's OS account
+and persist that account's credential store.
 
 The reviewer in this guide is an agentic gate that returns a journaled verdict;
 it does not submit a native GitHub review. A separate
@@ -502,6 +499,19 @@ scaling shapes:
   with `goobers validate --check-repos`. This is the recommended shape for
   repositories you operate together: one daemon, one journal, shared run
   conditions, and per-workflow budgets.
+
+This layout does not make one decomposition workflow a cross-repository
+publisher. The shipped decomposition plan creates its parent, children, and
+dependency links inside the publishing gaggle's configured repository; it has
+no per-child repository or target-gaggle selector. Use separate repo-owning
+implementation workflows, and treat any coordinated cross-repository delivery
+workflow as additional design work. See the decomposition design's
+[repository boundary](../design/decomposition-workflow.md#repository-boundary).
+
+An `additionalRepos` declaration remains read-only reference access. It neither
+changes that publication boundary nor, by itself, proves that the backing
+credential is materially down-scoped; review the repo-qualified credential
+mapping described in [GitHub token scopes](github-token-scopes.md).
 
 **If the additional repository belongs to a different GitHub owner and you use
 `daemonIdentity: kind: github-app`, add an installation binding for that owner.**

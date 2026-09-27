@@ -15,6 +15,10 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// adoContractIdentityID is the identity GUID the fake backend reports from
+// connectionData and stamps on every comment the provider posts.
+const adoContractIdentityID = "00000000-0000-0000-0000-00000000c1a1"
+
 type adoWorkItemBackend struct {
 	mu       sync.Mutex
 	revision int
@@ -47,6 +51,11 @@ func newADOWorkItemBackend() *adoWorkItemBackend {
 func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"authenticatedUser": map[string]interface{}{
+			"id": adoContractIdentityID, "providerDisplayName": "Goobers Bot",
+		}})
+	})
 	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -58,6 +67,13 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 		b.query = body["query"]
 		b.mu.Unlock()
 		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 42}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypecategories/Microsoft.RequirementCategory", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"name":                "Requirement Category",
+			"referenceName":       "Microsoft.RequirementCategory",
+			"defaultWorkItemType": map[string]string{"name": "Issue"},
+		})
 	})
 	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -138,7 +154,7 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 			}
 			comment := map[string]interface{}{
 				"id": len(b.comments) + 1, "text": body["text"],
-				"createdBy":   map[string]string{"displayName": "Goobers Bot"},
+				"createdBy":   map[string]string{"id": adoContractIdentityID, "displayName": "Goobers Bot"},
 				"createdDate": "2026-07-26T12:00:00Z",
 				"url":         "comment-url",
 			}
@@ -164,7 +180,7 @@ func (b *adoWorkItemBackend) server(t *testing.T) *httptest.Server {
 		}
 		writeJSON(t, w, map[string]interface{}{"value": states})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOWorkItemsBatch(t, mux))
 	t.Cleanup(server.Close)
 	return server
 }
@@ -441,7 +457,7 @@ func TestContract_ADOCreateWorkItemIdempotentOnRetry(t *testing.T) {
 		createRequests++
 		http.Error(w, "duplicate create", http.StatusConflict)
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withADOWorkItemsBatch(t, mux))
 	defer server.Close()
 	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
 		p.BaseURL = server.URL
@@ -653,48 +669,41 @@ func TestContract_ADOWorkItemErrorMapping(t *testing.T) {
 	}
 }
 
-// Items claimed before ownership moved into the comment thread carry a legacy
-// `goobers:claim-run:<b64>` tag and no breadcrumb. Those claims must still be
-// recognized — otherwise the change would orphan every in-flight claim — and
-// releasing one must clear the legacy tag rather than leaving it behind
-// forever in the project's tag namespace (#1979).
-//
-// This test is deleted along with the fallback it covers — #1990, target
-// 2026-08-14.
-func TestContract_ADOLegacyOwnerTagIsHonoredAndCleared(t *testing.T) {
+// #1990 removed the legacy claim-tag fallback: ownership lives only in the
+// comment thread now, so a stray `goobers:claim-run:<b64>` tag left on an
+// item from before that change no longer confers a claim, and a release no
+// longer reads or clears it.
+func TestContract_ADOLegacyOwnerTagNoLongerHonored(t *testing.T) {
 	legacyOwnerTag := "goobers:claim-run:" + base64.RawURLEncoding.EncodeToString([]byte("run-legacy"))
 	backend := newADOWorkItemBackend()
-	backend.tags = []string{"route/backend", providers.LabelClaimed, legacyOwnerTag}
+	backend.tags = []string{"route/backend", legacyOwnerTag}
 	server := backend.server(t)
 	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
 		p.BaseURL = server.URL
 	})
 	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}
 
-	// A different run must not be able to claim over the legacy owner.
+	// No breadcrumb, so the legacy tag alone must not stand in the way of a
+	// fresh claim.
 	result, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
 		Repository: repo, ID: "42", RunID: "run-new",
 	})
 	if err != nil {
 		t.Fatalf("ClaimWorkItem: %v", err)
 	}
-	if result.Claimed || result.ClaimedBy != "run-legacy" {
-		t.Fatalf("legacy claim was not honored: %#v", result)
+	if !result.Claimed || result.ClaimedBy != "run-new" {
+		t.Fatalf("legacy tag blocked a fresh claim: %#v", result)
 	}
 
-	// The legacy owner re-claiming its own item is idempotent.
-	again, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
-		Repository: repo, ID: "42", RunID: "run-legacy",
-	})
-	if err != nil {
-		t.Fatalf("re-claim: %v", err)
-	}
-	if !again.Claimed || again.ClaimedBy != "run-legacy" {
-		t.Fatalf("legacy owner could not re-claim its own item: %#v", again)
+	// The legacy tag stays hidden from the labels callers see.
+	for _, label := range result.Item.Labels {
+		if strings.HasPrefix(label, "goobers:claim-run:") {
+			t.Fatalf("legacy claim tag leaked into visible labels: %#v", result.Item.Labels)
+		}
 	}
 
 	released, err := provider.ReleaseWorkItemClaim(context.Background(), providers.ClaimWorkItemRequest{
-		Repository: repo, ID: "42", RunID: "run-legacy",
+		Repository: repo, ID: "42", RunID: "run-new",
 	})
 	if err != nil {
 		t.Fatalf("ReleaseWorkItemClaim: %v", err)
@@ -702,23 +711,19 @@ func TestContract_ADOLegacyOwnerTagIsHonoredAndCleared(t *testing.T) {
 	if released.HasLabel(providers.LabelClaimed) {
 		t.Fatalf("claim label remained after release: %#v", released.Labels)
 	}
+
+	// Release no longer touches the legacy tag; it is neither read nor
+	// cleared, so it is still present in the backend's raw tags.
 	backend.mu.Lock()
 	storedTags := append([]string(nil), backend.tags...)
 	backend.mu.Unlock()
+	found := false
 	for _, tag := range storedTags {
-		if strings.HasPrefix(tag, "goobers:claim-run:") {
-			t.Fatalf("release left the legacy owner tag behind: %#v", storedTags)
+		if strings.EqualFold(tag, legacyOwnerTag) {
+			found = true
 		}
 	}
-
-	// With the legacy epoch ended, a new run can take the item.
-	next, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
-		Repository: repo, ID: "42", RunID: "run-new",
-	})
-	if err != nil {
-		t.Fatalf("claim after release: %v", err)
-	}
-	if !next.Claimed || next.ClaimedBy != "run-new" {
-		t.Fatalf("item was not claimable after release: %#v", next)
+	if !found {
+		t.Fatalf("release unexpectedly touched the legacy owner tag: %#v", storedTags)
 	}
 }

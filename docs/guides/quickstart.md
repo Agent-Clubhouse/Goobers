@@ -220,7 +220,7 @@ with a real one.
 2. Create a fine-grained GitHub PAT in
    [GitHub's token settings](https://github.com/settings/personal-access-tokens/new).
    **Set Resource owner to the account or organization that owns
-   `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal
+   `<owner>/<repo>` (for example, `your-org`); keep the default personal
    account when it owns the repository.** Choose **Only select repositories**
    and select exactly the disposable repository. Grant only **Contents: Read
    and write**, **Issues: Read and write**, and **Pull requests: Read and

@@ -38,7 +38,7 @@ capabilities must also appear on its referenced Goober.
 | `ado:code:read` | Read Azure Repos code and pull requests. |
 | `ado:pr:comment` | Post Azure Repos PR threads without vote or completion authority. |
 | `ado:pr:write` | Open or update Azure Repos pull requests. |
-| `ado:pr:status` | Publish Azure Repos pull-request statuses. |
+| `ado:pr:status` | Publish Azure Repos pull-request statuses. Optional on the `report-pr-status` policy action, which requires `github:pr:write`; declaring `ado:pr:status` alongside it is accepted but not required. |
 | `ado:pr:complete` | Complete an Azure Repos pull request. |
 | `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
 | `telemetry:read` | Read local telemetry and configured external telemetry connectors. |

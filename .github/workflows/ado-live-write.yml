@@ -1,0 +1,105 @@
+name: ADO Live Write
+
+# workflow-inventory: dormant-until-provisioned
+#
+# ADO-N16 (#5727, docs/design/ado-parity-dsl-2-0.md §8.2): the live WRITE leg
+# for the Azure DevOps provider. It runs providers/ado_live_write_test.go
+# (-tags=liveadowrite) against a dedicated scratch repository, complementing
+# the read-only ado-live-conformance.yml smoke. Every object it creates is
+# namespaced under goobers-live/<run_id>/, found-or-created by run id so a
+# re-run of the same workflow run converges, and cleaned up by the leg itself;
+# nothing shared is ever deleted.
+#
+# Dormant until provisioned. It needs vars.ADO_ORG_URL, vars.ADO_PROJECT,
+# vars.ADO_WRITE_REPOSITORY (the scratch repository, never the testbed repo)
+# and secrets.ADO_PAT. When any is absent the provisioning check records
+# provisioned=false and emits a notice instead of failing, so the run ends
+# green and the scheduled-failure alarm never files a streak for a leg nobody
+# has provisioned yet. Provision the scratch repository's policies once with
+# `go run ./test/adolive provision -apply` (see
+# docs/guides/provider-fixture-drift.md), set the variables, and delete the
+# marker line above once the first run is green.
+#
+# Pull requests run the leg only when labelled `ado-live-write` and only for
+# changes under providers/ado*. This is a plain pull_request trigger: fork
+# pull requests receive no secrets, so the check reports "not provisioned"
+# and the job skips its live steps.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 8 * * 2"
+  pull_request:
+    types: [labeled]
+    paths:
+      - "providers/ado*"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialised: two legs against one scratch repository would race each
+  # other's find-or-create. Never cancel mid-run, so cleanup always finishes.
+  group: ado-live-write
+  cancel-in-progress: false
+
+jobs:
+  ado-live-write:
+    name: ADO live write leg
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ado-live-write'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check provisioning
+        id: check
+        env:
+          ADO_ORG_URL: ${{ vars.ADO_ORG_URL }}
+          ADO_PROJECT: ${{ vars.ADO_PROJECT }}
+          ADO_WRITE_REPOSITORY: ${{ vars.ADO_WRITE_REPOSITORY }}
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+        run: |
+          missing=""
+          [ -n "$ADO_ORG_URL" ] || missing="$missing ADO_ORG_URL"
+          [ -n "$ADO_PROJECT" ] || missing="$missing ADO_PROJECT"
+          [ -n "$ADO_WRITE_REPOSITORY" ] || missing="$missing ADO_WRITE_REPOSITORY"
+          [ -n "$ADO_PAT" ] || missing="$missing ADO_PAT"
+          if [ -n "$missing" ]; then
+            echo "::notice title=ADO live write leg skipped (not provisioned)::Missing:$missing. The leg stays dormant until the scratch repository is provisioned (#5727)."
+            echo "provisioned=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          org="${ADO_ORG_URL%/}"
+          org="${org##*/}"
+          if [ -z "$org" ]; then
+            echo "::error title=ADO live write leg misconfigured::ADO_ORG_URL has no organization segment after the last /."
+            exit 1
+          fi
+          echo "provisioned=true" >> "$GITHUB_OUTPUT"
+          echo "target=$org/$ADO_PROJECT/$ADO_WRITE_REPOSITORY" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.check.outputs.provisioned == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        if: steps.check.outputs.provisioned == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          # Never write the shared setup-go cache key: setup-go saves once per
+          # key and never overwrites, so a short job here that finishes first
+          # pins a near-empty build cache that CI then restores. Only CI saves.
+          cache: false
+
+      - name: Run live write leg
+        if: steps.check.outputs.provisioned == 'true'
+        env:
+          GOOBERS_ADO_LIVE_WRITE_REPO: ${{ steps.check.outputs.target }}
+          GOOBERS_ADO_LIVE_TOKEN: ${{ secrets.ADO_PAT }}
+          # Optional: the work-item type to create when the project's process
+          # has no type named like the provider default.
+          GOOBERS_ADO_LIVE_WORK_ITEM_TYPE: ${{ vars.ADO_WRITE_WORK_ITEM_TYPE }}
+          # One id per workflow run: "Re-run jobs" keeps it, so a re-run
+          # converges on the objects the first attempt created.
+          GOOBERS_ADO_LIVE_RUN_ID: gh-${{ github.run_id }}
+        run: go test -tags=liveadowrite ./providers/... -run '^TestLiveADOWrite' -count=1 -v

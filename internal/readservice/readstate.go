@@ -115,6 +115,13 @@ func (s *Local) readStateEnvelope(ctx context.Context) ReadStateEnvelope {
 	if s.intakeDepth != nil {
 		if pending, err := s.intakeDepth.Count(ctx); err == nil {
 			input.PendingIntake = pending
+		} else {
+			// #2462: a failed Count must not be reported as pendingIntake: 0 —
+			// that reads as "nothing pending" when the truth is "unknown", and
+			// an unapplied backlog can accumulate invisibly behind it.
+			// PendingIntake keeps its zero value; this degraded condition is
+			// what a caller checks to tell it apart from a genuine zero.
+			input.IntakeCountUnavailable = true
 		}
 		if aged, ok := s.intakeDepth.(intakeAge); ok {
 			if oldest, found, err := aged.OldestPending(ctx); err == nil && found {

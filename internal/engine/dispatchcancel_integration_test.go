@@ -4,7 +4,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"io"
 	"testing"
 	"time"
@@ -112,12 +111,16 @@ func assertDispatchCancellationCleanup(t *testing.T, ctx context.Context, server
 	}
 	// Hold cleanup beyond the heartbeat timeout. Continued heartbeats must keep
 	// the activity alive, and the canceled future must still await its result.
-	waitCtx, stopWait := context.WithTimeout(ctx, dispatchHeartbeatTimeout+2*time.Second)
-	err = run.Get(waitCtx, nil)
-	waitErr := waitCtx.Err()
-	stopWait()
-	if !errors.Is(waitErr, context.DeadlineExceeded) {
-		t.Fatalf("workflow settled before pod disappearance: %v", err)
+	// Get on a deadline-bound context can return a transport CANCEL before
+	// that context reports DeadlineExceeded. That is not workflow settlement.
+	// Keep the pod present for the full heartbeat window, then inspect the
+	// authoritative execution state; a terminal execution cannot become running.
+	hold := time.NewTimer(dispatchHeartbeatTimeout + 2*time.Second)
+	defer hold.Stop()
+	select {
+	case <-hold.C:
+	case <-ctx.Done():
+		t.Fatalf("cleanup observation interrupted: %v", ctx.Err())
 	}
 	description, err := server.Client().DescribeWorkflowExecution(ctx, run.GetID(), run.GetRunID())
 	if err != nil {

@@ -377,6 +377,11 @@ func (p *GiteaProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRe
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return WorkItem{}, err
 	}
+	// #5245: refuse declared graph edges before any mutation, rather than
+	// creating the item and dropping them.
+	if err := checkCreateWorkItemGraphFields(req); err != nil {
+		return WorkItem{}, err
+	}
 	itemBody := withRunIDFooter(req.Body, req.RunID)
 	var err error
 	itemBody, err = withAttribution(itemBody, p.attribution, "issue-create")
@@ -748,13 +753,14 @@ func (p *GiteaProvider) finishClaim(ctx context.Context, repo RepositoryRef, id,
 		return ClaimResult{}, err
 	}
 	claimed := winner == runID
+	providerRunID := ""
+	if !claimed {
+		providerRunID = winner
+	}
 	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(repo, id),
-		URL:       item.URL,
-		Operation: "claim",
-		Outcome:   claimAttemptOutcome(claimed),
-		RunID:     runID,
+		Provider: ProviderGitea, Ref: issueRef(repo, id), URL: item.URL,
+		Operation: "claim", Outcome: claimAttemptOutcome(claimed),
+		RunID: runID, ProviderRunID: providerRunID,
 		Fields: map[string]FieldDigest{
 			"claim": {After: digestString("run=" + winner)},
 		},

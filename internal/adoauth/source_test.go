@@ -3,6 +3,8 @@ package adoauth
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -106,5 +108,58 @@ func TestSourceAzureCLI(t *testing.T) {
 	}
 	if credential.Secret != "entra" || runner.name != "az" {
 		t.Fatalf("credential = %#v, runner = %q %#v", credential, runner.name, runner.args)
+	}
+}
+
+func TestSourceWorkloadIdentityAcceptsClientID(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "federated-token")
+	if err := os.WriteFile(tokenFile, []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AZURE_TENANT_ID", "00000000-0000-0000-0000-000000000001")
+	t.Setenv("AZURE_CLIENT_ID", "00000000-0000-0000-0000-000000000002")
+	t.Setenv("AZURE_FEDERATED_TOKEN_FILE", tokenFile)
+
+	_, err := Source(instance.RepoRef{
+		Provider: "ado",
+		Owner:    "org",
+		Project:  "project",
+		Name:     "repo",
+		Auth: &instance.RepoAuthConfig{
+			Kind:     instance.ADOAuthWorkloadIdentity,
+			ClientID: "00000000-0000-0000-0000-000000000003",
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAuthSchemeFollowsTheConfiguredKind pins the non-secret scheme the daemon
+// delivers beside an ADO credential: a PAT is Basic (including the default
+// kind a repo without an auth block uses), every Entra identity kind is
+// Bearer, and anything that is not a supported ADO kind states none.
+func TestAuthSchemeFollowsTheConfiguredKind(t *testing.T) {
+	ado := func(auth *instance.RepoAuthConfig) instance.RepoRef {
+		return instance.RepoRef{Provider: "ado", Owner: "example-org", Project: "example-project", Name: "example-repo", Auth: auth}
+	}
+	for _, tc := range []struct {
+		name string
+		repo instance.RepoRef
+		want string
+	}{
+		{"default kind is a PAT", ado(nil), SchemeBasic},
+		{"pat", ado(&instance.RepoAuthConfig{Kind: instance.ADOAuthPAT}), SchemeBasic},
+		{"azure-cli", ado(&instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI}), SchemeBearer},
+		{"workload-identity", ado(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}), SchemeBearer},
+		{"managed-identity", ado(&instance.RepoAuthConfig{Kind: instance.ADOAuthManagedIdentity}), SchemeBearer},
+		{"unsupported kind", ado(&instance.RepoAuthConfig{Kind: "unknown"}), ""},
+		{"github repository", instance.RepoRef{Provider: "github", Owner: "example-org", Name: "example-repo"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AuthScheme(tc.repo); got != tc.want {
+				t.Fatalf("AuthScheme() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

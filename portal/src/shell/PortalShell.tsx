@@ -147,7 +147,10 @@ export function PortalShell({
             {instanceIdentity?.environment && (
               <>
                 <span aria-hidden="true" className="topbar-context-separator">•</span>
-                <span className="topbar-environment">{instanceIdentity.environment}</span>
+                <span className="topbar-environment">
+                  {instanceIdentity.environment}
+                  {build?.commit && build.commit !== "none" ? ` (${build.commit})` : ""}
+                </span>
               </>
             )}
             <span className="topbar-info-wrap">
@@ -359,9 +362,7 @@ function GaggleNav({
             <a
               aria-current={activeGaggle === gaggle.name ? "page" : undefined}
               aria-label={`Open gaggle ${gaggle.displayName}`}
-              className={
-                activeGaggle === gaggle.name ? "nav-item nav-item-active" : "nav-item"
-              }
+              className={`${activeGaggle === gaggle.name ? "nav-item nav-item-active" : "nav-item"}${gaggle.enabled ? "" : " definition-disabled"}`}
               href={routeHash({ page: "gaggle", id: gaggle.name })}
               onClick={(event) => {
                 event.preventDefault();

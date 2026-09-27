@@ -179,6 +179,10 @@ function WorkflowDetailWorkspace({
               v{workflow.definition.version} · {workflow.definition.digest}
             </dd>
           </div>
+          <div>
+            <dt>Backprop</dt>
+            <dd>{workflow.backprop?.enabled ? `Enabled (${workflow.backprop.version})` : "Disabled"}</dd>
+          </div>
         </dl>
       </header>
 

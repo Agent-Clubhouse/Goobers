@@ -147,6 +147,22 @@ func TestFeatureRegistryReportsBothInterpreterVersions(t *testing.T) {
 	}
 }
 
+func TestBackpropFeatureRegistryReportsOnlyDSL30(t *testing.T) {
+	for _, id := range []FeatureID{
+		"workflow.spec.backprop.enabled",
+		"workflow.spec.backprop.version",
+	} {
+		feature, ok := LookupFeature(id)
+		if !ok {
+			t.Fatalf("%s feature is missing", id)
+		}
+		if len(feature.DSLVersions) != 1 ||
+			feature.DSLVersions[0] != (DSLFeatureSupport{Version: v30.DSLVersion, Level: SupportGA}) {
+			t.Errorf("%s DSL versions = %+v, want only DSL %s GA", id, feature.DSLVersions, v30.DSLVersion)
+		}
+	}
+}
+
 // TestPreV30SurfaceRefusedOnEarlierVersions pins the router-owned version
 // gate: the 3.0-only fields must be refused on the 2.0 document — the frozen
 // interpreter never learns them (PO-D0) — and the gaggle runsOn floor must
@@ -202,6 +218,15 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 			WithPreviewFeatures(true))
 		if err == nil || !strings.Contains(err.Error(), `declares repoFrom, which requires dslVersion "3.0"`) {
 			t.Fatalf("Compile(%s, repoFrom) error = %v, want version-gate refusal", version, err)
+		}
+
+		withBackprop := spec(func(s *apiv1.WorkflowSpec) {
+			s.Backprop = &apiv1.BackpropConfig{Enabled: true, Version: "v1"}
+		})
+		_, err = Compile(Definition{Name: "backprop", Version: 1, DSLVersion: version, Spec: withBackprop},
+			WithPreviewFeatures(true))
+		if err == nil || !strings.Contains(err.Error(), `declares backprop, which requires dslVersion "3.0"`) {
+			t.Fatalf("Compile(%s, backprop) error = %v, want version-gate refusal", version, err)
 		}
 
 		_, err = Compile(Definition{Name: "floor", Version: 1, DSLVersion: version, Spec: spec(nil)},
@@ -263,6 +288,14 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 	}
 	if machine.Digest() == "" {
 		t.Fatal("compiled 3.0 machine has no digest")
+	}
+
+	withBackprop := spec(func(s *apiv1.WorkflowSpec) {
+		s.Backprop = &apiv1.BackpropConfig{Enabled: true, Version: "v2"}
+	})
+	if _, err := Compile(Definition{Name: "bad-backprop-version", Version: 1, DSLVersion: v30.DSLVersion, Spec: withBackprop},
+		WithPreviewFeatures(true)); err == nil || !strings.Contains(err.Error(), `backprop.version must be "v1"`) {
+		t.Fatalf("Compile(3.0, unknown backprop version) error = %v, want version refusal", err)
 	}
 }
 

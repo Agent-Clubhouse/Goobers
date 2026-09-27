@@ -50,6 +50,8 @@ func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps servi
 		return 2
 	}
 	run := func(ctx context.Context, supervisorStdout, supervisorStderr io.Writer) int {
+		stopTelemetry := startCommandJournalTelemetry(layout, supervisorStderr)
+		defer stopTelemetry()
 		err := deps.runSupervisor(ctx, selfupdate.SupervisorOptions{
 			Root:      root,
 			Escalator: selfUpdateEscalator{root: root},

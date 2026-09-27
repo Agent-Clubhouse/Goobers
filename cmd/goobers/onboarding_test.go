@@ -93,6 +93,9 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 			t.Fatalf("%v: validation had errors: %s", args, stdout)
 		}
 		for _, finding := range result.Findings {
+			if isSafetyFinding(finding) {
+				continue
+			}
 			if (finding.Code != placeholderFindingCode || finding.Severity != "warning") &&
 				(finding.Code != sourceTreeAdvisoryCode || finding.Severity != diagnosticSeverityInfo) {
 				t.Fatalf("%v: validation had a non-placeholder finding: %s", args, stdout)

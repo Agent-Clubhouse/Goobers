@@ -19,6 +19,10 @@
       "properties": {
         "gaggle": { "type": "string", "minLength": 1, "examples": ["example"], "description": "Name of the gaggle this workflow belongs to." },
         "displayName": { "type": "string", "description": "Human-facing workflow name shown in the portal." },
+        "enabled": {
+          "type": ["boolean", "null"],
+          "description": "Selects whether new runs may start for this workflow. Defaults to true; null or omitted means true (enabled). Setting false disables new run starts for this workflow without changing its schedule or backlog configuration."
+        },
         "triggers": {
           "type": "array",
           "description": "Conditions that may start a run once readiness checks also pass. A manual trigger must be the only trigger.",
@@ -52,6 +56,16 @@
           }
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Workflow-level overrides for inherited runner safety budgets." },
+        "backprop": {
+          "type": "object",
+          "description": "Explicitly enrolls terminal runs in provenance-aware Backprop attribution. Omitted or enabled=false performs no attribution work.",
+          "additionalProperties": false,
+          "required": ["enabled", "version"],
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Whether terminal runs produce attribution records." },
+            "version": { "const": "v1", "description": "Pinned Backprop attribution contract version." }
+          }
+        },
         "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Absolute local filesystem root (or ~/ path) where durable journal outbox files are additionally mirrored. Tasks may override it." },
         "start": { "type": "string", "minLength": 1, "examples": ["act"], "description": "Name of the first task, gate, or parallel state." },
         "docsRoots": {
@@ -342,6 +356,7 @@
               "record-remediation-checkpoint",
               "release-backlog-claim",
               "release-pr-claim",
+              "report-pr-status",
               "respond-to-findings",
               "resolve-review-threads",
               "rework-pr",

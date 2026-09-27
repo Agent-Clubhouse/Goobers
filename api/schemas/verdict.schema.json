@@ -33,7 +33,7 @@
       "if": { "properties": { "decision": { "const": "fail" } } },
       "then": {
         "properties": {
-          "reasonCode": { "enum": ["implementation-rejected", "policy-rejected"] }
+          "reasonCode": { "enum": ["implementation-rejected", "policy-rejected", "unsalvageable-design"] }
         }
       }
     },
@@ -56,7 +56,7 @@
     },
     "reasonCode": {
       "type": "string",
-      "enum": ["implementation-rejected", "policy-rejected", "ordering", "no-lander", "empty-diff", "unchanged-repass", "repass-budget-exhausted", "finding-set-oscillation", "remediation-evidence-not-inspected"],
+      "enum": ["implementation-rejected", "policy-rejected", "unsalvageable-design", "ordering", "no-lander", "empty-diff", "unchanged-repass", "repass-budget-exhausted", "finding-set-oscillation", "remediation-evidence-not-inspected"],
       "description": "Machine-readable rejection or deferral reason. Legacy fail verdicts may omit this field and must be treated as ambiguous, not inferred substantive rejection."
     },
     "rationale": {

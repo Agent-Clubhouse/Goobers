@@ -225,3 +225,4 @@ must be digested artifact pointers, which you cannot construct — and you
 don't need to: the runner already records what it handed you (the diff in
 single-diff mode) as the run's evidence, independent of your verdict. Put
 per-finding citations in each finding's `location`.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

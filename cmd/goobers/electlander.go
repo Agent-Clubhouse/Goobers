@@ -100,9 +100,11 @@ func resolveElectionPolicy(name string) (electionPolicyFunc, string) {
 // elect-lander stage: election fires only when the verdict is entirely
 // cross-PR-ordering asks (electableUnderOrdering — the PR is individually fine
 // and merely waiting on a sibling) AND this PR wins its cluster's election under
-// the configured policy. Any verdict carrying a real defect (a substantive/
-// conflict/rebase-needed finding above `info` severity) is never electable; an
-// `info` finding is a nit and does not withhold landing authority (#1726).
+// the configured policy. Any verdict carrying a real defect (a substantive or
+// conflict finding above `info` severity) is never electable; an `info` finding
+// is a nit and does not withhold landing authority (#1726), and a bare
+// `rebase-needed` finding is an ordering fact about the base, not a defect in
+// the diff (#5576) — see findingIsCleanRebaseNeed.
 func electionDecision(findings []apiv1.Finding, selectedNumber int, policy electionPolicyFunc, demoted map[int]bool) bool {
 	// #950: a demoted lander (one that repeatedly could not merge at an
 	// unchanged head) is never crowned — that is exactly the re-election that
@@ -241,6 +243,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 			"selectedBaseSha":        selectedBaseSha,
 			"reviewDigest":           reviewDigest,
 			"overlappingSiblingsCsv": overlappingSiblingsCsv,
+			"unlandableSiblingsCsv":  providerInput("unlandableSiblings", ""),
 			"advisoryMode":           strconv.FormatBool(advisoryMode),
 			"scopeGateParked":        scopeGateParked,
 		})
@@ -340,21 +343,11 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: unknown election policy %q — falling back to %q\n", policyName, resolvedPolicy)
 	}
 
-	// #950: fail-safe — an unresolvable demotion state proceeds as an empty set
-	// (exactly the pre-#950 behavior), and never blocks the election.
-	demoted, derr := demotedSet(ctx, provider, repo, prs)
-	if derr != nil {
-		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
-		demoted = nil
-	}
-	// The FIFO lander election (#950) is a GitHub merge-queue concept with no
-	// Gitea equivalent; skip it on other forges rather than fail closed.
-	if githubProvider, githubSelected := provider.(*providers.GitHubProvider); githubSelected {
-		ineligible, ierr := electionIneligibleSet(ctx, githubProvider, repo, prs)
-		if ierr != nil {
-			return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
-		}
-		demoted = unionPRSets(demoted, ineligible)
+	// #950/#5602: demoted, parked, and unlandable PRs are dropped from the
+	// candidacy and from every blocker set, identically to apply-verdict.
+	demoted, ierr := electionExcludedSet(ctx, provider, repo, prs, providerInput("unlandableSiblings", ""), stderr)
+	if ierr != nil {
+		return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
 	}
 
 	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, serializedCluster, policy, demoted, resolvedPolicy); reason != "" {

@@ -18,10 +18,25 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 
 | Path | Contents | Shape doc |
 |---|---|---|
-| `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`) | §2, §3, §4, §5 |
+| `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`). Containers reference the bare image name `goobers`, left untransformed so the base stays consumable as a remote kustomize base (#3287) — point it at a registry via your own `images:` overlay, or see `examples/goobers-system-registry/` if you fork and edit instead | §2, §3, §4, §5 |
+| `examples/goobers-system-registry/` | example overlay stamping `goobers-system/` with a `registry.example.com/CHANGE-ME` placeholder image — copy and edit rather than apply as-is | §1 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
+
+## Migrating an existing `goobers-system` overlay (#3287)
+
+Before #3287, the `goobers-system` base carried its own placeholder `images:`
+transformer, rewriting every container to
+`registry.example.com/CHANGE-ME/goobers:CHANGE-ME`. If your own remote-base
+overlay's `images:` transformer matched that name — `name:
+registry.example.com/CHANGE-ME/goobers` — it never actually retargeted
+anything (the base's own transformer ran first and left nothing matching
+that name by the time yours ran; see the issue for why). Now that the base
+leaves the image bare, update your overlay's `images:` entry to match `name:
+goobers` instead. You can keep both `name:` entries during the transition;
+kustomize's `images:` transformer only rewrites containers matching a
+declared name, so a non-matching entry is a no-op rather than an error.
 
 ## Hand-managed node-pool contract
 
@@ -200,6 +215,19 @@ Deployment's container arguments against the registered CLI flags, requires
 execution-critical worker flags such as `--instance`, and (#4827) asserts that no
 reference NetworkPolicy selects pods from a chart release without also admitting
 that release's own required intra-cluster traffic.
+
+A stage pod's Go module cache is not mounted under `/tmp`: each gaggle namespace
+supplies a dedicated RWX persistent volume at `/var/goobers/cache`, exported as
+`GOMODCACHE`, so concurrent fresh stage pods reuse downloaded modules. `GOCACHE`
+continues to live under the attempt-private `tmp:ephemeral` root at `/tmp`, so
+the #3969 growth bound remains in force. Without the separate module-cache
+volume, a stage pod starts every build cold and spends its budget re-downloading
+modules. The PVC's 20Gi request is the documented growth bound. A namespace
+without the claim still runs stage pods: the dispatcher checks for the claim
+(`dispatcher-rbac.yaml` grants `get` on it) and, when it is missing or cannot
+be read, mounts an `emptyDir` there instead, logs a warning once and annotates
+each such pod `goobers.dev/go-mod-cache: ephemeral`. Those builds start cold
+until the claim exists (#5595).
 Run the same render and schema gate locally with:
 
 ```sh
@@ -230,8 +258,8 @@ the class-independent floor (default-deny-all + allow-dns).
 
 The base also ships `dispatcher-rbac.yaml`, binding the **existing** `goobers-worker`
 ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to create,
-get, delete and list pods in this gaggle's namespace, and read the worker's own
-Deployment (DI-9 template read). This is what lets a worker actually dispatch
+get, delete and list pods in this gaggle's namespace, read the worker's own
+Deployment (DI-9 template read), and read the Go module cache claim. This is what lets a worker actually dispatch
 pod-per-stage runs into a gaggle namespace (#4286); stage pods themselves still get
 no token mount and no RBAC grants at all. The included `goobers-stage` ServiceAccount
 is still a target-topology template, not one the current dispatcher selects — every
@@ -313,6 +341,44 @@ a memory-backed `emptyDir`.
 On Windows the same control is expressed through ACLs rather than mode bits, and
 a copied file inherits a grant to `S-1-5-11` (Authenticated Users). Break
 inheritance: `icacls <file> /inheritance:r /grant:r '<principal>:F'`.
+
+### Azure DevOps workload identity for the daemon
+
+An Azure DevOps repository with `auth.kind: workload-identity` is resolved by
+the daemon, not by the stage
+([ADO authentication](../../docs/guides/ado-authentication.md#where-the-credential-resolves)).
+The daemon mints the Microsoft Entra token, backs the repository's grants with
+it, and gives stage pods the token through the credential plane. The federated
+identity therefore belongs on the pod that runs `goobers up` (`goobers-api`
+here) and on any worker that runs self-placed stages for that gaggle
+(`goobers-worker`). Once built-in stage commands consume the delivered
+credential (ADO-N18), stage pods need no identity. Until then, a stage pod that
+runs a built-in Azure DevOps stage command still builds its connection from
+`repos[].auth` and needs the same projection (step 2).
+
+1. Create a user-assigned identity and add it to the Azure DevOps organization
+   at **Basic** access. Give it Contribute, Contribute to pull requests and
+   Create branch on the repository. Do not grant either "Bypass policies"
+   permission.
+2. Add a federated credential for the cluster's OIDC issuer whose subject is
+   `system:serviceaccount:goobers-system:goobers-api`, plus
+   `system:serviceaccount:goobers-system:goobers-worker` when a worker runs
+   self-placed stages. Until ADO-N18, also add the ServiceAccount stage pods
+   run under in the gaggle's namespace (its `default` ServiceAccount today)
+   when those pods run built-in Azure DevOps stage commands.
+3. Annotate each ServiceAccount with `azure.workload.identity/client-id:
+   <client-id>` and label its pod template `azure.workload.identity/use:
+   "true"`, so the webhook projects `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
+   `AZURE_FEDERATED_TOKEN_FILE` into the container.
+4. Set the repository's `auth.clientId` only when one projected token is
+   trusted by several identities and this repository must use a different one
+   than `AZURE_CLIENT_ID`.
+
+If an overlay restricts these pods' egress, allow the Microsoft Entra token
+endpoint as well as Azure DevOps. Display commands such as `goobers status`
+tolerate a missing identity, but the daemon's gaggle runtime builds the
+identity at startup to authenticate worktree git operations, so a daemon whose
+projection is missing fails to start.
 
 ### Egress allowlist: name hosts, not domain suffixes
 

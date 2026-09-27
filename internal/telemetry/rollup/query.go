@@ -26,6 +26,13 @@ type RunSummary struct {
 	DurationMs      int64     // 0 if the run has not finished
 }
 
+// ContinuationRun is the indexed identity and phase of a direct continuation.
+type ContinuationRun struct {
+	RunID       string
+	SourceRunID string
+	Status      string
+}
+
 // StageAttempt is a queryable row from the stage_attempts table.
 type StageAttempt struct {
 	Stage                  string
@@ -169,6 +176,42 @@ func (db *DB) Runs(ctx context.Context) ([]RunSummary, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ContinuationRuns returns direct continuations grouped by source run.
+func (db *DB) ContinuationRuns(ctx context.Context, sourceRunIDs []string) (map[string][]ContinuationRun, error) {
+	out := make(map[string][]ContinuationRun)
+	if len(sourceRunIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(sourceRunIDs))
+	args := make([]any, len(sourceRunIDs))
+	for i, id := range sourceRunIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := db.readDB().QueryContext(ctx, `
+		SELECT run_id, trigger_ref, status
+		FROM runs
+		WHERE trigger_kind = 'manual' AND trigger_ref IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY run_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query continuation runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var row ContinuationRun
+		var status sql.NullString
+		if err := rows.Scan(&row.RunID, &row.SourceRunID, &status); err != nil {
+			return nil, fmt.Errorf("rollup: scan continuation run: %w", err)
+		}
+		row.Status = status.String
+		out[row.SourceRunID] = append(out[row.SourceRunID], row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rollup: iterate continuation runs: %w", err)
+	}
+	return out, nil
 }
 
 // RunRef is a run's identity plus the immutable ordering key the run list

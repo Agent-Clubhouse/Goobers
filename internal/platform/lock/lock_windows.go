@@ -14,8 +14,11 @@ const (
 	lockedBytesLow     = 1
 )
 
-func lockFile(file *os.File, nonBlocking bool) error {
+func lockFile(file *os.File, nonBlocking, shared bool) error {
 	flags := uint32(windows.LOCKFILE_EXCLUSIVE_LOCK)
+	if shared {
+		flags = 0
+	}
 	if nonBlocking {
 		flags |= windows.LOCKFILE_FAIL_IMMEDIATELY
 	}

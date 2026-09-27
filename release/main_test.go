@@ -151,6 +151,13 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("%s missing %q:\n%s", releaseDocsVersionFile, want, marker)
 		}
 	}
+	generatedCLI, err := readZipEntry(archiveEntries["docs/cli/README.md"])
+	if err != nil {
+		t.Fatalf("read generated CLI reference: %v", err)
+	}
+	if !strings.Contains(string(generatedCLI), releaseDocsGeneratorFixtureMarker) {
+		t.Fatalf("release docs generator output was not staged:\n%s", generatedCLI)
+	}
 	readme, err := readZipEntry(archiveEntries["README.md"])
 	if err != nil {
 		t.Fatalf("read README.md: %v", err)

@@ -84,6 +84,9 @@ func (p *agentEventProjection) Emit(event journal.Event) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err := p.appender.Append(clean); err != nil {
+		if clean.Type == journal.EventAgentProgress && errors.Is(err, journal.ErrAgentProgressRateLimited) {
+			return nil
+		}
 		return err
 	}
 	p.events = append(p.events, clean)
@@ -330,7 +333,9 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		return adapterDiagnostics(out, transcript, stderr), err
 	}
 	if err := e.validator.ValidateEnvelope("result", out.Payload); err != nil {
-		return adapterDiagnostics(out, transcript, stderr), fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
+		validationErr := fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
+		out, validationErr = e.recordInvalidCompletion(env.TaskID, out, validationErr)
+		return adapterDiagnostics(out, transcript, stderr), validationErr
 	}
 	var result apiv1.ResultEnvelope
 	if err := json.Unmarshal(out.Payload, &result); err != nil {
@@ -353,6 +358,14 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	// anticipate — a missing tool is a system defect, so it must not escalate
 	// and needs-human-park every item this run claimed.
 	reclassifyMissingCapabilityBlock(&result)
+	// #5262: last, because it is the narrowest — an operational failure of the
+	// environment (a dependency restore that did not complete) reported as
+	// blocked would otherwise terminate the run at the #544 escalated terminal
+	// before the remediation gate a workflow declared after this stage could
+	// choose repair, infrastructure retry or escalation. Ordered after the
+	// capability backstop so a missing-tool code keeps its own, more specific
+	// classification rather than being absorbed into the operational one.
+	reclassifyOperationalFailureBlock(&result)
 	// The transcript pointer is runner-authored. Never trust a harness to
 	// self-report a path or digest for the diagnostic bytes the runner captured.
 	result.Transcript = transcript
@@ -377,6 +390,7 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		}
 		return result, err
 	}
+	result.Artifacts = append(result.Artifacts, out.DiagnosticArtifacts...)
 	return result, nil
 }
 
@@ -395,7 +409,9 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		return apiv1.Verdict{}, err
 	}
 	if err := e.validator.ValidateEnvelope("verdict", out.Payload); err != nil {
-		return apiv1.Verdict{}, fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
+		validationErr := fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
+		_, validationErr = e.recordInvalidCompletion(env.TaskID, out, validationErr)
+		return apiv1.Verdict{}, validationErr
 	}
 	var verdict apiv1.Verdict
 	if err := json.Unmarshal(out.Payload, &verdict); err != nil {
@@ -410,6 +426,7 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		}
 		return apiv1.Verdict{}, err
 	}
+	verdict.Evidence = append(verdict.Evidence, out.DiagnosticArtifacts...)
 	return verdict, nil
 }
 
@@ -522,6 +539,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Tools:                    append([]string(nil), e.tools...),
 		Workspace:                env.Workspace,
 		CompletionPath:           completionPath,
+		ValidateCompletion:       e.completionValidator(mode),
 		TelemetryDir:             telemetry.PrepareStageTelemetryDir(env.Workspace),
 		Credentials:              creds,
 		ContextPaths:             contextPaths,
@@ -535,9 +553,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			return Outcome{}, nil, nil, fmt.Errorf("harness: validate nested execution: %w", err)
 		}
 	}
-	if req.Attempt < 1 {
-		req.Attempt = 1
-	}
+	e.prepareReadinessRequest(&req)
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
 		// posture with no usable platform sandbox must block the stage, never
@@ -585,6 +601,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 	out, runErr = e.runAdapter(ctx, req, nestedAdapter)
 	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(out.MCPServerFailures))
+	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
 		if !hasAppender {
 			runErr = errors.Join(runErr, fmt.Errorf(
@@ -745,16 +762,8 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		}
 	}
 	if runErr != nil {
-		var stderr *apiv1.ArtifactPointer
-		ref, artifactErr := e.artifacts.RecordArtifact(env.TaskID+"/stderr.log", e.scrubber.Scrub(out.Stderr))
-		if artifactErr != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("harness: record stderr: %w", artifactErr))
-		} else {
-			ptr := refToPointer(ref, "text/plain")
-			stderr = &ptr
-		}
-		wrapped := fmt.Errorf("harness: %s: %w", e.adapter.Name(), runErr)
-		return out, transcript, stderr, classifyHarnessRunError(runErr, wrapped)
+		out, stderr, failure := e.finalizeAdapterFailure(env.TaskID, out, runErr)
+		return out, transcript, stderr, failure
 	}
 
 	if len(out.Payload) == 0 {
@@ -767,6 +776,46 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	return out, transcript, nil, nil
 }
 
+func (e *Executor) finalizeAdapterFailure(stage string, out Outcome, runErr error) (Outcome, *apiv1.ArtifactPointer, error) {
+	out, runErr = e.recordInvalidCompletion(stage, out, runErr)
+	var stderr *apiv1.ArtifactPointer
+	ref, artifactErr := e.artifacts.RecordArtifact(stage+"/stderr.log", e.scrubber.Scrub(out.Stderr))
+	if artifactErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("harness: record stderr: %w", artifactErr))
+	} else {
+		ptr := refToPointer(ref, "text/plain")
+		stderr = &ptr
+	}
+	wrapped := fmt.Errorf("harness: %s: %w", e.adapter.Name(), runErr)
+	return out, stderr, classifyHarnessRunError(runErr, wrapped)
+}
+
+func (e *Executor) completionValidator(mode Mode) func([]byte) error {
+	envelope := "result"
+	if mode == ModeReview {
+		envelope = "verdict"
+	}
+	return func(payload []byte) error {
+		return e.validator.ValidateEnvelope(envelope, payload)
+	}
+}
+
+func (e *Executor) recordInvalidCompletion(stage string, out Outcome, validationErr error) (Outcome, error) {
+	payload := out.InvalidCompletionPayload
+	if len(payload) == 0 && errors.Is(validationErr, ErrInvalidCompletion) {
+		payload = out.Payload
+	}
+	if len(payload) == 0 || len(out.DiagnosticArtifacts) > 0 {
+		return out, validationErr
+	}
+	ref, err := e.artifacts.RecordArtifact(stage+"/invalid-completion.json", e.scrubber.Scrub(payload))
+	if err != nil {
+		return out, errors.Join(validationErr, fmt.Errorf("harness: record invalid completion: %w", err))
+	}
+	out.DiagnosticArtifacts = append(out.DiagnosticArtifacts, refToPointer(ref, "application/json"))
+	return out, validationErr
+}
+
 func classifyHarnessRunError(runErr, wrapped error) error {
 	// Tag a session timeout at the invoke seam (#724) so the runner can
 	// recognize it and apply a stage's OnTimeout salvage policy without
@@ -775,6 +824,8 @@ func classifyHarnessRunError(runErr, wrapped error) error {
 	switch {
 	case errors.Is(runErr, ErrTimeout):
 		return invoke.Timeout(wrapped)
+	case errors.Is(runErr, errRequiredMCPRejected):
+		return executor.StageFailure(ErrorCodeRequiredMCPRejected, wrapped)
 	case errors.Is(runErr, errRequiredMCPUnavailable):
 		return invoke.InfrastructureFailure(
 			executor.StageFailure(ErrorCodeRequiredMCPUnavailable, wrapped),
@@ -969,9 +1020,10 @@ func adapterDiagnostics(out Outcome, transcript, stderr *apiv1.ArtifactPointer) 
 	result := apiv1.ResultEnvelope{
 		Transcript: transcript,
 		Metrics:    copyMetrics(out.Metrics),
+		Artifacts:  append([]apiv1.ArtifactPointer(nil), out.DiagnosticArtifacts...),
 	}
 	if stderr != nil {
-		result.Artifacts = []apiv1.ArtifactPointer{*stderr}
+		result.Artifacts = append(result.Artifacts, *stderr)
 	}
 	return result
 }

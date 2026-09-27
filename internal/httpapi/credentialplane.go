@@ -75,10 +75,17 @@ type MintedCredential struct {
 // call. Capabilities that are declared but carry no configured grant are
 // simply absent (not every capability is credentialed), mirroring
 // buildCredentialEnv's behavior on the worker path.
+//
+// RepoAuthScheme is the non-secret authorization scheme ("basic" or "bearer")
+// of the gaggle's Azure DevOps repository credential, set when the gaggle's
+// repository is on Azure DevOps and at least one credential was minted. The
+// pod stamps it as GOOBERS_REPO_AUTH_SCHEME so the stage never infers the
+// scheme from the token's shape. It is empty for every other provider.
 type CredentialResolveResponse struct {
-	RunID       string             `json:"runId"`
-	Stage       string             `json:"stage"`
-	Credentials []MintedCredential `json:"credentials"`
+	RunID          string             `json:"runId"`
+	Stage          string             `json:"stage"`
+	Credentials    []MintedCredential `json:"credentials"`
+	RepoAuthScheme string             `json:"repoAuthScheme,omitempty"`
 }
 
 // CredentialService is the daemon-side credential plane. Implementations

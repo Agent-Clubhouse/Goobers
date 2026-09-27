@@ -108,3 +108,69 @@ func TestPackagedOnboardingUsesInstallRouteCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestPackagedOnboardingToleratesQuickstartSectionDrift(t *testing.T) {
+	repoRoot := gitOutput("rev-parse", "--show-toplevel")
+	if repoRoot == "" {
+		t.Fatal("resolve repository root")
+	}
+	for _, tc := range []struct {
+		name    string
+		replace func(string) string
+		want    int
+	}{
+		{
+			name: "missing source section",
+			replace: func(content string) string {
+				return strings.Replace(content, quickstartSourceBuild, "", 1)
+			},
+			want: 0,
+		},
+		{
+			name: "duplicate source section",
+			replace: func(content string) string {
+				return strings.Replace(content, quickstartSourceBuild, quickstartSourceBuild+quickstartSourceBuild, 1)
+			},
+			want: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payloadDir := t.TempDir()
+			for _, rel := range []string{
+				"README.md",
+				"docs/guides/quickstart.md",
+				"docs/guides/quickstart-linux.md",
+			} {
+				destination := filepath.Join(payloadDir, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := copyReleaseFile(filepath.Join(repoRoot, filepath.FromSlash(rel)), destination); err != nil {
+					t.Fatal(err)
+				}
+			}
+			quickstartPath := filepath.Join(payloadDir, "docs/guides/quickstart.md")
+			quickstart, err := os.ReadFile(quickstartPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(quickstartPath, []byte(tc.replace(string(quickstart))), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := adaptInstalledOnboarding(payloadDir, "v1.2.3"); err != nil {
+				t.Fatalf("adaptInstalledOnboarding: %v", err)
+			}
+			packaged, err := os.ReadFile(quickstartPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Count(string(packaged), "## Confirm the installed binary"); got != tc.want {
+				t.Errorf("confirmation section count = %d, want %d", got, tc.want)
+			}
+			if !strings.Contains(string(packaged), "goobers-v1.2.3 onboarding stub-sample") {
+				t.Error("unrelated matching onboarding sections were not adapted")
+			}
+		})
+	}
+}

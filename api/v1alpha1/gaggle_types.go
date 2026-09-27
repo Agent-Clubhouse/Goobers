@@ -16,6 +16,13 @@ type GaggleSpec struct {
 	// null enabled value inherits the instance default; local accounting remains active.
 	// +optional
 	Cost *CostReporting `json:"cost,omitempty" yaml:"cost,omitempty"`
+	// Enabled selects whether new runs may start for this gaggle. Null or
+	// omitted means true (enabled). Setting false blocks new run starts
+	// without touching schedule or backlog configuration; in-flight runs
+	// finish normally.
+	// +optional
+	// +nullable
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// DisplayName is the human-facing name shown on the portal dashboard.
 	// +optional
 	DisplayName string `json:"displayName,omitempty" yaml:"displayName,omitempty"`

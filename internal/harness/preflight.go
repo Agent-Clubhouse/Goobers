@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -24,6 +25,10 @@ func preflightProbeError(probe string, result ProcessResult, runErr error, hint 
 
 	var message string
 	switch {
+	case errors.Is(runErr, ErrTimeout):
+		message = fmt.Sprintf("%s timed out: %v", probe, runErr)
+	case errors.Is(runErr, ErrCanceled):
+		message = fmt.Sprintf("%s was canceled: %v", probe, runErr)
 	case result.ExitCode > 0:
 		message = fmt.Sprintf("%s exited %d", probe, result.ExitCode)
 	case runErr != nil:

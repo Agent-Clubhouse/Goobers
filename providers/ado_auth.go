@@ -23,7 +23,26 @@ const (
 	adoCredentialPAT    = "pat"
 	adoCredentialBearer = "bearer"
 
+	// ADOCredentialKindPAT is the ADOCredential kind of a personal access
+	// token. It and ADOCredentialKindBearer are exported so a caller outside
+	// this package (a test's fake source, for one) builds a credential the
+	// provider accepts without restating the kind strings.
+	ADOCredentialKindPAT = adoCredentialPAT
+	// ADOCredentialKindBearer is the ADOCredential kind of a Microsoft Entra
+	// token.
+	ADOCredentialKindBearer = adoCredentialBearer
+
 	adoTokenRefreshSkew = 5 * time.Minute
+
+	// adoForceMsaPassThroughHeader and adoForceMsaPassThroughValue make a
+	// Bearer-authenticated request work against an org that is not
+	// Entra-backed (or an MSA account on one that is): without it, Azure
+	// DevOps answers a valid Entra bearer token with a 302 sign-in redirect
+	// or a 401 (TF400813), on both REST and Git. Microsoft's own `az devops`
+	// SDK sends it on every request. It is never sent for PAT/Basic
+	// credentials, which already work everywhere.
+	adoForceMsaPassThroughHeader = "X-VSS-ForceMsaPassThrough"
+	adoForceMsaPassThroughValue  = "true"
 )
 
 // ADOCredential is one authorization value returned by an ADOCredentialSource.
@@ -51,6 +70,10 @@ type adoPATCredentialSource struct {
 	resolve  func(context.Context) (string, error)
 }
 
+type adoBearerCredentialSource struct {
+	resolve func(context.Context) (string, error)
+}
+
 // NewADOPATCredentialSource returns a static PAT source. The provider preserves
 // the historical "goobers" username when username is empty.
 func NewADOPATCredentialSource(username, token string) ADOCredentialSource {
@@ -68,6 +91,21 @@ func NewResolvingADOPATCredentialSource(username string, resolve func(context.Co
 	return &adoPATCredentialSource{username: username, resolve: resolve}
 }
 
+// NewADOBearerCredentialSource returns a static Microsoft Entra bearer-token
+// source. It is used when the daemon has already minted and capability-scoped
+// the credential before dispatching a stage.
+func NewADOBearerCredentialSource(token string) ADOCredentialSource {
+	return NewResolvingADOBearerCredentialSource(func(context.Context) (string, error) {
+		return token, nil
+	})
+}
+
+// NewResolvingADOBearerCredentialSource returns a bearer source that resolves
+// its value for every operation.
+func NewResolvingADOBearerCredentialSource(resolve func(context.Context) (string, error)) ADOCredentialSource {
+	return &adoBearerCredentialSource{resolve: resolve}
+}
+
 func (s *adoPATCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
 	if err := ctx.Err(); err != nil {
 		return ADOCredential{}, err
@@ -83,6 +121,23 @@ func (s *adoPATCredentialSource) Credential(ctx context.Context) (ADOCredential,
 		return ADOCredential{}, fmt.Errorf("ado PAT credential is empty")
 	}
 	return ADOCredential{Kind: adoCredentialPAT, Secret: token, Username: s.username}, nil
+}
+
+func (s *adoBearerCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
+	if err := ctx.Err(); err != nil {
+		return ADOCredential{}, err
+	}
+	if s.resolve == nil {
+		return ADOCredential{}, fmt.Errorf("ado bearer credential resolver is nil")
+	}
+	token, err := s.resolve(ctx)
+	if err != nil {
+		return ADOCredential{}, err
+	}
+	if strings.TrimSpace(token) == "" {
+		return ADOCredential{}, fmt.Errorf("ado bearer credential is empty")
+	}
+	return ADOCredential{Kind: adoCredentialBearer, Secret: token}, nil
 }
 
 func (c ADOCredential) authorizationHeader() (string, error) {
@@ -106,9 +161,35 @@ func (c ADOCredential) authorizationHeader() (string, error) {
 	}
 }
 
-func adoGitAuthEnv(header, remoteURL string) []string {
+// ScrubForms returns every form in which this credential can appear in a
+// request: the raw secret and the Authorization value built from it — the
+// whole "Bearer <token>" value for a bearer credential, or the base64 Basic
+// value with and without its "Basic " prefix for a PAT. Registering every form
+// with a secret registrar is what lets a scrubber redact a captured header as
+// well as the bare token. The daemon's minting source and the provider's own
+// requests call this one function, so both register the same strings.
+func (c ADOCredential) ScrubForms() []string {
+	if strings.TrimSpace(c.Secret) == "" {
+		return nil
+	}
+	forms := []string{c.Secret}
+	header, err := c.authorizationHeader()
+	if err != nil {
+		return forms
+	}
+	if encoded, basic := strings.CutPrefix(header, "Basic "); basic {
+		return append(forms, encoded, header)
+	}
+	return append(forms, header)
+}
+
+// adoGitAuthEnv renders the child-process-only Git environment for one
+// authenticated request. bearer must come from the credential kind (e.g.
+// ADOCredential.Kind), not from re-parsing header, so a caller can never
+// drift from what actually minted the header.
+func adoGitAuthEnv(header, remoteURL string, bearer bool) []string {
 	scopedURL := strings.TrimRight(remoteURL, "/") + "/"
-	base := make([]string, 0, len(os.Environ())+6)
+	base := make([]string, 0, len(os.Environ())+8)
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
 		upper := strings.ToUpper(name)
@@ -118,14 +199,24 @@ func adoGitAuthEnv(header, remoteURL string) []string {
 		}
 		base = append(base, entry)
 	}
-	return append(base,
-		"GIT_CONFIG_COUNT=2",
+	count := 2
+	if bearer {
+		count = 3
+	}
+	env := append(base,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(count),
 		"GIT_CONFIG_KEY_0=credential.helper",
 		"GIT_CONFIG_VALUE_0=",
 		"GIT_CONFIG_KEY_1=http."+scopedURL+".extraheader",
 		"GIT_CONFIG_VALUE_1=AUTHORIZATION: "+header,
-		"GIT_TERMINAL_PROMPT=0",
 	)
+	if bearer {
+		env = append(env,
+			"GIT_CONFIG_KEY_2=http."+scopedURL+".extraheader",
+			"GIT_CONFIG_VALUE_2="+adoForceMsaPassThroughHeader+": "+adoForceMsaPassThroughValue,
+		)
+	}
+	return append(env, "GIT_TERMINAL_PROMPT=0")
 }
 
 // ADOGitAuthEnvironment resolves one credential into a child-process-only Git
@@ -146,10 +237,11 @@ func ADOGitAuthEnvironment(ctx context.Context, source ADOCredentialSource, regi
 		return nil, err
 	}
 	if registrar != nil {
-		registrar.Register([]byte(credential.Secret))
-		registrar.Register([]byte(strings.TrimSpace(strings.TrimPrefix(header, "Basic "))))
+		for _, form := range credential.ScrubForms() {
+			registrar.Register([]byte(form))
+		}
 	}
-	return adoGitAuthEnv(header, remoteURL), nil
+	return adoGitAuthEnv(header, remoteURL, credential.Kind == adoCredentialBearer), nil
 }
 
 type adoBearerToken struct {
@@ -244,8 +336,14 @@ func newAzureIdentityADOCredentialSource(credential azureTokenCredential) ADOCre
 
 // NewWorkloadIdentityADOCredentialSource uses Azure workload identity
 // federation configured through the standard AZURE_* environment variables.
-func NewWorkloadIdentityADOCredentialSource() (ADOCredentialSource, error) {
-	credential, err := azidentity.NewWorkloadIdentityCredential(nil)
+// clientID overrides AZURE_CLIENT_ID when one projected service-account token
+// is trusted by multiple user-assigned identities.
+func NewWorkloadIdentityADOCredentialSource(clientID string) (ADOCredentialSource, error) {
+	options := &azidentity.WorkloadIdentityCredentialOptions{}
+	if clientID != "" {
+		options.ClientID = clientID
+	}
+	credential, err := azidentity.NewWorkloadIdentityCredential(options)
 	if err != nil {
 		return nil, fmt.Errorf("create Azure workload identity credential: %w", err)
 	}

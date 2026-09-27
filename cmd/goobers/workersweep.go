@@ -49,6 +49,10 @@ const (
 	workerSweepBudget = 90 * time.Second
 	// workerSweepDescribeTimeout bounds ONE describe within that budget.
 	workerSweepDescribeTimeout = 10 * time.Second
+	// workerSweepInterval rechecks pods that were live or indeterminate during
+	// boot. Five minutes bounds retained terminal objects without making
+	// Temporal or the Kubernetes API part of a hot polling loop.
+	workerSweepInterval = 5 * time.Minute
 )
 
 // workerSweepDescriber is the one Temporal call the sweep needs.
@@ -178,7 +182,14 @@ func (r temporalRunStates) status(ctx context.Context, workflowID string) sweepS
 // boot-time connection that lives for the length of one sweep costs nothing to
 // reason about.
 func sweepWorkerStageOrphans(sweeper stageOrphanSweeper, hostPort, namespace string, stdout, stderr io.Writer) {
+	sweepWorkerStageOrphansContext(context.Background(), sweeper, hostPort, namespace, stdout, stderr)
+}
+
+func sweepWorkerStageOrphansContext(parent context.Context, sweeper stageOrphanSweeper, hostPort, namespace string, stdout, stderr io.Writer) {
 	if sweeper == nil {
+		return
+	}
+	if err := parent.Err(); err != nil {
 		return
 	}
 	c, err := dialWorkerSweepTemporal(hostPort, namespace)
@@ -187,7 +198,7 @@ func sweepWorkerStageOrphans(sweeper stageOrphanSweeper, hostPort, namespace str
 		return
 	}
 	defer c.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), workerSweepBudget)
+	ctx, cancel := context.WithTimeout(parent, workerSweepBudget)
 	defer cancel()
 	disposed, err := sweeper.SweepOrphans(ctx, temporalRunStates{client: c})
 	if err != nil {
@@ -199,4 +210,41 @@ func sweepWorkerStageOrphans(sweeper stageOrphanSweeper, hostPort, namespace str
 	}
 	pf(stdout, "goobers worker: orphan sweep disposed %d settled stage pod(s): %s\n",
 		len(disposed), strings.Join(disposed, ", "))
+}
+
+// startPeriodicWorkerStageOrphanSweeps retries reconciliation for the lifetime
+// of the worker. A boot sweep can correctly leave a live run's pod, and that
+// same pod can become terminal one second later; without this loop the object
+// remains until an unrelated worker restart. Cancellation interrupts an
+// in-flight sweep through its shared parent context and closes the returned
+// channel after the loop has stopped.
+func startPeriodicWorkerStageOrphanSweeps(
+	ctx context.Context,
+	sweeper stageOrphanSweeper,
+	hostPort, namespace string,
+	stdout, stderr io.Writer,
+	interval time.Duration,
+) <-chan struct{} {
+	done := make(chan struct{})
+	if sweeper == nil || interval <= 0 {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
+				sweepWorkerStageOrphansContext(ctx, sweeper, hostPort, namespace, stdout, stderr)
+			}
+		}
+	}()
+	return done
 }

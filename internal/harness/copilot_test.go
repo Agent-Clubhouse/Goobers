@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1347,6 +1348,59 @@ func TestCopilotAdapterEmptyToolAllowlistPreservesCommand(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterRepairsInvalidResponseAndRecordsScrubbedDiagnostic(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("COPILOT_HOME", "")
+	const secret = "copilot-invalid-completion-secret"
+	invalid := []byte(`{"status":"success","outputs":{"token":{"value":"` + secret + `"}}}`)
+	valid := []byte(`{"status":"success","outputs":{},"summary":"done"}`)
+	var calls []ProcessRequest
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
+	runner.act = func(req ProcessRequest) error {
+		calls = append(calls, req)
+		payload := invalid
+		if len(calls) == 2 {
+			payload = valid
+		}
+		_, err := req.StdoutCapture.Write(payload)
+		return err
+	}
+	rec := &fakeRecorder{}
+	scrubber := journal.NewRegistryScrubber()
+	scrubber.Register([]byte(secret))
+	exec, err := NewExecutor(
+		&CopilotAdapter{Command: []string{"copilot"}, Runner: runner},
+		testInjector(t, "", "", noopRegistrar{}),
+		rec, rec, rec, scrubber, "",
+		WithTools([]string{"view"}),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err != nil || result.Status != apiv1.ResultSuccess {
+		t.Fatalf("Invoke = (%+v, %v), want repaired success", result, err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("process calls = %d, want initial call plus one repair", len(calls))
+	}
+	prompt, ok := copilotPromptArgValue(calls[1].Command)
+	if !ok || !strings.Contains(prompt, "/outputs/token") || !strings.Contains(prompt, "expected") {
+		t.Fatalf("repair prompt = %q, want schema path and validation message", prompt)
+	}
+	if len(rec.artifacts) != 1 || rec.artifacts[0].name != "implement/invalid-completion.json" {
+		t.Fatalf("recorded artifacts = %+v, want invalid completion diagnostic", rec.artifacts)
+	}
+	if bytes.Contains(rec.artifacts[0].data, []byte(secret)) ||
+		!bytes.Contains(rec.artifacts[0].data, []byte(journal.Redacted)) {
+		t.Fatalf("invalid completion was not redacted: %q", rec.artifacts[0].data)
+	}
+	if len(result.Artifacts) != 1 || result.Artifacts[0].MediaType != "application/json" {
+		t.Fatalf("result artifacts = %+v, want diagnostic pointer", result.Artifacts)
+	}
+}
+
 func TestCopilotAdapterToolAllowlistRejectsCommaDelimitedEntry(t *testing.T) {
 	runner := &fakeProcessRunner{}
 	workspace := t.TempDir()
@@ -1441,8 +1495,8 @@ func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing
 	if !ok {
 		t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
 	}
-	if !strings.Contains(prompt, "entire response") ||
-		!strings.Contains(prompt, "without returning the mandatory completion") {
+	if !strings.Contains(prompt, "failed schema validation") ||
+		!strings.Contains(prompt, "missing properties: 'status'") {
 		t.Fatalf("recovery prompt = %q", prompt)
 	}
 }
@@ -1451,7 +1505,7 @@ func TestCopilotAdapterResponseCompletionRejectsTruncation(t *testing.T) {
 	capture := newTranscriptBuffer(8)
 	_, _ = capture.Write([]byte(`{"status":"success"}`))
 
-	_, err := readCopilotResponseCompletion(ModeInvoke, capture)
+	_, err := readCopilotResponseCompletion(capture)
 	if !errors.Is(err, ErrNoCompletion) {
 		t.Fatalf("read completion error = %v, want ErrNoCompletion", err)
 	}
@@ -2326,6 +2380,33 @@ func TestCopilotAdapterPreflightSignedOutFailsAuthProbe(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterPreflightTimeoutDoesNotSuggestSignIn(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+		act: func(req ProcessRequest) error {
+			if slices.Contains(req.Command, "auth") {
+				return context.DeadlineExceeded
+			}
+			return nil
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{program}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
+	_, err = adapter.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected preflight timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error should identify the timeout: %v", err)
+	}
+	if strings.Contains(err.Error(), "authentication failure") || strings.Contains(err.Error(), "sign in") {
+		t.Fatalf("timeout should not suggest an authentication failure: %v", err)
+	}
+}
+
 func TestCopilotAdapterPreflightReportsScrubbedBoundedProbeOutput(t *testing.T) {
 	secret := "ghp_" + strings.Repeat("x", 36)
 	runner := &fakeProcessRunner{
@@ -2375,6 +2456,34 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterPreflightVerifiesLauncherUsageOutput(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var usageProbe bool
+	adapter := &CopilotAdapter{
+		Command:            []string{program, "forwarding-launcher"},
+		DisableUsageOutput: true,
+		Runner: &fakeProcessRunner{
+			result: ProcessResult{ExitCode: 0, Transcript: []byte("GitHub Copilot CLI 1.0.87-0.\n")},
+			act: func(req ProcessRequest) error {
+				usageProbe = slices.Contains(req.Command, "--usage-output-file")
+				return nil
+			},
+		},
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !usageProbe {
+		t.Fatal("preflight did not probe launcher usage-output forwarding")
+	}
+	if adapter.usageOutputDisabled() {
+		t.Fatal("verified launcher usage output remained disabled")
+	}
+}
+
 func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	program, err := os.Executable()
 	if err != nil {
@@ -2383,6 +2492,7 @@ func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	copilotHome := t.TempDir()
 	t.Setenv("COPILOT_HOME", copilotHome)
 	var probedSessionID string
+	var isolatedHome string
 	runner := &fakeProcessRunner{
 		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
 		act: func(req ProcessRequest) error {
@@ -2394,7 +2504,15 @@ func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 				return errors.New("session id value missing")
 			}
 			probedSessionID = req.Command[sessionIndex+1]
-			path := copilotSessionLogPath(copilotHome, probedSessionID)
+			var ok bool
+			isolatedHome, ok = copilotConfigHome(req.Env)
+			if !ok {
+				return errors.New("isolated Copilot home missing")
+			}
+			if isolatedHome == copilotHome {
+				return errors.New("auth probe reused ambient Copilot home")
+			}
+			path := copilotSessionLogPath(isolatedHome, probedSessionID)
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return err
 			}
@@ -2414,8 +2532,8 @@ func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	if probedSessionID == "" {
 		t.Fatal("preflight did not probe a generated session id")
 	}
-	if _, err := os.Stat(filepath.Dir(copilotSessionLogPath(copilotHome, probedSessionID))); !os.IsNotExist(err) {
-		t.Fatalf("preflight session was not cleaned up: %v", err)
+	if _, err := os.Stat(isolatedHome); !os.IsNotExist(err) {
+		t.Fatalf("isolated preflight home was not cleaned up: %v", err)
 	}
 }
 

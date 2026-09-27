@@ -168,6 +168,7 @@ type CopilotAdapter struct {
 	launcherMu               sync.Mutex
 	launcherContract         *launcherContract
 	launcherContractVerified bool
+	launcherUsageVerified    bool
 	// AllowAdapterManagedFallback permits a launcher that does not implement
 	// the handshake to prove direct Copilot-compatible session forwarding
 	// during the normal authentication preflight.
@@ -179,8 +180,8 @@ type CopilotAdapter struct {
 	// RequiredTools are adapter-owned tools that must remain visible even when
 	// the goober declares a restrictive tool allowlist.
 	RequiredTools []string
-	// DisableUsageOutput omits the optional version-gated usage-file flag for
-	// launchers whose reported version does not prove that they forward it.
+	// DisableUsageOutput keeps the optional usage-file flag off until preflight
+	// proves that a forwarding launcher accepts it.
 	DisableUsageOutput bool
 	// PromptFlag precedes the rendered prompt text in the built argv.
 	// Defaults to "-p" if empty.
@@ -202,6 +203,8 @@ type CopilotAdapter struct {
 	OptionalCredentialCapabilities map[string]bool
 	// Runner executes the subprocess; defaults to ExecProcessRunner.
 	Runner ProcessRunner
+	// mcpSessionFactory substitutes the session boundary in adapter contract tests.
+	mcpSessionFactory copilotSessionFactory
 	// ModelLister discovers models from the authenticated Copilot runtime.
 	// Defaults to the official Copilot SDK.
 	ModelLister CopilotModelLister
@@ -218,6 +221,10 @@ type CopilotAdapter struct {
 	// wired at the composition root once confirmed, so a wrong guess can't
 	// falsely refuse to start every agentic run.
 	AuthCheckArgs []string
+	// AuthProbeExtraArgs are operator-configured preflight-only arguments
+	// appended to a version-2 launcher's declared lightweight auth probe.
+	// Version-1 launchers receive the same arguments through AuthCheckArgs.
+	AuthProbeExtraArgs []string
 	// ExtraEnvAllowlist names additional ambient env vars carried into the
 	// harness subprocess (and its preflight probes) on top of the built-in
 	// procenv default-deny allowlist — the instance's RunnerConfig.EnvPassthrough
@@ -587,9 +594,9 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if err != nil {
 		return PreflightInfo{}, err
 	}
-	verifyAdapterManagedSession := c.VerifyAdapterManagedSession && sessionContract.SessionMode == "adapter-managed"
-	if verifyAdapterManagedSession && len(c.AuthCheckArgs) == 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: launcher session verification requires an authentication probe")
+	authCheckArgs, verifyAdapterManagedSession, err := c.authPreflightPlan(sessionContract)
+	if err != nil {
+		return PreflightInfo{}, err
 	}
 	bin := c.Command[0]
 	if _, err := exec.LookPath(bin); err != nil {
@@ -623,10 +630,11 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if version == "" {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
+	c.verifyLauncherUsageOutput(ctx, version, args)
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
-	if len(c.AuthCheckArgs) > 0 {
+	if len(authCheckArgs) > 0 {
 		command := resolveHarnessCommand(c.Command)
 		// Preflight has no RunRequest, so it cannot resolve the agent:model
 		// credential the way credentialEnv does at run time — left to itself the
@@ -644,7 +652,12 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		if tok != "" {
 			authEnv = overrideEnv(authEnv, "COPILOT_GITHUB_TOKEN", tok)
 		}
-		authCommand := append(command, c.AuthCheckArgs...)
+		authEnv, authDir, authCleanup, err := prepareCopilotPreflightEnvironment(authEnv, tok == "")
+		if err != nil {
+			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: isolate authentication probe: %w", err)
+		}
+		defer authCleanup()
+		authCommand := append(command, authCheckArgs...)
 		sessionTranscript := ""
 		sessionCleanup := func() {}
 		if verifyAdapterManagedSession {
@@ -661,14 +674,19 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			authCommand = append(authCommand, "--session-id", sessionID)
 		}
 		defer sessionCleanup()
-		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (sign-in check)", bin, c.AuthCheckArgs)
+		probeKind := "sign-in check"
+		if sessionContract.AuthProbe != nil {
+			probeKind = "launcher authentication probe"
+		}
+		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (%s)", bin, authCheckArgs, probeKind)
 		res, err := c.runner().Run(ctx, ProcessRequest{
 			Command:            authCommand,
+			Dir:                authDir,
 			Env:                authEnv,
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		})
 		if err != nil || res.ExitCode != 0 {
-			return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run the Copilot CLI and sign in")
+			return PreflightInfo{}, copilotAuthProbeError(ctx, authProbe, res, err)
 		}
 		if sessionTranscript != "" {
 			if err := verifyCopilotSessionTranscript(sessionTranscript); err != nil {
@@ -681,6 +699,17 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		}
 	}
 	return PreflightInfo{Version: version}, nil
+}
+
+func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {
+	switch {
+	case errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return preflightProbeError(probe, result, errors.Join(ErrTimeout, context.DeadlineExceeded), "")
+	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		return preflightProbeError(probe, result, errors.Join(ErrCanceled, context.Canceled), "")
+	default:
+		return preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
+	}
 }
 
 func verifyCopilotSessionTranscript(path string) error {
@@ -832,6 +861,11 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
 	if err := validateStandardExecution(req); err != nil {
 		return Outcome{}, err
+	}
+	if req.ValidateCompletion == nil {
+		req.ValidateCompletion = func(payload []byte) error {
+			return validateCopilotCompletion(req.Mode, payload)
+		}
 	}
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
@@ -1004,7 +1038,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// unanswerable after the fact, because the invocation was never kept.
 	// Only permission-relevant flags are recorded; the prompt and environment
 	// are deliberately excluded (they carry task content and credentials).
-	if err := writeCopilotInvocationDiagnostics(req, argv, declaredTools, c.DisableUsageOutput); err != nil {
+	if err := writeCopilotInvocationDiagnostics(req, argv, declaredTools, c.usageOutputDisabled()); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 
@@ -1023,7 +1057,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// Finish while the wrapper-owned log still exists, before cleanupSession.
 	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
-	runner := c.runner()
+	runner, closeControlledSession := c.prepareRequiredMCPRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions, confinement)
+	defer closeControlledSession()
 	started := time.Now()
 	var responseCapture *syncBuffer
 	var stdoutCapture io.Writer
@@ -1050,80 +1085,28 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	processErr = errors.Join(processErr, nativeCheckpoints.worker.observedError())
 	runErr = processErr
 	var payload []byte
+	var invalidCompletionPayload []byte
 	var completionErr error
 	if processErr == nil {
-		payload, completionErr = readCopilotCompletion(req, responseCapture, completionInResponse)
-		if errors.Is(completionErr, ErrNoCompletion) && nativeTranscriptPath != "" {
-			// Copilot does not reliably echo its final message to stdout under
-			// --silent --output-format=text with MCP tools attached: the answer
-			// lands in the session log while the stdout capture stays empty, so
-			// the read above reports "final response is not valid JSON" for a
-			// completion the model produced correctly. Recover it from the log
-			// before spending the contract-recovery turn (which re-runs the whole
-			// session and hits the same stdout gap, failing the stage twice and
-			// stranding committed work on the branch).
-			if recovered, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes); ok {
-				payload, completionErr = recovered, nil
-			}
+		payload, completionErr = readCopilotCompletionWithSessionFallback(
+			req, responseCapture, completionInResponse, nativeTranscriptPath)
+		completionErr = validateCompletion(req, payload, completionErr)
+		if errors.Is(completionErr, ErrInvalidCompletion) {
+			invalidCompletionPayload = append([]byte(nil), payload...)
 		}
-		if errors.Is(completionErr, ErrNoCompletion) {
-			// A clean Copilot exit can still omit its completion contract. Give
-			// the same session one contract-only turn without extending its budget.
-			totalTimeout := req.Timeout
-			if totalTimeout <= 0 {
-				totalTimeout = DefaultTimeout
-			}
-			remaining := totalTimeout - time.Since(started)
-			if remaining <= 0 {
-				runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
-				completionErr = nil
-			} else {
-				recoveryArgv := append([]string(nil), argv...)
-				recoveryPrompt := renderCompletionRecoveryPrompt(req)
-				var recoveryCapture *syncBuffer
-				var recoveryStdout io.Writer
-				if completionInResponse {
-					recoveryPrompt = renderResponseCompletionRecoveryPrompt(req)
-					recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
-					recoveryStdout = recoveryCapture
-				}
-				recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
-				recovery, err := runner.Run(ctx, ProcessRequest{
-					Command:                      recoveryArgv,
-					Dir:                          req.Workspace,
-					Env:                          env,
-					Timeout:                      remaining,
-					MaxTranscriptBytes:           req.MaxTranscriptBytes,
-					StdoutCapture:                recoveryStdout,
-					TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
-					TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
-					// The recovery turn runs on what is LEFT of the budget,
-					// so a stall here is if anything more urgent to see than
-					// one in the main session (#4179).
-					Activity: agentTelemetry.activityObserver(),
-				})
-				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
-				if err != nil {
-					runErr = err
-					completionErr = nil
-				} else {
-					payload, completionErr = readCopilotCompletion(req, recoveryCapture, completionInResponse)
-					if errors.Is(completionErr, ErrNoCompletion) && nativeTranscriptPath != "" {
-						// Same stdout gap on the recovery turn.
-						if recovered, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes); ok {
-							payload, completionErr = recovered, nil
-						}
-					}
-				}
-			}
-		}
+		result, payload, runErr, completionErr = runCopilotCompletionRepair(
+			ctx, runner, req, result, payload, argv, env, promptArg, flag,
+			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
+		)
 	}
 	out = Outcome{
-		Transcript:             result.Transcript,
-		RenderedPrompt:         []byte(prompt),
-		TranscriptTruncated:    result.TranscriptTruncated,
-		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
-		Stderr:                 result.Stderr,
+		Transcript:               result.Transcript,
+		RenderedPrompt:           []byte(prompt),
+		TranscriptTruncated:      result.TranscriptTruncated,
+		TranscriptDroppedBytes:   result.TranscriptDroppedBytes,
+		Stderr:                   result.Stderr,
+		Payload:                  payload,
+		InvalidCompletionPayload: invalidCompletionPayload,
 	}
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
@@ -1133,25 +1116,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// structured system/init event; Copilot has no transcript equivalent, so
 	// this reads the CLI's private run log rather than guessing from shared
 	// user-level logs.
-	out.MCPServerFailures = copilotMCPServerFailures(req, captures.mcpLogPath)
+	out.MCPServerFailures = copilotRunnerMCPFailures(ctx, runner, req, captures.mcpLogPath)
+	runErr = errors.Join(runErr, finalizeControlledCopilot(ctx, runner))
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
-	if nativeTranscriptPath != "" {
-		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
-			out.Metrics = native.metrics
-			out.ModelUsage = native.modelUsage
-			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err))
-			}
-			if len(native.data) > 0 {
-				out.Transcript = native.data
-				out.TranscriptSchema = telemetry.GenAIEventSchema
-				out.TranscriptTruncated = native.truncated
-				out.TranscriptDroppedBytes = native.droppedBytes
-			}
-		}
-	}
+	runErr = errors.Join(runErr, applyCopilotNativeTelemetry(&out, req, nativeTranscriptPath, agentTelemetry))
+	applyControlledCopilotUsage(&out, runner)
 	applyCopilotUsageDocument(&out, usageOutputPath)
 	if runErr != nil {
 		return out, runErr
@@ -1159,8 +1130,67 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if completionErr != nil {
 		return out, completionErr
 	}
-	out.Payload = payload
 	return out, nil
+}
+
+func runCopilotCompletionRepair(
+	ctx context.Context,
+	runner ProcessRunner,
+	req RunRequest,
+	result ProcessResult,
+	payload []byte,
+	argv, env []string,
+	promptArg int,
+	flag string,
+	completionInResponse bool,
+	nativeTranscriptPath string,
+	started time.Time,
+	completionErr error,
+	agentTelemetry *adapterAgentEmitter,
+) (ProcessResult, []byte, error, error) {
+	if !repairableCompletionError(completionErr) {
+		return result, payload, nil, completionErr
+	}
+
+	totalTimeout := req.Timeout
+	if totalTimeout <= 0 {
+		totalTimeout = DefaultTimeout
+	}
+	remaining := totalTimeout - time.Since(started)
+	if remaining <= 0 {
+		return result, payload, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0]), nil
+	}
+
+	recoveryArgv := append([]string(nil), argv...)
+	recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
+	var recoveryCapture *syncBuffer
+	var recoveryStdout io.Writer
+	if completionInResponse {
+		recoveryPrompt = renderResponseCompletionRepairPrompt(req, completionErr)
+		recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
+		recoveryStdout = recoveryCapture
+	}
+	recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
+	recovery, err := runner.Run(ctx, ProcessRequest{
+		Command:                      recoveryArgv,
+		Dir:                          req.Workspace,
+		Env:                          env,
+		Timeout:                      remaining,
+		MaxTranscriptBytes:           req.MaxTranscriptBytes,
+		StdoutCapture:                recoveryStdout,
+		TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
+		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
+		Activity:                     agentTelemetry.activityObserver(),
+	})
+	result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
+	if err != nil {
+		return result, payload, err, nil
+	}
+
+	payload, completionErr = readCopilotCompletionWithSessionFallback(
+		req, recoveryCapture, completionInResponse, nativeTranscriptPath)
+	completionErr = validateCompletion(req, payload, completionErr)
+	return result, payload, nil, completionErr
 }
 
 func applyCopilotUsageDocument(out *Outcome, path string) {
@@ -1170,20 +1200,46 @@ func applyCopilotUsageDocument(out *Outcome, path string) {
 	}
 }
 
+// readCopilotCompletionWithSessionFallback reads the completion for one Copilot
+// turn, falling back to the CLI's own session log when the normal read comes up
+// empty.
+//
+// Copilot does not reliably echo its final message to stdout under
+// --silent --output-format=text with MCP tools attached: the answer lands in the
+// session log while the stdout capture stays empty, so the primary read reports
+// "final response is not valid JSON" for a completion the model produced
+// correctly. Recovering from the log here avoids spending the contract-recovery
+// turn on a re-run that hits the same stdout gap, fails the stage twice, and
+// strands committed work on the branch.
+//
+// When the log does not rescue it either, the reason is folded into the error so
+// diagnosing the next occurrence does not require re-reading the transcript with
+// `goobers trace` (#4752).
+func readCopilotCompletionWithSessionFallback(
+	req RunRequest, capture *syncBuffer, completionInResponse bool, nativeTranscriptPath string,
+) ([]byte, error) {
+	payload, completionErr := readCopilotCompletion(req, capture, completionInResponse)
+	if !errors.Is(completionErr, ErrNoCompletion) || nativeTranscriptPath == "" {
+		return payload, completionErr
+	}
+	recovered, why, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes)
+	if ok {
+		return recovered, nil
+	}
+	return nil, fmt.Errorf("%w (session log: %s)", completionErr, why)
+}
+
 func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResponse bool) ([]byte, error) {
 	if !completionInResponse {
 		return readCompletion(req.Workspace, req.CompletionPath)
 	}
-	payload, responseErr := readCopilotResponseCompletion(req.Mode, capture)
+	payload, responseErr := readCopilotResponseCompletion(capture)
 	if responseErr == nil {
 		return payload, nil
 	}
 	payload, fileErr := readCompletion(req.Workspace, req.CompletionPath)
 	switch {
 	case fileErr == nil:
-		if err := validateCopilotCompletion(req.Mode, payload); err != nil {
-			return nil, fmt.Errorf("%w: Copilot completion file failed validation: %w", ErrNoCompletion, err)
-		}
 		return payload, nil
 	case !errors.Is(fileErr, ErrNoCompletion):
 		return nil, fileErr
@@ -1208,25 +1264,37 @@ func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResp
 // already failed with ErrNoCompletion. The recovered payload goes through the
 // same extraction and envelope validation as any other completion, so a genuinely
 // malformed final message still fails.
-func readCopilotCompletionFromSession(mode Mode, path string, limit int64) ([]byte, bool) {
+func readCopilotCompletionFromSession(mode Mode, path string, limit int64) ([]byte, string, bool) {
 	if path == "" {
-		return nil, false
+		return nil, "no session log path", false
 	}
 	native, ok := readCopilotSessionTranscript(path, limit)
-	if !ok || len(native.finalMessage) == 0 {
-		return nil, false
+	if !ok {
+		return nil, "session log could not be read", false
 	}
-	payload := extractCompletionJSON(bytes.TrimSpace(native.finalMessage))
-	if !json.Valid(payload) {
-		return nil, false
+	if len(native.finalMessages) == 0 {
+		return nil, "session log holds no non-empty assistant message for the final turn", false
 	}
-	if err := validateCopilotCompletion(mode, payload); err != nil {
-		return nil, false
+	// Newest first. The completion is what the model ends the turn on, but the
+	// turn does not always end ON it: a trailing empty or prose sign-off
+	// assistant.message after the envelope used to mask a recoverable
+	// completion entirely (#4752). Walking back finds the envelope; validation
+	// below is unchanged, so a turn that genuinely produced none still fails.
+	for i := len(native.finalMessages) - 1; i >= 0; i-- {
+		payload := extractCompletionJSON(bytes.TrimSpace(native.finalMessages[i]))
+		if !json.Valid(payload) {
+			continue
+		}
+		if err := validateCopilotCompletion(mode, payload); err != nil {
+			continue
+		}
+		return payload, "", true
 	}
-	return payload, true
+	return nil, fmt.Sprintf("none of the final turn's %d assistant message(s) parsed as a completion envelope",
+		len(native.finalMessages)), false
 }
 
-func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, error) {
+func readCopilotResponseCompletion(capture *syncBuffer) ([]byte, error) {
 	if capture == nil {
 		return nil, fmt.Errorf("%w: Copilot final response was not captured", ErrNoCompletion)
 	}
@@ -1241,9 +1309,6 @@ func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, erro
 	payload = extractCompletionJSON(payload)
 	if !json.Valid(payload) {
 		return nil, fmt.Errorf("%w: Copilot final response is not valid JSON", ErrNoCompletion)
-	}
-	if err := validateCopilotCompletion(mode, payload); err != nil {
-		return nil, fmt.Errorf("%w: Copilot final response failed validation: %w", ErrNoCompletion, err)
 	}
 	return payload, nil
 }
@@ -1559,4 +1624,23 @@ func (c *CopilotAdapter) requireMCPModelCredential(ctx context.Context, req RunR
 		return fmt.Errorf("harness: copilot-cli: external MCP servers require a materialized %s credential: %w", modelCapability, err)
 	}
 	return nil
+}
+
+func applyCopilotNativeTelemetry(out *Outcome, req RunRequest, nativeTranscriptPath string, agentTelemetry *adapterAgentEmitter) (runErr error) {
+	if nativeTranscriptPath != "" {
+		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+			out.Metrics = native.metrics
+			out.ModelUsage = native.modelUsage
+			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
+				runErr = fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err)
+			}
+			if len(native.data) > 0 {
+				out.Transcript = native.data
+				out.TranscriptSchema = telemetry.GenAIEventSchema
+				out.TranscriptTruncated = native.truncated
+				out.TranscriptDroppedBytes = native.droppedBytes
+			}
+		}
+	}
+	return runErr
 }

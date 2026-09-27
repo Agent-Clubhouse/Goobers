@@ -14,3 +14,4 @@ resources:
   - serviceaccount.yaml
   - networkpolicies.yaml
   - dispatcher-rbac.yaml
+  - go-build-cache-pvc.yaml

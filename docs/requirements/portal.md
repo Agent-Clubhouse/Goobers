@@ -123,10 +123,11 @@ behind every unit of work.
   reports false. Withholding the control is required rather than failing at click
   time — a hidden control is the honest signal that the action does not apply to
   this deployment. See `docs/design/portal-reveal-remote-posture.md`.
-- **PORT-032 (SHOULD):** *(Fleet, partially shipped)* The portal SHOULD remain a
+- **PORT-032 (SHOULD):** *(Fleet, experimental and superseded)* The portal SHOULD remain a
   window over a **single instance**. Fleet-level aggregation across instances is
-  designed in `docs/design/fleet-portal.md` and is **not** shipped: the shipped
-  fleet slice is instance-side enrollment and connection only (`INST-015`–`INST-017`).
+  designed in `docs/design/fleet-portal.md` and is **not** shipped: the
+  superseded embedded connector provided only instance-side enrollment and
+  connection (`INST-015`–`INST-017`).
   Until a fleet read model and dashboard exist, no portal surface aggregates
   across instances, and this requirement is the record that the boundary has not
   moved.

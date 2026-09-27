@@ -175,15 +175,19 @@ func appendSkillPackageCollisionWarnings(configDir string, report *validate.Repo
 
 func journalValidationWarnings(log *journal.InstanceLog, warnings []validate.CodedWarning) error {
 	for _, warning := range warnings {
+		fields := map[string]any{
+			"kind":        "config.validation.warning",
+			"code":        string(warning.Code),
+			"severity":    string(warning.Severity),
+			"scope":       warning.Scope,
+			"explanation": warning.Explanation,
+		}
+		if warning.Safety != nil {
+			fields["safety"] = warning.Safety
+		}
 		if err := log.Append(journal.Event{
-			Type: journal.EventRunnerAnnotation,
-			Runner: map[string]any{
-				"kind":        "config.validation.warning",
-				"code":        string(warning.Code),
-				"severity":    string(warning.Severity),
-				"scope":       warning.Scope,
-				"explanation": warning.Explanation,
-			},
+			Type:   journal.EventRunnerAnnotation,
+			Runner: fields,
 		}); err != nil {
 			return fmt.Errorf("journal config validation warning: %w", err)
 		}

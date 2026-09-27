@@ -42,6 +42,13 @@ func latestPodAgentEvents(events []Event) []Event {
 	return filtered
 }
 
+// LatestPodAgentEvents applies the newest-physical-pod filter used by the
+// journal's agent projections so external readers reconstruct the same live
+// nested-agent view from a run's event stream.
+func LatestPodAgentEvents(events []Event) []Event {
+	return latestPodAgentEvents(events)
+}
+
 // agentPodOrdinal recognizes only the pod writer's complete positive-ordinal
 // prefix. Other emit-key formats, malformed values and unstamped journals have
 // no physical ordering authority. This parser is shared by tree and usage

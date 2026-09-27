@@ -22,7 +22,9 @@ func TestADODeferralPublishesHoldAndPreservesEvidence(t *testing.T) {
 			var label, state, comment string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
-				case strings.HasSuffix(r.URL.Path, "/statuses"):
+				case strings.HasSuffix(r.URL.Path, "/pullrequests/359/iterations"):
+					_, _ = w.Write([]byte(`{"value":[{"id":1},{"id":2}]}`))
+				case strings.HasSuffix(r.URL.Path, "/pullrequests/359/iterations/2/statuses"):
 					var body struct{ State string }
 					_ = json.NewDecoder(r.Body).Decode(&body)
 					state = body.State

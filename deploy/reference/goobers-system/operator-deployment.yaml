@@ -39,7 +39,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: operator
-          image: goobers # rewritten by the kustomization images: transformer
+          image: goobers # rewritten by your overlay's images: transformer (#3287)
           command: ["goobers-operator"]
           ports:
             - name: metrics

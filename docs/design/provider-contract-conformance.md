@@ -125,6 +125,7 @@ Extend the existing GitHub↔ADO contract corpus into the parity authority:
 - One contract-test suite **per capability**, written against the neutral contract (request/response envelopes + semantic assertions), executed against every provider that declares the capability — fixture-backed by default, live-gated where a real forge is needed (promote `providers/ado_live_test.go` from env-gated-never-runs to a scheduled leg; #2061 child).
 - A generated **capability × provider matrix** (like the CLI registry → docs pipeline): `declared / conformant / gap (linked issue) / not-applicable`. Published into docs and asserted in CI so the matrix cannot drift from declarations, and declarations cannot drift from passing tests. This is the "aware of gaps" deliverable — gaps stop being tribal knowledge.
 - **Blessed-tier rule, CI-enforced**: GitHub and ADO must be `conformant` on every capability in the workflow-required set (§6); any other divergence needs a linked, labeled gap issue. Community adapters must be conformant on whatever they declare — nothing more, but nothing less.
+- **Live write leg (ADO-N16, #5727).** The read-only ADO smoke above never mutates anything, so write-path drift stayed invisible. `.github/workflows/ado-live-write.yml` runs `providers/ado_live_write_test.go` (`-tags=liveadowrite`) weekly, on `workflow_dispatch`, and on PRs touching `providers/ado*` that carry the `ado-live-write` label. It targets a dedicated scratch repository (`vars.ADO_WRITE_REPOSITORY`, never the testbed repository) whose policies `go run ./test/adolive provision` creates once. Every object is namespaced under `goobers-live/<run_id>/` and found-or-created by run id, so a re-run converges. The leg abandons its own PRs, retires its own work items to Removed (or Closed), and deletes only its own branches. A janitor abandons other runs' live PRs older than 24 hours, and nothing shared is ever deleted. Those selection rules are unit-tested in ordinary CI (`providers/ado_live_write_plan_test.go`). Until the scratch repository is provisioned, the workflow reports "not provisioned" and ends green, and the workflow inventory lists it as dormant. Each later ADO parity fix adds its own live scenario to the leg ([ADO parity design §8.2](ado-parity-dsl-2-0.md#82-live-ado-write-leg-in-ci-ado-n16)).
 
 ## 6. Workflow preflight
 
@@ -190,3 +191,38 @@ Rules for this table:
   `reference-workflows/.../merge-review.yaml` and asserts it validates on an ADO
   gaggle *and* on a GitHub one. A future stage added to that lane which ADO
   cannot serve fails there, rather than on a consumer's instance.
+
+## 6.2 Provider compile-matrix gate (added by ADO-N1)
+
+§6.1's shipped-definition test covers one workflow on two providers. The
+compile-matrix gate (`test/providermatrix`, ADO-N1,
+[`ado-parity-dsl-2-0.md`](ado-parity-dsl-2-0.md) §8.1) covers every shipped
+definition:
+
+- **Subjects.** `reference-workflows/`, `config-examples/`, and the
+  `goobers init --template=standard` scaffold (every guided workflow module, with
+  pull-request CI and with a local CI command). The scaffold is generated for
+  `--provider=github` and `--provider=ado`.
+- **Providers.** Each subject is copied into a temporary directory. Every
+  gaggle's `spec.project` and `spec.backlog` are then rewritten onto one
+  provider, with that provider's repository shape: an ADO organization and
+  project, or a Gitea base URL.
+- **Checks.** Full config validation through `instance.LoadConfigDir` (schema,
+  workflow semantics, policy actions and manifest admission), then CONF-6 for
+  every workflow through `ProviderCapabilityProblems`. That function reports
+  every unmet requirement, where `CheckProviderCapabilityRequirements` stops at
+  the first, so one workflow's gap cannot hide another's.
+- **Verdicts.** GitHub and ADO results are asserted. Gitea is experimental, so
+  its results are logged and never fail the gate.
+- **Expected failures.** Known gaps are listed in `expectedFailures`, one entry
+  per subject, provider, workflow and capability (or validation code). Each
+  entry names the item that fixes it. The PR that fixes a gap deletes that
+  entry. An entry whose failure no longer occurs fails the gate, so the list
+  cannot go stale. Because each entry covers one capability, the fixing items
+  stay independent of each other.
+- **Mutation check.** A copy of the shipped `merge-review` with
+  `github:pr:merge` removed from `merge-pr` must fail validation on both GitHub
+  and ADO. This shows the gate rejects a missing landing grant.
+
+The gate is hermetic: it uses no git and no network. It runs in the unit test
+shards, not in the slower shipped-workflow contract job.

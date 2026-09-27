@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,6 +58,33 @@ func TestIntegrationArchiveIntakeRequiresVerifiedDurableAcknowledgement(t *testi
 	}
 	if refs := recoveryTestGit(t, host, "for-each-ref", "--format=%(refname)"); refs != "" {
 		t.Fatalf("intake created refs before reserving capacity: %s", refs)
+	}
+	// Regression for #5211: publication used the configured cap while its
+	// post-publication readers still treated 128 as full. Exercise the actual
+	// archive intake path with 129 valid existing records under a cap of 500.
+	largeHost, largeInventory := t.TempDir(), t.TempDir()
+	recoveryTestGit(t, largeHost, "init", "--bare")
+	recoveryTestGit(t, largeHost, "fetch", source, "main")
+	for i := range 129 {
+		seed := storageTestRecord()
+		seed.RunID = fmt.Sprintf("existing-%03d", i)
+		seed.SnapshotSHA = fmt.Sprintf("%040x", i+1)
+		seed.Ref, err = RefForSnapshot(seed.RunID, seed.SnapshotSHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedInventoryRecord(t, largeInventory, seed)
+	}
+	large := request
+	large.Repository = largeHost
+	large.InventoryRoot = largeInventory
+	large.CleanupRoots = []string{largeHost}
+	large.MaxSnapshots = 500
+	if _, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), large, retentionJournalFunc(func(journal.Event) error { return nil })); err != nil {
+		t.Fatalf("publication with 129 of 500 configured slots: %v", err)
+	}
+	if entries, err := ReadInventory(ctx, largeInventory, 500); err != nil || len(entries) != 130 {
+		t.Fatalf("post-publication inventory: entries=%d err=%v, want 130", len(entries), err)
 	}
 	denied := errors.New("journal acknowledgement failed")
 	got, path, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), request, retentionJournalFunc(func(journal.Event) error { return denied }))

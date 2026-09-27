@@ -213,6 +213,9 @@ func (c RunnerConfig) validateStageMemoryLimit() error {
 }
 
 func (c TelemetryConfig) validate(stores map[string]bool, telemetryEnabled bool) error {
+	if err := c.Diagnostics.validate(stores); err != nil {
+		return err
+	}
 	if c.OTLP == nil {
 		return nil
 	}
@@ -358,6 +361,9 @@ func (c RecoverySnapshotConfig) validate() error {
 	}
 	if _, err := c.RetainWindowEffective(); err != nil {
 		return err
+	}
+	if c.OnFull != "" && c.OnFull != RecoveryOnFullOverflow && c.OnFull != RecoveryOnFullRefuse {
+		return fmt.Errorf("retention.recovery.onFull must be %q or %q, got %q", RecoveryOnFullOverflow, RecoveryOnFullRefuse, c.OnFull)
 	}
 	if c.MaxVolumeBytes == 0 {
 		return nil
@@ -570,8 +576,8 @@ func (r RepoRef) validateADO(i int) error {
 	default:
 		return fmt.Errorf("repos[%d] (%s/%s): unsupported ADO auth kind %q", i, r.Owner, r.Name, kind)
 	}
-	if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthManagedIdentity {
-		return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for managed-identity", i, r.Owner, r.Name)
+	if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthWorkloadIdentity && kind != ADOAuthManagedIdentity {
+		return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for workload-identity or managed-identity", i, r.Owner, r.Name)
 	}
 	return nil
 }
@@ -755,6 +761,16 @@ func (c CredentialGrant) validate(i int, seen map[string]bool, stores map[string
 			"two grants must not match the same capability/mcp and harness", i, label)
 	}
 	seen[key] = true
+	return c.validateSource(i, label, stores, envPassthrough)
+}
+
+func (c CredentialGrant) validateSource(i int, label string, stores map[string]bool, envPassthrough []string) error {
+	if c.GitHubApp != nil && c.Token.Configured() {
+		return fmt.Errorf("credentials[%d] (%s): set exactly one of token or githubApp", i, label)
+	}
+	if c.GitHubApp != nil {
+		return c.validateAgentModelGitHubApp(i, label, stores, envPassthrough)
+	}
 	if c.Token.sourceCount() != 1 {
 		return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env, file, keychain, or store — "+
 			"inline secret values are never permitted (CFG-009, SEC-010)", i, label)
@@ -766,6 +782,49 @@ func (c CredentialGrant) validate(i int, seen map[string]bool, stores map[string
 		)
 	}
 	return validateStoreRef(fmt.Sprintf("credentials[%d] (%s): token", i, label), c.Token, stores)
+}
+
+func (c CredentialGrant) validateAgentModelGitHubApp(i int, label string, stores map[string]bool, envPassthrough []string) error {
+	app := c.GitHubApp
+	if c.Capability != string(capability.AgentModel) || c.MCP != "" {
+		return fmt.Errorf("credentials[%d] (%s): githubApp is only valid for capability %q", i, label, capability.AgentModel)
+	}
+	if c.Harness != "copilot" {
+		return fmt.Errorf("credentials[%d] (%s): githubApp requires harness %q so the App token cannot be selected by another model provider", i, label, "copilot")
+	}
+	if !mcpconfig.ValidBYOCredentialName(app.Name) {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.name %q must be a lowercase DNS label", i, label, app.Name)
+	}
+	if app.AppID == "" {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.appId is required", i, label)
+	}
+	if app.InstallationID == "" {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.installationId is required", i, label)
+	}
+	if _, err := strconv.ParseUint(string(app.InstallationID), 10, 64); err != nil {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.installationId %q must be the numeric installation ID", i, label, app.InstallationID)
+	}
+	owner, repository, ok := strings.Cut(strings.TrimSpace(app.Repository), "/")
+	if !ok || owner == "" || repository == "" || strings.Contains(repository, "/") {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.repository must be an exact owner/name", i, label)
+	}
+	repositoryID, err := strconv.ParseInt(string(app.RepositoryID), 10, 64)
+	if err != nil || repositoryID <= 0 {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.repositoryId %q must be the positive numeric repository ID", i, label, app.RepositoryID)
+	}
+	if app.PrivateKey == nil || app.PrivateKey.sourceCount() != 1 || app.PrivateKey.GitHubCLI != nil {
+		return fmt.Errorf("credentials[%d] (%s): githubApp.privateKey must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)", i, label)
+	}
+	if err := validateStoreRef(fmt.Sprintf("credentials[%d] (%s): githubApp.privateKey", i, label), *app.PrivateKey, stores); err != nil {
+		return err
+	}
+	if app.PrivateKey.Env != "" && stageEnvironmentAllows(app.PrivateKey.Env, envPassthrough) {
+		return fmt.Errorf(
+			"credentials[%d] (%s): githubApp.privateKey.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+			i, label, app.PrivateKey.Env,
+		)
+	}
+	return nil
 }
 
 func (c CredentialGrant) identity(i int) (string, string, error) {
@@ -820,7 +879,7 @@ func (c RunnerConfig) validate() error {
 	if err := c.validateHarnessSessionArgs(); err != nil {
 		return err
 	}
-	return nil
+	return c.validateHarnessPreflightArgs()
 }
 
 func (c RunnerConfig) validateHarnessSessionArgs() error {
@@ -849,6 +908,29 @@ func (c RunnerConfig) validateHarnessSessionArgs() error {
 		}
 		if !foundSessionID {
 			return fmt.Errorf("runner.harnessSessionArgs[%q]: at least one argument must contain {sessionId}", name)
+		}
+	}
+	return nil
+}
+
+func (c RunnerConfig) validateHarnessPreflightArgs() error {
+	for name, args := range c.HarnessPreflightArgs {
+		if !knownHarnessName(name) {
+			return fmt.Errorf("runner.harnessPreflightArgs[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
+		}
+		if name != "copilot" {
+			return fmt.Errorf("runner.harnessPreflightArgs[%q]: only the copilot harness supports preflight arguments", name)
+		}
+		if _, ok := c.HarnessCommand[name]; !ok {
+			return fmt.Errorf("runner.harnessPreflightArgs[%q]: requires runner.harnessCommand[%q]", name, name)
+		}
+		if len(args) == 0 || len(args) > 16 {
+			return fmt.Errorf("runner.harnessPreflightArgs[%q]: must contain 1 to 16 arguments", name)
+		}
+		for i, arg := range args {
+			if arg == "" || len(arg) > 1024 || strings.ContainsRune(arg, 0) {
+				return fmt.Errorf("runner.harnessPreflightArgs[%q][%d]: invalid preflight argument", name, i)
+			}
 		}
 	}
 	return nil

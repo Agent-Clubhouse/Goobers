@@ -11,3 +11,4 @@ Inspect the committed tutorial change for correctness and focus. This
 onboarding review is advisory and does not branch or remediate; report concise
 feedback in a successful result envelope so the happy-path workflow can
 continue to pull-request creation.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

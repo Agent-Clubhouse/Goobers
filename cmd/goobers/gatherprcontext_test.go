@@ -479,7 +479,7 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 	if err != nil {
 		t.Fatalf("Create digest probe: %v", err)
 	}
-	if _, err := checkoutExistingBranch(probe.Path, prBranch, ""); err != nil {
+	if _, err := checkoutExistingBranchWithAuth(t.Context(), probe.Path, prBranch, tokenGitAuthEnvironment("")); err != nil {
 		t.Fatalf("checkout digest probe branch: %v", err)
 	}
 	digest, err := diffDigest(probe.Path, baseSHA)

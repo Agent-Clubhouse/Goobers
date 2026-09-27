@@ -52,3 +52,4 @@ You never edit code, quarantine a test, or mutate provider state.
 Return a result envelope with `status`, a concise `summary`, and
 `outputs.findingsRef`. Do not populate `artifacts`; `publish_output` records
 the findings artifact.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

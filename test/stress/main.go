@@ -65,6 +65,29 @@ type packageSpec struct {
 	// pass over the whole package. It is what makes the enrollment budget
 	// checkable: Count repetitions of one shard must fit stressTimeout.
 	PassBudget time.Duration
+	// Exclude is a comma-separated list of exact top-level test names that
+	// gain nothing from repeated execution under the race detector — a
+	// deterministic, non-concurrent scan is exactly as informative run once
+	// as run twenty times — and so are never scheduled into any shard's
+	// `-run` set. A stored string, not a slice, keeps packageSpec comparable
+	// with `==` for slices.Equal in tests. Use excludedTests to read it.
+	Exclude string
+}
+
+// parseExcludedTests parses a packageSpec/shardSpec Exclude field into the
+// set of test names it names.
+func parseExcludedTests(raw string) map[string]struct{} {
+	if raw == "" {
+		return nil
+	}
+	names := make(map[string]struct{})
+	for _, name := range strings.Split(raw, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
 }
 
 // shardSpec is one `go test` invocation: a package, optionally narrowed to a
@@ -75,6 +98,10 @@ type shardSpec struct {
 	Count   int
 	Index   int
 	Shards  int
+	// Exclude carries packageSpec.Exclude through to the shard so
+	// shardRunPattern can keep excluded tests out of every shard's `-run`
+	// pattern, not just filter them after the fact.
+	Exclude string
 }
 
 // shardBudget is the reviewed wall-clock cost of running one shard of spec,
@@ -349,8 +376,19 @@ func parseSettings(pkg string, fields []string) (packageSpec, error) {
 				return packageSpec{}, fmt.Errorf("pass must be a positive duration, got %q", value)
 			}
 			spec.PassBudget = parsed
+		case "exclude":
+			names := parseExcludedTests(value)
+			if len(names) == 0 {
+				return packageSpec{}, fmt.Errorf("exclude must list at least one comma-separated test name, got %q", value)
+			}
+			for name := range names {
+				if !testNamePattern.MatchString(name) {
+					return packageSpec{}, fmt.Errorf("exclude names an invalid test name %q, want ^Test[A-Za-z0-9_]*$", name)
+				}
+			}
+			spec.Exclude = value
 		default:
-			return packageSpec{}, fmt.Errorf("expected count=N, shards=N, or pass=DURATION, got %q", field)
+			return packageSpec{}, fmt.Errorf("expected count=N, shards=N, pass=DURATION, or exclude=NAME[,NAME...], got %q", field)
 		}
 	}
 	if spec.PassBudget == 0 {
@@ -376,6 +414,7 @@ func expandShards(packages []packageSpec) []shardSpec {
 				Count:   spec.Count,
 				Index:   index,
 				Shards:  spec.Shards,
+				Exclude: spec.Exclude,
 			})
 		}
 	}
@@ -575,11 +614,20 @@ func goListArgs(pkg string) []string {
 }
 
 // shardRunPattern enumerates the package's top-level tests and returns a -run
-// pattern selecting this shard's deterministic slice of them. Round-robin
-// assignment keeps shards balanced as tests are added, so the split does not
-// need hand-maintained name prefixes.
+// pattern selecting this shard's deterministic slice of them, after dropping
+// any test named by the package's `exclude=` setting. Round-robin assignment
+// keeps shards balanced as tests are added, so the split does not need
+// hand-maintained name prefixes; excluding tests before that assignment keeps
+// it balanced over the tests that actually run.
+//
+// Excluded tests never enter any shard's `-run` pattern, so they are never
+// repeated under the race detector at all — the right outcome for a
+// deterministic, non-concurrent test (a static scan, a golden-file compare,
+// ...) that a repeat count cannot make more informative but can make time
+// out (#5158): such a test still runs once, normally, in ordinary CI.
 func (r processRunner) shardRunPattern(ctx context.Context, spec shardSpec) (string, error) {
-	if spec.Shards <= 1 {
+	excluded := parseExcludedTests(spec.Exclude)
+	if spec.Shards <= 1 && len(excluded) == 0 {
 		return "", nil
 	}
 	var listed bytes.Buffer
@@ -596,7 +644,10 @@ func (r processRunner) shardRunPattern(ctx context.Context, spec shardSpec) (str
 		if !testNamePattern.MatchString(name) {
 			continue
 		}
-		if index%spec.Shards == spec.Index {
+		if _, skip := excluded[name]; skip {
+			continue
+		}
+		if spec.Shards <= 1 || index%spec.Shards == spec.Index {
 			selected = append(selected, name)
 		}
 		index++

@@ -1,0 +1,17 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CONFIG TEMPLATES UPDATE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers config templates update \- merge template changes into the user's config source
+.SH SYNOPSIS
+\fBgoobers config templates update\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers config templates update --gaggle <name> [--source <config-root>] [instance-root]
+
+Fetch the tracked template branch and three-way merge the previous pristine
+template, local customizations, and updated template. Conflicts or validation
+errors leave the accepted files and lock unchanged. No automatic update.
+Stop the daemon first. Review, commit, and deploy the user's source afterwards.
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

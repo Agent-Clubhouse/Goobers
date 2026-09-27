@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 type fixtureDocument struct {
@@ -715,11 +717,14 @@ func loadFixtureConfig(
 	// DVL020 (deprecated dslVersion) is expected on fixtures that deliberately
 	// sit on a historical DSL version (#2700 deprecated 1.4): the advisor's
 	// whole subject is configs on old versions, so the deprecation warning is
-	// evidence the lifecycle works, not fixture rot. Every other warning still
-	// fails the load.
+	// evidence the lifecycle works, not fixture rot. Structured strict-neutral
+	// safety advisories are also nonfatal; other warnings still fail the load.
 	var unexpected []validate.CodedWarning
 	for _, warning := range report.Warnings() {
 		if warning.Code == validate.WarningDeprecatedDSLVersion {
+			continue
+		}
+		if warning.Safety != nil && slices.Contains(workflowsafety.Codes(), string(warning.Code)) {
 			continue
 		}
 		unexpected = append(unexpected, warning)

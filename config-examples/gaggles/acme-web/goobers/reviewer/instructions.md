@@ -65,3 +65,4 @@ Signal completion via the designated completion tool with a `verdict`
 envelope: `decision` (`pass` | `needs-changes` | `fail`), a `rationale`
 explaining the decision, `evidence` pointing at what you reviewed, and
 `findings` for specific issues.
+Put temporary or exploratory files under `.goobers/scratch/`; it is ignored by git and recovery capture—never write scratch files at the repository root.

@@ -35,6 +35,92 @@ by convention:
 - `outputs` on the result envelope accepts **scalars only**; anything larger is
   an artifact, referenced by pointer. State cannot be smuggled through `outputs`.
 
+## Scalar binding: `outputs` and `inputsFrom` (#5247)
+
+Scalar binding is **already supported** and is the mechanism for passing small
+control values between stages. `outputs` and `inputsFrom` carry those values;
+`contextFrom` is a *different* contract that selects artifact/verdict context.
+Neither is a substitute for the other, and `contextFrom` is **not** a required
+structured scalar input.
+
+A producer emits scalars on its result envelope; a consumer names, per input,
+which upstream output to bind:
+
+~~~yaml
+- name: plan                      # producer
+  run:
+    command: ["goobers", "plan"]
+  expectedOutputs:
+    - prTitle
+    - attempt
+
+- name: build                     # intermediate stage, also a producer
+  run:
+    command: ["make", "build"]
+  expectedOutputs:
+    - sha
+
+- name: open-pr                   # consumer
+  run:
+    command: ["goobers", "open-pr"]
+  inputsFrom:
+    title: plan.prTitle           # stage-qualified: names `plan` explicitly
+    head: sha                     # bare key: the IMMEDIATELY PRECEDING stage
+~~~
+
+### Which stage a value comes from
+
+The resolution rule is deliberately conservative
+(`internal/runner.resolveInputsFrom`):
+
+> The value is a **stage-qualified** reference only when the segment before the
+> first dot names a stage that has **actually produced outputs in this run**.
+> Otherwise the **entire string** is treated as a bare output key.
+
+- A **bare key** resolves against the immediately preceding stage only.
+- A **stage-qualified** key (`<stage>.<key>`) resolves against that stage.
+- A **legacy dotted key** — an output literally named `a.b` — keeps working,
+  because `a` is not a stage. This fallthrough is why the rule is ordered this
+  way, and stage names may not contain a dot, so there is no ambiguity to
+  escape and no escaping syntax to invent.
+- Stage-qualified resolution requires a workflow version that supports it
+  (`workflow.SupportsStageQualifiedInputs`); under an older version every value
+  is a bare key, exactly as before.
+
+The fallthrough has one sharp edge worth knowing: a dotted value whose prefix
+is **not** a stage that ran silently degrades into a whole-key lookup. If that
+key does not exist either, the stage fails closed — and the diagnostic says so
+explicitly rather than reporting only "not found".
+
+### Missing and invalid bindings
+
+`inputsFrom` is a **contract, not a hint**: an unresolvable reference fails the
+stage closed rather than silently omitting the input. Three diagnostics, each
+naming the keys that *were* available:
+
+| Situation | Message |
+|---|---|
+| Qualified reference to a stage that ran but did not emit the key | names the stage and what it *did* emit |
+| Dotted reference whose prefix is not a stage that ran | says the value was treated as a single output key, and names the preceding stage's keys |
+| Bare key not found | names the preceding stage's keys |
+
+Every one of them reports **keys only, never values**. An author needs to know
+what they could have bound; a diagnostic that printed the values would leak an
+entire upstream result into a message that lands in journals, PR comments and
+logs.
+
+The local runner and the Temporal engine share these messages through one
+exported function rather than each phrasing its own, so the same failure cannot
+be explained one way on one substrate and differently on the other.
+
+### Scalars are not artifacts
+
+`outputs` accepts **scalars only** — anything larger is an artifact, referenced
+by pointer, and state cannot be smuggled through `outputs`. Binding a *typed
+artifact* to a consumer-local name, with the producer attempt and digest that
+produced it, is a separate contract tracked by #4771/#5089 and is **not**
+implemented by `inputsFrom`.
+
 ## Well-known outputs
 
 Most `outputs` keys mean whatever the consuming gate or downstream stage's
@@ -150,7 +236,10 @@ state is intentional.
   before any harness process starts. Fresh context drops optional parent item,
   inputs, addenda, and context pointers; inherited context retains them;
   explicit context carries only named pointers and selected envelope sections.
-  The immutable child execution policy is delivered in every mode.
+  The immutable child execution policy is delivered in every mode. Live
+  top-level and adapter-exposed nested agents are addressable within one run by
+  the journal-derived portable address
+  `goobers.dev/journal/agent-address/v1/<run>/<stage>/<attempt>/<agent>`.
 - `item`, `repoRef`, `limits` — the triggering backlog item, target repo, and
   execution bounds. `repoRef` carries repository identity and connection
   fields only: config-side declarations such as `project.checkout` (B2, #649)
@@ -164,6 +253,34 @@ state is intentional.
   partial checkout is declared to a stage — deliberately a sibling of
   `repoRef` rather than a field on it, so `repoRef`'s own shape never changes
   regardless of checkout config.
+
+### Credential delivery
+
+Credentials never ride the envelope. For each declared capability that has a
+grant, the daemon resolves the value when the stage starts and delivers it as
+`GOOBERS_CRED_<CAPABILITY>` (the capability upper-cased, non-alphanumerics as
+`_`). A declared capability with no grant is skipped; one whose grant fails to
+resolve fails the stage closed. Every delivered value is registered with the
+scrubber first.
+
+- **Local stages** receive the variables from the runner's injector.
+- **Stage pods** resolve them from the daemon's credential plane
+  (`POST /api/v1/credentials/resolve`) at stage start, never at dispatch. A value
+  whose source states an expiry, such as an App or Microsoft Entra token,
+  carries it in the response.
+
+A repository grant is backed by the repository's own configured source: a
+GitHub App mints an installation token, and any other static token is read.
+Every Azure DevOps auth kind resolves in the daemon, so `repo:push` and
+the other repository capabilities have a credential for `azure-cli`,
+`workload-identity`, `managed-identity` and `pat` alike. With an Azure DevOps
+credential the stage also receives the non-secret `GOOBERS_REPO_AUTH_SCHEME`
+(`basic` for a PAT, `bearer` for an Entra token), so it builds the right
+Authorization header without inferring it from the token. The rule is the same
+for a local stage and a stage pod: a deterministic stage that received at least
+one `GOOBERS_CRED_<CAPABILITY>` also receives the scheme. Agentic stages do not
+receive it. The stage does not receive the token's expiry. See "Where the
+credential resolves" in `docs/guides/ado-authentication.md`.
 
 ## Where a stage writes its output
 
@@ -837,28 +954,49 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > including the circular-dependency exception (still `goobers:needs-human` —
 > it can't self-heal).
 
-> **A tool you could not call is not an organization policy (#2962).** Do not
-> report `blocked` on organization content exclusion because a tool call was
-> refused. Content exclusion is a policy fact the runtime states explicitly;
-> a bare permission refusal (e.g. `Permission denied and could not request
-> permission from user`) is an infrastructure fault an operator can fix, and
-> reporting it as a policy block parks the driving issue for a human who has
-> nothing to decide. The executor enforces this rather than trusting the
-> classification: a `blocked` result whose prose claims content exclusion is
-> rejected unless the captured transcript or stderr carries an explicit
-> runtime content-exclusion signal, and becomes a `failure` carrying
+> **A tool you could not call is not an organization policy (#2962, #5444).**
+> Do not report `blocked` OR `failure` on organization content exclusion
+> because a tool call was refused. Content exclusion is a policy fact the
+> runtime states explicitly; a bare permission refusal (e.g. `Permission
+> denied and could not request permission from user`) is an infrastructure
+> fault an operator can fix, and reporting it as a policy block or failure
+> parks the driving issue (or misdirects the operator) for nothing an agent
+> can actually fix. The executor enforces this rather than trusting the
+> classification: a `blocked` or `failure` result whose prose claims content
+> exclusion — or, on `failure` only, the observed vocabulary of a
+> `*_ACCESS_DENIED`-style code or an "access policy" phrase — is rejected
+> unless the captured transcript or stderr carries an explicit runtime
+> content-exclusion signal, and becomes a `failure` carrying
 >
 > | Observed | `error.code` | Meaning |
 > |---|---|---|
 > | a runtime tool-permission refusal | `HARNESS_TOOL_PERMISSION_DENIED` | grant the tool to the goober, or fix the harness invocation; `outputs.toolPermissionDenied` is `true` and the refusal lines are quoted in `error.message` |
-> | no runtime signal at all | `UNSUBSTANTIATED_CONTENT_EXCLUSION` | the classification was inferred, not observed |
+> | no runtime signal at all (only on a `blocked` result) | `UNSUBSTANTIATED_CONTENT_EXCLUSION` | the classification was inferred, not observed |
 >
-> Both are non-retryable (the identical invocation reproduces the identical
-> refusal), both set `outputs.contentExclusionClaimRejected: true`, and both
-> preserve your original summary and error detail inside `error.message` — no
-> cause is ever invented or discarded. Blocks that do not mention content
-> exclusion are untouched. The effective CLI version and tool/permission
-> arguments for every Copilot session are recorded at
+> A `failure` is reclassified ONLY when a runtime tool-permission refusal was
+> actually observed (`HARNESS_TOOL_PERMISSION_DENIED`) — never on vocabulary
+> alone, and never to `UNSUBSTANTIATED_CONTENT_EXCLUSION`. This matters
+> because `*_ACCESS_DENIED` and "access policy" are also the exact vocabulary
+> a genuine cloud-provider permission denial uses (a real Key Vault, S3, or
+> IAM 403); an agent's own explicit failure already told the operator
+> something went wrong, and without observed runtime denial evidence there is
+> nothing this check can prove it should correct. A non-retryable business
+> disposition your stage authors on purpose (e.g. `ISSUE_OVER_SCOPE`,
+> `NEEDS_DECOMPOSITION`, `ISSUE_NOT_APPLICABLE`, `SHARED_BASELINE_FAILURE` —
+> the escalate codes above) is never touched by this check either, regardless
+> of evidence.
+>
+> Both reclassifications are non-retryable (the identical invocation
+> reproduces the identical refusal), both set
+> `outputs.contentExclusionClaimRejected: true`, and both preserve your
+> original summary and error detail inside `error.message` — no cause is ever
+> invented or discarded. A `blocked` result is reclassified only when its own
+> prose claims content exclusion; the `*_ACCESS_DENIED`/"access policy"
+> vocabulary above applies to `failure` only, so an ordinary blocked
+> dependency (`DEPENDENCY_NOT_MET`, `blockedBy` set) that happens to mention
+> "access policy" is untouched even in a session that also had an unrelated
+> refused tool call. The effective CLI version and
+> tool/permission arguments for every Copilot session are recorded at
 > `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
 > attributed to the invocation after the fact.
 
@@ -889,6 +1027,64 @@ business `failure`/`blocked` `ResultEnvelope`. Each policy-driven retry
 attempt is a new journal entry, never overwritten history (§5). A business
 `failure`/`blocked` result is never retried by `Task.Retry`; it is handled
 per the table above.
+
+**Deterministic stage execution deadline — resolution and visibility (#5265).**
+A deterministic (shell) stage's execution deadline resolves through
+`internal/executor.(*ShellExecutor).resolveTimeout`, which is the single
+resolution point. Highest precedence first:
+
+1. `limits.maxDurationSeconds`, **when positive**.
+2. `inputs.timeout`, when present and non-empty, parsed as a Go duration
+   (`10m`, `90s`). This is the legacy surface.
+3. The runner default (`ShellExecutor.DefaultTimeout`, which the instance's
+   configured stage timeout resolves into), when positive.
+4. The built-in `internal/executor.DefaultTimeout` (10m).
+
+The ten-minute value is a **fallback, not a universal hard cap**: it applies
+only when no surface above it supplied a value.
+
+Note that this ordering is the **opposite** of the agentic one documented below
+for the task-level value versus `limits`: here `limits.maxDurationSeconds` wins
+over the stage's own `inputs.timeout`, whereas an agentic task's
+`timeoutSeconds` wins over `limits`. That divergence is why a bare duration was
+not enough to act on, and why the effective value is now reported together with
+its **source**.
+
+Three different zeros exist in this area and they do **not** mean the same
+thing. All three are preserved:
+
+| Setting | Zero means |
+| --- | --- |
+| `limits.maxDurationSeconds: 0` | **Unset** — falls through to the next surface. |
+| `inputs.timeout: "0s"` | **Expires immediately** — honored as written. |
+| task `timeoutSeconds: 0` | **Rejected** before it reaches an executor. |
+
+An *empty* `inputs.timeout` string is **absent**, not zero, so it falls
+through — that is what stops an unset value threaded through `inputsFrom` from
+becoming an instant deadline. An unparseable duration fails the stage closed
+rather than silently falling back to a default.
+
+Every deterministic stage result publishes the effective deadline and where it
+came from, on **every** outcome rather than only on a timeout (an operator
+asking which clock governs a stage most needs the answer from one that
+succeeded):
+
+- `outputs.timeoutSeconds` — the effective deadline, in seconds.
+- `outputs.timeoutSource` — one of `limits.maxDurationSeconds`,
+  `inputs.timeout`, `runner default`, `built-in default`.
+
+Both timeout diagnostics name the source too, so `stage exceeded timeout 10m`
+now reads `stage exceeded timeout 10m0s (from built-in default)`.
+
+Queue/admission deadlines are **not** part of this resolution: they bound how
+long a stage may wait to *start*, not how long it may *run*, and are reported
+separately.
+
+An explicit "no Goobers-imposed execution deadline" (infinite) mode is **not**
+implemented; #5265 tracks it as a versioned authoring-surface change that also
+needs engine/pod conformance, since a substrate that imposes a non-removable
+deadline must refuse it explicitly rather than advertise infinity and silently
+apply a finite limit.
 
 **Agentic session timeout & `Task.OnTimeout` (#724).** An agentic stage's
 harness session is bounded by a wall-clock timeout. The default is 30m

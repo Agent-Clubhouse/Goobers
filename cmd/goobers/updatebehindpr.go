@@ -32,8 +32,11 @@ const updateBehindPRHelp = "Usage: goobers update-behind-pr [path]\n\n" +
 	"pull request (goobers run --pr, or a pull_request webhook delivery)\n" +
 	"selects that PR and no other; when the target is not selectable the\n" +
 	"stage reports no-work naming the reason instead of falling back to\n" +
-	"another PR. Exit codes: 0 = updated, routed, or no-work;\n" +
-	"1 = business error; 2 = usage/IO error.\n"
+	"another PR. On Azure DevOps this API-only lane is not applicable (ADO\n" +
+	"has no up-to-date policy to satisfy via API update): the stage makes\n" +
+	"no provider call and always routes to full remediation, which\n" +
+	"reselects a candidate itself. Exit codes: 0 = updated, routed,\n" +
+	"not-applicable, or no-work; 1 = business error; 2 = usage/IO error.\n"
 
 // runUpdateBehindPR is pr-remediation's API-only preflight. It terminates the
 // workflow after updating a mechanically stale PR, or routes every non-trivial
@@ -54,6 +57,15 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	// ADO-N15 (docs/design/ado-parity-dsl-2-0.md §3.4): this stage's whole
+	// premise — a cheap API-only update-branch call ahead of full
+	// remediation — has no ADO analog, so it is reported not-applicable
+	// before any provider token or client is constructed, exactly as the
+	// derived-capabilities override above declares (no pr.update-branch,
+	// no pr.compare needed on ADO for this stage).
+	if repo.Provider == providers.ProviderADO {
+		return writeUpdateBehindNotApplicable(stdout, stderr, repo.Provider)
 	}
 	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
@@ -244,6 +256,36 @@ func pullRequestBehindLiveBase(ctx context.Context, provider remediationProvider
 		return false, fmt.Errorf("compare live base with PR #%d head returned no merge base", pr.Number)
 	}
 	return compared.MergeBaseSHA != baseTip, nil
+}
+
+// writeUpdateBehindNotApplicable reports update-behind-pr as not applicable
+// to provider (ADO-N15, docs/design/ado-parity-dsl-2-0.md §3.4) without
+// selecting or claiming any candidate. selectedNumber is left "" rather than
+// "0": an empty handoff reads as no pinned candidate
+// (gatherPRContextCandidateScope, gatherprcontext.go), so gather-pr-context
+// performs its own fresh selection instead of failing on an out-of-range PR
+// number. needsFullRemediation stays "true" so update-behind-gate routes into
+// gather-pr-context and the remediation chain continues — emitting no-work
+// here would end every ADO pr-remediation run instead.
+func writeUpdateBehindNotApplicable(stdout, stderr io.Writer, provider providers.ProviderKind) int {
+	resultFile := providerInput("resultFile", "update-behind-result.json")
+	reason := fmt.Sprintf("update-behind-pr is not applicable on %s: routing to full remediation", provider)
+	data, err := json.Marshal(map[string]string{
+		"selectedNumber":       "",
+		"needsFullRemediation": "true",
+		"notApplicable":        "true",
+		"reason":               reason,
+	})
+	if err != nil {
+		pf(stderr, "error: marshal update-behind result: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return 1
+	}
+	pf(stdout, "%s\n", reason)
+	return 0
 }
 
 func writeUpdateBehindResult(stdout, stderr io.Writer, selectedNumber int, needsFullRemediation, updated bool) int {

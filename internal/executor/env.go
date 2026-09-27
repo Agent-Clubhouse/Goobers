@@ -48,8 +48,9 @@ const (
 
 	// InstanceRootEnvVar carries the instance root to goobers CLI stages.
 	InstanceRootEnvVar = "GOOBERS_INSTANCE_ROOT"
-	// AppliedConfigDigestEnvVar pins a daemon-launched CLI stage to the config
-	// generation its runner was built from. The CLI refuses a different tree.
+	// AppliedConfigDigestEnvVar pins a daemon-launched CLI stage to the
+	// gaggle-scoped config generation its runner was built from. The CLI
+	// refuses a different relevant tree.
 	AppliedConfigDigestEnvVar = "GOOBERS_APPLIED_CONFIG_DIGEST"
 	// TaskEnvVar identifies the workflow task executing a goobers CLI stage.
 	TaskEnvVar = "GOOBERS_TASK"
@@ -104,6 +105,15 @@ const (
 	// and set to the Azure DevOps project for ADO-routed repositories, which
 	// need organization/project/repo to address a repo.
 	RepoProjectEnvVar = "GOOBERS_REPO_PROJECT"
+	// RepoAuthSchemeEnvVar carries the non-secret authorization scheme
+	// ("basic" or "bearer") of the Azure DevOps repository credential the
+	// daemon delivers as GOOBERS_CRED_<capability>, so a stage builds the
+	// right Authorization header without inferring it from the token's shape
+	// (docs/design/ado-parity-dsl-2-0.md §4.1). Set only for an Azure DevOps
+	// repository, on one rule local and in a pod: a deterministic stage that
+	// received at least one GOOBERS_CRED_<capability> gets it. Agentic stages
+	// do not receive it.
+	RepoAuthSchemeEnvVar = "GOOBERS_REPO_AUTH_SCHEME"
 
 	// NeedsHumanAssigneeEnvVar carries the daemon-resolved needs-human
 	// routing identity to the close-out CLI stage without exposing instance
@@ -257,4 +267,21 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		env = append(env, CredentialEnvVar(capability)+"="+token)
 	}
 	return env, nil
+}
+
+// ConfigGenerationEnvVar identifies the immutable execution archive for a run.
+const ConfigGenerationEnvVar = "GOOBERS_CONFIG_GENERATION"
+
+// ConfigDirectoryEnvVar locates that archive's verified local extraction.
+const ConfigDirectoryEnvVar = "GOOBERS_CONFIG_DIRECTORY"
+
+func declaredStageEnvironment(defaults, declared map[string]string) map[string]string {
+	result := make(map[string]string, len(defaults)+len(declared))
+	for key, value := range defaults {
+		result[key] = value
+	}
+	for key, value := range declared {
+		result[key] = value
+	}
+	return result
 }

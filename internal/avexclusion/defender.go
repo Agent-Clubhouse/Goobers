@@ -79,7 +79,7 @@ func QueryDefenderWithin(ctx context.Context, bound time.Duration) ([]string, er
 		}
 		return nil, fmt.Errorf("Get-MpPreference: %w: %s", err, detail)
 	}
-	return ParseExclusionList(output), nil
+	return parseDefenderOutput(output)
 }
 
 // ParseExclusionList splits probe output into entries: one per line,
@@ -92,4 +92,15 @@ func ParseExclusionList(output []byte) []string {
 		}
 	}
 	return entries
+}
+
+func parseDefenderOutput(output []byte) ([]string, error) {
+	entries := ParseExclusionList(output)
+	for _, entry := range entries {
+		normalized := strings.ToLower(strings.TrimSpace(entry))
+		if strings.HasPrefix(normalized, "n/a:") {
+			return nil, fmt.Errorf("Get-MpPreference: %s", entry)
+		}
+	}
+	return entries, nil
 }

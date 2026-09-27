@@ -71,6 +71,13 @@ type Config struct {
 	// tightening; the repository list is the isolation boundary that
 	// matters across gaggles.
 	Repositories []string
+	// RepositoryIDs is the immutable-ID counterpart to Repositories. Callers
+	// must use one form or the other, never both.
+	RepositoryIDs []int64
+	// Permissions down-scopes the minted token to the requested GitHub App
+	// permissions. Empty preserves the installation's configured permission
+	// set for existing repository-auth callers.
+	Permissions map[string]string
 	// Key returns the App's PEM-encoded RSA private key. It is re-resolved
 	// on every mint, so a rotated key file takes effect without restarting
 	// the process (the env/file resolver's contract).
@@ -118,6 +125,9 @@ func New(cfg Config) (*TokenSource, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if len(cfg.Repositories) > 0 && len(cfg.RepositoryIDs) > 0 {
+		return nil, errors.New("githubapp: set repositories or repository IDs, not both")
 	}
 	return &TokenSource{cfg: cfg}, nil
 }
@@ -215,10 +225,12 @@ func (s *TokenSource) mint(ctx context.Context, now time.Time) (string, time.Tim
 	defer cancel()
 	endpoint := strings.TrimRight(s.cfg.BaseURL, "/") + "/app/installations/" + url.PathEscape(s.cfg.InstallationID) + "/access_tokens"
 	var reqPayload []byte
-	if len(s.cfg.Repositories) > 0 {
+	if s.hasMintRestrictions() {
 		payload, err := json.Marshal(struct {
-			Repositories []string `json:"repositories"`
-		}{s.cfg.Repositories})
+			Repositories  []string          `json:"repositories,omitempty"`
+			RepositoryIDs []int64           `json:"repository_ids,omitempty"`
+			Permissions   map[string]string `json:"permissions,omitempty"`
+		}{s.cfg.Repositories, s.cfg.RepositoryIDs, s.cfg.Permissions})
 		if err != nil {
 			return "", time.Time{}, fmt.Errorf("githubapp: encode token request: %w", err)
 		}
@@ -281,6 +293,10 @@ func (s *TokenSource) mint(ctx context.Context, now time.Time) (string, time.Tim
 		return "", time.Time{}, err
 	}
 	return token, expiresAt, nil
+}
+
+func (s *TokenSource) hasMintRestrictions() bool {
+	return len(s.cfg.Repositories) > 0 || len(s.cfg.RepositoryIDs) > 0 || len(s.cfg.Permissions) > 0
 }
 
 // mintError maps GitHub's failure statuses onto actionable diagnostics. Only

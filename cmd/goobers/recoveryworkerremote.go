@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -19,9 +20,9 @@ func (w *workerSeams) installRemoteRecoveryGuard(manager *worktree.Manager) erro
 	if w.recoveryEmitter == nil {
 		return nil
 	}
-	return manager.SetCleanupGuard("recovery", func(ctx context.Context, target worktree.CleanupTarget) error {
+	return manager.SetCleanupGuard("recovery", classifyRecoveryCapacityGuard(func(ctx context.Context, target worktree.CleanupTarget) error {
 		return w.publishWorkerRecovery(ctx, manager, target)
-	})
+	}))
 }
 
 func (w *workerSeams) publishWorkerRecovery(ctx context.Context, manager *worktree.Manager, target worktree.CleanupTarget) error {
@@ -57,6 +58,8 @@ func (w *workerSeams) publishWorkerRecovery(ctx context.Context, manager *worktr
 	if err != nil {
 		return err
 	}
+	stopTelemetry := startCommandJournalTelemetry(layout, os.Stderr)
+	defer stopTelemetry()
 	root, err := prepareRecoveryInventory(w.root)
 	if err != nil {
 		return err

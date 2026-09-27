@@ -22,9 +22,14 @@ var verifiedAdapterManagedLaunchers sync.Map
 // deliberately not a new harness: prompts, results, tools and native transcript
 // events still obey the existing Copilot adapter contract.
 type launcherContract struct {
-	Version     int      `json:"version"`
-	SessionMode string   `json:"sessionMode"`
-	SessionArgs []string `json:"sessionArgs,omitempty"`
+	Version     int                `json:"version"`
+	SessionMode string             `json:"sessionMode"`
+	SessionArgs []string           `json:"sessionArgs,omitempty"`
+	AuthProbe   *launcherAuthProbe `json:"authProbe,omitempty"`
+}
+
+type launcherAuthProbe struct {
+	Args []string `json:"args"`
 }
 
 func (c *CopilotAdapter) prepareLauncherSession(ctx context.Context, workspace string, argv, env []string) ([]string, []string, string, func(), error) {
@@ -84,7 +89,19 @@ func parseLauncherContract(data []byte) (launcherContract, error) {
 }
 
 func validateLauncherContract(contract launcherContract) (launcherContract, error) {
-	if contract.Version != 1 {
+	switch contract.Version {
+	case 1:
+		if contract.AuthProbe != nil {
+			return contract, fmt.Errorf("authProbe requires launcher contract version 2")
+		}
+	case 2:
+		if contract.AuthProbe == nil {
+			return contract, fmt.Errorf("launcher contract version 2 requires authProbe")
+		}
+		if err := validateLauncherArgs("authProbe args", contract.AuthProbe.Args); err != nil {
+			return contract, err
+		}
+	default:
 		return contract, fmt.Errorf("unsupported launcher contract version %d", contract.Version)
 	}
 	switch contract.SessionMode {
@@ -114,6 +131,18 @@ func validateLauncherContract(contract launcherContract) (launcherContract, erro
 		return contract, fmt.Errorf("unsupported launcher sessionMode %q", contract.SessionMode)
 	}
 	return contract, nil
+}
+
+func validateLauncherArgs(name string, args []string) error {
+	if len(args) == 0 || len(args) > 16 {
+		return fmt.Errorf("%s must contain 1 to 16 arguments", name)
+	}
+	for _, arg := range args {
+		if arg == "" || len(arg) > 1024 || strings.ContainsRune(arg, 0) {
+			return fmt.Errorf("invalid %s", name)
+		}
+	}
+	return nil
 }
 
 func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherContract, error) {
@@ -153,7 +182,7 @@ func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherC
 			c.launcherContractVerified = adapterManagedLauncherVerified(c.Command)
 			return contract, nil
 		}
-		return launcherContract{}, fmt.Errorf("harness: copilot launcher is incompatible: %s must return a bounded version-1 session contract without starting an agent; use direct copilot or a contract-aware wrapper", launcherContractFlag)
+		return launcherContract{}, fmt.Errorf("harness: copilot launcher is incompatible: %s must return a bounded supported session contract without starting an agent; use direct copilot or a contract-aware wrapper", launcherContractFlag)
 	}
 	contract, err := parseLauncherContract(contractOutput)
 	if err != nil {

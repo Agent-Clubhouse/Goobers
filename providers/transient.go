@@ -23,6 +23,12 @@ func IsAuthenticationError(err error) bool {
 	if errors.As(err, &rl) {
 		return false
 	}
+	// A branch-policy refusal arrives as a 403 but is not a permission
+	// failure: the same credential succeeds once the policy is satisfied.
+	var policyErr PullRequestPolicyNotMetError
+	if errors.As(err, &policyErr) {
+		return false
+	}
 	var responseErr *providerResponseError
 	if errors.As(err, &responseErr) {
 		return (responseErr.statusCode == http.StatusUnauthorized ||

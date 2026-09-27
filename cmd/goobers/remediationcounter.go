@@ -28,6 +28,9 @@ type remediationDemandCounter struct {
 }
 
 func (c *remediationDemandCounter) EligibleCount(ctx context.Context) (int, error) {
+	if c.repo.Provider != providers.ProviderGitHub {
+		return 0, fmt.Errorf("remediation demand count is not supported for provider %q", c.repo.Provider)
+	}
 	provider, cleanup, err := newCounterGitHubProvider(ctx, c.ref, c.schedulerDir, c.resolver, c.reg, c.quota)
 	if err != nil {
 		return 0, fmt.Errorf("resolve remediation-count token for %s: %w", c.ref, err)

@@ -480,7 +480,7 @@ func refreshTutorHoldoutMergeStateFromProvider(root, gaggle string) error {
 	if err != nil {
 		return err
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	provider, err := newProviderForStage(root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
 	if err != nil {
 		return err
 	}
@@ -491,7 +491,7 @@ func refreshTutorHoldoutMergeStateFromProvider(root, gaggle string) error {
 		root,
 		gaggle,
 		repo,
-		newGitHubProvider(token),
+		provider,
 	)
 }
 

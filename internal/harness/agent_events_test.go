@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -101,6 +102,56 @@ func TestProjectAgentEventsDropsRawMessageContent(t *testing.T) {
 		now + `","purpose":"dependency","content":"must-not-survive"},"content":"also-drop"}`))
 	if !ok || strings.Contains(string(normalized), "must-not-survive") || strings.Contains(string(normalized), "also-drop") {
 		t.Fatalf("raw peer content survived transcript normalization: %s", normalized)
+	}
+}
+
+func TestAgentEventProjectionDropsRateLimitedProgress(t *testing.T) {
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID:           "rate-limited-progress-run",
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "3771"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	projection := newAgentEventProjection(context.Background(), run, journal.NewPatternScrubber())
+	start := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < journal.AgentProgressRateLimitMax; i++ {
+		progress := journal.Event{Type: journal.EventAgentProgress, Progress: &journal.AgentProgress{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      "rate-limited-progress-run",
+			Stage:      "work",
+			Attempt:    1,
+			Kind:       journal.AgentProgressProgress,
+			Source:     journal.AgentProgressSourceModel,
+			OccurredAt: start.Add(time.Duration(i) * time.Second),
+			Progress:   []string{"working"},
+		}}
+		if err := projection.Emit(progress); err != nil {
+			t.Fatalf("Emit progress %d: %v", i, err)
+		}
+	}
+	overLimit := journal.Event{Type: journal.EventAgentProgress, Progress: &journal.AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      "rate-limited-progress-run",
+		Stage:      "work",
+		Attempt:    1,
+		Kind:       journal.AgentProgressProgress,
+		Source:     journal.AgentProgressSourceModel,
+		OccurredAt: start.Add(45 * time.Second),
+		Progress:   []string{"too chatty"},
+	}}
+	if err := projection.Emit(overLimit); err != nil {
+		t.Fatalf("Emit over-limit progress: %v", err)
+	}
+	if len(projection.Events()) != journal.AgentProgressRateLimitMax {
+		t.Fatalf("projection events = %d, want %d retained durable events", len(projection.Events()), journal.AgentProgressRateLimitMax)
 	}
 }
 

@@ -295,6 +295,37 @@ func TestPullRequestURLMatchesConfiguredRepository(t *testing.T) {
 			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "platform", Name: "web"},
 			url:  "https://dev.azure.com/other/platform/_git/web/pullrequest/42",
 		},
+		{
+			name: "ado api form matching repository name",
+			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "platform", Name: "web"},
+			url:  "https://dev.azure.com/acme/platform/_apis/git/repositories/web/pullRequests/42",
+			want: true,
+		},
+		{
+			name: "ado api form with repository guid is never trusted",
+			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "platform", Name: "web"},
+			url:  "https://dev.azure.com/acme/platform/_apis/git/repositories/11111111-2222-3333-4444-555555555555/pullRequests/42",
+		},
+		{
+			name: "ado api form wrong organization",
+			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "platform", Name: "web"},
+			url:  "https://dev.azure.com/other/platform/_apis/git/repositories/web/pullRequests/42",
+		},
+		{
+			name: "ado api form wrong project",
+			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "platform", Name: "web"},
+			url:  "https://dev.azure.com/acme/other/_apis/git/repositories/web/pullRequests/42",
+		},
+		{
+			name: "ado api form wrong repository",
+			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "platform", Name: "web"},
+			url:  "https://dev.azure.com/acme/platform/_apis/git/repositories/other/pullRequests/42",
+		},
+		{
+			name: "ado api form wrong pull request number",
+			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "platform", Name: "web"},
+			url:  "https://dev.azure.com/acme/platform/_apis/git/repositories/web/pullRequests/7",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := pullRequestURLMatchesRepository(test.repo, test.url, 42); got != test.want {

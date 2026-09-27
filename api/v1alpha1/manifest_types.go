@@ -20,8 +20,9 @@ type ManifestSpec struct {
 	// Instance identifies the deployment this manifest configures.
 	// +kubebuilder:validation:Required
 	Instance InstanceRef `json:"instance" yaml:"instance"`
-	// Connections are the named, reusable links (with Key Vault-backed creds)
-	// that gaggles/goobers reference. Declared once here.
+	// Connections are the named, reusable links that gaggles reference by
+	// connectionRef. Declared once here. They are not yet used to source
+	// credentials; see Connection.
 	// +optional
 	Connections []Connection `json:"connections,omitempty" yaml:"connections,omitempty"`
 	// Gaggles lists the gaggle definitions (by metadata.name) included in this
