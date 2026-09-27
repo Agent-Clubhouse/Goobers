@@ -231,7 +231,7 @@ Use only the target release's registry. The current set is:
 | `github:pr:review` | Submit provider-native pull-request reviews. |
 | `provider:ci:cancel` | Cancel bounded pending provider CI only for an exact reviewed pull-request head. |
 | `github:branch:delete` | Delete a remote GitHub branch. |
-| `github:pr:merge` | Merge a GitHub pull request. |
+| `github:pr:merge` | Merge a pull request; the landing authority on every provider, Azure DevOps included. |
 | `contents:read` | Fetch a separately declared reference repository with its repo-scoped read credential. |
 | `github:code-scanning:read` | Read GitHub code-scanning alerts. Read-only; grants no issue, pull-request, or contents write. |
 | `github:dependabot-alerts:read` | Read GitHub Dependabot alerts. A separate GitHub permission from code scanning, so a workflow can take one feed without the other. |
@@ -239,7 +239,7 @@ Use only the target release's registry. The current set is:
 | `ado:pr:comment` | Post Azure Repos pull-request threads without voting or completing. |
 | `ado:pr:write` | Open and update Azure Repos pull requests (no completion or merge authority). |
 | `ado:pr:status` | Publish Azure Repos pull-request statuses that branch policies gate on. |
-| `ado:pr:complete` | Complete (merge) an Azure Repos pull request; the ADO counterpart to `github:pr:merge`. |
+| `ado:pr:complete` | Complete (merge) an Azure Repos pull request. Optional: accepted alongside the required `github:pr:merge`; when declared, Azure DevOps completion uses it instead. |
 | `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
 | `telemetry:read` | Read the Goobers telemetry rollup. |
 | `journal:read` | Resolve evidence from another run's journal. |

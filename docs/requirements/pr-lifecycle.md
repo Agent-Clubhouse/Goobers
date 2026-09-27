@@ -311,18 +311,20 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
 ### Merge execution
 
 - **PRL-040 (MUST, Shipped):** Merging MUST be gated on the explicit
-  **`github:pr:merge` capability** on GitHub, or its Azure DevOps counterpart
-  **`ado:pr:complete`** — granted per workflow (instance opt-in — the G2
-  decision). On each provider the merge grant is deliberately distinct from the
-  ordinary PR-write grant (`github:pr:merge` ≠ `github:pr:write`;
-  `ado:pr:complete` ≠ `ado:pr:write`) so completion authority never rides on
-  ordinary PR writes — the decider≠executor isolation that keeps merge off
-  `implementation`/`pr-remediation`. The grant is provider-conditional and
-  declared per stage: an ADO `merge-review` declares `ado:pr:complete` on
-  `merge-pr`/`queue-watch`, a GitHub one declares `github:pr:merge`. Absent the
-  applicable grant, the merge stage refuses before polling any state
-  (fail-closed); no other stage in the loop holds merge authority, and
-  `merge-review` never holds `repo:push`.
+  **`github:pr:merge` capability** — granted per workflow (instance opt-in — the
+  G2 decision). In DSL 2.0, `github:pr:merge` is the landing authority on every
+  provider, Azure DevOps included (`design/ado-parity-dsl-2-0.md` §3.3). On
+  Azure DevOps, **`ado:pr:complete`** is accepted and never required: when the
+  landing stage declares it, `merge-pr`/`queue-watch` complete with its
+  credential; otherwise they complete with `github:pr:merge`'s. The merge grant
+  is deliberately distinct from the ordinary PR-write grant (`github:pr:merge`
+  and `ado:pr:complete` ≠ `github:pr:write`/`ado:pr:write`) so completion
+  authority never rides on ordinary PR writes — the decider≠executor isolation
+  that keeps merge off `implementation`/`pr-remediation`. `github:pr:merge`
+  stays the required manifest capability, so a stage holding only
+  `ado:pr:complete` is not admitted. Absent a landing grant, the merge stage
+  refuses before polling any state (fail-closed); no other stage in the loop
+  holds merge authority, and `merge-review` never holds `repo:push`.
 - **PRL-041 (MUST, Shipped):** A merge MUST proceed only when **every
   independent conjunct holds against a live re-poll** (never a caller claim):
   verdict = `pass`; CI green — where the provider's `mergeable_state:
@@ -521,7 +523,9 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
 - **PRL-072 (MUST, Shipped):** *(GitHub and Gitea; **not ADO** — ADO
   source-branch deletion rides on the completion request's own
   `deleteSourceBranch` flag rather than this cleanup path, and `merge-pr` skips
-  the shared cleanup for ADO by construction. #2061.)* After an actual merge
+  the shared cleanup for ADO by construction. #2061. The landing stage still
+  declares `github:branch:delete` on ADO, and completes with `github:pr:merge`
+  or a declared `ado:pr:complete` per PRL-040.)* After an actual merge
   (direct or queue-reported), the merged head branch MUST be deleted unless
   another open PR is stacked on it; cleanup requires the `github:branch:delete` grant and
   a cleanup failure is a warning on an already-successful merge, never a
@@ -597,8 +601,8 @@ therefore have no action row.
 | Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `provider:pr:write` | Covered |
 | Park a narrower PR behind a dominant shared-file rewrite (`flag-foundation-coupling`) | `merge-review/pr-select` | `github:pr:write` | Covered |
 | Apply or clear the scope-drift advisory and post its first warning (`flag-scope-drift`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
-| Merge a PR after all safety conjuncts hold (`merge-pr`) | `merge-review/merge-pr` | `github:pr:merge` (GitHub) / `ado:pr:complete` (Azure DevOps) | Covered |
-| Watch an enqueued merge to a determined outcome (`watch-merge-queue`) | `merge-review/queue-watch` | `github:pr:merge` (GitHub) / `ado:pr:complete` (Azure DevOps) | Covered |
+| Merge a PR after all safety conjuncts hold (`merge-pr`) | `merge-review/merge-pr` | `github:pr:merge` (every provider; `ado:pr:complete` optional on Azure DevOps) | Covered |
+| Watch an enqueued merge to a determined outcome (`watch-merge-queue`) | `merge-review/queue-watch` | `github:pr:merge` (every provider; `ado:pr:complete` optional on Azure DevOps) | Covered |
 | Route an evicted or timed-out queue entry to remediation (`route-queue-outcome`) | `merge-review/queue-watch` | `github:issues:write` | Covered |
 | Delete a merged or eligible stale owned branch (`delete-branch`) | `merge-review/reconcile-post-merge`, `merge-pr`, `queue-watch`; `reconcile-branches` when `--delete` or `deleteBranches` is enabled | `github:branch:delete` | Covered |
 | Close originating issues after merge (`close-issues`) | `merge-review/reconcile-post-merge`, `post-merge` | `github:issues:write` | Covered |
