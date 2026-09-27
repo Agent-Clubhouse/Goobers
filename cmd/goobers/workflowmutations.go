@@ -36,6 +36,13 @@ type configReloadHandle interface {
 	pollOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error)
 }
 
+func workflowMutationHandlerOptions(service *workflowMutationService) []httpapi.HandlerOption {
+	return []httpapi.HandlerOption{
+		httpapi.WithWorkflowMutations(service),
+		httpapi.WithGaggleBundles(service),
+	}
+}
+
 // workflowMutationService implements httpapi.WorkflowMutationService: it
 // rewrites a workflow's YAML source file's non-manual triggers' `enabled`
 // field and then hot-reloads the daemon from the edited config directory
