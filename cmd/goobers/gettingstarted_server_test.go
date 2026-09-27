@@ -906,6 +906,7 @@ func TestGuidedStandardInitArgvDropsADOTokenEnvWithoutPAT(t *testing.T) {
 		{kind: "azure-cli", want: "--repo-token-env="},
 		{kind: "", want: "--repo-token-env="},
 		{kind: "pat", want: "--repo-token-env=REPO_TOKEN"},
+		{kind: " pat ", want: "--repo-token-env=REPO_TOKEN"},
 	} {
 		input := &guidedInitOptionsInput{
 			Branch: "main", Workflows: []string{"backlog-curation"}, IssueScope: "all", Harness: "copilot",

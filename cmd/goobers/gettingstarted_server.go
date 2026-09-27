@@ -994,7 +994,7 @@ func guidedStandardInitArgv(repository, provider, assignedTo, instancePath strin
 // named alongside any other kind, so the wizard's GitHub-shaped default is
 // not forwarded for Azure CLI and the other token-free kinds.
 func guidedRepoTokenEnvArg(provider string, input *guidedInitOptionsInput) string {
-	if provider == string(providers.ProviderADO) && input.AuthKind != instance.ADOAuthPAT {
+	if provider == string(providers.ProviderADO) && strings.TrimSpace(input.AuthKind) != instance.ADOAuthPAT {
 		return ""
 	}
 	return input.RepoTokenEnv

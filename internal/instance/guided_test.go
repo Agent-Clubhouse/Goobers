@@ -287,6 +287,7 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 		if workflow == GuidedWorkflowMergeReview {
 			// Guided merge-review is Azure DevOps-only; GitHub refuses it
 			// (TestInitGuidedGitHubRefusesMergeReview).
+			t.Run(workflow, assertGuidedADOSingleWorkflow(workflow))
 			continue
 		}
 		t.Run(workflow, func(t *testing.T) {
@@ -712,6 +713,34 @@ func guidedADOOptions(workflows ...string) GuidedOptions {
 		RepoOwner: "example-org", RepoProject: "example-project", RepoName: "widget",
 		CopilotTokenEnv: "MODEL_TOKEN", PullRequestCI: slices.Contains(workflows, GuidedWorkflowImplementation),
 		Workflows: workflows,
+	}
+}
+
+// assertGuidedADOSingleWorkflow runs guided setup on Azure DevOps with only
+// workflow selected (Azure CLI auth) and checks that exactly that workflow is
+// scaffolded against the ADO repository.
+func assertGuidedADOSingleWorkflow(workflow string) func(*testing.T) {
+	return func(t *testing.T) {
+		opts := guidedADOOptions(workflow)
+		opts.RepoAuthKind = ADOAuthAzureCLI
+		root := filepath.Join(t.TempDir(), "guided")
+		if _, err := initGuidedForTest(root, opts); err != nil {
+			t.Fatalf("InitGuided: %v", err)
+		}
+		set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+		if err != nil {
+			t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+		}
+		if len(set.Workflows) != 1 || set.Workflows[0].Name != workflow {
+			t.Fatalf("guided workflows = %+v, want only %q", set.Workflows, workflow)
+		}
+		cfg, err := LoadConfig(NewLayout(root).ConfigFile())
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if len(cfg.Repos) != 1 || cfg.Repos[0].Provider != "ado" || cfg.Repos[0].Auth == nil || cfg.Repos[0].Auth.Kind != ADOAuthAzureCLI {
+			t.Fatalf("guided repos = %+v, want one ado repository with azure-cli auth", cfg.Repos)
+		}
 	}
 }
 
