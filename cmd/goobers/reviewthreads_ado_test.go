@@ -250,11 +250,16 @@ func TestResolveReviewThreadsOnADO(t *testing.T) {
 	server := fake.server(repo, "published-sha")
 	defer server.Close()
 	routeADOStageProvider(t, server.URL)
+	setDaemonStageAttributionEnv(t)
 	dir := t.TempDir()
 	t.Chdir(dir)
 
-	if code, stdout, stderr := runArgs(t, "resolve-review-threads", root); code != 0 {
-		t.Fatalf("resolve-review-threads: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	// The second run is a stage retry: it must recognise the attributed
+	// replies the first run posted and add none of its own.
+	for attempt := 1; attempt <= 2; attempt++ {
+		if code, stdout, stderr := runArgs(t, "resolve-review-threads", root); code != 0 {
+			t.Fatalf("resolve-review-threads attempt %d: code = %d, stdout = %q, stderr = %q", attempt, code, stdout, stderr)
+		}
 	}
 	data, err := os.ReadFile(filepath.Join(dir, resolveReviewThreadsResultFile))
 	if err != nil {
@@ -273,7 +278,9 @@ func TestResolveReviewThreadsOnADO(t *testing.T) {
 	for _, id := range []int{5, 6, 7} {
 		if len(fake.threads[id].replies) != 1 {
 			t.Errorf("thread %d replies = %d, want exactly 1", id, len(fake.threads[id].replies))
+			continue
 		}
+		assertAttributedReviewThreadReply(t, strconv.Itoa(id), fake.threads[id].replies[0]["content"].(string))
 	}
 	if strings.Join(fake.order, ",") != "reply:5,resolve:5,reply:6,reply:7" {
 		t.Errorf("mutation order = %v, want each reply before its resolution", fake.order)
