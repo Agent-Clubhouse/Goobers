@@ -1099,7 +1099,7 @@
         "azureMonitor": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Direct trace export to a customer-owned Azure Monitor Application Insights resource; no external collector is required.",
+          "description": "Direct trace, committed-journal, and whitelisted diagnostic export to a customer-owned Azure Monitor Application Insights resource; no external collector is required.",
           "required": ["connectionString"],
           "properties": {
             "connectionString": {

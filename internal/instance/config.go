@@ -1310,9 +1310,10 @@ type TelemetryConfig struct {
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
 	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
-	// AzureMonitor opts into direct trace export to a customer-owned Application
-	// Insights resource. The connection string is always resolved indirectly;
-	// it is never valid inline instance configuration.
+	// AzureMonitor opts into direct trace, committed-journal, and whitelisted
+	// diagnostic export to a customer-owned Application Insights resource. The
+	// connection string is always resolved indirectly; it is never valid inline
+	// instance configuration.
 	AzureMonitor *AzureMonitorConfig `json:"azureMonitor,omitempty" yaml:"azureMonitor,omitempty"`
 	// Diagnostics has its own opt-in collector; it never inherits journal export.
 	Diagnostics *DiagnosticsConfig `json:"diagnostics,omitempty" yaml:"diagnostics,omitempty"`

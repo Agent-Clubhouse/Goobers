@@ -81,8 +81,13 @@ func configureAzureMonitor(
 	if err != nil {
 		return fmt.Errorf("resolve Azure Monitor connection string: %w", err)
 	}
-	registry.Register([]byte(connectionString))
+	if registry != nil {
+		registry.Register([]byte(connectionString))
+	}
 	cfg.AzureMonitorConnectionString = connectionString
+	// One explicit Azure destination carries the standard live-forward signal
+	// set: traces plus committed journals and whitelisted diagnostics.
+	cfg.JournalLogs = true
 	return nil
 }
 
@@ -113,7 +118,9 @@ func resolveOTLPHeaders(
 		if err != nil {
 			return nil, fmt.Errorf("resolve telemetry OTLP header %q: %w", name, err)
 		}
-		registry.Register([]byte(value))
+		if registry != nil {
+			registry.Register([]byte(value))
+		}
 		headers[name] = value
 	}
 	return headers, nil

@@ -53,15 +53,24 @@ func startServiceHealthWithStores(ctx context.Context, root string, identity *da
 
 func buildDiagnosticExporterWithStores(ctx context.Context, setup *schedulerSetup, stores credentials.StoreResolver) (*telemetry.DiagnosticExporter, error) {
 	otlp := setup.Config.DiagnosticOTLP()
-	if !otlp.Enabled() {
+	azure := setup.Config.Telemetry.AzureMonitor
+	azureEnabled := setup.Config.TelemetryEnabled() && azure != nil && azure.Enabled()
+	if !otlp.Enabled() && !azureEnabled {
 		return nil, nil
 	}
 	cfg := telemetry.Config{
 		ServiceVersion: version.Get().Version, BuildCommit: version.Get().Commit,
 		Scrubber: journal.Chain(setup.SharedRegistry, journal.NewPatternScrubber()),
 	}
-	if err := configureOTLP(ctx, &cfg, otlp, setup.SharedRegistry, stores); err != nil {
-		return nil, err
+	if otlp.Enabled() {
+		if err := configureOTLP(ctx, &cfg, otlp, setup.SharedRegistry, stores); err != nil {
+			return nil, err
+		}
+	}
+	if azureEnabled {
+		if err := configureAzureMonitor(ctx, &cfg, *azure, setup.SharedRegistry, stores); err != nil {
+			return nil, err
+		}
 	}
 	return telemetry.NewDiagnosticExporter(cfg)
 }

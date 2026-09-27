@@ -139,7 +139,7 @@ func TestJournalRedactExportsLiveOTLPLog(t *testing.T) {
 			if wantLog && logs != 1 {
 				t.Fatalf("logs = %d, want exactly the new redaction, not seeded history", logs)
 			}
-			if (mode == "collector rejects" || mode == "invalid TLS") && !strings.Contains(stderr, "warning: journal OTLP logs") {
+			if (mode == "collector rejects" || mode == "invalid TLS") && !strings.Contains(stderr, "warning: journal telemetry") {
 				t.Fatalf("failed export did not warn: %s", stderr)
 			}
 		})
