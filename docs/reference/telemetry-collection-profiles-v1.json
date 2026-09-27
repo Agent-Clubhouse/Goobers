@@ -1,5 +1,6 @@
 {
   "schema": "goobers.dev/telemetry/collection-profiles/v1",
+  "observabilitySchema": "goobers.dev/telemetry/tenant-observability/v1",
   "defaultProfile": "standard",
   "profileField": "goobers.telemetry.profile",
   "structuredPayloadEncoding": "json",

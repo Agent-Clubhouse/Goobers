@@ -70,6 +70,7 @@ type TelemetryCollectionProfileDescriptor struct {
 // workflows, credentials, prompts, or arbitrary payloads.
 type TelemetryCollectionProfileContract struct {
 	Schema                    string                                 `json:"schema"`
+	ObservabilitySchema       string                                 `json:"observabilitySchema"`
 	DefaultProfile            TelemetryCollectionProfile             `json:"defaultProfile"`
 	ProfileField              string                                 `json:"profileField"`
 	StructuredPayloadEncoding string                                 `json:"structuredPayloadEncoding"`
@@ -100,6 +101,7 @@ func TelemetryCollectionProfiles() []TelemetryCollectionProfileDescriptor {
 func TelemetryCollectionContract() TelemetryCollectionProfileContract {
 	return TelemetryCollectionProfileContract{
 		Schema:                    TelemetryCollectionProfileContractVersion,
+		ObservabilitySchema:       TenantTelemetryContract().Schema,
 		DefaultProfile:            TelemetryProfileStandard,
 		ProfileField:              "goobers.telemetry.profile",
 		StructuredPayloadEncoding: "json",
