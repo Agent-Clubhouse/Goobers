@@ -64,9 +64,11 @@ above:
 
 Matching is case-insensitive on the host and on the configured organization,
 project and repository names, and tolerates a username-only origin
-(`https://<organization>@dev.azure.com/...`). An origin that embeds a password
-(`https://user:secret@dev.azure.com/...`) is refused by `push-branch`; remove
-the password from the remote and configure the repository's `auth` instead. A
+(`https://<organization>@dev.azure.com/...`, or `git@` on the SSH hosts). An
+origin that embeds a password (`https://user:secret@dev.azure.com/...`), or
+any other username, which may be a token (`https://<token>@dev.azure.com/...`),
+is refused by `push-branch`, and the refusal masks it; remove it from the
+remote and configure the repository's `auth` instead. A
 legacy `*.visualstudio.com` remote is accepted for matching and credential
 routing only — Goobers never rewrites an operator's configured remote, and
 every URL Goobers itself generates stays the canonical `dev.azure.com` form.
