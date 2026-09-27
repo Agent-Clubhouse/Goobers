@@ -7,20 +7,13 @@ import (
 	"time"
 )
 
-// shrinkRetryDelays swaps in test-scale backoff bounds for the duration of
-// one test, restoring the production values on cleanup — mirrors
-// internal/dispatcher's copy of the same seam.
-func shrinkRetryDelays(t *testing.T) {
-	t.Helper()
-	origBase, origMax := retryBaseDelay, retryMaxDelay
-	retryBaseDelay, retryMaxDelay = time.Millisecond, 5*time.Millisecond
-	t.Cleanup(func() { retryBaseDelay, retryMaxDelay = origBase, origMax })
+func fastRetryPolicy() RetryPolicy {
+	return RetryPolicy{BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}
 }
 
 func TestWithRetrySucceedsAfterTransientFailures(t *testing.T) {
-	shrinkRetryDelays(t)
 	attempts := 0
-	err := withRetry(context.Background(), time.Second, func(context.Context) (bool, error) {
+	err := withRetryPolicy(context.Background(), time.Second, fastRetryPolicy(), func(context.Context) (bool, error) {
 		attempts++
 		if attempts < 3 {
 			return true, errors.New("transient")
@@ -36,9 +29,8 @@ func TestWithRetrySucceedsAfterTransientFailures(t *testing.T) {
 }
 
 func TestWithRetryStopsImmediatelyOnNonRetryableError(t *testing.T) {
-	shrinkRetryDelays(t)
 	attempts := 0
-	err := withRetry(context.Background(), time.Second, func(context.Context) (bool, error) {
+	err := withRetryPolicy(context.Background(), time.Second, fastRetryPolicy(), func(context.Context) (bool, error) {
 		attempts++
 		return false, errors.New("permanent")
 	})

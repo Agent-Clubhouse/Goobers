@@ -75,6 +75,9 @@ type CredentialResolveClient struct {
 	// RetryDeadline bounds how long Resolve retries a transport error or 5xx
 	// response before giving up. Zero uses defaultCredentialRetryDeadline.
 	RetryDeadline time.Duration
+	// RetryPolicy overrides retry pacing for this client. Zero values retain
+	// the production defaults.
+	RetryPolicy RetryPolicy
 }
 
 // CredentialResolveRefusal is the credential plane's own answer to a resolve —
@@ -169,7 +172,7 @@ func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage
 	// credential per call rather than consuming a one-shot grant. A repeated
 	// resolve can only return the same entitlement again.
 	var resolution CredentialResolution
-	retryErr := withRetry(ctx, deadline, func(ctx context.Context) (bool, error) {
+	retryErr := withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
 		// A fresh request per attempt: an *http.Request body is consumed by
 		// the first send, so a retried request would post an empty body and
 		// be refused as invalid — a self-inflicted non-retryable failure.
