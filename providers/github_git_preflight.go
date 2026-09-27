@@ -101,8 +101,8 @@ func githubReceivePackEndpoint(base string, repo RepositoryRef) (string, error) 
 		return "", fmt.Errorf("invalid GitHub API origin")
 	}
 	loopback := net.ParseIP(u.Hostname()).IsLoopback() || u.Hostname() == "localhost"
-	if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
-		return "", fmt.Errorf("Git discovery requires HTTPS")
+	if u.Scheme != "https" && (u.Scheme != "http" || !loopback) {
+		return "", fmt.Errorf("git discovery requires HTTPS")
 	}
 	for _, segment := range []string{repo.Owner, repo.Name} {
 		if segment == "" || segment == "." || segment == ".." || strings.ContainsAny(segment, "/\\?#%") {
