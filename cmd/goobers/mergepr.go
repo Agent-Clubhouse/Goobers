@@ -353,7 +353,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 				// still matches this poll's live head/base (#2746). verdictAuthor is
 				// not required on ADO — the recovery resolves the trusted author
 				// itself.
-				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll, adoVerdict)
+				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll, adoVerdict, repo, backlogRepoRefForStage(root, repo))
 				if commitErr != nil {
 					return nil
 				}
@@ -603,7 +603,7 @@ func recoverADOPassVerdict(
 // unrecoverable verdict falls back to the PR's own title + "Closes #N" closing
 // refs, so the merge still lands. Errors only on the same empty-title condition
 // the GitHub assembly rejects.
-func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoRecoveredVerdict) (string, string, error) {
+func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoRecoveredVerdict, repo, backlog providers.RepositoryRef) (string, string, error) {
 	title := strings.TrimSpace(poll.Title)
 	if title == "" {
 		return "", "", fmt.Errorf("pull request title is empty")
@@ -623,9 +623,9 @@ func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoR
 			attribution = "Reviewed-by: " + author
 		}
 	}
-	for _, issue := range closingIssueNumbers(poll.Body) {
-		parts = append(parts, "Closes #"+issue)
-	}
+	// A backlog on another provider (topology (b)) is referenced by URL, never
+	// by a bare "#<id>" that ADO would resolve to one of its own work items.
+	parts = append(parts, mergeCommitClosingRefs(poll.Body, repo, backlog)...)
 	if attribution != "" {
 		parts = append(parts, attribution)
 	}

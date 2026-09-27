@@ -489,7 +489,7 @@ func TestADOMergeCommitMessageBypassesVerdictLookup(t *testing.T) {
 		t.Fatal("structuredMergeCommitMessage: want error on empty CommentsSince, got nil")
 	}
 
-	title, message, err := adoMergeCommitMessage(poll, nil)
+	title, message, err := adoMergeCommitMessage(poll, nil, providers.RepositoryRef{}, providers.RepositoryRef{})
 	if err != nil {
 		t.Fatalf("adoMergeCommitMessage: unexpected error %v", err)
 	}
@@ -501,7 +501,7 @@ func TestADOMergeCommitMessageBypassesVerdictLookup(t *testing.T) {
 	}
 
 	// An empty title is still a business error, matching the GitHub assembly.
-	if _, _, err := adoMergeCommitMessage(providers.PullRequestPollResult{Title: "   "}, nil); err == nil {
+	if _, _, err := adoMergeCommitMessage(providers.PullRequestPollResult{Title: "   "}, nil, providers.RepositoryRef{}, providers.RepositoryRef{}); err == nil {
 		t.Fatal("adoMergeCommitMessage: want error on empty title, got nil")
 	}
 }
@@ -530,7 +530,7 @@ func TestADOMergeCommitMessageRecordsRecoveredVerdict(t *testing.T) {
 		},
 	}
 
-	title, message, err := adoMergeCommitMessage(poll, recovered)
+	title, message, err := adoMergeCommitMessage(poll, recovered, providers.RepositoryRef{}, providers.RepositoryRef{})
 	if err != nil {
 		t.Fatalf("adoMergeCommitMessage: unexpected error %v", err)
 	}
@@ -551,7 +551,7 @@ func TestADOMergeCommitMessageRecordsRecoveredVerdict(t *testing.T) {
 		{name: "unpinned", verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "s"}},
 	} {
 		t.Run(stale.name, func(t *testing.T) {
-			_, message, err := adoMergeCommitMessage(poll, &adoRecoveredVerdict{Author: "goobers-bot", Verdict: stale.verdict})
+			_, message, err := adoMergeCommitMessage(poll, &adoRecoveredVerdict{Author: "goobers-bot", Verdict: stale.verdict}, providers.RepositoryRef{}, providers.RepositoryRef{})
 			if err != nil {
 				t.Fatalf("adoMergeCommitMessage: unexpected error %v", err)
 			}

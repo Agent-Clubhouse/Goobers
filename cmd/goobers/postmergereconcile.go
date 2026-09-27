@@ -171,7 +171,8 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 	// The pull request poll and threads authenticate with github:pr:write and
 	// the backlog work-item close with github:issues:write, each with the
 	// credential its declared capability delivered (ado-parity-dsl-2-0.md §3.1).
-	provider, issuesProvider, err := newReconcilePostMergeADOProviders(root, repo)
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	provider, issuesProvider, err := newReconcilePostMergeADOProviders(root, repo, backlogRepo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -212,7 +213,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 				report.Pending++
 				continue
 			}
-			actionErrs := performPostMergeADOWithOrigin(ctx, issuesProvider, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, root, entry.Gaggle, repo, stdout, stderr)
+			actionErrs := performPostMergeADOWithOrigin(ctx, issuesProvider, provider, backlogRepo, poll, entry.PullNumber, root, entry.Gaggle, repo, stdout, stderr)
 			if len(actionErrs) > 0 {
 				report.Pending++
 				ledger.Entries[key] = entry
@@ -221,7 +222,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 			}
 			// ADO's post-merge path closes work items only. Do not checkpoint
 			// GitHub PR branch/fan-out actions that this path did not perform.
-			closed := closingIssueNumbers(poll.Body)
+			closed := postMergeClosingIDs(poll.Body, repo, backlogRepo)
 			entry.Actions.ClosedIssueNumbers = make(map[string]bool, len(closed))
 			for _, id := range closed {
 				entry.Actions.ClosedIssueNumbers[id] = true
@@ -253,14 +254,16 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 // newReconcilePostMergeADOProviders builds reconcile-post-merge's two Azure
 // DevOps providers: one for the pull request (github:pr:write) and one for the
 // backlog work items it closes (github:issues:write).
-func newReconcilePostMergeADOProviders(root string, repo providers.RepositoryRef) (*providers.ADOProvider, *providers.ADOProvider, error) {
+func newReconcilePostMergeADOProviders(root string, repo, backlogRepo providers.RepositoryRef) (*providers.ADOProvider, providers.Provider, error) {
 	prProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false,
 		withStageProviderCapability(capability.GitHubPRWrite),
 	)
 	if err != nil {
 		return nil, nil, err
 	}
-	issuesProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false,
+	// A backlog on another provider (topology (b)) is closed through that
+	// provider with the github:issues:write credential bound to it.
+	issuesProvider, err := newMergeReviewProvider(root, backlogProviderRepo(repo, backlogRepo), false,
 		withStageProviderCapability(capability.GitHubIssuesWrite),
 	)
 	if err != nil {

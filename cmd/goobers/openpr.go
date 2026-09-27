@@ -32,8 +32,20 @@ type adoPullRequestWorkItemLinker interface {
 	LinkPullRequestToWorkItem(context.Context, providers.RepositoryRef, providers.RepositoryRef, string, string) error
 }
 
-func openPRWorkItemLinker(root string, repo providers.RepositoryRef, haveIssue bool, issueID string) (adoPullRequestWorkItemLinker, error) {
+// adoNativeWorkItemLink reports whether open-pr links the pull request to its
+// item natively: only on Azure DevOps, for a claimed item that is an ADO work
+// item. A backlog on another provider (topology (b)) holds no work item to
+// link, and linking the ADO work item that happens to share the id would
+// attach the pull request to an unrelated item.
+func adoNativeWorkItemLink(root string, repo providers.RepositoryRef, haveIssue bool, issueID string) bool {
 	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
+		return false
+	}
+	return !backlogOnOtherProvider(repo, backlogRepoRefForStage(root, repo))
+}
+
+func openPRWorkItemLinker(root string, repo providers.RepositoryRef, haveIssue bool, issueID string) (adoPullRequestWorkItemLinker, error) {
+	if !adoNativeWorkItemLink(root, repo, haveIssue, issueID) {
 		return nil, nil
 	}
 	return newProviderForStageSurface[adoPullRequestWorkItemLinker](root, repo, false,
@@ -50,7 +62,7 @@ func linkADOPullRequestToWorkItem(
 	haveIssue bool,
 	stderr io.Writer,
 ) int {
-	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
+	if !adoNativeWorkItemLink(root, repo, haveIssue, issueID) {
 		return 0
 	}
 	if linker == nil {
@@ -220,7 +232,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	body := providerInput("body", "")
 	structuredBody := false
 	if body == "" {
-		body, structuredBody, err = renderStructuredPRBody(root, runID, issueID, issueTitle)
+		body, structuredBody, err = renderStructuredPRBody(root, runID, issueID, prIssueReference(root, repo, issueID), issueTitle)
 		if err != nil {
 			pf(stderr, "error: render pull request body from journal: %v\n", err)
 			return 1
@@ -230,7 +242,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if haveIssue && issueID != "" && !structuredBody {
-		body += "\n\nFixes #" + issueID
+		body += "\n\nFixes " + prIssueReference(root, repo, issueID)
 	}
 	_, journalErr := stageRunJournal(root, runID)
 	if journalErr != nil && !errors.Is(journalErr, journalclient.ErrRunNotFound) {
@@ -352,7 +364,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	if haveIssue && issueID != "" {
 		issuesRepo := backlogRepoRefForStage(root, repo)
 		ctxCheck, cancelCheck := providerCommandContext()
-		item, checkErr := provider.GetWorkItem(ctxCheck, issuesRepo, issueID)
+		item, checkErr := openPRWorkItem(ctxCheck, root, repo, issuesRepo, provider, issueID)
 		cancelCheck()
 		switch {
 		case providers.IsNotFoundError(checkErr):

@@ -286,14 +286,16 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.GitHubIssuesWrite))
+	// Work items (the closed PBI) live in the backlog project on ADO, not the
+	// routed code repo whose PR this stage merged; address them there (§6).
+	// A backlog on another provider (topology (b)) is opened on that provider
+	// with the github:issues:write credential bound to it (§7.2).
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	issuesProvider, err := newMergeReviewProvider(root, backlogProviderRepo(repo, backlogRepo), false, withStageProviderCapability(capability.GitHubIssuesWrite))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Work items (the closed PBI) live in the backlog project on ADO, not the
-	// routed code repo whose PR this stage merged; address them there (§6).
-	backlogRepo := backlogRepoRefForStage(root, repo)
 
 	// Mandatory Provider methods (PollPullRequest here, BacklogProvider in the
 	// close) route through the dispatcher, which embeds Provider — never a
@@ -406,7 +408,7 @@ func performPostMergeADOWithPRComments(ctx context.Context, closer adoWorkItemCl
 // Delayed entries carry their originating gaggle explicitly. An empty legacy
 // origin remains empty so the cost resolver can apply its conservative policy.
 func performPostMergeADOWithOrigin(ctx context.Context, closer adoWorkItemCloser, prComments adoPostMergePRComments, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber, root, origin string, repo providers.RepositoryRef, stdout, stderr io.Writer) []error {
-	issueIDs := closingIssueNumbers(poll.Body)
+	issueIDs := postMergeClosingIDs(poll.Body, repo, backlogRepo)
 	var report postMergeCostReport
 	if prComments != nil && costPublicationAllowed(root, origin, repo, stderr) {
 		report = collectADOPostMergeCostReport(ctx, closer, prComments, backlogRepo, repo, pullNumber, issueIDs, stderr)
@@ -415,7 +417,7 @@ func performPostMergeADOWithOrigin(ctx context.Context, closer adoWorkItemCloser
 	for _, issueID := range issueIDs {
 		comments[issueID] = mergedPullRequestComment(pullNumber, report, issueID)
 	}
-	closed, closeErrs := closeReferencedWorkItemsADOWithComments(ctx, closer, backlogRepo, poll.Body, comments)
+	closed, closeErrs := closeReferencedWorkItemsADOWithComments(ctx, closer, backlogRepo, issueIDs, comments)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}
@@ -423,16 +425,19 @@ func performPostMergeADOWithOrigin(ctx context.Context, closer adoWorkItemCloser
 	return closeErrs
 }
 
-// closeReferencedWorkItemsADOWithComments marks done every work item the merged PR's body
-// references via the same closing-keyword grammar closeReferencedIssues uses
-// (Fixes/Closes/Resolves #N) — on ADO `N` is the work-item id (open-pr writes
-// "Fixes #<itemID>"; the durable WI↔PR link is the body ref, not the claim
-// ledger, which was released at issue-close-out). It mirrors
-// closeReferencedIssues but routes through the base-Provider interface (so it
-// accepts the ADO provider) and targets backlogRepo, never the routed code repo.
-// A PR referencing no work item is a normal outcome, not an error.
-func closeReferencedWorkItemsADOWithComments(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, body string, comments map[string]string) (closed []string, errs []error) {
-	for _, id := range closingIssueNumbers(body) {
+// closeReferencedWorkItemsADOWithComments marks done every backlog item in ids:
+// the items the merged PR's body closes (postMergeClosingIDs). On ADO that is
+// the same closing-keyword grammar closeReferencedIssues uses
+// (Fixes/Closes/Resolves #N), where `N` is the work-item id (open-pr writes
+// "Fixes #<itemID>"); with a backlog on another provider (topology (b)) it is
+// the "Fixes <issue URL>" form open-pr writes there. The durable item↔PR link
+// is the body ref, not the claim ledger, which was released at
+// issue-close-out. It mirrors closeReferencedIssues but routes through the
+// base-Provider interface (so it accepts the ADO provider, or the backlog's
+// own provider) and targets backlogRepo, never the routed code repo. A PR
+// referencing no work item is a normal outcome, not an error.
+func closeReferencedWorkItemsADOWithComments(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, ids []string, comments map[string]string) (closed []string, errs []error) {
+	for _, id := range ids {
 		if err := closeReferencedWorkItemADO(ctx, closer, backlogRepo, id, comments[id]); err != nil {
 			errs = append(errs, fmt.Errorf("close work item #%s: %w", id, err))
 			continue

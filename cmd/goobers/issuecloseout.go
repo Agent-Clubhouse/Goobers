@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
@@ -33,6 +34,68 @@ type issueCloseOutProvider interface {
 	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
 	UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error)
 	ReleaseWorkItemClaim(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error)
+}
+
+type pullRequestBranchFinder interface {
+	FindPullRequestByBranch(context.Context, providers.RepositoryRef, string, string) (providers.PullRequestResult, bool, error)
+}
+
+// openIssueCloseOutProvider opens the provider issue-close-out talks to. A
+// backlog on the routed provider (GitHub, or the ADO project split) is served
+// by the one routed provider, as before. A backlog on another provider
+// (topology (b), docs/design/ado-parity-dsl-2-0.md §7.2) splits by role: work
+// items go to the backlog provider under the stage's github:issues:write
+// credential, and the pull-request lookup to the routed provider under a
+// pull-request credential (crossProviderPRFinder).
+func openIssueCloseOutProvider(root string, repo, backlogRepo providers.RepositoryRef, stderr io.Writer) (issueCloseOutProvider, error) {
+	stageProvider, err := newProviderForStage(root, backlogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
+	if err != nil {
+		return nil, err
+	}
+	provider, ok := stageProvider.(issueCloseOutProvider)
+	if !ok {
+		return nil, fmt.Errorf("issue-close-out does not support repository provider %q", repo.Provider)
+	}
+	if !backlogOnOtherProvider(repo, backlogRepo) {
+		return provider, nil
+	}
+	finder, err := crossProviderPRFinder(root, repo, stderr)
+	if err != nil {
+		return nil, err
+	}
+	return splitIssueCloseOutProvider{issueCloseOutProvider: provider, prs: finder}, nil
+}
+
+// crossProviderPRFinder opens the routed provider for a pull-request lookup
+// in topology (b). The stage's github:issues:write credential belongs to the
+// backlog provider, so the lookup needs a pull-request credential the stage
+// declared (github:pr:write or provider:pr:write). Without one the lookup is
+// skipped: the close-out still runs, with a comment that does not link the
+// pull request.
+func crossProviderPRFinder(root string, repo providers.RepositoryRef, stderr io.Writer) (pullRequestBranchFinder, error) {
+	for _, prCapability := range []capability.Capability{capability.GitHubPRWrite, capability.ProviderPRWrite} {
+		if _, err := providerToken(prCapability); err != nil {
+			continue
+		}
+		return newProviderForStageSurface[pullRequestBranchFinder](root, repo, true, withStageProviderCapability(prCapability))
+	}
+	pf(stderr, "warning: the backlog is on another provider than %s and this stage declares no pull-request capability (github:pr:write); the close-out comment will not link the pull request\n", repositoryDisplayName(repo))
+	return nil, nil
+}
+
+// splitIssueCloseOutProvider serves issue-close-out in topology (b): work
+// items through the embedded backlog provider, the pull-request lookup through
+// prs, which is nil when the stage holds no pull-request credential.
+type splitIssueCloseOutProvider struct {
+	issueCloseOutProvider
+	prs pullRequestBranchFinder
+}
+
+func (p splitIssueCloseOutProvider) FindPullRequestByBranch(ctx context.Context, repo providers.RepositoryRef, head, base string) (providers.PullRequestResult, bool, error) {
+	if p.prs == nil {
+		return providers.PullRequestResult{}, false, nil
+	}
+	return p.prs.FindPullRequestByBranch(ctx, repo, head, base)
 }
 
 type pullRequestReader interface {
@@ -327,19 +390,14 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	stageProvider, err := newProviderForStage(root, repo, false, withStageProviderMutations("issue"))
+	// Work items (the claimed PBI) live in the backlog project on ADO, not the
+	// routed code repo whose branch/PR this stage links; address them there.
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	provider, err := openIssueCloseOutProvider(root, repo, backlogRepo, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, ok := stageProvider.(issueCloseOutProvider)
-	if !ok {
-		pf(stderr, "error: issue-close-out does not support repository provider %q\n", repo.Provider)
-		return 1
-	}
-	// Work items (the claimed PBI) live in the backlog project on ADO, not the
-	// routed code repo whose branch/PR this stage links; address them there.
-	backlogRepo := backlogRepoRefForStage(root, repo)
 
 	runID, workflow, err := providerRunContext()
 	if err != nil {

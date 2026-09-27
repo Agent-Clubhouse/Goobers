@@ -311,7 +311,7 @@ func TestPerformPostMergeADOCostTrustsPRThreadsByIdentityGUID(t *testing.T) {
 // others) — mirroring closeReferencedIssues' best-effort posture.
 func TestCloseReferencedWorkItemsADOSurfacesPerItemError(t *testing.T) {
 	closer := &erroringCloser{failID: "1456"}
-	closed, errs := closeReferencedWorkItemsADOWithComments(context.Background(), closer, backlogRef, "Fixes #1456 and closes #1457", map[string]string{
+	closed, errs := closeReferencedWorkItemsADOWithComments(context.Background(), closer, backlogRef, closingIssueNumbers("Fixes #1456 and closes #1457"), map[string]string{
 		"1456": "Merged in pull request #359.",
 		"1457": "Merged in pull request #359.",
 	})

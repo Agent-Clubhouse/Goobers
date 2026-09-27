@@ -42,7 +42,7 @@ type journalArtifact struct {
 // renderStructuredPRBody projects the implementation run's existing journal
 // evidence into a reviewer-facing PR body. Workflows without reviewer or
 // local-ci evidence keep open-pr's generic fallback.
-func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bool, error) {
+func renderStructuredPRBody(root, runID, issueID, issueRef, issueTitle string) (string, bool, error) {
 	runDir, err := runDirFor(layoutFor(root), runID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -146,7 +146,7 @@ func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bo
 		}
 	}
 
-	return formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, identity.WorkflowDigest, reviews, parseUnifiedDiff(latestDiff), ci), true, nil
+	return formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdatedAt, identity.WorkflowDigest, reviews, parseUnifiedDiff(latestDiff), ci), true, nil
 }
 
 func artifactByDigest(artifacts []journalArtifact, digest string) (journal.Ref, bool) {
@@ -173,7 +173,7 @@ func stageArtifactByName(artifacts []journalArtifact, stageRefs []journal.Ref, r
 	return journal.Ref{}, false
 }
 
-func formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, workflowDigest string, reviews []prBodyReview, changes []prBodyChange, ci *prBodyCI) string {
+func formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdatedAt, workflowDigest string, reviews []prBodyReview, changes []prBodyChange, ci *prBodyCI) string {
 	var b strings.Builder
 	latest := prBodyReview{}
 	if len(reviews) > 0 {
@@ -182,7 +182,7 @@ func formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, work
 
 	b.WriteString("## Summary\n\n")
 	if issueID != "" {
-		fmt.Fprintf(&b, "Implements #%s: **%s**.\n", html.EscapeString(issueID), html.EscapeString(issueTitle))
+		fmt.Fprintf(&b, "Implements %s: **%s**.\n", html.EscapeString(issueRef), html.EscapeString(issueTitle))
 	}
 	if summary := strings.TrimSpace(latest.verdict.Summary); summary != "" {
 		if issueID != "" {
@@ -270,7 +270,7 @@ func formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, work
 
 	b.WriteString("\n---\n")
 	if issueID != "" {
-		fmt.Fprintf(&b, "Fixes #%s", html.EscapeString(issueID))
+		fmt.Fprintf(&b, "Fixes %s", html.EscapeString(issueRef))
 	}
 	digest, label := latest.diffDigest, "Reviewed diff"
 	if digest == "" {

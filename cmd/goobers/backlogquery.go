@@ -252,10 +252,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return 1
 	}
 	env.repo = repo
+	env.backlogRepo = backlogRepoRefForStage(root, repo)
 	if code := env.openProvider(mode == backlogQueryModeReadOnly); code != 0 {
 		return code
 	}
-	env.backlogRepo = backlogRepoRefForStage(root, repo)
 	return runBacklogQueryMode(mode, env, beforeClaimTransaction)
 }
 
@@ -304,6 +304,16 @@ type backlogQueryEnv struct {
 	debug           bool
 }
 
+// issueRepo is the repository the stage's issue provider was opened for and
+// the ref its GitHub-only extras, re-sweep listing and claim namespace use.
+// It is the routed repository on a same-provider gaggle, exactly as before,
+// and the backlog repository when the backlog lives on another provider
+// (topology (b), docs/design/ado-parity-dsl-2-0.md §7.2), so claims are keyed
+// by the backlog provider.
+func (env backlogQueryEnv) issueRepo() providers.RepositoryRef {
+	return backlogProviderRepo(env.repo, env.backlogRepo)
+}
+
 func (env backlogQueryEnv) debugf(format string, args ...interface{}) {
 	if env.debug {
 		pf(env.stderr, "debug: "+format+"\n", args...)
@@ -322,7 +332,7 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	if !readOnly {
 		opts = append(opts, withStageProviderCache())
 	}
-	provider, err := newProviderForStage(env.root, env.repo, readOnly, opts...)
+	provider, err := newProviderForStage(env.root, env.issueRepo(), readOnly, opts...)
 	if err != nil {
 		pf(env.stderr, "error: %v\n", err)
 		return 1
@@ -566,7 +576,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		// failure-streak input (the critic's terminalFailureStreak row: over
 		// the plane this is claims/list with history, so the deprioritization
 		// keeps its input off the daemon).
-		listing, err := ledger.ListNamespace(claimContext(), providerGaggle(), string(env.repo.Provider))
+		listing, err := ledger.ListNamespace(claimContext(), providerGaggle(), string(env.issueRepo().Provider))
 		if err != nil {
 			pf(stderr, "error: read claim ledger: %v\n", err)
 			return 1
@@ -957,7 +967,7 @@ func writeClaimedBacklogResult(
 	var err error
 	if opts.curationRun {
 		curationItems, err = enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.repo, claimed, opts.observedAt, opts.stalenessPolicy,
+			ctx, env.ghIssueProvider, env.issueRepo(), claimed, opts.observedAt, opts.stalenessPolicy,
 		)
 		if err != nil {
 			return failProviderStage(env.stderr, "compute claimed-item staleness", err, "claimed-items.json")
@@ -966,7 +976,7 @@ func writeClaimedBacklogResult(
 			curationItems[index].CurationMode = opts.curationModeByID[curationItems[index].ID]
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.repo, readOnly, opts.observedAt, opts.stalenessPolicy,
+			ctx, env.ghIssueProvider, env.issueRepo(), readOnly, opts.observedAt, opts.stalenessPolicy,
 		)
 		if enrichErr != nil {
 			return failProviderStage(env.stderr, "compute read-only re-sweep staleness", enrichErr, "claimed-items.json")
@@ -1240,7 +1250,7 @@ func (session *backlogClaimSession) rememberPreexistingClaims(ctx context.Contex
 			}
 			continue
 		}
-		if entry.Gaggle == session.gaggle && entry.Provider == string(session.env.repo.Provider) {
+		if entry.Gaggle == session.gaggle && entry.Provider == string(session.env.issueRepo().Provider) {
 			session.preexistingClaimIDs[entry.ExternalID] = struct{}{}
 		}
 	}
@@ -1256,7 +1266,7 @@ func (session *backlogClaimSession) claimKey(item providers.WorkItem) claimsclie
 	}
 	return claimsclient.Key{
 		Gaggle:     session.gaggle,
-		Provider:   string(session.env.repo.Provider),
+		Provider:   string(session.env.issueRepo().Provider),
 		ExternalID: item.ID,
 	}
 }
@@ -1273,7 +1283,7 @@ func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claims
 	// claim — terminal circuit-breaker/notification bookkeeping later reads
 	// this back instead of reconstructing ownership from the gaggle's
 	// static project or cfg.Repos[0].
-	if recordErr := recordItemRepository(session.annotations, session.runID, item.ID, itemKindIssue, session.env.repo); recordErr != nil {
+	if recordErr := recordItemRepository(session.annotations, session.runID, item.ID, itemKindIssue, session.env.issueRepo()); recordErr != nil {
 		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID); releaseErr != nil {
 			session.env.debugf("release claim %s after repository-identity record failure: %v", item.ID, releaseErr)
 		}
@@ -1371,7 +1381,7 @@ func (session *backlogClaimSession) repeatedProviderContention(ctx context.Conte
 	if session.gaggle == "" || providerRunID == "" {
 		return nil, nil
 	}
-	listing, err := session.ledger.ListNamespace(ctx, session.gaggle, string(session.env.repo.Provider))
+	listing, err := session.ledger.ListNamespace(ctx, session.gaggle, string(session.env.issueRepo().Provider))
 	if err != nil {
 		return nil, err
 	}
@@ -1381,7 +1391,7 @@ func (session *backlogClaimSession) repeatedProviderContention(ctx context.Conte
 			entry.Verification.ProviderRunID == providerRunID &&
 			entry.Verification.ObservedAt.Before(cutoff) {
 			return &providerClaimOwnershipError{
-				provider: string(session.env.repo.Provider), itemID: item.ID,
+				provider: string(session.env.issueRepo().Provider), itemID: item.ID,
 				claimRunID: session.runID, providerRunID: providerRunID,
 			}, nil
 		}
@@ -1393,7 +1403,7 @@ func (session *backlogClaimSession) filterRecentClaimDisagreements(ctx context.C
 	if session.gaggle == "" || len(session.eligible) == 0 {
 		return nil
 	}
-	listing, err := ledger.ListNamespace(ctx, session.gaggle, string(session.env.repo.Provider))
+	listing, err := ledger.ListNamespace(ctx, session.gaggle, string(session.env.issueRepo().Provider))
 	if err != nil {
 		return fmt.Errorf("read claim namespace for provider disagreement backoff: %w", err)
 	}
@@ -1426,7 +1436,7 @@ func (session *backlogClaimSession) filterRecentClaimDisagreements(ctx context.C
 			Reason: "provider claim disagreement backoff",
 			Runner: map[string]any{
 				"annotation": "provider-claim-disagreement-backoff",
-				"provider":   string(session.env.repo.Provider), "itemId": item.ID,
+				"provider":   string(session.env.issueRepo().Provider), "itemId": item.ID,
 				"claimRunId": claimRunID, "providerRunId": observation.ProviderRunID,
 				"retryAfter": retryAt.UTC().Format(time.RFC3339Nano),
 			},
@@ -1465,7 +1475,7 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 	if holder == "" || holder == session.runID {
 		return false, nil
 	}
-	listing, err := session.ledger.ListNamespace(ctx, session.gaggle, string(session.env.repo.Provider))
+	listing, err := session.ledger.ListNamespace(ctx, session.gaggle, string(session.env.issueRepo().Provider))
 	if err != nil {
 		return false, fmt.Errorf("read claim namespace: %w", err)
 	}
@@ -1636,7 +1646,7 @@ func appendBlockedResweepCandidates(
 	items, blockedWindow, err := listBacklogScanWindow(
 		ctx,
 		env.issueProvider,
-		env.repo,
+		env.issueRepo(),
 		compactLabels(opts.trustLabel, blockedOnSiblingLabel),
 		opts.requireLabels,
 		"",
@@ -1687,7 +1697,7 @@ func appendBlockedResweepCandidates(
 	}
 	budget := opts.maxItems - len(result.eligible)
 	for _, item := range items {
-		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.repo, item.ID)
+		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.issueRepo(), item.ID)
 		if err != nil {
 			return nil, failProviderStage(env.stderr, "recheck blocked-item dependencies", fmt.Errorf("dependency recheck item %s: %w", item.ID, err), "claimed-items.json")
 		}
@@ -1751,7 +1761,7 @@ func appendReadyResweepCandidates(
 	items, readyWindow, err := listBacklogScanWindow(
 		ctx,
 		env.issueProvider,
-		env.repo,
+		env.issueRepo(),
 		compactLabels(opts.trustLabel, opts.policy.readyLabel),
 		opts.requireLabels,
 		"",
@@ -1930,7 +1940,7 @@ func performBacklogQueryReconciliation(
 		ctx,
 		env.layout,
 		env.ghIssueProvider,
-		env.repo,
+		env.issueRepo(),
 		trustLabel,
 		stalenessPolicy,
 		func() time.Time { return observedAt },
@@ -1946,7 +1956,7 @@ func performBacklogQueryReconciliation(
 	// warnings for the same reason: it is scheduled housekeeping, so failing
 	// the stage would discard completed work to report a check that can simply
 	// run again on the next tick.
-	restored, err := restoreInvisibleClaims(ctx, env.layout, env.ghIssueProvider, env.repo, observedAt, env.stderr)
+	restored, err := restoreInvisibleClaims(ctx, env.layout, env.ghIssueProvider, env.issueRepo(), observedAt, env.stderr)
 	if err != nil {
 		pf(env.stderr, "warning: could not reconcile claim visibility: %v\n", err)
 	}
@@ -2974,7 +2984,11 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		if rerr != nil {
 			return rerr
 		}
-		stageProvider, err := newProviderForStage(root, repo, false, withStageProviderMutations("issue"))
+		// Work-item claim markers live in the backlog project on ADO, not the
+		// routed code repo, and on the backlog provider when the backlog lives
+		// on another provider (see backlogRepoRefForStage).
+		backlogRepo := backlogRepoRefForStage(root, repo)
+		stageProvider, err := newProviderForStage(root, backlogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
 		if err != nil {
 			return err
 		}
@@ -2982,9 +2996,6 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		if !ok {
 			return fmt.Errorf("backlog-query release does not support repository provider %q", repo.Provider)
 		}
-		// Work-item claim markers live in the backlog project on ADO, not the
-		// routed code repo (see backlogRepoRefForStage).
-		backlogRepo := backlogRepoRefForStage(root, repo)
 		ctx, cancel := providerCommandContext()
 		defer cancel()
 
