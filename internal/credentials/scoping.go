@@ -42,7 +42,10 @@ type BacklogRole struct {
 // repo's credential: when no binding with a token matches the backlog
 // repository, the capability gets no grant and a stage that declares it fails
 // closed for want of a credential, rather than sending one provider's
-// credential to the other.
+// credential to the other. For the same reason a backlog role turns off the
+// first-binding fallback for every other capability: when no binding matches
+// the project repository exactly, those capabilities get no grant rather than
+// whichever repository happens to be listed first.
 //
 // overrides source individual capabilities from their own refs (#287 — e.g.
 // agent:model from a personal token): an override for a capability the repo
@@ -54,7 +57,10 @@ type BacklogRole struct {
 // order), so the resulting grant slice is stable across builds.
 func RunnerGrants(bindings []RepoBinding, owner, name string, backlog *BacklogRole, credentialedCaps []string, overrides []Grant) []Grant {
 	defaultRef := ""
-	if len(bindings) > 0 {
+	// The first-binding fallback is for single-provider instances only. With a
+	// backlog role the first binding may be the backlog repository, on the
+	// other provider, so the project family is backed only by an exact match.
+	if len(bindings) > 0 && backlog == nil {
 		defaultRef = bindings[0].TokenRef
 	}
 	if owner != "" && name != "" {

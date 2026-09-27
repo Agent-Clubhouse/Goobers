@@ -44,20 +44,32 @@ No new DSL is involved. Each stage is routed by role
 
 - **Backlog work goes to the backlog provider.** `backlog-query`,
   `issue-close-out`, the issue half of `post-merge`, `backlog-assignment`,
-  `backlog-health`, `backlog-dedupe`, `check-issue-staleness`, and the
-  daemon's park, failure and claim-release handlers read and write the
-  GitHub issues. Claims are keyed by the backlog provider.
+  `backlog-health`, `backlog-dedupe`, `check-issue-staleness`, the
+  decomposition stages (`select-source`, `validate-plan`, `publish-batch`),
+  and the daemon's park, failure and claim-release handlers read and write
+  the GitHub issues. Claims are keyed by the backlog provider.
 - **Credentials follow the capability family.** `github:issues:*` and
   `github:milestones:write` are backed by the backlog repository's `repos[]`
   entry. Pull-request and repository capabilities are backed by the ADO
   repository's. Without a backlog entry, a backlog capability has no
   credential and the stage fails. It is never given the ADO credential.
+  The reverse holds too:
+  - The ADO repository must match its `repos[]` entry exactly. The usual
+    fallback to the first `repos[]` entry is off in topology (b).
+  - A `daemonIdentity` (a GitHub PAT or App) backs only `github:issues:write`,
+    for the backlog repository.
+  - A stage that would open the ADO repository with a backlog-family
+    credential is refused with an error instead of sending it to Azure DevOps.
 - **Pull requests name the issue by URL.** On Azure DevOps, `#42` in a pull
   request description or squash commit message means ADO work item 42. So
   `open-pr` writes `Fixes https://github.com/example-org/example-backlog/issues/42`,
   and never `Fixes #42`. The ADO merge commit carries the same URL. After the
   merge, `post-merge` closes only issues that the pull request references by a
-  URL into the backlog repository. A bare `#N` is ignored.
+  URL into the backlog repository. A bare `#N` is ignored. In the other
+  direction, the comment `post-merge` leaves on the GitHub issue names the
+  ADO pull request by its URL. Any `#N` in the issue's acceptance criteria
+  that `open-pr` copies into the description is rewritten to that backlog
+  issue's URL.
 - **GitHub pull-request extras are skipped.** In `backlog-query`, the open-PR
   eligibility backstop and contested-file ordering read GitHub pull requests,
   and there are none here, so they do not run. Native ADO work-item linking
@@ -95,6 +107,10 @@ Not yet covered in topology (b):
   repository.
 - The daemon's terminal claim-marker release for a Gitea backlog. As on a
   plain Gitea gaggle, backlog curation reconciles the marker instead.
+- Pull-request stages that authenticate to Azure DevOps with
+  `github:issues:write`, such as `pr-comment-watch` and the merge-queue
+  remediation label. Their backlog-family credential belongs to GitHub in
+  topology (b), so they stop with the refusal above.
 
 ## One gaggle, two code providers (topology c)
 

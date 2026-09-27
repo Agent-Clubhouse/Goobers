@@ -57,3 +57,29 @@ func TestRunnerGrants_UnboundBacklogFailsClosed(t *testing.T) {
 		t.Fatalf("override not applied: %v", got)
 	}
 }
+
+// TestRunnerGrants_BacklogRoleDisablesFirstBindingFallback: with a backlog
+// role, a project repository that matches no binding exactly gets no grant for
+// its capabilities, even when the backlog repository is listed first. Without
+// a role the first-binding fallback is unchanged.
+func TestRunnerGrants_BacklogRoleDisablesFirstBindingFallback(t *testing.T) {
+	bindings := []RepoBinding{
+		{Owner: "example-org", Name: "backlog", TokenRef: "example-org/backlog"},
+		{Owner: "example-org/example-project", Name: "other-service", TokenRef: "example-org/example-project/other-service"},
+	}
+	caps := []string{"repo:push", "github:pr:write", "github:issues:write"}
+	role := &BacklogRole{Owner: "example-org", Name: "backlog", Capabilities: []string{"github:issues:write"}}
+
+	got := grantMap(RunnerGrants(bindings, "example-org/example-project", "service", role, caps, nil))
+	want := map[string]string{"github:issues:write": "example-org/backlog"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("grants = %v, want only the backlog family %v", got, want)
+	}
+
+	got = grantMap(RunnerGrants(bindings, "example-org/example-project", "service", nil, caps, nil))
+	for _, c := range caps {
+		if got[c] != "example-org/backlog" {
+			t.Fatalf("without a role %s granted %q, want the first binding", c, got[c])
+		}
+	}
+}

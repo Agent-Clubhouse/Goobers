@@ -303,6 +303,34 @@ func TestBuildGaggleCredentialsTopologyB(t *testing.T) {
 		}
 	}
 
+	// A daemon identity is a GitHub identity: in (b) it backs only the
+	// backlog-family part of the daemon-mutation set, and every pull-request
+	// and repository capability keeps the ADO repository's credential.
+	withIdentity := *cfg
+	withIdentity.DaemonIdentity = &instance.DaemonIdentityConfig{Kind: instance.GitHubAuthPAT, Token: &instance.TokenRef{Env: "TOPOLOGY_B_DAEMON_PAT"}}
+	t.Setenv("TOPOLOGY_B_DAEMON_PAT", "daemon-token")
+	_, identityGrants, err := buildGaggleCredentials(&withIdentity, nil, project, backlog, nil, nil)
+	if err != nil {
+		t.Fatalf("buildGaggleCredentials with a daemon identity: %v", err)
+	}
+	identityRefs := map[string]string{}
+	for _, grant := range identityGrants {
+		identityRefs[grant.Capability] = grant.Ref
+	}
+	for capabilityName, want := range map[capability.Capability]string{
+		capability.GitHubIssuesWrite:  daemonIdentityRefName,
+		capability.GitHubIssuesRead:   githubRef,
+		capability.GitHubPRWrite:      adoRef,
+		capability.GitHubPRMerge:      adoRef,
+		capability.GitHubBranchDelete: adoRef,
+		capability.RepoPush:           adoRef,
+		capability.ProviderCICancel:   adoRef,
+	} {
+		if got := identityRefs[string(capabilityName)]; got != want {
+			t.Errorf("with a daemon identity %s backed by %q, want %q", capabilityName, got, want)
+		}
+	}
+
 	// Same-provider gaggles keep the single project binding.
 	_, same, err := buildGaggleCredentials(cfg, nil, project, apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "example-backlog-project"}, nil, nil)
 	if err != nil {

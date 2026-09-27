@@ -112,6 +112,31 @@ func backlogRoleFor(owner, name string) *credentials.BacklogRole {
 	return role
 }
 
+// daemonIdentityGrantScope is the repository a daemon identity mints for and
+// the capabilities it backs, for one gaggle. Without a backlog role that is
+// the gaggle's project repository and the whole daemon-mutation set, as
+// before. With one (topology (b)) the daemon identity is a GitHub identity
+// (a GitHub PAT or App) and the project is on Azure DevOps, so it backs only
+// the backlog-family capabilities of the set, for the backlog repository; the
+// pull-request and repository capabilities keep the Azure DevOps repository's
+// own credential and never receive the GitHub one.
+func daemonIdentityGrantScope(gaggleOwner, gaggleName string, backlog *credentials.BacklogRole) (string, string, []capability.Capability) {
+	if backlog == nil {
+		return gaggleOwner, gaggleName, daemonIdentityCapabilities
+	}
+	family := make(map[string]bool, len(backlog.Capabilities))
+	for _, c := range backlog.Capabilities {
+		family[c] = true
+	}
+	var caps []capability.Capability
+	for _, c := range daemonIdentityCapabilities {
+		if family[string(c)] {
+			caps = append(caps, c)
+		}
+	}
+	return backlog.Owner, backlog.Name, caps
+}
+
 func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string, backlog *credentials.BacklogRole, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
@@ -138,8 +163,9 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 	// repo-default grant).
 	var daemonIdentityOverrides []credentials.Grant
 	if cfg.DaemonIdentity != nil {
+		identityOwner, identityName, identityCaps := daemonIdentityGrantScope(gaggleOwner, gaggleName, backlog)
 		if cfg.DaemonIdentity.GitHubApp() {
-			mint, err := newDaemonIdentityGitHubAppTokenSource(cfg.DaemonIdentity, gaggleOwner, gaggleName, registrar, stores)
+			mint, err := newDaemonIdentityGitHubAppTokenSource(cfg.DaemonIdentity, identityOwner, identityName, registrar, stores)
 			if err != nil {
 				return nil, nil, fmt.Errorf("build credentials: daemonIdentity: %w", err)
 			}
@@ -150,8 +176,8 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 		} else {
 			refs = append(refs, cfg.DaemonIdentity.Token.CredentialTokenRef(daemonIdentityRefName))
 		}
-		daemonIdentityOverrides = make([]credentials.Grant, len(daemonIdentityCapabilities))
-		for i, c := range daemonIdentityCapabilities {
+		daemonIdentityOverrides = make([]credentials.Grant, len(identityCaps))
+		for i, c := range identityCaps {
 			daemonIdentityOverrides[i] = credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName}
 		}
 	}
