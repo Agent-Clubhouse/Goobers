@@ -406,10 +406,14 @@ func adoMergeStrategy(m MergeMethod) string {
 // auto-complete/pr.landing.enqueue) from a policy-free one (safe to
 // complete immediately/pr.merge).
 type adoPolicyConfiguration struct {
+	ID         int  `json:"id"`
 	IsEnabled  bool `json:"isEnabled"`
 	IsBlocking bool `json:"isBlocking"`
 	IsDeleted  bool `json:"isDeleted"`
-	Settings   struct {
+	Type       struct {
+		DisplayName string `json:"displayName"`
+	} `json:"type"`
+	Settings struct {
 		Scope []adoPolicyScope `json:"scope"`
 	} `json:"settings"`
 }
