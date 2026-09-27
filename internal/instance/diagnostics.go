@@ -61,7 +61,7 @@ func (c *Config) DiagnosticOTLP() OTLPConfig {
 // HeartbeatPeriod returns the independent fleet observation interval.
 func (c *DiagnosticsConfig) HeartbeatPeriod() time.Duration {
 	if c == nil || c.HeartbeatInterval == "" {
-		return 30 * time.Second
+		return time.Minute
 	}
 	value, _ := time.ParseDuration(c.HeartbeatInterval)
 	return value

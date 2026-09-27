@@ -81,7 +81,7 @@ func TestFleetProducerThroughCollectorKeepsTenantHealthAndOwners(t *testing.T) {
 			t.Fatal(err)
 		}
 		stats := exporter.Stats()
-		if accepted != 3 || stats.Delivered != 3 || stats.Dropped != 0 {
+		if accepted != len(records) || stats.Delivered != uint64(len(records)) || stats.Dropped != 0 || len(records) < 2 {
 			t.Fatalf("production wire rejected: accepted=%d stats=%+v", accepted, stats)
 		}
 	}

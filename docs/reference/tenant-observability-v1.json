@@ -1,0 +1,259 @@
+{
+  "schema": "goobers.dev/telemetry/tenant-observability/v1",
+  "collectionProfileSchema": "goobers.dev/telemetry/collection-profiles/v1",
+  "cadences": [
+    {
+      "signal": "goobers.fleet.heartbeat/deployment",
+      "periodicSeconds": 60
+    },
+    {
+      "signal": "goobers.fleet.heartbeat/gaggle",
+      "periodicSeconds": 60,
+      "transitionWithinSeconds": 60
+    },
+    {
+      "signal": "goobers.service.health",
+      "periodicSeconds": 21600
+    }
+  ],
+  "bounds": [
+    {
+      "name": "inventoryPage",
+      "value": 100,
+      "unit": "items"
+    },
+    {
+      "name": "inventoryObservation",
+      "value": 1000,
+      "unit": "items"
+    },
+    {
+      "name": "retainedRunsPerGaggle",
+      "value": 100,
+      "unit": "runs"
+    },
+    {
+      "name": "diagnosticBatch",
+      "value": 128,
+      "unit": "records"
+    },
+    {
+      "name": "journalMemoryQueue",
+      "value": 1024,
+      "unit": "records"
+    },
+    {
+      "name": "journalMemoryQueueBytes",
+      "value": 8388608,
+      "unit": "bytes"
+    },
+    {
+      "name": "azureReplayMaxAge",
+      "value": 72,
+      "unit": "hours"
+    },
+    {
+      "name": "azureReplayMaxBytes",
+      "value": 536870912,
+      "unit": "bytes"
+    }
+  ],
+  "correlationFields": [
+    "goobers.instance.id",
+    "instanceId",
+    "bootId",
+    "goobers.gaggle",
+    "gaggleId",
+    "goobers.workflow",
+    "goobers.workflow.version",
+    "goobers.workflow.digest",
+    "goobers.config.generation",
+    "goobers.trigger.kind",
+    "goobers.run.id",
+    "trace_id",
+    "span_id",
+    "goobers.stage",
+    "goobers.attempt.n",
+    "goobers.telemetry.record_id"
+  ],
+  "incidents": [
+    {
+      "id": "pat_auth_rejection",
+      "signal": "journal",
+      "eventNames": [
+        "stage.finished"
+      ],
+      "stableCodes": [
+        "github_auth_failed"
+      ],
+      "requiredFields": [
+        "goobers.instance.id",
+        "goobers.gaggle",
+        "goobers.workflow",
+        "goobers.run.id",
+        "goobers.stage"
+      ],
+      "minimumProfile": "journal"
+    },
+    {
+      "id": "credential_unavailable",
+      "signal": "journal",
+      "eventNames": [
+        "stage.finished"
+      ],
+      "stableCodes": [
+        "credential_unavailable"
+      ],
+      "requiredFields": [
+        "goobers.instance.id",
+        "goobers.gaggle",
+        "goobers.workflow",
+        "goobers.run.id",
+        "goobers.stage"
+      ],
+      "minimumProfile": "journal"
+    },
+    {
+      "id": "startup_not_ready",
+      "signal": "diagnostic",
+      "eventNames": [
+        "goobers.fleet.heartbeat"
+      ],
+      "stableCodes": [
+        "startup"
+      ],
+      "requiredFields": [
+        "instanceId",
+        "bootId",
+        "state",
+        "reasonCode",
+        "windowCoverage"
+      ],
+      "minimumProfile": "health"
+    },
+    {
+      "id": "workflow_refused",
+      "signal": "journal",
+      "eventNames": [
+        "workflow.refused"
+      ],
+      "stableCodes": [
+        "conditions: harness-unavailable"
+      ],
+      "requiredFields": [
+        "goobers.instance.id",
+        "goobers.gaggle",
+        "goobers.workflow"
+      ],
+      "minimumProfile": "journal"
+    },
+    {
+      "id": "provider_api_failure",
+      "signal": "journal",
+      "eventNames": [
+        "stage.finished"
+      ],
+      "stableCodes": [
+        "provider_error",
+        "poll_provider_error",
+        "github_rate_limited"
+      ],
+      "requiredFields": [
+        "goobers.instance.id",
+        "goobers.gaggle",
+        "goobers.workflow",
+        "goobers.run.id",
+        "goobers.stage"
+      ],
+      "minimumProfile": "journal"
+    },
+    {
+      "id": "harness_startup_failure",
+      "signal": "journal",
+      "eventNames": [
+        "workflow.refused",
+        "stage.finished"
+      ],
+      "stableCodes": [
+        "conditions: harness-unavailable",
+        "harness.failure"
+      ],
+      "requiredFields": [
+        "goobers.instance.id",
+        "goobers.gaggle",
+        "goobers.workflow"
+      ],
+      "minimumProfile": "journal"
+    },
+    {
+      "id": "stuck_run",
+      "signal": "diagnostic",
+      "eventNames": [
+        "goobers.fleet.heartbeat"
+      ],
+      "stableCodes": [
+        "no_progress"
+      ],
+      "requiredFields": [
+        "instanceId",
+        "gaggleId",
+        "state",
+        "reasonCode",
+        "windowCoverage"
+      ],
+      "minimumProfile": "health"
+    },
+    {
+      "id": "incomplete_observation",
+      "signal": "diagnostic",
+      "eventNames": [
+        "goobers.fleet.heartbeat"
+      ],
+      "stableCodes": [
+        "observation_incomplete"
+      ],
+      "requiredFields": [
+        "instanceId",
+        "state",
+        "reasonCode",
+        "windowCoverage"
+      ],
+      "minimumProfile": "health"
+    },
+    {
+      "id": "exporter_loss_or_recovery",
+      "signal": "diagnostic",
+      "eventNames": [
+        "goobers.service.health",
+        "goobers.fleet.heartbeat"
+      ],
+      "stableCodes": [
+        "azure_replay_pending",
+        "azure_replay_pruned",
+        "azure_replay_malformed"
+      ],
+      "requiredFields": [
+        "instanceId",
+        "goobers.telemetry.record_id",
+        "azureReplayPendingRecords",
+        "azureReplayRetried"
+      ],
+      "minimumProfile": "health"
+    }
+  ],
+  "forbiddenFields": [
+    "authorization",
+    "connectionString",
+    "credentialValue",
+    "password",
+    "patValue",
+    "secretValue",
+    "tokenValue",
+    "environmentValue",
+    "rawConfig",
+    "rawPrompt",
+    "rawWorkflow",
+    "workflowBase64"
+  ],
+  "structuredPayloadEncoding": "json"
+}
