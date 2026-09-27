@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -155,5 +157,80 @@ func TestDecompositionIssueRepoTopologyB(t *testing.T) {
 	}
 	if got.Provider != providers.ProviderADO || got.Project != topologyBCodeProject || got.Name != topologyBCodeRepo {
 		t.Fatalf("decompositionIssueRepo without a gaggle = %+v, want the routed ADO repository", got)
+	}
+}
+
+// A (b) claim is keyed by the backlog provider (§7.2 step 4): backlog-query
+// claims the GitHub issue through the GitHub backlog, records the ledger key
+// under provider "github", records the item's repository as the GitHub
+// backlog, and never builds an Azure DevOps provider for any of it.
+func TestBacklogQueryClaimTopologyBKeysByBacklogProvider(t *testing.T) {
+	root := topologyBStageEnv(t)
+	server := newFakeGitHubServer(t, "example-org", "example-backlog")
+	server.addIssue(7, "Fix the bug", "goobers", "goobers:ready")
+	previousGitHub := newGitHubProvider
+	newGitHubProvider = server.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = previousGitHub })
+	previousADO := newADOProviderForStage
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		t.Errorf("backlog-query built an Azure DevOps provider for %+v in topology (b)", routed)
+		return nil, errors.New("unexpected ADO provider")
+	}
+	t.Cleanup(func() { newADOProviderForStage = previousADO })
+
+	t.Setenv("GOOBERS_RUN_ID", "run-topology-b-claim")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesWrite)), "backlog-issues-token")
+	t.Setenv(executor.InputEnvVar("trustLabel"), "goobers")
+	t.Setenv(executor.InputEnvVar("requireLabels"), "goobers:ready")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("backlog-query --claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	var held []localscheduler.ClaimEntry
+	for _, entry := range ledger.Snapshot() {
+		if entry.RunID == "run-topology-b-claim" {
+			held = append(held, entry)
+		}
+	}
+	if len(held) != 1 || held[0].ExternalID != "7" {
+		t.Fatalf("ledger entries held by the run = %+v, want exactly item 7", held)
+	}
+	if held[0].Provider != string(providers.ProviderGitHub) || held[0].Gaggle != "example" {
+		t.Fatalf("claim keyed (gaggle %q, provider %q), want (example, github)", held[0].Gaggle, held[0].Provider)
+	}
+
+	items, err := claimedItemsForRun(layoutFor(root), "run-topology-b-claim")
+	if err != nil {
+		t.Fatalf("claimedItemsForRun: %v", err)
+	}
+	if len(items) != 1 || items[0].Repo != topologyBBacklogRef() {
+		t.Fatalf("recorded item repositories = %+v, want the GitHub backlog %+v", items, topologyBBacklogRef())
+	}
+}
+
+// backlogPRExtrasAvailable keeps backlog-query's GitHub pull-request extras
+// (the open-PR backstop, closed-unmerged requeue and contested-file ordering)
+// off in (b), where the GitHub provider is the backlog's and the pull
+// requests are on Azure DevOps, and on for a GitHub gaggle.
+func TestBacklogPRExtrasOffInTopologyB(t *testing.T) {
+	github := providers.NewGitHubProvider("token")
+	b := backlogQueryEnv{repo: topologyBRouted(), backlogRepo: topologyBBacklogRef(), ghIssueProvider: github}
+	if backlogPRExtrasAvailable(b) {
+		t.Fatal("pull-request extras enabled in topology (b)")
+	}
+	same := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "example-org", Name: "service"}
+	if !backlogPRExtrasAvailable(backlogQueryEnv{repo: same, backlogRepo: same, ghIssueProvider: github}) {
+		t.Fatal("pull-request extras disabled for a GitHub gaggle")
+	}
+	if backlogPRExtrasAvailable(backlogQueryEnv{repo: topologyBRouted(), backlogRepo: topologyBRouted()}) {
+		t.Fatal("pull-request extras enabled for ADO code without a GitHub provider")
 	}
 }
