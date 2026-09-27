@@ -7,26 +7,94 @@ clear reason instead of misbehaving at run time.
 
 ## Mixed-provider backlog and project (topology b)
 
-When either side is `ado`, a gaggle's `spec.backlog.provider` must match
-its `spec.project.provider`. `validate` refuses a gaggle where the two
-differ and either side is `ado` (CFG010; for example a GitHub backlog with
-ADO code, or an ADO backlog with GitHub code): every backlog stage currently
-opens the routed *project* provider, so a mismatched backlog would silently
-query the wrong forge instead of failing loudly.
+A gaggle can keep its code in Azure DevOps and its backlog in a GitHub (or
+Gitea) repository. Declare the backlog repository as `owner/name` and give
+it its own `repos[]` entry, with a token or GitHub App, next to the ADO
+repository:
 
-Other mismatches, between two non-ADO providers (for example a GitHub
-project with a Gitea backlog), are warned rather than refused (CFG011), so
-an existing non-ADO configuration does not break. CFG011 is strict-neutral:
+```yaml
+# gaggle.yaml
+spec:
+  project:
+    provider: ado
+    owner: example-org
+    project: example-project
+    name: example-repo
+  backlog:
+    provider: github
+    project: example-org/example-backlog
+
+# instance.yaml
+repos:
+  - provider: ado
+    owner: example-org
+    project: example-project
+    name: example-repo
+    auth:
+      kind: azure-cli
+  - provider: github
+    owner: example-org
+    name: example-backlog
+    token:
+      env: GOOBERS_BACKLOG_TOKEN
+```
+
+No new DSL is involved. Each stage is routed by role
+(`docs/design/ado-parity-dsl-2-0.md` §7.2):
+
+- **Backlog work goes to the backlog provider.** `backlog-query`,
+  `issue-close-out`, the issue half of `post-merge`, `backlog-assignment`,
+  `backlog-health`, `backlog-dedupe`, `check-issue-staleness`, and the
+  daemon's park, failure and claim-release handlers read and write the
+  GitHub issues. Claims are keyed by the backlog provider.
+- **Credentials follow the capability family.** `github:issues:*` and
+  `github:milestones:write` are backed by the backlog repository's `repos[]`
+  entry. Pull-request and repository capabilities are backed by the ADO
+  repository's. Without a backlog entry, a backlog capability has no
+  credential and the stage fails. It is never given the ADO credential.
+- **Pull requests name the issue by URL.** On Azure DevOps, `#42` in a pull
+  request description or squash commit message means ADO work item 42. So
+  `open-pr` writes `Fixes https://github.com/example-org/example-backlog/issues/42`,
+  and never `Fixes #42`. The ADO merge commit carries the same URL. After the
+  merge, `post-merge` closes only issues that the pull request references by a
+  URL into the backlog repository. A bare `#N` is ignored.
+- **GitHub pull-request extras are skipped.** In `backlog-query`, the open-PR
+  eligibility backstop and contested-file ordering read GitHub pull requests,
+  and there are none here, so they do not run. Native ADO work-item linking
+  also does not run, because the item is not an ADO work item.
+
+Some behaviour depends on what a stage declares:
+
+- `issue-close-out` needs a pull-request credential (`github:pr:write`) to
+  link the pull request in its close-out comment. Without one it still closes
+  out the issue, but it writes a generic comment.
+- `open-pr` re-checks that the claimed issue is still open only if it
+  declares `github:issues:read`. Without it the re-check is skipped with a
+  warning. The re-check fails open.
+
+`validate` still refuses an Azure DevOps backlog for GitHub or Gitea code
+(CFG010), because nothing in the gaggle names the backlog's ADO
+organization. A GitHub or Gitea backlog whose `backlog.project` is not
+`owner/name` is also refused (CFG010).
+
+Mismatches between two non-ADO providers (for example a GitHub project with
+a Gitea backlog) behave as before: `validate` warns (CFG011) and backlog
+stages query the project provider. CFG011 is strict-neutral:
 `goobers validate --strict` prints it but does not fail on it.
 
-An Azure DevOps project split — the project repository in one ADO project
-and `spec.backlog.project` naming a different ADO project — is unaffected
-and keeps working, because both sides share the same `ado` provider.
+An Azure DevOps project split is unaffected and keeps working. That is the
+case where the project repository is in one ADO project and
+`spec.backlog.project` names a different ADO project.
 
-Full mixed-provider backlog/project support (topology b) is planned for a
-v0.5.x release. It routes each backlog stage by role, binds credentials by
-capability family, and stops writing cross-provider closing references. See
-`docs/design/ado-parity-dsl-2-0.md` §7.2 for the design.
+Not yet covered in topology (b):
+
+- `goobers run --continue` of a run that claimed a GitHub issue. It stops
+  with an error naming the provider mismatch.
+- A stage pod on the cluster substrate reading the claim-marker bot login for
+  the backlog repository. The dispatcher stamps the login only for the routed
+  repository.
+- The daemon's terminal claim-marker release for a Gitea backlog. As on a
+  plain Gitea gaggle, backlog curation reconciles the marker instead.
 
 ## One gaggle, two code providers (topology c)
 

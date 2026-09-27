@@ -32,11 +32,12 @@ repos:
       env: GOOBERS_ADO_TOKEN
 ```
 
-The Boards `backlog.project` can differ from the repository project, but
-`backlog.provider` must stay `ado`: `validate` refuses a gaggle whose backlog
-provider differs from its project provider (a mixed-provider backlog is
-planned for a later release; see
-[ADO limitations](../../docs/guides/ado-limitations.md)).
+The Boards `backlog.project` can differ from the repository project. The
+backlog can also live in a GitHub repository instead of Boards
+(`backlog.provider: github`, `backlog.project: owner/name`), with its own
+`repos[]` entry for the backlog credential; see
+[ADO limitations](../../docs/guides/ado-limitations.md) for that mixed
+topology.
 
 A work item with a predecessor link is not claimed until the predecessor is
 done. By default a predecessor in the Resolved, Completed or Removed state

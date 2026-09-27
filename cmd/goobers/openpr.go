@@ -138,7 +138,10 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"generic one-line body. A claimed item still augments an unstructured body\n" +
 	"— explicit or generic — with a \"Fixes #<id>\" back-reference, so explicit\n" +
 	"body text does not cost the issue linkage. The structured body carries\n" +
-	"its own linkage and is never appended to.\n\n" +
+	"its own linkage and is never appended to. When the backlog lives on\n" +
+	"another provider than the pull request (a GitHub backlog for Azure\n" +
+	"DevOps code), both name the item by its full URL instead of \"#<id>\",\n" +
+	"which that provider would read as one of its own items.\n\n" +
 	"A workflow that claims no item, or whose journal holds no recognized\n" +
 	"review/local-CI evidence, therefore gets generic metadata unless it sets\n" +
 	"these inputs. That is the fallback working, not a missing feature.\n" +

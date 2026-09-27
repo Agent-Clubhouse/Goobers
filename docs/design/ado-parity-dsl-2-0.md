@@ -547,6 +547,37 @@ ADO-backlog project split keeps working.
 The reverse arrangement (backlog on ADO, code on GitHub) uses the same machinery.
 Topology (c) needs two *project* providers in one gaggle, which is DSL 3.0.
 
+**Status (ADO-N31, implemented).** A GitHub or Gitea backlog for ADO code
+validates and is routed by role. Steps 1–6 landed as follows:
+
+- **Steps 1 and 4.** `applyBacklogProject` returns the backlog provider's
+  ref (`backlogProviderRef`, shared with `statusWorkItemLookup`). Each
+  backlog stage opens that provider, and claims are keyed by it.
+- **Step 2.** `credentials.RunnerGrants` takes a backlog role. If no
+  `repos[]` entry with a credential matches the backlog `owner/name`, the
+  backlog family gets no credential, never the ADO one.
+- **Step 3.** `open-pr` and the ADO merge commit write the issue's full URL.
+  `post-merge` closes only URL references into the backlog. A bare `#N` is
+  ignored.
+- **Step 5.** The PR-coupled extras are skipped.
+- **Step 6.** The N1 gate has a (b) column (`test/providermatrix`). The live
+  (b) scenario belongs to the ADO-N16 leg.
+
+Deviations from the steps above:
+
+- **Post-merge reads the PR body, not the claims ledger.** `issue-close-out`
+  releases the claim when the PR opens, so post-merge has no claim to read.
+  It parses full-URL closing references into the backlog repository instead,
+  which cannot name the wrong item.
+- **The reverse arrangement is still refused (CFG010).** A gaggle does not
+  name the backlog's ADO organization.
+- **The ADO-N13 guard is lifted only for ADO code.** A mismatch between two
+  non-ADO providers keeps its routed provider and its CFG011 warning, so
+  GitHub and Gitea behaviour does not change.
+
+`docs/guides/ado-limitations.md` lists what stages need to declare in (b),
+and the known gaps.
+
 ### 7.3 `validate --check-repos` on ADO (ADO-N34, v0.5.x)
 
 This adds read-only checks against configured endpoints only (SEC-048, no phone-home):

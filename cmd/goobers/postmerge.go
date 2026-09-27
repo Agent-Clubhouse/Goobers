@@ -187,7 +187,10 @@ const postMergeHelp = "Usage: goobers post-merge [path]\n\n" +
 	"the merged PR and overlapping paths on each affected PR (issue\n" +
 	"#715 — a clean disjoint sibling is left untouched), and mark each\n" +
 	"issue the merged PR's body references (Fixes/Closes/Resolves #N)\n" +
-	"done. Declared input: pullNumber (required — the just-merged PR).\n" +
+	"done. When the backlog lives on another provider than the PR (a\n" +
+	"GitHub backlog for Azure DevOps code), only references by the\n" +
+	"issue's full URL count. Declared input: pullNumber (required — the\n" +
+	"just-merged PR).\n" +
 	"Exit codes: 0 = done (even if the PR body references no issue, or\n" +
 	"there are no other open PRs — both are normal outcomes, not\n" +
 	"errors), 1 = business error, 2 = usage/IO error.\n"
