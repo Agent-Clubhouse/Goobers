@@ -569,6 +569,146 @@ func installADOCredentialProbe(t *testing.T) *[]string {
 	return &consumed
 }
 
+// adoStageCredentialCase is one command run on Azure DevOps with every
+// credentialed capability delivered, and the capabilities whose values its ADO
+// providers must be built from, in order.
+type adoStageCredentialCase struct {
+	command string
+	args    []string
+	inputs  map[string]string
+	seed    func(t *testing.T, root, runID string)
+	want    []string
+}
+
+var (
+	credPRWrite     = string(capability.GitHubPRWrite)
+	credIssuesWrite = string(capability.GitHubIssuesWrite)
+	credIssuesRead  = string(capability.GitHubIssuesRead)
+)
+
+// adoStageCredentialCases is the table TestADOStageProvidersConsumeTheDeclaredCapability
+// runs; TestADOStageConsumesDeclaredCapabilityCredential counts each row as
+// its command's credential evidence.
+var adoStageCredentialCases = []adoStageCredentialCase{
+	{command: "backlog-health", inputs: map[string]string{"trustLabel": providers.LabelApproved}, want: []string{credIssuesRead}},
+	{command: "check-issue-staleness", inputs: map[string]string{"pullNumber": "77", "head": "goobers/implementation/run"}, want: []string{credPRWrite, credIssuesWrite}},
+	{command: "gather-pr-context", want: []string{credPRWrite}},
+	{command: "gather-review-threads", seed: seedADOGatherReviewThreadsRun, want: []string{credPRWrite}},
+	{command: "gather-sibling-context", inputs: map[string]string{"selectedNumber": "77"}, want: []string{credPRWrite}},
+	{command: "merge-pr", inputs: map[string]string{"pullNumber": "77", "verdict": "pass"}, want: []string{string(capability.ADOPRComplete)}},
+	{command: "merge-queue-poll", inputs: map[string]string{"pullNumber": "77"}, want: []string{string(capability.ADOPRComplete)}},
+	{command: "open-pr", want: []string{string(capability.ProviderPRWrite)}},
+	{command: "post-merge", inputs: map[string]string{"pullNumber": "77"}, want: []string{credPRWrite, credIssuesWrite}},
+	{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{credPRWrite}},
+	{command: "push-remediated", want: []string{credPRWrite}},
+	{command: "rebase-pr", inputs: map[string]string{"selectedNumber": "77", "head": "goobers/pr-remediation/run"}, want: []string{credPRWrite}},
+	// reconcile-branches builds its provider before it refuses Azure DevOps,
+	// so the credential it would use is still the declared one.
+	{command: "reconcile-branches", want: []string{string(capability.GitHubBranchDelete)}},
+	{command: "reconcile-post-merge", want: []string{credPRWrite, credIssuesWrite}},
+	{command: "record-merge-refusal", inputs: map[string]string{"selectedNumber": "77", "selectedHeadSha": "head-sha", "reason": "blocked"}, want: []string{credPRWrite}},
+	{command: "remediation-checkpoint", inputs: map[string]string{"selectedNumber": "77"}, want: []string{credPRWrite}},
+	{command: "resolve-review-threads", seed: seedADOResolveReviewThreadsRun, want: []string{credPRWrite}},
+}
+
+// adoCredentialEvidence names, for each provider-dispatched command not in
+// adoStageCredentialCases, the test that runs it on Azure DevOps and asserts
+// its ADO provider is built from the declared capability's delivered value
+// (through assertADOStageDispatch, deliveredCapabilityOf or
+// routeADOStageProvider).
+var adoCredentialEvidence = map[string]func(*testing.T){
+	"apply-verdict":            TestRunApplyVerdictADOPassPublishesStatusAndDecisionPass,
+	"backlog-assignment":       TestBacklogAssignmentDispatchesFromCommand,
+	"backlog-dedupe":           TestBacklogDedupeCommandDispatchesToADO,
+	"backlog-query":            TestBacklogQueryDispatchesFromCommand,
+	"elect-lander":             TestElectLanderDispatchesADOAndElectsCandidate,
+	"gather-ci-failures":       TestGatherCIFailuresOnADOWritesPolicyEvidence,
+	"gather-implement-context": TestGatherImplementContextCommandDispatchesToADO,
+	"issue-close-out":          TestIssueCloseOutDispatchesFromCommand,
+	"pr-claim":                 TestPRClaimDispatchesFromCommand,
+	"publish-batch":            TestPublishBatchDispatchesFromCommand,
+	"report-pr-status":         TestReportPRStatusDispatchesFromCommand,
+	"select-source":            TestSelectSourceDispatchesFromCommand,
+	"set-milestone":            TestSetMilestoneDispatchesFromCommand,
+	"validate-plan":            TestValidatePlanDispatchesFromCommand,
+}
+
+// adoCredentialExempt lists the commands whose manifest row names a github:*
+// capability but which build no Azure DevOps provider, so no ADO credential
+// is consumed at all.
+var adoCredentialExempt = map[string]string{
+	"file-issues":           "Refuses every non-GitHub provider before building one (TestFileIssuesRefusesNonGitHubProviders).",
+	"gather-issue-context":  "Uses the broad remediation provider factory, whose Azure DevOps arm is an error, so no ADO provider is built.",
+	"pr-comment-watch":      "Refuses the ado repository provider before building one.",
+	"respond-to-findings":   "Uses the broad remediation provider factory, whose Azure DevOps arm is an error, so no ADO provider is built.",
+	"security-alerts-query": "Refuses every non-GitHub provider before building one (TestSecurityAlertsQueryRefusesNonGitHubProviders).",
+	"telemetry-query":       "Its only provider access is the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
+	"update-behind-pr":      "Reports not-applicable on Azure DevOps and routes to full remediation without building a provider (ADO-N15).",
+}
+
+// manifestNamesGitHubCapability reports whether command's manifest row names
+// any github:* capability, required or optional.
+func manifestNamesGitHubCapability(t *testing.T, command string) bool {
+	t.Helper()
+	entry, ok := providerstage.Lookup(command)
+	if !ok {
+		t.Fatalf("%q is not a manifest command", command)
+	}
+	for _, use := range entry.Capabilities {
+		if strings.HasPrefix(string(use.Capability), "github:") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestADOStageConsumesDeclaredCapabilityCredential is the completeness gate
+// for the rebinding rule's credential half (docs/design/ado-parity-dsl-2-0.md
+// §3.1, ADO-N24): every manifest row that names a github:* capability must
+// either carry a test asserting that its Azure DevOps path builds each
+// provider from the declared capability's GOOBERS_CRED_ value and no other,
+// or document why it builds no ADO provider. A new provider-dispatched
+// command cannot land without one of the two.
+func TestADOStageConsumesDeclaredCapabilityCredential(t *testing.T) {
+	tabled := make(map[string]bool, len(adoStageCredentialCases))
+	for _, tc := range adoStageCredentialCases {
+		tabled[tc.command] = true
+	}
+	for _, command := range providerstage.Commands() {
+		if !manifestNamesGitHubCapability(t, command) {
+			continue
+		}
+		evidence, hasEvidence := adoCredentialEvidence[command]
+		reason, exempt := adoCredentialExempt[command]
+		sources := 0
+		for _, present := range []bool{tabled[command], hasEvidence, exempt} {
+			if present {
+				sources++
+			}
+		}
+		switch {
+		case sources == 0:
+			t.Errorf("%q names a github:* capability but has no Azure DevOps credential conformance evidence; add it to adoStageCredentialCases or adoCredentialEvidence, or document it in adoCredentialExempt", command)
+		case sources > 1:
+			t.Errorf("%q is listed more than once across adoStageCredentialCases, adoCredentialEvidence and adoCredentialExempt", command)
+		case hasEvidence && evidence == nil:
+			t.Errorf("%q has nil Azure DevOps credential evidence", command)
+		case exempt && strings.TrimSpace(reason) == "":
+			t.Errorf("%q has an undocumented Azure DevOps credential exemption", command)
+		}
+	}
+	for command := range adoCredentialEvidence {
+		if _, ok := providerstage.Lookup(command); !ok || !manifestNamesGitHubCapability(t, command) {
+			t.Errorf("adoCredentialEvidence lists %q, which is not a manifest command naming a github:* capability", command)
+		}
+	}
+	for command := range adoCredentialExempt {
+		if _, ok := providerstage.Lookup(command); !ok || !manifestNamesGitHubCapability(t, command) {
+			t.Errorf("adoCredentialExempt lists %q, which is not a manifest command naming a github:* capability", command)
+		}
+	}
+}
+
 // TestADOStageProvidersConsumeTheDeclaredCapability covers the commands whose
 // Azure DevOps path builds its own providers (merge review and PR
 // remediation). Each must build every ADO provider from the delivered value of
@@ -585,31 +725,7 @@ func installADOCredentialProbe(t *testing.T) *[]string {
 // provider, so their end-to-end ADO tests (TestRunApplyVerdictADO*,
 // TestElectLanderDispatchesADOAndElectsCandidate) assert the same rule.
 func TestADOStageProvidersConsumeTheDeclaredCapability(t *testing.T) {
-	prWrite, issuesWrite, issuesRead := string(capability.GitHubPRWrite), string(capability.GitHubIssuesWrite), string(capability.GitHubIssuesRead)
-	for _, tc := range []struct {
-		command string
-		args    []string
-		inputs  map[string]string
-		seed    func(t *testing.T, root, runID string)
-		want    []string
-	}{
-		{command: "backlog-health", inputs: map[string]string{"trustLabel": providers.LabelApproved}, want: []string{issuesRead}},
-		{command: "check-issue-staleness", inputs: map[string]string{"pullNumber": "77", "head": "goobers/implementation/run"}, want: []string{prWrite, issuesWrite}},
-		{command: "gather-pr-context", want: []string{prWrite}},
-		{command: "gather-review-threads", seed: seedADOGatherReviewThreadsRun, want: []string{prWrite}},
-		{command: "gather-sibling-context", inputs: map[string]string{"selectedNumber": "77"}, want: []string{prWrite}},
-		{command: "merge-pr", inputs: map[string]string{"pullNumber": "77", "verdict": "pass"}, want: []string{string(capability.ADOPRComplete)}},
-		{command: "merge-queue-poll", inputs: map[string]string{"pullNumber": "77"}, want: []string{string(capability.ADOPRComplete)}},
-		{command: "open-pr", want: []string{string(capability.ProviderPRWrite)}},
-		{command: "post-merge", inputs: map[string]string{"pullNumber": "77"}, want: []string{prWrite, issuesWrite}},
-		{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{prWrite}},
-		{command: "push-remediated", want: []string{prWrite}},
-		{command: "rebase-pr", inputs: map[string]string{"selectedNumber": "77", "head": "goobers/pr-remediation/run"}, want: []string{prWrite}},
-		{command: "reconcile-post-merge", want: []string{prWrite, issuesWrite}},
-		{command: "record-merge-refusal", inputs: map[string]string{"selectedNumber": "77", "selectedHeadSha": "head-sha", "reason": "blocked"}, want: []string{prWrite}},
-		{command: "remediation-checkpoint", inputs: map[string]string{"selectedNumber": "77"}, want: []string{prWrite}},
-		{command: "resolve-review-threads", seed: seedADOResolveReviewThreadsRun, want: []string{prWrite}},
-	} {
+	for _, tc := range adoStageCredentialCases {
 		t.Run(tc.command, func(t *testing.T) {
 			root := initDemo(t)
 			runID := "ado-credential-" + tc.command
