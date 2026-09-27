@@ -135,6 +135,9 @@ func Export(configDir, name string, now time.Time) (apiv1.GaggleBundle, error) {
 		Gaggle: gaggle, Workflows: workflows, Goobers: goobers,
 		Files: files, Repositories: repositories,
 	}
+	if err := validateStructuredCredentials(definition); err != nil {
+		return apiv1.GaggleBundle{}, fmt.Errorf("%w: %w", ErrInvalidBundle, err)
+	}
 	if path, value := firstAbsoluteString(definition); path != "" {
 		return apiv1.GaggleBundle{}, fmt.Errorf("%w: %s contains non-portable absolute path %q", ErrInvalidBundle, path, value)
 	}
@@ -408,6 +411,11 @@ func validateSanitizedDefinition(definition apiv1.GaggleBundleDefinition) error 
 			return errors.New("repository connection references are forbidden")
 		}
 	}
+	for _, sibling := range gaggle.Spec.Siblings {
+		if sibling.Project.ConnectionRef != "" {
+			return errors.New("sibling repository connection references are forbidden")
+		}
+	}
 	for _, workflow := range definition.Workflows {
 		if err := validatePortableMetadata("workflow "+workflow.Name, workflow.Labels, workflow.Annotations); err != nil {
 			return err
@@ -431,6 +439,9 @@ func validateSanitizedDefinition(definition apiv1.GaggleBundleDefinition) error 
 		if len(goober.Spec.HarnessOptions) != 0 {
 			return fmt.Errorf("goober %q contains opaque harnessOptions", goober.Name)
 		}
+	}
+	if err := validateStructuredCredentials(definition); err != nil {
+		return err
 	}
 	if path, value := firstAbsoluteString(definition); path != "" {
 		return fmt.Errorf("%s contains non-portable absolute path %q", path, value)
@@ -619,24 +630,54 @@ func validateCompanionContent(path string, data []byte) error {
 			return invalidCompanionFile(path, "contains binary control bytes")
 		}
 	}
-	if !bytes.Equal(companionSecretPatterns.Scrub(data), data) {
-		return invalidCompanionFile(path, "contains a provider credential or private key")
+	if reason := credentialContentReason(data); reason != "" {
+		return invalidCompanionFile(path, reason)
 	}
 	text := string(data)
-	for _, match := range credentialAssignment.FindAllStringSubmatch(text, -1) {
-		if value := firstNonEmptyCapture(match); value != "" && !portablePlaceholder(value) {
-			return invalidCompanionFile(path, "contains a credential-like assignment")
-		}
-	}
-	for _, match := range credentialURI.FindAllStringSubmatch(text, -1) {
-		if len(match) > 1 && !portablePlaceholder(match[1]) {
-			return invalidCompanionFile(path, "contains a credential-bearing URI")
-		}
-	}
 	if windowsLocalPath.MatchString(text) || unixLocalPath.MatchString(text) {
 		return invalidCompanionFile(path, "contains a host-local absolute path")
 	}
 	return nil
+}
+
+func validateStructuredCredentials(definition apiv1.GaggleBundleDefinition) error {
+	structured := struct {
+		Gaggle       apiv1.Gaggle     `json:"gaggle"`
+		Workflows    []apiv1.Workflow `json:"workflows"`
+		Goobers      []apiv1.Goober   `json:"goobers"`
+		Repositories []apiv1.RepoRef  `json:"repositories"`
+	}{
+		Gaggle:       definition.Gaggle,
+		Workflows:    definition.Workflows,
+		Goobers:      definition.Goobers,
+		Repositories: definition.Repositories,
+	}
+	data, err := json.Marshal(structured)
+	if err != nil {
+		return fmt.Errorf("encode structured definition for credential validation: %w", err)
+	}
+	if reason := credentialContentReason(data); reason != "" {
+		return fmt.Errorf("structured definition %s", reason)
+	}
+	return nil
+}
+
+func credentialContentReason(data []byte) string {
+	if !bytes.Equal(companionSecretPatterns.Scrub(data), data) {
+		return "contains a provider credential or private key"
+	}
+	text := string(data)
+	for _, match := range credentialAssignment.FindAllStringSubmatch(text, -1) {
+		if value := firstNonEmptyCapture(match); value != "" && !portablePlaceholder(value) {
+			return "contains a credential-like assignment"
+		}
+	}
+	for _, match := range credentialURI.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 && !portablePlaceholder(match[1]) {
+			return "contains a credential-bearing URI"
+		}
+	}
+	return ""
 }
 
 func firstNonEmptyCapture(match []string) string {

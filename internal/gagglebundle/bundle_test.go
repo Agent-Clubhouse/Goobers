@@ -133,6 +133,75 @@ func TestCompanionContentPolicyAllowsPortableTemplate(t *testing.T) {
 	}
 }
 
+func TestStructuredCredentialPolicyRejectsExportAndImport(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("a", 36)
+	tests := []struct {
+		name           string
+		mutateSource   func(*testing.T, instance.Layout)
+		mutateImported func(*apiv1.GaggleBundle)
+	}{
+		{
+			name: "deterministic command",
+			mutateSource: func(t *testing.T, source instance.Layout) {
+				mutateSourceWorkflow(t, source, func(workflow *apiv1.Workflow) {
+					workflow.Spec.Tasks[0].Run.Command = []string{"tool", "--token=" + secret}
+				})
+			},
+			mutateImported: func(bundle *apiv1.GaggleBundle) {
+				bundle.Definition.Workflows[0].Spec.Tasks[0].Run.Command = []string{"tool", "--token=" + secret}
+			},
+		},
+		{
+			name: "deterministic script",
+			mutateSource: func(t *testing.T, source instance.Layout) {
+				mutateSourceWorkflow(t, source, func(workflow *apiv1.Workflow) {
+					workflow.Spec.Tasks[0].Run.Command = nil
+					workflow.Spec.Tasks[0].Run.Script = "TOKEN=" + secret
+				})
+			},
+			mutateImported: func(bundle *apiv1.GaggleBundle) {
+				bundle.Definition.Workflows[0].Spec.Tasks[0].Run.Command = nil
+				bundle.Definition.Workflows[0].Spec.Tasks[0].Run.Script = "TOKEN=" + secret
+			},
+		},
+		{
+			name: "MCP arguments",
+			mutateSource: func(t *testing.T, source instance.Layout) {
+				mutateSourceGoober(t, source, func(goober *apiv1.Goober) {
+					goober.Spec.MCPServers = []apiv1.MCPServer{{Name: "leaked", Command: "tool", Args: []string{"--token=" + secret}}}
+				})
+			},
+			mutateImported: func(bundle *apiv1.GaggleBundle) {
+				bundle.Definition.Goobers[0].Spec.MCPServers = []apiv1.MCPServer{{Name: "leaked", Command: "tool", Args: []string{"--token=" + secret}}}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := newBundleSource(t)
+			safe, err := Export(source.ConfigDir(), "example", time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutateSource(t, source)
+			if _, err := Export(source.ConfigDir(), "example", time.Now()); !errors.Is(err, ErrInvalidBundle) {
+				t.Fatalf("Export error = %v, want ErrInvalidBundle", err)
+			} else if strings.Contains(err.Error(), secret) {
+				t.Fatal("export error echoed rejected credential")
+			}
+
+			crafted := cloneBundle(t, safe)
+			test.mutateImported(&crafted)
+			refreshBundleDigest(t, &crafted)
+			if err := Validate(crafted); !errors.Is(err, ErrInvalidBundle) {
+				t.Fatalf("Validate error = %v, want ErrInvalidBundle", err)
+			} else if strings.Contains(err.Error(), secret) {
+				t.Fatal("import validation error echoed rejected credential")
+			}
+		})
+	}
+}
+
 func TestCompanionLimitsRejectExportAndImport(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -325,6 +394,18 @@ func TestPrepareImportValidatesBeforeMutation(t *testing.T) {
 			name: "omitted repository authorization requirement",
 			mutate: func(bundle *apiv1.GaggleBundle) {
 				bundle.Definition.Repositories = nil
+				refreshBundleDigest(t, bundle)
+			},
+			want: ErrInvalidBundle,
+		},
+		{
+			name: "sibling repository connection reference",
+			mutate: func(bundle *apiv1.GaggleBundle) {
+				sibling := apiv1.GaggleSibling{Label: "sibling"}
+				sibling.Project = bundle.Definition.Gaggle.Spec.Project
+				sibling.Project.Name = "sibling-repo"
+				sibling.Project.ConnectionRef = "source-credential"
+				bundle.Definition.Gaggle.Spec.Siblings = append(bundle.Definition.Gaggle.Spec.Siblings, sibling)
 				refreshBundleDigest(t, bundle)
 			},
 			want: ErrInvalidBundle,
@@ -523,6 +604,40 @@ func newEmptyBundleDestination(t *testing.T, source instance.Layout) instance.La
 		t.Fatalf("empty destination invalid: %v report=%+v", err, report)
 	}
 	return layout
+}
+
+func mutateSourceWorkflow(t *testing.T, source instance.Layout, mutate func(*apiv1.Workflow)) {
+	t.Helper()
+	path := filepath.Join(source.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
+	var workflow apiv1.Workflow
+	if err := yaml.UnmarshalStrict(readFile(t, path), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&workflow)
+	data, err := yaml.Marshal(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mutateSourceGoober(t *testing.T, source instance.Layout, mutate func(*apiv1.Goober)) {
+	t.Helper()
+	path := filepath.Join(source.ConfigDir(), "gaggles", "example", "goobers", "coder", "goober.yaml")
+	var goober apiv1.Goober
+	if err := yaml.UnmarshalStrict(readFile(t, path), &goober); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&goober)
+	data, err := yaml.Marshal(goober)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func readFile(t *testing.T, path string) []byte {
