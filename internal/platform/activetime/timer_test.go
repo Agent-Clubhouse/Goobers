@@ -21,6 +21,9 @@ func TestWithTimeoutPreservesDeadlineAndCause(t *testing.T) {
 	if !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
 		t.Fatalf("cause = %v, want deadline exceeded", context.Cause(ctx))
 	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("Err = %v, want deadline exceeded", ctx.Err())
+	}
 }
 
 func TestWithTimeoutPreservesExplicitCancellation(t *testing.T) {
@@ -29,5 +32,8 @@ func TestWithTimeoutPreservesExplicitCancellation(t *testing.T) {
 	<-ctx.Done()
 	if !errors.Is(context.Cause(ctx), context.Canceled) {
 		t.Fatalf("cause = %v, want canceled", context.Cause(ctx))
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("Err = %v, want canceled", ctx.Err())
 	}
 }
