@@ -638,6 +638,9 @@ type adoPolicyEvaluation struct {
 			ID          string `json:"id"`
 			DisplayName string `json:"displayName"`
 		} `json:"type"`
+		// Settings names the build definition or status a CI policy
+		// requires; gather-ci-failures uses it to label its evidence.
+		Settings adoPolicyEvaluationSettings `json:"settings"`
 	} `json:"configuration"`
 	// Context carries type-specific evaluation detail. For a build policy,
 	// BuildID names the build that was evaluated.

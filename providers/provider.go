@@ -199,6 +199,20 @@ type PullRequestReviewThreadMutator interface {
 	ResolvePullRequestReviewThread(context.Context, RepositoryRef, string) error
 }
 
+// PullRequestCIFailureReader returns a pull request's failing CI evidence
+// when the provider scopes CI to the pull request rather than to a commit
+// (Azure DevOps policy evaluations). HeadSHA is the source head the provider
+// reports for the pull request when the evidence was read.
+type PullRequestCIFailureReader interface {
+	PullRequestCIFailures(ctx context.Context, repo RepositoryRef, pullID string) (PullRequestCIFailures, error)
+}
+
+// PullRequestCIFailures is pull-request-scoped CI failure evidence.
+type PullRequestCIFailures struct {
+	HeadSHA  string
+	Failures []CIFailureDetail
+}
+
 // PullRequestBranchUpdater incorporates a pull request's base branch through
 // the provider API. It is separate from RepoProvider because Azure DevOps does
 // not yet expose the V0 GitHub update-branch primitive.

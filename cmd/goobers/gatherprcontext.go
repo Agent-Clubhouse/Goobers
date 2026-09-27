@@ -202,7 +202,10 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 	if err != nil {
 		return gatherPRContextAdapter{}, err
 	}
-	return gatherPRContextAdapter{gitAuth: gitAuth, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
+	return gatherPRContextAdapter{features: gatherPRContextFeatures{checkState: true}, gitAuth: gitAuth, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
+		resolveCheck: func(ctx context.Context, pr *providers.PullRequestSummary) error {
+			return resolveADOSelectedCheckState(ctx, provider, repo, pr)
+		},
 		prepare: func(_ context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 			eligible := make([]providers.PullRequestSummary, 0, len(prs))
 			for _, pr := range prs {
@@ -229,6 +232,25 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 			return nil
 		},
 	}, nil
+}
+
+// resolveADOSelectedCheckState marks the selected pull request's CI failing
+// when gather-ci-failures would report at least one rejected or broken
+// blocking build, status or unclassified policy for it (ADO-N22). It reads
+// the same evidence that stage reads, so hasFailingCI and the gathered checks
+// cannot disagree: a rejected comment-resolution or work-item-linking policy
+// is a human wait, not CI, and leaves the list's pending state in place.
+// ListPullRequests cannot report CI state, so without this read hasFailingCI
+// would always be false on Azure DevOps.
+func resolveADOSelectedCheckState(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) error {
+	evidence, err := provider.PullRequestCIFailures(ctx, repo, strconv.Itoa(pr.Number))
+	if err != nil {
+		return err
+	}
+	if len(evidence.Failures) > 0 {
+		pr.CheckState = providers.CheckStateFailing
+	}
+	return nil
 }
 
 // adoSelfAttributedThreadComments lists a PR's thread comments with their
