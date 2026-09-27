@@ -214,6 +214,71 @@ func TestValidationArgsKeepsStrictWithoutAllowlist(t *testing.T) {
 	}
 }
 
+func TestValidationEnvAddsKnownTargetWithoutChangingRepositoryRemotes(t *testing.T) {
+	root := t.TempDir()
+	initGitRepository(t, root)
+	addGitRemote(t, root, "https://github.com/fork-owner/Goobers.git")
+
+	env, err := gitWorktreeEnv(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := testgit.Command("-C", root, "config", "--get-regexp", `^remote\..*\.url$`)
+	cmd.Env = validationEnv(testgit.IsolateEnvironment(env), checkedInTrees[0])
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.ReplaceAll(string(output), "\r\n", "\n")
+	for _, want := range []string{
+		"remote.origin.url https://github.com/fork-owner/Goobers.git",
+		"remote.goobers-validation-target.url https://github.com/Agent-Clubhouse/Goobers.git",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("git remotes = %q, want %q", got, want)
+		}
+	}
+
+	persistedCmd := testgit.Command("-C", root, "config", "--get-regexp", `^remote\..*\.url$`)
+	persisted, err := persistedCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), "goobers-validation-target") {
+		t.Fatalf("validation target remote was persisted: %q", persisted)
+	}
+}
+
+func TestValidationEnvPreservesExistingGitConfigSlots(t *testing.T) {
+	root := t.TempDir()
+	initGitRepository(t, root)
+
+	env, err := gitWorktreeEnv(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = append(env,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0="+root,
+	)
+	cmd := testgit.Command("-C", root, "config", "--get-regexp", `^(safe\.directory|remote\.goobers-validation-target\.url)$`)
+	cmd.Env = validationEnv(testgit.IsolateEnvironment(env), checkedInTrees[0])
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.ReplaceAll(string(output), "\r\n", "\n")
+	for _, want := range []string{
+		"safe.directory " + root,
+		"remote.goobers-validation-target.url https://github.com/Agent-Clubhouse/Goobers.git",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("git config = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestRunRejectsMissingValidator(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{filepath.Join(t.TempDir(), "missing")}, &stdout, &stderr); code != 2 {
@@ -259,6 +324,11 @@ func TestValidatorHelperProcess(t *testing.T) {
 	if warning := os.Getenv("GO_CONFIGVALIDATE_WARNING"); warning != "" {
 		_, _ = fmt.Fprintln(os.Stdout, warning)
 	} else if filepath.Base(target) == "reference-workflows" {
+		cmd := testgit.Command("config", "--get", "remote.goobers-validation-target.url")
+		if output, err := cmd.Output(); err != nil || strings.TrimSpace(string(output)) != checkedInTrees[0].targetRemote {
+			_, _ = fmt.Fprintf(os.Stderr, "reference-workflows target remote missing: output=%q err=%v\n", output, err)
+			os.Exit(2)
+		}
 		for _, warning := range checkedInTrees[0].allowedWarnings {
 			_, _ = fmt.Fprintln(os.Stdout, warning)
 		}

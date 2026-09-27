@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/workflowsafety"
@@ -66,6 +67,7 @@ type checkedInTree struct {
 	path            string
 	sourceTree      bool
 	strict          bool
+	targetRemote    string
 	allowedWarnings []string
 }
 
@@ -74,6 +76,10 @@ var checkedInTrees = []checkedInTree{
 		path:       "reference-workflows",
 		sourceTree: true,
 		strict:     true,
+		// The repository-owned inventory establishes that this self-hosting
+		// tree targets the canonical project even when this source is cloned
+		// from a fork that has no upstream remote configured.
+		targetRemote: "https://github.com/Agent-Clubhouse/Goobers.git",
 		allowedWarnings: []string{
 			docsUpdaterInertWarning,
 			preReviewExperimentInertWarning,
@@ -154,7 +160,7 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 		commandArgs := append(append([]string(nil), validator.prefixArgs...), args...)
 		cmd := exec.Command(validator.path, commandArgs...)
 		cmd.Dir = root
-		cmd.Env = gitEnv
+		cmd.Env = validationEnv(gitEnv, tree)
 		var commandStdout, commandStderr bytes.Buffer
 		if len(tree.allowedWarnings) > 0 {
 			cmd.Stdout = &commandStdout
@@ -191,6 +197,37 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 		return 1
 	}
 	return 0
+}
+
+func validationEnv(gitEnv []string, tree checkedInTree) []string {
+	if tree.targetRemote == "" {
+		return gitEnv
+	}
+	count := 0
+	for _, entry := range gitEnv {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(name, "GIT_CONFIG_COUNT") {
+			if parsed, err := strconv.Atoi(value); err == nil && parsed > count {
+				count = parsed
+			}
+			continue
+		}
+		const keyPrefix = "GIT_CONFIG_KEY_"
+		if len(name) <= len(keyPrefix) || !strings.EqualFold(name[:len(keyPrefix)], keyPrefix) {
+			continue
+		}
+		if slot, err := strconv.Atoi(name[len(keyPrefix):]); err == nil && slot >= count {
+			count = slot + 1
+		}
+	}
+	return append(append([]string(nil), gitEnv...),
+		"GIT_CONFIG_COUNT="+strconv.Itoa(count+1),
+		"GIT_CONFIG_KEY_"+strconv.Itoa(count)+"=remote.goobers-validation-target.url",
+		"GIT_CONFIG_VALUE_"+strconv.Itoa(count)+"="+tree.targetRemote,
+	)
 }
 
 func gitWorktreeEnv(root string) ([]string, error) {
