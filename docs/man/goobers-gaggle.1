@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS GAGGLE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers gaggle \- export or import sanitized portable gaggle bundles
+.SH SYNOPSIS
+\fBgoobers gaggle\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers gaggle export|import [flags]
+
+A team or bounded workforce: its project/backlog connections, goobers, and workflows.
+
+Export or import a sanitized, portable gaggle bundle. Bundles contain only
+declarative gaggle, workflow, stage, Goober, instruction, skill, repository
+reference, and provenance data. Structured credentials and runtime state are
+excluded; companion text with recognized credential or local-path shapes is refused.
+.fi
+.SH EXAMPLES
+.nf
+goobers gaggle export example
+goobers gaggle import --name copied-example example.bundle.json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

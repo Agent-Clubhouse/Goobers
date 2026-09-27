@@ -83,6 +83,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service (experimental; superseded) |
 | [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets (experimental; superseded) |
 | [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state (experimental; superseded) |
+| [`goobers gaggle`](#goobers-gaggle) | export or import sanitized portable gaggle bundles |
+| [`goobers gaggle export`](#goobers-gaggle-export) | export a sanitized portable gaggle bundle |
+| [`goobers gaggle import`](#goobers-gaggle-import) | atomically create a gaggle from a validated bundle |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
@@ -2023,6 +2026,66 @@ Private key and bearer credential material are never printed.
 ~~~console
 $ goobers fleet status
 $ goobers fleet status --json
+~~~
+
+## `goobers gaggle`
+
+export or import sanitized portable gaggle bundles
+
+~~~text
+Usage: goobers gaggle export|import [flags]
+
+A team or bounded workforce: its project/backlog connections, goobers, and workflows.
+
+Export or import a sanitized, portable gaggle bundle. Bundles contain only
+declarative gaggle, workflow, stage, Goober, instruction, skill, repository
+reference, and provenance data. Structured credentials and runtime state are
+excluded; companion text with recognized credential or local-path shapes is refused.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gaggle export example
+$ goobers gaggle import --name copied-example example.bundle.json
+~~~
+
+## `goobers gaggle export`
+
+export a sanitized portable gaggle bundle
+
+~~~text
+Usage: goobers gaggle export [--output <file>] <gaggle> [path]
+
+Validate the source configuration and write a deterministic JSON bundle.
+The digest is stable for unchanged sanitized definitions; exportedAt is not
+part of the digest. Without --output, write the bundle to stdout.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gaggle export example
+$ goobers gaggle export --output example.bundle.json example ./instance
+~~~
+
+## `goobers gaggle import`
+
+atomically create a gaggle from a validated bundle
+
+~~~text
+Usage: goobers gaggle import --name <destination-name> <bundle-file> [path]
+
+Validate the complete bundle and destination repository authorizations before
+atomically creating a new gaggle. The source remains unchanged. Any schema,
+digest, reference, name-conflict, authorization, validation, or write failure
+leaves the destination configuration unchanged.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers gaggle import --name copied-example example.bundle.json ./instance
 ~~~
 
 ## `goobers gate-removal-guard`
