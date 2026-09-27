@@ -27,7 +27,8 @@ func startServiceHealthWithStores(ctx context.Context, root string, identity *da
 	records := make(chan telemetry.DiagnosticRecord, 1)
 	go func() {
 		defer close(records)
-		sink := func(event journal.Event) { records <- serviceHealthDiagnosticRecord(event) }
+		includeHostIdentity := setup.Config.Telemetry.EffectiveCollectionProfile().IncludesHostIdentity()
+		sink := func(event journal.Event) { records <- serviceHealthDiagnosticRecord(event, includeHostIdentity) }
 		emitServiceHealth(ctx, root, identity, setup.InstanceLog, inventory, serviceHealthInterval, nil, nil, sink)
 	}()
 	go func() {
@@ -68,7 +69,7 @@ func buildDiagnosticExporterWithStores(ctx context.Context, setup *schedulerSetu
 		}
 	}
 	if azureEnabled {
-		if err := configureAzureMonitor(ctx, &cfg, *azure, setup.SharedRegistry, stores); err != nil {
+		if err := configureAzureMonitor(ctx, &cfg, *azure, setup.Config.Telemetry.EffectiveCollectionProfile(), setup.SharedRegistry, stores); err != nil {
 			return nil, err
 		}
 	}
@@ -79,9 +80,13 @@ func buildDiagnosticExporterWithStores(ctx context.Context, setup *schedulerSetu
 // journal wholesale. Paths, raw errors, credentials and arbitrary payloads never
 // enter this record. Machine/account identity is exported only with explicit
 // diagnostic endpoint consent, never through the journal collector.
-func serviceHealthDiagnosticRecord(event journal.Event) telemetry.DiagnosticRecord {
+func serviceHealthDiagnosticRecord(event journal.Event, includeHostIdentity bool) telemetry.DiagnosticRecord {
 	attrs := make(map[string]any)
-	for _, key := range []string{"schemaVersion", "observedAt", "instanceId", "instanceDisplayName", "identityProblem", "machineName", "accountName", "windowCoverage", "daemonStartedAt", "processUptimeSeconds", "observedUncleanRestarts", "observationWindowStart"} {
+	keys := []string{"schemaVersion", "observedAt", "instanceId", "instanceDisplayName", "identityProblem", "windowCoverage", "daemonStartedAt", "processUptimeSeconds", "observedUncleanRestarts", "observationWindowStart"}
+	if includeHostIdentity {
+		keys = append(keys, "machineName", "accountName")
+	}
+	for _, key := range keys {
 		if value, ok := event.Runner[key]; ok {
 			attrs[key] = value
 		}

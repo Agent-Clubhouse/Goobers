@@ -7,10 +7,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/microsoft/ApplicationInsights-Go/appinsights/contracts"
 	"go.opentelemetry.io/otel/attribute"
 	collectorlogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/grpc"
@@ -54,6 +56,52 @@ func TestParseAzureMonitorConnectionString(t *testing.T) {
 	}
 }
 
+func TestAzureMonitorHostIdentityRequiresExplicitConsent(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Skip("hostname unavailable")
+	}
+	standard, err := newAzureMonitorClient(connectionString, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if standard.defaultTags[contracts.DeviceId] != "" || standard.defaultTags[contracts.CloudRoleInstance] != "" {
+		t.Fatal("standard profile exposed hostname")
+	}
+	diagnostic, err := newAzureMonitorClient(connectionString, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diagnostic.defaultTags[contracts.DeviceId] != hostname || diagnostic.defaultTags[contracts.CloudRoleInstance] != hostname {
+		t.Fatal("diagnostic profile omitted consented hostname")
+	}
+}
+
+func TestAzureMonitorSignalsAreSelectedIndependently(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	exporters, err := spanExporters(context.Background(), Config{AzureMonitorConnectionString: connectionString})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exporters) != 0 {
+		t.Fatalf("disabled Azure traces created %d exporters", len(exporters))
+	}
+	client, err := New(context.Background(), Config{
+		AzureMonitorConnectionString: connectionString,
+		JournalLogsOnly:              true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.JournalLogsEnabled() {
+		t.Fatal("disabled Azure journals created a journal pipeline")
+	}
+	if err := client.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAzureMonitorExporterSendsCorrelatedScrubbedSpan(t *testing.T) {
 	payloads := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +131,7 @@ func TestAzureMonitorExporterSendsCorrelatedScrubbedSpan(t *testing.T) {
 	client, err := New(context.Background(), Config{
 		ServiceName: "goobers", ServiceVersion: "v0.5.0-test", BuildCommit: "abc123",
 		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + server.URL,
+		AzureMonitorTraces:           true,
 		AzureMonitorHTTPClient:       server.Client(), Scrubber: scrubber,
 	})
 	if err != nil {
@@ -127,6 +176,7 @@ func TestAzureMonitorExporterSendsCommittedJournalLog(t *testing.T) {
 	client, err := New(context.Background(), Config{
 		ServiceName: "goobers", ServiceVersion: "v0.5.0-test", BuildCommit: "journal-build",
 		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + server.URL,
+		AzureMonitorJournalLogs:      true,
 		AzureMonitorHTTPClient:       server.Client(), JournalLogs: true, JournalLogsOnly: true,
 		Scrubber:           scrubber,
 		ResourceAttributes: []attribute.KeyValue{attribute.String("goobers.instance.id", "durable-instance")},
@@ -217,6 +267,7 @@ func TestJournalLogsFanOutToOTLPAndAzureMonitor(t *testing.T) {
 	client, err := New(context.Background(), Config{
 		Exporter: ExporterOTLP, OTLPEndpoint: listener.Addr().String(), OTLPInsecure: true,
 		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + azureServer.URL,
+		AzureMonitorJournalLogs:      true,
 		AzureMonitorHTTPClient:       azureServer.Client(), JournalLogs: true, JournalLogsOnly: true,
 	})
 	if err != nil {
@@ -303,7 +354,7 @@ func TestAzureMonitorRejectionIsVisibleInLogExportStats(t *testing.T) {
 	}
 
 	journalClient, err := New(context.Background(), Config{
-		AzureMonitorConnectionString: connectionString, AzureMonitorHTTPClient: server.Client(),
+		AzureMonitorConnectionString: connectionString, AzureMonitorHTTPClient: server.Client(), AzureMonitorJournalLogs: true,
 		JournalLogs: true, JournalLogsOnly: true,
 	})
 	if err != nil {

@@ -1,0 +1,50 @@
+{
+  "schema": "goobers.dev/telemetry/collection-profiles/v1",
+  "defaultProfile": "standard",
+  "profileField": "goobers.telemetry.profile",
+  "structuredPayloadEncoding": "json",
+  "correlationFields": [
+    "goobers.instance.id",
+    "goobers.gaggle",
+    "goobers.workflow",
+    "goobers.run.id",
+    "trace_id",
+    "span_id"
+  ],
+  "consentGatedIdentity": [
+    "machineName",
+    "accountName",
+    "ai.device.id",
+    "ai.cloud.roleInstance"
+  ],
+  "profiles": [
+    {
+      "name": "health",
+      "health": true,
+      "journal": false,
+      "traces": false,
+      "hostAccountIdentity": false
+    },
+    {
+      "name": "journal",
+      "health": true,
+      "journal": true,
+      "traces": false,
+      "hostAccountIdentity": false
+    },
+    {
+      "name": "standard",
+      "health": true,
+      "journal": true,
+      "traces": true,
+      "hostAccountIdentity": false
+    },
+    {
+      "name": "diagnostic",
+      "health": true,
+      "journal": true,
+      "traces": true,
+      "hostAccountIdentity": true
+    }
+  ]
+}

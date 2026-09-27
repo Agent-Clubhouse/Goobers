@@ -61,6 +61,13 @@ type Config struct {
 	// AzureMonitorHTTPClient is injectable for transport tests. Production
 	// callers leave it nil and use the standard HTTP client.
 	AzureMonitorHTTPClient *http.Client
+	// AzureMonitorTraces and AzureMonitorJournalLogs independently select the
+	// direct destination's signal set. They do not alter explicit OTLP routing.
+	AzureMonitorTraces      bool
+	AzureMonitorJournalLogs bool
+	// AzureMonitorHostIdentity permits hostname context tags. It must only be
+	// set by an explicit diagnostic collection profile.
+	AzureMonitorHostIdentity bool
 	// JournalLogs enables live export of committed journal events as OTLP Logs.
 	// It has no effect without ExporterOTLP and an explicit endpoint.
 	JournalLogs bool
@@ -502,21 +509,27 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		exporters = append(exporters, cfg.SpanExporter)
 	}
 	if cfg.Exporter == "" && len(exporters) != 0 {
-		if cfg.AzureMonitorConnectionString == "" {
+		if cfg.AzureMonitorConnectionString == "" || !cfg.AzureMonitorTraces {
 			return exporters, nil
 		}
-		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient)
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
 		if err != nil {
 			return exporters, err
 		}
 		return append(exporters, azure), nil
 	}
-	if cfg.Exporter == "" && cfg.AzureMonitorConnectionString != "" {
-		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient)
+	if cfg.Exporter == "" && cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
 		if err != nil {
 			return nil, err
 		}
 		return append(exporters, azure), nil
+	}
+	if cfg.Exporter == "" && cfg.AzureMonitorConnectionString != "" {
+		// A health/journal profile intentionally has no remote span exporter.
+		// Do not fall through to the developer stdout default merely because the
+		// same destination is used by diagnostics or journal logs.
+		return exporters, nil
 	}
 
 	var exporter sdktrace.SpanExporter
@@ -570,8 +583,8 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		return nil, fmt.Errorf("unsupported telemetry exporter %q", cfg.Exporter)
 	}
 	exporters = append(exporters, exporter)
-	if cfg.AzureMonitorConnectionString != "" {
-		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient)
+	if cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
 		if err != nil {
 			return exporters, err
 		}

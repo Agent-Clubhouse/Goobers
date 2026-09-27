@@ -59,7 +59,7 @@ func startCommandJournalTelemetry(l instance.Layout, stderr io.Writer) func() {
 		}
 		return noop
 	}
-	azureEnabled := cfg.Telemetry.AzureMonitor != nil && cfg.Telemetry.AzureMonitor.Enabled()
+	azureEnabled := cfg.Telemetry.AzureMonitor != nil && cfg.Telemetry.AzureMonitor.Enabled() && cfg.Telemetry.EffectiveCollectionProfile().IncludesJournal()
 	otlpEnabled := cfg.Telemetry.OTLP != nil && cfg.Telemetry.OTLP.JournalLogsEnabled()
 	if !cfg.TelemetryEnabled() || (!otlpEnabled && !azureEnabled) {
 		return noop
@@ -84,7 +84,7 @@ func startCommandJournalTelemetry(l instance.Layout, stderr io.Writer) func() {
 		}
 	}
 	if cfg.Telemetry.AzureMonitor != nil {
-		if err := configureAzureMonitor(initialize, &export, *cfg.Telemetry.AzureMonitor, registry, stores); err != nil {
+		if err := configureAzureMonitor(initialize, &export, *cfg.Telemetry.AzureMonitor, cfg.Telemetry.EffectiveCollectionProfile(), registry, stores); err != nil {
 			cancel()
 			pf(stderr, "warning: journal telemetry unavailable: %v\n", err)
 			return noop

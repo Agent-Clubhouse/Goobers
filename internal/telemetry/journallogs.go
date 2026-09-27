@@ -119,7 +119,7 @@ type JournalExportStats struct {
 var _ journal.CommittedEventSink = (*Client)(nil)
 
 func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *resource.Resource) error {
-	if !cfg.JournalLogs {
+	if !cfg.JournalLogs && !cfg.AzureMonitorJournalLogs {
 		return nil
 	}
 	exporters := make([]sdklog.Exporter, 0, 2)
@@ -132,8 +132,8 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 			exporters = append(exporters, exporter)
 		}
 	}
-	if cfg.AzureMonitorConnectionString != "" {
-		exporter, err := newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient)
+	if cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorJournalLogs {
+		exporter, err := newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
 		if err != nil {
 			if len(exporters) == 0 {
 				return err

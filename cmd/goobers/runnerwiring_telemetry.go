@@ -53,7 +53,7 @@ func buildTelemetryClient(
 		}
 	}
 	if telemetryConfig.AzureMonitor != nil {
-		if err := configureAzureMonitor(ctx, &cfg, *telemetryConfig.AzureMonitor, registry, stores); err != nil {
+		if err := configureAzureMonitor(ctx, &cfg, *telemetryConfig.AzureMonitor, telemetryConfig.EffectiveCollectionProfile(), registry, stores); err != nil {
 			return nil, err
 		}
 	}
@@ -69,6 +69,7 @@ func configureAzureMonitor(
 	ctx context.Context,
 	cfg *telemetry.Config,
 	azure instance.AzureMonitorConfig,
+	profile instance.TelemetryCollectionProfile,
 	registry *journal.RegistryScrubber,
 	stores credentials.StoreResolver,
 ) error {
@@ -85,9 +86,11 @@ func configureAzureMonitor(
 		registry.Register([]byte(connectionString))
 	}
 	cfg.AzureMonitorConnectionString = connectionString
-	// One explicit Azure destination carries the standard live-forward signal
-	// set: traces plus committed journals and whitelisted diagnostics.
-	cfg.JournalLogs = true
+	cfg.AzureMonitorTraces = profile.IncludesTraces()
+	cfg.AzureMonitorJournalLogs = profile.IncludesJournal()
+	cfg.AzureMonitorHostIdentity = profile.IncludesHostIdentity()
+	cfg.ResourceAttributes = append(cfg.ResourceAttributes,
+		attribute.String("goobers.telemetry.profile", string(profile)))
 	return nil
 }
 

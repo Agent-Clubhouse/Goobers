@@ -106,7 +106,7 @@ func NewDiagnosticExporter(cfg Config) (*DiagnosticExporter, error) {
 	var azure *azureMonitorLogExporter
 	if cfg.AzureMonitorConnectionString != "" {
 		var err error
-		azure, err = newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient)
+		azure, err = newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity)
 		if err != nil {
 			if conn != nil {
 				_ = conn.Close()
@@ -117,9 +117,13 @@ func NewDiagnosticExporter(cfg Config) (*DiagnosticExporter, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &DiagnosticExporter{queue: make(chan diagnosticBatch, DiagnosticQueueLimit), done: make(chan struct{}), cancel: cancel, conn: conn, client: client, azure: azure, scrubber: cfg.Scrubber}
 	d.ctx = metadata.NewOutgoingContext(ctx, metadata.New(cfg.OTLPHeaders))
-	d.resource = &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
+	resourceAttributes := []*commonpb.KeyValue{
 		d.field("service.name", "goobers"), d.field("service.version", cfg.ServiceVersion), d.field("goobers.build.commit", cfg.BuildCommit), d.field("goobers.telemetry.stream", "diagnostics"),
-	}}
+	}
+	for _, attr := range cfg.ResourceAttributes {
+		resourceAttributes = append(resourceAttributes, d.field(string(attr.Key), attr.Value.AsInterface()))
+	}
+	d.resource = &resourcepb.Resource{Attributes: resourceAttributes}
 	go d.run()
 	return d, nil
 }
