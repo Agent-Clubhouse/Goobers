@@ -306,6 +306,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 	var commitErr error
 	var policyErr error
 	var optedOutReason string
+	var adoCleanup *mergeBranchCleanup
 	lockErr := ledger.MergeLock(ctx, mergeLock, func(ctx context.Context) error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
@@ -456,7 +457,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		landResult, mergeErr = lander.Land(ctx, dispatcher, mergepolicy.Request{
 			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
 			CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
-			DeleteSourceBranch: adoDeleteSourceBranchGranted(isADO),
+			DeleteSourceBranch: adoCompletionDeletesSourceBranch(ctx, stageProvider, repo, poll.HeadBranch, isADO, &adoCleanup),
 		})
 		return nil
 	})
@@ -501,19 +502,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		return 1
 	}
 
-	var cleanup *mergeBranchCleanup
-	// ADO deletes the source branch through completionOptions.deleteSourceBranch;
-	// its PollPullRequest does not populate HeadRepository, so the shared
-	// provider-neutral cleanup path remains limited to GitHub and Gitea.
-	if !isADO && landResult.Outcome == mergepolicy.OutcomeMerged {
-		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
-		cleanup = &outcome
-		if outcome.Error != "" {
-			pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
-		} else {
-			pf(stdout, "branch cleanup %s (%s)\n", outcome.Status, outcome.HeadBranch)
-		}
-	}
+	cleanup := reportMergedBranchCleanup(ctx, root, isADO, adoCleanup, landResult, poll, prProvider, pullNumber, stdout, stderr)
 	if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, landResult, nil, cleanup); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -719,6 +708,81 @@ func adoDeleteSourceBranchGranted(isADO bool) bool {
 	}
 	_, err := providerToken(capability.GitHubBranchDelete)
 	return err == nil
+}
+
+// stackedPullRequestLister is the read adoCompletionDeletesSourceBranch needs.
+type stackedPullRequestLister interface {
+	ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
+}
+
+// adoCompletionDeletesSourceBranch decides the ADO landing call's
+// deleteSourceBranch flag. It is set only when the stage holds the delete
+// grant (adoDeleteSourceBranchGranted) and no other open pull request targets
+// headBranch: deleting the base of a stacked pull request breaks it, so the
+// stacked exception cleanupMergedBranch applies on GitHub and Gitea
+// (PRL-072) applies here too. When the flag is withheld for a stacked branch,
+// or because the check could not run, *skipped records it for the result
+// file. The check reflects the pull requests open when the landing is armed.
+func adoCompletionDeletesSourceBranch(ctx context.Context, lister stackedPullRequestLister, repo providers.RepositoryRef, headBranch string, isADO bool, skipped **mergeBranchCleanup) bool {
+	if !adoDeleteSourceBranchGranted(isADO) {
+		return false
+	}
+	withheld := func(status, reason string) bool {
+		*skipped = &mergeBranchCleanup{Status: status, HeadBranch: headBranch, Error: reason}
+		return false
+	}
+	if strings.TrimSpace(headBranch) == "" {
+		return withheld("failed", "pull request did not report a head branch; source branch kept")
+	}
+	stacked, err := lister.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository:     repo,
+		Base:           headBranch,
+		SkipCheckState: true,
+	})
+	if err != nil {
+		return withheld("failed", fmt.Sprintf("check stacked pull requests for %q: %v; source branch kept", headBranch, err))
+	}
+	if len(stacked) > 0 {
+		return withheld("skipped-stacked", "")
+	}
+	return true
+}
+
+// reportMergedBranchCleanup performs and reports post-landing branch cleanup.
+// ADO deletes the source branch through completionOptions.deleteSourceBranch
+// and its PollPullRequest does not populate HeadRepository, so the shared
+// provider-neutral cleanup path stays limited to GitHub and Gitea; on ADO only
+// a deletion adoCompletionDeletesSourceBranch withheld (adoCleanup) is
+// reported.
+func reportMergedBranchCleanup(
+	ctx context.Context,
+	root string,
+	isADO bool,
+	adoCleanup *mergeBranchCleanup,
+	landResult mergepolicy.Result,
+	poll providers.PullRequestPollResult,
+	prProvider mergeProvider,
+	pullNumber string,
+	stdout, stderr io.Writer,
+) *mergeBranchCleanup {
+	if isADO {
+		if adoCleanup != nil && adoCleanup.Error != "" {
+			pf(stderr, "warning: pr #%s landing keeps its source branch: %s\n", pullNumber, adoCleanup.Error)
+		} else if adoCleanup != nil {
+			pf(stdout, "branch cleanup %s (%s)\n", adoCleanup.Status, adoCleanup.HeadBranch)
+		}
+		return adoCleanup
+	}
+	if landResult.Outcome != mergepolicy.OutcomeMerged {
+		return nil
+	}
+	outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
+	if outcome.Error != "" {
+		pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
+	} else {
+		pf(stdout, "branch cleanup %s (%s)\n", outcome.Status, outcome.HeadBranch)
+	}
+	return &outcome
 }
 
 type mergeBranchCleanup struct {
