@@ -36,6 +36,10 @@ const adoPRThreadCommentType = "text"
 // no PR-comment transport otherwise, so this is the keystone of the ADO
 // remediation handoff.
 //
+// The thread is opened with status "closed", not "active": an active thread
+// would count against a comment-resolution branch policy and hold the pull
+// request until someone resolved Goobers' own bookkeeping comment.
+//
 // The returned Comment.ID is the composite "<pullID>/<threadId>/<commentId>" so
 // UpdatePullRequestThreadComment can address the exact comment later with no
 // extra state — the ADO update endpoint needs all three, unlike GitHub's

@@ -564,19 +564,20 @@ and a workflow whose labels match nothing claims nothing without an error —
 check `gh label list --repo <owner>/<name>` and set the trust label from
 section 5 before the first cycle.
 
-### Current single-repo residue
+### Per-gaggle repository scoping
 
-Three built-in behaviors still resolve through the first `repos` entry
-regardless of gaggle. Account for them when a second repository shares the
-instance:
+The daemon's background behaviors follow each gaggle's own `project`
+repository and that repository's own `repos` entry and credential:
 
-- The open-PR poll behind `readiness.maxOpenPRs` counts the first repository's
-  open PRs only, so the cap throttles every gaggle by that one count.
-- Terminal branch-delete cleanup targets the first repository only; branches
-  left by terminal runs against another repository are not deleted.
+- The open-PR poll behind `readiness.maxOpenPRs` runs once per repository, so
+  each gaggle's cap counts its own repository's open PRs.
+- Terminal branch-delete cleanup deletes a run's branch in its gaggle's
+  project repository, with that repository's credential.
 - The backlog counter that sizes scheduled work queries the gaggle's own
-  repository but resolves its credential from the first `repos` entry; a
-  second repository readable only by a different token can fail to count.
+  repository and resolves that repository's credential.
+
+A gaggle with no `project` still falls back to the first `repos` entry, as a
+single-repository instance always has.
 
 ### Worked example: a documentation gaggle for the same repository
 

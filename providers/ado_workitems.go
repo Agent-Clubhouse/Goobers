@@ -713,8 +713,9 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	return updated, nil
 }
 
-// ClaimWorkItem atomically adds the visible claim tag and an internal owner tag.
-// The /rev test makes concurrent read-modify-write attempts settle on one winner.
+// ClaimWorkItem posts a claim breadcrumb comment, settles concurrent claimers
+// on the earliest own-identity breadcrumb (adoClaimWinner), and then adds the
+// visible claim tag in a /rev-tested patch.
 func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
 	result, err := p.claimWorkItem(ctx, req)
 	p.recordClaimAttempt(ctx, req, "claim", claimAttemptOutcome(result.Claimed), result.ClaimedBy, err)
@@ -739,8 +740,8 @@ func (p *ADOProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemReques
 		return ClaimResult{}, err
 	}
 
-	// Fast path: an existing claim (breadcrumb, or a legacy owner tag) settles
-	// this without writing anything. The winner may be us on a re-claim.
+	// Fast path: an existing own-identity claim breadcrumb settles this
+	// without writing anything. The winner may be us on a re-claim.
 	winner, claimed, err := p.adoClaimWinner(ctx, req.Repository, req.ID)
 	if err != nil {
 		return ClaimResult{}, err
@@ -1095,10 +1096,10 @@ func adoLabels(tags string) []string {
 
 // adoVisibleLabels drops legacy goobers:claim-run:* tags from the labels a
 // work item reports. The claim-tag fallback that read and cleared these tags
-// was removed in #1990, but items claimed before that change may still carry
-// a stale tag until it is naturally overwritten or the item is next released;
-// hiding the prefix keeps that garbage from surfacing as a routing label in
-// the meantime. Safe to drop this filter once no pre-#1990 tags remain.
+// was removed in #1990, and nothing clears them now: an item claimed before
+// that change keeps its stale tag until someone removes it by hand. Hiding
+// the prefix keeps that garbage from surfacing as a routing label, so the
+// filter stays.
 func adoVisibleLabels(labels []string) []string {
 	visible := make([]string, 0, len(labels))
 	for _, label := range labels {

@@ -160,7 +160,7 @@ Select scopes for the operations you enable, not full access:
 | Push branches and create pull requests | Code (read and write), `vso.code_write` |
 | Query the Boards backlog and validate its project | Work Items (read), `vso.work` |
 | Seed tasks, update tags, and mutate work items | Work Items (read and write), `vso.work_write` |
-| Publish PR status evidence | Code (status), `vso.code_status` |
+| Publish PR status evidence | Code (status), `vso.code_status`, plus Code (read), `vso.code`: publishing first reads the pull request's iterations |
 
 These are Azure DevOps scopes, not Goobers stage capabilities. The identity also
 needs access to the target organization, repository and Boards project; scopes
@@ -183,7 +183,7 @@ permissions on each target repository:
 | Contribute | Push run branches |
 | Create branch | Create run branches |
 | Contribute to pull requests | Open, comment on and complete pull requests |
-| Force push (rewrite history and delete branches) | Push a rewritten run branch after remediation, and delete merged run branches. Recommended. |
+| Force push (rewrite history and delete branches) | Rewrite or delete branches the identity did not create, such as a human-opened pull request's source branch during remediation. Azure DevOps already lets a branch's creator force-push and delete its own run branches. Recommended. |
 
 Do not grant it these permissions. Goobers never bypasses branch policy, and its
 identity should not be able to:
@@ -207,7 +207,7 @@ these reads against the configured organization only. It changes nothing.
 | --- | --- |
 | Identity | Prints the id and UPN of the identity the credential authenticates as |
 | Contribute, Contribute to pull requests, Create branch | `ADOACCESS001` error when the identity lacks one. `validate` exits 1. |
-| Force push | `ADOACCESS002` warning when the identity lacks it |
+| Force push | `ADOACCESS002` warning when the identity lacks it at repository level. Only branches the identity did not create are affected. |
 | Either bypass permission | `ADOACCESS003` warning when the identity holds it |
 | Branch policies | `ADOACCESS004` warning for each enabled, blocking policy with a Prefix scope over `refs/heads/` |
 | A read that fails | `ADOACCESS005` warning. The result is unknown, not missing. |
@@ -375,11 +375,13 @@ the instance config surface documented above.
   credential failure. ADO's Git server rejects the raw `git push` itself —
   `! [remote rejected] ... (TF402455: Pushes to this branch are not
   permitted...)`, with `GitRefUpdateRejectedByPolicyException` in the
-  underlying exception text — and `push-branch` and the remediation/rebase
-  force-pushes classify that rejection as `provider_branch_policy_protected`
-  (the provider error class in telemetry), never `auth_failed`, and never
-  retry it as a ref race or with a fresh credential: the fix is to land the
-  change through a pull request, not to re-run with a different token.
+  underlying exception text. `push-branch` reports the protected branch on
+  stderr and does not retry it as a ref race; it writes no result file, so
+  it records no error code. The remediation/rebase force-pushes classify the
+  same rejection as `provider_branch_policy_protected` (the provider error
+  class in telemetry). Neither treats it as `auth_failed` or retries with a
+  fresh credential: the fix is to land the change through a pull request,
+  not to re-run with a different token.
 
 ### MSA passthrough header
 
@@ -420,21 +422,26 @@ a release breadcrumb and removes the tag. When a run ends without a close-out
 stage (for example a `no-work` outcome or an abort), the daemon's terminal
 cleanup performs the same release against the gaggle's backlog project before
 it frees the local claim, and it never ends a claim that a newer run now
-holds. Claims taken for a work item on a `goobers:ready` selector do not
-record a ready time on Azure DevOps, because Goobers does not yet read tag
-history from work-item updates.
+holds. Claims taken for a work item on a `goobers:ready` selector record
+the ready time Goobers reads from the work item's update history, the time
+the `goobers:ready` tag was added (ADO-N21). An item whose history cannot be
+read in full (past Azure DevOps' 10,000-revision cap) is released and
+skipped.
 
 Only breadcrumbs written by the identity the credential authenticates as
 count: the comment's `createdBy.id` must equal the `authenticatedUser.id` that
 `connectionData` returns for the credential. A breadcrumb posted by any other
 identity is ignored, and a claim fails if that identity cannot be read.
 
-> **Rotating the identity orphans its claims.** Claims are matched by identity
-> GUID, not by display name. If you switch the credential to a different
-> identity (for example from a PAT to a service principal), the new identity
-> does not see claims the old one made, and it cannot release them. Let
-> in-flight runs finish, or release their claims, before you rotate. Remove any
-> leftover `goobers:claimed` tags by hand afterwards.
+> **Rotating the identity can claim items twice.** Claims are matched by
+> identity GUID, not by display name. If you switch the credential to a
+> different identity (for example from a PAT to a service principal), the new
+> identity ignores the old one's breadcrumbs, so it treats those items as
+> unclaimed and may claim them again while an old-identity run still holds
+> them. A release by the new identity removes the `goobers:claimed` tag but
+> not the old breadcrumb. Let in-flight runs finish, or release their claims,
+> before you rotate. Remove any leftover `goobers:claimed` tags by hand
+> afterwards.
 
 Repository and pull-request parity remains incremental. Keep human branch
 policies authoritative for ADO repo operations that the provider does not yet

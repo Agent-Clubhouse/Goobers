@@ -65,8 +65,8 @@ ADO stage branches build the provider through the shared stage seam
 capability the stage declared, in the daemon-stated `GOOBERS_REPO_AUTH_SCHEME`
 (ADO-N18, `docs/design/ado-parity-dsl-2-0.md` §3.1): `github:pr:write` or
 `provider:pr:write` for pull-request work, `github:issues:*` for work items, `repo:push` for
-Git, `github:pr:merge` (or a declared `ado:pr:complete`) for completion. Every auth kind — PAT, Azure CLI, workload identity,
-managed identity — resolves in the daemon; no stage reads `repos[].auth`. Work-item
+Git, `github:pr:merge` (or a declared `ado:pr:complete`) for completion. Every auth kind —
+PAT, Azure CLI, workload identity, managed identity — resolves in the daemon; no stage reads `repos[].auth`. Work-item
 reads/writes route through the backlog project reference
 (`backlogRepoRefForStage`) so a split code-repo/backlog-project instance addresses the
 right project; PR-scoped calls use the routed code repo.
@@ -126,7 +126,9 @@ claim or end another run's claim by posting the marker text. `ListComments` maps
 `createdBy.id` into `Comment.AuthorID` for this. If the identity cannot be read, the claim
 or release fails; it never falls back to an unfiltered scan. Breadcrumbs written under a
 previous identity stop counting when the credential's identity changes. The legacy
-owner-tag fallback (#1990) is unchanged.
+owner-tag fallback was removed in #1990: a stray `goobers:claim-run:*` tag confers no
+claim, nothing clears it, and `adoVisibleLabels` keeps hiding it until someone removes it
+by hand.
 
 Every thread `PostPullRequestThreadComment` opens is posted with `status: "closed"`, not
 ADO's default `active`. All Goobers-authored threads are informational (verdict json,
@@ -257,8 +259,8 @@ through the work-item API.
 first — `ado:pr:complete` when the stage declared it, otherwise `github:pr:merge`
 (`ado-parity-dsl-2-0.md` §3.3) — and only then is the completion-authorized provider
 constructed from that credential and wrapped in the `Dispatcher`. `queue-watch` resolves the
-same way. Both names stay in the config-generation revocation fence. Landing then flows through the **same shared code path** both
-providers use:
+same way. Both names stay in the config-generation revocation fence. Landing then flows
+through the **same shared code path** both providers use:
 
 | Contract step | ADO behavior |
 |---|---|
@@ -542,8 +544,9 @@ for. These rules come from `docs/design/ado-parity-dsl-2-0.md` §5 (ADO-N9).
   If a direct completion is refused because a required policy is not met (403
   `GitPullRequestUpdateRejectedByPolicyException`), `merge-pr` fails the stage
   with `provider_policy_not_met`. It does not retry, and it does not report the
-  refusal as an authentication failure. The pull request waits for a human, or
-  for its policies to pass.
+  refusal as an authentication failure. The stage fails (the refusal is not
+  recorded as a business refusal), and the pull request stays unlanded until a
+  later pass finds its policies met.
 - **No approval.** Goobers never casts a reviewer vote other than 0 ("no
   vote"). ADO lets an identity vote on its own pull request, and on some
   configurations that vote would count toward a required-reviewer policy.

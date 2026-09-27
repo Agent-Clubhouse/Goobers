@@ -620,8 +620,12 @@ type PullRequestPollRequest struct {
 	// (which would loop forever on a policy only a human can satisfy). The
 	// values are provider-interpreted opaque identities: the Azure DevOps
 	// provider matches them against branch-policy *configuration* ids. Empty
-	// means every required blocking policy gates (fail-closed default); loops
-	// with human-only policies declare them here as configuration.
+	// means every required blocking build, status or unclassified policy
+	// gates (fail-closed default). Azure DevOps minimum- and required-reviewer
+	// policies never gate CI, listed or not: an unmet one is reported as a
+	// human wait. Comment-resolution and work-item-linking policies never gate
+	// CI either. Loops with other human-only policies declare them here as
+	// configuration.
 	HumanPolicyConfigurationIDs []string `json:"humanPolicyConfigurationIds,omitempty"`
 }
 

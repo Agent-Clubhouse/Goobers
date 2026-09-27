@@ -65,19 +65,28 @@ On Azure DevOps an undeclared capability means no credential, as on GitHub:
 each stage builds its provider from the credential of the capability it
 declared, and from no other.
 
-Two `ado:*` names are honoured when declared, and neither is required:
-`ado:pr:complete` (completion uses its credential instead of
-`github:pr:merge`'s) and `ado:pr:status`. The other four have no consumer in
-DSL 2.0. They stay valid, so configurations that followed older docs keep
-loading, but `goobers validate` reports `CAP006` and names what authorizes the
-operation:
+Two `ado:*` names have a consumer, and neither is required: `ado:pr:complete`
+on `merge-pr` and `merge-queue-poll` (completion uses its credential instead of
+`github:pr:merge`'s), and `ado:work-items:write` on `open-pr` (it links the
+pull request to its work item natively). `ado:pr:status` is accepted on
+`report-pr-status` but harmless: nothing reads it, and `github:pr:write`
+authorizes the status. The remaining names have no consumer on a built-in
+stage in DSL 2.0. They stay valid, so configurations that followed older docs
+keep loading, but `goobers validate` reports `CAP006` and names what
+authorizes the operation:
 
 | Declared | What authorizes the operation |
 | --- | --- |
 | `ado:code:read` | No capability: repository reads use the repository credential. |
 | `ado:pr:comment` | `github:pr:write` |
 | `ado:pr:write` | `github:pr:write` |
-| `ado:work-items:write` | `github:issues:write` (`github:issues:read` for reads). Not reported on `open-pr`, which consumes it to link the pull request to its work item. |
+| `ado:work-items:write` | `github:issues:write` authorizes work-item updates on the backlog provider (`github:issues:read` for reads). Not reported on `open-pr`, which consumes it to link the pull request to its work item; `github:issues:write` does not replace it there. |
+
+The advice is provider-neutral: it names the capability that authorizes the
+operation on whichever provider the stage routes to. A task that runs its own
+command (a custom deterministic command or an agentic stage) receives the
+credential its declared capabilities select, so `CAP006` on such a task says
+only that no built-in stage consumes the name; keep it if the command uses it.
 
 `CAP006` is strict-neutral: `goobers validate --strict` prints it but does not
 fail on it. It covers DSL 2.0 workflows and the goobers their agentic tasks and

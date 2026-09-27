@@ -149,6 +149,10 @@ behaviour changes.
   not reported. The link is best-effort (#5925): without a delivered credential
   the pull request still opens with a text reference and a note, and the Azure
   DevOps repository credential backs the capability when a stage declares it.
+  The advice is provider-neutral, since the warning fires on every provider. A task
+  that runs its own command (a custom deterministic command or an agentic stage)
+  receives the credential its declared capabilities select, so its warning only says
+  no built-in stage consumes the name, instead of advising a rename.
 - **Compile-matrix gate** (§8.1). Every shipped workflow is validated against an ADO
   gaggle.
 
@@ -442,13 +446,13 @@ when it fails, the entry is reported as plain pending rather than failing the po
 | # | Item | Change | Evidence |
 |---|---|---|---|
 | ADO-N10 | Claim breadcrumb authorship | Count only breadcrumbs whose `createdBy.id` equals the authenticated id. The code comment admits that authorship is not checked (`providers/ado_workitems.go:686`). | probe §5 |
-| ADO-N21 | `goobers:ready` / label transitions (#5554) | Implement `ListWorkItemLabelTransitionsForItem` (`ado_workitems.go:799`) from `GET workitems/{id}/updates`: `System.Tags` old/new diffs timed by each update's `System.ChangedDate` new value (an update's `revisedDate` is when that revision was superseded, not when it was made), paged with `$top`/`$skip`, and a fail-closed error past the 10,000-revision cap. | features §3.9 |
+| ADO-N21 | `goobers:ready` / label transitions (#5554) | Implement `ADOProvider.ListWorkItemLabelTransitionsForItem` (`providers/ado_labeltransitions.go`) from `GET workitems/{id}/updates`: `System.Tags` old/new diffs timed by each update's `System.ChangedDate` new value (an update's `revisedDate` is when that revision was superseded, not when it was made), paged with `$top`/`$skip`, and a fail-closed error past the 10,000-revision cap. | features §3.9 |
 | ADO-N32 | Blockers | Today any `Dependency-Reverse` link excludes the item, even when the predecessor is closed (`adoBlockedByCount`, `ado_workitems.go:965`). Implement the blocker checker: hydrate the predecessors and count one as blocking unless its category is Completed, Removed or Resolved (see below). Declare `backlog.blockers` (#2061). | probe §4 |
 | ADO-N33 | Hydration | Replace the per-item N+1 GET with `POST _apis/wit/workitemsbatch` (200 ids per call, `$expand: Relations`) | F12 |
 | ADO-N27 | Custom processes | Key states by type **name**, never `referenceName`. This is already true for `adoWorkItemStateCategories` (`ado_workitems.go:1106-1141`); keep it and test it against an inherited process. When no type is given, the create type is the project's **Requirement-category default type** from `workitemtypecategories`, not a hard-coded `"Issue"` (`ado_workitems.go:278`). Also send `multilineFieldsFormat` and `format=markdown`. | probe §4 |
 | ADO-N11 | Tags | Tags are case-insensitive on read. A `,` or `;` is already refused on write (`validateADOTags`, `ado_workitems.go:1058`). Humans' comma tags are split by the server, which is harmless. | probe §4 |
 | ADO-N28 | Idempotent close | Before closing, re-read the state category. Already Completed is success. Resolved (reached through `transitionWorkItems` or `Fixes #`) moves on to Completed, or stops at Resolved for a type without a Completed transition. A 412 on `test /rev` re-reads and retries. | F9 |
-| ADO-N29 | Terminal claim cleanup (#5648) | Release the provider claim epoch and the `goobers:claimed` tag on terminal runs for ADO. Today this is skipped for non-GitHub providers (`cmd/goobers/terminalclaimmarker.go:82-84`). | #5648 |
+| ADO-N29 | Terminal claim cleanup (#5648) | Release the provider claim epoch and the `goobers:claimed` tag on terminal runs for ADO. Before this item it was skipped for non-GitHub providers; the ADO release is `buildTerminalADOClaimMarkerRelease` (`cmd/goobers/terminalclaimmarker.go`). | #5648 |
 | ADO-N38 | Legacy claim tag (#1990) | Stop reading and clearing `goobers:claim-run:<b64>` | #1990 |
 
 **Resolved counts as done for blockers.** In stock Agile, a Bug is `Resolved` in the

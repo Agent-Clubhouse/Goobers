@@ -62,8 +62,10 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	// premise — a cheap API-only update-branch call ahead of full
 	// remediation — has no ADO analog, so it is reported not-applicable
 	// before any provider token or client is constructed, exactly as the
-	// derived-capabilities override above declares (no pr.update-branch,
-	// no pr.compare needed on ADO for this stage).
+	// derived-capabilities override for this stage declares
+	// (stageProviderCapabilityOverrides in
+	// internal/instance/providercapability.go: no pr.update-branch, no
+	// pr.compare needed on ADO for this stage).
 	if repo.Provider == providers.ProviderADO {
 		return writeUpdateBehindNotApplicable(stdout, stderr, repo.Provider)
 	}
