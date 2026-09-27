@@ -17,7 +17,6 @@ _goobers_completion()
             'connect:connect an instance to your own GitHub repository'
             'examples:browse canonical workflow examples embedded in the binary'
             'scaffold:scaffold a goober, workflow, or gaggle'
-            'gaggle:export or import sanitized portable gaggle bundles'
             'validate:validate an instance or checked-in config source tree'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'down:request a live daemon'\''s graceful drain-shutdown from a separate terminal'
