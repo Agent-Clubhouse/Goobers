@@ -220,7 +220,8 @@ repository the stage routes to:
 | `github:pr:write`, `provider:pr:write` | pull-request reads, threads, labels and statuses |
 | `github:issues:read`, `github:issues:write`, `github:milestones:write` | Azure Boards work items |
 | `repo:push` | `push-branch` and the remediation fetches and force-pushes |
-| `ado:pr:complete` | pull-request completion in `merge-pr` and `merge-queue-poll` |
+| `github:pr:merge` | pull-request completion in `merge-pr` and `merge-queue-poll` |
+| `ado:pr:complete` | the same completion, instead of `github:pr:merge`, when the stage declares it (optional) |
 | `ado:work-items:write` | linking the pull request `open-pr` opened to its work item (a `credentials:` entry; the repository credential does not back it) |
 
 This needs no `runner.envPassthrough` entry for a PAT or an Azure identity
