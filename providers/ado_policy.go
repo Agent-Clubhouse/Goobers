@@ -34,12 +34,23 @@ const (
 	// one is a wait on a human, never CI pending and never a remediation
 	// trigger.
 	adoPolicyReviewer
-	// adoPolicyCommentResolution rejected means unresolved threads.
+	// adoPolicyCommentResolution rejected means unresolved threads. It is
+	// not CI: the threads route to gather-review-threads, so it never gates
+	// the CI state.
 	adoPolicyCommentResolution
 	// adoPolicyWorkItemLinking rejected means the pull request has no linked
-	// work item.
+	// work item. It is not CI: open-pr's workItemRefs carry the link, so it
+	// never gates the CI state.
 	adoPolicyWorkItemLinking
 )
+
+// gatesCI reports whether a policy of this kind drives the CI state. Reviewer,
+// comment-resolution and work-item-linking policies each have their own route
+// (a human, review threads, work-item refs), so none of them is a CI failure
+// that CI remediation could fix.
+func (k adoPolicyKind) gatesCI() bool {
+	return k == adoPolicyCI || k == adoPolicyOther
+}
 
 func adoPolicyKindOf(typeID string) adoPolicyKind {
 	switch strings.ToLower(strings.TrimSpace(typeID)) {
@@ -81,7 +92,7 @@ func adoEvaluationState(ev adoPolicyEvaluation, _ adoPolicyKind) CheckState {
 // adoPolicyGate reduces the gating evaluations of one pull request to a
 // single CI state.
 type adoPolicyGate struct {
-	failing, pending, passing, sawGate, sawReviewer, sawBlocking bool
+	failing, pending, passing, sawGate, sawNonCI, sawBlocking bool
 }
 
 func (g *adoPolicyGate) observe(state CheckState) {
@@ -98,11 +109,11 @@ func (g *adoPolicyGate) observe(state CheckState) {
 
 // result is failing when any gate failed and passing once every gate passed.
 // With no blocking policy at all it passes because the repository has no
-// hosted policy gate. When ADO evaluated only reviewer policies, the branch
-// likewise has no CI to wait for and the reviewer wait is reported per check
-// as AwaitingHuman instead of pinning CI to pending forever. Human-only
-// blocking policies still remain pending because no agent-fixable correctness
-// signal exists.
+// hosted policy gate. When ADO evaluated only non-CI policies (reviewer,
+// comment-resolution, work-item-linking), the branch likewise has no CI to
+// wait for: each is reported per check instead of pinning CI to pending
+// forever. Human-only blocking policies still remain pending because no
+// agent-fixable correctness signal exists.
 func (g adoPolicyGate) result() CheckState {
 	switch {
 	case g.failing:
@@ -111,7 +122,7 @@ func (g adoPolicyGate) result() CheckState {
 		return CheckStatePassing
 	case !g.sawBlocking:
 		return CheckStatePassing
-	case !g.sawGate && g.sawReviewer:
+	case !g.sawGate && g.sawNonCI:
 		return CheckStatePassing
 	default:
 		return CheckStatePending
@@ -120,8 +131,11 @@ func (g adoPolicyGate) result() CheckState {
 
 // reducePolicyEvaluations classifies a pull request's evaluations (design
 // ado-parity-dsl-2-0.md §5.1). Build, status and unclassified policies gate
-// CI unless listed in humanOnly. Reviewer policies never gate CI: an unmet
-// one is reported as AwaitingHuman.
+// CI unless listed in humanOnly. Reviewer, comment-resolution and
+// work-item-linking policies never gate CI: an unmet reviewer policy is
+// reported as AwaitingHuman, and a rejected comment-resolution or
+// work-item-linking policy keeps its per-check reason without making CI
+// fail.
 func (p *ADOProvider) reducePolicyEvaluations(evals []adoPolicyEvaluation, projectName string, humanOnly map[string]bool) (CheckState, []CheckDetail) {
 	checks := make([]CheckDetail, 0, len(evals))
 	var gate adoPolicyGate
@@ -137,8 +151,8 @@ func (p *ADOProvider) reducePolicyEvaluations(evals []adoPolicyEvaluation, proje
 		}
 		checks = append(checks, p.adoPolicyCheckDetail(ev, kind, state, projectName))
 		switch {
-		case kind == adoPolicyReviewer:
-			gate.sawReviewer = true
+		case !kind.gatesCI():
+			gate.sawNonCI = true
 		case humanOnly[ev.Configuration.ID.String()]:
 		default:
 			gate.observe(state)
@@ -163,10 +177,12 @@ func (p *ADOProvider) adoPolicyCheckDetail(ev adoPolicyEvaluation, kind adoPolic
 		}
 	case adoPolicyCommentResolution:
 		if state == CheckStateFailing {
+			detail.State = CheckStatePending
 			detail.Summary = "unresolved comment threads"
 		}
 	case adoPolicyWorkItemLinking:
 		if state == CheckStateFailing {
+			detail.State = CheckStatePending
 			detail.Summary = "no linked work item"
 		}
 	}
