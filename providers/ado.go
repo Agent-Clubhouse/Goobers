@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -669,6 +670,9 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			return nil, fmt.Errorf("send request: %w", err)
 		}
 		p.observeQuota(ctx, resp)
+		if err := p.deliveredCredentialRejected(resp, method, endpoint); err != nil {
+			return nil, err
+		}
 		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateCredential() {
 			_ = resp.Body.Close()
 			authRetried = true
@@ -727,6 +731,22 @@ func (p *ADOProvider) authorizationHeader(ctx context.Context) (header string, b
 		}
 	}
 	return header, credential.Kind == adoCredentialBearer, nil
+}
+
+// deliveredCredentialRejected turns an HTTP 401 answered to a delivered
+// credential into the error the request ends with. A delivered value cannot be
+// refreshed, so the request is not retried: the error keeps the original 401
+// response (status and body, so it still classifies as an authentication
+// failure, including after it crosses a process boundary as text) and adds
+// which delivered credential was rejected. Any other response returns nil.
+func (p *ADOProvider) deliveredCredentialRejected(resp *http.Response, method, endpoint string) error {
+	source, ok := p.credentialSource.(*adoDeliveredCredentialSource)
+	if !ok || resp.StatusCode != http.StatusUnauthorized {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return &adoDeliveredCredentialRejectedError{label: source.label, cause: newProviderResponseError(resp, method, endpoint, body)}
 }
 
 func (p *ADOProvider) invalidateCredential() bool {

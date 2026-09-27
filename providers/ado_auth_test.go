@@ -359,8 +359,10 @@ func TestADOGitAuthEnvironmentRegistersTheBasicHeader(t *testing.T) {
 // TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized pins the
 // stage-side contract for a credential the daemon handed a stage: it is sent
 // in its delivered scheme, a 401 is not answered by resending it, and the
-// stage fails with ErrADODeliveredCredentialRejected naming where the value
-// came from, never the value itself.
+// request fails with ErrADODeliveredCredentialRejected naming where the value
+// came from, never the value itself. The error keeps the 401 response, so it
+// still classifies as an authentication failure (typed and as text), and the
+// rejection does not stick: the next request sends the value again.
 func TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -381,7 +383,7 @@ func TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized(t *testing.T)
 				func(p *ADOProvider) {
 					p.Client = adoHTTPClientFunc(func(req *http.Request) (*http.Response, error) {
 						headers = append(headers, req.Header.Get("Authorization"))
-						return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+						return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("TF400813: not authorized"))}, nil
 					})
 				},
 			)
@@ -392,11 +394,21 @@ func TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized(t *testing.T)
 			if !strings.Contains(err.Error(), "github:pr:write") || !strings.Contains(err.Error(), "expired or been revoked") {
 				t.Fatalf("error %q does not name the capability and the cause", err)
 			}
+			if !strings.Contains(err.Error(), "status 401") || !strings.Contains(err.Error(), "TF400813") {
+				t.Fatalf("error %q dropped the 401 response detail", err)
+			}
 			if strings.Contains(err.Error(), "delivered-secret-value") {
 				t.Fatalf("error leaks the credential: %q", err)
 			}
+			if !IsAuthenticationError(err) || !IsAuthenticationError(errors.New(err.Error())) {
+				t.Fatalf("IsAuthenticationError(%v) = false (typed or as text), want true", err)
+			}
 			if len(headers) != 1 || headers[0] != tc.wantHeader {
 				t.Fatalf("Authorization headers = %q, want exactly one %q", headers, tc.wantHeader)
+			}
+			_, _ = provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "43")
+			if len(headers) != 2 || headers[1] != tc.wantHeader {
+				t.Fatalf("Authorization headers after a second request = %q, want the value sent again", headers)
 			}
 		})
 	}

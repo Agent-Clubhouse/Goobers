@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,6 +151,39 @@ func TestADOStageProviderUsesTheDeclaredCapabilityCredential(t *testing.T) {
 				t.Fatal("no request reached the server")
 			}
 		})
+	}
+}
+
+// TestADOStageProviderRejectedCredentialClassifiesAsAuthFailure pins that an
+// HTTP 401 answered to a stage's delivered ADO credential still reports
+// errorCodeAuthFailed, typed and after crossing a process boundary as text:
+// the scheduler's auth circuit and the read model's provider-auth block key
+// on that code. The 401 detail stays in the message.
+func TestADOStageProviderRejectedCredentialClassifiesAsAuthFailure(t *testing.T) {
+	root, repo := adoConfiguredPATFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "TF400813: the user is not authorized to access this resource", http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+	pointADOStageProviderAt(t, server)
+	t.Setenv(executor.CredentialEnvVar("github:issues:write"), "issues-write-token")
+	t.Setenv(executor.RepoAuthSchemeEnvVar, "basic")
+
+	provider, err := newProviderForStage(root, repo, false)
+	if err != nil {
+		t.Fatalf("build ADO stage provider: %v", err)
+	}
+	_, err = provider.GetWorkItem(context.Background(), repo, "42")
+	if err == nil {
+		t.Fatal("GetWorkItem succeeded against a 401 server")
+	}
+	if !strings.Contains(err.Error(), "TF400813") || strings.Contains(err.Error(), "issues-write-token") {
+		t.Fatalf("error %q must keep the 401 detail and never the credential", err)
+	}
+	for name, candidate := range map[string]error{"typed": err, "text": errors.New(err.Error())} {
+		if code, _, _ := classifyProviderError(candidate); code != errorCodeAuthFailed {
+			t.Fatalf("classifyProviderError(%s) = %q, want %q", name, code, errorCodeAuthFailed)
+		}
 	}
 }
 
