@@ -70,6 +70,26 @@ func TestValidateAcceptsExistingDocsRoots(t *testing.T) {
 	}
 }
 
+func TestValidateChecksDocsRootsInGitHubFork(t *testing.T) {
+	unsetRunContext(t)
+	root := demoWithDocsRoots(t, []string{"docs", "MISSING.md"})
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, root, "remote", "set-url", "origin", "https://github.com/fork-owner/your-repo.git")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (missing docs root in fork checkout); stdout = %q stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `declared docs root "MISSING.md" does not exist`) {
+		t.Fatalf("stdout = %q, want missing docs-root error", stdout)
+	}
+	if strings.Contains(stdout, "WARNING DOCS003") {
+		t.Fatalf("stdout = %q, fork checkout must not produce repository-mismatch warnings", stdout)
+	}
+}
+
 // TestValidateRejectsMissingDocsRoot: a declared root that does not exist in the
 // repository fails validation with a clear message (#1016).
 func TestValidateRejectsMissingDocsRoot(t *testing.T) {
@@ -206,6 +226,30 @@ func TestRemoteURLNamesRepositoryADOForms(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := remoteURLNamesRepository(tc.remote, tc.owner, tc.repo); got != tc.want {
 				t.Errorf("remoteURLNamesRepository(%q, %q, %q) = %v, want %v", tc.remote, tc.owner, tc.repo, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRemotesNameRepositoryGitHubForks(t *testing.T) {
+	tests := []struct {
+		name     string
+		remote   string
+		provider string
+		want     bool
+	}{
+		{"canonical", "https://github.com/your-org/your-repo.git", "github", true},
+		{"https fork", "https://github.com/fork-owner/your-repo.git", "github", true},
+		{"ssh fork", "git@github.com:fork-owner/your-repo.git", "github", true},
+		{"unrelated GitHub repository", "https://github.com/fork-owner/unrelated.git", "github", false},
+		{"same name on unrelated host", "https://git.example.com/fork-owner/your-repo.git", "github", false},
+		{"same name is not a fork for Gitea", "https://github.com/fork-owner/your-repo.git", "gitea", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := remotesNameRepository([]string{tc.remote}, tc.provider, "your-org", "your-repo")
+			if got != tc.want {
+				t.Fatalf("remotesNameRepository(%q, %q) = %v, want %v", tc.remote, tc.provider, got, tc.want)
 			}
 		})
 	}
