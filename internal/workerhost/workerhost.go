@@ -23,6 +23,7 @@ import (
 
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // ErrAbandonedWork reports a drain that expired with activities still in
@@ -45,6 +46,8 @@ type Config struct {
 	HostPort string
 	// Namespace is the Temporal namespace.
 	Namespace string
+	// TLS is the frontend transport security (#5289); nil dials plaintext.
+	TLS *temporaldial.TLS
 	// TaskQueues are the queues this process serves — one Temporal worker per
 	// queue, all registering the identical engine workflow/activity set.
 	TaskQueues []string
@@ -71,7 +74,7 @@ type Host struct {
 
 	// Seams for hermetic tests: dialing Temporal and constructing one
 	// registered worker per queue.
-	dial      func(hostPort, namespace string) (client.Client, error)
+	dial      func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error)
 	newWorker func(c client.Client, taskQueue string, opts worker.Options) managedWorker
 }
 
@@ -138,7 +141,7 @@ func (h *Host) workerOptions() worker.Options {
 // and in-flight activities get up to DrainTimeout to complete. Returns nil on
 // a clean drain and ErrAbandonedWork when work was cut short.
 func (h *Host) Run(ctx context.Context) error {
-	c, err := h.dial(h.cfg.HostPort, h.cfg.Namespace)
+	c, err := h.dial(h.cfg.HostPort, h.cfg.Namespace, h.cfg.TLS)
 	if err != nil {
 		return fmt.Errorf("workerhost: dial temporal %s (namespace %s): %w", h.cfg.HostPort, h.cfg.Namespace, err)
 	}

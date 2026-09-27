@@ -738,7 +738,42 @@
         "hitl": {
           "description": "Human-in-the-loop posture for engine-driven runs (goobers.hitl.v1). Opt-in: when omitted or disabled, an engine run settles at its terminal exactly as it did before the protocol existed and operator interventions on it are refused. When enabled, a resumable terminal is journaled and then held open for the window below so an operator can resolve, rerun, or resume it — which also keeps the run's Temporal workflow, and therefore its scheduler concurrency slot, occupied for that long.",
           "$ref": "#/$defs/engineHITL"
+        },
+        "tls": {
+          "description": "Opt-in TLS or mTLS for the Temporal frontend connection, applied by every dial site: daemon, worker, engine commands, and the doctor preflight. Omitted keeps the plaintext dial a local dev Temporal expects. When set, a frontend that does not speak TLS fails the dial; there is no fallback to plaintext.",
+          "$ref": "#/$defs/engineTLS"
         }
+      }
+    },
+    "engineTLS": {
+      "description": "Client transport security for the Temporal frontend. An empty object enables TLS with the system trust store and the dialed host as the verified name.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "caFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "PEM bundle of the CA or CAs that sign the frontend certificate. When set, it is the only trust anchor and the system store is not consulted."
+        },
+        "certFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "PEM client certificate presented for mTLS. Requires keyFile."
+        },
+        "keyFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "PEM private key for certFile. Requires certFile."
+        },
+        "serverName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name verified against the frontend certificate, for when the dialed address is not a name on it."
+        }
+      },
+      "dependentRequired": {
+        "certFile": ["keyFile"],
+        "keyFile": ["certFile"]
       }
     },
     "engineHITL": {
