@@ -314,7 +314,7 @@ operational-diagnostics stream as `goobers.service.health`. The `health`,
 `journal`, and default `standard` profiles omit `machineName` and `accountName`;
 the `diagnostic` profile includes them only after that separate consent choice.
 With no tenant telemetry destination configured, the record remains local
-evidence. See [Azure Monitor tenant telemetry](azure-monitor.md).
+evidence. See [Azure Monitor tenant telemetry](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/azure-monitor.md).
 
 ## Dirty restart journal event
 
