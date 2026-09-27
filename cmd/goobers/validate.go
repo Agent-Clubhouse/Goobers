@@ -546,6 +546,7 @@ var strictNeutralWarningCodes = func() []validate.WarningCode {
 		validate.RunnerAVExclusionsUnverified,
 		validate.WarningImplicitWritableWorkspace,
 		validate.WarningGaggleMixedProvider,
+		validate.WarningCrossProviderCredentialOverride,
 		validate.WarningInertADOCapability,
 	}
 	for _, code := range workflowsafety.Codes() {

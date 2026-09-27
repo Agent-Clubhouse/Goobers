@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // dispatchexec.go is the mode-3 in-pod stage runtime (#3699): the process a
@@ -329,11 +330,11 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// The working directory IS the workspace (podspec stamps WorkingDir), so
 	// checking out into "." is what puts the stage's command inside the tree.
 	// The checkout may use a credential the stage itself never receives.
-	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
+	checkoutCreds, checkoutScheme, checkoutErr := podCheckoutCredentials(ctx, creds, repoAuthScheme)
 	if checkoutErr != nil {
 		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
 	}
-	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
+	if err := checkoutRepoWorkspace(ctx, ".", stderr, checkoutCreds, checkoutScheme); err != nil {
 		// A genuine syncBase base-merge conflict is classified exactly as the
 		// self arms classify it (#813, internal/engine/activities.go's
 		// RunDeterministic and internal/runner/run.go): a business failure
@@ -447,10 +448,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// executor registers every token with a scrubber before the stage runs;
 	// without this a stage that echoes its token surrenders it into the
 	// journal, where it is durable and widely readable.
-	registry, scrubber := journal.DefaultScrubber()
-	for _, cred := range creds {
-		registry.Register([]byte(cred.Value))
-	}
+	scrubber := podStageScrubber(checkoutCreds, checkoutScheme)
 	outputs := map[string]interface{}{}
 	scrubbedOut := scrubber.Scrub([]byte(capturedStdout.String()))
 	scrubbedErr := scrubber.Scrub([]byte(capturedStderr.String()))
@@ -591,7 +589,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		message = runErr.Error()
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
-			message = fmt.Sprintf("exit code %d: %s", exitErr.ExitCode(), capturedStderr.String())
+			message = fmt.Sprintf("exit code %d: %s", exitErr.ExitCode(), scrubbedErr)
 		}
 	}
 	if timedOut {
@@ -873,20 +871,63 @@ func stageDeclaredCapabilities() ([]string, error) {
 // not gain repository authority merely by needing a working tree. Returns nil
 // when the stage already declares a repo-shaped capability — the checkout uses
 // that one, and minting a second would be pointless.
-func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+//
+// The scheme is the one the credential plane stated beside an Azure DevOps
+// repository credential ("" for every other provider), so the checkout sends
+// the credential in the header Azure DevOps expects for its kind.
+func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredential, string, error) {
 	capability := strings.TrimSpace(os.Getenv(dispatcher.EnvCheckoutCapability))
 	if capability == "" {
-		return nil, nil
+		return nil, "", nil
 	}
-	return resolveCapabilities(ctx, []string{capability})
+	client, err := credentialPlaneClient([]string{capability})
+	if err != nil {
+		return nil, "", err
+	}
+	resolution, err := client.ResolveStage(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), []string{capability})
+	return resolution.Credentials, resolution.RepoAuthScheme, err
 }
 
-func resolveCapabilities(ctx context.Context, capabilities []string) ([]dispatcher.MintedCredential, error) {
-	client, err := credentialPlaneClient(capabilities)
+// podCheckoutCredentials is every credential a pod's workspace checkout may
+// authenticate with: the stage's own first, then the checkout-only credential
+// the dispatcher named (#3770). The scheme is the stated Azure DevOps scheme
+// of either resolution; both describe the same repository credential, so the
+// stage's wins only because it was resolved first.
+func podCheckoutCredentials(ctx context.Context, stageCreds []dispatcher.MintedCredential, stageScheme string) ([]dispatcher.MintedCredential, string, error) {
+	checkoutCreds, checkoutScheme, err := resolveCheckoutCredential(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return client.Resolve(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
+	scheme := stageScheme
+	if scheme == "" {
+		scheme = checkoutScheme
+	}
+	return append(append([]dispatcher.MintedCredential{}, stageCreds...), checkoutCreds...), scheme, nil
+}
+
+// podStageScrubber is the scrubber for everything a pod stage surrenders: its
+// streams, its result file, and the failure envelope's message. It registers
+// every credential this pod held — the stage's and the checkout's — and, for
+// an Azure DevOps repository credential, every header form it can be sent in
+// (providers.ADOCredential.ScrubForms): a bare base64 Basic value has no
+// "Basic " prefix for the pattern net to key on. The daemon's minting source
+// registers the same forms, so a self runner and a pod redact the same bytes.
+func podStageScrubber(creds []dispatcher.MintedCredential, repoAuthScheme string) journal.Scrubber {
+	registry, scrubber := journal.DefaultScrubber()
+	kind := ""
+	if strings.TrimSpace(repoAuthScheme) != "" {
+		kind, _ = adoCredentialKindForScheme(repoAuthScheme)
+	}
+	for _, cred := range creds {
+		registry.Register([]byte(cred.Value))
+		if kind == "" {
+			continue
+		}
+		for _, form := range (providers.ADOCredential{Kind: kind, Secret: cred.Value}).ScrubForms() {
+			registry.Register([]byte(form))
+		}
+	}
+	return scrubber
 }
 
 // credentialPlaneClient is the pod's client for the daemon's credential plane,

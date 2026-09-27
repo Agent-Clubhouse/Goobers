@@ -76,7 +76,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	//
 	// The credential is resolved first because the checkout authenticates with
 	// it, and resolving twice would mint two credentials for one stage.
-	minted, err := resolveStageCredentials(ctx)
+	minted, mintedScheme, err := resolveStageCredentialsWithScheme(ctx)
 	if err != nil {
 		return fail("credential_resolve_failed", err)
 	}
@@ -88,11 +88,12 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// provisions the working tree and is excluded from buildPodAgenticExecutor
 	// below, so the goober's resolver and its environment see only what the
 	// stage actually declared.
-	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
+	// checkoutCreds is minted plus that checkout-only credential.
+	checkoutCreds, checkoutScheme, checkoutErr := podCheckoutCredentials(ctx, minted, mintedScheme)
 	if checkoutErr != nil {
 		return fail("credential_resolve_failed", checkoutErr)
 	}
-	if err := checkoutRepoWorkspace(ctx, workspace, stderr, append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...)); err != nil {
+	if err := checkoutRepoWorkspace(ctx, workspace, stderr, checkoutCreds, checkoutScheme); err != nil {
 		return fail("workspace_provision_failed", err)
 	}
 	// The stamp the harness actually reads.
@@ -129,8 +130,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		// The checkout credential is registered with the diff's scrubber even
 		// though the AGENT never sees it: a commit could have captured it, and
 		// the diff is journaled.
-		pointer, derr := recordPodReviewerDiff(ctx, workspace, runsDir, os.Getenv(dispatcher.EnvStage),
-			append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...), stderr)
+		pointer, derr := recordPodReviewerDiff(ctx, workspace, runsDir, os.Getenv(dispatcher.EnvStage), checkoutCreds, stderr)
 		if derr != nil {
 			return fail("reviewer_diff_failed", derr)
 		}
