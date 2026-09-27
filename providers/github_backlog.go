@@ -264,36 +264,11 @@ func (p *GitHubProvider) ListWorkItemChildren(ctx context.Context, repo Reposito
 // exact line. It scans the authoritative issues listing rather than GitHub's
 // eventually-consistent search index.
 func (p *GitHubProvider) FindWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string) ([]WorkItem, error) {
-	if err := requireOwnerRepo(repo); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
-		return nil, fmt.Errorf("single-line work item marker is required")
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues")
-	if err != nil {
-		return nil, err
-	}
-	endpoint, err = addQuery(endpoint, url.Values{"state": []string{"all"}})
-	if err != nil {
-		return nil, err
-	}
-	var matches []WorkItem
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var issues []githubIssue
-		if err := json.Unmarshal(page, &issues); err != nil {
-			return fmt.Errorf("decode issues page: %w", err)
-		}
-		for _, issue := range issues {
-			if issue.PullRequest == nil && containsExactLine(issue.Body, marker) {
-				matches = append(matches, mapGitHubIssue(issue))
-			}
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return matches, nil
+	return findRESTWorkItemsByMarker(ctx, p, p.BaseURL, repo, marker,
+		url.Values{"state": []string{"all"}}, mapGitHubIssue,
+		func(issue githubIssue) restMarkerIssue {
+			return restMarkerIssue{Body: issue.Body, IsPullRequest: issue.PullRequest != nil}
+		})
 }
 
 // AttachWorkItemChild attaches child to parent through GitHub's native

@@ -13,7 +13,7 @@
 # !body-length-cap <lines>
 # !body-length\t<path>\t<symbol>\t<lines>
 # !body-length-justification\t<path>\t<symbol>\t<target>\t<why>
-!ratchet-budget 186
+!ratchet-budget 185
 api/validate/validate.go	(*index).checkWorkflow	57
 cmd/goobers/applyverdict.go	runApplyVerdict	83
 cmd/goobers/daemon.go	buildSchedulerDefinitions	52
