@@ -75,6 +75,15 @@ func (o *recordingObserver) count() int {
 	return len(o.events)
 }
 
+func (o *recordingObserver) last() (RateLimitEvent, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.events) == 0 {
+		return RateLimitEvent{}, false
+	}
+	return o.events[len(o.events)-1], true
+}
+
 type staticTokenSource struct {
 	token string
 	calls int

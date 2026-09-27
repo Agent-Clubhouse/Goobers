@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -78,7 +79,10 @@ func buildADOProviderForStage(routed providers.RepositoryRef, credential provide
 	if credential == nil {
 		return nil, fmt.Errorf("ADO stage provider for %s/%s/%s has no credential", routed.Owner, routed.Project, routed.Name)
 	}
-	return providers.NewADOProvider(routed.Owner, routed.Project, "", providers.WithADOCredentialSource(credential)), nil
+	telemetryOpt := providers.WithADORateLimitObserver(
+		telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
+	)
+	return providers.NewADOProvider(routed.Owner, routed.Project, "", providers.WithADOCredentialSource(credential), telemetryOpt), nil
 }
 
 // stageADOCredentialSource turns the token delivered for cap
