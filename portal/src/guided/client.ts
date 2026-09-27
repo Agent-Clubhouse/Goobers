@@ -183,7 +183,8 @@ export interface InitInstanceRequest {
 export type GuidedWorkflow =
   | "implementation"
   | "backlog-curation"
-  | "work-nomination";
+  | "work-nomination"
+  | "merge-review";
 
 export interface GuidedInitOptions {
   repo?: string;
