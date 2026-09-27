@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -54,6 +55,12 @@ type Config struct {
 	OTLPEndpoint   string
 	OTLPInsecure   bool
 	OTLPHeaders    map[string]string
+	// AzureMonitorConnectionString enables direct, customer-owned Application
+	// Insights trace export alongside local journal and optional OTLP export.
+	AzureMonitorConnectionString string
+	// AzureMonitorHTTPClient is injectable for transport tests. Production
+	// callers leave it nil and use the standard HTTP client.
+	AzureMonitorHTTPClient *http.Client
 	// JournalLogs enables live export of committed journal events as OTLP Logs.
 	// It has no effect without ExporterOTLP and an explicit endpoint.
 	JournalLogs bool
@@ -495,7 +502,21 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		exporters = append(exporters, cfg.SpanExporter)
 	}
 	if cfg.Exporter == "" && len(exporters) != 0 {
-		return exporters, nil
+		if cfg.AzureMonitorConnectionString == "" {
+			return exporters, nil
+		}
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient)
+		if err != nil {
+			return exporters, err
+		}
+		return append(exporters, azure), nil
+	}
+	if cfg.Exporter == "" && cfg.AzureMonitorConnectionString != "" {
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient)
+		if err != nil {
+			return nil, err
+		}
+		return append(exporters, azure), nil
 	}
 
 	var exporter sdktrace.SpanExporter
@@ -548,7 +569,15 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 	default:
 		return nil, fmt.Errorf("unsupported telemetry exporter %q", cfg.Exporter)
 	}
-	return append(exporters, exporter), nil
+	exporters = append(exporters, exporter)
+	if cfg.AzureMonitorConnectionString != "" {
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient)
+		if err != nil {
+			return exporters, err
+		}
+		exporters = append(exporters, azure)
+	}
+	return exporters, nil
 }
 
 // buildOTLPTLSConfig assembles the OTLP exporter's client TLS config: with

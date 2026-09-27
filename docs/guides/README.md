@@ -10,6 +10,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Azure DevOps limitations](ado-limitations.md)
 - [Onboard an arbitrary repository (tiers 1-2)](arbitrary-repo-onboarding.md)
 - [Coordinate a shared backlog with assignees](assignment-aware-backlogs.md)
+- [Export traces directly to Azure Monitor](azure-monitor.md)
 - [Partition-aware backlog health](backlog-health.md)
 - [Backlog label preflight](backlog-label-preflight.md)
 - [Configuring backlog park-label filtering](backlog-park-filtering.md)

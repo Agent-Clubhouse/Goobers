@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -25,7 +27,7 @@ func buildTelemetryClient(
 	l instance.Layout,
 	scrubber journal.Scrubber,
 	registry *journal.RegistryScrubber,
-	otlp instance.OTLPConfig,
+	telemetryConfig instance.TelemetryConfig,
 	stores credentials.StoreResolver,
 ) (*telemetry.Client, error) {
 	cfg := telemetry.Config{
@@ -38,9 +40,22 @@ func buildTelemetryClient(
 		JournalRoot:    l.Root,
 	}
 	// Only the durable identity is trustworthy; legacy roots remain unidentified.
-	cfg.JournalInstanceID, _ = l.ReadIdentity()
-	if err := configureOTLP(ctx, &cfg, otlp, registry, stores); err != nil {
-		return nil, err
+	// Carry it on every signal as a resource attribute so operators can correlate
+	// process restarts with the same customer-managed instance and its journals.
+	if instanceID, err := l.ReadIdentity(); err == nil {
+		cfg.JournalInstanceID = instanceID
+		cfg.ResourceAttributes = append(cfg.ResourceAttributes,
+			attribute.String("goobers.instance.id", instanceID))
+	}
+	if telemetryConfig.OTLP != nil {
+		if err := configureOTLP(ctx, &cfg, *telemetryConfig.OTLP, registry, stores); err != nil {
+			return nil, err
+		}
+	}
+	if telemetryConfig.AzureMonitor != nil {
+		if err := configureAzureMonitor(ctx, &cfg, *telemetryConfig.AzureMonitor, registry, stores); err != nil {
+			return nil, err
+		}
 	}
 	// telemetry.New may return a non-nil *Client alongside an error wrapping
 	// telemetry.ErrOTLPUnavailable (invalid TLS material) — that Client is
@@ -48,6 +63,27 @@ func buildTelemetryClient(
 	// non-nil error here as a construction failure. See daemon.go's call
 	// site for the degrade handling.
 	return telemetry.New(ctx, cfg)
+}
+
+func configureAzureMonitor(
+	ctx context.Context,
+	cfg *telemetry.Config,
+	azure instance.AzureMonitorConfig,
+	registry *journal.RegistryScrubber,
+	stores credentials.StoreResolver,
+) error {
+	ref := azure.ConnectionString.CredentialTokenRef("telemetry.azureMonitor.connectionString")
+	resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{ref}, stores)
+	if err != nil {
+		return fmt.Errorf("configure Azure Monitor telemetry: %w", err)
+	}
+	connectionString, err := resolver.Resolve(ctx, ref.Name)
+	if err != nil {
+		return fmt.Errorf("resolve Azure Monitor connection string: %w", err)
+	}
+	registry.Register([]byte(connectionString))
+	cfg.AzureMonitorConnectionString = connectionString
+	return nil
 }
 
 func resolveOTLPHeaders(

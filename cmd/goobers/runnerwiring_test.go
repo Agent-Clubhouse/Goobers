@@ -243,18 +243,23 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 	t.Setenv("RUNNERWIRING_OTLP_SECRET", secret)
 	registry := journal.NewRegistryScrubber()
 	scrubber := journal.Chain(registry, journal.NewPatternScrubber())
+	layout := instance.NewLayout(t.TempDir())
+	instanceID, err := layout.EnsureIdentity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	client, err := buildTelemetryClient(
 		context.Background(),
-		instance.NewLayout(t.TempDir()),
+		layout,
 		scrubber,
 		registry,
-		instance.OTLPConfig{
+		instance.TelemetryConfig{OTLP: &instance.OTLPConfig{
 			Endpoint: "http://" + listener.Addr().String(),
 			Insecure: true,
 			Headers: map[string]instance.TokenRef{
 				"authorization": {Env: "RUNNERWIRING_OTLP_SECRET"},
 			},
-		},
+		}},
 		nil,
 	)
 	if err != nil {
@@ -292,8 +297,40 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatal("registered collector credential appeared in exported span data")
 		}
+		if len(req.ResourceSpans) != 1 || req.ResourceSpans[0].Resource == nil {
+			t.Fatalf("resource spans = %d, want one populated resource", len(req.ResourceSpans))
+		}
+		gotInstanceID := ""
+		for _, attr := range req.ResourceSpans[0].Resource.Attributes {
+			if attr.Key == "goobers.instance.id" {
+				gotInstanceID = attr.Value.GetStringValue()
+				break
+			}
+		}
+		if gotInstanceID != instanceID {
+			t.Fatalf("goobers.instance.id = %q, want %q", gotInstanceID, instanceID)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("collector did not receive an OTLP export")
+	}
+}
+
+func TestConfigureAzureMonitorResolvesAndRegistersConnectionString(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("GOOBERS_TEST_APPLICATIONINSIGHTS_CONNECTION_STRING", connectionString)
+	registry := journal.NewRegistryScrubber()
+	var cfg telemetry.Config
+	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_APPLICATIONINSIGHTS_CONNECTION_STRING"},
+	}, registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AzureMonitorConnectionString != connectionString {
+		t.Fatal("resolved connection string was not passed to telemetry config")
+	}
+	if scrubbed := string(registry.Scrub([]byte("prefix " + connectionString + " suffix"))); strings.Contains(scrubbed, connectionString) {
+		t.Fatalf("connection string was not registered with scrubber: %q", scrubbed)
 	}
 }
 
@@ -339,7 +376,7 @@ func TestBuildTelemetryClientThreadsOTLPTLSFields(t *testing.T) {
 		instance.NewLayout(t.TempDir()),
 		nil,
 		journal.NewRegistryScrubber(),
-		instance.OTLPConfig{
+		instance.TelemetryConfig{OTLP: &instance.OTLPConfig{
 			Endpoint: listener.Addr().String(),
 			TLS: &instance.OTLPTLSConfig{
 				CAFile:     serverCert.certFile,
@@ -347,7 +384,7 @@ func TestBuildTelemetryClientThreadsOTLPTLSFields(t *testing.T) {
 				CertFile:   clientCert.certFile,
 				KeyFile:    clientCert.keyFile,
 			},
-		},
+		}},
 		nil,
 	)
 	if err != nil {
