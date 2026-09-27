@@ -450,17 +450,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				node.Randomized = randomized
 				node.Arm = arm
 			}
-			if row.Operator.IssueTitle == "" {
-				id, idOK := event.Outputs["id"].(string)
-				title, titleOK := event.Outputs["title"].(string)
-				if idOK && titleOK && id != "" && title != "" {
-					row.Operator.IssueNumber = id
-					row.Operator.IssueTitle = title
-				}
-			}
-			if source, ok := event.Outputs["resumedFromRun"].(string); ok && source != "" {
-				row.Operator.ResumedFromRunID = source
-			}
+			projectOperatorStageOutputs(&row.Operator, event)
 			countAttempt(&row, event)
 		case journal.EventGateStarted:
 			row.CurrentStage = event.Gate
@@ -687,6 +677,20 @@ func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity,
 		projection.Run.Operator.PROpenerStage = ""
 	}
 	return projection, nil
+}
+
+func projectOperatorStageOutputs(operator *OperatorFacts, event journal.Event) {
+	if operator.IssueTitle == "" {
+		id, idOK := event.Outputs["id"].(string)
+		title, titleOK := event.Outputs["title"].(string)
+		if idOK && titleOK && id != "" && title != "" {
+			operator.IssueNumber = id
+			operator.IssueTitle = title
+		}
+	}
+	if source, ok := event.Outputs["resumedFromRun"].(string); ok && source != "" {
+		operator.ResumedFromRunID = source
+	}
 }
 
 func projectRemediationExamples(identity journal.RunIdentity, run RunRow, events []journal.Event) []RemediationExampleRow {

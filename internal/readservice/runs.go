@@ -1750,22 +1750,7 @@ func summarizeRunForStage(
 				currentStage = ""
 			}
 			lastStageStatus[event.Stage] = event.Status
-			if source, ok := event.Outputs["resumedFromRun"].(string); ok && source != "" {
-				operator.ResumedFromRunID = source
-			}
-			if !claimedIssueFound {
-				id, idOK := event.Outputs["id"].(string)
-				title, titleOK := event.Outputs["title"].(string)
-				if !idOK || !titleOK || id == "" || title == "" {
-					break
-				}
-				if operator.Issue == nil {
-					operator.Issue = &OperatorIssue{}
-				}
-				operator.Issue.Number = id
-				operator.Issue.Title = title
-				claimedIssueFound = true
-			}
+			claimedIssueFound = projectOperatorStageOutputs(&operator, event, claimedIssueFound)
 		case journal.EventGateStarted:
 			currentStage = event.Gate
 		case journal.EventGateEvaluated:
@@ -1940,6 +1925,26 @@ func summarizeRunForStage(
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
 	}, observations.activity), nil
+}
+
+func projectOperatorStageOutputs(operator *OperatorRunSummary, event journal.Event, claimedIssueFound bool) bool {
+	if source, ok := event.Outputs["resumedFromRun"].(string); ok && source != "" {
+		operator.ResumedFromRunID = source
+	}
+	if claimedIssueFound {
+		return true
+	}
+	id, idOK := event.Outputs["id"].(string)
+	title, titleOK := event.Outputs["title"].(string)
+	if !idOK || !titleOK || id == "" || title == "" {
+		return false
+	}
+	if operator.Issue == nil {
+		operator.Issue = &OperatorIssue{}
+	}
+	operator.Issue.Number = id
+	operator.Issue.Title = title
+	return true
 }
 
 // isNoWorkTick reports whether a run is a routine no-work tick: a completed
