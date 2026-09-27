@@ -338,10 +338,10 @@ the instance config surface documented above.
   `! [remote rejected] ... (TF402455: Pushes to this branch are not
   permitted...)`, with `GitRefUpdateRejectedByPolicyException` in the
   underlying exception text — and `push-branch` and the remediation/rebase
-  force-pushes classify that rejection as `branch_policy_protected`, never
-  `auth_failed`, and never retry it as a ref race or with a fresh credential:
-  the fix is to land the change through a pull request, not to re-run with a
-  different token.
+  force-pushes classify that rejection as `provider_branch_policy_protected`
+  (the provider error class in telemetry), never `auth_failed`, and never
+  retry it as a ref race or with a fresh credential: the fix is to land the
+  change through a pull request, not to re-run with a different token.
 
 ### MSA passthrough header
 
