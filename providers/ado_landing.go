@@ -141,8 +141,8 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	// autoCompleteSetBy must name the caller: ADO accepts only the
 	// credential's own identity (or omitting the field) and returns 400 for
 	// any other id (live probe F3, design ado-parity-dsl-2-0.md §5) — the PR
-	// creator's id (N5's earlier assumption) is wrong whenever some other
-	// identity opened the pull request.
+	// creator's id, which an earlier implementation sent, is wrong whenever
+	// some other identity opened the pull request.
 	identity, err := p.AuthenticatedIdentity(ctx)
 	if err != nil {
 		return EnqueuePullRequestResult{}, fmt.Errorf("ado: resolve authenticated identity for auto-complete: %w", err)

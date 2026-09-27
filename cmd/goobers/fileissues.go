@@ -26,6 +26,9 @@ const fileIssuesHelp = "Usage: goobers file-issues [--check] [path]\n\n" +
 	"carrying the nominated label, excludes anything flake-watch already\n" +
 	"fingerprints, enforces maxPerRun, and creates issues with a retry-safe\n" +
 	"idempotency key.\n\n" +
+	"file-issues files GitHub issues only. It refuses any other repository\n" +
+	"provider (Azure DevOps, Gitea) with an error, so work nomination is not\n" +
+	"available there.\n\n" +
 	"goobers:approved (the SEC-047 trust label) is applied on one condition\n" +
 	"only (decision 004): the nomination's evidence names a finding — a go\n" +
 	"vet diagnostic, a golangci-lint issue (linter + file + line) or a go\n" +

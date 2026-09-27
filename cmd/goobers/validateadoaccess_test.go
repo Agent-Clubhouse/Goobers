@@ -135,7 +135,7 @@ func TestCheckADORepositoryAccessDiagnostics(t *testing.T) {
 			name:     "missing force push is a warning",
 			mutate:   func(a *adoRepositoryAccess) { a.permissions[providers.ADOGitForcePush] = false },
 			wantOK:   true,
-			wantCode: adoAccessForcePushCode, wantSev: "warning", wantText: `lacks "Force push"`,
+			wantCode: adoAccessForcePushCode, wantSev: "warning", wantText: `lacks "Force push" at repository level; Azure DevOps lets a branch's creator force-push its own branches, but rewriting or deleting branches it did not create`,
 		},
 		{
 			name:     "held bypass is a warning",
