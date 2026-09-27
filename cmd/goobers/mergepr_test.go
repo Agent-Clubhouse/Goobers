@@ -1590,6 +1590,75 @@ func TestMergePRRecordsUnrecognized405AsRefusal(t *testing.T) {
 	}
 }
 
+// TestMergePRFailuresAlwaysEmitRefusalOutputs pins #5527: merge-gate routes a
+// failed merge-pr to record-merge-refusal, whose inputsFrom needs
+// selectedNumber, selectedHeadSha and reason. Every failure path — a missing
+// landing credential on either provider, a non-refusal provider error on the
+// merge call — must still emit them alongside its typed errorCode, or the run
+// crashes resolving inputs instead of recording why it did not merge.
+func TestMergePRFailuresAlwaysEmitRefusalOutputs(t *testing.T) {
+	inputs := func(number, head, base string) map[string]string {
+		return map[string]string{"pullNumber": number, "verdict": "pass", "headSha": head, "baseSha": base}
+	}
+	cases := []struct {
+		name       string
+		setup      func(t *testing.T) (root, dir string)
+		wantNumber string
+		wantHead   string
+		wantReason string
+	}{
+		{
+			name: "github missing credential",
+			setup: func(t *testing.T) (string, string) {
+				st := &mergePRServerState{checkState: "success", headSHA: "head123", baseSHA: "base456"}
+				return mergePREnv(t, newMergePRServer(t, "your-org", "your-repo", st).URL, true, inputs("9", "head123", "base456"))
+			},
+			wantNumber: "9", wantHead: "head123", wantReason: "no credential",
+		},
+		{
+			name: "github merge endpoint non-refusal error",
+			setup: func(t *testing.T) (string, string) {
+				st := &mergePRServerState{
+					checkState: "success", headSHA: "head123", baseSHA: "base456",
+					mergeRefusalStatus: http.StatusUnprocessableEntity, mergeRefusalBody: `{"message":"Validation Failed"}`,
+				}
+				return mergePREnv(t, newMergePRServer(t, "your-org", "your-repo", st).URL, false, inputs("9", "head123", "base456"))
+			},
+			wantNumber: "9", wantHead: "head123", wantReason: "merge pull request",
+		},
+		{
+			name: "ado missing completion credential",
+			setup: func(t *testing.T) (string, string) {
+				server, _ := newADOMergePRServer(t, "headsha1", "basesha1")
+				return adoMergePREnv(t, server.URL, true, inputs("359", "headsha1", "basesha1"))
+			},
+			wantNumber: "359", wantHead: "headsha1", wantReason: "no credential",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, dir := tc.setup(t)
+			code, _, stderr := runArgs(t, "merge-pr", root)
+			if code != 1 {
+				t.Fatalf("code = %d, want 1 (the failure stays a typed stage failure), stderr = %q", code, stderr)
+			}
+			result := readMergeResult(t, dir)
+			if code, _ := result[executor.OutputErrorCode].(string); code == "" {
+				t.Fatalf("result = %+v, want the typed errorCode preserved", result)
+			}
+			if result["selectedNumber"] != tc.wantNumber || result["selectedHeadSha"] != tc.wantHead {
+				t.Fatalf("result = %+v, want selectedNumber=%q selectedHeadSha=%q for record-merge-refusal", result, tc.wantNumber, tc.wantHead)
+			}
+			if merged, ok := result["merged"].(bool); !ok || merged {
+				t.Fatalf("result = %+v, want merged=false", result)
+			}
+			if reason, _ := result["reason"].(string); !strings.Contains(reason, tc.wantReason) {
+				t.Fatalf("reason = %q, want it to contain %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
 // #2732: merge-pr's own help documented headSha/baseSha as required inputs
 // but never said where they come from, even though it names apply-verdict as
 // verdictAuthor's producer two lines later. The shipped merge-review
