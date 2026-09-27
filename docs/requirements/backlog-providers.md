@@ -122,7 +122,10 @@ same abstraction, whose shape is unchanged.
     that take precedence for one work item type. Names are trimmed of surrounding
     whitespace, and `byType` keys that differ only in case are merged. The
     setting governs only predecessor blocking; Goobers' own close always drives
-    an item to the Completed category. A predecessor whose state cannot
+    an item to the Completed category. A stage that cannot read its gaggle's
+    instance config (a brokered or Goobernetes stage pod) warns on stderr that
+    `doneStates` and the backlog project are not applied there and uses the
+    defaults. A predecessor whose state cannot
     be read still blocks. GitHub and Gitea accept `doneStates` and ignore it
     (`ADO-N32`).
   - *ADO partial label add:* ADO adds one PR label per request. When some labels
