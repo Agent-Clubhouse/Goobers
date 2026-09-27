@@ -78,7 +78,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
 	apiMetadataRoutes := map[apicontract.ActionID]bool{"discovery": true, "openapi": true, "capabilities": true}
-	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true, "gaggleBundleImport": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true, "claimVerify": true,
 		// A resident worker reports a config comparison transition into the

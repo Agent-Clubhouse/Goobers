@@ -14,7 +14,6 @@ Commands:
   down              Gracefully stop a running daemon.
   escalations       List escalated runs.
   examples          Browse embedded workflow examples.
-  gaggle            export or import sanitized portable gaggle bundles
   init              Create an instance or configuration source.
   run               Start a workflow run.
   scaffold          Create a goober, workflow, or gaggle.
@@ -62,7 +61,6 @@ Commands:
   down              Gracefully stop a running daemon.
   escalations       List escalated runs.
   examples          Browse embedded workflow examples.
-  gaggle            export or import sanitized portable gaggle bundles
   init              Create an instance or configuration source.
   run               Start a workflow run.
   scaffold          Create a goober, workflow, or gaggle.
@@ -107,7 +105,6 @@ Core commands:
   down              Gracefully stop a running daemon.
   escalations       List escalated runs.
   examples          Browse embedded workflow examples.
-  gaggle            export or import sanitized portable gaggle bundles
   init              Create an instance or configuration source.
   run               Start a workflow run.
   scaffold          Create a goober, workflow, or gaggle.
@@ -144,6 +141,7 @@ Advanced operator commands:
   features          list the workflow-DSL features this build supports
   fix               mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
   fleet             associate this instance with a Fleet service (experimental; superseded)
+  gaggle            export or import sanitized portable gaggle bundles
   journal redact    remove a leaked secret from a stored blob (SEC-041)
   lint              lint config via the single authoritative validation engine (alias for validate)
   netpol-render     render per-runner-class NetworkPolicy reference manifests from the runners: inventory
@@ -1437,6 +1435,8 @@ Private key and bearer credential material are never printed.
 
 ### gaggle
 Usage: goobers gaggle export|import [flags]
+
+A team or bounded workforce: its project/backlog connections, goobers, and workflows.
 
 Export or import a sanitized, portable gaggle bundle. Bundles contain only
 declarative gaggle, workflow, stage, Goober, instruction, skill, repository

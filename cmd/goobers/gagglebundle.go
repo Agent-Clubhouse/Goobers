@@ -17,6 +17,7 @@ import (
 )
 
 const gaggleHelp = "Usage: goobers gaggle export|import [flags]\n\n" +
+	"A team or bounded workforce: its project/backlog connections, goobers, and workflows.\n\n" +
 	"Export or import a sanitized, portable gaggle bundle. Bundles contain only\n" +
 	"declarative gaggle, workflow, stage, Goober, instruction, skill, repository\n" +
 	"reference, and provenance data. Structured credentials and runtime state are\n" +

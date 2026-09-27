@@ -98,7 +98,7 @@ func (c cliCommand) withExamples(examples ...string) cliCommand {
 var cliCommands []cliCommand
 
 func gaggleCLICommand() cliCommand {
-	return coreGroupCommand(
+	return groupCommand(
 		"gaggle",
 		runGaggle,
 		subcommand("gaggle export", "export", apicontract.ActionReadOnlyNavigation, runGaggleExport).
