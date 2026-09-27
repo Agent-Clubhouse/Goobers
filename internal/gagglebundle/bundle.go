@@ -403,18 +403,8 @@ func validateSanitizedDefinition(definition apiv1.GaggleBundleDefinition) error 
 	if err := validatePortableMetadata("gaggle", gaggle.Labels, gaggle.Annotations); err != nil {
 		return err
 	}
-	if gaggle.Spec.Project.ConnectionRef != "" || gaggle.Spec.Backlog.ConnectionRef != "" {
-		return errors.New("repository and backlog connection references are forbidden")
-	}
-	for _, repo := range append(append([]apiv1.RepoRef(nil), gaggle.Spec.AdditionalRepos...), gaggle.Spec.Project) {
-		if repo.ConnectionRef != "" {
-			return errors.New("repository connection references are forbidden")
-		}
-	}
-	for _, sibling := range gaggle.Spec.Siblings {
-		if sibling.Project.ConnectionRef != "" {
-			return errors.New("sibling repository connection references are forbidden")
-		}
+	if err := validateNoConnectionRefs(gaggle.Spec); err != nil {
+		return err
 	}
 	for _, workflow := range definition.Workflows {
 		if err := validatePortableMetadata("workflow "+workflow.Name, workflow.Labels, workflow.Annotations); err != nil {
@@ -449,6 +439,23 @@ func validateSanitizedDefinition(definition apiv1.GaggleBundleDefinition) error 
 	expectedRepositories := portableRepositories(gaggle.Spec)
 	if !reflect.DeepEqual(definition.Repositories, expectedRepositories) {
 		return errors.New("repositories must exactly match the sorted credential-free project and additionalRepos identities")
+	}
+	return nil
+}
+
+func validateNoConnectionRefs(spec apiv1.GaggleSpec) error {
+	if spec.Project.ConnectionRef != "" || spec.Backlog.ConnectionRef != "" {
+		return errors.New("repository and backlog connection references are forbidden")
+	}
+	for _, repo := range spec.AdditionalRepos {
+		if repo.ConnectionRef != "" {
+			return errors.New("repository connection references are forbidden")
+		}
+	}
+	for _, sibling := range spec.Siblings {
+		if sibling.Project.ConnectionRef != "" {
+			return errors.New("sibling repository connection references are forbidden")
+		}
 	}
 	return nil
 }
