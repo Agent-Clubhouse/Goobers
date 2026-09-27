@@ -318,14 +318,9 @@ func (p *ADOProvider) findWorkItemsByMarker(ctx context.Context, repo Repository
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
 			return nil, err
 		}
-		page, err := p.listWorkItemsBatch(ctx, repo, result.WorkItems)
+		matches, err = p.appendMarkerMatches(ctx, repo, result.WorkItems, marker, matches)
 		if err != nil {
 			return nil, err
-		}
-		for _, item := range page {
-			if containsExactLine(item.Body, marker) {
-				matches = append(matches, item)
-			}
 		}
 		if len(result.WorkItems) < pageSize {
 			return matches, nil
@@ -336,6 +331,25 @@ func (p *ADOProvider) findWorkItemsByMarker(ctx context.Context, repo Repository
 		}
 		afterID = nextID
 	}
+}
+
+// appendMarkerMatches hydrates refs one workitemsbatch chunk at a time and
+// appends the items whose body carries marker as an exact line. Only one
+// chunk of full items (descriptions included) is held at once, so a WIQL
+// page of up to 20,000 ids never sits in memory whole.
+func (p *ADOProvider) appendMarkerMatches(ctx context.Context, repo RepositoryRef, refs []adoWorkItemRef, marker string, matches []WorkItem) ([]WorkItem, error) {
+	for start := 0; start < len(refs); start += adoWorkItemsBatchSize {
+		chunk, err := p.listWorkItemsBatch(ctx, repo, refs[start:min(start+adoWorkItemsBatchSize, len(refs))])
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range chunk {
+			if containsExactLine(item.Body, marker) {
+				matches = append(matches, item)
+			}
+		}
+	}
+	return matches, nil
 }
 
 // CreateWorkItem creates an Azure Boards work item.

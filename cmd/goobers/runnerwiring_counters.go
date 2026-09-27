@@ -288,6 +288,9 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 	pageInfo := &providers.ListWorkItemsPageInfo{}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: pageSize,
+		// The predicate below compares labels exactly; ADO folds a read tag
+		// equal to one of these ignoring case onto this spelling.
+		CompareLabels: b.labelPredicate.Labels(),
 		Assignee: func() string {
 			if b.respectAssignee && b.assignedTo != "" {
 				return b.assignedTo

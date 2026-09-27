@@ -1191,30 +1191,10 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 			return malformedReadyItems, 1
 		}
 		if labelFilter.ReferencesLabel(providers.LabelReady) {
-			for index := firstNewClaim; index < len(session.claimed); {
-				if !session.claimed[index].HasLabel(providers.LabelReady) {
-					index++
-					continue
-				}
-				transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
-					ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
-				)
-				if err != nil {
-					return malformedReadyItems, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
-				}
-				if err := annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions); err != nil {
-					malformed := session.claimed[index]
-					if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
-						pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
-						return malformedReadyItems, 1
-					}
-					session.forgetNewClaim(malformed.ID)
-					pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, err)
-					session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
-					malformedReadyItems++
-					continue
-				}
-				index++
+			skipped, code := session.annotateNewReadyClaims(ctx, firstNewClaim)
+			malformedReadyItems += skipped
+			if code != 0 {
+				return malformedReadyItems, code
 			}
 		}
 		if err := session.confirmProviderClaims(ctx, firstNewClaim); err != nil {
@@ -1223,6 +1203,55 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 		}
 	}
 	return malformedReadyItems, 0
+}
+
+// annotateNewReadyClaims stamps the ready time on each claim acquired from
+// firstNewClaim on that carries the ready label. An item whose ready history
+// is malformed, or incomplete (providers.ErrLabelHistoryIncomplete, such as an
+// ADO item past the revision cap), is released and skipped so one
+// pathological item cannot fail the claim stage every time it is re-selected.
+// Any other provider read error still fails the stage. It returns the number
+// of items skipped and a non-zero exit code when the stage must stop.
+func (session *backlogClaimSession) annotateNewReadyClaims(ctx context.Context, firstNewClaim int) (int, int) {
+	skipped := 0
+	for index := firstNewClaim; index < len(session.claimed); {
+		if !session.claimed[index].HasLabel(providers.LabelReady) {
+			index++
+			continue
+		}
+		transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
+			ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
+		)
+		if err != nil && !errors.Is(err, providers.ErrLabelHistoryIncomplete) {
+			return skipped, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
+		}
+		if err == nil {
+			err = annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions)
+		}
+		if err == nil {
+			index++
+			continue
+		}
+		if code := session.skipMalformedClaim(ctx, index, err); code != 0 {
+			return skipped, code
+		}
+		skipped++
+	}
+	return skipped, 0
+}
+
+// skipMalformedClaim releases the claim at index, drops it from the claim
+// set, and warns why it was skipped.
+func (session *backlogClaimSession) skipMalformedClaim(ctx context.Context, index int, cause error) int {
+	malformed := session.claimed[index]
+	if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
+		pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
+		return 1
+	}
+	session.forgetNewClaim(malformed.ID)
+	pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, cause)
+	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	return 0
 }
 
 // acquire is the claim transaction: the blocked-record reconcile and the
