@@ -367,10 +367,13 @@ surface) for the brief's pull request, built through the same narrow surface as 
 review-thread stages and without the `github:pr:write` grant. The read is GET-only.
 
 The stage runs only when the brief's `hasFailingCI` is `true`. ADO's pull-request list
-carries no CI state, so `gather-pr-context` reads the selected pull request's state with
-`PollPullRequest` (the §11.1 policy reducer) before it writes the brief; a rejected
-blocking build or status policy makes `hasFailingCI` `true`. The other candidates are not
-polled, so the fifo selection is unchanged.
+carries no CI state, so `gather-pr-context` reads the selected pull request's evidence with
+the same `PullRequestCIFailures` call (two GETs: the pull request and its policy evaluations;
+a failed read fails the stage) before it writes the brief. `hasFailingCI` is `true` exactly
+when that evidence is non-empty, so the brief and the gathered checks never disagree: a
+rejected comment-resolution or work-item-linking policy alone leaves it `false`. When it is
+`true`, `rebase-pr`'s failing-CI cause becomes reachable on ADO. The other candidates are
+not read, so the fifo selection is unchanged.
 
 | Aspect | Behaviour |
 |---|---|

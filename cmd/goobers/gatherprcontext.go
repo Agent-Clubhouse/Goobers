@@ -234,18 +234,22 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 	}, nil
 }
 
-// resolveADOSelectedCheckState sets the selected pull request's CI state from
-// its blocking policy evaluations (the ADO-N19 reducer behind PollPullRequest).
-// ListPullRequests cannot report it, so without this read hasFailingCI would
-// always be false on Azure DevOps and gather-ci-failures would never run.
-// Human-only policy ids are a CI-poll gate input this stage does not receive,
-// so every blocking build, status or unclassified policy counts here.
+// resolveADOSelectedCheckState marks the selected pull request's CI failing
+// when gather-ci-failures would report at least one rejected or broken
+// blocking build, status or unclassified policy for it (ADO-N22). It reads
+// the same evidence that stage reads, so hasFailingCI and the gathered checks
+// cannot disagree: a rejected comment-resolution or work-item-linking policy
+// is a human wait, not CI, and leaves the list's pending state in place.
+// ListPullRequests cannot report CI state, so without this read hasFailingCI
+// would always be false on Azure DevOps.
 func resolveADOSelectedCheckState(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) error {
-	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: strconv.Itoa(pr.Number)})
+	evidence, err := provider.PullRequestCIFailures(ctx, repo, strconv.Itoa(pr.Number))
 	if err != nil {
 		return err
 	}
-	pr.CheckState = poll.CheckState
+	if len(evidence.Failures) > 0 {
+		pr.CheckState = providers.CheckStateFailing
+	}
 	return nil
 }
 

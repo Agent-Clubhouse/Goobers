@@ -220,6 +220,34 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 // reviewer policy, which is a human wait and never CI.
 func handleADOSelectedPRRejectedBuild(t *testing.T, mux *http.ServeMux, repo providers.RepositoryRef, prNumber int, headSHA, baseSHA string) {
 	t.Helper()
+	build := adoBlockingPolicyEvaluation(adoTestPolicyTypeBuild, "Build", "rejected")
+	build["context"] = map[string]interface{}{"buildId": 314}
+	handleADOSelectedPRPolicies(t, mux, repo, prNumber, headSHA, baseSHA, build,
+		adoBlockingPolicyEvaluation(adoTestPolicyTypeMinimumReviewers, "Minimum number of reviewers", "queued"))
+}
+
+// Azure DevOps policy type ids the selected-PR CI-state fixtures use.
+const (
+	adoTestPolicyTypeBuild               = "0609b952-1397-4640-95ec-e00a01b2c241"
+	adoTestPolicyTypeStatus              = "cbdc66da-9728-4af8-aada-9a5a32e4a226"
+	adoTestPolicyTypeMinimumReviewers    = "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"
+	adoTestPolicyTypeCommentRequirements = "c6a1889d-b943-4856-b76f-9e46bb6b0df2"
+	adoTestPolicyTypeWorkItemLinking     = "40e92b44-2fe1-4dd6-b3d8-74a9c21d0c6e"
+)
+
+// adoBlockingPolicyEvaluation is one enabled, blocking policy evaluation of
+// the given policy type in the given status.
+func adoBlockingPolicyEvaluation(typeID, name, status string) map[string]interface{} {
+	return map[string]interface{}{"status": status, "configuration": map[string]interface{}{
+		"id": 5, "isEnabled": true, "isBlocking": true,
+		"type": map[string]string{"id": typeID, "displayName": name},
+	}}
+}
+
+// handleADOSelectedPRPolicies serves the selected PR's detail and the given
+// policy evaluations for it.
+func handleADOSelectedPRPolicies(t *testing.T, mux *http.ServeMux, repo providers.RepositoryRef, prNumber int, headSHA, baseSHA string, evaluations ...map[string]interface{}) {
+	t.Helper()
 	prPath := "/" + repo.Owner + "/" + repo.Project + "/_apis/git/repositories/" + repo.Name + "/pullrequests/" + strconv.Itoa(prNumber)
 	mux.HandleFunc(prPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -237,19 +265,57 @@ func handleADOSelectedPRRejectedBuild(t *testing.T, mux *http.ServeMux, repo pro
 		})
 	})
 	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
-		policy := func(typeID, name, status string) map[string]interface{} {
-			return map[string]interface{}{"status": status, "configuration": map[string]interface{}{
-				"id": 5, "isEnabled": true, "isBlocking": true,
-				"type": map[string]string{"id": typeID, "displayName": name},
-			}}
-		}
-		build := policy("0609b952-1397-4640-95ec-e00a01b2c241", "Build", "rejected")
-		build["context"] = map[string]interface{}{"buildId": 314}
-		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{
-			build,
-			policy("fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", "Minimum number of reviewers", "queued"),
-		}})
+		writeJSONResp(t, w, map[string]interface{}{"value": evaluations})
 	})
+}
+
+// TestResolveADOSelectedCheckStateCountsOnlyCIPolicies pins that the selected
+// ADO pull request's CI state, and so hasFailingCI, follows exactly the
+// evidence gather-ci-failures reports (ADO-N22): a rejected build or broken
+// status policy fails CI, while rejected comment-resolution, work-item-linking
+// or reviewer policies are human waits that leave hasFailingCI false.
+func TestResolveADOSelectedCheckStateCountsOnlyCIPolicies(t *testing.T) {
+	const prNumber = 359
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "example-org", Project: "example-project", Name: "example-repo"}
+	cases := []struct {
+		name        string
+		evaluations []map[string]interface{}
+		want        string
+	}{
+		{"human-policies-only", []map[string]interface{}{
+			adoBlockingPolicyEvaluation(adoTestPolicyTypeCommentRequirements, "Comment requirements", "rejected"),
+			adoBlockingPolicyEvaluation(adoTestPolicyTypeWorkItemLinking, "Work item linking", "rejected"),
+			adoBlockingPolicyEvaluation(adoTestPolicyTypeMinimumReviewers, "Minimum number of reviewers", "rejected"),
+		}, "false"},
+		{"rejected-build", []map[string]interface{}{
+			adoBlockingPolicyEvaluation(adoTestPolicyTypeBuild, "Build", "rejected"),
+			adoBlockingPolicyEvaluation(adoTestPolicyTypeWorkItemLinking, "Work item linking", "rejected"),
+		}, "true"},
+		{"broken-status", []map[string]interface{}{
+			adoBlockingPolicyEvaluation(adoTestPolicyTypeStatus, "Status", "broken"),
+		}, "true"},
+		{"passing-build", []map[string]interface{}{
+			adoBlockingPolicyEvaluation(adoTestPolicyTypeBuild, "Build", "approved"),
+		}, "false"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			handleADOSelectedPRPolicies(t, mux, repo, prNumber, "headsha", "basesha", tc.evaluations...)
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			provider := providers.NewADOProvider(repo.Owner, repo.Project, "token",
+				func(p *providers.ADOProvider) { p.BaseURL = server.URL })
+			pr := providers.PullRequestSummary{Number: prNumber, CheckState: providers.CheckStatePending}
+			if err := resolveADOSelectedCheckState(t.Context(), provider, repo, &pr); err != nil {
+				t.Fatalf("resolveADOSelectedCheckState: %v", err)
+			}
+			// gather-pr-context's hasFailingCI is exactly this comparison.
+			if got := strconv.FormatBool(pr.CheckState == providers.CheckStateFailing); got != tc.want {
+				t.Fatalf("hasFailingCI = %s (check state %q), want %s", got, pr.CheckState, tc.want)
+			}
+		})
+	}
 }
 
 func TestGatherPRContextADOParksRepeatedEscalatedDigest(t *testing.T) {
