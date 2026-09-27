@@ -98,6 +98,26 @@ func TestGaggleBundleImportDecodesCompleteRequest(t *testing.T) {
 	}
 }
 
+func TestGaggleBundleImportRejectsNestedUnknownFields(t *testing.T) {
+	service := &fakeGaggleBundles{}
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithGaggleBundles(service))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"name":"copy","bundle":{"apiVersion":"goobers.dev/v1alpha1","kind":"GaggleBundle","schemaVersion":1,"source":{"name":"example","apiVersion":"goobers.dev/v1alpha1","digest":"sha256:x"},"exportedAt":"2026-09-27T00:00:00Z","provenance":{"exporter":"goobers","exporterVersion":"test","sanitizedFields":[]},"definition":{"unexpected":true,"gaggle":{"apiVersion":"goobers.dev/v1alpha1","kind":"Gaggle","metadata":{"name":"example"},"spec":{}},"workflows":[],"goobers":[],"repositories":[]},"digest":"sha256:x"}}`
+	request := httptest.NewRequest(http.MethodPost, apicontract.GaggleBundleImportPath, strings.NewReader(body))
+	request.Host = "127.0.0.1:8080"
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body)
+	}
+	if service.input.Name != "" {
+		t.Fatalf("service received invalid input: %+v", service.input)
+	}
+}
+
 func TestGaggleBundleImportBodyLimit(t *testing.T) {
 	service := &fakeGaggleBundles{}
 	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithGaggleBundles(service))

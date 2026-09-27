@@ -1,7 +1,10 @@
 package v1alpha1
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -87,7 +90,16 @@ func (d GaggleBundleDefinition) MarshalJSON() ([]byte, error) {
 // status after decoding the portable wire projection.
 func (d *GaggleBundleDefinition) UnmarshalJSON(data []byte) error {
 	var wire gaggleBundleDefinitionWire
-	if err := json.Unmarshal(data, &wire); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("gaggle bundle definition must contain one JSON object")
+		}
 		return err
 	}
 	d.Gaggle = Gaggle{

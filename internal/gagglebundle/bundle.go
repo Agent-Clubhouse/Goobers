@@ -60,21 +60,15 @@ var (
 
 var sanitizedFields = []string{
 	"definition.gaggle.metadata.runtime",
-	"definition.gaggle.metadata.labels",
-	"definition.gaggle.metadata.annotations except goobers.dev/allow-preview-features",
 	"definition.gaggle.spec.selfIdentity",
 	"definition.gaggle.spec.isolation",
 	"definition.gaggle.spec.outboxMirrorPath",
 	"definition.gaggle.spec.workcopies",
 	"definition.gaggle.spec.*.connectionRef",
 	"definition.workflows[].metadata.runtime",
-	"definition.workflows[].metadata.labels",
-	"definition.workflows[].metadata.annotations except goobers.dev/allow-preview-features",
 	"definition.workflows[].spec.outboxMirrorPath",
 	"definition.workflows[].spec.tasks[].outboxMirrorPath",
 	"definition.goobers[].metadata.runtime",
-	"definition.goobers[].metadata.labels",
-	"definition.goobers[].metadata.annotations except goobers.dev/allow-preview-features",
 }
 
 // Export returns a deterministic portable definition plus timestamped
@@ -333,14 +327,22 @@ func sanitizeGoober(source apiv1.Goober) apiv1.Goober {
 }
 
 func portableMetadata(name string, labels, annotations map[string]string) metav1.ObjectMeta {
-	portableAnnotations := map[string]string{}
-	if annotations["goobers.dev/allow-preview-features"] == "true" {
-		portableAnnotations["goobers.dev/allow-preview-features"] = "true"
+	return metav1.ObjectMeta{
+		Name:        name,
+		Labels:      cloneStrings(labels),
+		Annotations: cloneStrings(annotations),
 	}
-	if len(portableAnnotations) == 0 {
-		portableAnnotations = nil
+}
+
+func cloneStrings(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
 	}
-	return metav1.ObjectMeta{Name: name, Annotations: portableAnnotations}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func clearRepoConnection(repo *apiv1.RepoRef) {
@@ -461,13 +463,19 @@ func validateNoConnectionRefs(spec apiv1.GaggleSpec) error {
 }
 
 func validatePortableMetadata(subject string, labels, annotations map[string]string) error {
-	if len(labels) != 0 {
-		return fmt.Errorf("%s metadata labels are forbidden", subject)
+	metadata := struct {
+		Labels      map[string]string `json:"labels,omitempty"`
+		Annotations map[string]string `json:"annotations,omitempty"`
+	}{Labels: labels, Annotations: annotations}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("encode %s metadata: %w", subject, err)
 	}
-	for key, value := range annotations {
-		if key != "goobers.dev/allow-preview-features" || value != "true" {
-			return fmt.Errorf("%s metadata annotation %q is not portable", subject, key)
-		}
+	if reason := credentialContentReason(data); reason != "" {
+		return fmt.Errorf("%s metadata %s", subject, reason)
+	}
+	if path, value := firstAbsoluteString(metadata); path != "" {
+		return fmt.Errorf("%s metadata %s contains non-portable absolute path %q", subject, path, value)
 	}
 	return nil
 }
@@ -623,6 +631,27 @@ func validateFiles(definition apiv1.GaggleBundleDefinition) error {
 		seen[file.Path] = true
 		if !isReferencedCompanionPath(definition.Goobers, file.Path) {
 			return fmt.Errorf("file path %q is not a referenced Goober instruction or gaggle skill file", file.Path)
+		}
+	}
+	for _, goober := range definition.Goobers {
+		if goober.Spec.Instructions != "" {
+			path := filepath.ToSlash(filepath.Clean(filepath.Join("goobers", goober.Name, filepath.FromSlash(goober.Spec.Instructions))))
+			if !seen[path] {
+				return fmt.Errorf("goober %q instruction file %q is missing", goober.Name, path)
+			}
+		}
+		for _, skill := range goober.Spec.Skills {
+			prefix := "skills/" + skill + "/"
+			found := false
+			for path := range seen {
+				if strings.HasPrefix(path, prefix) && len(path) > len(prefix) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("goober %q skill package %q has no bundled files", goober.Name, skill)
+			}
 		}
 	}
 	return nil

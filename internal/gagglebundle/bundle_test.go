@@ -58,6 +58,40 @@ func TestExportDigestIsStableAndSanitized(t *testing.T) {
 	}
 }
 
+func TestExportAndImportPreserveSafeDeclarativeMetadata(t *testing.T) {
+	source := newBundleSource(t)
+	mutateSourceWorkflow(t, source, func(workflow *apiv1.Workflow) {
+		workflow.Labels = map[string]string{"area": "portable-bundles"}
+		workflow.Annotations = map[string]string{"goobers.dev/purpose": "Move a gaggle between instances"}
+	})
+	bundle, err := Export(source.ConfigDir(), "example", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := bundle.Definition.Workflows[0]
+	if workflow.Labels["area"] != "portable-bundles" ||
+		workflow.Annotations["goobers.dev/purpose"] != "Move a gaggle between instances" {
+		t.Fatalf("exported metadata = labels %#v annotations %#v", workflow.Labels, workflow.Annotations)
+	}
+	destination := newEmptyBundleDestination(t, source)
+	swap, err := PrepareImport(destination, "copied-example", bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := swap.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	set, report, err := instance.LoadConfigDir(destination.ConfigDir())
+	if err != nil {
+		t.Fatalf("load imported config: %v report=%+v", err, report)
+	}
+	imported := set.Workflows[0]
+	if imported.Labels["area"] != "portable-bundles" ||
+		imported.Annotations["goobers.dev/purpose"] != "Move a gaggle between instances" {
+		t.Fatalf("imported metadata = labels %#v annotations %#v", imported.Labels, imported.Annotations)
+	}
+}
+
 func TestExportRejectsExplicitEnvironmentValues(t *testing.T) {
 	source := newBundleSource(t)
 	path := filepath.Join(source.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
@@ -386,6 +420,21 @@ func TestPrepareImportValidatesBeforeMutation(t *testing.T) {
 			name: "unreferenced companion file",
 			mutate: func(bundle *apiv1.GaggleBundle) {
 				bundle.Definition.Files[0].Path = "gaggle.yaml"
+				refreshBundleDigest(t, bundle)
+			},
+			want: ErrInvalidBundle,
+		},
+		{
+			name: "missing declared skill package",
+			mutate: func(bundle *apiv1.GaggleBundle) {
+				skill := bundle.Definition.Goobers[0].Spec.Skills[0]
+				files := make([]apiv1.GaggleBundleFile, 0, len(bundle.Definition.Files))
+				for _, file := range bundle.Definition.Files {
+					if !strings.HasPrefix(file.Path, "skills/"+skill+"/") {
+						files = append(files, file)
+					}
+				}
+				bundle.Definition.Files = files
 				refreshBundleDigest(t, bundle)
 			},
 			want: ErrInvalidBundle,

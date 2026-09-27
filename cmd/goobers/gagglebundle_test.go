@@ -37,6 +37,15 @@ func TestGaggleBundleCLIExportAndImport(t *testing.T) {
 	if firstBundle.Digest != secondBundle.Digest {
 		t.Fatalf("unchanged CLI export digest moved: %s != %s", firstBundle.Digest, secondBundle.Digest)
 	}
+	unknown := bytes.Replace(first.Bytes(), []byte(`"definition": {`), []byte(`"definition": {"unexpected": true,`), 1)
+	unknownPath := filepath.Join(t.TempDir(), "unknown.bundle.json")
+	if err := os.WriteFile(unknownPath, unknown, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stderr.Reset()
+	if code := runGaggleImport([]string{"--name", "unknown", unknownPath, root}, &bytes.Buffer{}, &stderr); code != 1 {
+		t.Fatalf("unknown-field import code = %d, want 1; stderr = %s", code, stderr.String())
+	}
 
 	bundlePath := filepath.Join(t.TempDir(), "example.bundle.json")
 	if err := os.WriteFile(bundlePath, first.Bytes(), 0o644); err != nil {
