@@ -57,6 +57,12 @@ func (p *GitHubProvider) preflightGitReceivePack(ctx context.Context, repo Repos
 		return gitPreflightUnavailable("Git push-service discovery could not be completed"), nil
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if isRateLimited(resp) {
+		return gitPreflightUnavailable("Git push-service discovery is rate limited"), nil
+	}
+	if ctx.Err() != nil {
+		return RepositoryWritePreflightResult{}, ctx.Err()
+	}
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusNotFound:
 		return RepositoryWritePreflightResult{FailureCapability: RepoWriteFailureUnauthorized, Detail: fmt.Sprintf("Git repository unreachable or credential unauthorized (HTTP %d)", resp.StatusCode)}, nil

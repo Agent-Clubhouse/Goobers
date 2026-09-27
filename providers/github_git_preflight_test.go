@@ -20,6 +20,7 @@ func TestPreflightRepositoryWriteGitDiscovery(t *testing.T) {
 		status      int
 		contentType string
 		body        string
+		retryAfter  string
 		rulesStatus int
 		blocking    bool
 		want        RepoWriteFailureCapability
@@ -31,6 +32,8 @@ func TestPreflightRepositoryWriteGitDiscovery(t *testing.T) {
 		{name: "expired or invalid token", status: 401, want: RepoWriteFailureUnauthorized},
 		{name: "wrong repository", status: 404, want: RepoWriteFailureUnauthorized},
 		{name: "rate limited", status: 429, want: RepoWriteFailurePolicyIntrospectionUnavailable},
+		{name: "403 secondary limit", status: 403, body: "secondary rate limit", want: RepoWriteFailurePolicyIntrospectionUnavailable},
+		{name: "403 retry guidance", status: 403, retryAfter: "60", want: RepoWriteFailurePolicyIntrospectionUnavailable},
 		{name: "server unavailable", status: 503, want: RepoWriteFailurePolicyIntrospectionUnavailable},
 		{name: "HTML is not permission", status: 200, contentType: "text/html", body: testReceivePackAdvertisement, want: RepoWriteFailurePolicyIntrospectionUnavailable},
 		{name: "fetch service is not push", status: 200, contentType: "application/x-git-upload-pack-advertisement", body: "001e# service=git-upload-pack\n0000", want: RepoWriteFailurePolicyIntrospectionUnavailable},
@@ -58,6 +61,9 @@ func TestPreflightRepositoryWriteGitDiscovery(t *testing.T) {
 						t.Error("Git probe must be an authenticated, bodyless receive-pack discovery GET")
 					}
 					w.Header().Set("Content-Type", tc.contentType)
+					if tc.retryAfter != "" {
+						w.Header().Set("Retry-After", tc.retryAfter)
+					}
 					w.WriteHeader(tc.status)
 					_, _ = w.Write([]byte(tc.body))
 				case "/repos/acme/app/rules/branches/goobers/run-1":
