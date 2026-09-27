@@ -97,15 +97,27 @@ func openPRWorkItem(ctx context.Context, root string, repo, backlog providers.Re
 	if !backlogOnOtherProvider(repo, backlog) {
 		return routed.GetWorkItem(ctx, backlog, id)
 	}
-	for _, issueCapability := range []capability.Capability{capability.GitHubIssuesRead, capability.GitHubIssuesWrite} {
-		if _, err := providerToken(issueCapability); err != nil {
-			continue
-		}
-		reader, err := newProviderForStage(root, backlog, true, withStageProviderCapability(issueCapability))
-		if err != nil {
-			return providers.WorkItem{}, err
-		}
-		return reader.GetWorkItem(ctx, backlog, id)
+	issueCapability, ok := declaredBacklogReadCapability()
+	if !ok {
+		return providers.WorkItem{}, fmt.Errorf("the backlog is on %s and this stage declares no github:issues:read capability to read it", backlog.Provider)
 	}
-	return providers.WorkItem{}, fmt.Errorf("the backlog is on %s and this stage declares no github:issues:read capability to read it", backlog.Provider)
+	reader, err := newProviderForStage(root, backlog, true, withStageProviderCapability(issueCapability))
+	if err != nil {
+		return providers.WorkItem{}, err
+	}
+	return reader.GetWorkItem(ctx, backlog, id)
+}
+
+// declaredBacklogReadCapability is the first issue capability the stage
+// declared that can read a backlog item: github:issues:read, else
+// github:issues:write. Each providerToken call names its capability as a
+// constant so the provider-capability drift check can resolve it.
+func declaredBacklogReadCapability() (capability.Capability, bool) {
+	if _, err := providerToken(capability.GitHubIssuesRead); err == nil {
+		return capability.GitHubIssuesRead, true
+	}
+	if _, err := providerToken(capability.GitHubIssuesWrite); err == nil {
+		return capability.GitHubIssuesWrite, true
+	}
+	return "", false
 }

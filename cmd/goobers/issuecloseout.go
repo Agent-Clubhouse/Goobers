@@ -73,14 +73,25 @@ func openIssueCloseOutProvider(root string, repo, backlogRepo providers.Reposito
 // skipped: the close-out still runs, with a comment that does not link the
 // pull request.
 func crossProviderPRFinder(root string, repo providers.RepositoryRef, stderr io.Writer) (pullRequestBranchFinder, error) {
-	for _, prCapability := range []capability.Capability{capability.GitHubPRWrite, capability.ProviderPRWrite} {
-		if _, err := providerToken(prCapability); err != nil {
-			continue
-		}
+	if prCapability, ok := declaredPullRequestCapability(); ok {
 		return newProviderForStageSurface[pullRequestBranchFinder](root, repo, true, withStageProviderCapability(prCapability))
 	}
 	pf(stderr, "warning: the backlog is on another provider than %s and this stage declares no pull-request capability (github:pr:write); the close-out comment will not link the pull request\n", repositoryDisplayName(repo))
 	return nil, nil
+}
+
+// declaredPullRequestCapability is the first pull-request capability the
+// stage declared: github:pr:write, else provider:pr:write. Each providerToken
+// call names its capability as a constant so the provider-capability drift
+// check can resolve it.
+func declaredPullRequestCapability() (capability.Capability, bool) {
+	if _, err := providerToken(capability.GitHubPRWrite); err == nil {
+		return capability.GitHubPRWrite, true
+	}
+	if _, err := providerToken(capability.ProviderPRWrite); err == nil {
+		return capability.ProviderPRWrite, true
+	}
+	return "", false
 }
 
 // splitIssueCloseOutProvider serves issue-close-out in topology (b): work
