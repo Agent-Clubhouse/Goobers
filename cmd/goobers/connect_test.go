@@ -90,6 +90,7 @@ func stubConnectReachability(t *testing.T, err error) {
 		return 1, nil
 	}
 	t.Cleanup(func() { targetRepositorySize = previousSize })
+	stubADOAccessReads(t, fullADORepositoryAccess(), fullADOBacklogStates())
 }
 
 func connectEnvelope(t *testing.T, stdout string) onboardingActionResult {
