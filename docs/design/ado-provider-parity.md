@@ -335,9 +335,9 @@ shared stage-provider seam, and ADO satisfies that surface through the same
   adapter over `PollPullRequest`), releasing the claim (and returning a terminal no-work
   result) if it has merged or closed. On ADO the claim also never reads as open on an empty
   source head: `GetPullRequest`'s poll-observed `HeadSHA` must be non-empty, so the guard
-  fails closed rather than proceeding against an unverified source. Like the other ADO
-  remediation stages, it does not require the `github:pr:write` grant on ADO: the ADO
-  provider resolves its own credential from `repos[].auth`, so non-PAT auth kinds work.
+  fails closed rather than proceeding against an unverified source. On ADO it polls with
+  the delivered `github:pr:write` credential in the daemon-stated scheme, like every other
+  remediation stage, and every ADO auth kind backs that credential (ADO-N18, §3).
 
 The sticky remediation-state comment (carrying the pre-remediation head SHA) is a PR thread
 updated in place via the composite comment id.
@@ -349,7 +349,8 @@ are first-class, so the ADO provider declares `pr.review.threads` and `pr.review
 implements the same `PullRequestReviewThreadProvider` / `PullRequestReviewThreadMutator`
 surfaces GitHub does (`providers/ado_review_threads.go`). Both stages build their provider
 through a narrow surface over the shared stage-provider seam (`reviewThreadStageSurface`), the
-same route `pr-claim` takes, and on ADO they do not require the `github:pr:write` grant.
+same route `pr-claim` takes. On ADO, as on GitHub and Gitea, they consume the declared
+`github:pr:write` credential, delivered in the daemon-stated scheme (ADO-N18, §3).
 
 | Operation | ADO call and mapping |
 |---|---|

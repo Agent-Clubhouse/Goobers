@@ -391,7 +391,7 @@ func TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized(t *testing.T)
 			if !errors.Is(err, ErrADODeliveredCredentialRejected) {
 				t.Fatalf("GetWorkItem error = %v, want ErrADODeliveredCredentialRejected", err)
 			}
-			if !strings.Contains(err.Error(), "github:pr:write") || !strings.Contains(err.Error(), "expired or been revoked") {
+			if !strings.Contains(err.Error(), "github:pr:write") || !strings.Contains(err.Error(), "expired, revoked, or without access to this resource") {
 				t.Fatalf("error %q does not name the capability and the cause", err)
 			}
 			if !strings.Contains(err.Error(), "status 401") || !strings.Contains(err.Error(), "TF400813") {

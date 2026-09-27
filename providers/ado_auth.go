@@ -123,7 +123,7 @@ type adoDeliveredCredentialRejectedError struct {
 }
 
 func (e *adoDeliveredCredentialRejectedError) Error() string {
-	return fmt.Sprintf("%s: Azure DevOps rejected the credential delivered for %s; it has expired or been revoked, and a stage cannot refresh it (run the stage again to receive a new one): %v", ErrADODeliveredCredentialRejected, e.label, e.cause)
+	return fmt.Sprintf("%s: Azure DevOps rejected the credential delivered for %s (expired, revoked, or without access to this resource); a stage cannot refresh it: %v", ErrADODeliveredCredentialRejected, e.label, e.cause)
 }
 
 func (e *adoDeliveredCredentialRejectedError) Unwrap() []error {

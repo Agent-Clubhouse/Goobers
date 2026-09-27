@@ -279,9 +279,9 @@ then re-resolves through the credential plane for pods, and fails with a clear
 credentials at all (credential containment, #5664).
 
 > **As shipped (ADO-N18):** a stage, local or pod, cannot refresh a delivered
-> value. A 401 fails the request at once with an "expired or been revoked" error
-> that names the capability and keeps the 401 response, so it still classifies
-> as an authentication failure. The daemon does not deliver the token's expiry.
+> value. A 401 fails the request at once with an "expired, revoked, or without
+> access to this resource" error that names the capability and keeps the 401
+> response, so it still classifies as an authentication failure. The daemon does not deliver the token's expiry.
 > Pod re-resolve, expiry delivery or a minimum remaining lifetime at mint is
 > follow-up #5905.
 

@@ -194,9 +194,11 @@ lapses, but the stage does not receive the expiry. A delivered token can
 therefore have only a few minutes left. A stage cannot refresh what it was
 delivered: when Azure DevOps rejects the value with HTTP 401, the request fails
 without a retry, with an error that names the capability, says the credential
-expired or was revoked, and keeps the 401 response. It is reported as an
-authentication failure (`github_auth_failed`), and the next attempt receives a
-new value. Refreshing a delivered value in a stage is follow-up #5905.
+expired, was revoked or has no access to the resource called, and keeps the 401
+response (Azure DevOps answers 401 for a missing scope or project access too).
+It is reported as an authentication failure (`github_auth_failed`). The next
+attempt receives a new value, which helps with expiry but not with missing
+access. Refreshing a delivered value in a stage is follow-up #5905.
 
 The workload and managed identity sources that back grants are built on first
 use, so a host without the identity can still run read-only commands such as
@@ -265,8 +267,8 @@ the instance config surface documented above.
 - Entra tokens are cached with an expiry-aware refresh window.
 - A 401 invalidates an expiring credential and retries exactly once. A
   credential delivered to a stage is never resent after a 401; that request
-  fails with an "expired or been revoked" error that still classifies as an
-  authentication failure.
+  fails with an "expired, revoked, or without access to this resource" error
+  that still classifies as an authentication failure.
 - PAT sources are not retried as though they were refreshable.
 - The daemon registers every value it resolves with the journal and telemetry
   scrubber when it mints it, in each form the value can travel in: the raw
