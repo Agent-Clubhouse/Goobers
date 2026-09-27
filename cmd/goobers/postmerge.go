@@ -417,8 +417,9 @@ func performPostMergeADOWithOrigin(ctx context.Context, closer adoWorkItemCloser
 		report = collectADOPostMergeCostReport(ctx, closer, prComments, backlogRepo, repo, pullNumber, issueIDs, stderr)
 	}
 	comments := make(map[string]string, len(issueIDs))
+	pullRef := postMergePullRequestRef(pullNumber, poll.URL, repo, backlogRepo)
 	for _, issueID := range issueIDs {
-		comments[issueID] = mergedPullRequestComment(pullNumber, report, issueID)
+		comments[issueID] = mergedPullRequestCommentAt(pullRef, report, issueID)
 	}
 	closed, closeErrs := closeReferencedWorkItemsADOWithComments(ctx, closer, backlogRepo, issueIDs, comments)
 	for _, cerr := range closeErrs {

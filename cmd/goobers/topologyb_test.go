@@ -177,8 +177,9 @@ func TestADOMergeCommitMessageTopologyB(t *testing.T) {
 
 // topologyBCloser records every backlog call post-merge makes.
 type topologyBCloser struct {
-	repos []providers.RepositoryRef
-	ids   []string
+	repos    []providers.RepositoryRef
+	ids      []string
+	comments []string
 }
 
 func (c *topologyBCloser) GetWorkItem(_ context.Context, repo providers.RepositoryRef, id string) (providers.WorkItem, error) {
@@ -192,6 +193,9 @@ func (c *topologyBCloser) ListComments(context.Context, providers.RepositoryRef,
 
 func (c *topologyBCloser) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	c.repos = append(c.repos, req.Repository)
+	if req.Comment != "" {
+		c.comments = append(c.comments, req.Comment)
+	}
 	return providers.WorkItem{ID: req.ID}, nil
 }
 
@@ -202,7 +206,8 @@ func (c *topologyBCloser) UpdateWorkItemStatus(_ context.Context, req providers.
 
 func TestPostMergeADOTopologyBClosesTheGitHubIssue(t *testing.T) {
 	closer := &topologyBCloser{}
-	poll := providers.PullRequestPollResult{Merged: true, Body: "Fixes #7\n\nFixes " + topologyBIssueURL + "42"}
+	const pullURL = "https://dev.azure.com/example-org/example-project/_git/service/pullrequest/5"
+	poll := providers.PullRequestPollResult{Merged: true, URL: pullURL, Body: "Fixes #7\n\nFixes " + topologyBIssueURL + "42"}
 	var stdout, stderr strings.Builder
 	errs := performPostMergeADOWithOrigin(context.Background(), closer, nil, topologyBBacklogRef(), poll, "5", t.TempDir(), "example", topologyBRouted(), &stdout, &stderr)
 	if len(errs) != 0 {
@@ -218,6 +223,46 @@ func TestPostMergeADOTopologyBClosesTheGitHubIssue(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "closed 1 work item(s)") {
 		t.Fatalf("stdout = %q, want one closed item", stdout.String())
+	}
+	// The GitHub issue names the ADO pull request by URL: "#5" there would
+	// link issue or pull request 5 of the backlog repository.
+	if want := []string{"Merged in pull request " + pullURL + "."}; !reflect.DeepEqual(closer.comments, want) {
+		t.Fatalf("close-out comments = %q, want %q", closer.comments, want)
+	}
+}
+
+// postMergePullRequestRef keeps "#<n>" on a same-provider gaggle and never
+// writes a bare "#<n>" onto a (b) backlog issue.
+func TestPostMergePullRequestRefTopologyB(t *testing.T) {
+	routed, backlog := topologyBRouted(), topologyBBacklogRef()
+	if got := postMergePullRequestRef("5", "https://example.test/pr/5", routed, routed); got != "#5" {
+		t.Fatalf("same-provider ref = %q, want #5", got)
+	}
+	if got := postMergePullRequestRef("5", " https://example.test/pr/5 ", routed, backlog); got != "https://example.test/pr/5" {
+		t.Fatalf("topology (b) ref = %q, want the pull request URL", got)
+	}
+	if got := postMergePullRequestRef("5", "", routed, backlog); strings.Contains(got, "#") {
+		t.Fatalf("topology (b) ref without a URL = %q, want no bare #", got)
+	}
+}
+
+// Issue text open-pr embeds in a (b) pull request description names the
+// backlog's issues by URL, never by a bare "#<n>" that Azure DevOps would read
+// as one of its work items. Same-provider gaggles embed it unchanged.
+func TestCrossProviderIssueTextTopologyB(t *testing.T) {
+	const text = "- [ ] depends on #7 (see #8, #9)\n## Heading\nit&#39;s ok, page#3 and /x#4 stay"
+	ref := backlogIssueURL(topologyBBacklogRef(), "42")
+	want := "- [ ] depends on " + topologyBIssueURL + "7 (see " + topologyBIssueURL + "8, " + topologyBIssueURL + "9)\n## Heading\nit&#39;s ok, page#3 and /x#4 stay"
+	if got := crossProviderIssueText(text, "42", ref); got != want {
+		t.Fatalf("crossProviderIssueText =\n%q\nwant\n%q", got, want)
+	}
+	if got := crossProviderIssueText(text, "42", "#42"); got != text {
+		t.Fatalf("same-provider text rewritten: %q", got)
+	}
+
+	body := formatStructuredPRBody("42", ref, "Add the widget", "## Acceptance criteria\n\n- [ ] after #7 lands\n", "", "sha256:abc", nil, nil, nil)
+	if strings.Contains(body, "#7") || !strings.Contains(body, "after "+topologyBIssueURL+"7 lands") {
+		t.Fatalf("structured (b) body embeds a bare #7:\n%s", body)
 	}
 }
 

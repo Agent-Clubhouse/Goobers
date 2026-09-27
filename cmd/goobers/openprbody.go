@@ -191,7 +191,7 @@ func formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdat
 		b.WriteString(summary)
 		b.WriteString("\n")
 	}
-	if criteria := markdownSection(issueBody, "acceptance criteria"); criteria != "" {
+	if criteria := crossProviderIssueText(markdownSection(issueBody, "acceptance criteria"), issueID, issueRef); criteria != "" {
 		b.WriteString("\n<details>\n<summary>Acceptance criteria</summary>\n\n")
 		b.WriteString(criteria)
 		b.WriteString("\n\n</details>\n")

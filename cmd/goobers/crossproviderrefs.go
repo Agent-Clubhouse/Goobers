@@ -82,6 +82,45 @@ func mergeCommitClosingRefs(body string, repo, backlog providers.RepositoryRef) 
 	return refs
 }
 
+// bareIssueRefPattern matches a bare "#<n>" issue shorthand. The character
+// before it must not be a word character, "&" (an HTML entity such as
+// "&#39;"), "/" (a URL fragment) or "#" (a Markdown heading).
+var bareIssueRefPattern = regexp.MustCompile(`(^|[^\w&/#])#(\d+)\b`)
+
+// crossProviderIssueText prepares backlog issue text that open-pr embeds in a
+// pull request description (the acceptance criteria). issueRef is what
+// prIssueReference returned for issueID. On a same-provider gaggle that is
+// "#<id>" and text is returned unchanged. In topology (b) it is the issue's
+// URL, and every bare "#<n>" in text, which the backlog provider reads as its
+// own issue n, is rewritten to that issue's URL, so the Azure DevOps
+// description never names ADO work item n.
+func crossProviderIssueText(text, issueID, issueRef string) string {
+	prefix, ok := strings.CutSuffix(issueRef, issueID)
+	if !ok || issueID == "" || !strings.HasSuffix(prefix, "/issues/") || !strings.Contains(prefix, "://") {
+		return text
+	}
+	return bareIssueRefPattern.ReplaceAllStringFunc(text, func(match string) string {
+		groups := bareIssueRefPattern.FindStringSubmatch(match)
+		return groups[1] + prefix + groups[2]
+	})
+}
+
+// postMergePullRequestRef names the merged pull request in the comment
+// post-merge leaves on the item it closes: "#<n>" when the item shares the
+// pull request's provider, as before. In topology (b) the item is a GitHub or
+// Gitea issue, where "#<n>" would link issue or pull request <n> of the
+// backlog repository, so the Azure DevOps pull request is named by its URL,
+// or, when the poll carried none, in words without a "#".
+func postMergePullRequestRef(pullNumber, pullURL string, repo, backlog providers.RepositoryRef) string {
+	if !backlogOnOtherProvider(repo, backlog) {
+		return "#" + pullNumber
+	}
+	if url := strings.TrimSpace(pullURL); url != "" {
+		return url
+	}
+	return pullNumber + " on Azure DevOps"
+}
+
 // workItemGetter is the one read open-pr's staleness re-check makes.
 type workItemGetter interface {
 	GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error)
