@@ -9,7 +9,6 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/capability"
 )
 
 const gatherReviewThreadsHelp = "Usage: goobers gather-review-threads [path]\n\n" +
@@ -48,12 +47,7 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	provider, err := remediationStageProvider(root, repo, token, true)
+	provider, err := reviewThreadStageSurface[reviewThreadReader](root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

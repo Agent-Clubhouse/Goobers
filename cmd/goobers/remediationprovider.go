@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -50,9 +51,10 @@ var (
 
 // remediationStageProvider builds the provider a pr-remediation stage talks
 // to, dispatched by the routed repo's kind — the openpr.go per-kind idiom
-// (github | gitea | default-error). ADO is default-error: it declares
-// neither pr.review.threads nor the CI/branch-tip read surfaces this lane
-// needs, and CONF-6's preflight refuses it before a run ever starts.
+// (github | gitea | default-error). ADO is default-error: *ADOProvider does
+// not implement this broad surface (the CI/branch-tip reads among others), so
+// an ADO-capable stage builds a narrow surface through remediationStageSurface
+// instead, as pr-claim and the review-thread stages do.
 // token is the stage's own capability-scoped credential (providerToken);
 // cached selects the conditional-GET read cache on the GitHub arm only —
 // the cache is a GitHub HTTPClient decorator (apireadcache.go) and the
@@ -104,4 +106,38 @@ func remediationStageProviderWithRecorder(root string, repo providers.Repository
 func remediationStageSurface[T any](root string, repo providers.RepositoryRef, token string, opts ...stageProviderOption) (T, error) {
 	allOpts := append([]stageProviderOption{withStageProviderToken(token)}, opts...)
 	return newProviderForStageSurface[T](root, repo, false, allOpts...)
+}
+
+// reviewThreadReader is gather-review-threads' narrow provider surface: the
+// one call it makes. GitHub, Gitea and ADO all implement it.
+type reviewThreadReader interface {
+	ListPullRequestReviewThreads(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.PullRequestReviewThreads, error)
+}
+
+// reviewThreadResolver is resolve-review-threads' narrow provider surface.
+// Replying and resolving (providers.PullRequestReviewThreadMutator) stay a
+// separate type assertion so a provider that can read but not mutate threads
+// (Gitea) keeps its specific refusal.
+type reviewThreadResolver interface {
+	reviewThreadReader
+	GetPullRequest(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.PullRequestSummary, error)
+}
+
+// reviewThreadStageSurface builds a review-thread stage's provider through
+// remediationStageSurface, so ADO (ADO-N20) routes like GitHub and Gitea.
+// Every provider is built from the stage's declared github:pr:write
+// credential; on ADO it is sent in the daemon-delivered scheme, so every ADO
+// auth kind backs it (ADO-N18) — the same rule as pr-claim. cached selects
+// the GitHub-only conditional-GET read cache.
+func reviewThreadStageSurface[T any](root string, repo providers.RepositoryRef, cached bool) (T, error) {
+	var zero T
+	token, err := providerToken(capability.GitHubPRWrite)
+	if err != nil {
+		return zero, err
+	}
+	opts := []stageProviderOption{withStageProviderCapability(capability.GitHubPRWrite)}
+	if cached && repo.Provider == providers.ProviderGitHub {
+		opts = append(opts, withStageProviderCache())
+	}
+	return remediationStageSurface[T](root, repo, token, opts...)
 }

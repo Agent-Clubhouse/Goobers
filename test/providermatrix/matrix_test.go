@@ -48,12 +48,7 @@ var matrixProviders = []apiv1.Provider{apiv1.ProviderGitHub, apiv1.ProviderADO, 
 // The PR that closes a gap deletes its entry; an entry whose failure no longer
 // occurs fails the gate, so the list cannot rot. Keep it keyed by one
 // capability or diagnostic per entry so fixing items stay independent.
-var expectedFailures = map[finding]string{
-	{
-		Subject: "reference-workflows", Provider: apiv1.ProviderADO,
-		Object: "goobers/pr-remediation", Diagnostic: "capability pr.review.threads",
-	}: "ADO-N20: implement ADO review threads (gather-review-threads, resolve-review-threads)",
-}
+var expectedFailures = map[finding]string{}
 
 // TestShippedWorkflowsCompileOnEveryProvider is the compile-matrix gate.
 func TestShippedWorkflowsCompileOnEveryProvider(t *testing.T) {

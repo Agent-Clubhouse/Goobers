@@ -192,10 +192,10 @@ func TestCheckProviderCapabilityRequirementsAdmitsADOApplyVerdict(t *testing.T) 
 	}
 }
 
-// A genuine ADO gap must still refuse. gather-review-threads derives
-// pr.review.threads, which ADO does not declare and for which no ADO path
-// exists — the shape apply-verdict was wrongly lumped in with.
-func TestCheckProviderCapabilityRequirementsRejectsRealADOGap(t *testing.T) {
+// ADO-N20: gather-review-threads derives pr.review.threads, which ADO now
+// declares and implements (providers/ado_review_threads.go), so an ADO gaggle
+// using the stage validates.
+func TestCheckProviderCapabilityRequirementsAdmitsADOReviewThreads(t *testing.T) {
 	wf := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 		Gaggle: "web",
 		Tasks:  []apiv1.Task{deterministicStage("threads", "gather-review-threads")},
@@ -203,9 +203,26 @@ func TestCheckProviderCapabilityRequirementsRejectsRealADOGap(t *testing.T) {
 	wf.Name = "implementation"
 	set := &ConfigSet{Gaggles: []apiv1.Gaggle{adoGaggle("web")}, Workflows: []apiv1.Workflow{wf}}
 
+	if err := CheckProviderCapabilityRequirements(set); err != nil {
+		t.Fatalf("ADO gather-review-threads must validate: %v", err)
+	}
+}
+
+// A genuine ADO gap must still refuse. pr.review.submit is a capability ADO
+// deliberately does not declare (no native self-review exists) — the shape
+// apply-verdict was wrongly lumped in with.
+func TestCheckProviderCapabilityRequirementsRejectsRealADOGap(t *testing.T) {
+	wf := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Tasks:    []apiv1.Task{deterministicStage("threads", "gather-review-threads")},
+		Requires: &apiv1.WorkflowRequirements{Capabilities: []string{string(providers.CapPRReviewSubmit)}},
+	}}
+	wf.Name = "implementation"
+	set := &ConfigSet{Gaggles: []apiv1.Gaggle{adoGaggle("web")}, Workflows: []apiv1.Workflow{wf}}
+
 	err := CheckProviderCapabilityRequirements(set)
 	if err == nil {
-		t.Fatal("expected error — ADO does not declare pr.review.threads")
+		t.Fatal("expected error — ADO does not declare pr.review.submit")
 	}
 	if !strings.Contains(err.Error(), "implementation") || !strings.Contains(err.Error(), "ado") {
 		t.Errorf("error must name the workflow and the provider: %v", err)
@@ -216,28 +233,30 @@ func TestCheckProviderCapabilityRequirementsRejectsRealADOGap(t *testing.T) {
 // workflow, so the provider compile-matrix gate (ADO-N1) cannot have one gap
 // mask another; CheckProviderCapabilityRequirements still returns the first.
 func TestProviderCapabilityProblemsReportsEveryWorkflowAndCapability(t *testing.T) {
+	// ADO no longer lacks a capability any shipped stage derives (ADO-N15
+	// overrides update-behind-pr; ADO-N20 declares pr.review.threads), so
+	// the unmet requirements here are explicit ones ADO does not declare.
 	remediation := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 		Gaggle: "web",
 		Tasks: []apiv1.Task{
 			deterministicStage("threads", "gather-review-threads"),
 			deterministicStage("update", "update-behind-pr"),
 		},
+		Requires: &apiv1.WorkflowRequirements{Capabilities: []string{string(providers.CapPRReviewSubmit)}},
 	}}
 	remediation.Name = "pr-remediation"
 	review := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
-		Gaggle: "web",
-		Tasks:  []apiv1.Task{deterministicStage("threads", "gather-review-threads")},
+		Gaggle:   "web",
+		Tasks:    []apiv1.Task{deterministicStage("threads", "gather-review-threads")},
+		Requires: &apiv1.WorkflowRequirements{Capabilities: []string{string(providers.CapRepoPolicyRead)}},
 	}}
 	review.Name = "review"
 	set := &ConfigSet{Gaggles: []apiv1.Gaggle{adoGaggle("web")}, Workflows: []apiv1.Workflow{remediation, review}}
 
 	got := ProviderCapabilityProblems(set)
-	// update-behind-pr contributes no problem here (ADO-N15): its ADO
-	// override derives no capability at all, so pr.update-branch never
-	// reaches ProviderCapabilityProblems for this workflow.
 	want := []ProviderCapabilityProblem{
-		{Gaggle: "web", Workflow: "pr-remediation", Capability: providers.CapPRReviewThreads, Provider: "ado"},
-		{Gaggle: "web", Workflow: "review", Capability: providers.CapPRReviewThreads, Provider: "ado"},
+		{Gaggle: "web", Workflow: "pr-remediation", Capability: providers.CapPRReviewSubmit, Provider: "ado"},
+		{Gaggle: "web", Workflow: "review", Capability: providers.CapRepoPolicyRead, Provider: "ado"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("problems = %+v, want %+v", got, want)
@@ -251,7 +270,7 @@ func TestProviderCapabilityProblemsReportsEveryWorkflowAndCapability(t *testing.
 	if err == nil || err.Error() != want[0].Error() {
 		t.Fatalf("CheckProviderCapabilityRequirements = %v, want the first problem %q", err, want[0].Error())
 	}
-	wantMessage := `workflow "pr-remediation" requires provider capability "pr.review.threads" which provider "ado" does not declare`
+	wantMessage := `workflow "pr-remediation" requires provider capability "pr.review.submit" which provider "ado" does not declare`
 	if err.Error() != wantMessage {
 		t.Fatalf("diagnostic = %q, want the unchanged CONF-6 wording %q", err.Error(), wantMessage)
 	}

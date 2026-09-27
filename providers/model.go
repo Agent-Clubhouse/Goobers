@@ -456,9 +456,14 @@ type PullRequestInlineComment struct {
 }
 
 // PullRequestReviewThreadReply requests a reply to one native review thread.
+// CommentID names the comment being replied to. ThreadID is the thread's id as
+// ListPullRequestReviewThreads reported it; providers whose comment ids are
+// repository-unique (GitHub) ignore it, while Azure DevOps, whose comment ids
+// are only unique within a thread, addresses the reply by it.
 type PullRequestReviewThreadReply struct {
 	Repository RepositoryRef
 	PullID     string
+	ThreadID   string
 	CommentID  int64
 	Body       string
 }

@@ -157,7 +157,7 @@ var inputSchemas = map[string][]Input{
 		integersIn("pullNumber"), durationsIn("pollIntervalSeconds", "pollMaxIntervalSeconds", "pollTimeoutSeconds", "timeout"), pathsIn("resultFile"),
 	),
 	"open-pr": schema(
-		stringsIn("base", "body", "configRoot", "head", "title", "tutorConfigSource"),
+		stringsIn("base", "body", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
 		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "recordLiveVerification", "runIdFooter"),
 		stringListsIn("actionRoots", "docsRoots"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
