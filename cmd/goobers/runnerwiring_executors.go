@@ -212,11 +212,10 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, bac
 		})
 	}
 
+	role := gaggleBacklogRole(project, backlog)
 	overrides := make([]credentials.Grant, 0, len(daemonIdentityCapabilities)+len(cfg.Credentials))
 	if cfg.DaemonIdentity != nil {
-		for _, c := range daemonIdentityCapabilities {
-			overrides = append(overrides, credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName})
-		}
+		overrides = append(overrides, daemonIdentityOverrides(role)...)
 	}
 	for i, credential := range cfg.Credentials {
 		key, err := credentialGrantKey(credential)
@@ -234,7 +233,7 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, bac
 	for i, c := range credentialedCapabilities {
 		caps[i] = string(c)
 	}
-	grants := credentials.RunnerGrants(bindings, owner, project.Name, gaggleBacklogRole(project, backlog), caps, overrides)
+	grants := credentials.RunnerGrants(bindings, owner, project.Name, role, caps, overrides)
 	result := make(map[string]bool, len(grants))
 	for _, grant := range grants {
 		result[grant.Capability] = true

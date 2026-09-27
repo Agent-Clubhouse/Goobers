@@ -137,6 +137,20 @@ func daemonIdentityGrantScope(gaggleOwner, gaggleName string, backlog *credentia
 	return backlog.Owner, backlog.Name, caps
 }
 
+// daemonIdentityOverrides is the grants a daemon identity backs for one
+// gaggle, by capability: the whole daemon-mutation set, or in topology (b)
+// only its backlog-family subset (daemonIdentityGrantScope). The credential
+// preflights use it so they agree with buildRoleCredentials about which
+// credential backs each capability.
+func daemonIdentityOverrides(backlog *credentials.BacklogRole) []credentials.Grant {
+	_, _, caps := daemonIdentityGrantScope("", "", backlog)
+	grants := make([]credentials.Grant, len(caps))
+	for i, c := range caps {
+		grants[i] = credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName}
+	}
+	return grants
+}
+
 func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string, backlog *credentials.BacklogRole, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))

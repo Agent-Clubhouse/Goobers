@@ -1167,11 +1167,10 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: repo.Name, TokenRef: tokenRef})
 	}
 
+	role := gaggleBacklogRole(project, backlog)
 	overrides := make([]credentials.Grant, 0, len(daemonIdentityCapabilities)+len(cfg.Credentials))
 	if cfg.DaemonIdentity != nil {
-		for _, capability := range daemonIdentityCapabilities {
-			overrides = append(overrides, credentials.Grant{Capability: string(capability), Ref: daemonIdentityRefName})
-		}
+		overrides = append(overrides, daemonIdentityOverrides(role)...)
 		if cfg.DaemonIdentity.Token != nil && cfg.DaemonIdentity.Token.Env != "" {
 			envByRef[daemonIdentityRefName] = cfg.DaemonIdentity.Token.Env
 		} else if cfg.DaemonIdentity.GitHubApp() && cfg.DaemonIdentity.PrivateKey != nil && cfg.DaemonIdentity.PrivateKey.Env != "" {
@@ -1198,7 +1197,7 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 	for i, capability := range credentialedCapabilities {
 		caps[i] = string(capability)
 	}
-	grants := credentials.RunnerGrants(bindings, owner, project.Name, gaggleBacklogRole(project, backlog), caps, overrides)
+	grants := credentials.RunnerGrants(bindings, owner, project.Name, role, caps, overrides)
 	envByCapability := make(map[string]string, len(grants))
 	for _, grant := range grants {
 		if env := envByRef[grant.Ref]; env != "" {
