@@ -64,14 +64,11 @@ func retryBackoff(base, max time.Duration, attempt int) time.Duration {
 	return floor + time.Duration(rand.Int64N(int64(ceiling-floor)+1))
 }
 
-// withRetry runs attempt until it succeeds (nil error), reports a
+// withRetryPolicy runs attempt until it succeeds (nil error), reports a
 // non-retryable failure, or deadline elapses — whichever comes first —
-// waiting a jittered backoff between tries. attempt classifies its OWN
-// failure as retryable or not; withRetry owns only pacing and the deadline.
-func withRetry(ctx context.Context, deadline time.Duration, attempt func(ctx context.Context) (retryable bool, err error)) error {
-	return withRetryPolicy(ctx, deadline, RetryPolicy{}, attempt)
-}
-
+// waiting a jittered backoff between tries. attempt classifies its own
+// failure as retryable or not; withRetryPolicy owns only pacing and the
+// deadline.
 func withRetryPolicy(ctx context.Context, deadline time.Duration, policy RetryPolicy, attempt func(ctx context.Context) (retryable bool, err error)) error {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()

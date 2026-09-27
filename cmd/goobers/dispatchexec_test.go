@@ -42,6 +42,10 @@ func fastArtifactTiming() artifactTiming {
 	}
 }
 
+func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[string][]byte) []apiv1.ArtifactPointer {
+	return recordStageArtifactsWithTiming(ctx, stderr, streams, artifactTiming{})
+}
+
 func TestRunDeclaredStageCommandSuccessCapturesOutput(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageCommand, `["sh","-c","echo hello; echo world >&2"]`)
 	t.Setenv(dispatcher.EnvStageScript, "")

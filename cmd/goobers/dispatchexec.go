@@ -930,10 +930,6 @@ func stageArtifactMediaType(mediaTypes map[string]string, name string) string {
 	return "text/plain"
 }
 
-func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[string][]byte) []apiv1.ArtifactPointer {
-	return recordStageArtifactsWithTiming(ctx, stderr, streams, artifactTiming{})
-}
-
 func recordStageArtifactsWithTiming(
 	ctx context.Context, stderr io.Writer, streams map[string][]byte, timing artifactTiming,
 ) []apiv1.ArtifactPointer {

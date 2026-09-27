@@ -59,19 +59,16 @@ func retryBackoff(base, max time.Duration, attempt int) time.Duration {
 	return floor + time.Duration(rand.Int64N(int64(ceiling-floor)+1))
 }
 
-// withRetry runs attempt until it succeeds (nil error), reports a
+// withRetryPolicy runs attempt until it succeeds (nil error), reports a
 // non-retryable failure, or deadline elapses — whichever comes first —
-// waiting a jittered backoff between tries. attempt classifies its OWN
-// failure as retryable or not; withRetry owns only pacing and the deadline.
+// waiting a jittered backoff between tries. attempt classifies its own
+// failure as retryable or not; withRetryPolicy owns only pacing and the
+// deadline.
 //
 // deadline bounds the WHOLE loop via ctx, so a caller-supplied ctx with its
 // own earlier deadline (e.g. the 15s blob write-through batch budget,
 // dispatchexec.go's blobWriteThroughBudget) wins automatically — this never
 // widens a caller's existing bound, only fills in one where none exists.
-func withRetry(ctx context.Context, deadline time.Duration, attempt func(ctx context.Context) (retryable bool, err error)) error {
-	return withRetryPolicy(ctx, deadline, RetryPolicy{}, attempt)
-}
-
 func withRetryPolicy(ctx context.Context, deadline time.Duration, policy RetryPolicy, attempt func(ctx context.Context) (retryable bool, err error)) error {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
