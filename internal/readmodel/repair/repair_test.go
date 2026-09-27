@@ -2,12 +2,14 @@ package repair
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
@@ -67,6 +69,103 @@ func TestSweepDiscoversAnUnprojectedRun(t *testing.T) {
 	}
 	if _, ok, _ := store.GetRun(ctx, fmt.Sprintf("%032x", 1)); !ok {
 		t.Error("the sweep did not project a run that exists on disk")
+	}
+}
+
+func TestSweepKeepsRunInRootAddedDuringStep(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	layout := instance.NewLayout(t.TempDir())
+	if err := layout.EnsureGaggleRuntime("existing"); err != nil {
+		t.Fatal(err)
+	}
+	runID := fmt.Sprintf("%032x", 5845)
+	added := false
+	sweeper := New(store, store, nil, Options{
+		BatchSize: 10,
+		ResolveRunsDirs: func(ctx context.Context) ([]string, error) {
+			roots, err := layout.RunDirsContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if !added {
+				added = true
+				// A projector can publish a newly discovered root after repair
+				// snapshots its roots but before it selects reverse candidates.
+				if err := layout.EnsureGaggleRuntime("alpha"); err != nil {
+					t.Fatal(err)
+				}
+				writeRun(t, layout.ForGaggle("alpha").RunsDir(), runID)
+				if err := store.UpsertRun(ctx, readmodel.Projection{Run: readmodel.RunRow{
+					RunID: runID, Gaggle: "alpha", Workflow: "wf",
+					Phase: journal.PhaseCompleted, Terminal: true,
+					StartedAt: time.Now().UTC().Add(-time.Hour), LastSeq: 3,
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return roots, nil
+		},
+	})
+	if err := sweeper.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.GetRun(ctx, runID); err != nil || !found {
+		t.Fatalf("run with an existing journal in a hot-added root: found=%v err=%v", found, err)
+	}
+	changes, err := store.Changes(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range changes {
+		if change.Kind == readmodel.ChangeRunRemoved {
+			t.Fatalf("repair incorrectly published removal of %s", change.RunID)
+		}
+	}
+}
+
+func TestSweepDiscoversHotAddedRootsAndSurvivesDiscoveryFailure(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	layout := instance.NewLayout(t.TempDir())
+	var resolveErr error
+	sweeper := New(store, store, nil, Options{
+		BatchSize: 10,
+		ResolveRunsDirs: func(ctx context.Context) ([]string, error) {
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			return layout.RunDirsContext(ctx)
+		},
+	})
+	if err := sweeper.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := layout.EnsureGaggleRuntime("alpha"); err != nil {
+		t.Fatal(err)
+	}
+	runID := fmt.Sprintf("%032x", 5846)
+	writeRun(t, layout.ForGaggle("alpha").RunsDir(), runID)
+	if err := sweeper.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if row, found, err := store.GetRun(ctx, runID); err != nil || !found || !row.Terminal {
+		t.Fatalf("unreported run in a hot-added root: row=%+v found=%v err=%v", row, found, err)
+	}
+	discoveryErr := errors.New("run roots temporarily unreadable")
+	resolveErr = discoveryErr
+	if err := sweeper.Step(ctx); !errors.Is(err, discoveryErr) {
+		t.Fatalf("discovery failure = %v, want %v", err, discoveryErr)
+	}
+	if _, found, err := store.GetRun(ctx, runID); err != nil || !found {
+		t.Fatalf("history after failed discovery: found=%v err=%v", found, err)
+	}
+	resolveErr = nil
+	if err := sweeper.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.GetRun(ctx, runID); err != nil || !found {
+		t.Fatalf("history after discovery recovered: found=%v err=%v", found, err)
 	}
 }
 
