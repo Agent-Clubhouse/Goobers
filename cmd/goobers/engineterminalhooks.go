@@ -117,6 +117,14 @@ func (h *engineTerminalHooks) run(ctx context.Context, out engineTerminalOutcome
 	if h == nil {
 		return
 	}
+	// Engine completions are observed by the daemon rather than by the local
+	// runner, so their dispatch context has no provider-write attribution. Load
+	// the durable identity before invoking any terminal hook: blocked parking
+	// and escalation comments are daemon-authored GitHub writes and must carry
+	// the run that caused them.
+	if attributed, err := attributionContextForRun(ctx, h.layout, out.RunID, out.Result.FinalState); err == nil {
+		ctx = attributed
+	}
 	h.fireExistingFix(ctx, out)
 	h.fireBlocked(ctx, out)
 	h.fireFailed(ctx, out)
