@@ -486,9 +486,9 @@ set:
 |---|---|
 | PRL-045 / PRL-064 | Queue eviction and timeout do not label the PR or seed the reconciliation ledger. |
 | PRL-040 | Landing authority is `github:pr:merge` on ADO too; `ado:pr:complete` is optional and, when declared, is the credential completion uses (ADO-N2, `ado-parity-dsl-2-0.md` §3.3). |
-| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag. |
+| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag, set only when the landing stage holds `github:branch:delete` (ADO-N25). |
 | PRL-081 | ADO verdict threads are **posted**, not reconciled, so the single-sticky-comment guarantee does not hold on the thread carrier. |
-| PRL-082 | The ADO stage provider does not wire the mutation recorder, so ADO merge-path side effects are not journal-attributed. |
+| PRL-082 | Resolved — the ADO stage provider does wire the mutation recorder (`cmd/goobers/stageprovider.go`'s `newProviderForStage`); this row is retained only to record that the earlier "not ADO" annotation was stale. |
 
 `backlog.blockers` is now declared for ADO (ADO-N32). The provider reads an
 item's predecessor links (`System.LinkTypes.Dependency-Reverse`), hydrates the

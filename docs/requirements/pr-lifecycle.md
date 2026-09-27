@@ -551,12 +551,16 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   mapped to the neutral `Comment` type. Each payload MUST be SHA-snapshotted
   where a self-heal check reads it, and updates MUST reconcile a single sticky
   comment/thread rather than append per cycle — on either carrier.
-- **PRL-082 (MUST, Shipped):** *(GitHub and Gitea; **not ADO** — the ADO stage
-  provider does not wire the mutation recorder, so ADO merge-path side effects
-  are not journal-attributed. #2061.)* Provider mutations on the merge path
-  (reviews, merges, branch deletions, label writes by the merge stages) MUST be
+- **PRL-082 (MUST, Shipped):** Provider mutations on the merge path (reviews,
+  merges, source-branch deletion, label writes by the merge stages) MUST be
   recorded through the run's mutation recorder so the journal attributes
-  every external side effect.
+  every external side effect. *(GitHub, Gitea, and ADO — the earlier "not
+  ADO" annotation was stale: `newProviderForStage`
+  (`cmd/goobers/stageprovider.go`) calls `SetMutationRecorder` on every ADO
+  stage provider, and the ADO landing/PR-thread/pull-request/work-item paths
+  all route their mutations through it, including ADO-N25's own
+  `deleteSourceBranch` completion PATCH via `prepareLandingIntent`/
+  `recordLandingReceipt`. #2061.)*
 - **PRL-083 (MUST, Shipped):** Refusals, voids, and no-work outcomes are
   **normal, journaled outcomes** (exit 0 with structured result files), so
   telemetry can distinguish "the machine declined for a stated reason" from a

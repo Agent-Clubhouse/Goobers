@@ -40,6 +40,11 @@ type Request struct {
 	CommitTitle     string
 	CommitMessage   string
 	MergeMethod     providers.MergeMethod
+	// DeleteSourceBranch asks the landed provider to delete the pull
+	// request's source branch as part of landing it — meaningful on ADO
+	// only (ADO-N25); GitHub's branch cleanup runs as a separate,
+	// provider-neutral call after a confirmed merge and ignores this field.
+	DeleteSourceBranch bool
 }
 
 // Result reports what Land did.
@@ -63,12 +68,13 @@ type directLander struct{}
 
 func (directLander) Land(ctx context.Context, provider *providers.Dispatcher, req Request) (Result, error) {
 	res, err := provider.MergePullRequest(ctx, providers.MergePullRequestRequest{
-		Repository:      req.Repository,
-		PullID:          req.PullID,
-		ExpectedHeadSHA: req.ExpectedHeadSHA,
-		CommitTitle:     req.CommitTitle,
-		CommitMessage:   req.CommitMessage,
-		MergeMethod:     req.MergeMethod,
+		Repository:         req.Repository,
+		PullID:             req.PullID,
+		ExpectedHeadSHA:    req.ExpectedHeadSHA,
+		CommitTitle:        req.CommitTitle,
+		CommitMessage:      req.CommitMessage,
+		MergeMethod:        req.MergeMethod,
+		DeleteSourceBranch: req.DeleteSourceBranch,
 	})
 	if err != nil {
 		if res.Merged {
@@ -94,7 +100,8 @@ func (enqueueLander) Land(ctx context.Context, provider *providers.Dispatcher, r
 		// GitHub's enqueue path IS the merge endpoint, so a dropped merge
 		// method makes GitHub apply its own default ("merge") and a
 		// squash-only ruleset 405s every landing.
-		MergeMethod: req.MergeMethod,
+		MergeMethod:        req.MergeMethod,
+		DeleteSourceBranch: req.DeleteSourceBranch,
 	})
 	if err != nil {
 		var receiptErr *providers.LandingReceiptError

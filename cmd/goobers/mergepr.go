@@ -392,6 +392,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		landResult, mergeErr = lander.Land(ctx, dispatcher, mergepolicy.Request{
 			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
 			CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
+			DeleteSourceBranch: adoDeleteSourceBranchGranted(isADO),
 		})
 		return nil
 	})
@@ -637,6 +638,23 @@ func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoR
 func adoVerdictPinMatches(verdict apiv1.Verdict, poll providers.PullRequestPollResult) bool {
 	return verdict.HeadSHA != "" && verdict.HeadSHA == poll.HeadSHA &&
 		verdict.BaseSHA != "" && verdict.BaseSHA == poll.BaseSHA
+}
+
+// adoDeleteSourceBranchGranted reports whether the pull request landing on
+// ADO (isADO) should ask for source-branch cleanup on the same completion
+// PATCH (ADO-N25). ADO has no separate post-merge DeleteBranch call — its
+// PollPullRequest never populates HeadRepository, so cleanupMergedBranch
+// stays unreachable for it — so cleanup must ride the landing call itself,
+// gated on the same grant GitHub's cleanup requires (github:branch:delete).
+// It uses the presence-check idiom landingAuthority already uses: a
+// resolvable providerToken means the stage declared the capability, without
+// spending its credential.
+func adoDeleteSourceBranchGranted(isADO bool) bool {
+	if !isADO {
+		return false
+	}
+	_, err := providerToken(capability.GitHubBranchDelete)
+	return err == nil
 }
 
 type mergeBranchCleanup struct {

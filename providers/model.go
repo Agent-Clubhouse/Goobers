@@ -752,6 +752,16 @@ type MergePullRequestRequest struct {
 	CommitMessage string `json:"commitMessage,omitempty"`
 	// MergeMethod, if set, selects merge, squash, or rebase semantics.
 	MergeMethod MergeMethod `json:"mergeMethod,omitempty"`
+	// DeleteSourceBranch, if set, asks the provider to delete the pull
+	// request's source branch as part of landing it. GitHub ignores this
+	// field: its branch cleanup runs as a separate, provider-neutral
+	// DeleteBranch call after a confirmed merge (cmd/goobers/mergepr.go's
+	// cleanupMergedBranch), not through this request. ADO has no such
+	// separate call — PollPullRequest never populates HeadRepository for
+	// it — so ADO honors this field by setting
+	// completionOptions.deleteSourceBranch on the same PATCH that lands
+	// the pull request (design ado-parity-dsl-2-0.md §3.3, ADO-N25).
+	DeleteSourceBranch bool `json:"deleteSourceBranch,omitempty"`
 }
 
 // MergePullRequestResult reports the outcome of a merge attempt. Merged=false
@@ -866,6 +876,12 @@ type EnqueuePullRequestRequest struct {
 	// and GitHub's enqueue mutation has no such field (issue #882). It
 	// stays required on the direct-merge path, which is what #877 fixed.
 	MergeMethod MergeMethod `json:"mergeMethod,omitempty"`
+	// DeleteSourceBranch is the same request MergePullRequestRequest
+	// carries, for the same reason: on ADO the auto-complete PATCH is the
+	// only opportunity to ask for source-branch cleanup, so it must be set
+	// at enqueue time rather than after the completion job lands the pull
+	// request (ADO-N25). GitHub ignores it.
+	DeleteSourceBranch bool `json:"deleteSourceBranch,omitempty"`
 }
 
 // EnqueuePullRequestResult reports the outcome of an enqueue attempt.
