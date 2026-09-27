@@ -457,6 +457,128 @@ func TestRetryAfterDelaySupportsHTTPDate(t *testing.T) {
 	}
 }
 
+// TestADOQuotaObservationUnknownWithoutHeaders pins ADO-N40's first
+// acceptance criterion: a response with none of ADO's rate-limit headers
+// must never be read as a genuine "0 remaining" quota window.
+func TestADOQuotaObservationUnknownWithoutHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/workitemtypes/") {
+			writeJSON(t, w, map[string]any{"value": []map[string]string{
+				{"name": "Active", "category": "InProgress"},
+			}})
+			return
+		}
+		writeJSON(t, w, map[string]any{
+			"id": 42,
+			"fields": map[string]any{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "no-headers",
+				"System.State":        "Active",
+			},
+		})
+	}))
+	defer server.Close()
+
+	quota := &recordingQuotaObserver{}
+	rate := &recordingObserver{}
+	provider := NewADOProvider("org", "project", "token",
+		func(p *ADOProvider) { p.BaseURL = server.URL },
+		WithADOQuotaObserver(quota),
+		WithADORateLimitObserver(rate),
+	)
+
+	if _, err := provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project"}, "42"); err != nil {
+		t.Fatalf("GetWorkItem() error = %v", err)
+	}
+	observation, ok := quota.last()
+	if !ok {
+		t.Fatal("expected a quota observation")
+	}
+	if observation.Known || observation.Remaining != 0 {
+		t.Fatalf("quota observation = %#v, want Known=false", observation)
+	}
+	if rate.count() != 0 {
+		t.Fatalf("rate-limit events = %#v, want none for a plain 200", rate.events)
+	}
+}
+
+// TestADORateLimitDelayHeaderSurfacesDiagnosticEvent pins ADO-N40's second
+// acceptance criterion: X-RateLimit-Delay on an otherwise-successful response
+// is surfaced as a diagnostic "delayed" rate-limit event, with no retry.
+func TestADORateLimitDelayHeaderSurfacesDiagnosticEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/workitemtypes/") {
+			writeJSON(t, w, map[string]any{"value": []map[string]string{
+				{"name": "Active", "category": "InProgress"},
+			}})
+			return
+		}
+		w.Header().Set("X-RateLimit-Delay", "1.5")
+		w.Header().Set("X-RateLimit-Remaining", "199997")
+		w.Header().Set("X-RateLimit-Reset", "1784210000")
+		writeJSON(t, w, map[string]any{
+			"id": 42,
+			"fields": map[string]any{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "delayed",
+				"System.State":        "Active",
+			},
+		})
+	}))
+	defer server.Close()
+
+	rate := &recordingObserver{}
+	provider := NewADOProvider("org", "project", "token",
+		func(p *ADOProvider) { p.BaseURL = server.URL },
+		WithADORateLimitObserver(rate),
+	)
+
+	if _, err := provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project"}, "42"); err != nil {
+		t.Fatalf("GetWorkItem() error = %v", err)
+	}
+	event, ok := rate.last()
+	if !ok {
+		t.Fatal("expected a rate-limit event for X-RateLimit-Delay")
+	}
+	if event.Outcome != RateLimitOutcomeDelayed {
+		t.Fatalf("event outcome = %q, want %q", event.Outcome, RateLimitOutcomeDelayed)
+	}
+	if event.Delay < 1400*time.Millisecond || event.Delay > 1600*time.Millisecond {
+		t.Fatalf("event delay = %s, want ~1.5s", event.Delay)
+	}
+	if !event.RemainingKnown || event.Remaining != 199997 {
+		t.Fatalf("event remaining = %#v, want known 199997", event)
+	}
+}
+
+// TestADORateLimitEventRemainingUnknownOn429WithOnlyRetryAfter pins that a
+// 429 answered with only Retry-After (no X-RateLimit-Remaining) reports its
+// event's remaining as unknown, not a fabricated 0.
+func TestADORateLimitEventRemainingUnknownOn429WithOnlyRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	observer := &recordingObserver{}
+	provider := NewADOProvider("org", "project", "token",
+		func(p *ADOProvider) { p.BaseURL = server.URL },
+		WithADOMaxRateLimitRetries(0),
+		WithADORateLimitObserver(observer),
+	)
+	if _, err := provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project"}, "42"); err == nil {
+		t.Fatal("expected an error from an exhausted rate limit")
+	}
+	event, ok := observer.last()
+	if !ok {
+		t.Fatal("expected a rate-limit event")
+	}
+	if event.RemainingKnown {
+		t.Fatalf("event = %#v, want RemainingKnown=false without X-RateLimit-Remaining", event)
+	}
+}
+
 func TestRateLimitEventJSONOmitsEndpointAndRawHeaders(t *testing.T) {
 	const credential = "credential-canary"
 	data, err := json.Marshal(RateLimitEvent{

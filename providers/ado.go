@@ -676,6 +676,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			return nil, fmt.Errorf("send request: %w", err)
 		}
 		p.observeQuota(ctx, resp)
+		p.observeRateLimitDelay(ctx, resp, endpoint)
 		if err := p.deliveredCredentialRejected(resp, method, endpoint); err != nil {
 			return nil, err
 		}
@@ -773,7 +774,7 @@ func (p *ADOProvider) rateLimitPlan(resp *http.Response, endpoint string, attemp
 	} else {
 		wait += rateLimitResetSlack
 	}
-	return wait, RateLimitEvent{
+	ev := RateLimitEvent{
 		Provider:      ProviderADO,
 		Scope:         rateLimitScope(endpoint),
 		Delay:         wait,
@@ -783,6 +784,11 @@ func (p *ADOProvider) rateLimitPlan(resp *http.Response, endpoint string, attemp
 		RetryAfterRaw: raw,
 		Attempt:       attempt,
 	}
+	if remaining, known := adoRemainingHeader(resp); known {
+		ev.Remaining = remaining
+		ev.RemainingKnown = true
+	}
+	return wait, ev
 }
 
 func (p *ADOProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent) {
@@ -791,14 +797,29 @@ func (p *ADOProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent) {
 	}
 }
 
+// adoRemainingHeader parses X-RateLimit-Remaining. Absent or unparseable is
+// reported as unknown (ok=false), never as a remaining value of 0 (ADO-N40):
+// callers must not confuse "no header" with "quota exhausted".
+func adoRemainingHeader(resp *http.Response) (remaining int, ok bool) {
+	raw := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining"))
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
 	if p.quotaObserver == nil {
 		return
 	}
 	observation := QuotaObservation{Provider: ProviderADO}
-	remaining, remainingErr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")))
+	remaining, remainingKnown := adoRemainingHeader(resp)
 	resetSeconds, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
-	if remainingErr == nil && resetErr == nil && remaining >= 0 && resetSeconds > 0 {
+	if remainingKnown && resetErr == nil && resetSeconds > 0 {
 		observation.Remaining = remaining
 		// X-RateLimit-Reset is Unix epoch time (Microsoft's rate-limits docs:
 		// "Time when, if all resource consumption stops immediately, tracked
@@ -814,6 +835,39 @@ func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
 		}
 	}
 	p.quotaObserver.ObserveQuota(ctx, observation)
+}
+
+// observeRateLimitDelay surfaces Azure DevOps' X-RateLimit-Delay header
+// (ADO-N40): present on an otherwise-successful response when ADO itself
+// slowed the request down to stay under its own throttling threshold. It is
+// diagnostic only — no retry is made and the scheduler's quota state is not
+// touched (docs/design/ado-parity-dsl-2-0.md §8.3) — so it is safe to check
+// on every response, not only 429s.
+func (p *ADOProvider) observeRateLimitDelay(ctx context.Context, resp *http.Response, endpoint string) {
+	if p.rateObserver == nil {
+		return
+	}
+	raw := strings.TrimSpace(resp.Header.Get("X-RateLimit-Delay"))
+	if raw == "" {
+		return
+	}
+	seconds, err := strconv.ParseFloat(raw, 64)
+	if err != nil || seconds <= 0 {
+		return
+	}
+	ev := RateLimitEvent{
+		Provider: ProviderADO,
+		Scope:    rateLimitScope(endpoint),
+		Delay:    time.Duration(seconds * float64(time.Second)),
+		Outcome:  RateLimitOutcomeDelayed,
+		Endpoint: endpoint,
+		Status:   resp.StatusCode,
+	}
+	if remaining, known := adoRemainingHeader(resp); known {
+		ev.Remaining = remaining
+		ev.RemainingKnown = true
+	}
+	p.observeRateLimit(ctx, ev)
 }
 
 type adoPatchOperation struct {
