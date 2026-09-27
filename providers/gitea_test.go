@@ -787,7 +787,7 @@ func TestGiteaProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 		}
 		assertMethod(t, r, http.MethodGet)
 		writeJSON(t, w, []map[string]interface{}{
-			{"filename": "internal/runner/run.go", "status": "modified", "additions": 12, "deletions": 3},
+			{"filename": "internal/runner/run.go", "status": "modified", "additions": 12, "deletions": 3, "patch": "@@ -1 +1 @@\n-old\n+new"},
 			{"filename": "cmd/goobers/new.go", "previous_filename": "cmd/goobers/old.go", "status": "renamed", "additions": 40, "deletions": 0},
 		})
 	}))
