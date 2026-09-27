@@ -283,6 +283,11 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 	// The runner inventory can already pin an agentic stage here: a
 	// harnesses:[copilot] runner class resolves and places, so this is
 	// reachable today rather than hypothetical.
+	if in.RoleRoutedBacklogProvider != "" {
+		return dispatchRefusal(ctx, in, t, rec, env.ContextPointers, deltaOut, CrossProviderBacklogPodCode,
+			"stage of a topology (b) gaggle; refused before a pod was created",
+			crossProviderBacklogPodReason(t.Name, in.RepoRef.Provider, in.RoleRoutedBacklogProvider))
+	}
 	if t.Type == apiv1.TaskDeterministic {
 		if t.Run == nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name)
@@ -396,17 +401,44 @@ func instanceRootRefusalReason(taskName string, command []string, kind string) s
 // the walk's continuity record must see an empty digest rather than inherit the
 // previous stage's by omission.
 func dispatchInstanceRootRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, reason string) (apiv1.ResultEnvelope, error) {
+	return dispatchRefusal(ctx, in, t, rec, pointers, deltaOut, executor.StageRequiresInstanceRootCode,
+		"stage requires the daemon's instance root; refused before a pod was created", reason)
+}
+
+// dispatchRefusal journals a stage.finished FAILURE with the given code for a
+// stage refused before dispatch; see dispatchInstanceRootRefusal for why the
+// refusal is a normal, journaled stage outcome.
+func dispatchRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, code, summary, reason string) (apiv1.ResultEnvelope, error) {
 	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error) {
 		return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
-			Summary: "stage requires the daemon's instance root; refused before a pod was created",
+			Summary: summary,
 			Error: &apiv1.ErrorInfo{
-				Code:      executor.StageRequiresInstanceRootCode,
+				Code:      code,
 				Message:   reason,
 				Retryable: false,
 			},
 		}}, nil
 	}, deltaOut)
+}
+
+// CrossProviderBacklogPodCode names, in a stage's failure ErrorInfo.Code, a
+// stage of a topology (b) gaggle (a GitHub or Gitea backlog for Azure DevOps
+// code, docs/design/ado-parity-dsl-2-0.md §7.2) that was refused a stage pod.
+//
+// Topology (b) routes backlog work and backlog-family credentials by role, and
+// the stage resolves that routing from the instance config. A stage pod has
+// no instance config, so a backlog stage there would address the Azure
+// DevOps repository with the backlog repository's credential. Every stage of
+// such a run is therefore refused before a pod is created; placing the
+// gaggle's stages on a self runner runs them.
+const CrossProviderBacklogPodCode = "cross_provider_backlog_pod_unsupported"
+
+func crossProviderBacklogPodReason(taskName string, project, backlog apiv1.Provider) string {
+	return fmt.Sprintf(
+		"task %q belongs to a gaggle whose backlog is on %s and whose code is on %s (topology (b)); a stage pod has no instance config to route backlog work and credentials by role — place this gaggle's stages on a self runner",
+		taskName, backlog, project,
+	)
 }
 
 // StageDispatcher is the mode-3 substrate seam the dispatch activity executes

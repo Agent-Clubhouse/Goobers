@@ -574,6 +574,10 @@ Deviations from the steps above:
 - **The ADO-N13 guard is lifted only for ADO code.** A mismatch between two
   non-ADO providers keeps its routed provider and its CFG011 warning, so
   GitHub and Gitea behaviour does not change.
+- **(b) stages do not run in stage pods.** A pod has no instance config to
+  route by role, so the engine refuses every stage of a (b) run before a pod
+  is created (`RunInput.RoleRoutedBacklogProvider`). The gaggle's stages run
+  on a self runner.
 
 `docs/guides/ado-limitations.md` lists what stages need to declare in (b),
 and the known gaps.

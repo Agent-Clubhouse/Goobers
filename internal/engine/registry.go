@@ -201,6 +201,10 @@ type StartSpec struct {
 	// decide the same way on replay as it did live, and a config edit between
 	// the two would otherwise change the command sequence and wedge the run.
 	HITL *HITLPolicy
+	// RoleRoutedBacklogProvider is the gaggle's backlog provider when topology
+	// (b) routes its backlog to another provider than RepoRef's; empty
+	// otherwise. See RunInput.RoleRoutedBacklogProvider.
+	RoleRoutedBacklogProvider apiv1.Provider
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -273,6 +277,8 @@ func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s St
 		GooberDigest:           s.GooberDigest,
 		ConfigGeneration:       s.ConfigGeneration,
 		HITL:                   s.HITL,
+
+		RoleRoutedBacklogProvider: s.RoleRoutedBacklogProvider,
 
 		BacklogQueryAssignedTo:    s.BacklogQueryAssignedTo,
 		BacklogQueryRequireLabels: s.BacklogQueryRequireLabels,
