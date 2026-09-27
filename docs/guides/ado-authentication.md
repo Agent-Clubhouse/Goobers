@@ -244,16 +244,33 @@ for the capabilities it declares:
   never infers the scheme from the token's shape. Agentic stages do not
   receive it.
 
-The daemon tracks each Entra token's expiry and refreshes it shortly before it
-lapses, but the stage does not receive the expiry. A delivered token can
-therefore have only a few minutes left. A stage cannot refresh what it was
-delivered: when Azure DevOps rejects the value with HTTP 401, the request fails
-without a retry, with an error that names the capability, says the credential
-expired, was revoked or has no access to the resource called, and keeps the 401
-response (Azure DevOps answers 401 for a missing scope or project access too).
-It is reported as an authentication failure (`github_auth_failed`). The next
-attempt receives a new value, which helps with expiry but not with missing
-access. Refreshing a delivered value in a stage is follow-up #5905.
+The daemon tracks each Entra token's expiry. Before it delivers a token with
+less than 20 minutes left, locally or through the credential plane, it rebuilds
+the credential source and fetches again, so the stage starts with a fresh
+token. For `workload-identity` and `managed-identity` the rebuild bypasses the
+Azure SDK's token cache. For `azure-cli` the Azure CLI keeps its own cache and
+may return the same token until a few minutes before it expires; the daemon
+then delivers that token, which is still valid. The daemon never fails a stage
+because a refresh did not produce a longer-lived token.
+
+The stage receives each token's expiry as the non-secret
+`GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>` (an RFC 3339 UTC timestamp) beside
+`GOOBERS_CRED_<CAPABILITY>`. A PAT states no expiry and gets no such variable.
+
+A stage cannot refresh what it was delivered: when Azure DevOps rejects the
+value with HTTP 401, the request fails without a retry, with an error that
+names the capability and keeps the 401 response. It is reported as an
+authentication failure (`github_auth_failed`). The delivered expiry decides
+the wording:
+
+- at or after the expiry, the credential "expired at" that time;
+- before it, the credential was "revoked or without access to this resource"
+  (Azure DevOps answers 401 for a missing scope or project access too);
+- with no delivered expiry (a PAT, or a variable set by hand), "expired,
+  revoked, or without access to this resource".
+
+The next attempt receives a new value, which helps with expiry but not with
+missing access.
 
 The workload and managed identity sources that back grants are built on first
 use, so a host without the identity can still run read-only commands such as
@@ -329,11 +346,14 @@ the instance config surface documented above.
 
 ## Security behavior
 
-- Entra tokens are cached with an expiry-aware refresh window.
+- Entra tokens are cached with an expiry-aware refresh window, and a token
+  delivered to a stage has at least 20 minutes left whenever the source can
+  mint one.
 - A 401 invalidates an expiring credential and retries exactly once. A
   credential delivered to a stage is never resent after a 401; that request
-  fails with an "expired, revoked, or without access to this resource" error
-  that still classifies as an authentication failure.
+  fails with an error that says whether the credential expired or was revoked
+  or lacks access (when its expiry was delivered) and still classifies as an
+  authentication failure.
 - PAT sources are not retried as though they were refreshable.
 - The daemon registers every value it resolves with the journal and telemetry
   scrubber when it mints it, in each form the value can travel in: the raw

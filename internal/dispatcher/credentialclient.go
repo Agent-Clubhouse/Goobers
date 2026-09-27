@@ -49,6 +49,10 @@ const defaultCredentialRetryDeadline = 3 * time.Minute
 type MintedCredential struct {
 	Capability string `json:"capability"`
 	Value      string `json:"value"`
+	// ExpiresAt is the expiry the plane stated for Value
+	// (httpapi.MintedCredential), nil when its source states none. The pod
+	// delivers it to the stage beside the value (#5905).
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 // CredentialResolution is one resolve answer: the minted credentials, plus

@@ -414,6 +414,52 @@ func TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized(t *testing.T)
 	}
 }
 
+// TestADODeliveredCredentialRejectionUsesTheDeliveredExpiry pins #5905: with
+// the expiry the daemon delivered beside the value, a 401 at or after it is
+// reported as an expired credential, and one before it as revoked or without
+// access. Either way the error stays ErrADODeliveredCredentialRejected, keeps
+// the 401 and classifies as an authentication failure.
+func TestADODeliveredCredentialRejectionUsesTheDeliveredExpiry(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		expiresAt time.Time
+		want      string
+		notWant   string
+	}{
+		{name: "past expiry", expiresAt: now.Add(-time.Minute), want: "(expired at 2026-09-28T11:59:00Z)", notWant: "revoked"},
+		{name: "at expiry", expiresAt: now, want: "(expired at 2026-09-28T12:00:00Z)", notWant: "revoked"},
+		{name: "before expiry", expiresAt: now.Add(time.Hour), want: "(revoked or without access to this resource; it does not expire until 2026-09-28T13:00:00Z)", notWant: "expired"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, err := NewADODeliveredCredentialSourceWithExpiry(ADOCredentialKindBearer, "delivered-secret-value", "github:pr:write", tc.expiresAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider := NewADOProvider("org", "project", "",
+				WithADOCredentialSource(source),
+				func(p *ADOProvider) {
+					p.now = func() time.Time { return now }
+					p.Client = adoHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+						return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("TF400813: not authorized"))}, nil
+					})
+				},
+			)
+			_, err = provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "42")
+			if !errors.Is(err, ErrADODeliveredCredentialRejected) || !IsAuthenticationError(err) {
+				t.Fatalf("GetWorkItem error = %v, want an authentication failure matching ErrADODeliveredCredentialRejected", err)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.want) || strings.Contains(msg, tc.notWant) {
+				t.Fatalf("error %q, want it to contain %q and not %q", msg, tc.want, tc.notWant)
+			}
+			if !strings.Contains(msg, "github:pr:write") || !strings.Contains(msg, "status 401") || strings.Contains(msg, "delivered-secret-value") {
+				t.Fatalf("error %q must name the capability, keep the 401 and not leak the value", msg)
+			}
+		})
+	}
+}
+
 func TestNewADODeliveredCredentialSourceRejectsUnusableInput(t *testing.T) {
 	if _, err := NewADODeliveredCredentialSource("other", "value", "repo:push"); err == nil {
 		t.Fatal("unknown kind accepted")

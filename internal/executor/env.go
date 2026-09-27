@@ -27,6 +27,13 @@ func CredentialEnvVar(capabilityName string) string {
 	return capability.CredentialEnvVar(capabilityName)
 }
 
+// CredentialExpiryEnvVar returns the variable that carries the stated expiry
+// of the credential delivered under CredentialEnvVar(capabilityName)
+// (capability.CredentialExpiryEnvVar).
+func CredentialExpiryEnvVar(capabilityName string) string {
+	return capability.CredentialExpiryEnvVar(capabilityName)
+}
+
 // InputEnvVar returns the deterministic env var name a stage's declared
 // Task.Inputs key is passed through under, e.g. "trustLabel" ->
 // "GOOBERS_INPUT_TRUSTLABEL". Exported for the same reason as
@@ -265,8 +272,22 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		}
 		registrar.Register([]byte(token))
 		env = append(env, CredentialEnvVar(capability)+"="+token)
+		env = appendCredentialExpiry(env, set, capability)
 	}
 	return env, nil
+}
+
+// appendCredentialExpiry appends CredentialExpiryEnvVar for capability when
+// the credential materialized for it states an expiry, so a stage that cannot
+// refresh the value can tell an expired credential from a revoked one
+// (#5905). The stage pod gets the same variable from stageCredentialEnv in
+// cmd/goobers/dispatchexec.go.
+func appendCredentialExpiry(env []string, set *credentials.Set, name string) []string {
+	expiresAt, ok := set.Expiry(name)
+	if !ok || expiresAt.IsZero() {
+		return env
+	}
+	return append(env, CredentialExpiryEnvVar(name)+"="+capability.FormatCredentialExpiry(expiresAt))
 }
 
 // ConfigGenerationEnvVar identifies the immutable execution archive for a run.

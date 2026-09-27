@@ -292,9 +292,18 @@ credentials at all (credential containment, #5664).
 > **As shipped (ADO-N18):** a stage, local or pod, cannot refresh a delivered
 > value. A 401 fails the request at once with an "expired, revoked, or without
 > access to this resource" error that names the capability and keeps the 401
-> response, so it still classifies as an authentication failure. The daemon does not deliver the token's expiry.
-> Pod re-resolve, expiry delivery or a minimum remaining lifetime at mint is
-> follow-up #5905.
+> response, so it still classifies as an authentication failure.
+>
+> **As shipped (#5905, PO ruling 2026-09-27):** the daemon refreshes a
+> credential with a stated expiry that has less than
+> `credentials.MinDeliveredLifetime` (20 minutes) left before it delivers it,
+> to a local stage and through the credential plane; an Entra source is
+> rebuilt so the Azure SDK's cache is bypassed, and a GitHub App token is
+> re-minted. When the refresh cannot do better (the Azure CLI's own cache), the
+> still-valid value is delivered. The expiry travels as the non-secret
+> `GOOBERS_CREDENTIAL_EXPIRES_<capability>`, and the 401 error says "expired"
+> at or after it and "revoked or without access" before it. Pod re-resolve on
+> a 401 was not needed.
 
 **Harness.** Remove the ADO exception that tolerates a missing grant
 (`internal/harness/environment.go:170-173`). Once every kind backs its grants, ADO
