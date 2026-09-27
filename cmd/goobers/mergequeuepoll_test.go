@@ -1015,30 +1015,41 @@ func TestMergeQueuePollADOReportsMergedWithoutBranchCleanupOrWorkItemWrite(t *te
 	}
 }
 
-// TestMergeQueuePollADORequiresCompleteCapability proves completion authority on
-// ADO rides on ado:pr:complete (capability.ADOPRComplete), resolved before the
-// provider is ever constructed — mirroring how the GitHub path gates on
-// github:pr:merge.
-func TestMergeQueuePollADORequiresCompleteCapability(t *testing.T) {
-	st := &adoPRDetailState{status: "completed", mergeCommit: "adomergesha"}
-	server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
-	root, _ := adoMergeQueuePollEnv(t, server.URL, "acme", "proj", "svc", false, map[string]string{
-		"pullNumber": "9",
-	})
+// TestMergeQueuePollADOLandingAuthorityMatrix pins the DSL 2.0 landing rule
+// for the ADO land oracle (docs/design/ado-parity-dsl-2-0.md §3.3), the same
+// matrix merge-pr runs: github:pr:merge alone or ado:pr:complete alone lands,
+// both lands with ado:pr:complete, and neither — including PR-write grants
+// only (SEC-053) — fails closed before the provider polls.
+func TestMergeQueuePollADOLandingAuthorityMatrix(t *testing.T) {
+	for _, tc := range adoLandingGrantCases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &adoPRDetailState{status: "completed", mergeCommit: "adomergesha"}
+			server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
+			root, dir := adoMergeQueuePollEnv(t, server.URL, "acme", "proj", "svc", false, map[string]string{
+				"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+			})
+			deliverLandingGrants(t, tc.grants)
+			credentials := recordADOStageCredentials(t)
 
-	code, _, stderr := runArgs(t, "merge-queue-poll", root)
-	if code != 1 || !strings.Contains(stderr, "ado:pr:complete") {
-		t.Fatalf("code = %d, stderr = %q, want an ado:pr:complete capability error", code, stderr)
-	}
-	if st.detailCalls != 0 {
-		t.Fatalf("detail calls = %d, want 0 — completion authority must be resolved before the provider polls", st.detailCalls)
+			code, _, stderr := runArgs(t, "merge-queue-poll", root)
+			assertLandingCredential(t, tc, code, stderr, *credentials)
+			if tc.want == "" {
+				if st.detailCalls != 0 {
+					t.Fatalf("detail calls = %d, want 0 — landing authority must be resolved before the provider polls", st.detailCalls)
+				}
+				return
+			}
+			if result := readQueueResult(t, dir); result["queueOutcome"] != "merged" {
+				t.Fatalf("result = %+v, want queueOutcome=merged", result)
+			}
+		})
 	}
 }
 
 // TestMergeQueuePollADOAzureCLIUsesDeliveredCredential covers a repository
 // configured for Microsoft Entra (azure-cli) auth: merge-queue-poll watches
 // completion with the bearer value delivered for ado:pr:complete, and without
-// that grant it fails before polling rather than falling back to the
+// a landing grant it fails before polling rather than falling back to the
 // repository's configured auth (ADO-N18).
 func TestMergeQueuePollADOAzureCLIUsesDeliveredCredential(t *testing.T) {
 	st := &adoPRDetailState{status: "completed", mergeCommit: "adomergesha"}
@@ -1065,8 +1076,8 @@ func TestMergeQueuePollADOAzureCLIUsesDeliveredCredential(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_ADO_PR_COMPLETE", "")
 	detailCalls := st.detailCalls
 	code, _, stderr = runArgs(t, "merge-queue-poll", root)
-	if code != 1 || !strings.Contains(stderr, "GOOBERS_CRED_ADO_PR_COMPLETE") {
-		t.Fatalf("without the grant: code = %d, stderr = %q, want a missing GOOBERS_CRED_ADO_PR_COMPLETE failure", code, stderr)
+	if code != 1 || !strings.Contains(stderr, "GOOBERS_CRED_GITHUB_PR_MERGE") {
+		t.Fatalf("without the grant: code = %d, stderr = %q, want a missing GOOBERS_CRED_GITHUB_PR_MERGE failure", code, stderr)
 	}
 	if st.detailCalls != detailCalls {
 		t.Fatalf("without the grant: detail calls = %d, want %d — no poll without completion authority", st.detailCalls, detailCalls)

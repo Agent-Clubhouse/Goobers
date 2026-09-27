@@ -33,13 +33,13 @@ capabilities must also appear on its referenced Goober.
 | `github:pr:review` | Submit provider-native GitHub approve/request-changes reviews. |
 | `provider:ci:cancel` | Cancel pending provider CI for a pinned commit. |
 | `github:branch:delete` | Delete a remote GitHub branch ref. |
-| `github:pr:merge` | Merge a GitHub pull request. |
+| `github:pr:merge` | Merge a pull request. The landing authority on every provider: on Azure DevOps it completes the pull request unless the stage also declares `ado:pr:complete`. |
 | `contents:read` | Fetch a separately declared read-only reference repository. |
 | `ado:code:read` | Read Azure Repos code and pull requests. |
 | `ado:pr:comment` | Post Azure Repos PR threads without vote or completion authority. |
 | `ado:pr:write` | Open or update Azure Repos pull requests. |
 | `ado:pr:status` | Publish Azure Repos pull-request statuses. Optional on the `report-pr-status` policy action, which requires `github:pr:write`; declaring `ado:pr:status` alongside it is accepted but not required. |
-| `ado:pr:complete` | Complete an Azure Repos pull request. |
+| `ado:pr:complete` | Complete an Azure Repos pull request. Optional: accepted on `merge-pr` and `merge-queue-poll` alongside the required `github:pr:merge`, and when declared, completion uses its credential instead. |
 | `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
 | `telemetry:read` | Read local telemetry and configured external telemetry connectors. |
 | `journal:read` | Resolve evidence from another run's journal. |

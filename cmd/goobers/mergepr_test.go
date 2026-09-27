@@ -1362,10 +1362,10 @@ func TestMergePRDispatchesADOAndRequiresCompletionCapability(t *testing.T) {
 	})
 	code, _, stderr := runArgs(t, "merge-pr", rootNoGrant)
 	if code != 1 {
-		t.Fatalf("code = %d, want 1 without ado:pr:complete; stderr = %q", code, stderr)
+		t.Fatalf("code = %d, want 1 without github:pr:merge or ado:pr:complete; stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "ADO_PR_COMPLETE") {
-		t.Fatalf("stderr = %q, want missing ado:pr:complete capability", stderr)
+	if !strings.Contains(stderr, "GITHUB_PR_MERGE") {
+		t.Fatalf("stderr = %q, want missing github:pr:merge capability", stderr)
 	}
 
 	root, dir := adoMergePREnv(t, server.URL, false, map[string]string{

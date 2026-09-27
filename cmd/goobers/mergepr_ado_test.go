@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
@@ -245,29 +246,100 @@ func TestMergePRDispatchesToADOAndLandsWithoutVerdictComment(t *testing.T) {
 	}
 }
 
-// TestMergePRADORequiresCompletionCapability proves the merge/completion
-// authority on ADO is gated on the dedicated ado:pr:complete capability: with
-// the grant absent, merge-pr fails closed BEFORE constructing any provider —
-// the fake ADO server is never touched — so a stage carrying only ado:pr:write
-// can never complete a pull request.
-func TestMergePRADORequiresCompletionCapability(t *testing.T) {
-	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
-	root, _ := adoMergePREnv(t, server.URL, true, map[string]string{
-		"pullNumber": "359",
-		"verdict":    "pass",
-		"headSha":    "headsha1",
-		"baseSha":    "basesha1",
-	})
+// landingGrantTokens gives every grant a landing matrix case can deliver a
+// distinct value, so the credential a provider was built from names the
+// capability it came from.
+var landingGrantTokens = map[capability.Capability]string{
+	capability.GitHubPRMerge: "github-merge-token",
+	capability.ADOPRComplete: "ado-complete-token",
+	capability.GitHubPRWrite: "github-pr-write-token",
+	capability.ADOPRWrite:    "ado-pr-write-token",
+}
 
-	code, _, stderr := runArgs(t, "merge-pr", root)
-	if code != 1 {
-		t.Fatalf("code = %d, want 1 (fail-closed); stderr = %q", code, stderr)
+// landingGrantCase is one row of the ADO landing matrix
+// (docs/design/ado-parity-dsl-2-0.md §3.3): the grants a stage holds and the
+// delivered value the land must authenticate with, or "" when it must fail
+// closed before any provider call.
+type landingGrantCase struct {
+	name   string
+	grants []capability.Capability
+	want   string
+}
+
+var adoLandingGrantCases = []landingGrantCase{
+	{name: "mp-gh", grants: []capability.Capability{capability.GitHubPRMerge}, want: "github-merge-token"},
+	{name: "mp-ado", grants: []capability.Capability{capability.ADOPRComplete}, want: "ado-complete-token"},
+	{name: "mp-both", grants: []capability.Capability{capability.GitHubPRMerge, capability.ADOPRComplete}, want: "ado-complete-token"},
+	{name: "mp-neither"},
+	{name: "mp-pr-write-only", grants: []capability.Capability{capability.GitHubPRWrite, capability.ADOPRWrite}},
+}
+
+// deliverLandingGrants sets the GOOBERS_CRED_ value for each grant.
+func deliverLandingGrants(t *testing.T, grants []capability.Capability) {
+	t.Helper()
+	for _, grant := range grants {
+		t.Setenv(executor.CredentialEnvVar(string(grant)), landingGrantTokens[grant])
 	}
-	if !strings.Contains(stderr, "ADO_PR_COMPLETE") {
-		t.Fatalf("stderr = %q, want the missing ado:pr:complete credential named", stderr)
+}
+
+// assertLandingCredential checks the ADO providers a landing command built:
+// exactly one, from the wanted value, or none when the case must fail closed.
+func assertLandingCredential(t *testing.T, tc landingGrantCase, code int, stderr string, credentials []providers.ADOCredential) {
+	t.Helper()
+	if tc.want == "" {
+		if code != 1 {
+			t.Fatalf("code = %d, want 1 (fail closed); stderr = %q", code, stderr)
+		}
+		if !strings.Contains(stderr, "GOOBERS_CRED_GITHUB_PR_MERGE") || !strings.Contains(stderr, "ado:pr:complete") {
+			t.Fatalf("stderr = %q, want the missing github:pr:merge credential named and ado:pr:complete offered", stderr)
+		}
+		if len(credentials) != 0 {
+			t.Fatalf("ADO stage credentials = %+v, want none: a stage without landing authority builds no provider", credentials)
+		}
+		return
 	}
-	if n := atomic.LoadInt64(&state.getCalls) + atomic.LoadInt64(&state.patchCalls); n != 0 {
-		t.Fatalf("ADO server received %d PR requests, want 0 (must fail before any provider call)", n)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	want := providers.ADOCredential{Kind: providers.ADOCredentialKindPAT, Secret: tc.want}
+	if len(credentials) != 1 || credentials[0] != want {
+		t.Fatalf("ADO stage credentials = %+v, want exactly %+v", credentials, want)
+	}
+}
+
+// TestMergePRADOLandingAuthorityMatrix pins the DSL 2.0 landing rule on Azure
+// DevOps (docs/design/ado-parity-dsl-2-0.md §3.3): github:pr:merge alone lands,
+// ado:pr:complete alone lands, a stage holding both completes with
+// ado:pr:complete, and a stage holding neither — including one holding only
+// PR-write grants (SEC-053) — fails closed before touching the server.
+func TestMergePRADOLandingAuthorityMatrix(t *testing.T) {
+	for _, tc := range adoLandingGrantCases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+			root, dir := adoMergePREnv(t, server.URL, true, map[string]string{
+				"pullNumber": "359",
+				"verdict":    "pass",
+				"headSha":    "headsha1",
+				"baseSha":    "basesha1",
+			})
+			deliverLandingGrants(t, tc.grants)
+			credentials := recordADOStageCredentials(t)
+
+			code, _, stderr := runArgs(t, "merge-pr", root)
+			assertLandingCredential(t, tc, code, stderr, *credentials)
+			if tc.want == "" {
+				if n := atomic.LoadInt64(&state.getCalls) + atomic.LoadInt64(&state.patchCalls); n != 0 {
+					t.Fatalf("ADO server received %d PR requests, want 0 (must fail before any provider call)", n)
+				}
+				return
+			}
+			if merged, _ := readMergeResult(t, dir)["merged"].(bool); !merged {
+				t.Fatalf("result = %+v, want merged=true", readMergeResult(t, dir))
+			}
+			if atomic.LoadInt64(&state.patchCalls) != 1 {
+				t.Fatalf("completion PATCH called %d times, want 1", state.patchCalls)
+			}
+		})
 	}
 }
 
@@ -303,10 +375,11 @@ func TestMergePRAzureCLICompletesWithDeliveredCredential(t *testing.T) {
 	}
 }
 
-// TestMergePRAzureCLIWithoutCompleteGrantFailsClosed is the other half: with
-// no ado:pr:complete delivered, merge-pr on an Entra repository fails before
-// any request instead of falling back to the configured auth.
-func TestMergePRAzureCLIWithoutCompleteGrantFailsClosed(t *testing.T) {
+// TestMergePRAzureCLIWithoutLandingGrantFailsClosed is the other half: with
+// neither github:pr:merge nor ado:pr:complete delivered, merge-pr on an Entra
+// repository fails before any request instead of falling back to the
+// configured auth.
+func TestMergePRAzureCLIWithoutLandingGrantFailsClosed(t *testing.T) {
 	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
 	root, _ := adoMergePREnvWithAuth(t, server.URL, true, "azure-cli", map[string]string{
 		"pullNumber": "359",
@@ -317,8 +390,8 @@ func TestMergePRAzureCLIWithoutCompleteGrantFailsClosed(t *testing.T) {
 	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
 
 	code, _, stderr := runArgs(t, "merge-pr", root)
-	if code != 1 || !strings.Contains(stderr, "GOOBERS_CRED_ADO_PR_COMPLETE") {
-		t.Fatalf("code = %d, stderr = %q, want a missing GOOBERS_CRED_ADO_PR_COMPLETE failure", code, stderr)
+	if code != 1 || !strings.Contains(stderr, "GOOBERS_CRED_GITHUB_PR_MERGE") {
+		t.Fatalf("code = %d, stderr = %q, want a missing GOOBERS_CRED_GITHUB_PR_MERGE failure", code, stderr)
 	}
 	if atomic.LoadInt64(&state.patchCalls) != 0 {
 		t.Fatalf("completion PATCH called %d times, want 0", state.patchCalls)

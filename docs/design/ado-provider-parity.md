@@ -39,10 +39,12 @@ code path byte-identical.
   `repo.Provider == providers.ProviderADO`, mirroring the per-provider dispatch template
   `issue-close-out` established. On GitHub the ADO branch is unreachable; on ADO the GitHub
   helpers are gated off.
-- **Capability isolation is preserved on ADO.** Merge/completion authority rides on a
-  dedicated capability, `ado:pr:complete` (`capability.ADOPRComplete`) — the ADO
-  counterpart to `github:pr:merge`. It is resolved fail-closed *before* the completion-
-  authorized provider is constructed, so a stage carrying only `ado:pr:write` can never
+- **Capability isolation is preserved on ADO.** Merge/completion authority is
+  `github:pr:merge`, the landing authority on every provider in DSL 2.0
+  (`ado-parity-dsl-2-0.md` §3.3). `ado:pr:complete` (`capability.ADOPRComplete`) is
+  accepted and never required: when the stage declares it, completion uses it instead.
+  The landing grant is resolved fail-closed *before* the completion-authorized provider
+  is constructed, so a stage carrying only `github:pr:write` or `ado:pr:write` can never
   silently acquire completion authority (decider ≠ executor).
 - **Mandatory methods flow through the Dispatcher; ADO-only surfaces are called
   directly.** Poll / list / compare / detect-policy / enqueue / merge all run through the
@@ -63,7 +65,7 @@ ADO stage branches build the provider through the shared stage seam
 capability the stage declared, in the daemon-stated `GOOBERS_REPO_AUTH_SCHEME`
 (ADO-N18, `docs/design/ado-parity-dsl-2-0.md` §3.1): `github:pr:write` or
 `provider:pr:write` for pull-request work, `github:issues:*` for work items, `repo:push` for
-Git, `ado:pr:complete` for completion. Every auth kind — PAT, Azure CLI, workload identity,
+Git, `github:pr:merge` (or a declared `ado:pr:complete`) for completion. Every auth kind — PAT, Azure CLI, workload identity,
 managed identity — resolves in the daemon; no stage reads `repos[].auth`. Work-item
 reads/writes route through the backlog project reference
 (`backlogRepoRefForStage`) so a split code-repo/backlog-project instance addresses the
@@ -250,8 +252,10 @@ through the work-item API.
 ### 6.3 `merge-pr` and `queue-watch` — landing
 
 `merge-pr` gates ADO behind an `isADO` switch. Completion authority is resolved fail-closed
-first via `ado:pr:complete`; only then is the completion-authorized provider constructed and
-wrapped in the `Dispatcher`. Landing then flows through the **same shared code path** both
+first — `ado:pr:complete` when the stage declared it, otherwise `github:pr:merge`
+(`ado-parity-dsl-2-0.md` §3.3) — and only then is the completion-authorized provider
+constructed from that credential and wrapped in the `Dispatcher`. `queue-watch` resolves the
+same way. Both names stay in the config-generation revocation fence. Landing then flows through the **same shared code path** both
 providers use:
 
 | Contract step | ADO behavior |
@@ -413,9 +417,10 @@ scope.
   authors/reviewers key on **UPN**, and assignee comparison uses
   displayName — so assignee-scoped PR filters and native-review vote paths are intentionally
   not used on the ADO merge path.
-- **Completion authority.** `ado:pr:complete` is required for `merge-pr` and `queue-watch`
-  and is resolved fail-closed before the provider is built; `ado:pr:write` must never grant
-  completion.
+- **Completion authority.** `merge-pr` and `queue-watch` complete with `github:pr:merge`,
+  or with `ado:pr:complete` when the stage declared it; `ado:pr:complete` is never
+  required. The grant is resolved fail-closed before the provider is built;
+  `github:pr:write` and `ado:pr:write` must never grant completion.
 - **Preview api-version.** The PR-labels endpoint is only published under a `-preview`
   api-version; the label calls pin it explicitly.
 
@@ -480,6 +485,7 @@ set:
 | Requirement | ADO state |
 |---|---|
 | PRL-045 / PRL-064 | Queue eviction and timeout do not label the PR or seed the reconciliation ledger. |
+| PRL-040 | Landing authority is `github:pr:merge` on ADO too; `ado:pr:complete` is optional and, when declared, is the credential completion uses (ADO-N2, `ado-parity-dsl-2-0.md` §3.3). |
 | PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag. |
 | PRL-081 | ADO verdict threads are **posted**, not reconciled, so the single-sticky-comment guarantee does not hold on the thread carrier. |
 | PRL-082 | The ADO stage provider does not wire the mutation recorder, so ADO merge-path side effects are not journal-attributed. |
