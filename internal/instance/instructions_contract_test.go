@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -54,7 +55,7 @@ func TestGeneratedInstructionTemplatesDeclareScratchLocation(t *testing.T) {
 			PullRequestTokenEnv:  "WIDGET_PR_TOKEN",
 			RepoPushTokenEnv:     "WIDGET_PUSH_TOKEN",
 			CopilotTokenEnv:      "WIDGET_COPILOT_TOKEN",
-			Workflows:            guidedWorkflowOrder,
+			Workflows:            guidedGitHubWorkflows(),
 			CICommand:            []string{"npm", "run", "ci"},
 			RequiredCapabilities: []string{"node@20"},
 		})
@@ -104,4 +105,13 @@ func assertScratchInstruction(t *testing.T, path string) {
 	if !strings.Contains(string(data), scratchInstruction) {
 		t.Errorf("%s does not declare scratch files belong under %s", path, scratchInstruction)
 	}
+}
+
+// guidedGitHubWorkflows is every guided workflow GitHub guided setup accepts:
+// all of them except merge-review, which guided setup offers on Azure DevOps
+// only.
+func guidedGitHubWorkflows() []string {
+	return slices.DeleteFunc(slices.Clone(guidedWorkflowOrder), func(name string) bool {
+		return name == GuidedWorkflowMergeReview
+	})
 }

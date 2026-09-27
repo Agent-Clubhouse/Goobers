@@ -284,6 +284,11 @@ func TestInitGuidedRejectsExistingConfigurationBeforeWriting(t *testing.T) {
 
 func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 	for _, workflow := range guidedWorkflowOrder {
+		if workflow == GuidedWorkflowMergeReview {
+			// Guided merge-review is Azure DevOps-only; GitHub refuses it
+			// (TestInitGuidedGitHubRefusesMergeReview).
+			continue
+		}
 		t.Run(workflow, func(t *testing.T) {
 			opts := GuidedOptions{
 				GaggleName:           "widget",
@@ -765,6 +770,24 @@ func TestInitGuidedADORejectsBeforeWriting(t *testing.T) {
 	}
 }
 
+// TestInitGuidedGitHubRefusesMergeReview pins that guided setup offers
+// merge-review on Azure DevOps only: guided GitHub setup grants merge-review
+// no pull-request token, so it is refused before anything is written.
+func TestInitGuidedGitHubRefusesMergeReview(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "guided")
+	_, err := initGuidedForTest(root, GuidedOptions{
+		GaggleName: "widget", RepoOwner: "example-org", RepoName: "widget",
+		RepoTokenEnv: "REPO_TOKEN", WorkTrackingTokenEnv: "ISSUES_TOKEN", PullRequestTokenEnv: "PR_TOKEN",
+		Workflows: []string{GuidedWorkflowBacklogCuration, GuidedWorkflowMergeReview},
+	})
+	if err == nil || !strings.Contains(err.Error(), "merge-review workflow on Azure DevOps only") {
+		t.Fatalf("InitGuided error = %v, want the Azure DevOps-only merge-review refusal", err)
+	}
+	if _, statErr := os.Stat(root); !os.IsNotExist(statErr) {
+		t.Fatalf("refused guided setup wrote root, stat error = %v", statErr)
+	}
+}
+
 // TestInitGuidedADOUsesADOInstructions pins the per-provider instruction
 // selection: an ADO scaffold gets the curator's instructions-ado.md variant,
 // a GitHub scaffold keeps the canonical instructions.md, and goobers with no
@@ -786,8 +809,9 @@ func TestInitGuidedADOUsesADOInstructions(t *testing.T) {
 	githubOpts := GuidedOptions{
 		GaggleName: "widget", RepoOwner: "example-org", RepoName: "widget",
 		RepoTokenEnv: "REPO_TOKEN", WorkTrackingTokenEnv: "ISSUES_TOKEN", PullRequestTokenEnv: "PR_TOKEN",
-		CopilotTokenEnv: "MODEL_TOKEN",
-		Workflows:       []string{GuidedWorkflowBacklogCuration, GuidedWorkflowMergeReview},
+		CopilotTokenEnv:  "MODEL_TOKEN",
+		RepoPushTokenEnv: "PUSH_TOKEN", PullRequestCI: true,
+		Workflows: []string{GuidedWorkflowBacklogCuration, GuidedWorkflowImplementation},
 	}
 	if _, err := initGuidedForTest(githubRoot, githubOpts); err != nil {
 		t.Fatalf("InitGuided GitHub: %v", err)
