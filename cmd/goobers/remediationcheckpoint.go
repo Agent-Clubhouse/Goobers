@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -99,6 +100,23 @@ func (a *remediationAttempts) increment(cause remediationCause) {
 		a.SiblingOverlap++
 	case remediationCauseHumanComment:
 		a.HumanComment++
+	}
+}
+
+// refund returns one attempt of cause's allowance, never below zero — a
+// voided cycle's charge is given back (#5588).
+func (a *remediationAttempts) refund(cause remediationCause) {
+	switch cause {
+	case remediationCauseConflict:
+		a.Conflict = max(a.Conflict-1, 0)
+	case remediationCauseSubstantive:
+		a.Substantive = max(a.Substantive-1, 0)
+	case remediationCauseFailingCI:
+		a.FailingCI = max(a.FailingCI-1, 0)
+	case remediationCauseSiblingOverlap:
+		a.SiblingOverlap = max(a.SiblingOverlap-1, 0)
+	case remediationCauseHumanComment:
+		a.HumanComment = max(a.HumanComment-1, 0)
 	}
 }
 
@@ -236,7 +254,30 @@ type remediationState struct {
 	// renderRemediationComment otherwise renders is wrong for this record
 	// (#4174). It never gates any budget or escalation decision itself.
 	NoopGuardRepark bool `json:"noopGuardRepark,omitempty"`
+	// RunID and ChargedCauses make an advancing cycle's charge provisional
+	// (#5588/#5598): the checkpoint charges AttemptsByCause and records
+	// LastDiffDigest BEFORE the agent runs, so the run that recorded the
+	// cycle is named here along with exactly what it charged. Empty on
+	// escalations and on records written before this shipped.
+	RunID         string             `json:"runId,omitempty"`
+	ChargedCauses []remediationCause `json:"chargedCauses,omitempty"`
+	// InfrastructureVoided is set by the daemon's failed-terminal handler
+	// (voidRemediationChargeForRun) when RunID ended on an infrastructure
+	// fault — the cycle's fix was never evaluated. The next checkpoint refunds
+	// ChargedCauses and skips the same-diff comparison against this cycle
+	// instead of reading it as a failed or stalled attempt.
+	InfrastructureVoided bool `json:"infrastructureVoided,omitempty"`
+	// InfrastructureFailures counts consecutive cycles voided that way before
+	// this one. It bounds the refund: a PR whose every cycle dies on
+	// infrastructure escalates infrastructure-failure after
+	// remediationInfrastructureAllowance of them rather than looping forever.
+	InfrastructureFailures int `json:"infrastructureFailures,omitempty"`
 }
+
+// remediationInfrastructureAllowance is how many consecutive
+// infrastructure-voided cycles a PR may refund before the checkpoint parks it
+// with escalationOutcome infrastructure-failure (#5588).
+const remediationInfrastructureAllowance = 3
 
 // remediationStatePattern matches the machine-readable payload
 // remediationStateComment appends to its posted comment.
@@ -355,6 +396,9 @@ func renderRemediationComment(state remediationState) string {
 			"pr-remediation checkpoint: cycle %d, attempts by cause %s, diff digest `%s`.",
 			state.Cycles, renderRemediationAttempts(state.AttemptsByCause), state.LastDiffDigest,
 		)
+		if state.InfrastructureVoided {
+			prose += " This cycle's run ended on an infrastructure failure before its fix was evaluated, so its attempt will be refunded."
+		}
 	}
 	payload, err := remediationStateComment(state)
 	if err != nil {
@@ -558,6 +602,9 @@ type remediationCheckpointDecisionInput struct {
 	ExternalBlockReason        string
 	StructuralCollisions       []structuralCollision
 	StructuralCollisionContext string
+	// RunID is the run recording this cycle, stamped on an advancing state so
+	// its charge can be voided if the run dies on infrastructure (#5588).
+	RunID string
 }
 
 type remediationCheckpointDecision struct {
@@ -568,6 +615,7 @@ type remediationCheckpointDecision struct {
 }
 
 func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediationCheckpointDecision {
+	infraFailures := settleInfrastructureVoidedCycle(&in)
 	stalled := remediationStalled(in.Prior, in.Digest, in.BaseSHA)
 	exhaustedCause, exceeded := exhaustedRemediationCause(in.Prior.AttemptsByCause, in.Causes, in.Budgets)
 	structuralCollision := len(in.StructuralCollisions) > 0
@@ -683,8 +731,42 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 		State: remediationState{
 			Cycles: cycles, AttemptsByCause: attempts, LastDiffDigest: in.Digest,
 			HeadSHA: in.HeadSHA, BaseSHA: in.BaseSHA, LastSeenCommentAt: in.Watermark,
+			RunID: in.RunID, ChargedCauses: slices.Clone(in.Causes),
+			InfrastructureFailures: infraFailures,
 		},
 	}
+}
+
+// settleInfrastructureVoidedCycle settles the prior cycle's provisional
+// charge (#5588/#5598). A prior cycle whose run the failed-terminal handler
+// marked InfrastructureVoided never had its fix evaluated, so its
+// ChargedCauses are refunded and its pre-agent digest is dropped from the
+// same-diff comparison (the diff did not move because nothing ran, not because
+// the agent could not move it). Consecutive voided cycles are counted, and the
+// remediationInfrastructureAllowance-th one forces an infrastructure-failure
+// park so a PR whose runs always die before evaluation cannot loop forever.
+// Returns the consecutive voided-cycle count to carry forward (0 once a cycle
+// settles normally). A prior that was not voided is left untouched.
+func settleInfrastructureVoidedCycle(in *remediationCheckpointDecisionInput) int {
+	prior := in.Prior
+	if !prior.InfrastructureVoided || prior.Escalated {
+		return 0
+	}
+	for _, cause := range prior.ChargedCauses {
+		prior.AttemptsByCause.refund(cause)
+	}
+	prior.LastDiffDigest = ""
+	in.Prior = prior
+	infraFailures := prior.InfrastructureFailures + 1
+	if infraFailures >= remediationInfrastructureAllowance && !in.Forced {
+		in.Forced = true
+		in.ForcedOutcome = remediationOutcomeInfrastructure
+		in.ForcedReason = fmt.Sprintf(
+			"the last %d remediation cycles each ended on an infrastructure failure before their fix could be evaluated; no implementation defect was established",
+			infraFailures,
+		)
+	}
+	return infraFailures
 }
 
 func remediationCheckpointMoot(stdout, stderr io.Writer, selectedNumber int) int {
@@ -2025,6 +2107,7 @@ func runRemediationCheckpointCore(
 		StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, observation.structuralCollisions),
 		ExternallyBlocked:          externalBlockReason != "",
 		ExternalBlockReason:        externalBlockReason,
+		RunID:                      strings.TrimSpace(os.Getenv(journalclient.EnvRunID)),
 	})
 	if decision.Escalated {
 		return env.escalate(decision, mode, observation, priorCommentID)
