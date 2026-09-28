@@ -277,13 +277,20 @@ the stage.
 
 Codex also reports `check_unobservable`, with source `startup-required`.
 Goobers registers goobers-io with `required = true`, so the Codex CLI refuses
-to start a session without it. When the CLI exits before the model turn
-because goobers-io failed to initialize, the adapter records
-`transport_failure` from the same source. The stage then fails with
-`HARNESS_REQUIRED_MCP_UNAVAILABLE` as an infrastructure failure, the same as a
-failed Copilot pre-model probe. A declared server's required-startup failure
-keeps the ordinary harness error. Neither the annotation nor the error copies
-the CLI's server error text.
+to start a session without it. A session that starts (its JSONL stream shows
+`thread.started` or `turn.started`) is therefore evidence that goobers-io
+initialized: the adapter records a second `check_unobservable` with
+connection and inventory `ready` and authorization `unobservable`, which
+clears an earlier codex availability failure for the same stage. When the
+first invocation exits without starting a session and its stderr carries the
+CLI's refusal naming goobers-io, the adapter records `transport_failure` from
+the same source. The stage then fails with `HARNESS_REQUIRED_MCP_UNAVAILABLE`
+as an infrastructure failure, the same as a failed Copilot pre-model probe. A
+session that started is never reclassified, whatever its output quotes, and a
+completion-repair resume keeps the ordinary harness error, because the model
+has already run. A declared server's required-startup failure keeps the
+ordinary harness error. Neither the annotation nor the error copies the CLI's
+server error text.
 
 The opt-in read-only live checks send no model prompt:
 

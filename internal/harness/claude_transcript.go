@@ -409,7 +409,7 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 		droppedBytes:       dropped,
 		mcpServersReported: mcpServersReported,
 		mcpServerStatus:    mcpServerStatus,
-		mcpServersUsed:     mcpToolUse.used,
+		mcpToolsUsed:       mcpToolUse.used,
 	}, true
 }
 

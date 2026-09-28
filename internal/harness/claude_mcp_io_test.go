@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -484,17 +485,28 @@ func TestClaudeAdapterToleratesGoobersIOPendingAtInitWhenLaterUsed(t *testing.T)
 	}
 }
 
-func TestClaudeMCPToolServer(t *testing.T) {
+// TestClaudeMCPServersUsed confirms a successfully called tool is attributed
+// to its registered server through the claude CLI's name normalization, and
+// to the longest registered name when one name extends another with "__".
+func TestClaudeMCPServersUsed(t *testing.T) {
+	registered := []string{goobersIOServerName, "github", "docs.example", "a", "a__b"}
 	for tool, want := range map[string]string{
 		"mcp__goobers-io__get_run_info": goobersIOServerName,
 		"mcp__github__search":           "github",
+		"mcp__docs_example__lookup":     "docs.example",
+		"mcp__a__b__tool":               "a__b",
+		"mcp__a__tool":                  "a",
 		"Read":                          "",
-		"mcp__goobers-io":               "",
-		"mcp____tool":                   "",
+		"mcp__goobers-io__":             "",
+		"mcp__unregistered__tool":       "",
 	} {
-		got, ok := claudeMCPToolServer(tool)
-		if got != want || ok != (want != "") {
-			t.Errorf("claudeMCPToolServer(%q) = %q, %v; want %q", tool, got, ok, want)
+		used := claudeMCPServersUsed(map[string]bool{tool: true}, registered)
+		wantUsed := map[string]bool{}
+		if want != "" {
+			wantUsed[want] = true
+		}
+		if !maps.Equal(used, wantUsed) {
+			t.Errorf("claudeMCPServersUsed(%q) = %v, want %v", tool, used, wantUsed)
 		}
 	}
 }

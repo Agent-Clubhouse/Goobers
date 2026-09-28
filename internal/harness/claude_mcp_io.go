@@ -113,6 +113,7 @@ func claudeMCPServerFailures(req RunRequest, capture transcriptCapture) []MCPSer
 			registered = append(registered, server.Name)
 		}
 	}
+	used := claudeMCPServersUsed(capture.mcpToolsUsed, registered)
 	var failures []MCPServerFailure
 	seen := make(map[string]struct{}, len(registered))
 	for _, name := range registered {
@@ -124,7 +125,7 @@ func claudeMCPServerFailures(req RunRequest, capture transcriptCapture) []MCPSer
 		switch {
 		case !ok:
 			failures = append(failures, MCPServerFailure{Server: name, Status: "absent"})
-		case status == claudeMCPStatusPending && capture.mcpServersUsed[name]:
+		case status == claudeMCPStatusPending && used[name]:
 			// The init report caught the server mid-handshake, and the turn
 			// later called one of its tools successfully: it connected, just
 			// after init (#5397). The same startup race the Copilot
@@ -151,11 +152,12 @@ const claudeMCPStatusConnected = "connected"
 // when init was emitted. The CLI keeps connecting it during the turn.
 const claudeMCPStatusPending = "pending"
 
-// claudeMCPToolUseTracker records which MCP servers a claude-code turn
-// demonstrably reached: a tool_use naming one of the server's tools
-// (mcp__<server>__<tool>) followed by a tool_result for that call that is not
-// an error. A failed call proves nothing, since the CLI answers a call to an
-// unconnected server's tool with an error result too.
+// claudeMCPToolUseTracker records the MCP tools a claude-code turn
+// demonstrably reached: a tool_use naming an MCP tool (mcp__<server>__<tool>)
+// followed by a tool_result for that call that is not an error. A failed call
+// proves nothing, since the CLI answers a call to an unconnected server's tool
+// with an error result too. Which server a tool belongs to is resolved against
+// the registered names afterwards (claudeMCPServersUsed).
 type claudeMCPToolUseTracker struct {
 	calls map[string]string
 	used  map[string]bool
@@ -172,32 +174,56 @@ func (t *claudeMCPToolUseTracker) observe(events []transcriptEvent) {
 			continue
 		}
 		if event.Role == "assistant" {
-			if server, ok := claudeMCPToolServer(call.Name); ok {
-				t.calls[call.ID] = server
+			if strings.HasPrefix(call.Name, claudeMCPToolPrefix) {
+				t.calls[call.ID] = call.Name
 			}
 			continue
 		}
-		server, ok := t.calls[call.ID]
+		tool, ok := t.calls[call.ID]
 		if event.Role != "tool" || !ok || call.Success == nil || !*call.Success {
 			continue
 		}
 		if t.used == nil {
 			t.used = make(map[string]bool)
 		}
-		t.used[server] = true
+		t.used[tool] = true
 	}
 }
 
-// claudeMCPToolServer returns the server segment of a claude MCP tool name
-// ("mcp__<server>__<tool>").
-func claudeMCPToolServer(tool string) (string, bool) {
-	rest, ok := strings.CutPrefix(tool, "mcp__")
-	if !ok {
-		return "", false
+const claudeMCPToolPrefix = "mcp__"
+
+// claudeMCPServersUsed maps each successfully called MCP tool to the
+// registered server it belongs to. The claude CLI names a server's tools
+// mcp__<normalized server>__<tool>, where the normalized name replaces every
+// character outside [A-Za-z0-9_-] with '_'. A server name may itself contain
+// "__", so a tool is attributed to the longest registered name whose prefix
+// it carries.
+func claudeMCPServersUsed(tools map[string]bool, registered []string) map[string]bool {
+	used := make(map[string]bool)
+	for tool := range tools {
+		best := ""
+		for _, name := range registered {
+			prefix := claudeMCPToolPrefix + claudeMCPNormalizeServerName(name) + "__"
+			if len(tool) > len(prefix) && strings.HasPrefix(tool, prefix) && len(name) > len(best) {
+				best = name
+			}
+		}
+		if best != "" {
+			used[best] = true
+		}
 	}
-	server, _, ok := strings.Cut(rest, "__")
-	if !ok || server == "" {
-		return "", false
-	}
-	return server, true
+	return used
+}
+
+// claudeMCPNormalizeServerName mirrors the claude CLI's normalization of a
+// server name inside its tool names.
+func claudeMCPNormalizeServerName(name string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, name)
 }
