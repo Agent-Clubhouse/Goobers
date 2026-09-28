@@ -19,8 +19,9 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 )
 
-const runsHelp = "Usage: goobers runs [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n" +
-	"       goobers runs <command> [flags] [path]\n\n" +
+const runsHelp = "Usage: goobers runs <command> [flags] [path]\n\n" +
+	"A flag in place of <command> (for example `goobers runs --api=<url>`)\n" +
+	"runs the run table, as `runs list` does.\n\n" +
 	"Commands:\n" +
 	"  list    alias for the goobers status run table (same flags)\n" +
 	"  du      report per-run journal and artifact bytes, largest first\n"

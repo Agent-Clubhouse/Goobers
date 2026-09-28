@@ -3614,8 +3614,10 @@ $ goobers run cancel <run-id>
 list runs and report per-run disk usage
 
 ~~~text
-Usage: goobers runs [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
-       goobers runs <command> [flags] [path]
+Usage: goobers runs <command> [flags] [path]
+
+A flag in place of <command> (for example `goobers runs --api=<url>`)
+runs the run table, as `runs list` does.
 
 Commands:
   list    alias for the goobers status run table (same flags)
