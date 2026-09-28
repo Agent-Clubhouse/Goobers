@@ -189,14 +189,17 @@ func Validate(bundle apiv1.GaggleBundle) error {
 		return fmt.Errorf("%w: source.apiVersion is required", ErrInvalidBundle)
 	case bundle.ExportedAt.IsZero():
 		return fmt.Errorf("%w: exportedAt is required", ErrInvalidBundle)
-	case strings.TrimSpace(bundle.Provenance.Exporter) == "":
-		return fmt.Errorf("%w: provenance.exporter is required", ErrInvalidBundle)
+	case bundle.Provenance.Exporter != "goobers":
+		return fmt.Errorf("%w: provenance.exporter must be %q", ErrInvalidBundle, "goobers")
 	case strings.TrimSpace(bundle.Provenance.ExporterVersion) == "":
 		return fmt.Errorf("%w: provenance.exporterVersion is required", ErrInvalidBundle)
 	case bundle.Definition.Gaggle.Name == "":
 		return fmt.Errorf("%w: definition.gaggle.metadata.name is required", ErrInvalidBundle)
 	case bundle.Definition.Gaggle.Name != bundle.Source.Name:
 		return fmt.Errorf("%w: source.name %q does not match definition gaggle %q", ErrInvalidBundle, bundle.Source.Name, bundle.Definition.Gaggle.Name)
+	}
+	if err := validateRetainedEnvelope(bundle); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidBundle, err)
 	}
 	if err := validateReferences(bundle.Definition); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidBundle, err)
@@ -213,6 +216,30 @@ func Validate(bundle apiv1.GaggleBundle) error {
 	}
 	if bundle.Digest != digest || bundle.Source.Digest != digest {
 		return fmt.Errorf("%w: digest mismatch: computed %s", ErrInvalidBundle, digest)
+	}
+	return nil
+}
+
+func validateRetainedEnvelope(bundle apiv1.GaggleBundle) error {
+	if !reflect.DeepEqual(bundle.Provenance.SanitizedFields, sanitizedFields) {
+		return errors.New("provenance.sanitizedFields does not match the current bundle contract")
+	}
+	retained := struct {
+		Source     apiv1.GaggleBundleSource     `json:"source"`
+		ExportedAt time.Time                    `json:"exportedAt"`
+		Provenance apiv1.GaggleBundleProvenance `json:"provenance"`
+	}{
+		Source: bundle.Source, ExportedAt: bundle.ExportedAt, Provenance: bundle.Provenance,
+	}
+	data, err := json.Marshal(retained)
+	if err != nil {
+		return fmt.Errorf("encode retained envelope for validation: %w", err)
+	}
+	if reason := credentialContentReason(data); reason != "" {
+		return fmt.Errorf("retained envelope %s", reason)
+	}
+	if path, value := firstAbsoluteString(retained); path != "" {
+		return fmt.Errorf("retained envelope %s contains non-portable absolute path %q", path, value)
 	}
 	return nil
 }
@@ -351,6 +378,9 @@ func clearRepoConnection(repo *apiv1.RepoRef) {
 
 func portableRepositories(spec apiv1.GaggleSpec) []apiv1.RepoRef {
 	repositories := append([]apiv1.RepoRef{spec.Project}, spec.AdditionalRepos...)
+	if backlogRepo, ok := portableBacklogRepository(spec.Project, spec.Backlog); ok {
+		repositories = append(repositories, backlogRepo)
+	}
 	for _, sibling := range spec.Siblings {
 		repositories = append(repositories, sibling.Project)
 	}
@@ -359,6 +389,23 @@ func portableRepositories(spec apiv1.GaggleSpec) []apiv1.RepoRef {
 	}
 	sort.Slice(repositories, func(i, j int) bool { return repositoryKey(repositories[i]) < repositoryKey(repositories[j]) })
 	return repositories
+}
+
+func portableBacklogRepository(project apiv1.RepoRef, backlog apiv1.BacklogRef) (apiv1.RepoRef, bool) {
+	if project.Provider != apiv1.ProviderADO ||
+		(backlog.Provider != apiv1.ProviderGitHub && backlog.Provider != apiv1.ProviderGitea) {
+		return apiv1.RepoRef{}, false
+	}
+	owner, name, ok := strings.Cut(backlog.Project, "/")
+	if !ok || owner == "" || name == "" {
+		return apiv1.RepoRef{}, false
+	}
+	return apiv1.RepoRef{
+		Provider: backlog.Provider,
+		BaseURL:  backlog.BaseURL,
+		Owner:    owner,
+		Name:     name,
+	}, true
 }
 
 func validateReferences(definition apiv1.GaggleBundleDefinition) error {

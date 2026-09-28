@@ -459,6 +459,20 @@ func TestPrepareImportValidatesBeforeMutation(t *testing.T) {
 			},
 			want: ErrInvalidBundle,
 		},
+		{
+			name: "credential in retained provenance",
+			mutate: func(bundle *apiv1.GaggleBundle) {
+				bundle.Provenance.ExporterCommit = "ghp_" + strings.Repeat("a", 36)
+			},
+			want: ErrInvalidBundle,
+		},
+		{
+			name: "absolute path in retained provenance",
+			mutate: func(bundle *apiv1.GaggleBundle) {
+				bundle.Provenance.ExporterVersion = `C:\Users\alice\goobers.exe`
+			},
+			want: ErrInvalidBundle,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -588,6 +602,40 @@ func TestPrepareImportRejectsNameConflictAndMissingAuthorization(t *testing.T) {
 		}
 		if after := readFile(t, filepath.Join(destination.ConfigDir(), "manifest.yaml")); !bytes.Equal(before, after) {
 			t.Fatal("authorization failure mutated destination")
+		}
+	})
+
+	t.Run("missing cross-provider backlog authorization", func(t *testing.T) {
+		crossProvider := cloneBundle(t, bundle)
+		crossProvider.Definition.Gaggle.Spec.Project = apiv1.RepoRef{
+			Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "example-repo",
+		}
+		crossProvider.Definition.Gaggle.Spec.Backlog = apiv1.BacklogRef{
+			Provider: apiv1.ProviderGitHub, Project: "backlog-owner/backlog-repo",
+		}
+		crossProvider.Definition.Repositories = portableRepositories(crossProvider.Definition.Gaggle.Spec)
+		refreshBundleDigest(t, &crossProvider)
+
+		destination := newEmptyBundleDestination(t, source)
+		cfg, err := instance.LoadConfig(destination.ConfigFile())
+		if err != nil {
+			t.Fatal(err)
+		}
+		template := cfg.Repos[0]
+		template.Provider = "ado"
+		template.Owner = "example-org"
+		template.Project = "example-project"
+		template.Name = "example-repo"
+		cfg.Repos = []instance.RepoRef{template}
+		if err := instance.WriteConfig(destination.ConfigFile(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		before := readFile(t, filepath.Join(destination.ConfigDir(), "manifest.yaml"))
+		if _, err := PrepareImport(destination, "copied-example", crossProvider); !errors.Is(err, ErrRepositoryAuthorization) {
+			t.Fatalf("PrepareImport error = %v, want backlog authorization requirement", err)
+		}
+		if after := readFile(t, filepath.Join(destination.ConfigDir(), "manifest.yaml")); !bytes.Equal(before, after) {
+			t.Fatal("backlog authorization failure mutated destination")
 		}
 	})
 }
