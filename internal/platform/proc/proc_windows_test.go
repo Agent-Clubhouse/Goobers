@@ -4,6 +4,7 @@ package proc
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -250,38 +251,69 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	}
 
 	marker := filepath.Join(t.TempDir(), "wsl.pid")
+	// Keep shell startup errors rather than reducing every setup failure to a
+	// missing PID. Read only after the launcher has stopped, and bound CI output.
+	launcherLogPath := filepath.Join(t.TempDir(), "wsl-launcher.log")
+	launcherLog, err := os.Create(launcherLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = launcherLog.Close()
+		if !t.Failed() {
+			return
+		}
+		log, openErr := os.Open(launcherLogPath)
+		if openErr != nil {
+			t.Logf("open WSL launcher diagnostics: %v", openErr)
+			return
+		}
+		defer func() { _ = log.Close() }()
+		data, readErr := io.ReadAll(io.LimitReader(log, 16*1024))
+		t.Logf("WSL launcher stdout/stderr (first 16 KiB, read error %v):\n%s", readErr, data)
+	})
 	cmd := exec.Command(
 		"powershell.exe",
 		"-NoLogo",
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",
-		"$child = Start-Process wsl.exe -ArgumentList '-e','sh','-c','sleep 30' -WindowStyle Hidden -PassThru; Set-Content -LiteralPath $env:GOOBERS_WSL_PID -Value $child.Id; Start-Sleep -Seconds 30",
+		"$ErrorActionPreference = 'Stop'; $child = Start-Process wsl.exe -ArgumentList '-e','sh','-c','sleep 30' -WindowStyle Hidden -PassThru; Set-Content -LiteralPath $env:GOOBERS_WSL_PID -Value $child.Id; Start-Sleep -Seconds 30",
 	)
 	cmd.Env = append(os.Environ(), "GOOBERS_WSL_PID="+marker)
+	cmd.Stdout = launcherLog
+	cmd.Stderr = launcherLog
 	tree, err := Start(cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		_ = tree.Kill()
-		_ = cmd.Wait()
+		killErr := tree.Kill()
+		waitErr := cmd.Wait()
+		if t.Failed() {
+			t.Logf("WSL launcher cleanup: kill=%v, wait=%v", killErr, waitErr)
+		}
 	}()
 
 	var wslPID int
+	var markerData []byte
+	var markerErr error
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		data, readErr := os.ReadFile(marker)
-		if readErr == nil {
-			wslPID, err = strconv.Atoi(strings.TrimSpace(string(data)))
-			if err == nil {
+		markerData, markerErr = os.ReadFile(marker)
+		if markerErr == nil {
+			wslPID, markerErr = strconv.Atoi(strings.TrimSpace(string(markerData)))
+			if markerErr == nil && wslPID > 0 {
 				break
 			}
 		}
+		if !Alive(cmd.Process.Pid) {
+			t.Fatalf("WSL launcher %d exited before recording a valid PID: marker=%q, error=%v", cmd.Process.Pid, markerData, markerErr)
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if wslPID == 0 {
-		t.Fatal("WSL process did not record its pid")
+	if wslPID <= 0 {
+		t.Fatalf("WSL process did not record its pid within 10s: launcher=%d alive=%t, marker=%q, error=%v", cmd.Process.Pid, Alive(cmd.Process.Pid), markerData, markerErr)
 	}
 	if !Alive(wslPID) {
 		t.Fatalf("WSL process %d exited before tree termination", wslPID)
