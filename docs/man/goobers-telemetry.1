@@ -1,12 +1,12 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS TELEMETRY" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers telemetry \- configure, test, query, export, prune, or compact telemetry
+goobers telemetry \- configure, test, query, export, mark fixes, prune, or compact telemetry
 .SH SYNOPSIS
 \fBgoobers telemetry\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -14,6 +14,7 @@ merges: confirmed PR landings and daily counts by originating instance
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
+mark-fix: mark a Backprop finding for post-fix verification
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -22,8 +23,8 @@ compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
 .nf
 goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance
 goobers telemetry test ./instance
-goobers telemetry stats
-goobers telemetry errors
+goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123
+goobers telemetry prune --dry-run
 .fi
 .SH SEE ALSO
 \fBgoobers\fR(1)
