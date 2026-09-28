@@ -61,6 +61,13 @@ These are background goroutines, **not an OS low-priority scheduling class**.
 Asynchronous work still consumes CPU, memory, disk bandwidth, and filesystem
 operations. Local authoritative journal fsync remains a separate cost.
 
+Azure uploads reuse at most four gzip compressors per process. Cache misses
+allocate rather than waiting; unused compressors above the bound are discarded.
+Request output buffers are not cached, and a compressor is released before HTTP
+starts. This bounds retained compression workspace while reducing repeated
+allocation for sparse uploads. It does not change batching, durable admission,
+retry behavior, compression level, or the per-stream HTTP concurrency limit.
+
 Redaction skips replacement only when the regexp engine's required literal
 prefix is absent; credential patterns and their ordering are unchanged.
 This avoids copying ordinary payloads once per pattern without a second full

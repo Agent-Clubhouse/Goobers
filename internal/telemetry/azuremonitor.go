@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -177,12 +176,7 @@ func (c *azureMonitorClient) sendPayload(ctx context.Context, raw []byte) error 
 
 func (c *azureMonitorClient) sendPayloadRequest(ctx context.Context, raw []byte) error {
 	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	if _, err := writer.Write(raw); err != nil {
-		_ = writer.Close()
-		return fmt.Errorf("compress Azure Monitor telemetry: %w", err)
-	}
-	if err := writer.Close(); err != nil {
+	if err := azureMonitorCompression.compress(&compressed, raw); err != nil {
 		return fmt.Errorf("compress Azure Monitor telemetry: %w", err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ingestionURL, &compressed)
