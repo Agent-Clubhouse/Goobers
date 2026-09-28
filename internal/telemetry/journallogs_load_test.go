@@ -26,6 +26,59 @@ type journalBatchTestExporter struct {
 	bodyBytes []int
 }
 
+func TestJournalCoalescingDoesNotDelayFullBatches(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		count, size int
+	}{
+		{"record limit", journalLogBatchLimit, 1},
+		{"byte limit", 8, journalLogBatchBytes / 8},
+		{"large singleton", 1, journalLogBatchBytes + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			p := &journalLogPipeline{ctx: ctx, wake: make(chan struct{}, 1)}
+			done := make(chan struct{})
+			go func() { p.coalesce(time.Hour); close(done) }()
+			t.Cleanup(func() { cancel(); <-done })
+			for range tc.count {
+				if _, ok := p.reserve(tc.size); !ok {
+					t.Fatal("fixture admission failed")
+				}
+				p.signal()
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("a full batch waited for the sparse-traffic delay")
+			}
+		})
+	}
+}
+
+func TestJournalCoalescingKeepsSparseDelayAndCancels(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	p := &journalLogPipeline{ctx: ctx, wake: make(chan struct{}, 1)}
+	if _, ok := p.reserve(1); !ok {
+		t.Fatal("fixture admission failed")
+	}
+	p.signal()
+	done := make(chan struct{})
+	go func() { p.coalesce(time.Hour); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	select {
+	case <-done:
+		t.Fatal("sparse traffic bypassed coalescing")
+	case <-time.After(10 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not stop coalescing")
+	}
+}
+
 func (e *journalBatchTestExporter) Export(ctx context.Context, records []sdklog.Record) error {
 	if err := e.journalTestExporter.Export(ctx, records); err != nil {
 		return err

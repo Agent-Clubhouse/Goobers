@@ -583,12 +583,7 @@ func (p *journalLogPipeline) run() {
 			case <-p.wake:
 				// Coalesce a newly arriving burst. This is a maximum batching
 				// delay, never a delay between batches of an existing backlog.
-				timer := time.NewTimer(journalLogBatchDelay)
-				select {
-				case <-timer.C:
-				case <-p.ctx.Done():
-				}
-				timer.Stop()
+				p.coalesce(journalLogBatchDelay)
 			case <-p.ctx.Done():
 			case request := <-p.flushes:
 				err := p.provider.ForceFlush(request.ctx)
@@ -629,6 +624,30 @@ func (p *journalLogPipeline) run() {
 		close(p.progress)
 		p.progress = make(chan struct{})
 		p.mu.Unlock()
+	}
+}
+
+func (p *journalLogPipeline) coalesce(delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		// There is nothing left to coalesce once a bounded batch is full.
+		// In particular, durable catch-up admits one read batch then waits
+		// for its acknowledgement; imposing the idle delay on each full
+		// byte-limited batch artificially throttles large-record recovery.
+		count, size := p.reserved()
+		if count >= journalLogBatchLimit || size >= journalLogBatchBytes {
+			return
+		}
+		select {
+		case <-timer.C:
+			return
+		case <-p.ctx.Done():
+			return
+		case <-p.wake:
+			// Existing producer notifications announce that the batch grew.
+			// Do not restart the timer: sparse traffic still waits at most delay.
+		}
 	}
 }
 
