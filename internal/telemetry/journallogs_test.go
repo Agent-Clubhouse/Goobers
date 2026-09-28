@@ -45,7 +45,14 @@ func TestJournalLogsOTLPWireContract(t *testing.T) {
 }
 
 func TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun(t *testing.T) {
-	exporter := &journalTestExporter{}
+	exporter := &journalTestExporter{
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
+		ignoreExportContext: true,
+	}
+	var releaseOnce sync.Once
+	releaseExporter := func() { releaseOnce.Do(func() { close(exporter.release) }) }
+	defer releaseExporter()
 	registry, scrubber := journal.DefaultScrubber()
 	registry.Register([]byte("pat-fixture-must-not-leave"))
 	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), scrubber)}
@@ -73,6 +80,11 @@ func TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun(t *testing.T) 
 	if err := scheduler.Append(journal.Event{Type: journal.EventDaemonStarted}); err != nil {
 		t.Fatal(err)
 	}
+	// The timeline contract needs a complete, uncontended input. Park the
+	// worker in Export (outside the queue lock) before queuing the rest: the
+	// production sink intentionally drops on TryLock contention, which is
+	// covered separately, and draining concurrently made this test flaky.
+	waitJournalStarted(t, exporter.started)
 	if err := scheduler.Append(journal.Event{Type: journal.EventTriggerFired, Gaggle: "production", Workflow: "poll-and-fix", Reason: "scheduled"}); err != nil {
 		t.Fatal(err)
 	}
@@ -101,10 +113,14 @@ func TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun(t *testing.T) 
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
+	releaseExporter()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.journalLogs.flush(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if stats := client.JournalExportStats(); stats.Accepted != 6 || stats.Dropped != 0 {
+		t.Fatalf("timeline admission = %+v; want all six events accepted with no drops", stats)
 	}
 
 	exporter.mu.Lock()
