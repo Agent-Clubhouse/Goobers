@@ -188,6 +188,25 @@ complete reconstruction. With both Azure and OTLP journal destinations, the
 shared pipeline also sends catch-up to OTLP; either destination's admission
 failure prevents cursor advancement and can duplicate already accepted copies.
 
+The default local journal policy is separately **90 days / 500 runs across the
+instance**, with automatic pruning enabled. Either bound can select terminal
+runs for removal; local retention does not wait for Azure export cursors or
+remote receipt. Records already admitted to replay can survive source pruning,
+but records not yet copied cannot be reconstructed after their journal is gone.
+An entirely missing source journal is not an export-failure increment: inspect
+the retention summary and policy as well as exporter health counters.
+
+The first over-policy candidates start a seven-day dry-run grace period. A
+first real enforcement that would remove more than half the history also needs
+acknowledgement; grace expiry alone is not a hard disk-usage ceiling. Fresh
+24-hour tests therefore do not establish mature-policy pruning behavior.
+For sizing, ten actual runs every three minutes is about 200 runs/hour, so
+500 runs represent roughly 2.5 hours at that illustrative rate, not 90 days.
+Sweeps, custody holds and polls finding no work affect actual history. Size
+local retention, replay storage and disk/inodes together; increasing only the
+replay byte cap does not extend source retention. Successfully ingested cloud
+history follows the tenant's Azure retention settings independently.
+
 With replay enabled, an export call acknowledges **local durable admission**,
 not Azure receipt. Inspect replay `Delivered`, `Retried`, and pending/pruning
 counters for remote delivery; journal `ExportFailures` now reports admission

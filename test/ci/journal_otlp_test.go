@@ -62,6 +62,7 @@ func journalOTLPTestInventory(t *testing.T) map[string][]string {
 		"internal/runner/telemetry_dispatch_probe_test.go",
 		"internal/runner/telemetry_dispatch_load_test.go",
 		"cmd/goobers/journaltelemetry_test.go",
+		"cmd/goobers/journalretention_replay_test.go",
 		"cmd/goobers/telemetryidentity_test.go",
 	} {
 		paths, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(pattern)))

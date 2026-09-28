@@ -158,6 +158,17 @@ and requires at least 32 records/request overall. Separate deterministic tests
 cover count/byte pressure, overload accounting, shutdown deadlines, no ambiguous
 OTLP retry, replay restart, pruning, malformed files, stalled upload isolation,
 and retry backoff under continued admission.
+
+`TestJournalCatchupRetentionBoundary` in `cmd/goobers` separately combines actual
+configured retention with the journal exporter. Six synthetic terminal runs
+cross a three-run fixture policy: grace preserves unspooled source; mature
+pruning preserves already-spooled records through restart; mature pruning
+cannot recover never-admitted records whose source was deleted. It captures
+source sequence keys before pruning and verifies stable received identities,
+not merely the post-prune survivor count. Maturity is simulated with valid
+aged/acknowledged retention state, not a real seven-day wait. It is selected by
+the existing Windows `TestJournalCatchup.*` gate. Native filesystem execution
+still matters; a fresh 24-hour soak under grace does not replace this boundary.
 The indexed-spool tests also cover cross-connection claims, interrupted updates,
 expired leases, initialization recovery, successful work-budget continuation,
 and deterministic handoff to a waiting producer before a hot drainer reenters.
