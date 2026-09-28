@@ -189,11 +189,17 @@ are bulk operations. A private SQLite manifest caches file metadata and aggregat
 counts across processes; ordinary admission and health checks do not enumerate
 the backlog. New/changed directories reconcile after an interrupted update or
 an older writer. Legacy payloads are read for metadata during reconciliation,
-not on every admission. The NDJSON files remain authoritative. Initial indexing
-runs in the background; unavailable accounting is explicitly reported, not
+not on every admission. The NDJSON files remain authoritative. The manifest
+also records a shared audit cadence: once a minute, the next replay operation
+checks all file metadata even if directory timestamps have not changed. This
+catches timestamp-coalesced external changes without scanning on every batch.
+Initial indexing runs in the background; unavailable accounting is explicitly reported, not
 interpreted as an empty spool. Initialization retries transient storage failures.
 An obstructed or unavailable spool does not abort daemon startup; background
 health reports degradation.
+Once initialization has failed, admissions fail promptly and are counted until
+the background retry succeeds. A final shutdown drain is skipped while the
+manifest is still unavailable; existing replay files remain for the next start.
 
 Upload claims expire after 30 seconds if a process dies. HTTP attempts are
 limited to five seconds; local acknowledgement cleanup has a separate bounded

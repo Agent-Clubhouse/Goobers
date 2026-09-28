@@ -34,7 +34,14 @@ load-test a production tenant without its approval.
   Shutdown gives source catch-up at most five seconds for a last-chance copy;
   retained journal records can resume on restart. Remote Azure delivery errors
   remain visible through health/retry accounting without making daemon shutdown
-  fail; local storage errors still propagate, including in mixed error chains.
+  fail; local exporter errors are not reclassified as remote failures, including
+  in mixed error chains. A known failed replay initialization rejects admission
+  promptly and counts the failure while background initialization keeps retrying.
+  Shutdown does not wait for an unavailable manifest to attempt a final upload.
+- A persisted, one-minute full-audit cadence supplements directory timestamps
+  on the next replay operation. This finds external/interrupted file changes
+  even when a filesystem coalesces timestamps. Short-lived CLI processes share
+  that cadence. A locally rolled-back mutation forces the next reconciliation.
 
 These are background goroutines, **not an OS low-priority scheduling class**.
 Asynchronous work still consumes CPU, memory, disk bandwidth, and filesystem
@@ -49,6 +56,7 @@ go test -race ./internal/telemetry -run 'TestJournalLogs|TestAzureReplay|TestAzu
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalLogsDurableHTTP$' -benchtime=4096x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayBacklogAdmission$' -benchtime=5x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexedStats$' -benchtime=100x -count=3
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexAudit$' -benchtime=3x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupAcknowledgedHistory$' -benchtime=14400x -count=3 -timeout=3m
 ```
 
@@ -79,6 +87,9 @@ by one file per measured iteration; use the fixed iteration count above when
 comparing results.
 The indexed-stats benchmark compares empty and 12,000-file manifests after
 initialization. Fixture creation is excluded; it is not a cold-start benchmark.
+The audit benchmark separately forces complete metadata reconciliation with
+0 or 12,000 actual files, excluding creation and initial manifest construction.
+Keep its periodic cost separate from ordinary stats/admission costs.
 The acknowledged-history benchmark repeatedly visits 128 warm, enrolled run
 journals and scales the per-visit measurement to 14,400 visits (ten runs every
 three minutes across a 72-hour retention window). It is not an actual

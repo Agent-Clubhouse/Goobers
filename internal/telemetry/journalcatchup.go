@@ -256,9 +256,10 @@ func (s *journalCatchup) processBatch(ctx context.Context, root *os.Root, db *sq
 		return false, nil
 	}
 	fingerprint, unchanged, err := unchangedJournalRun(ctx, root, dir, runFile, cursor)
-	if err != nil || unchanged {
+	if err != nil || unchanged && hint.seq == 0 {
 		return false, err
 	}
+	// A newer committed watermark outranks a possibly coalesced file stamp.
 	batch, err := s.readBatch(ctx, root, hint, cursor)
 	if err != nil {
 		return false, err

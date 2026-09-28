@@ -45,6 +45,11 @@ func TestAzureReplayUnavailableStorageStartsAndRecovers(t *testing.T) {
 	}
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
+	for !spool.stats().AccountingReady {
+		if !waitJournalCatchup(ctx, 10*time.Millisecond) {
+			t.Fatal("background initialization did not recover")
+		}
+	}
 	if err = spool.submit(ctx, []byte("{}\n")); err != nil {
 		t.Fatalf("storage did not recover: %v", err)
 	}

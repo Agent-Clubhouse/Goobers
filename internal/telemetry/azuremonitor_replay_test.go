@@ -56,6 +56,45 @@ func TestAzureReplayShutdownRetainsRemoteFailures(t *testing.T) {
 	}
 }
 
+func TestAzureReplayClientShutdownDoesNotWaitForUnavailableManifest(t *testing.T) {
+	spool := filepath.Join(t.TempDir(), "obstructed")
+	if err := os.WriteFile(spool, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(t.Context(), Config{ServiceName: "unavailable-manifest",
+		AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=http://127.0.0.1:1",
+		AzureMonitorTraces:           true, AzureMonitorJournalLogs: true, JournalRoot: t.TempDir(), Batch: true,
+		AzureMonitorReplayRoot: spool, AzureMonitorReplayMaxAge: time.Hour, AzureMonitorReplayMaxBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, span, err := client.StartRun(ctx, RunAttributes{Gaggle: "test", WorkflowID: "fixture", RunID: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.End() // Exercise the SDK's pending-batch drain, not only an empty exporter.
+	done := make(chan error, 1)
+	go func() { done <- client.Shutdown(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("shutdown waited for unavailable replay manifest initialization")
+	}
+	azureReplayIndexes.Lock()
+	_, retained := azureReplayIndexes.roots[spool]
+	azureReplayIndexes.Unlock()
+	if retained {
+		t.Fatal("shutdown retained the shared initializer")
+	}
+}
+
 func TestAzureReplaySpoolReplaysAfterRestartAndSkipsMalformed(t *testing.T) {
 	dir := t.TempDir()
 	cfg := azureReplayConfig{dir: dir, maxAge: 72 * time.Hour, maxBytes: 1 << 20}

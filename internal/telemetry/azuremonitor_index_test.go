@@ -61,6 +61,7 @@ func TestAzureReplayIndexReconcilesInterruptedMutationAndExternalWriter(t *testi
 		if err != nil {
 			return err
 		}
+		s.index.dirty = true // Model the production publication marker.
 		return errors.New("simulate interrupted transaction after file publish")
 	})
 	if err == nil {
@@ -73,6 +74,12 @@ func TestAzureReplayIndexReconcilesInterruptedMutationAndExternalWriter(t *testi
 		t.Fatalf("reconciled stats=%+v", stats)
 	}
 	if err = os.Remove(filepath.Join(s.cfg.dir, "external.ndjson")); err != nil {
+		t.Fatal(err)
+	}
+	// Directory timestamps need not immediately expose an external delete on
+	// Windows. The periodic audit guarantees recovery even with an unchanged
+	// stamp; expire its persisted cadence deterministically rather than sleep.
+	if _, err = s.index.db.ExecContext(t.Context(), `UPDATE reconciliation SET audited=0`); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.index.withLock(context.Background(), func(*sql.Tx) error { return nil }); err != nil {
@@ -116,6 +123,79 @@ func TestAzureReplayIndexIndependentHandlesRespectClaims(t *testing.T) {
 	}
 	if stats := s.stats(); stats.PendingRecords != 0 {
 		t.Fatalf("shared totals stale: %+v", stats)
+	}
+}
+
+func TestAzureReplayIndexAuditRecoversUnchangedDirectoryStamp(t *testing.T) {
+	s := testAzureReplaySpool(t, t.TempDir(), time.Now())
+	if err := s.submit(t.Context(), []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.writeLocked("coalesced.ndjson", s.now(), []byte("{}\n{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	stamp, err := directoryStamp(s.cfg.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model the directory stamp failing to reveal an external publication.
+	if _, err = s.index.db.ExecContext(t.Context(), `UPDATE directories SET modified=?`, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.index.withLock(t.Context(), func(*sql.Tx) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if stats := s.stats(); stats.PendingRecords != 1 {
+		t.Fatalf("unexpected hot-path full scan: %+v", stats)
+	}
+	if _, err = s.index.db.ExecContext(t.Context(), `UPDATE reconciliation SET audited=0`); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.index.withLock(t.Context(), func(*sql.Tx) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if stats := s.stats(); stats.PendingRecords != 3 {
+		t.Fatalf("audit failed to find hidden publication: %+v", stats)
+	}
+	var audited int64
+	if err = s.index.db.QueryRowContext(t.Context(), `SELECT audited FROM reconciliation`).Scan(&audited); err != nil {
+		t.Fatal(err)
+	}
+	other := &azureReplayIndex{root: s.index.root, streams: []string{""}}
+	if err = other.open(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.db.Close() }()
+	var reopened int64
+	if err = other.db.QueryRowContext(t.Context(), `SELECT audited FROM reconciliation`).Scan(&reopened); err != nil {
+		t.Fatal(err)
+	}
+	if audited == 0 || reopened != audited {
+		t.Fatal("short-lived opener repeated the full audit")
+	}
+}
+
+func TestAzureReplayIndexV1AuditMigrationPreservesPayloads(t *testing.T) {
+	s := testAzureReplaySpool(t, t.TempDir(), time.Now())
+	if err := s.submit(t.Context(), []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	// Recreate the preceding schema shape in this isolated fixture, retaining
+	// manifest rows and authoritative files; opening must migrate, not reset.
+	if _, err := s.index.db.ExecContext(t.Context(), `DROP TABLE reconciliation; UPDATE schema_meta SET version=1`); err != nil {
+		t.Fatal(err)
+	}
+	other := &azureReplayIndex{root: s.index.root, streams: []string{""}}
+	if err := other.open(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.db.Close() }()
+	var version int
+	if err := other.db.QueryRowContext(t.Context(), `SELECT version FROM schema_meta`).Scan(&version); err != nil || version != len(replayIndexMigrations) {
+		t.Fatalf("version=%d err=%v", version, err)
+	}
+	if stats := s.stats(); stats.PendingRecords != 1 || stats.PendingFiles != 1 {
+		t.Fatalf("migration lost payload: %+v", stats)
 	}
 }
 
@@ -180,6 +260,11 @@ func TestAzureReplayIndexRecoversAfterTransientInitializationFailure(t *testing.
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	for !s.stats().AccountingReady {
+		if !waitJournalCatchup(ctx, 10*time.Millisecond) {
+			t.Fatal("manifest never recovered")
+		}
+	}
 	if err := s.submit(ctx, []byte("{}\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -298,6 +383,42 @@ func BenchmarkAzureReplayIndexedStats(b *testing.B) {
 				if stats := s.stats(); stats.PendingRecords != count || !stats.AccountingReady {
 					b.Fatalf("stats=%+v", stats)
 				}
+			}
+		})
+	}
+}
+
+// Measure the periodic metadata audit separately from the O(1) stats path.
+// Fixture publication and initial manifest construction are outside timing.
+func BenchmarkAzureReplayIndexAudit(b *testing.B) {
+	for _, count := range []int{0, 12000} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			s := testAzureReplaySpool(b, b.TempDir(), time.Now())
+			fixture := []byte(fmt.Sprintf("{\"schema\":%q,\"createdAt\":%q,\"records\":1}\n{}\n", azureReplaySchema, s.now().UTC().Format(time.RFC3339Nano)))
+			for i := range count {
+				if err := os.WriteFile(filepath.Join(s.cfg.dir, fmt.Sprintf("%020d.ndjson", i)), fixture, 0o600); err != nil {
+					b.Fatal(err)
+				}
+			}
+			if err := s.ensureIndex(); err != nil {
+				b.Fatal(err)
+			}
+			if err := s.index.wait(b.Context()); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := s.index.db.ExecContext(b.Context(), `UPDATE reconciliation SET audited=0`); err != nil {
+					b.Fatal(err)
+				}
+				if err := s.index.withLock(b.Context(), func(*sql.Tx) error { return nil }); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.StopTimer()
+			if stats := s.stats(); stats.PendingRecords != count {
+				b.Fatalf("audit changed records: %+v", stats)
 			}
 		})
 	}

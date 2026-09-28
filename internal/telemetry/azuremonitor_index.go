@@ -26,21 +26,26 @@ import (
 
 const azureReplayIndexName = ".replay-index.db"
 
+const azureReplayIndexAuditInterval = time.Minute
+
 var azureReplayIndexes = struct {
 	sync.Mutex
 	roots map[string]*azureReplayIndex
 }{roots: make(map[string]*azureReplayIndex)}
 
 type azureReplayIndex struct {
-	root      string
-	streams   []string
-	db        *sql.DB
-	ready     chan struct{}
-	cancel    context.CancelFunc
-	err       error
-	refs      int // guarded by azureReplayIndexes
-	lockOnce  sync.Once
-	localLock chan struct{}
+	root         string
+	streams      []string
+	db           *sql.DB
+	ready        chan struct{}
+	cancel       context.CancelFunc
+	err          error
+	refs         int // guarded by azureReplayIndexes
+	lockOnce     sync.Once
+	localLock    chan struct{}
+	dirty        bool // guarded by the root lock; retry a rolled-back mutation eagerly
+	firstAttempt chan struct{}
+	firstErr     error // immutable after firstAttempt closes
 }
 
 func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
@@ -70,7 +75,7 @@ func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error
 		return index, stream, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, ready: make(chan struct{}), cancel: cancel, refs: 1}
+	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, ready: make(chan struct{}), firstAttempt: make(chan struct{}), cancel: cancel, refs: 1}
 	if stream == "" {
 		index.streams = []string{""}
 	}
@@ -83,8 +88,15 @@ func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error
 }
 
 func (x *azureReplayIndex) initialize(ctx context.Context) error {
+	first := true
 	for {
-		if err := x.open(ctx); err == nil {
+		err := x.open(ctx)
+		if first {
+			x.firstErr = err
+			close(x.firstAttempt)
+			first = false
+		}
+		if err == nil {
 			return nil
 		}
 		if x.db != nil {
@@ -134,6 +146,17 @@ func (x *azureReplayIndex) wait(ctx context.Context) error {
 	select {
 	case <-x.ready:
 		return x.err
+	case <-x.firstAttempt:
+		// A known initialization fault cannot durably admit anything. Fail
+		// this copy promptly (and count it), rather than park SDK workers and
+		// shutdown until their deadlines. Background initialization still
+		// retries; once ready, later admissions use the recovered manifest.
+		select {
+		case <-x.ready:
+			return x.err
+		default:
+			return x.firstErr
+		}
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -205,6 +228,12 @@ CREATE TRIGGER IF NOT EXISTS replay_update AFTER UPDATE OF bytes,records ON file
  UPDATE totals SET bytes=bytes+NEW.bytes-OLD.bytes,records=records+NEW.records-OLD.records WHERE stream=OLD.stream;
 END;`
 
+var replayIndexMigrations = []string{
+	replayIndexSchema,
+	`CREATE TABLE reconciliation(id INTEGER PRIMARY KEY CHECK(id=1), audited INTEGER NOT NULL);
+INSERT INTO reconciliation VALUES(1,0);`,
+}
+
 func (x *azureReplayIndex) open(ctx context.Context) error {
 	for _, stream := range x.streams {
 		if err := os.MkdirAll(filepath.Join(x.root, stream), 0o700); err != nil {
@@ -231,7 +260,7 @@ func (x *azureReplayIndex) open(ctx context.Context) error {
 		return err
 	}
 	x.db.SetMaxOpenConns(1)
-	if err = sqliteschema.Migrate(ctx, x.db, "azure-replay-index", []string{replayIndexSchema}); err != nil {
+	if err = sqliteschema.Migrate(ctx, x.db, "azure-replay-index", replayIndexMigrations); err != nil {
 		return err
 	}
 	// A fresh manifest or changed directory is reconciled. Opening every short-
@@ -260,8 +289,8 @@ func (x *azureReplayIndex) withLock(ctx context.Context, f func(*sql.Tx) error) 
 		return err
 	}
 	defer unlock()
-	return x.transaction(ctx, func(tx *sql.Tx) error {
-		if err := x.reconcile(ctx, tx, false); err != nil {
+	err = x.transaction(ctx, func(tx *sql.Tx) error {
+		if err := x.reconcile(ctx, tx, x.dirty); err != nil {
 			return err
 		}
 		if err := f(tx); err != nil {
@@ -269,6 +298,8 @@ func (x *azureReplayIndex) withLock(ctx context.Context, f func(*sql.Tx) error) 
 		}
 		return x.stamp(ctx, tx)
 	})
+	x.dirty = err != nil && x.dirty
+	return err
 }
 
 func directoryStamp(path string) (int64, error) {
@@ -313,6 +344,15 @@ func (x *azureReplayIndex) path(f indexedReplayFile) (string, error) {
 }
 
 func (x *azureReplayIndex) reconcile(ctx context.Context, tx *sql.Tx, force bool) error {
+	// Windows/filesystem timestamp coalescing can hide an external mutation.
+	// Persist the audit cadence so short-lived CLI processes share it instead
+	// of each rescanning the backlog. Normal manifest mutations stay incremental.
+	var audited int64
+	if err := tx.QueryRowContext(ctx, `SELECT audited FROM reconciliation WHERE id=1`).Scan(&audited); err != nil {
+		return err
+	}
+	now := time.Now()
+	force = force || now.Sub(time.Unix(0, audited)) >= azureReplayIndexAuditInterval || now.UnixNano() < audited
 	for _, stream := range x.streams {
 		dir := filepath.Join(x.root, stream)
 		stamp, err := directoryStamp(dir)
@@ -328,6 +368,11 @@ func (x *azureReplayIndex) reconcile(ctx context.Context, tx *sql.Tx, force bool
 			continue
 		}
 		if err = x.reconcileDirectory(ctx, tx, stream, dir); err != nil {
+			return err
+		}
+	}
+	if force {
+		if _, err := tx.ExecContext(ctx, `UPDATE reconciliation SET audited=? WHERE id=1`, now.UnixNano()); err != nil {
 			return err
 		}
 	}
@@ -414,6 +459,7 @@ func (x *azureReplayIndex) remove(ctx context.Context, tx *sql.Tx, f indexedRepl
 	if err = os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	x.dirty = true
 	_, err = tx.ExecContext(ctx, `DELETE FROM files WHERE stream=? AND name=?`, f.stream, f.name)
 	return err
 }
@@ -476,7 +522,7 @@ func inspectReplayIndex(root string) (AzureReplayStats, bool) {
 	}
 	defer func() { _ = db.Close() }()
 	var version int
-	if err = db.QueryRowContext(ctx, "SELECT version FROM schema_meta").Scan(&version); err != nil || version != 1 {
+	if err = db.QueryRowContext(ctx, "SELECT version FROM schema_meta").Scan(&version); err != nil || version < 1 || version > len(replayIndexMigrations) {
 		return AzureReplayStats{}, true
 	}
 	stats, _ := replayIndexStats(ctx, db, "*", time.Now())
