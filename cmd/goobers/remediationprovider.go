@@ -3,11 +3,40 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
+
+func remediationPullRequests(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	base, headPrefix string,
+	target remediationTarget,
+) ([]providers.PullRequestSummary, error) {
+	if !target.targeted {
+		return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+			Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
+		})
+	}
+	pr, err := provider.GetPullRequest(ctx, repo, fmt.Sprint(target.number))
+	if err != nil {
+		if providers.IsNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read targeted PR #%d: %w", target.number, err)
+	}
+	if pr.Number != target.number {
+		return nil, fmt.Errorf("targeted PR lookup returned #%d, want #%d", pr.Number, target.number)
+	}
+	if pr.Merged || !strings.EqualFold(pr.State, "open") || (base != "" && pr.Base != base) {
+		return nil, nil
+	}
+	return []providers.PullRequestSummary{pr}, nil
+}
 
 // remediationProvider is the narrow surface the pr-remediation lane needs.
 // Both *providers.GitHubProvider and

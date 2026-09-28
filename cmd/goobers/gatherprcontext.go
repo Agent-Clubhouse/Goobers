@@ -102,6 +102,7 @@ type gatherPRContextAdapter struct {
 	note             string
 	gitAuth          gitAuthEnvironmentResolver
 	list             func(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
+	get              func(context.Context, string) (providers.PullRequestSummary, error)
 	prepare          func(context.Context, []providers.PullRequestSummary, map[string]bool) ([]providers.PullRequestSummary, map[int]int, error)
 	resolveCheck     func(context.Context, *providers.PullRequestSummary) error
 	behindBase       func(providers.PullRequestSummary) (bool, error)
@@ -150,6 +151,9 @@ func newGitHubGiteaGatherPRContextAdapter(root string, repo providers.Repository
 	bases := map[string]bool{}
 	return gatherPRContextAdapter{
 		features: gatherPRContextFeatures{checkState: true, siblingBlocking: true, liveBaseTip: true}, gitAuth: tokenGitAuthEnvironment(pushToken), list: provider.ListPullRequests,
+		get: func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
+			return provider.GetPullRequest(ctx, repo, id)
+		},
 		prepare: func(ctx context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 			if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
 				return nil, nil, gatherPRAdapterError("resolve remediation check states", err)
@@ -203,6 +207,9 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 		return gatherPRContextAdapter{}, err
 	}
 	return gatherPRContextAdapter{features: gatherPRContextFeatures{checkState: true}, gitAuth: gitAuth, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
+		get: func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
+			return provider.GetPullRequest(ctx, repo, id)
+		},
 		resolveCheck: func(ctx context.Context, pr *providers.PullRequestSummary) error {
 			return resolveADOSelectedCheckState(ctx, provider, repo, pr)
 		},
@@ -277,9 +284,9 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 	target := remediationTargetFromEnv()
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	prs, err := a.list(ctx, providers.ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: prefix, SkipCheckState: true})
+	prs, err := gatherPRContextPullRequests(ctx, a, repo, base, prefix, target)
 	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
+		return failProviderStage(stderr, "select pull requests", err, remediationBriefResultFile)
 	}
 	listed := prs
 	prs, pinned, done, code := gatherPRContextCandidateScope(root, target, prs, stdout, stderr)
@@ -321,6 +328,25 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 		return code
 	}
 	return writeGatherPRContextResult(selected, behind, gatherPRVerdict(root, repo, selected.Number, comments, author), comments, stdout, stderr)
+}
+func gatherPRContextPullRequests(ctx context.Context, a gatherPRContextAdapter, repo providers.RepositoryRef, base, prefix string, target remediationTarget) ([]providers.PullRequestSummary, error) {
+	if !target.targeted {
+		return a.list(ctx, providers.ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: prefix, SkipCheckState: true})
+	}
+	pr, err := a.get(ctx, strconv.Itoa(target.number))
+	if err != nil {
+		if providers.IsNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read targeted PR #%d: %w", target.number, err)
+	}
+	if pr.Number != target.number {
+		return nil, fmt.Errorf("targeted PR lookup returned #%d, want #%d", pr.Number, target.number)
+	}
+	if pr.Merged || !strings.EqualFold(pr.State, "open") || (base != "" && pr.Base != base) {
+		return nil, nil
+	}
+	return []providers.PullRequestSummary{pr}, nil
 }
 func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter, ctx context.Context, pr providers.PullRequestSummary, comments []providers.Comment, stdout, stderr io.Writer) (bool, int) {
 	state, prior, ok := latestRemediationStateForPR(pr.Body, comments)

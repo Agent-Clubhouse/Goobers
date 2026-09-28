@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -38,6 +39,8 @@ type updateBehindServer struct {
 	// can only select 55 by honouring its trigger (#3985).
 	includeEarlierCandidate bool
 	earlierMergeable        *bool
+	targetHead              string
+	exactCalls              int
 	unselectedCount         int
 	graphQLCalls            int
 }
@@ -50,20 +53,65 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 		baseSHA = "live-base-sha"
 	)
 	mux := http.NewServeMux()
+	targetHead := s.targetHead
+	if targetHead == "" {
+		targetHead = "goobers/implementation/run-55"
+	}
+	pull := func(number int) (map[string]interface{}, bool) {
+		switch {
+		case number == 55:
+			return map[string]interface{}{
+				"number": 55, "state": "open", "html_url": "https://github.test/pulls/55",
+				"head":   map[string]string{"ref": targetHead, "sha": headSHA},
+				"base":   map[string]string{"ref": "main", "sha": "opening-base-sha"},
+				"labels": labelsJSON(s.labels),
+			}, true
+		case number == 54 && (s.includeEarlierCrown || s.includeEarlierCandidate):
+			return map[string]interface{}{
+				"number": 54, "state": "open", "html_url": "https://github.test/pulls/54",
+				"head":   map[string]string{"ref": "goobers/implementation/run-54", "sha": "earlier-candidate-sha"},
+				"base":   map[string]string{"ref": "main", "sha": "opening-base-sha"},
+				"labels": labelsJSON([]string{needsRemediationLabel}),
+			}, true
+		case number >= 56 && number < 56+s.unselectedCount:
+			index := number - 56
+			return map[string]interface{}{
+				"number": number, "state": "open", "html_url": fmt.Sprintf("https://github.test/pulls/%d", number),
+				"head": map[string]string{"ref": fmt.Sprintf("goobers/implementation/run-%d", number), "sha": fmt.Sprintf("unselected-head-sha-%d", index)},
+				"base": map[string]string{"ref": "main", "sha": "opening-base-sha"},
+			}, true
+		default:
+			return nil, false
+		}
+	}
 	mux.HandleFunc("/user", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]string{"login": "merge-review-bot"})
 	})
-	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
+	pullsHandler := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "want GET", http.StatusMethodNotAllowed)
 			return
 		}
-		prs := []map[string]interface{}{{
-			"number": 55, "state": "open", "html_url": "https://github.test/pulls/55",
-			"head":   map[string]string{"ref": "goobers/implementation/run-55", "sha": headSHA},
-			"base":   map[string]string{"ref": "main", "sha": "opening-base-sha"},
-			"labels": labelsJSON(s.labels),
-		}}
+		if r.URL.Path != prefix+"/pulls" {
+			s.exactCalls++
+			number, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, prefix+"/pulls/"))
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			pr, ok := pull(number)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			writeFakeJSON(w, pr)
+			return
+		}
+		var prs []map[string]interface{}
+		if requested := strings.TrimPrefix(r.URL.Query().Get("head"), "your-org:"); requested == "" || strings.HasPrefix(targetHead, requested) {
+			item, _ := pull(55)
+			prs = append(prs, item)
+		}
 		if s.includeEarlierCrown {
 			prs = append([]map[string]interface{}{{
 				"number": 54, "state": "open", "html_url": "https://github.test/pulls/54",
@@ -97,7 +145,9 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 			})
 		}
 		writeFakeJSON(w, prs)
-	})
+	}
+	mux.HandleFunc(prefix+"/pulls", pullsHandler)
+	mux.HandleFunc(prefix+"/pulls/", pullsHandler)
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
 		state := "SUCCESS"
 		if s.checkState == "failure" {
@@ -128,7 +178,11 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
 	})
 	mux.HandleFunc(prefix+"/commits/unselected-head-sha-", func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("initial pull-request list resolved check state for unselected PR: %s", r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/status") {
+			writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []interface{}{}})
+			return
+		}
+		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
 	})
 	mux.HandleFunc(prefix+"/git/ref/heads/main", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"object": map[string]string{"sha": baseSHA}})
@@ -146,6 +200,12 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(prefix+"/compare/"+baseSHA+"...earlier-candidate-sha", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{
 			"merge_base_commit": map[string]string{"sha": "opening-base-sha"},
+			"files":             []interface{}{},
+		})
+	})
+	mux.HandleFunc(prefix+"/compare/"+baseSHA+"...unselected-head-sha-0", func(w http.ResponseWriter, _ *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{
+			"merge_base_commit": map[string]string{"sha": baseSHA},
 			"files":             []interface{}{},
 		})
 	})
@@ -191,7 +251,10 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 			http.Error(w, "want GET", http.StatusMethodNotAllowed)
 			return
 		}
-		writeFakeJSON(w, map[string]interface{}{"number": 55, "mergeable": s.mergeable})
+		s.exactCalls++
+		pr, _ := pull(55)
+		pr["mergeable"] = s.mergeable
+		writeFakeJSON(w, pr)
 	})
 	mux.HandleFunc(prefix+"/issues/55/comments", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, s.comments)
@@ -285,7 +348,7 @@ func invokeUpdateBehindPRTest(t *testing.T, root, workspace string) (code int, s
 		t.Fatalf("read result: %v", err)
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
+		t.Fatalf("unmarshal result: %v; stdout=%q stderr=%q data=%s", err, stdout, stderr, data)
 	}
 	return code, stdout, stderr, result
 }

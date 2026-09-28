@@ -100,14 +100,9 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository:     repo,
-		Base:           base,
-		HeadPrefix:     headPrefix,
-		SkipCheckState: true,
-	})
+	prs, err := remediationPullRequests(ctx, provider, repo, base, headPrefix, target)
 	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, "update-behind-result.json")
+		return failProviderStage(stderr, "select pull requests", err, "update-behind-result.json")
 	}
 	listed := prs
 	prs, blockedDependents, err := filterRemediationPullRequests(ctx, provider, repo, prs, nil)
