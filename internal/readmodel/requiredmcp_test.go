@@ -149,3 +149,19 @@ func TestRequiredMCPCrossRunUnknownDoesNotEraseOrRelatchDenial(t *testing.T) {
 		}
 	}
 }
+
+// TestRequiredMCPObservationAcceptsReadinessAdapters confirms every adapter
+// that emits required-mcp-readiness is projected, including codex (#5397),
+// and that an unknown adapter's annotation is ignored.
+func TestRequiredMCPObservationAcceptsReadinessAdapters(t *testing.T) {
+	for adapter, want := range map[string]bool{"copilot-cli": true, "claude-code": true, "codex": true, "fake": false} {
+		event := readinessEvent(1, "transport_failure")
+		event.Runner["adapter"] = adapter
+		var state *RequiredMCPState
+		state = state.After(event)
+		got := state != nil && len(state.Conditions) == 1 && state.Conditions[0].Active
+		if got != want {
+			t.Errorf("adapter %q projected=%v, want %v (state %+v)", adapter, got, want, state)
+		}
+	}
+}

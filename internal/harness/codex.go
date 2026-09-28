@@ -345,9 +345,10 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		}
 	}()
 
+	runner := withUnobservableMCPSource(c.runner(), req, codexMCPReadinessSource)
 	started := time.Now()
 	result, parsed, processErr := runCodexInvocation(
-		ctx, c.runner(), req, argv, env, prompt, req.Timeout, 1, agentTelemetry.activityObserver(),
+		ctx, runner, req, argv, env, prompt, req.Timeout, 1, agentTelemetry.activityObserver(),
 	)
 	out = Outcome{
 		Transcript:             result.Transcript,
@@ -386,7 +387,7 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 		recoveryArgv := buildCodexResumeArgv(argv, prepared.execIndex, parsed.threadID)
 		recovery, recoveryParsed, recoveryErr := runCodexInvocation(
-			ctx, c.runner(), req, recoveryArgv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(),
+			ctx, runner, req, recoveryArgv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(),
 		)
 		mergeCodexMetrics(parsed.metrics, recoveryParsed.metrics)
 		out.Metrics = parsed.metrics
@@ -572,6 +573,9 @@ func runCodexInvocation(
 		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		Activity:                     activity,
 	})
+	if checkpoint == codexInitialCheckpoint {
+		err = observeCodexRequiredMCPStartup(req, result, codexSessionStarted(stdout, result.Transcript), err)
+	}
 	if err != nil {
 		return result, codexParseResult{}, err
 	}
@@ -633,6 +637,9 @@ func prepareCodexRuntime(root string) (string, string, string, error) {
 }
 
 type codexParseResult struct {
+	// started reports a thread.started or turn.started event: the CLI got
+	// past session startup, required MCP servers included.
+	started   bool
 	completed bool
 	failed    string
 	threadID  string
@@ -756,6 +763,15 @@ func (c *codexJSONLCapture) hasData() bool {
 	return c.wrote
 }
 
+// sessionStarted reports whether the events parsed so far include a
+// thread.started or turn.started event, even when a later line failed to
+// parse.
+func (c *codexJSONLCapture) sessionStarted() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.parsed.started
+}
+
 func (c *codexJSONLCapture) result() (codexParseResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -810,7 +826,10 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 	}
 	switch event.Type {
 	case "thread.started":
+		result.started = true
 		result.threadID = event.ThreadID
+	case "turn.started":
+		result.started = true
 	case "turn.completed":
 		result.completed = true
 		result.metrics[telemetry.AttrGenAIUsageInputTokens] += event.Usage.InputTokens

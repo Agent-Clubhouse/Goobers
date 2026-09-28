@@ -84,7 +84,7 @@ func requiredMCPObservation(event journal.Event) (RequiredMCPCondition, bool) {
 		return result, false
 	}
 	result = payload.RequiredMCPCondition
-	if result.Server != "goobers-io" || (result.Adapter != "copilot-cli" && result.Adapter != "claude-code") {
+	if result.Server != "goobers-io" || !requiredMCPReadinessAdapter(result.Adapter) {
 		return result, false
 	}
 	if !validMCPObservationStatus(result.Connection) || !validMCPObservationStatus(result.Inventory) || !validMCPObservationStatus(result.Authorization) {
@@ -102,6 +102,17 @@ func requiredMCPObservation(event journal.Event) (RequiredMCPCondition, bool) {
 	result.Stage, result.Branch, result.ObservedAt = event.Stage, event.Branch, event.Time
 	result.Active, result.Reason = false, "" // Never trust producer-supplied derived state.
 	return decisiveMCPObservation(result), true
+}
+
+// requiredMCPReadinessAdapter lists the adapters that produce
+// required-mcp-readiness observations; codex joined them in #5397.
+func requiredMCPReadinessAdapter(adapter string) bool {
+	switch adapter {
+	case "copilot-cli", "claude-code", "codex":
+		return true
+	default:
+		return false
+	}
 }
 
 func sameRequiredMCPContext(a, b RequiredMCPCondition) bool {
