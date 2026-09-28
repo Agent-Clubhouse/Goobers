@@ -39,6 +39,15 @@ type fakeADOResponseThreads struct {
 	mu      sync.Mutex
 	threads []*fakeADOResponseThread
 	deleted []string
+	// posts and patches count thread creates and comment edits, so a test
+	// can pin how many writes one run makes.
+	posts, patches int
+}
+
+func (f *fakeADOResponseThreads) writeCounts() (posts, patches int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.posts, f.patches
 }
 
 func (f *fakeADOResponseThreads) addThread(content, authorID, authorDN string) {
@@ -97,6 +106,7 @@ func (f *fakeADOResponseThreads) server(repo providers.RepositoryRef) *httptest.
 			if body.Status != "closed" {
 				t.Errorf("thread status = %q, want closed so no comment-resolution policy trips", body.Status)
 			}
+			f.posts++
 			f.addThread(body.Comments[0].Content, "self-guid", "Goobers")
 			thread := f.threads[len(f.threads)-1]
 			writeJSONResp(t, w, map[string]any{"id": thread.id, "comments": []map[string]any{{
@@ -131,6 +141,7 @@ func (f *fakeADOResponseThreads) server(repo providers.RepositoryRef) *httptest.
 		}
 		switch r.Method {
 		case http.MethodPatch:
+			f.patches++
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			comment.content = body["content"]
@@ -206,7 +217,10 @@ func routeADOResponseProvider(t *testing.T, serverURL string) {
 // respond-to-findings after every published remediation, so on Azure DevOps
 // it posts its account as one closed pull-request thread. A retry updates
 // that thread rather than posting another, and a thread from a different
-// identity that shares the display name is never taken for its own.
+// identity that shares the display name is never taken for its own. The
+// stored comment carries the attribution footer, which must not make the run
+// edit the thread it just wrote: one post on the first run, one edit on the
+// retry.
 func TestRespondToFindingsOnADOPostsOneThread(t *testing.T) {
 	const runID = "ado-respond"
 	verdict := apiv1.Verdict{
@@ -222,9 +236,12 @@ func TestRespondToFindingsOnADOPostsOneThread(t *testing.T) {
 	defer server.Close()
 	routeADOResponseProvider(t, server.URL)
 
-	for attempt := 1; attempt <= 2; attempt++ {
+	for attempt, want := range [][2]int{{1, 0}, {1, 1}} {
 		if code, stdout, stderr := runArgs(t, "respond-to-findings", root); code != 0 {
-			t.Fatalf("attempt %d: code = %d, stdout = %q, stderr = %q", attempt, code, stdout, stderr)
+			t.Fatalf("attempt %d: code = %d, stdout = %q, stderr = %q", attempt+1, code, stdout, stderr)
+		}
+		if posts, patches := fake.writeCounts(); posts != want[0] || patches != want[1] {
+			t.Errorf("after attempt %d: thread posts/edits = %d/%d, want %d/%d", attempt+1, posts, patches, want[0], want[1])
 		}
 	}
 	own := fake.ownResponses(runID)

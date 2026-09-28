@@ -632,7 +632,10 @@ func reconcileRemediationResponseComment(
 	if len(matches) == 0 {
 		return fmt.Errorf("remediation response comment disappeared during reconciliation")
 	}
-	if matches[0].Body != body {
+	// The stored body carries the provider's attribution footer whenever the
+	// stage runs with attribution, so only the text this stage wrote decides
+	// whether the canonical comment still needs an update.
+	if providers.StripAttribution(matches[0].Body) != strings.TrimSpace(body) {
 		if err := channel.update(ctx, matches[0].ID, body); err != nil {
 			return fmt.Errorf("update canonical remediation response comment: %w", err)
 		}
