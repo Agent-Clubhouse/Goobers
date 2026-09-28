@@ -1336,6 +1336,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
+	drainedDowntime := readDrainedDowntime(setup.InstanceLog, stderr)
 	sweepStalled := func(now time.Time, recoveryRunDirs ...[]string) error {
 		return sweepStalledRuns(
 			ctx,
@@ -1344,7 +1345,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			setup.LegacyRunner,
 			engineGuards,
 			setup.InstanceLog,
-			stalledSweepDependencies(setup),
+			stalledSweepDependencies(setup, drainedDowntime),
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
 			now,
@@ -2122,7 +2123,23 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 
 // stalledSweepDependencies is the daemon-owned wiring the stalled-run sweep
 // needs when it has to terminalize a run no live Runner owns.
-func stalledSweepDependencies(setup *schedulerSetup) *stalledSweepDeps {
+// readDrainedDowntime reads the graceful-drain downtime the stalled-run sweep
+// credits (#5601). The daemon has already journaled its own start, so the
+// newest interval ends at this lifetime's beginning. A read failure credits
+// nothing, which is the pre-#5601 behavior, and says so.
+func readDrainedDowntime(log *journal.InstanceLog, stderr io.Writer) []daemonDowntime {
+	if log == nil {
+		return nil
+	}
+	events, err := journal.ReadInstanceLog(log.Dir())
+	if err != nil {
+		pf(stderr, "warning: read daemon lifecycle for stalled-run downtime credit: %v\n", err)
+		return nil
+	}
+	return cleanDaemonDowntime(events)
+}
+
+func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime) *stalledSweepDeps {
 	return &stalledSweepDeps{
 		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 			// The stalled run's gaggle is only knowable from its runs-tree
@@ -2143,6 +2160,7 @@ func stalledSweepDependencies(setup *schedulerSetup) *stalledSweepDeps {
 		// Without it the terminal append records no intake watermark and the
 		// projector never re-reads the run (#5278).
 		JournalAdvanced: telemetryingest.RunIntakeObserver(setup.Watermarks, setup.InstanceLog),
+		DrainedDowntime: drainedDowntime,
 	}
 }
 
