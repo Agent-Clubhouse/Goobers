@@ -600,11 +600,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		withStartupProgress(newSchedulerSetupProgress(stdout, schedulerSetupStarted, time.Now)),
 		withClaimRecoveryGate(claimRecoveryGate),
 	}
+	buildSetup := buildSchedulerSetup
 	if *skipPreflight {
-		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
-	} else {
-		setup, err = buildSchedulerSetup(ctx, l, &wg, setupOptions...)
+		buildSetup = buildSchedulerSetupAllowingInvalidConfig
 	}
+	setup, err = retryTransientStartup(ctx, stderr, func() (*schedulerSetup, error) { return buildSetup(ctx, l, &wg, setupOptions...) })
 	if err != nil {
 		return daemonStartupFailure(ctx, err, func() {
 			printValidationIssues(stderr, validationReportFromError(err))

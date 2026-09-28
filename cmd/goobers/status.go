@@ -124,6 +124,24 @@ func journalHealthStatusLine(status readservice.SchedulerStatus) string {
 		status.JournalHealth.AppendsDropped)
 }
 
+// configReloadRejectionStatusLine reports a config edit the daemon has not
+// applied because its reload was rejected (#5596). Silent otherwise.
+func configReloadRejectionStatusLine(status readservice.SchedulerStatus) string {
+	rejection := status.ConfigReloadRejection
+	if rejection == nil {
+		return ""
+	}
+	digest := rejection.Digest
+	if len(digest) > 12 {
+		digest = digest[:12]
+	}
+	if digest == "" {
+		digest = "unreadable"
+	}
+	return fmt.Sprintf("Warning: config reload rejected at %s (candidate %s); the previous config is still in force: %s\n",
+		rejection.At.UTC().Format(time.RFC3339), digest, rejection.Message)
+}
+
 // storageHealthStatusLine reports tiered low-disk protection's current tier
 // (#4873). Silent when healthy, matching journalHealthStatusLine's
 // only-say-something-when-it-matters convention.
@@ -169,6 +187,7 @@ func renderSchedulerStatus(
 	text.WriteString(telemetryRetentionStatusLine(status))
 	text.WriteString(journalHealthStatusLine(status))
 	text.WriteString(storageHealthStatusLine(status))
+	text.WriteString(configReloadRejectionStatusLine(status))
 	text.WriteString(workerConfigDivergenceStatusLines(status, now))
 	text.WriteString(refusedWorkflowStatusLines(status))
 	text.WriteString(isolationMandateStatusLines(status))

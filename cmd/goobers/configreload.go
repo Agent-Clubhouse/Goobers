@@ -22,6 +22,7 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configtree"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -114,6 +115,54 @@ type configReloader struct {
 	rejectedDigest  string
 	mirroredDigest  string
 	lastMirrorError string
+	// transientRetry re-evaluates a digest whose reload was rejected by a
+	// transient provider failure (#5596). Without it the unchanged digest
+	// matched observedDigest and was never looked at again, so a valid edit
+	// rejected during a quota window stayed unapplied until the next edit.
+	transientRetry transientReloadRetry
+}
+
+// transientReloadRetry is the backoff schedule for one rejected digest. A zero
+// at means no retry is due: the pending attempt was consumed, and only another
+// transient rejection of the same digest schedules the next one.
+type transientReloadRetry struct {
+	digest  string
+	at      time.Time
+	backoff time.Duration
+}
+
+const (
+	transientReloadRetryInitial = 30 * time.Second
+	transientReloadRetryMax     = 10 * time.Minute
+)
+
+// takeTransientRetry reports whether digest has a transient-rejection retry
+// due at now, consuming it so a retry that fails some other way does not
+// re-run on every poll.
+func (r *configReloader) takeTransientRetry(digest string, now time.Time) bool {
+	retry := &r.transientRetry
+	if retry.digest != digest || retry.at.IsZero() || now.Before(retry.at) {
+		return false
+	}
+	retry.at = time.Time{}
+	return true
+}
+
+// scheduleTransientRetry records the outcome of building digest's
+// definitions. A transient provider failure schedules the next attempt with
+// doubling backoff and says so in the returned error; any other failure is
+// deterministic for these bytes and clears the schedule.
+func (r *configReloader) scheduleTransientRetry(digest string, err error, now time.Time) error {
+	if !errors.Is(err, credentials.ErrTransientProvider) {
+		r.transientRetry = transientReloadRetry{}
+		return err
+	}
+	backoff := transientReloadRetryInitial
+	if r.transientRetry.digest == digest && r.transientRetry.backoff > 0 {
+		backoff = min(2*r.transientRetry.backoff, transientReloadRetryMax)
+	}
+	r.transientRetry = transientReloadRetry{digest: digest, at: now.Add(backoff), backoff: backoff}
+	return fmt.Errorf("%w (transient provider failure; retrying in %s)", err, backoff)
 }
 
 func (r *configReloader) Run(ctx context.Context) error {
@@ -212,7 +261,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return r.reject("", err)
 	}
 	r.lastDigestError = ""
-	if digest == r.observedDigest {
+	if digest == r.observedDigest && !r.takeTransientRetry(digest, now) {
 		return nil
 	}
 	r.observedDigest = digest
@@ -260,7 +309,7 @@ func (r *configReloader) poll(now time.Time) error {
 		r.setup.Generations,
 	)
 	if err != nil {
-		return r.reject(digest, &configReportError{report: report, err: err})
+		return r.reject(digest, &configReportError{report: report, err: r.scheduleTransientRetry(digest, err, now)})
 	}
 
 	stableDigest, err := configDirectoryDigest(r.layout.ConfigDir())
@@ -332,6 +381,7 @@ func (r *configReloader) poll(now time.Time) error {
 	}
 	r.appliedDigest = digest
 	r.digests.Set(digest)
+	r.transientRetry = transientReloadRetry{}
 	r.rejectionReason = ""
 	r.candidateWarnings = nil
 	// Advisory persistence cannot turn a successfully applied configuration
