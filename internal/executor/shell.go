@@ -971,6 +971,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	select {
 	case waitErr = <-waitDone:
 	case <-runCtx.Done():
+		// runCtx.Done() fires both when its own timeout elapses and when the
+		// caller's ctx is canceled out from under it — distinguishing the two
+		// via context.Cause matters even though only the timeout path is
+		// reachable today (internal/runner's dispatch always uses
+		// context.WithoutCancel): a future hard-shutdown path that DOES
+		// cancel ctx must not be mislabeled as a retryable timeout (#122).
 		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
 			timedOut = true
 		} else {

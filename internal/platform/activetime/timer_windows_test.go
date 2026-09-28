@@ -142,3 +142,57 @@ func TestTimerFallsBackForRemainingDurationWhenUptimeFails(t *testing.T) {
 		t.Fatal("timer did not fire from wall-clock fallback")
 	}
 }
+
+func TestMarkSuspendedSinceSubtractsActiveTime(t *testing.T) {
+	wall := time.Unix(1_000, 0)
+	active := 10 * time.Minute
+	mark := newMarkWithSources(func() time.Time { return wall }, func() (time.Duration, error) { return active, nil })
+
+	// Five active minutes plus a two-hour suspend: the monotonic clock moved
+	// 2h5m, the unbiased clock only 5m.
+	now := wall.Add(2*time.Hour + 5*time.Minute)
+	got := mark.suspendedSinceWithSources(
+		func() time.Time { return now },
+		func() (time.Duration, error) { return active + 5*time.Minute, nil },
+	)
+	if got != 2*time.Hour {
+		t.Fatalf("SuspendedSince = %s, want 2h", got)
+	}
+}
+
+func TestMarkSuspendedSinceIgnoresClockGranularity(t *testing.T) {
+	wall := time.Unix(1_000, 0)
+	mark := newMarkWithSources(func() time.Time { return wall }, func() (time.Duration, error) { return time.Minute, nil })
+	got := mark.suspendedSinceWithSources(
+		func() time.Time { return wall.Add(10*time.Minute + 16*time.Millisecond) },
+		func() (time.Duration, error) { return 11 * time.Minute, nil },
+	)
+	if got != 0 {
+		t.Fatalf("SuspendedSince = %s, want 0 below the noise floor", got)
+	}
+}
+
+func TestMarkSuspendedSinceReportsZeroWhenClockUnavailable(t *testing.T) {
+	failing := func() (time.Duration, error) { return 0, errors.New("unavailable") }
+	wall := time.Unix(1_000, 0)
+	if got := newMarkWithSources(func() time.Time { return wall }, failing).SuspendedSince(); got != 0 {
+		t.Fatalf("mark taken without the unbiased clock reported %s suspended", got)
+	}
+	mark := newMarkWithSources(func() time.Time { return wall }, func() (time.Duration, error) { return time.Minute, nil })
+	if got := mark.suspendedSinceWithSources(func() time.Time { return wall.Add(time.Hour) }, failing); got != 0 {
+		t.Fatalf("unavailable clock at read reported %s suspended", got)
+	}
+	if got := (Mark{}).SuspendedSince(); got != 0 {
+		t.Fatalf("zero Mark reported %s suspended", got)
+	}
+}
+
+func TestNewMarkUsesLiveClocks(t *testing.T) {
+	mark := NewMark()
+	if !mark.ok {
+		t.Fatal("NewMark could not read the unbiased interrupt time")
+	}
+	if got := mark.SuspendedSince(); got != 0 {
+		t.Fatalf("SuspendedSince immediately after NewMark = %s, want 0", got)
+	}
+}

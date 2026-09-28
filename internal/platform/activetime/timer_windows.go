@@ -35,6 +35,13 @@ type deadlineContext struct {
 	deadline time.Time
 }
 
+// Deadline reports the WALL-CLOCK instant the timeout would expire if the host
+// never suspended: time.Now()+timeout at creation, capped by the parent's own
+// deadline. It is not moved forward when the host suspends, so after a resume
+// it can lie in the past while the context is still live, because Done() fires
+// on active time and the suspended interval does not count. Callers that need
+// to know whether the budget is spent must watch Done()/Err(), not compare
+// Deadline() with time.Now(). Nothing in the executor does the latter today.
 func (c deadlineContext) Deadline() (time.Time, bool) {
 	if parentDeadline, ok := c.Context.Deadline(); ok && parentDeadline.Before(c.deadline) {
 		return parentDeadline, true
@@ -156,4 +163,56 @@ func unbiasedUptime() (time.Duration, error) {
 		return 0, callErr
 	}
 	return time.Duration(ticks100ns) * 100 * time.Nanosecond, nil
+}
+
+// suspendNoiseFloor absorbs the difference between the two clocks' update
+// granularity (the unbiased interrupt time advances in timer-tick steps of
+// about 15.6ms), so an unsuspended host never reports a phantom suspension.
+const suspendNoiseFloor = time.Second
+
+// Mark records one instant so a later SuspendedSince can report how much of
+// the elapsed time the host spent suspended. See the package documentation.
+// The zero Mark, or one taken while the unbiased clock was unavailable,
+// reports no suspension, which preserves the plain monotonic comparison.
+type Mark struct {
+	wall   time.Time
+	active time.Duration
+	ok     bool
+}
+
+// NewMark records the current instant on both Go's monotonic clock (which on
+// Windows includes suspension) and the unbiased interrupt time (which does
+// not).
+func NewMark() Mark {
+	return newMarkWithSources(time.Now, unbiasedUptime)
+}
+
+func newMarkWithSources(now func() time.Time, uptime func() (time.Duration, error)) Mark {
+	active, err := uptime()
+	if err != nil {
+		return Mark{}
+	}
+	return Mark{wall: now(), active: active, ok: true}
+}
+
+// SuspendedSince reports how long the host was suspended since m was taken:
+// monotonic elapsed time minus unbiased elapsed time. It reports zero when
+// either clock is unavailable or the gap is below suspendNoiseFloor.
+func (m Mark) SuspendedSince() time.Duration {
+	return m.suspendedSinceWithSources(time.Now, unbiasedUptime)
+}
+
+func (m Mark) suspendedSinceWithSources(now func() time.Time, uptime func() (time.Duration, error)) time.Duration {
+	if !m.ok {
+		return 0
+	}
+	active, err := uptime()
+	if err != nil {
+		return 0
+	}
+	suspended := now().Sub(m.wall) - (active - m.active)
+	if suspended < suspendNoiseFloor {
+		return 0
+	}
+	return suspended
 }
