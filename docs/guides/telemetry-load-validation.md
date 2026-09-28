@@ -59,6 +59,8 @@ go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexedStats
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexAudit$' -benchtime=3x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupAcknowledgedHistory$' -benchtime=14400x -count=3 -timeout=3m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupRetainedDirectorySweep$' -benchtime=3x -count=1 -timeout=45m
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupCommitHint$' -benchtime=100000x -count=3
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupRateControlledBurst$' -benchtime=1x -count=3 -timeout=30m
 ```
 
 The commands also work in PowerShell. Benchmarks are measurements, not hard
@@ -121,6 +123,27 @@ are excluded, and fixture creation itself can take minutes on fsynced storage.
 Place the Go test temporary directory on the filesystem being validated.
 This remains a warm reader/cursor-path measurement, not a cold-cache guarantee,
 paced discovery timing, or concurrent daemon latency measurement.
+
+The commit-hint benchmark measures the production catch-up notification path
+with both an empty and a full 1,024-entry hint queue and a 32 KiB input body.
+It checks deferred-hint accounting and reports Commit p99; it does not measure
+journal fsync or background recovery. The durable-HTTP benchmark also reports
+Commit p99 separately from its overall coalescing/drain time.
+
+The rate-controlled burst benchmark compares disabled/enabled export for
+1 KiB and 32 KiB event payloads. Ten concurrent durable journals receive
+212 records/second for 60 seconds (12,720 offered records, plus ten initial
+run-start records). This is approximately 100 times the illustrative rate of
+ten workflows × 38 events every three minutes, not a known deployment rate.
+It reports achieved rate and journal-append p95/p99, fails if production of
+the offered records takes over 66 seconds, then reconciles actual persisted
+journal sequences against received stable IDs within 60 seconds. Duplicate
+copies must retain identity; pruning is not allowed in this healthy-export
+case. Set `TMPDIR` (or Windows `TMP`/`TEMP`) to the test filesystem and use
+`-benchtime=1x`; each subcase is a fixed experiment, not benchmark calibration.
+The fixture is a journal/telemetry component test, not a daemon stage-dispatch
+or full workflow benchmark. Keep it separate from the real-daemon matrix and
+do not describe an offered rate as achieved unless its result confirms it.
 
 ## Local evidence, not fleet certification
 

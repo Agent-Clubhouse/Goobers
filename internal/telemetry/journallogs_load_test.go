@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -228,10 +229,53 @@ func BenchmarkJournalLogsDurableHTTP(b *testing.B) {
 	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
 	if len(samples) > 0 {
 		b.ReportMetric(float64(samples[(len(samples)-1)*95/100].Nanoseconds()), "commit-p95-ns")
+		b.ReportMetric(float64(samples[(len(samples)-1)*99/100].Nanoseconds()), "commit-p99-ns")
 	}
 	receiver.mu.Lock()
 	defer receiver.mu.Unlock()
 	b.ReportMetric(float64(receiver.records)/float64(max(receiver.requests, 1)), "records/request")
 	b.ReportMetric(float64(stats.Dropped), "drops")
 	b.ReportMetric(float64(receiver.wireBytes)/float64(max(receiver.records, 1)), "encoded-B/record")
+}
+
+// Measure the production catch-up notification path with an empty and a full
+// bounded hint queue. There is deliberately no consumer: deferred wake hints
+// are accounted here; recovery from the journal is tested separately.
+func BenchmarkJournalCatchupCommitHint(b *testing.B) {
+	for _, full := range []bool{false, true} {
+		b.Run(fmt.Sprintf("queue-full=%t", full), func(b *testing.B) {
+			pipeline := &journalLogPipeline{}
+			source := &journalCatchup{pipeline: pipeline, hints: make(chan journalCatchupHint, 1024)}
+			client := &Client{journalLogs: pipeline, journalCatchup: source}
+			if full {
+				for range cap(source.hints) {
+					source.offer(journalCatchupHint{})
+				}
+			}
+			event := journal.CommittedEvent{Kind: "run", RunID: "0123456789abcdef0123456789abcdef", JournalID: "0123456789abcdef0123456789abcdef", Body: make([]byte, 32<<10)}
+			samples := make([]time.Duration, 0, min(b.N, 100000))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				started := time.Now()
+				client.Commit(event)
+				if len(samples) < cap(samples) {
+					samples = append(samples, time.Since(started))
+				}
+				if !full {
+					<-source.hints
+				}
+			}
+			b.StopTimer()
+			sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+			b.ReportMetric(float64(samples[(len(samples)-1)*99/100].Nanoseconds()), "commit-p99-ns")
+			want := uint64(0)
+			if full {
+				want = uint64(b.N)
+			}
+			if pipeline.catchupDeferred.Load() != want {
+				b.Fatal("deferred hint accounting mismatch")
+			}
+		})
+	}
 }
