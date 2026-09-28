@@ -301,6 +301,20 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 // existing newAgenticAdapter / repoCloneURL test seams.
 var podHarnessRegistry = buildHarnessRegistry
 
+// podHarnessEnvironment is the pod's view of the instance harness policy, as
+// the daemon wrote it into the kit for the selected harness. A settle budget
+// the kit does not carry, or cannot parse, keeps the adapter default: the
+// daemon validated it at load, so only a legacy kit omits it.
+func podHarnessEnvironment(kit *agentickit.Kit, selected apiv1.Harness) harness.EnvironmentConfig {
+	settle, _ := (instance.RunnerConfig{RequiredMCPSettleTimeout: kit.RequiredMCPSettleTimeout}).RequiredMCPSettleTimeoutDuration()
+	return harness.EnvironmentConfig{
+		Unset:                    kit.HarnessEnvUnset,
+		SessionArgs:              map[string][]string{string(selected): kit.HarnessSessionArgs},
+		PreflightArgs:            map[string][]string{string(selected): kit.HarnessPreflightArgs},
+		RequiredMCPSettleTimeout: settle,
+	}
+}
+
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
 // runsDir is the staging root the caller already created and already
@@ -381,11 +395,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	if len(kit.HarnessCommand) > 0 {
 		commands = map[string][]string{string(spec.Harness): kit.HarnessCommand}
 	}
-	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, harness.EnvironmentConfig{
-		Unset:         kit.HarnessEnvUnset,
-		SessionArgs:   map[string][]string{string(spec.Harness): kit.HarnessSessionArgs},
-		PreflightArgs: map[string][]string{string(spec.Harness): kit.HarnessPreflightArgs},
-	}, commands, "", "", false, nil, false)
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, podHarnessEnvironment(kit, spec.Harness), commands, "", "", false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}

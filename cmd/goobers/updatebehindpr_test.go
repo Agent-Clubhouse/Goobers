@@ -505,7 +505,7 @@ func TestUpdateBehindPRRoutesNonTrivialCandidatesToFullRemediation(t *testing.T)
 			mergeable: true,
 			comments: []map[string]interface{}{{
 				"id": 1, "user": map[string]string{"login": "merge-review-bot"},
-				"body": substantive, "created_at": "2026-07-20T00:00:00Z",
+				"body": stampOwnFixtureBody(substantive, "comment"), "created_at": "2026-07-20T00:00:00Z",
 			}},
 		},
 	}

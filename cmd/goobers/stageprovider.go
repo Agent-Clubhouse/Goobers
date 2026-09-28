@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -152,22 +153,74 @@ func configureStageAttribution(provider providers.Provider, root string) {
 	if !ok {
 		return
 	}
-	attribution, ok := stageAttribution(root)
+	attribution, ok := stageAttributionFor(root)
 	if !ok {
 		return
 	}
 	configurer.SetAttribution(attribution)
 }
 
+// newStageGitHubProvider builds a stage's GitHub provider through the
+// newGitHubProvider seam and stamps its writes with the stage's run
+// attribution. The attribution is applied here, around the seam rather than
+// inside it, so a test that points the seam at a fake forge still runs the
+// stage the way a daemon runs it. Stage providers built by newProviderForStage
+// are attributed there (configureStageAttribution).
+func newStageGitHubProvider(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+	provider := newGitHubProvider(token, opts...)
+	if attribution, ok := stageAttributionFor(os.Getenv(executor.InstanceRootEnvVar)); ok {
+		provider.SetAttribution(attribution)
+	}
+	return provider
+}
+
+// stageAttributionFor resolves the run attribution a stage provider stamps on
+// its writes. Every production provider construction goes through it, so the
+// cmd/goobers test suite can replace it once (testmain_test.go) and run each
+// stage the way a daemon runs it: with attribution on.
+var stageAttributionFor = stageAttribution
+
+// stageAttributionIdentity is the run context a provider write is attributed
+// to, as the executor injects it into a goobers CLI stage.
+type stageAttributionIdentity struct {
+	runID    string
+	gaggle   string
+	workflow string
+	task     string
+	goober   string
+}
+
+// stageAttributionEnvIdentity reads the stage's run context from its env.
+func stageAttributionEnvIdentity() stageAttributionIdentity {
+	return stageAttributionIdentity{
+		runID:    strings.TrimSpace(os.Getenv("GOOBERS_RUN_ID")),
+		gaggle:   strings.TrimSpace(os.Getenv("GOOBERS_GAGGLE")),
+		workflow: strings.TrimSpace(os.Getenv("GOOBERS_WORKFLOW")),
+		task:     strings.TrimSpace(os.Getenv(executor.TaskEnvVar)),
+		goober:   strings.TrimSpace(os.Getenv(executor.GooberEnvVar)),
+	}
+}
+
+// complete reports whether identity names a run. A standalone or manual
+// invocation lacks part of it and is not attributed.
+func (identity stageAttributionIdentity) complete() bool {
+	return identity.runID != "" && identity.gaggle != "" && identity.workflow != "" && identity.task != ""
+}
+
 func stageAttribution(root string) (providers.Attribution, bool) {
-	runID := strings.TrimSpace(os.Getenv("GOOBERS_RUN_ID"))
-	gaggle := strings.TrimSpace(os.Getenv("GOOBERS_GAGGLE"))
-	workflow := strings.TrimSpace(os.Getenv("GOOBERS_WORKFLOW"))
-	task := strings.TrimSpace(os.Getenv(executor.TaskEnvVar))
-	goober := strings.TrimSpace(os.Getenv(executor.GooberEnvVar))
-	if runID == "" || gaggle == "" || workflow == "" || task == "" {
+	identity := stageAttributionEnvIdentity()
+	if !identity.complete() {
 		return providers.Attribution{}, false
 	}
+	return stageAttributionFrom(root, identity, os.Stderr), true
+}
+
+// stageAttributionFrom builds the attribution for identity under root. The
+// instance name, the cost-publication gate, the run's cost receipt and the
+// pinned instance identity are resolved here for every identity, however it
+// was obtained. warnings receives the cost gate's suppression notice.
+func stageAttributionFrom(root string, identity stageAttributionIdentity, warnings io.Writer) providers.Attribution {
+	goober := identity.goober
 	if goober == "" {
 		goober = "deterministic"
 	}
@@ -179,21 +232,21 @@ func stageAttribution(root string) (providers.Attribution, bool) {
 		Schema:   1,
 		Goobers:  true,
 		Instance: instanceName,
-		Gaggle:   gaggle,
-		Workflow: workflow,
-		Task:     task,
+		Gaggle:   identity.gaggle,
+		Workflow: identity.workflow,
+		Task:     identity.task,
 		Goober:   goober,
-		Run:      runID,
+		Run:      identity.runID,
 	}
 	// Provider writes happen after the stage's earlier agentic work has already
 	// journaled completion events. Snapshot those durable events here so every
 	// existing human-readable status comment can carry the same run's
 	// machine-readable cost receipt without consulting telemetry.db.
-	if costPublicationAllowed(root, gaggle, providers.RepositoryRef{}, os.Stderr) {
-		attribution.Cost = stageCostReceipt(root, runID)
+	if costPublicationAllowed(root, identity.gaggle, providers.RepositoryRef{}, warnings) {
+		attribution.Cost = stageCostReceipt(root, identity.runID)
 	}
 	attribution.InstanceID = stageInstanceIdentity()
-	return attribution, true
+	return attribution
 }
 
 func stageInstanceIdentity() string {

@@ -45,11 +45,7 @@ func newTelemetryGitHubProvider(token string, opts ...func(*providers.GitHubProv
 	telemetryOpt := providers.WithRateLimitObserver(
 		telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
 	)
-	provider := providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){telemetryOpt}, opts...)...)
-	if attribution, ok := stageAttribution(os.Getenv(executor.InstanceRootEnvVar)); ok {
-		provider.SetAttribution(attribution)
-	}
-	return provider
+	return providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){telemetryOpt}, opts...)...)
 }
 
 // claimLedgerFileName/claimLockFileName are the well-known files under an

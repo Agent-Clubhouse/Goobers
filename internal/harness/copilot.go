@@ -203,6 +203,11 @@ type CopilotAdapter struct {
 	OptionalCredentialCapabilities map[string]bool
 	// Runner executes the subprocess; defaults to ExecProcessRunner.
 	Runner ProcessRunner
+	// RequiredMCPSettleTimeout bounds how long the pre-model readiness check
+	// waits for goobers-io to leave its startup state, separately from tool
+	// initialization and the inventory check. Zero keeps
+	// DefaultRequiredMCPSettleTimeout; the invocation timeout still applies.
+	RequiredMCPSettleTimeout time.Duration
 	// mcpSessionFactory substitutes the session boundary in adapter contract tests.
 	mcpSessionFactory copilotSessionFactory
 	// ModelLister discovers models from the authenticated Copilot runtime.

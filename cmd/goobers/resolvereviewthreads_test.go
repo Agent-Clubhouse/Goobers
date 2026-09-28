@@ -61,12 +61,11 @@ func seedReviewThreadResolutionRunWithComments(t *testing.T, root, runID, respon
 	}
 }
 
-// setDaemonStageAttributionEnv sets the remaining stage env a daemon injects
-// into a goobers CLI stage, so the stage provider stamps its writes with run
-// attribution exactly as it does in a real run.
+// setDaemonStageAttributionEnv names the stage's task the way the daemon does,
+// so the attribution the suite stamps by default (defaultTestStageAttribution)
+// carries resolve-review-threads rather than the placeholder task.
 func setDaemonStageAttributionEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	t.Setenv(executor.TaskEnvVar, "resolve-review-threads")
 }
 
@@ -106,22 +105,22 @@ func TestReviewThreadHasReplyMatchesResponseMarkerLine(t *testing.T) {
 	}
 }
 
-func TestResolveReviewThreadsRepliesBeforeResolvingAndReturnsUnresolvedCount(t *testing.T) {
-	const runID = "resolve-threads"
-	root := initDemo(t)
-	responses := `[
-		{"threadId":"PRRT_addressed","disposition":"addressed","detail":"added synchronization"},
-		{"threadId":"PRRT_obsolete","disposition":"obsolete","detail":"code was removed"},
-		{"threadId":"PRRT_blocked","disposition":"blocked","detail":"needs maintainer input"}
-	]`
-	seedReviewThreadResolutionRun(t, root, runID, responses)
+// githubReviewThreadState is one review thread on the fake GitHub pull
+// request: its reviewer's root comment, whether it is resolved, and the
+// replies posted to it, stored verbatim.
+type githubReviewThreadState struct {
+	rootID   int64
+	resolved bool
+	replies  []map[string]any
+}
 
-	type threadState struct {
-		rootID   int64
-		resolved bool
-		replies  []map[string]any
-	}
-	threads := map[string]*threadState{
+// newGitHubReviewThreadsFake serves the pull request 77 calls
+// resolve-review-threads makes on GitHub, for three review threads. Replies
+// are stored verbatim and a thread cannot be resolved before its reply is
+// visible.
+func newGitHubReviewThreadsFake(t *testing.T) (*httptest.Server, map[string]*githubReviewThreadState) {
+	t.Helper()
+	threads := map[string]*githubReviewThreadState{
 		"PRRT_addressed": {rootID: 101},
 		"PRRT_obsolete":  {rootID: 201},
 		"PRRT_blocked":   {rootID: 301},
@@ -154,42 +153,64 @@ func TestResolveReviewThreadsRepliesBeforeResolvingAndReturnsUnresolvedCount(t *
 					return
 				}
 			}
-			t.Fatalf("reply posted to unknown root %d", rootID)
+			t.Errorf("reply posted to unknown root %d", rootID)
+			http.NotFound(w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
-			var request struct {
-				Query     string         `json:"query"`
-				Variables map[string]any `json:"variables"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&request)
-			if strings.Contains(request.Query, "mutation") {
-				id := request.Variables["threadId"].(string)
-				state := threads[id]
-				if len(state.replies) == 0 {
-					t.Fatalf("thread %s resolved before its reply was visible", id)
-				}
-				state.resolved = true
-				_, _ = w.Write([]byte(`{"data":{"resolveReviewThread":{"thread":{"id":"` + id + `","isResolved":true}}}}`))
-				return
-			}
-			var nodes []map[string]any
-			for id, state := range threads {
-				commentNodes := []map[string]any{{"databaseId": state.rootID}}
-				for _, reply := range state.replies {
-					commentNodes = append(commentNodes, map[string]any{"databaseId": reply["id"]})
-				}
-				nodes = append(nodes, map[string]any{
-					"id": id, "isResolved": state.resolved, "isOutdated": false, "path": "x.go",
-					"comments": map[string]any{"nodes": commentNodes},
-				})
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewThreads": map[string]any{
-				"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false},
-			}}}}})
+			serveGitHubReviewThreadsGraphQL(t, w, r, threads)
 		default:
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
+	return server, threads
+}
+
+// serveGitHubReviewThreadsGraphQL answers the review-thread query and the
+// resolve mutation for newGitHubReviewThreadsFake.
+func serveGitHubReviewThreadsGraphQL(t *testing.T, w http.ResponseWriter, r *http.Request, threads map[string]*githubReviewThreadState) {
+	t.Helper()
+	var request struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&request)
+	if strings.Contains(request.Query, "mutation") {
+		id := request.Variables["threadId"].(string)
+		state := threads[id]
+		if len(state.replies) == 0 {
+			t.Errorf("thread %s resolved before its reply was visible", id)
+		}
+		state.resolved = true
+		_, _ = w.Write([]byte(`{"data":{"resolveReviewThread":{"thread":{"id":"` + id + `","isResolved":true}}}}`))
+		return
+	}
+	var nodes []map[string]any
+	for id, state := range threads {
+		commentNodes := []map[string]any{{"databaseId": state.rootID}}
+		for _, reply := range state.replies {
+			commentNodes = append(commentNodes, map[string]any{"databaseId": reply["id"]})
+		}
+		nodes = append(nodes, map[string]any{
+			"id": id, "isResolved": state.resolved, "isOutdated": false, "path": "x.go",
+			"comments": map[string]any{"nodes": commentNodes},
+		})
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewThreads": map[string]any{
+		"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false},
+	}}}}})
+}
+
+func TestResolveReviewThreadsRepliesBeforeResolvingAndReturnsUnresolvedCount(t *testing.T) {
+	const runID = "resolve-threads"
+	root := initDemo(t)
+	responses := `[
+		{"threadId":"PRRT_addressed","disposition":"addressed","detail":"added synchronization"},
+		{"threadId":"PRRT_obsolete","disposition":"obsolete","detail":"code was removed"},
+		{"threadId":"PRRT_blocked","disposition":"blocked","detail":"needs maintainer input"}
+	]`
+	seedReviewThreadResolutionRun(t, root, runID, responses)
+	server, threads := newGitHubReviewThreadsFake(t)
 
 	previousProvider := newGitHubProvider
 	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {

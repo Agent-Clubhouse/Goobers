@@ -24,7 +24,8 @@ func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex in
 		return &mcpUnobservableRunner{base: base, request: req}, func() {}
 	}
 	controlled := &copilotControlledRunner{base: base, request: req, promptIndex: promptIndex, mcpConfig: config, model: model, options: options, factory: c.mcpSessionFactory,
-		readiness: MCPReadiness{Server: goobersIOServerName, Category: "transport_failure", Source: "adapter-session", Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"}}
+		settleTimeout: c.RequiredMCPSettleTimeout,
+		readiness:     MCPReadiness{Server: goobersIOServerName, Category: "transport_failure", Source: "adapter-session", Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable", ObservedStatus: mcpObservedUnobserved}}
 	if confinement != nil {
 		controlled.permissionRoots = append([]string(nil), confinement.writableRoots...)
 	}
@@ -40,7 +41,7 @@ type mcpUnobservableRunner struct {
 func (r *mcpUnobservableRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
 	if !r.reported {
 		r.reported = true
-		if err := emitMCPReadiness(r.request, MCPReadiness{Server: goobersIOServerName, Category: "check_unobservable", Source: "adapter-limitation", Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"}); err != nil {
+		if err := emitMCPReadiness(r.request, MCPReadiness{Server: goobersIOServerName, Category: "check_unobservable", Source: "adapter-limitation", Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable", ObservedStatus: mcpObservedUnobserved}); err != nil {
 			return ProcessResult{ExitCode: -1}, err
 		}
 	}
@@ -60,8 +61,27 @@ func (e *Executor) mcpReadinessSink(stage string) func(MCPReadiness) error {
 		return nil
 	}
 	return func(report MCPReadiness) error {
-		return appender.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: stage, Runner: map[string]any{
-			"kind": "required-mcp-readiness", "schemaVersion": 1, "adapter": e.adapter.Name(), "server": report.Server, "category": report.Category, "source": report.Source, "phase": "before-model", "connection": report.Connection, "inventory": report.Inventory, "authorization": report.Authorization}})
+		return appender.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: stage, Runner: requiredMCPReadinessAnnotation(e.adapter.Name(), report)})
+	}
+}
+
+// RequiredMCPReadinessSchemaVersion is the current required-mcp-readiness
+// annotation schema. Version 2 adds the #5397 diagnostics; readers still
+// accept version 1.
+const RequiredMCPReadinessSchemaVersion = 2
+
+// requiredMCPReadinessAnnotation builds the durable annotation. Every value is
+// categorical or numeric: no server message, tool response or credential.
+func requiredMCPReadinessAnnotation(adapter string, report MCPReadiness) map[string]any {
+	observed := report.ObservedStatus
+	if observed == "" {
+		observed = mcpObservedUnobserved
+	}
+	return map[string]any{
+		"kind": "required-mcp-readiness", "schemaVersion": RequiredMCPReadinessSchemaVersion, "adapter": adapter, "server": report.Server,
+		"category": report.Category, "source": report.Source, "phase": "before-model", "connection": report.Connection,
+		"inventory": report.Inventory, "authorization": report.Authorization, "observedStatus": observed, "polls": report.Polls,
+		"elapsedMs": report.ElapsedMs, "failedReasonPresent": report.FailedReasonPresent,
 	}
 }
 

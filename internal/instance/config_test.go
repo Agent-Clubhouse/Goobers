@@ -1536,6 +1536,35 @@ func TestDaemonLivenessTimeout(t *testing.T) {
 	}
 }
 
+// #5397: the required-MCP settle budget is optional (zero keeps the harness
+// default), loads from instance.yaml, and fails closed when malformed.
+func TestRequiredMCPSettleTimeout(t *testing.T) {
+	if got, err := (RunnerConfig{}).RequiredMCPSettleTimeoutDuration(); err != nil || got != 0 {
+		t.Fatalf("unset RequiredMCPSettleTimeoutDuration = %s, %v; want 0", got, err)
+	}
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+runner:
+  requiredMCPSettleTimeout: 90s
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got, err := cfg.Runner.RequiredMCPSettleTimeoutDuration(); err != nil || got != 90*time.Second {
+		t.Fatalf("RequiredMCPSettleTimeoutDuration = %s, %v; want 90s", got, err)
+	}
+	for _, value := range []string{"not-a-duration", "0s", "-1m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Config{Runner: RunnerConfig{RequiredMCPSettleTimeout: value}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "runner.requiredMCPSettleTimeout") {
+				t.Fatalf("Validate() error = %v, want runner.requiredMCPSettleTimeout error", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigAPIListenAddress(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
@@ -4324,6 +4353,24 @@ func TestLoadConfigEngineWorkerVersioningIsOptIn(t *testing.T) {
 				t.Fatalf("EffectiveEngineConfig().WorkerVersioning = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestLoadConfigEngineHITLSurvivesResolution pins that engine.hitl reaches
+// EffectiveEngineConfig: LoadConfig rebuilds the engine block from defaults
+// and overrides, and that rebuild used to drop HITL, so an instance that
+// opted into the #3883 operator-hold protocol silently ran without it.
+func TestLoadConfigEngineHITLSurvivesResolution(t *testing.T) {
+	path := writeInstanceYAML(t, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: localhost:7233\n  hitl:\n    enabled: true\n    window: 4h\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.EngineHITLEnabled() {
+		t.Fatal("EngineHITLEnabled() = false, want the engine.hitl opt-in to survive LoadConfig")
+	}
+	if got := cfg.EffectiveEngineConfig().HITL; got == nil || got.Window != "4h" {
+		t.Fatalf("EffectiveEngineConfig().HITL = %+v, want window 4h", got)
 	}
 }
 

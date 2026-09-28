@@ -293,16 +293,19 @@ func TestGatherSiblingContextKeepsAdvisoryFailVerdict(t *testing.T) {
 		SourceRunID: "run-1", HeadSHA: "sha10head", BaseSHA: "shamainbase",
 	})
 	server.addComment(10, comment)
+	// The seeded verdict is stored as a daemon run wrote it, with the
+	// attribution footer; "unchanged" means byte-for-byte what was stored.
+	seeded, _ := fakeIssueComments(t, server, 10)
 
 	result := readSiblingContextResultAfterGather(t, root)
 	if result.CachedVerdictJSON == "" {
 		t.Fatal("cachedVerdictJson is empty, want advisory fail verdict preserved")
 	}
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	if comments := server.issues[10].comments; len(comments) != 1 || comments[0] != comment {
+	comments, _ := fakeIssueComments(t, server, 10)
+	if len(comments) != 1 || comments[0] != seeded[0] {
 		t.Fatalf("comments = %q, want advisory verdict left unchanged", comments)
 	}
+	assertBodyEqualIgnoringAttribution(t, comments[0], comment)
 }
 
 func TestGatherSiblingContextHeadChangeMissesCache(t *testing.T) {
