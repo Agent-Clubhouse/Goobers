@@ -1135,7 +1135,7 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 			for _, num := range sortedPRKeys(s.prs) {
 				pr := s.prs[num]
 				if pr.state == "open" && pr.head == wantHead && (base == "" || pr.base == base) {
-					out = append(out, prJSON(pr))
+					out = append(out, s.prJSON(pr))
 				}
 			}
 			writeFakeJSON(w, out)
@@ -1153,7 +1153,7 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 		for _, num := range sortedPRKeys(s.prs) {
 			pr := s.prs[num]
 			if (state == "all" || pr.state == state) && (base == "" || pr.base == base) {
-				out = append(out, prDetailJSON(pr))
+				out = append(out, s.prDetailJSON(pr))
 			}
 		}
 		if perPage, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && perPage > 0 {
@@ -1177,7 +1177,7 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 		num := s.nextPR
 		s.nextPR++
 		s.prs[num] = &fakePR{number: num, title: body.Title, body: body.Body, head: body.Head, base: body.Base, state: "open"}
-		writeFakeJSON(w, prJSON(s.prs[num]))
+		writeFakeJSON(w, s.prJSON(s.prs[num]))
 	default:
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
 	}
@@ -1200,7 +1200,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 	}
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
-		writeFakeJSON(w, prDetailJSON(pr))
+		writeFakeJSON(w, s.prDetailJSON(pr))
 	case len(parts) == 2 && parts[1] == "reviews" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(pr.reviews))
 		for _, review := range pr.reviews {
@@ -1280,7 +1280,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		if body.Body != "" {
 			pr.body = body.Body
 		}
-		writeFakeJSON(w, prJSON(pr))
+		writeFakeJSON(w, s.prJSON(pr))
 	default:
 		http.Error(w, fmt.Sprintf("unhandled %s %s", r.Method, r.URL.Path), http.StatusNotImplemented)
 	}
@@ -1371,17 +1371,26 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 	return out
 }
 
-func prJSON(pr *fakePR) map[string]interface{} {
+func (s *fakeGitHubServer) prJSON(pr *fakePR) map[string]interface{} {
 	return map[string]interface{}{
 		"id": pr.number, "number": pr.number, "title": pr.title, "body": pr.body,
 		"state": pr.state, "merged": pr.merged,
-		"html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
+		"html_url": s.prHTMLURL(pr.number),
 	}
+}
+
+// prHTMLURL is a pull request's html_url in real GitHub shape
+// (https://github.com/<owner>/<repo>/pull/N), so a URL a stage publishes and
+// a later stage parses back, such as issue-close-out's merge-review
+// breadcrumb read by backlog-query's requeue reconciliation, passes the same
+// owner/repo/pull/N checks it meets in production.
+func (s *fakeGitHubServer) prHTMLURL(number int) string {
+	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, number)
 }
 
 // prDetailJSON is the ListPullRequests shape (issue #359): draft flag,
 // labels, and head/base ref+sha, none of which prJSON's open-pr shape needs.
-func prDetailJSON(pr *fakePR) map[string]interface{} {
+func (s *fakeGitHubServer) prDetailJSON(pr *fakePR) map[string]interface{} {
 	labels := make([]map[string]string, 0, len(pr.labels))
 	for _, l := range pr.labels {
 		labels = append(labels, map[string]string{"name": l})
@@ -1395,7 +1404,7 @@ func prDetailJSON(pr *fakePR) map[string]interface{} {
 		requestedReviewers = append(requestedReviewers, map[string]string{"login": reviewer})
 	}
 	return map[string]interface{}{
-		"number": pr.number, "html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
+		"number": pr.number, "html_url": s.prHTMLURL(pr.number),
 		"state": pr.state, "merged": pr.merged, "draft": pr.draft,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
 		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
