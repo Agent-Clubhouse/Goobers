@@ -194,6 +194,12 @@ func benchmarkJournalBurst(b *testing.B, size int, enabled bool) {
 	b.ReportMetric(float64(count)/producing.Seconds(), "achieved-records/s")
 	b.ReportMetric(float64(all[(len(all)-1)*95/100].Nanoseconds()), "append-p95-ns")
 	b.ReportMetric(float64(all[(len(all)-1)*99/100].Nanoseconds()), "append-p99-ns")
+	// The testing package omits the benchmark metric row when a subcase fails.
+	// Keep source timings in its failure log too; an unsustained offered rate
+	// must not erase the evidence needed to compare disabled and enabled runs.
+	b.Logf("source: payload=%d enabled=%t records=%d elapsed=%s achieved=%.3f/s append_p95=%s append_p99=%s",
+		size, enabled, count, producing, float64(count)/producing.Seconds(),
+		all[(len(all)-1)*95/100], all[(len(all)-1)*99/100])
 	if producing > 66*time.Second {
 		b.Errorf("producer could not sustain offered rate: %d records in %s", count, producing)
 	}
@@ -269,6 +275,9 @@ func settleBurst(b *testing.B, client *Client, receiver *burstReceiver, expected
 			stats := client.JournalExportStats()
 			b.ReportMetric(float64(stats.Dropped), "export-drops")
 			b.ReportMetric(float64(stats.CatchupDeferred), "deferred-hints")
+			b.Logf("reconciliation: expected=%d unique=%d missing=%d recovery=%s requests=%d records=%d largest_batch=%d duplicates=%d dropped=%d deferred=%d pruned_age=%d pruned_bytes=%d",
+				len(expected), len(identities), missing, time.Since(start), requests, records, largest,
+				duplicates, stats.Dropped, stats.CatchupDeferred, stats.AzureReplay.PrunedAge, stats.AzureReplay.PrunedBytes)
 			if stats.AzureReplay.PrunedBytes != 0 || stats.AzureReplay.PrunedAge != 0 {
 				b.Fatalf("unexpected pruning: %+v", stats)
 			}
