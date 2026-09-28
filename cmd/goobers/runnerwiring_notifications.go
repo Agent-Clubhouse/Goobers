@@ -411,6 +411,12 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		// counts: a recurring harness session timeout is this circuit
 		// breaker's motivating case (#1054).
 		if failureStreakExempt(o) {
+			// #5588/#5598: a pr-remediation cycle this run already charged
+			// never had its fix evaluated. Mark it so the next checkpoint
+			// refunds the charge instead of escalating the PR.
+			if failedOutcomeClass(o).InfraFault() {
+				return voidRemediationChargeForRun(ctx, poster, l, o.RunID)
+			}
 			return nil
 		}
 		// #4417: o.RepoRef is the run's dispatch-time gaggle project, not
@@ -431,11 +437,17 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 // exempts that way; an unclassified terminal is judged by its code, so a
 // bare session timeout still counts (#1054).
 func failureStreakExempt(o runner.FailedOutcome) bool {
-	class := o.FaultClass
-	if class == "" {
-		class = telemetry.ClassifyError(o.Code)
-	}
+	class := failedOutcomeClass(o)
 	return class.InfraFault() || class == telemetry.ErrorClassItemJudgment
+}
+
+// failedOutcomeClass is the terminal's class: the runner's explicit
+// FaultClass when it set one, else the class of its code.
+func failedOutcomeClass(o runner.FailedOutcome) telemetry.ErrorClass {
+	if o.FaultClass != "" {
+		return o.FaultClass
+	}
+	return telemetry.ClassifyError(o.Code)
 }
 
 const failureStreakThreshold = 3
