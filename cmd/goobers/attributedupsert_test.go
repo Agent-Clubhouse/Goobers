@@ -160,6 +160,24 @@ func (f *fakeGiteaComments) editComment(w http.ResponseWriter, r *http.Request, 
 	http.NotFound(w, r)
 }
 
+// addComment seeds a comment on pull request 77 under author. One under
+// Goobers' own login is stored as a daemon run wrote it, with the
+// attribution footer.
+func (f *fakeGiteaComments) addComment(author, body string) {
+	if author == f.login {
+		body = stampOwnFixtureBody(body, "comment")
+	}
+	f.addRawComment(author, body)
+}
+
+// addRawComment seeds body under author exactly as given.
+func (f *fakeGiteaComments) addRawComment(author, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	f.comments = append(f.comments, map[string]any{"id": f.nextID, "body": body, "user": map[string]string{"login": author}})
+}
+
 func (f *fakeGiteaComments) bodies() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

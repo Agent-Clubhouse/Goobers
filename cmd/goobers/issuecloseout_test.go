@@ -369,9 +369,10 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	if !hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
 		t.Fatalf("issue labels = %v, want %s", parked.labels, providers.LabelNeedsHuman)
 	}
-	if len(parked.comments) != 1 || parked.comments[0] != "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?" {
-		t.Fatalf("issue comments = %v, want exact routed reason and question", parked.comments)
+	if len(parked.comments) != 1 {
+		t.Fatalf("issue comments = %v, want exactly the routed reason and question", parked.comments)
 	}
+	assertBodyEqualIgnoringAttribution(t, parked.comments[0], "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?")
 }
 
 func TestValidateIssueCloseOutParkComment(t *testing.T) {

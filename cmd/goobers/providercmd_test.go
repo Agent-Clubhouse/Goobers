@@ -1552,7 +1552,29 @@ func (s *fakeGitHubServer) addCommentAtAs(number int, author, body string, creat
 	s.addCommentAtAsType(number, author, "", body, createdAt)
 }
 
+// addCommentAtAsType seeds a comment the way the forge stores it. A comment
+// under Goobers' own login is stored as a daemon run wrote it, with the
+// attribution footer (stampOwnFixtureBody); use addRawComment/addRawCommentAs
+// to seed human or legacy text under the bot login byte for byte.
 func (s *fakeGitHubServer) addCommentAtAsType(number int, author, authorType, body string, createdAt time.Time) {
+	if author == s.authenticatedLogin {
+		body = stampOwnFixtureBody(body, "comment")
+	}
+	s.addRawCommentAtAsType(number, author, authorType, body, createdAt)
+}
+
+// addRawComment seeds body under Goobers' own login exactly as given, without
+// the attribution footer a daemon write carries.
+func (s *fakeGitHubServer) addRawComment(number int, body string) {
+	s.addRawCommentAs(number, s.authenticatedLogin, body)
+}
+
+// addRawCommentAs seeds body under author exactly as given.
+func (s *fakeGitHubServer) addRawCommentAs(number int, author, body string) {
+	s.addRawCommentAtAsType(number, author, "", body, time.Time{})
+}
+
+func (s *fakeGitHubServer) addRawCommentAtAsType(number int, author, authorType, body string, createdAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextCommentID++
