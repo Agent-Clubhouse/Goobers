@@ -27,6 +27,7 @@ var dependencyAcquisitionDecisions = map[string]dependencyAcquisition{
 	"dotnet":         {kind: "nuget-packages", reason: "opt-in dotnet-service fixture executes dotnet test with restore"},
 	"find":           {reason: "local findutils operation"},
 	"git":            {reason: "integration fixtures operate on locally seeded repositories"},
+	"go":             {kind: "go-modules", reason: "telemetry integration fixture builds the daemon and driver using the pinned module graph"},
 	"head":           {reason: "local coreutils operation"},
 	"java":           {reason: "preinstalled JVM; Maven resolves fixture dependencies"},
 	"mkdir":          {reason: "local coreutils operation"},

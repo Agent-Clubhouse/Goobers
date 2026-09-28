@@ -308,7 +308,7 @@ func TestAzureMonitorJournalReplaySurvivesRestartWithStableScrubbedIdentity(t *t
 		t.Fatal(err)
 	}
 	cancel()
-	if stats := first.JournalExportStats(); stats.ExportFailures == 0 {
+	if stats := first.JournalExportStats(); stats.AzureReplay.Retried == 0 {
 		t.Fatalf("unavailable destination was not reflected in export stats: %+v", stats)
 	}
 	spooled, err := filepath.Glob(filepath.Join(replayRoot, "journal", "*.ndjson"))

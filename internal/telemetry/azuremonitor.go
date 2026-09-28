@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -381,8 +383,9 @@ func azureMonitorAttribute(properties map[string]string, measurements map[string
 // azureMonitorLogExporter adapts both committed journal records and the
 // whitelisted diagnostic stream to Application Insights TraceTelemetry. The
 // callers retain their existing bounded queues and invoke this exporter only
-// from background workers; HTTP ingestion results therefore feed their loss
-// accounting without putting network work on a journal or workflow path.
+// from background workers. With replay enabled, Export reports durable local
+// admission and replay stats report remote delivery; without replay, Export
+// reports HTTP ingestion. Neither puts network work on a journal/workflow path.
 type azureMonitorLogExporter struct {
 	client *azureMonitorClient
 	mu     sync.RWMutex
@@ -394,6 +397,12 @@ func (e *azureMonitorLogExporter) ReplayStats() AzureReplayStats {
 		return AzureReplayStats{}
 	}
 	return e.client.replay.stats()
+}
+
+func (e *azureMonitorLogExporter) setReplayLossSource(sample func() replayLossCounters) {
+	if e != nil && e.client != nil && e.client.replay != nil {
+		setReplayLossSource(&e.client.replay.lossSource, sample)
+	}
 }
 
 func newAzureMonitorLogExporter(connectionString string, httpClient *http.Client, includeHostIdentity bool, replay azureReplayConfig) (*azureMonitorLogExporter, error) {
@@ -463,6 +472,13 @@ func azureMonitorLog(record *sdklog.Record) *appinsights.TraceTelemetry {
 		item.Properties[string(attr.Key)] = attr.Value.String()
 		return true
 	})
+	if journalID, seq := item.Properties["goobers.journal.id"], item.Properties["goobers.journal.seq"]; journalID != "" && seq != "" {
+		// Stable across cursor replay and an ambiguous ingestion acknowledgement.
+		// Hash structured identity, not the body or any human-authored label.
+		identity, _ := json.Marshal([]string{item.Properties["goobers.instance.id"], item.Properties["goobers.journal.kind"], journalID, seq})
+		digest := sha256.Sum256(identity)
+		item.Properties["goobers.telemetry.record_id"] = hex.EncodeToString(digest[:])
+	}
 	if scope := record.InstrumentationScope(); scope.Name != "" {
 		item.Properties["otel.scope.name"] = scope.Name
 		if scope.Version != "" {

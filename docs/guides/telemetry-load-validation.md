@@ -1,0 +1,318 @@
+# Telemetry load and v0.5.0 validation
+
+Treat telemetry performance as a release gate, not just a successful upload.
+The goal is tenant-owned visibility without appreciable workflow, scheduler,
+startup, or interactive latency. This guide separates repeatable automated
+checks from platform measurements still required before fleet rollout.
+
+See [Azure Monitor setup](azure-monitor.md) for opt-in configuration and
+delivery semantics. Use synthetic data and a dedicated test destination. Never
+load-test a production tenant without its approval.
+
+## Hardening covered by this change
+
+- Journal export batches up to 128 records / 256 KiB of charged input, with a
+  maximum 100 ms idle coalescing delay. One individually valid larger record
+  travels alone. The byte threshold is not an encoded HTTP request limit.
+- The existing 1,024-record / 8 MiB admission queue includes the in-flight
+  batch. No second lossy queue is added. Commit does not upload or spool.
+- Durable replay submission acknowledges local persistence; the replay worker
+  owns HTTP. New arrivals cannot bypass exponential retry backoff.
+- HTTP holds no filesystem lock or database transaction. Each replay pass sends
+  at most 32 requests with the worker's five-second context; acknowledgement
+  cleanup has a separate maximum five-second allowance.
+- Replay combines tiny files into bounded 128-record / 1 MiB requests, preserving
+  stable identities and at-least-once delivery. Existing larger batches travel
+  alone. Cross-process leases protect uploads from concurrent pruning/delivery.
+- A private incremental manifest replaces per-operation directory/header scans;
+  legacy metadata is cached on reconciliation. Payloads are still validated at
+  delivery. The journal producer lock is released before replay inspection.
+- Independent, rate-limited stderr/rotating-file warnings expose backlog pressure
+  and counted losses even when ingestion is down. See the Azure Monitor guide
+  for thresholds, counter scope, storage overhead, and PVC requirements.
+
+These are background goroutines, **not an OS low-priority scheduling class**.
+Asynchronous work still consumes CPU, memory, disk bandwidth, and filesystem
+operations. Local authoritative journal fsync remains a separate cost.
+
+## Run the automated checks
+
+From the repository root, with the pinned Go toolchain:
+
+```sh
+go test -race ./internal/telemetry -run 'TestJournalLogs|TestAzureReplay|TestAzureMonitorJournalReplay|TestClientShutdownExportsFinalJournalDropCauses|TestTenantTimeline' -count=1 -timeout=3m
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalLogsDurableHTTP$' -benchtime=4096x -count=3
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayBacklogAdmission$' -benchtime=5x -count=3
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexedStats$' -benchtime=100x -count=3
+```
+
+The commands also work in PowerShell. Benchmarks are measurements, not hard
+wall-clock CI assertions. Keep their text output with the release evidence.
+The journal/replay correctness tests are selected by the Windows CI gate and
+its coverage contract; this does not substitute for native deployment testing.
+
+The HTTP fixture exercises production journal admission, batching, Azure
+envelope serialization, gzip, fsynced replay files, and loopback HTTP. It sends
+2,048 ~1 KiB synthetic records in 256-record waves, verifies delivery accounting
+and valid envelopes, limits batches to 128, requires zero admission drops,
+and requires at least 32 records/request overall. Separate deterministic tests
+cover count/byte pressure, overload accounting, shutdown deadlines, no ambiguous
+OTLP retry, replay restart, pruning, malformed files, stalled upload isolation,
+and retry backoff under continued admission.
+The indexed-spool tests also cover cross-connection claims, interrupted updates,
+expired leases, initialization recovery, successful work-budget continuation,
+and deterministic handoff to a waiting producer before a hot drainer reenters.
+
+The benchmark's `commit-p95-ns` samples Commit only. Its `ns/op` includes
+periodic drain waits and coalescing, so it is not a maximum throughput estimate.
+It does **not** execute workflows, append the authoritative journal, measure
+Azure service ingestion latency, or exercise all three streams together.
+`encoded-B/record` is uncompressed envelope size, not transferred gzip bytes.
+The backlog benchmark starts with 0, 32, or 256 ~127 KiB batch files and grows
+by one file per measured iteration; use the fixed iteration count above when
+comparing results.
+The indexed-stats benchmark compares empty and 12,000-file manifests after
+initialization. Fixture creation is excluded; it is not a cold-start benchmark.
+
+## Local evidence, not fleet certification
+
+Measured on macOS/arm64, Apple M4 Max, 2026-09-27, with real replay-file fsync:
+
+| Check | Result |
+| --- | --- |
+| 2,048-record durable HTTP check | 16 requests; 128 records/request; zero drops |
+| 4,096-record HTTP benchmark, three final runs | 128 records/request; zero drops; Commit p95 875–1,125 ns |
+| Admit a batch with ~32 MiB / 256 files before metadata optimization | ~90.6 ms; ~82.0 MB allocated/admission |
+| Same fixed fixture after metadata optimization | ~10.0 ms; ~1.44 MB allocated/admission |
+
+The last comparison is historical, before the incremental manifest. It is a
+small five-iteration diagnostic, not a statistically
+established platform guarantee. It identifies and substantially reduces a real
+full-backlog-read cost. At that point directory enumeration and legacy reads
+still scaled with file count. Do not extrapolate it to a 512 MiB cap, slow
+Windows disks, a PVC, or the subsequent manifest implementation.
+
+Local validation also passed the full telemetry race suite, focused repeated
+race regressions, journal/engine/CLI
+integration-boundary tests, `make verify-fast`, `make lint-fast`, complexity
+and Markdown checks, and the Windows test-selection contract. Passing the
+selection contract verifies CI wiring, not execution on a Windows host.
+
+### Follow-up real-daemon stress findings: not a passing sign-off
+
+A local scratch harness subsequently ran the real daemon and credential-free
+four-stage workflows, with real fsync, two gaggles, a loopback faulting receiver,
+and two-minute scenarios. The initial six-case matrix completed 716 workflows
+without workflow or health-check failures, but exposed these blockers:
+
+- 12,000 tiny replay files (~5 MiB initially): 92.9% mean sampled daemon CPU,
+  210 MiB peak sampled RSS, and 15,985 records still pending after approximately
+  one minute of restored ingestion with continuing work. Byte caps alone do not
+  bound file-count scan cost or guarantee catch-up.
+- 64 MiB of legacy-format replay files: 330 MiB peak sampled daemon RSS and
+  69.2% mean sampled CPU; repeated payload reads during accounting remain costly.
+- Healthy export with 16 concurrent callers: 51 of 3,952 authoritative run
+  journal sequence keys absent after clean shutdown and an empty replay spool.
+  The daemon logged queue-lock contention drops. Two separate API submissions
+  were explicitly rejected by the mutation concurrency guard.
+- An unusable telemetry spool path caused otherwise-valid daemon configuration
+  to fail startup. Export initialization is not fully failure-isolated.
+
+These are serial, warm-cache macOS measurements from an uncommitted local
+harness, not portable benchmarks or statistically isolated causal estimates.
+They nevertheless demonstrate concrete delivery and resource gaps. Fix bounded
+admission, incremental/cross-process-safe spool accounting, small-batch replay,
+legacy metadata handling, and runtime spool-failure isolation before treating
+the exporter as volume-safe. Then rerun the matrix; passing unit tests does not
+override these findings.
+
+### Indexed-spool follow-up
+
+The incremental manifest, combined uploads, bulk acknowledgement, work-budget
+continuation, and fair admission gate were subsequently exercised on the same
+local setup. A hot drainer could otherwise starve new admissions between OS-lock
+polls; a deterministic regression now checks producer-first handoff.
+
+With 180 seconds of continued work and ingestion restored at 60 seconds:
+
+| Fixture | Completed workflows | Mean sampled CPU / peak RSS | First sampled empty spool |
+| --- | ---: | --- | --- |
+| 12,000 tiny files | 154 | 18.2% / 114.7 MiB | 141 s; 81 s after restoration |
+| 520 MiB prefill / 512 MiB cap | 157 | 20.2% / 120.5 MiB | 122 s; 62 s after restoration |
+
+Both had zero workflow/health-check failures, zero sampled failed admissions,
+and no received duplicate IDs; near-cap replay stayed below its logical byte
+ceiling. The independent warnings reported backlog pressure, intentional pruning,
+and queue drops while the receiver was offline. A real kill/restart recovered
+all 1,372 persisted IDs captured before the kill.
+
+These are **not zero-loss or full timing passes**. Thirty of 5,852 run sequences
+were missing after the tiny-file run, and 22 of 5,966 after near-cap shutdown,
+despite empty spools. The crash trial missed eight run sequences outside its
+durable checkpoint. Journal queue admission and startup isolation still need
+corrective work; the one-minute recovery target was missed. The longer trials
+do not replace the shorter failed checks. Shared-workstation conditions and
+unreplicated timing comparisons prevent a fleet-overhead guarantee.
+
+## Updated validation and repeatable driver
+
+### Durable-source follow-up
+
+After atomic queue admission, nonfatal storage initialization and journal
+cursor catch-up, the same macOS synthetic workload produced:
+
+| Fixture | Workflows | Reconciled run events | Duplicate copies |
+| --- | ---: | ---: | ---: |
+| Healthy, 60 s | 60 | 2,280 / 2,280 | 0 |
+| 12,000 tiny files, 180 s, restore at 60 s | 169 | 6,422 / 6,422 | 0 |
+| 520 MiB prefill, 180 s, restore at 60 s | 175 | 6,650 / 6,650 | 0 |
+| Kill/restart, 60 s each lifetime | 117 | 4,446 / 4,446 | 17 |
+
+All had zero workflow/health-check failures; the restarted run also recovered
+all 3,254 captured pre-kill spool IDs. Tiny-file and near-cap cases reached an
+empty spool by the roughly 105-second sample. These are correctness results,
+not matched performance guarantees; some checks overlapped other local builds.
+The earlier failed tests above remain historical evidence, not passing results.
+
+A small real Azure canary made all 38 run sequences query-visible under its
+run operation ID. Azure held 76 copies with 38 distinct stable IDs: dedupe is
+mandatory, and a successful upload alone must not be called reconstruction.
+A native AKS Azure Disk CSI PVC smoke run completed 89 workflows and reconciled
+3,382 / 3,382 run events with no duplicates or workflow/health failures. Native
+Windows journal/replay regression binaries passed with Defender enabled.
+These preliminary checks do not replace the service-account and 24-hour gates.
+
+### Maintained real-daemon driver
+
+The integration fixture builds the actual daemon and runs a short loopback-only
+reconciliation test. It requires Go, Git, and `ps` (PowerShell on Windows):
+
+```sh
+go test -tags=integration ./test/telemetryload -count=1 -timeout=5m
+go build -o bin/telemetry-load ./test/telemetryload/testdata/driver
+go build -o bin/goobers ./cmd/goobers
+bin/telemetry-load -bin bin/goobers -out /tmp/telemetry-enabled -scenario enabled -duration 30m -workers 10 -poll-interval 3m -sample-interval 10s
+```
+
+Use a **new or empty** output directory each time. On Windows use `.exe` paths
+and explicitly add `-windows-insecure-demo`: the bundled deterministic,
+credential-free demo has no native Windows network isolation. This does not
+change the deployment's sandbox policy or certify isolation. Do not substitute
+untrusted workflows. Child processes have ambient provider/telemetry credential
+variables removed. On Linux make the daemon executable readable/executable by
+the workload identity, not just the host root user.
+
+Scenarios: `baseline`, `enabled`, `outage-recovery` (503 and stalled requests),
+`tiny-files`, `near-cap`, `legacy`, `spool-failure`, and `crash` (two lifetimes).
+`all` runs the first seven sequentially. `-recovery-after 60s` sets restoration
+time for prefills; use at least three minutes for their initial drain checks.
+`-profile health|standard|diagnostic` selects collection. Health-only and disabled
+profiles do not assert run-journal export. The driver fails on workflow/health
+errors, measurement errors, shutdown over 20 seconds, or unexplained missing
+run/spool records in eligible loopback scenarios. Burst overload tests need a
+separate explicitly justified loss policy, not silently relaxed assertions.
+
+For a 24-hour representative run use `-duration 24h -workers 10 -poll-interval 3m
+-sample-interval 10s`. This exercises actual runs, so it overstates a deployment
+where most polls find no work. Sample JSONL, authoritative journals, daemon logs,
+and result JSON stay in the output directory. Disk size is logical file bytes,
+not filesystem allocation. Unix `ps` CPU values are lifetime averages; Windows
+PowerShell uses interval process CPU and itself has sampling overhead. Final
+process CPU seconds are also recorded. The driver is not a heap, goroutine,
+handle, disk-latency, or stage-dispatch profiler; collect those separately for
+the proposed gates below. It does not automatically certify every table entry.
+
+Only the explicit `azure` scenario accepts `-azure-connection-env NAME`, with
+the connection string already in that environment variable. It never uploads
+volume prefills. It reports `MissingRunEvents: -1` until a separate Azure query
+reconciles instance/run/sequence and stable IDs. A connection string is not an
+Azure query credential. Never put it in arguments, evidence, or source control.
+
+## Establish the representative workload
+
+Start with two gaggles per instance and five polling workflows per gaggle,
+every three minutes. That is 200 poll opportunities/hour/instance, not
+necessarily 200 runs. Confirm whether five workflows means per gaggle or per
+instance; the latter halves that estimate. Measure actual records/run and
+record sizes, including successful polls that do no work.
+
+For illustration only, 20 journal events per poll opportunity gives about
+1.1 records/second/instance and 111 records/second across 100 instances. The
+fleet total stresses ingestion; the per-instance rate stresses the daemon.
+Do not treat 100 users as 100 instances until deployment topology is known.
+
+Run identical deterministic workloads in export-disabled, `health`, `standard`,
+and `diagnostic` configurations. Keep local journaling and fsync unchanged.
+Use all configured streams concurrently. Measure a normal rate, 10× that rate,
+and a 60-second 100× burst. Also include synchronized poll boundaries and
+1 KiB / 32 KiB / near-limit records. These multipliers are test levels, not
+claims about supported capacity. Full-workflow snapshots are not included.
+
+## Required platform matrix
+
+- Windows service, normal enterprise account, Defender/endpoint protection
+  enabled, actual deployment filesystem and ordinary developer hardware.
+- Kubernetes, actual CPU/memory requests and limits, PVC storage class and
+  filesystem, one active owner per instance root. Test container restart and
+  replacement pod on the same PVC, plus CPU throttling and storage latency.
+- Native macOS and Linux smoke/load runs. A macOS result does not certify
+  Windows or Linux; a Linux unit run does not certify a Kubernetes PVC.
+
+Record build SHA, OS/CPU, resource limits, storage, profile, payload sizes,
+rates, replay caps, and whether antivirus and fsync were enabled. Run at least
+three matched disabled/enabled comparisons after a five-minute warmup.
+
+## Proposed release acceptance criteria
+
+These are initial sign-off targets, **not achieved results or shipped SLOs**.
+If a target fails, retain the evidence and either fix the issue or explicitly
+agree a revised capacity envelope; do not silently relax it.
+
+| Scenario | Duration and acceptance target |
+| --- | --- |
+| Normal operation | 30 min/profile/platform. Zero queue drops, pruning, or unexplained missing records. Incremental daemon CPU ≤5% of one core; steady incremental RSS ≤32 MiB. |
+| User-facing latency | At normal load, journal append and stage-dispatch p95 regression ≤max(1 ms, 10% of baseline), p99 ≤max(5 ms, 20%). Interactive health/status calls remain responsive. Measure telemetry Commit separately: p99 <1 ms for ≤32 KiB inputs. |
+| Batching | Under sustained backlog, small-record batches average ≥32 records/request, never >128; input-byte threshold respected except valid singletons. Idle/sparse records are allowed to send singly. No one-spool-file-per-event behavior during a burst. |
+| 10× sustained / 100× burst | 30 min / 60 s. No deadlock or unbounded memory growth. At 10×, no drops on the declared supported hardware. Burst overload may drop exported copies only if fully counted; local journals remain complete and workers recover within 60 s after load returns to normal. |
+| Network failure | 30 min of timeout, DNS failure, 429, 503, and connection reset, including an ambiguous acknowledgement. Normal workflow latency budgets still hold. Retry spacing respects backoff despite new records; one in-flight request per replay stream. No retry/log storm. |
+| Backlog / storage | Repeat at 0%, 50%, 90%, and cap with both large batches and many tiny batches. Include pre-upgrade spool files, read-only/unwritable directory, disk-full, and slow disk/PVC. Steady incremental RSS ≤64 MiB during outage, with no sustained upward trend. Age/byte pruning must be visible and remain within the configured published-file bound after enforcement. Allow temporary write/file-system overhead separately. |
+| Recovery | Restore the endpoint while new runs continue. For a backlog sized to 10 min of normal work, catch up within 10 min while preserving normal-work latency. Compare unique record IDs; retries may duplicate delivery. Larger backlogs need an explicitly measured drain rate and ETA. |
+| Startup / shutdown | Compare empty, half-full, and near-cap cold/warm starts, online and offline. Added startup-to-ready p95 ≤250 ms and no waiting for HTTP; shutdown respects its configured deadline within 250 ms. Persisted unacknowledged batches survive forced termination; unspooled memory queues are not crash-durable. |
+| Soak | 24 h on Windows and the deployment PVC, including outages and a restart. No growing goroutine/handle count, no sustained heap/RSS growth, no unexpected disk growth beyond configured telemetry storage and authoritative journal retention. |
+
+Do not size storage alone and assume the problem is solved: file count, scans,
+fsync latency, antivirus, GC, and shared disk traffic can be the limiting factor.
+Near-cap behavior remains a required gate. Test both a cold manifest rebuild and
+warm incremental accounting, and include many tiny files rather than only large
+batches. Raising the storage cap is not a substitute for efficient catch-up.
+
+For every scenario retain CPU/RSS and Go heap/allocation/goroutine profiles,
+disk bytes/operations/latency, append/dispatch/Commit percentiles, startup and
+shutdown timings, queue/drop causes, replay pending age/bytes/records, retries,
+pruning, request count/size, and unique received record IDs. Compare journal
+sequence/run identity to destination records; queue admission is not proof of
+remote delivery. Use local stats during an outage because remote health
+telemetry cannot report through a broken endpoint.
+
+Check the independent health files and stderr explicitly: a sustained outage
+must produce a backlog warning, injected journal/diagnostic losses must be
+counted, repeated warnings must be rate-limited, and restoration must produce a
+recovery transition without feeding warnings back into the export queue. Capture
+admission failures separately from queue drops and intentional cap pruning.
+Keep retry-discovery time separate from catch-up throughput, but include both
+when judging the total recovery target. A longer follow-up run must not overwrite
+or relabel a failed shorter timing check.
+
+## Sign-off record
+
+- Build SHA / platform / hardware / storage:
+- Profile / instance count / workload / observed events per second:
+- Disabled baseline versus enabled results:
+- Backlog sizes and file counts, including legacy files:
+- Failure/restart scenarios and reconciled losses/duplicates:
+- Evidence paths and remaining exceptions:
+- Owner / date / rollout decision:
+
+Start with a small opted-in canary group; expand only after native Windows and
+Kubernetes gates pass. This change does not certify a 100-user deployment by
+itself, nor does it add full workflow-content export.
