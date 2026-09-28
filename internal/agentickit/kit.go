@@ -97,6 +97,10 @@ type Kit struct {
 	// HarnessPreflightArgs are appended only to the selected harness's
 	// authentication/session-contract preflight probe.
 	HarnessPreflightArgs []string `json:"harnessPreflightArgs,omitempty"`
+	// RequiredMCPSettleTimeout is the instance's runner.requiredMCPSettleTimeout
+	// duration string, verbatim. Omitted in legacy kits and when unset, which
+	// keeps the adapter's default settle budget.
+	RequiredMCPSettleTimeout string `json:"requiredMCPSettleTimeout,omitempty"`
 }
 
 // Marshal renders the kit and returns it with its content address.

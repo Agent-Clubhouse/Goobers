@@ -202,5 +202,7 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 		HarnessEnvUnset:      slices.Clone(cfg.Runner.HarnessEnvUnset),
 		HarnessSessionArgs:   slices.Clone(cfg.Runner.HarnessSessionArgs[string(spec.Harness)]),
 		HarnessPreflightArgs: slices.Clone(cfg.Runner.HarnessPreflightArgs[string(spec.Harness)]),
+
+		RequiredMCPSettleTimeout: cfg.Runner.RequiredMCPSettleTimeout,
 	}, nil
 }

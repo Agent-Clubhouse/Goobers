@@ -893,7 +893,7 @@ func (c RunnerConfig) validate() error {
 			return fmt.Errorf("runner.capabilities[%d]: %w", i, err)
 		}
 	}
-	if _, err := c.LivenessTimeoutDuration(); err != nil {
+	if err := c.validateTimeouts(); err != nil {
 		return err
 	}
 	for i, name := range c.EnvPassthrough {
@@ -921,6 +921,14 @@ func (c RunnerConfig) validate() error {
 		return err
 	}
 	return c.validateHarnessPreflightArgs()
+}
+
+func (c RunnerConfig) validateTimeouts() error {
+	if _, err := c.LivenessTimeoutDuration(); err != nil {
+		return err
+	}
+	_, err := c.RequiredMCPSettleTimeoutDuration()
+	return err
 }
 
 func (c RunnerConfig) validateHarnessSessionArgs() error {
