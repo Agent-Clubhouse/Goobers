@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -101,5 +102,34 @@ func TestDedupeAuthoredBodyRemovesProviderFooters(t *testing.T) {
 		if got := dedupeAuthoredBody(tc.body); got != tc.want {
 			t.Errorf("%s: dedupeAuthoredBody = %q, want %q", name, got, tc.want)
 		}
+	}
+}
+
+// TestDuplicateSignalsMatchUnattributedBodies: the footers shared by items
+// from one run add neither body similarity nor shared references; a run id
+// such as "run-decompose-1" would otherwise read as the external reference
+// DECOMPOSE-1 shared by every item the run filed.
+func TestDuplicateSignalsMatchUnattributedBodies(t *testing.T) {
+	attribution := providers.Attribution{Gaggle: "goobers", Workflow: "decomposition", Task: "create-children", Goober: "planner", Run: "run-decompose-1"}
+	stamp := func(body, runID string) string {
+		stamped, err := providers.StampAttribution(body+"\n\n---\n"+providers.RunIDFooterPrefix+runID, attribution, "issue-create")
+		if err != nil {
+			t.Fatalf("stamp attribution: %v", err)
+		}
+		return stamped
+	}
+	plainA := providers.WorkItem{ID: "1", Title: "Document the release checklist", Body: "Operators need the tagging steps written down."}
+	plainB := providers.WorkItem{ID: "2", Title: "Tighten portal session expiry", Body: "Idle sessions stay valid for a week."}
+	stampedA, stampedB := plainA, plainB
+	stampedA.Body = stamp(plainA.Body, "run-decompose-1-child-1")
+	stampedB.Body = stamp(plainB.Body, "run-decompose-1-child-2")
+
+	want := duplicateSignals(plainA, plainB, nil)
+	got := duplicateSignals(stampedA, stampedB, nil)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("attributed signals = %+v, want the unattributed %+v", got, want)
+	}
+	if _, likely := duplicateCandidateScore(got); likely {
+		t.Fatalf("unrelated attributed siblings scored as likely duplicates: %+v", got)
 	}
 }
