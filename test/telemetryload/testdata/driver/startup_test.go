@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 func TestStartupConfiguration(t *testing.T) {
@@ -48,6 +50,28 @@ func TestStartupReadinessRequiresBothRoutes(t *testing.T) {
 				t.Fatalf("ready=%v failing=%q", got, failing)
 			}
 		})
+	}
+}
+
+func TestStartupWarmRequiresCompleteAccounting(t *testing.T) {
+	state := startupOccupancy{Manifest: true, Files: 2, Bytes: 100}
+	stats := telemetry.AzureReplayStats{AccountingReady: true, PendingFiles: 2, PendingBytes: 100}
+	if err := validateStartupWarm(state, stats); err != nil {
+		t.Fatal(err)
+	}
+	for _, incomplete := range []telemetry.AzureReplayStats{
+		{AccountingReady: true}, // Migrated schema is not reconciled accounting.
+		{AccountingReady: false, PendingFiles: 2, PendingBytes: 100},
+		{AccountingReady: true, PendingFiles: 1, PendingBytes: 100},
+		{AccountingReady: true, PendingFiles: 2, PendingBytes: 99},
+	} {
+		if validateStartupWarm(state, incomplete) == nil {
+			t.Fatalf("incomplete accounting accepted: %+v", incomplete)
+		}
+	}
+	state.Manifest = false
+	if validateStartupWarm(state, stats) == nil {
+		t.Fatal("missing manifest accepted")
 	}
 }
 

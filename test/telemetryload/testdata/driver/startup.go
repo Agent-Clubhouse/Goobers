@@ -174,6 +174,9 @@ func runStartupSample(url string, round int, enabled bool) startupSample {
 	if enabled && startupOptions.Index == "warm" && !sample.Before.Manifest {
 		panic("warm startup fixture has no manifest")
 	}
+	if enabled && startupOptions.Index == "warm" {
+		must(validateStartupWarm(sample.Before, telemetry.InspectAzureReplayRoot(spool(root))))
+	}
 	mode.Store(0)
 	if startupOptions.Endpoint == "stalled" {
 		mode.Store(2)
@@ -189,4 +192,11 @@ func runStartupSample(url string, round int, enabled bool) startupSample {
 	must(visitStartupSeeds(root, true))
 	sample.SeedPayloadsRemovedAfterward = true
 	return sample
+}
+
+func validateStartupWarm(state startupOccupancy, stats telemetry.AzureReplayStats) error {
+	if !state.Manifest || !stats.AccountingReady || int64(stats.PendingFiles) != state.Files || stats.PendingBytes != state.Bytes {
+		return fmt.Errorf("warm startup manifest does not match the stopped fixture: disk=%+v indexed=%+v", state, stats)
+	}
+	return nil
 }
