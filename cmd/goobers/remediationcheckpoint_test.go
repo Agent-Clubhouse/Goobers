@@ -82,7 +82,14 @@ type remediationCheckpointServerState struct {
 	// short) entry serves the default timestamp so existing tests are
 	// unaffected; the sentinel "-" omits created_at entirely (a comment with
 	// no timestamp), which the human-comment watermark tests use.
-	commentCreatedAt    []string
+	commentCreatedAt []string
+	// commentAuthors is optional, index-aligned with comments (as
+	// rebasePRServerState's commentAuthors): an empty (or short) entry falls
+	// back to the bot login "goobers-bot", so existing tests that only set
+	// comments are unaffected. Only a bot-authored comment is stamped with
+	// the attribution footer; a comment seeded under a non-bot login is
+	// served raw, modeling a human comment the way production stores it.
+	commentAuthors      []string
 	files               []providers.ChangedFile
 	siblings            []remediationCheckpointSibling
 	labelRemovalAuth    string
@@ -281,7 +288,15 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		}
 		out := make([]map[string]interface{}, len(st.comments))
 		for i, c := range st.comments {
-			entry := map[string]interface{}{"id": i + 1, "user": map[string]string{"login": "goobers-bot"}, "body": stampOwnFixtureBody(c, "comment")}
+			login := "goobers-bot"
+			if i < len(st.commentAuthors) && st.commentAuthors[i] != "" {
+				login = st.commentAuthors[i]
+			}
+			body := c
+			if login == "goobers-bot" {
+				body = stampOwnFixtureBody(c, "comment")
+			}
+			entry := map[string]interface{}{"id": i + 1, "user": map[string]string{"login": login}, "body": body}
 			createdAt := "2026-07-15T00:00:00Z"
 			if i < len(st.commentCreatedAt) {
 				createdAt = st.commentCreatedAt[i]
@@ -1072,6 +1087,7 @@ func TestRemediationCheckpointRecordsCommentWatermark(t *testing.T) {
 			number: 77, headSHA: headSHA, baseSHA: baseSHA,
 			labels:           []string{needsRemediationLabel},
 			comments:         []string{priorComment, "please look", "and this too"},
+			commentAuthors:   []string{"goobers-bot", "human-reviewer", "human-reviewer"},
 			commentCreatedAt: []string{"2026-07-19T00:00:00Z", "2026-07-20T00:00:00Z", "2026-07-21T00:00:00Z"},
 		}
 		server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)

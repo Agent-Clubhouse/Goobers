@@ -24,8 +24,9 @@ func replayRemediationCheckpointGitHub(t *testing.T) replayFixture {
 	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
 	st := &remediationCheckpointServerState{
 		number: 77, headSHA: headSHA, baseSHA: baseSHA,
-		labels:   []string{needsRemediationLabel},
-		comments: []string{replayRemediationCheckpointReviewerComment},
+		labels:         []string{needsRemediationLabel},
+		comments:       []string{replayRemediationCheckpointReviewerComment},
+		commentAuthors: []string{"human-reviewer"},
 	}
 	inner := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	counter := &providerWriteCounter{}
