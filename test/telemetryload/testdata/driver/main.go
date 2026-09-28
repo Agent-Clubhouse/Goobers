@@ -399,6 +399,19 @@ func run(name, root, api string, duration time.Duration) Result {
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
+			// Normal polling models ten independent polling schedules. Sending
+			// ten CLI mutations in the same instant instead tests the API's
+			// four-request admission guard (even with telemetry disabled).
+			// Zero poll interval deliberately preserves synchronized burst load.
+			if pollInterval > 0 && worker > 0 {
+				timer := time.NewTimer(time.Duration(worker) * pollInterval / time.Duration(workers))
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				}
+			}
 			for ctx.Err() == nil {
 				g := "demo"
 				if worker%2 == 1 {

@@ -223,8 +223,13 @@ a failed immediate-shutdown reconciliation, not evidence of permanent loss.
 
 For a 24-hour representative run use `-duration 24h -workers 10 -poll-interval 3m
 -sample-interval 10s`. This exercises actual runs, so it overstates a deployment
-where most polls find no work. Sample JSONL, authoritative journals, daemon logs,
-and result JSON stay in the output directory. Disk size is logical file bytes,
+where most polls find no work. Sample JSONL, authoritative journals and daemon
+logs stay in the output directory.
+Positive poll intervals stagger the workers' initial schedules. Zero intervals
+retain simultaneous burst submissions. Ten concurrent CLI mutations can hit
+the API's four-request admission guard even with telemetry disabled; preserve
+those rejected-request results as API-pressure evidence, not telemetry losses.
+Result JSON stays in the output directory. Disk size is logical file bytes,
 not filesystem allocation. Unix `ps` CPU values are lifetime averages; Windows
 PowerShell uses interval process CPU and itself has sampling overhead. Final
 process CPU seconds are also recorded. Normal daemon heartbeats remain enabled
