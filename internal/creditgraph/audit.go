@@ -263,52 +263,15 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 		ID:        faultFindingID(signature),
 		Signature: signature, Verification: VerificationOpen,
 	}
-	classificationSignals := signals
-	if fixedAt, ok := config.FixesAppliedAt[finding.ID]; ok {
-		var baseline []faultSignal
-		for _, signal := range signals {
-			if signal.observation.ObservedAt.IsZero() || !signal.observation.ObservedAt.After(fixedAt) {
-				baseline = append(baseline, signal)
-			}
-		}
-		if len(baseline) > 0 {
-			classificationSignals = baseline
-		}
-	}
-	runSet, workflowSet, versionSet, environmentSet, pathSet := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
-	domainCounts := map[FaultDomain]int{}
-	confidence := 0.0
-	missingProvenance, contradictory := false, false
-	for _, signal := range classificationSignals {
-		runSet[signal.observation.RunID] = true
-		workflowSet[signal.observation.Workflow] = true
-		versionSet[signal.observation.EffectiveVersion] = true
-		for _, environment := range signal.observation.Environments {
-			environmentSet[environment] = true
-		}
-		if len(signal.path) > 0 {
-			pathSet[strings.Join(signal.path, "\x00")] = true
-		}
-		finding.Evidence = append(finding.Evidence, signal.evidence...)
-		if signal.observation.Status == RecordFailed || signal.observation.Status == RecordInsufficientEvidence ||
-			signal.observation.EffectiveVersion == "" ||
-			signal.observation.Workflow == "" || len(signal.evidence) == 0 {
-			missingProvenance = true
-		}
-		for _, assumption := range signal.cause.Assumptions {
-			if strings.Contains(strings.ToLower(assumption), "contradict") {
-				contradictory = true
-				finding.CounterEvidence = append(finding.CounterEvidence, assumption)
-			}
-		}
-		domainCounts[signalDomain(signal)]++
-		confidence += signal.cause.Confidence
-	}
-	finding.RunIDs = sortedSet(runSet, config.MaxRunsPerFinding)
-	finding.Workflows = sortedSet(workflowSet, 0)
-	finding.EffectiveVersions = sortedSet(versionSet, 0)
-	finding.Environments = sortedSet(environmentSet, 0)
-	for _, encoded := range sortedSet(pathSet, 0) {
+	classificationSignals := faultClassificationSignals(finding.ID, signals, config.FixesAppliedAt)
+	summary := summarizeFaultSignals(classificationSignals)
+	finding.Evidence = summary.evidence
+	finding.CounterEvidence = summary.counterEvidence
+	finding.RunIDs = sortedSet(summary.runs, config.MaxRunsPerFinding)
+	finding.Workflows = sortedSet(summary.workflows, 0)
+	finding.EffectiveVersions = sortedSet(summary.versions, 0)
+	finding.Environments = sortedSet(summary.environments, 0)
+	for _, encoded := range sortedSet(summary.paths, 0) {
 		finding.NodePaths = append(finding.NodePaths, strings.Split(encoded, "\x00"))
 	}
 	sortEvidence(finding.Evidence)
@@ -316,30 +279,30 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 		finding.Evidence = finding.Evidence[:config.MaxEvidence]
 	}
 
-	finding.Domain = dominantDomain(domainCounts)
-	sparse := len(runSet) < config.SampleFloor
-	if sparse || missingProvenance || contradictory || len(domainCounts) != 1 {
+	finding.Domain = dominantDomain(summary.domainCounts)
+	sparse := len(summary.runs) < config.SampleFloor
+	if sparse || summary.missingProvenance || summary.contradictory || len(summary.domainCounts) != 1 {
 		finding.Domain = FaultDomainUnknown
 	}
 	if finding.Domain == FaultDomainWorkflow &&
-		(len(workflowSet) != 1 || len(versionSet) != 1 || len(pathSet) != 1) {
+		(len(summary.workflows) != 1 || len(summary.versions) != 1 || len(summary.paths) != 1) {
 		finding.Domain = FaultDomainUnknown
 		finding.CounterEvidence = append(finding.CounterEvidence, "the signature is not localized to one workflow, EffectiveVersion, and node path")
 	}
-	if (finding.Domain == FaultDomainProductRuntime || finding.Domain == FaultDomainExternal) && len(workflowSet) < 2 {
+	if (finding.Domain == FaultDomainProductRuntime || finding.Domain == FaultDomainExternal) && len(summary.workflows) < 2 {
 		finding.Domain = FaultDomainUnknown
 		finding.CounterEvidence = append(finding.CounterEvidence, "the signature has not crossed unrelated workflow boundaries")
 	}
-	finding.Confidence = round(confidence / float64(len(classificationSignals)))
+	finding.Confidence = round(summary.confidence / float64(len(classificationSignals)))
 	if sparse {
 		finding.Confidence = min(finding.Confidence, 0.35)
-		finding.CounterEvidence = append(finding.CounterEvidence, fmt.Sprintf("sample floor not met: %d runs observed, %d required", len(runSet), config.SampleFloor))
+		finding.CounterEvidence = append(finding.CounterEvidence, fmt.Sprintf("sample floor not met: %d runs observed, %d required", len(summary.runs), config.SampleFloor))
 	}
-	if missingProvenance {
+	if summary.missingProvenance {
 		finding.Confidence = min(finding.Confidence, 0.3)
 		finding.CounterEvidence = append(finding.CounterEvidence, "one or more observations lack exact version or journal/artifact provenance")
 	}
-	if contradictory || len(domainCounts) != 1 {
+	if summary.contradictory || len(summary.domainCounts) != 1 {
 		finding.Confidence = min(finding.Confidence, 0.45)
 	}
 	if finding.Domain == FaultDomainUnknown {
@@ -348,6 +311,65 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 	finding.Rationale, finding.AlternativeDomains, finding.RecommendedOwner, finding.RecommendedAction = explainFaultFinding(finding, len(classificationSignals))
 	finding.Verification = verificationState(finding, signals, all, config)
 	return finding
+}
+
+func faultClassificationSignals(findingID string, signals []faultSignal, fixesAppliedAt map[string]time.Time) []faultSignal {
+	fixedAt, ok := fixesAppliedAt[findingID]
+	if !ok {
+		return signals
+	}
+	var baseline []faultSignal
+	for _, signal := range signals {
+		if signal.observation.ObservedAt.IsZero() || !signal.observation.ObservedAt.After(fixedAt) {
+			baseline = append(baseline, signal)
+		}
+	}
+	if len(baseline) == 0 {
+		return signals
+	}
+	return baseline
+}
+
+type faultSignalSummary struct {
+	runs, workflows, versions, environments, paths map[string]bool
+	domainCounts                                   map[FaultDomain]int
+	confidence                                     float64
+	missingProvenance, contradictory               bool
+	evidence                                       []AttributionEvidenceLink
+	counterEvidence                                []string
+}
+
+func summarizeFaultSignals(signals []faultSignal) faultSignalSummary {
+	summary := faultSignalSummary{
+		runs: map[string]bool{}, workflows: map[string]bool{}, versions: map[string]bool{},
+		environments: map[string]bool{}, paths: map[string]bool{}, domainCounts: map[FaultDomain]int{},
+	}
+	for _, signal := range signals {
+		summary.runs[signal.observation.RunID] = true
+		summary.workflows[signal.observation.Workflow] = true
+		summary.versions[signal.observation.EffectiveVersion] = true
+		for _, environment := range signal.observation.Environments {
+			summary.environments[environment] = true
+		}
+		if len(signal.path) > 0 {
+			summary.paths[strings.Join(signal.path, "\x00")] = true
+		}
+		summary.evidence = append(summary.evidence, signal.evidence...)
+		if signal.observation.Status == RecordFailed || signal.observation.Status == RecordInsufficientEvidence ||
+			signal.observation.EffectiveVersion == "" ||
+			signal.observation.Workflow == "" || len(signal.evidence) == 0 {
+			summary.missingProvenance = true
+		}
+		for _, assumption := range signal.cause.Assumptions {
+			if strings.Contains(strings.ToLower(assumption), "contradict") {
+				summary.contradictory = true
+				summary.counterEvidence = append(summary.counterEvidence, assumption)
+			}
+		}
+		summary.domainCounts[signalDomain(signal)]++
+		summary.confidence += signal.cause.Confidence
+	}
+	return summary
 }
 
 func baselineObservations(signals []faultSignal, fixedAt time.Time, limit int) []AttributionObservation {
