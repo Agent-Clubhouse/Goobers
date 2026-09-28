@@ -54,6 +54,7 @@ func journalOTLPTestInventory(t *testing.T) map[string][]string {
 		"internal/telemetry/journalprivacy_test.go",
 		"internal/telemetry/journal_admission_test.go",
 		"internal/telemetry/journalcatchup_test.go",
+		"internal/telemetry/journalcatchup_batch_test.go",
 		"internal/telemetry/journalcatchup_load_test.go",
 		"internal/instance/journallogs_test.go",
 		"api/schemas/journallogs_test.go",

@@ -35,6 +35,8 @@ type journalCatchup struct {
 type journalCatchupHint struct {
 	dir, identity string
 	seq           uint64
+	bytes         int
+	resume        bool // A bounded read found more retained work; do not idle.
 }
 
 func newJournalCatchup(cfg Config, pipeline *journalLogPipeline) *journalCatchup {
@@ -60,7 +62,7 @@ func (s *journalCatchup) notify(event journal.CommittedEvent) {
 	if len(event.JournalID) > 128 {
 		return
 	}
-	hint := journalCatchupHint{identity: event.JournalID, seq: event.Seq}
+	hint := journalCatchupHint{identity: event.JournalID, seq: event.Seq, bytes: journalLogSize(event)}
 	if event.Kind == "scheduler" {
 		hint.dir = "scheduler"
 		s.offer(hint)
@@ -153,9 +155,11 @@ func (s *journalCatchup) run(ctx context.Context) {
 		case request := <-s.flushes:
 			request.done <- s.flushHints(request.ctx, root, db)
 		case hint := <-s.hints:
-			// Collapse notification bursts to the latest committed sequence per
-			// journal. Otherwise each event would force its own tiny disk batch.
-			for _, pending := range s.coalesceHints(hint) {
+			pendingHints := s.collectHints(ctx, hint)
+			if ctx.Err() != nil {
+				return // Retained journals, not hints, are the durable queue.
+			}
+			for _, pending := range pendingHints {
 				s.process(ctx, root, db, pending)
 			}
 		case dir := <-s.discovered:
@@ -184,24 +188,16 @@ func (s *journalCatchup) waitForStoreRetry(ctx context.Context) bool {
 }
 
 func (s *journalCatchup) coalesceHints(first journalCatchupHint) []journalCatchupHint {
-	hints := []journalCatchupHint{first}
-	positions := map[string]int{first.dir: 0}
+	batch := newJournalHintBatch(first)
 	for range cap(s.hints) {
 		select {
 		case hint := <-s.hints:
-			if i, ok := positions[hint.dir]; ok {
-				if hints[i].identity != hint.identity || hint.seq > hints[i].seq {
-					hints[i] = hint
-				}
-			} else {
-				positions[hint.dir] = len(hints)
-				hints = append(hints, hint)
-			}
+			batch.add(hint)
 		default:
-			return hints
+			return batch.hints
 		}
 	}
-	return hints
+	return batch.hints
 }
 
 func (s *journalCatchup) failure() {
@@ -221,6 +217,7 @@ func (s *journalCatchup) process(ctx context.Context, root *os.Root, db *sql.DB,
 		// Preserve the last committed watermark after a transient storage error
 		// or another process owning the cursor. Pace retries during an outage.
 		if err == nil || waitJournalCatchup(ctx, time.Second) {
+			hint.resume = more && err == nil
 			s.offer(hint)
 		}
 	}

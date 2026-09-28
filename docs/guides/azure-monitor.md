@@ -115,6 +115,7 @@ this is not a general-purpose personal-data scrubber for user-authored text.
 Malformed health bodies are replaced by a JSON `telemetryBodyRedacted` marker,
 with correlation metadata retained. Malformed candidate Azure envelopes fail
 closed and remain pending rather than sending an unfiltered payload.
+This projection does not alter records already ingested by a destination.
 
 Set the environment variable in the account/environment of the Goobers daemon
 and restart the service. A private file or declared secret store is also valid:

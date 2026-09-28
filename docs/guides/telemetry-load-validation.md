@@ -52,6 +52,13 @@ load-test a production tenant without its approval.
   (including a valid large singleton). The short idle delay remains for sparse
   traffic and is not restarted by new arrivals. A full durable catch-up batch
   does not pay the sparse-traffic delay before every acknowledgement.
+- Live durable-source hints also coalesce on the background worker for at most
+  100 ms from the first hint. Count/charged-byte pressure ends that window early;
+  new arrivals cannot extend it. This avoids starting sparse catch-up disk work
+  immediately after event fsync while the producer is still checkpointing its
+  state. Known retained-backlog continuations and explicit source flushes do not
+  add a coalescing timer. Cancellation interrupts the window. Hints remain
+  bounded and nonblocking; retained journals, not hints, provide durability.
 - A persisted, one-minute full-audit cadence supplements directory timestamps
   on the next replay operation. This finds external/interrupted file changes
   even when a filesystem coalesces timestamps. Short-lived CLI processes share
