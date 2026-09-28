@@ -132,6 +132,24 @@ with `-run '^$' -benchtime=1x -count=1`. Use an external watchdog of at least
 Keep earlier short-run failures in the evidence; this larger sample does not
 retroactively turn them into passes or measure isolated stage dispatch.
 
+The test-only `BenchmarkRunnerTelemetryDispatchNormalRate` in `internal/runner`
+measures a separate boundary: entry into task-span setup through entry into the
+deterministic executor. It includes durable stage-start append/checkpoint and
+scratch-workspace/envelope preparation. Executor work is stubbed; process spawn,
+repository checkout, daemon scheduling and remote pod queue latency are excluded.
+Identical timing wrappers run in both disabled/enabled cases. The benchmark
+offers 100 runs across ten workflow definitions over thirty minutes and retains
+400 task-preparation samples (logged as raw nanoseconds after measurement), then reconciles source sequences with stable
+received IDs. Invoke one `enabled=false` or `enabled=true` subcase with
+`-run '^$' -bench '^BenchmarkRunnerTelemetryDispatchNormalRate$/enabled=true$'
+-benchtime=1x -count=1`, an external watchdog of at least 35 minutes, and the
+matched disabled comparison. Ordinary regression tests check the probe boundary,
+bounded sample storage, duplicate refusal and real runner/export integration;
+they do not execute the thirty-minute benchmark in CI.
+The timer starts at `SpanStarter.StartTask`, after the runner builds span
+attributes. That earlier attribute construction is outside this measurement;
+do not label this component interval as total scheduling-to-execution latency.
+
 The HTTP fixture exercises production journal admission, batching, Azure
 envelope serialization, gzip, fsynced replay files, and loopback HTTP. It sends
 2,048 ~1 KiB synthetic records in 256-record waves, verifies delivery accounting

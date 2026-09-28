@@ -50,6 +50,9 @@ func BenchmarkJournalCatchupNormalRateSustained(b *testing.B) {
 
 func benchmarkJournalRateCases(b *testing.B, count int, window time.Duration) {
 	b.Helper()
+	if os.Getenv("GOOBERS_DISABLE_FSYNC") != "" {
+		b.Fatal("journal measurement requires the fsync override to be absent")
+	}
 	for _, size := range []int{1024, 32 << 10} {
 		for _, enabled := range []bool{false, true} {
 			b.Run(fmt.Sprintf("bytes=%d/enabled=%t", size, enabled), func(b *testing.B) {
