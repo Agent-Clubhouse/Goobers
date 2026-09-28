@@ -208,7 +208,12 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 	}
 	return gatherPRContextAdapter{features: gatherPRContextFeatures{checkState: true}, gitAuth: gitAuth, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
 		get: func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
-			return provider.GetPullRequest(ctx, repo, id)
+			pr, err := provider.GetPullRequest(ctx, repo, id)
+			if err != nil {
+				return providers.PullRequestSummary{}, err
+			}
+			pr.Labels, err = provider.PullRequestLabelNames(ctx, repo, id)
+			return pr, err
 		},
 		resolveCheck: func(ctx context.Context, pr *providers.PullRequestSummary) error {
 			return resolveADOSelectedCheckState(ctx, provider, repo, pr)

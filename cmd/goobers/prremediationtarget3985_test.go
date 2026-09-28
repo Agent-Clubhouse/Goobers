@@ -642,6 +642,11 @@ func setupTargetedGatherPRContextADO(t *testing.T, runID string) (root, workDir 
 		mux.HandleFunc(prBase+"/"+strconv.Itoa(id)+"/threads", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 		})
+		mux.HandleFunc(prBase+"/"+strconv.Itoa(id)+"/labels", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSONResp(t, w, map[string]interface{}{"value": []map[string]interface{}{{
+				"id": "1", "name": needsRemediationLabel,
+			}}})
+		})
 		// PR detail: the selected PR's CI state is read from its policy
 		// evaluations (ADO-N22), which need the project id.
 		mux.HandleFunc(prBase+"/"+strconv.Itoa(id), func(w http.ResponseWriter, _ *http.Request) {
