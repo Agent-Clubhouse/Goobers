@@ -1,15 +1,24 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	collectorlog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	"google.golang.org/protobuf/encoding/prototext"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestTelemetryInstanceIdentities(t *testing.T) {
+	t.Run("scheduler-first-boot", testTelemetrySchedulerFirstBoot)
 	journalID, rootID := strings.Repeat("1", 32), strings.Repeat("2", 32)
 	t.Run("explicit-root-required", func(t *testing.T) {
 		root := t.TempDir()
@@ -70,4 +79,99 @@ func TestTelemetryInstanceIdentities(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testTelemetrySchedulerFirstBoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "first-boot")
+	if code, _, stderr := runArgs(t, "init", "--demo", "--allow-ephemeral", "--insecure", root); code != 0 {
+		t.Fatalf("init: %d %s", code, stderr)
+	}
+	layout := instance.NewLayout(root)
+	if _, err := layout.ReadIdentity(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fixture must not pre-create the runner identity: %v", err)
+	}
+	collector := &routingCollector{}
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	cfg.Telemetry.Enabled = &enabled
+	cfg.Telemetry.OTLP = &instance.OTLPConfig{Endpoint: startRoutingCollector(t, collector), Insecure: true}
+	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	var firstID string
+	for boot := range 2 {
+		var wg sync.WaitGroup
+		setup, err := buildSchedulerSetup(t.Context(), layout, &wg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = setup.Shutdown(context.Background()) })
+		id, err := layout.ReadIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if boot == 0 {
+			firstID = id
+		} else if id != firstID {
+			t.Fatal("restart rotated the durable identity")
+		}
+		if err := setup.InstanceLog.Append(journal.Event{Type: journal.EventRunnerAnnotation, Reason: "first-boot identity probe"}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = setup.Shutdown(ctx)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSchedulerTelemetryIdentity(t, collector, id)
+	}
+}
+
+func assertSchedulerTelemetryIdentity(t *testing.T, collector *routingCollector, id string) {
+	t.Helper()
+	collector.mu.Lock()
+	defer collector.mu.Unlock()
+	found := false
+	for _, observation := range collector.observations {
+		if observation.signal != "logs" {
+			continue
+		}
+		request := &collectorlog.ExportLogsServiceRequest{}
+		if err := prototext.Unmarshal([]byte(observation.payload), request); err != nil {
+			t.Fatal(err)
+		}
+		for _, resource := range request.ResourceLogs {
+			resourceID := ""
+			for _, attr := range resource.Resource.Attributes {
+				if attr.Key == "goobers.instance.id" {
+					resourceID = attr.Value.GetStringValue()
+				}
+			}
+			for _, scope := range resource.ScopeLogs {
+				for _, record := range scope.LogRecords {
+					if !strings.Contains(record.Body.GetStringValue(), "first-boot identity probe") {
+						continue
+					}
+					found = true
+					recordID := ""
+					for _, attr := range record.Attributes {
+						if attr.Key == "goobers.instance.id" {
+							recordID = attr.Value.GetStringValue()
+						}
+					}
+					if resourceID != id || recordID != id {
+						t.Fatalf("first-boot scheduler identity: resource=%q record=%q want=%q", resourceID, recordID, id)
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("scheduler probe was not exported")
+	}
+	collector.observations = nil
 }

@@ -318,7 +318,11 @@ journal-attribution identity) and `goobers.root.id` (the separate durable
 root-lifecycle identity), when their existing identity files are readable.
 Service-health's older `instanceId` field refers to the root-lifecycle identity;
 it is **not** interchangeable with `goobers.instance.id`. Neither identity is
-created, repaired, or rotated by export. Older records without these common
+created, repaired, or rotated by telemetry observation. Daemon setup publishes its
+journal-attribution identity before constructing exporters and the scheduler
+journal, so first-boot scheduler records use the same identity as later runs
+and restarts. Each resource key is omitted when its corresponding durable
+identity cannot be read by a standalone observer. Older records without these common
 resource attributes cannot safely be joined merely by coalescing the two IDs.
 
 With the diagnostic profile's explicit identity consent, Azure envelopes also
