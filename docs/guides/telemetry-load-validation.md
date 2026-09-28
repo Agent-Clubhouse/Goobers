@@ -297,6 +297,17 @@ volume prefills. It reports `MissingRunEvents: -1` until a separate Azure query
 reconciles instance/run/sequence and stable IDs. A connection string is not an
 Azure query credential. Never put it in arguments, evidence, or source control.
 
+The explicit `network-faults` scenario divides its duration into six equal
+phases: 503, request timeout, 429, connection closure before acceptance,
+acceptance with a lost acknowledgement, and healthy recovery. Use 30 minutes
+with the normal ten staggered workers and three-minute polling interval.
+`NetworkModes` reports request counts by fault; validation fails if any phase
+received no requests or ambiguous acknowledgement produced no duplicate replay.
+The existing unique journal-sequence reconciliation still must pass. Durations
+too short for retry backoff may legitimately fail phase coverage. This tests
+loopback HTTP faults, not real DNS outages, WAN behavior or a 30-minute outage
+for each individual fault; dial-level DNS errors have separate unit coverage.
+
 ## Establish the representative workload
 
 Start with two gaggles per instance and five polling workflows per gaggle,

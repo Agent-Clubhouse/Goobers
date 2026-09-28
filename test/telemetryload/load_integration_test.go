@@ -37,6 +37,12 @@ func TestIntegrationTelemetryDaemonReconcilesJournal(t *testing.T) {
 	daemon, driver := filepath.Join(artifact, "goobers"+ext), filepath.Join(artifact, "load"+ext)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
+	// testdata is excluded from ./...; explicitly keep driver invariants in CI.
+	checks := exec.CommandContext(ctx, "go", "test", "./test/telemetryload/testdata/driver", "-count=1")
+	checks.Dir = root
+	if output, err := checks.CombinedOutput(); err != nil {
+		t.Fatalf("driver invariants: %v\n%s", err, output)
+	}
 	for _, build := range []struct{ output, pkg string }{{daemon, "./cmd/goobers"}, {driver, "./test/telemetryload/testdata/driver"}} {
 		command := exec.CommandContext(ctx, "go", "build", "-o", build.output, build.pkg)
 		command.Dir = root

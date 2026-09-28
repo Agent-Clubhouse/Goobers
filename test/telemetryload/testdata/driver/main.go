@@ -26,6 +26,7 @@ import (
 )
 
 var mode atomic.Int32
+var modeRequests [6]atomic.Int64
 var requests, received, encoded, rejects atomic.Int64
 var ids sync.Map
 var duplicates atomic.Int64
@@ -88,6 +89,7 @@ type Result struct {
 	MeanCPU                                             float64
 	Requests, Records, Rejected, Duplicates             int64
 	Streams                                             map[string]int
+	NetworkModes                                        map[string]int64
 	Replay                                              telemetry.AzureReplayStats
 	DiskKiB                                             int64
 	ExpectedRunEvents, MissingRunEvents                 int
@@ -214,7 +216,7 @@ func main() {
 	if collectionProfile != "health" && collectionProfile != "standard" && collectionProfile != "diagnostic" {
 		panic("invalid collection profile")
 	}
-	if !strings.Contains("|all|baseline|enabled|outage-recovery|near-cap|tiny-files|legacy|spool-failure|azure|crash|", "|"+selected+"|") {
+	if !strings.Contains("|all|baseline|enabled|outage-recovery|network-faults|near-cap|tiny-files|legacy|spool-failure|azure|crash|", "|"+selected+"|") {
 		panic("unknown scenario")
 	}
 	bin, _ = filepath.Abs(bin)
@@ -228,6 +230,7 @@ func main() {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		m := mode.Load()
+		modeRequests[m].Add(1)
 		if m == 2 {
 			select {
 			case <-time.After(7 * time.Second):
@@ -240,12 +243,12 @@ func main() {
 			w.WriteHeader(400)
 			return
 		}
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 		scan := bufio.NewScanner(reader)
 		scan.Buffer(make([]byte, 4096), 2<<20)
 		for scan.Scan() {
 			encoded.Add(int64(len(scan.Bytes())))
-			if m != 0 {
+			if m != 0 && m != 5 {
 				continue
 			}
 			var e struct {
@@ -272,7 +275,7 @@ func main() {
 		}
 		if m != 0 {
 			rejects.Add(1)
-			w.WriteHeader(503)
+			respondNetworkFault(w, m)
 		} else {
 			w.WriteHeader(200)
 		}
@@ -295,12 +298,18 @@ func main() {
 	if selected == "azure" {
 		scenarios = []string{"azure"}
 	}
+	if selected == "network-faults" {
+		scenarios = []string{"network-faults"}
+	}
 	for _, name := range scenarios {
 		if selected != "all" && selected != name {
 			continue
 		}
 		mode.Store(0)
 		root, api := setup(name, server.URL, name != "baseline")
+		if name == "network-faults" {
+			mode.Store(networkFaultMode(0, duration))
+		}
 		if name == "spool-failure" {
 			write(filepath.Join(root, "telemetry-export"), "synthetic obstruction, not a directory")
 		}
@@ -325,6 +334,16 @@ func main() {
 }
 
 func validate(r Result) {
+	if r.Name == "network-faults" {
+		for _, name := range networkModeNames {
+			if r.NetworkModes[name] == 0 {
+				panic("network phase not exercised: " + name + "; increase duration")
+			}
+		}
+		if r.Duplicates == 0 {
+			panic("ambiguous acknowledgement did not exercise duplicate replay")
+		}
+	}
 	if r.Runs == 0 || r.Failures != 0 || r.HealthFailures != 0 || r.MetricSampleErrors != 0 || r.ShutdownMS > 20000 {
 		panic("daemon health/workflow/measurement/shutdown invariant failed; inspect result JSON")
 	}
@@ -345,9 +364,13 @@ func run(name, root, api string, duration time.Duration) Result {
 	}
 	streamMu.Unlock()
 	rq, rec, rej, dup := requests.Load(), received.Load(), rejects.Load(), duplicates.Load()
+	var modeStart [6]int64
+	for i := range modeStart {
+		modeStart[i] = modeRequests[i].Load()
+	}
 	log, err := os.Create(filepath.Join(out, name+"-daemon.log"))
 	must(err)
-	defer log.Close()
+	defer func() { must(log.Close()) }()
 	// Keep the normal heartbeat: it captures Go heap/retained memory,
 	// goroutines and cgroup CPU/memory pressure without extra instrumentation.
 	c := cmd(context.Background(), "up", "--drain-timeout", "15s", root)
@@ -374,13 +397,13 @@ func run(name, root, api string, duration time.Duration) Result {
 		}
 		r, err := client.Get(api + "/readyz")
 		if err == nil {
-			io.Copy(io.Discard, r.Body)
-			r.Body.Close()
+			_, _ = io.Copy(io.Discard, r.Body)
+			_ = r.Body.Close()
 			if r.StatusCode == 200 {
 				identity, identityErr := client.Get(api + "/api/v1/instance")
 				if identityErr == nil {
-					io.Copy(io.Discard, identity.Body)
-					identity.Body.Close()
+					_, _ = io.Copy(io.Discard, identity.Body)
+					_ = identity.Body.Close()
 					if identity.StatusCode == 200 {
 						break
 					}
@@ -398,7 +421,7 @@ func run(name, root, api string, duration time.Duration) Result {
 	defer cancel()
 	samples, err := os.Create(filepath.Join(out, name+"-samples.jsonl"))
 	must(err)
-	defer samples.Close()
+	defer func() { must(samples.Close()) }()
 	var mu sync.Mutex
 	var runLatency, healthLatency []float64
 	var cpus []float64
@@ -463,6 +486,12 @@ func run(name, root, api string, duration time.Duration) Result {
 		case <-ticker.C:
 		}
 		elapsed := time.Since(phase)
+		if name == "network-faults" {
+			next := networkFaultMode(elapsed, duration)
+			if mode.Swap(next) != next {
+				fmt.Printf("NETWORK phase=%s elapsed=%s\n", networkModeNames[next], elapsed.Round(time.Second))
+			}
+		}
 		if name == "spool-failure" && !obstructionRepaired && elapsed > duration/3 {
 			// Remove only the regular-file fixture created above, never a spool tree.
 			path := filepath.Join(root, "telemetry-export")
@@ -502,7 +531,7 @@ func run(name, root, api string, duration time.Duration) Result {
 			result.HealthFailures++
 		} else {
 			b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-			r.Body.Close()
+			_ = r.Body.Close()
 			if r.StatusCode != 200 {
 				result.HealthFailures++
 			}
@@ -519,7 +548,8 @@ func run(name, root, api string, duration time.Duration) Result {
 		cpus = append(cpus, cpu)
 		stat := telemetry.InspectAzureReplayRoot(spool(root))
 		b, _ := json.Marshal(map[string]any{"elapsed": elapsed.Seconds(), "rssKiB": rss, "cpu": cpu, "openHandlesOrFDs": sampler.handles, "healthMS": ms, "mode": mode.Load(), "replay": stat})
-		fmt.Fprintln(samples, string(b))
+		_, err = fmt.Fprintln(samples, string(b))
+		must(err)
 		if int(elapsed.Seconds())%15 == 0 {
 			mu.Lock()
 			fmt.Printf("%s t=%.0fs runs=%d failed=%d rss=%dKiB cpu=%.1f accounting=%t spool=%dB records=%d\n", name, elapsed.Seconds(), result.Runs, result.Failures, rss, cpu, stat.AccountingReady, stat.PendingBytes, stat.PendingRecords)
@@ -578,7 +608,8 @@ func run(name, root, api string, duration time.Duration) Result {
 					}
 				}
 			}
-			f.Close()
+			must(scan.Err())
+			must(f.Close())
 		}
 		b, _ := json.Marshal(checkpointIDs)
 		write(filepath.Join(out, "prekill-spool-record-ids.json"), string(b))
@@ -604,6 +635,10 @@ func run(name, root, api string, duration time.Duration) Result {
 	result.CPUSeconds = c.ProcessState.UserTime().Seconds() + c.ProcessState.SystemTime().Seconds()
 	result.WallSeconds = time.Since(started).Seconds()
 	result.Requests = requests.Load() - rq
+	result.NetworkModes = make(map[string]int64, len(modeRequests))
+	for i := range modeRequests {
+		result.NetworkModes[networkModeNames[i]] = modeRequests[i].Load() - modeStart[i]
+	}
 	result.Records = received.Load() - rec
 	result.Rejected = rejects.Load() - rej
 	result.Duplicates = duplicates.Load() - dup
@@ -635,7 +670,8 @@ func run(name, root, api string, duration time.Duration) Result {
 				}
 			}
 		}
-		f.Close()
+		must(scan.Err())
+		must(f.Close())
 	}
 	result.PersistedCheckpointRecords = len(checkpointIDs)
 	for _, id := range checkpointIDs {
