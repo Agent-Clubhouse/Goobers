@@ -482,6 +482,15 @@ spec:
       agentic:
         goober: reviewer
         workspace: repo
+        # #765/#5397: retry a transient reviewer-harness infrastructure failure
+        # (e.g. a required MCP server not yet ready) within this bound instead
+        # of failing the run and discarding the implement turn that already
+        # succeeded. Evaluator retries never charge a repass; the non-zero
+        # backoff keeps a retry out of the same failure window (#5084).
+        # Non-transient errors still fail fast.
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 20
       branches:
         pass: push-branch
         needs-changes: implement
