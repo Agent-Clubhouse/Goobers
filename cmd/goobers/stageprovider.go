@@ -160,6 +160,20 @@ func configureStageAttribution(provider providers.Provider, root string) {
 	configurer.SetAttribution(attribution)
 }
 
+// newStageGitHubProvider builds a stage's GitHub provider through the
+// newGitHubProvider seam and stamps its writes with the stage's run
+// attribution. The attribution is applied here, around the seam rather than
+// inside it, so a test that points the seam at a fake forge still runs the
+// stage the way a daemon runs it. Stage providers built by newProviderForStage
+// are attributed there (configureStageAttribution).
+func newStageGitHubProvider(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+	provider := newGitHubProvider(token, opts...)
+	if attribution, ok := stageAttributionFor(os.Getenv(executor.InstanceRootEnvVar)); ok {
+		provider.SetAttribution(attribution)
+	}
+	return provider
+}
+
 // stageAttributionFor resolves the run attribution a stage provider stamps on
 // its writes. Every production provider construction goes through it, so the
 // cmd/goobers test suite can replace it once (testmain_test.go) and run each

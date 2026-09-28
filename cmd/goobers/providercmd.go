@@ -48,20 +48,6 @@ func newTelemetryGitHubProvider(token string, opts ...func(*providers.GitHubProv
 	return providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){telemetryOpt}, opts...)...)
 }
 
-// newStageGitHubProvider builds a stage's GitHub provider through the
-// newGitHubProvider seam and stamps its writes with the stage's run
-// attribution. The attribution is applied here, around the seam rather than
-// inside it, so a test that points the seam at a fake forge still runs the
-// stage the way a daemon runs it. Stage providers built by newProviderForStage
-// are attributed there (configureStageAttribution).
-func newStageGitHubProvider(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
-	provider := newGitHubProvider(token, opts...)
-	if attribution, ok := stageAttributionFor(os.Getenv(executor.InstanceRootEnvVar)); ok {
-		provider.SetAttribution(attribution)
-	}
-	return provider
-}
-
 // claimLedgerFileName/claimLockFileName are the well-known files under an
 // instance's scheduler dir the claim ledger and its cross-process lock
 // (withClaimLock) live at — shared by backlog-query (the claimant) and
