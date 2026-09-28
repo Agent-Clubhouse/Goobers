@@ -23,6 +23,27 @@ type publisherFake struct {
 	mutations    int
 	failMutation int
 	called       chan<- struct{}
+	// raw stores created bodies verbatim. By default the fake stamps them
+	// with provider attribution, as every daemon stage provider does.
+	raw bool
+}
+
+// fakeStageAttribution is the attribution a daemon publish-batch provider
+// carries; the Cost receipt exercises the longest visible footer.
+var fakeStageAttribution = func() providers.Attribution {
+	nanoAIU := int64(1_250_000_000)
+	return providers.Attribution{
+		Instance: "example-instance", Gaggle: "example-gaggle", Workflow: "decomposition",
+		Task: "publish-batch", Goober: "deterministic", Run: "run-attribution-1",
+		Cost: &providers.CostReceipt{JournalSequence: 3, NanoAIU: &nanoAIU},
+	}
+}()
+
+func (f *publisherFake) stored(body, action string) (string, error) {
+	if f.raw {
+		return body, nil
+	}
+	return providers.StampAttribution(body, fakeStageAttribution, action)
 }
 
 var _ WorkItemDependencyProvider = (*providers.GitHubProvider)(nil)
@@ -88,9 +109,13 @@ func (f *publisherFake) ListComments(_ context.Context, _ providers.RepositoryRe
 func (f *publisherFake) CreateWorkItem(_ context.Context, req providers.CreateWorkItemRequest) (providers.WorkItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	body, err := f.stored(req.Body, "issue-create")
+	if err != nil {
+		return providers.WorkItem{}, err
+	}
 	id := fmt.Sprint(f.nextID)
 	f.nextID++
-	item := providers.WorkItem{ID: id, ExternalID: id, Revision: "r1", Title: req.Title, Body: req.Body, Labels: append([]string(nil), req.Labels...), State: "open"}
+	item := providers.WorkItem{ID: id, ExternalID: id, Revision: "r1", Title: req.Title, Body: body, Labels: append([]string(nil), req.Labels...), State: "open"}
 	f.items[id] = item
 	return cloneWorkItem(item), f.afterMutation()
 }
@@ -110,6 +135,10 @@ func (f *publisherFake) FindWorkItemsByMarker(_ context.Context, _ providers.Rep
 func (f *publisherFake) CreateWorkItemComment(_ context.Context, _ providers.RepositoryRef, id, body string) (providers.Comment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	body, err := f.stored(body, "comment")
+	if err != nil {
+		return providers.Comment{}, err
+	}
 	comment := providers.Comment{ID: fmt.Sprintf("%s-%d", id, len(f.comments[id])+1), Body: body}
 	f.comments[id] = append(f.comments[id], comment)
 	return comment, f.afterMutation()
@@ -673,6 +702,60 @@ func TestPublisherRejectsPublishedChildDrift(t *testing.T) {
 		t.Fatal("Publish after child drift succeeded, want conflict")
 	}
 	assertParentParked(t, fake)
+}
+
+// TestPublisherVerifiesChildrenStoredWithProviderAttribution pins that a
+// daemon publish-batch, whose provider stamps every created child with the
+// attribution footer, verifies its own children instead of reporting a false
+// PublicationConflict, and that a retry adopts and verifies them again.
+func TestPublisherVerifiesChildrenStoredWithProviderAttribution(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  bool
+	}{{name: "attributed"}, {name: "raw", raw: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newPublisherFake()
+			fake.raw = tc.raw
+			publisher := Publisher{
+				Provider: fake,
+				Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+				Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+				RunID:    "run-1",
+			}
+			var first PublishedBatch
+			for attempt := 1; attempt <= 2; attempt++ {
+				batch, err := publisher.Publish(context.Background(), testPublisherPlan())
+				if err != nil {
+					t.Fatalf("Publish attempt %d: %v (publication conflict = %v)", attempt, err, IsPublicationConflict(err))
+				}
+				if attempt == 1 {
+					first = batch
+				} else if !sameIDs(batch.Children, first.Children) {
+					t.Fatalf("retry children = %v, want adopted %v", batch.Children, first.Children)
+				}
+			}
+			if len(fake.items) != 3 {
+				t.Fatalf("items = %d, want parent plus two children", len(fake.items))
+			}
+			for _, child := range first.Children {
+				stored := fake.items[child.ID]
+				_, attributed, err := providers.ParseAttribution(stored.Body)
+				if err != nil {
+					t.Fatalf("child %s attribution: %v", child.ID, err)
+				}
+				if attributed == tc.raw {
+					t.Fatalf("child %s attributed = %v, want %v; body %q", child.ID, attributed, !tc.raw, stored.Body)
+				}
+				if !stored.HasLabel(providers.LabelReady) {
+					t.Fatalf("child %s labels = %v, want %s", child.ID, stored.Labels, providers.LabelReady)
+				}
+			}
+			parent := fake.items[fake.parentID]
+			if parent.HasLabel(providers.LabelNeedsHuman) || parent.HasLabel("goobers/status:decomposing") {
+				t.Fatalf("parent parked after attributed publication: labels = %v", parent.Labels)
+			}
+		})
+	}
 }
 
 func assertParentParked(t *testing.T, fake *publisherFake) {
