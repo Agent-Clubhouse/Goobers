@@ -279,7 +279,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 		t.Skip("set GOOBERS_RUN_WSL_INTEGRATION_TEST=1 to run the disruptive WSL integration test")
 	}
 	if _, err := exec.LookPath("wsl.exe"); err != nil {
-		t.Skip("wsl.exe is not installed")
+		t.Fatalf("WSL integration was explicitly required but wsl.exe is unavailable: %v", err)
 	}
 
 	marker := filepath.Join(t.TempDir(), "wsl.pid")
