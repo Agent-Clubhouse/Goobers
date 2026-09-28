@@ -42,6 +42,18 @@ process. Changing a wrapper requires
 restarting that process. A separate worker or stage process performs
 its own proof; verification is never written to configuration or shared storage.
 
+## Session export is always disabled
+
+Goobers appends `--no-remote-export` to every Copilot session it launches —
+stage invocations, reviewer gates, and the fallback prompt authentication probe
+— after the configured launcher prefix and any extra arguments, unless the argv
+already contains it. A `runner.harnessCommand` override therefore cannot
+re-enable exporting agent sessions to GitHub web and mobile, and a forwarding
+launcher must pass the flag through to the Copilot CLI. A version-2
+`authProbe` starts no session and receives its declared arguments unchanged.
+There is no opt-in to session export. The flag requires Copilot CLI 1.0.52 or
+newer; an older CLI fails the startup preflight with an upgrade message.
+
 ## Environment isolation
 
 Harness subprocesses inherit only Goobers' built-in environment allowlist plus
