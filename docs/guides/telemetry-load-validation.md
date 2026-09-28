@@ -411,6 +411,10 @@ the larger watchdog is not the acceptance limit. Independently compare disabled
 and enabled p95 against the 250 ms added-startup budget, and each shutdown
 against 15.250 seconds. Use at least 20 samples per variant; the one-pair CI
 smoke exercises harness correctness only, never performance acceptance.
+The startup receiver streams decoded payloads to discard instead of retaining
+every seed identity across repetitions. Full workflow scenarios retain their
+independent delivery-reconciliation collector; this startup probe does not
+claim delivery completeness.
 
 Prefills are `empty`, `half` (256 MiB), `near-cap` (460 MiB), `cap` (512 MiB),
 `tiny-files` (12,000 single-record files), or `legacy` (64 MiB without header

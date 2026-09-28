@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,6 +19,22 @@ type startupTiming struct {
 	StartedUTC, FinishedUTC time.Time
 	StartupMS, ShutdownMS   float64
 	Requests, Rejected      int64
+}
+
+// Startup probes need request/fault evidence, not a growing map of every seed
+// identity ever received. Stream decoding to discard bounds receiver memory;
+// the separate workflow scenarios keep their full reconciliation collector.
+func consumeStartupReplay(w http.ResponseWriter, decoded io.Reader, responseMode int32) {
+	if _, err := io.Copy(io.Discard, decoded); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if responseMode != 0 {
+		rejects.Add(1)
+		respondNetworkFault(w, responseMode)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func measureStartup(name, root, api string, waitForIndex bool) startupTiming {

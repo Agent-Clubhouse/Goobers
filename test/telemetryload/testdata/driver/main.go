@@ -256,6 +256,10 @@ func main() {
 			return
 		}
 		defer func() { _ = reader.Close() }()
+		if selected == "startup" {
+			consumeStartupReplay(w, reader, m)
+			return
+		}
 		scan := bufio.NewScanner(reader)
 		scan.Buffer(make([]byte, 4096), 2<<20)
 		for scan.Scan() {

@@ -1,15 +1,44 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/telemetry"
 )
+
+func TestStartupReceiverDoesNotRetainPayloadIdentities(t *testing.T) {
+	before := received.Load()
+	for _, responseMode := range []int32{0, 1, 2} {
+		w := httptest.NewRecorder()
+		consumeStartupReplay(w, strings.NewReader(strings.Repeat("synthetic seed\n", 1024)), responseMode)
+		want := http.StatusServiceUnavailable
+		if responseMode == 0 {
+			want = http.StatusOK
+		}
+		if w.Code != want {
+			t.Fatalf("mode=%d status=%d want=%d", responseMode, w.Code, want)
+		}
+	}
+	if received.Load() != before {
+		t.Fatal("startup receiver used the reconciliation collector")
+	}
+	w := httptest.NewRecorder()
+	consumeStartupReplay(w, startupBrokenReader{}, 0)
+	if w.Code != http.StatusBadRequest {
+		t.Fatal("truncated payload acknowledged")
+	}
+}
+
+type startupBrokenReader struct{}
+
+func (startupBrokenReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
 func TestStartupConfiguration(t *testing.T) {
 	base := startupConfig{Rounds: 20, Prefill: "empty", Index: "cold", Endpoint: "healthy", Settle: time.Second}
