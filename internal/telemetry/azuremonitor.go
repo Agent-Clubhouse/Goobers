@@ -169,6 +169,13 @@ func (c *azureMonitorClient) export(ctx context.Context, items []appinsights.Tel
 }
 
 func (c *azureMonitorClient) sendPayload(ctx context.Context, raw []byte) error {
+	if err := c.sendPayloadRequest(ctx, raw); err != nil {
+		return &azureMonitorDeliveryError{cause: err}
+	}
+	return nil
+}
+
+func (c *azureMonitorClient) sendPayloadRequest(ctx context.Context, raw []byte) error {
 	var compressed bytes.Buffer
 	writer := gzip.NewWriter(&compressed)
 	if _, err := writer.Write(raw); err != nil {

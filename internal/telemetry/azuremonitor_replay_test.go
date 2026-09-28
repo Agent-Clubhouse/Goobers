@@ -3,6 +3,8 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +14,47 @@ import (
 	"testing"
 	"time"
 )
+
+func TestAzureReplayShutdownRetainsRemoteFailures(t *testing.T) {
+	for _, scenario := range []string{"refused", "unauthorized", "unavailable"} {
+		t.Run(scenario, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				code := http.StatusServiceUnavailable
+				if scenario == "unauthorized" {
+					code = http.StatusUnauthorized
+				}
+				w.WriteHeader(code)
+			}))
+			defer server.Close()
+			if scenario == "refused" {
+				server.Close()
+			}
+			root := t.TempDir()
+			client, err := New(t.Context(), Config{ServiceName: "offline-shutdown",
+				AzureMonitorConnectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=" + server.URL,
+				AzureMonitorTraces:           true, AzureMonitorReplayRoot: root, Batch: true,
+				AzureMonitorReplayMaxAge: time.Hour, AzureMonitorReplayMaxBytes: 1 << 20})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			defer func() { _ = client.Shutdown(ctx) }()
+			_, span, err := client.StartRun(ctx, RunAttributes{Gaggle: "test", WorkflowID: "fixture", RunID: "0123456789abcdef0123456789abcdef"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			span.End()
+			if err = client.Shutdown(ctx); err != nil {
+				t.Fatalf("remote delivery failed daemon shutdown: %v", err)
+			}
+			stats := InspectAzureReplayRoot(root)
+			if !stats.AccountingReady || stats.PendingRecords != 1 {
+				t.Fatalf("undelivered span was not retained: %+v", stats)
+			}
+		})
+	}
+}
 
 func TestAzureReplaySpoolReplaysAfterRestartAndSkipsMalformed(t *testing.T) {
 	dir := t.TempDir()

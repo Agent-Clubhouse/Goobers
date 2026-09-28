@@ -96,7 +96,14 @@ func (s *journalCatchup) flush(ctx context.Context) error {
 }
 
 func (s *journalCatchup) shutdown(ctx context.Context) {
-	s.stopOnce.Do(func() { _ = s.flush(ctx); s.cancel() })
+	s.stopOnce.Do(func() {
+		// Retained source records are already durable. A busy retry loop must
+		// not spend the daemon's entire shutdown budget on a last-chance copy.
+		flush, cancel := context.WithTimeout(ctx, journalLogTimeout)
+		defer cancel()
+		_ = s.flush(flush)
+		s.cancel()
+	})
 	select {
 	case <-s.done:
 	case <-ctx.Done():
@@ -127,7 +134,7 @@ func (s *journalCatchup) run(ctx context.Context) {
 			db, enrolled, err = openJournalCursorStore(ctx, s.spool, s.since)
 			if err != nil {
 				s.failure()
-				if !waitJournalCatchup(ctx, time.Second) {
+				if !s.waitForStoreRetry(ctx) {
 					return
 				}
 				continue
@@ -153,6 +160,25 @@ func (s *journalCatchup) run(ctx context.Context) {
 			}
 		case dir := <-s.discovered:
 			s.process(ctx, root, db, journalCatchupHint{dir: dir})
+		}
+	}
+}
+
+// A flush cannot make progress until the cursor store opens. Acknowledge that
+// promptly instead of consuming the caller's entire shutdown deadline waiting
+// for an initialization loop which cannot receive flush requests. The retained
+// journals remain the source; requests must not accelerate the retry cadence.
+func (s *journalCatchup) waitForStoreRetry(ctx context.Context) bool {
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return true
+		case request := <-s.flushes:
+			request.done <- errors.New("journal catch-up storage unavailable; retained records remain pending")
 		}
 	}
 }

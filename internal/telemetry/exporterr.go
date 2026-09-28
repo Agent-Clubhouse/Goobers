@@ -10,9 +10,17 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// isCollectorUnreachable reports whether err is a transient telemetry-export
-// transport failure — the remote OTLP collector being unreachable, slow, or
-// gone — rather than a real defect in a local exporter (a journal/stdout write,
+// Delivery failures are remote-only. They must remain visible to replay/health
+// accounting without making an otherwise successful daemon shutdown fail.
+// Keep local spool/admission failures outside this marker.
+type azureMonitorDeliveryError struct{ cause error }
+
+func (e *azureMonitorDeliveryError) Error() string { return e.cause.Error() }
+func (e *azureMonitorDeliveryError) Unwrap() error { return e.cause }
+
+// isCollectorUnreachable reports a best-effort remote export failure: an OTLP
+// transport failure or Azure ingestion failure, rather than a real defect in
+// a local exporter (a journal/stdout write,
 // a nil provider). Telemetry is best-effort: neither a daemon shutdown nor a
 // test that merely touches telemetry should fail because a collector is not up
 // (#1124, the macOS-gate flake). Such a failure surfaces from the OTLP gRPC
@@ -25,6 +33,8 @@ import (
 // The OTLP SDK's own async export errors continue to route through the global
 // otel error handler, so dropping the returned error here suppresses a spurious
 // caller-facing failure without hiding the condition from operators.
+// Azure replay also retains unacknowledged payloads and reports retry/backlog
+// health; its typed delivery marker is independent of OS socket error wording.
 func isCollectorUnreachable(err error) bool {
 	if err == nil {
 		return false
@@ -43,6 +53,14 @@ func isCollectorUnreachable(err error) bool {
 			}
 		}
 		return true
+	}
+	if _, ok := err.(*azureMonitorDeliveryError); ok { //nolint:errorlint // Inspect this node only; errors.As could hide a local error inside a wrapped join.
+		return true
+	}
+	// Inspect nested joins before sentinel/string matching: a formatting
+	// wrapper must not hide a local failure joined with a remote timeout.
+	if cause := errors.Unwrap(err); cause != nil {
+		return isCollectorUnreachable(cause)
 	}
 	if errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, context.Canceled) ||

@@ -30,6 +30,11 @@ load-test a production tenant without its approval.
 - Independent, rate-limited stderr/rotating-file warnings expose backlog pressure
   and counted losses even when ingestion is down. See the Azure Monitor guide
   for thresholds, counter scope, storage overhead, and PVC requirements.
+- Cursor-store initialization failures acknowledge flush requests promptly.
+  Shutdown gives source catch-up at most five seconds for a last-chance copy;
+  retained journal records can resume on restart. Remote Azure delivery errors
+  remain visible through health/retry accounting without making daemon shutdown
+  fail; local storage errors still propagate, including in mixed error chains.
 
 These are background goroutines, **not an OS low-priority scheduling class**.
 Asynchronous work still consumes CPU, memory, disk bandwidth, and filesystem

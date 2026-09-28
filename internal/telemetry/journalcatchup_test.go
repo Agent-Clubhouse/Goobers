@@ -72,6 +72,59 @@ func TestJournalCatchupCursorOnlyAdvancesAfterAdmission(t *testing.T) {
 	}
 }
 
+func TestJournalCatchupUnavailableStoreDoesNotConsumeShutdownDeadline(t *testing.T) {
+	root, spool := t.TempDir(), filepath.Join(t.TempDir(), "obstructed")
+	if err := os.WriteFile(spool, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := journalTestClient(t, &journalTestExporter{})
+	source := newJournalCatchup(Config{JournalRoot: root, AzureMonitorReplayRoot: spool, AzureMonitorReplayMaxAge: time.Hour}, client.journalLogs)
+	client.journalCatchup = source
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for client.journalLogs.failures.Load() == 0 {
+		if !waitJournalCatchup(ctx, time.Millisecond) {
+			t.Fatal("source never attempted storage initialization")
+		}
+	}
+	// Include pending work: unavailable storage cannot flush it, but the
+	// durable source will retry after restart instead of holding shutdown open.
+	source.offer(journalCatchupHint{dir: "scheduler", seq: 1})
+	done := make(chan error, 1)
+	go func() { done <- client.Shutdown(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("unavailable cursor store consumed the shutdown deadline")
+	}
+	select {
+	case <-source.done:
+	default:
+		t.Fatal("source was left running after shutdown")
+	}
+}
+
+func TestJournalCatchupShutdownBoundsBusySourceFlush(t *testing.T) {
+	done := make(chan struct{})
+	source := &journalCatchup{flushes: make(chan journalLogFlush), done: done, cancel: func() { close(done) }}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	stopped := make(chan struct{})
+	go func() { source.shutdown(ctx); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(2 * journalLogTimeout):
+		cancel()
+		<-stopped
+		t.Fatal("busy source consumed an unbounded shutdown context")
+	}
+}
+
 func TestJournalCatchupProductionRegistrationAndRestart(t *testing.T) {
 	root, spool := t.TempDir(), t.TempDir()
 	// Create enrollment before the synthetic crash-window records, with no
