@@ -50,7 +50,17 @@ func (f *fakeADOResponseThreads) writeCounts() (posts, patches int) {
 	return f.posts, f.patches
 }
 
+// addThread seeds a thread. One seeded under Goobers' own identity is stored
+// as a daemon run wrote it, with the attribution footer; addRawThread stores
+// content exactly as given.
 func (f *fakeADOResponseThreads) addThread(content, authorID, authorDN string) {
+	if authorID == "self-guid" {
+		content = stampOwnFixtureBody(content, "comment")
+	}
+	f.addRawThread(content, authorID, authorDN)
+}
+
+func (f *fakeADOResponseThreads) addRawThread(content, authorID, authorDN string) {
 	f.threads = append(f.threads, &fakeADOResponseThread{
 		id: len(f.threads) + 1, status: "closed",
 		comments: []*fakeADOResponseComment{{id: 1, content: content, authorID: authorID, authorDN: authorDN}},
@@ -107,7 +117,7 @@ func (f *fakeADOResponseThreads) server(repo providers.RepositoryRef) *httptest.
 				t.Errorf("thread status = %q, want closed so no comment-resolution policy trips", body.Status)
 			}
 			f.posts++
-			f.addThread(body.Comments[0].Content, "self-guid", "Goobers")
+			f.addRawThread(body.Comments[0].Content, "self-guid", "Goobers")
 			thread := f.threads[len(f.threads)-1]
 			writeJSONResp(t, w, map[string]any{"id": thread.id, "comments": []map[string]any{{
 				"id": 1, "content": body.Comments[0].Content, "commentType": "text",

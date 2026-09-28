@@ -46,7 +46,7 @@ func (f *fakeADOReviewThreads) threadsJSON() map[string]any {
 	value := []map[string]any{
 		// Goobers' own verdict thread: skipped by author id.
 		{"id": 1, "status": "closed", "comments": []map[string]any{{
-			"id": 1, "parentCommentId": 0, "content": "verdict", "commentType": "text",
+			"id": 1, "parentCommentId": 0, "content": stampOwnFixtureBody("verdict", "comment"), "commentType": "text",
 			"author": map[string]string{"id": "self-guid", "displayName": "Goobers"},
 		}}},
 		// ADO-synthesized vote thread: skipped as system.
