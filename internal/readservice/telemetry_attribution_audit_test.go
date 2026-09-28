@@ -55,6 +55,61 @@ func TestStoredFaultAuditContinuesPastUnenrolledTerminalRows(t *testing.T) {
 	}
 }
 
+func TestStoredFaultAuditDegradesFailedRecordWhenJournalIsMissing(t *testing.T) {
+	root := t.TempDir()
+	runID := "missing-journal"
+	writeAuditRecord(t, root, runID, "v1", true)
+	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
+	recordPath := filepath.Join(runDir, creditgraph.RecordFileName)
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record creditgraph.RunRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	record.Status = creditgraph.RecordFailed
+	record.Failure = "journal provenance unavailable"
+	data, err = json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.WriteFileAtomic(recordPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == creditgraph.RecordFileName {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(runDir, entry.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	reader := &pagedAttributionReader{pages: []readmodel.ListPage{{
+		Runs: []readmodel.RunRow{terminalAuditRow(runID, now)},
+	}}}
+	report, err := StoredFaultAudit(
+		context.Background(), root, reader, StoredAttributionQuery{},
+		creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ObservationsScanned != 1 || len(report.UnknownFindings) != 1 {
+		t.Fatalf("report = %+v, want one degraded unknown finding", report)
+	}
+	if confidence := report.UnknownFindings[0].Confidence; confidence > 0.3 {
+		t.Fatalf("confidence = %v, want reduced confidence for missing journal provenance", confidence)
+	}
+}
+
 func TestStoredFaultAuditPersistsCooldownAndPostFixVerification(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)

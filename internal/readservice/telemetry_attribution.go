@@ -358,11 +358,11 @@ func storedAttributionObservation(
 	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
-		return creditgraph.AttributionObservation{}, false, fmt.Errorf("open attribution journal %q: %w", row.RunID, err)
+		return attributionProvenanceError(record.Status, observation, "open attribution journal", row.RunID, err)
 	}
 	records, err := reader.EventRecords()
 	if err != nil {
-		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution journal %q: %w", row.RunID, err)
+		return attributionProvenanceError(record.Status, observation, "read attribution journal", row.RunID, err)
 	}
 	events := make([]journal.Event, len(records))
 	for i := range records {
@@ -370,7 +370,7 @@ func storedAttributionObservation(
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution identity %q: %w", row.RunID, err)
+		return attributionProvenanceError(record.Status, observation, "read attribution identity", row.RunID, err)
 	}
 	observation.GooberDigest = identity.GooberDigest
 	spanData := map[string][]byte{}
@@ -384,7 +384,9 @@ func storedAttributionObservation(
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution span %q/%d: %w", row.RunID, event.Seq, err)
+			return attributionProvenanceError(
+				record.Status, observation, fmt.Sprintf("read attribution span at sequence %d", event.Seq), row.RunID, err,
+			)
 		}
 		spanData[event.Ref.Digest] = data
 	}
@@ -396,7 +398,7 @@ func storedAttributionObservation(
 		SpanData: spanData,
 	})
 	if err != nil {
-		return creditgraph.AttributionObservation{}, false, fmt.Errorf("build attribution graph %q: %w", row.RunID, err)
+		return attributionProvenanceError(record.Status, observation, "build attribution graph", row.RunID, err)
 	}
 	attribution := record.Attribution
 	observation.Attribution = attribution
@@ -414,6 +416,19 @@ func storedAttributionObservation(
 		buildAttributionEvidence(layout.Root, runDir, records, graph, attribution)...,
 	)
 	return observation, true, nil
+}
+
+func attributionProvenanceError(
+	status creditgraph.RecordStatus,
+	observation creditgraph.AttributionObservation,
+	operation string,
+	runID string,
+	err error,
+) (creditgraph.AttributionObservation, bool, error) {
+	if status == creditgraph.RecordFailed {
+		return observation, true, nil
+	}
+	return creditgraph.AttributionObservation{}, false, fmt.Errorf("%s %q: %w", operation, runID, err)
 }
 
 func appendUniqueString(values []string, value string) []string {

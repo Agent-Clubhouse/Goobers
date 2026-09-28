@@ -260,7 +260,8 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 			pathSet[strings.Join(signal.path, "\x00")] = true
 		}
 		finding.Evidence = append(finding.Evidence, signal.evidence...)
-		if signal.observation.Status == RecordInsufficientEvidence || signal.observation.EffectiveVersion == "" ||
+		if signal.observation.Status == RecordFailed || signal.observation.Status == RecordInsufficientEvidence ||
+			signal.observation.EffectiveVersion == "" ||
 			signal.observation.Workflow == "" || len(signal.evidence) == 0 {
 			missingProvenance = true
 		}
