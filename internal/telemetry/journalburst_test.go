@@ -27,7 +27,7 @@ import (
 // Use -benchtime=1x; -count=3 repeats the baseline/enabled comparisons.
 // It measures journal append + catch-up/replay, not workflow stage dispatch.
 func BenchmarkJournalCatchupRateControlledBurst(b *testing.B) {
-	benchmarkJournalRateCases(b, 212*60)
+	benchmarkJournalRateCases(b, 212*60, time.Minute)
 }
 
 // Representative-rate component experiment: 127 records/minute approximates
@@ -36,18 +36,27 @@ func BenchmarkJournalCatchupRateControlledBurst(b *testing.B) {
 // It does not include the daemon's other signals or prove stage-dispatch tails.
 // Use -benchtime=1x and repeat matched baseline/enabled cases on the target host.
 func BenchmarkJournalCatchupNormalRate(b *testing.B) {
-	benchmarkJournalRateCases(b, 127)
+	benchmarkJournalRateCases(b, 127, time.Minute)
 }
 
-func benchmarkJournalRateCases(b *testing.B, count int) {
+// The sustained variant keeps the same offered rate for thirty minutes,
+// providing 3,810 append observations instead of 127 for tail analysis.
+// It is still a component experiment, not full-daemon or dispatch validation.
+// An external watchdog must bound each case; Go's test timeout does not bound
+// benchmark-only execution. Select one size/enabled subcase per invocation.
+func BenchmarkJournalCatchupNormalRateSustained(b *testing.B) {
+	benchmarkJournalRateCases(b, 127*30, 30*time.Minute)
+}
+
+func benchmarkJournalRateCases(b *testing.B, count int, window time.Duration) {
 	b.Helper()
 	for _, size := range []int{1024, 32 << 10} {
 		for _, enabled := range []bool{false, true} {
 			b.Run(fmt.Sprintf("bytes=%d/enabled=%t", size, enabled), func(b *testing.B) {
 				if b.N != 1 {
-					b.Fatal("use -benchtime=1x for the fixed 60-second experiment")
+					b.Fatal("use -benchtime=1x for the fixed-duration experiment")
 				}
-				benchmarkJournalRate(b, size, enabled, count)
+				benchmarkJournalRate(b, size, enabled, count, window)
 			})
 		}
 	}
@@ -128,9 +137,9 @@ func (s *burstReceiver) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 	w.WriteHeader(http.StatusOK)
 }
 
-func benchmarkJournalRate(b *testing.B, size int, enabled bool, count int) {
+func benchmarkJournalRate(b *testing.B, size int, enabled bool, count int, window time.Duration) {
 	b.Helper()
-	const window, writers = time.Minute, 10
+	const writers = 10
 	root, spool := b.TempDir(), b.TempDir()
 	receiver := &burstReceiver{keys: make(map[string]string)}
 	server := httptest.NewServer(receiver)
@@ -213,7 +222,7 @@ func benchmarkJournalRate(b *testing.B, size int, enabled bool, count int) {
 	b.Logf("source: payload=%d enabled=%t records=%d elapsed=%s achieved=%.3f/s append_p95=%s append_p99=%s",
 		size, enabled, count, producing, float64(count)/producing.Seconds(),
 		all[(len(all)-1)*95/100], all[(len(all)-1)*99/100])
-	if producing > 66*time.Second {
+	if producing > window+window/10 {
 		b.Errorf("producer could not sustain offered rate: %d records in %s", count, producing)
 	}
 	expected := burstJournalKeys(b, paths)

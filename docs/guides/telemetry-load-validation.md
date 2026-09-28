@@ -122,6 +122,16 @@ an enabled scenario cannot pass with unavailable final accounting.
 The journal/replay correctness tests are selected by the Windows CI gate and
 its coverage contract; this does not substitute for native deployment testing.
 
+For a larger normal-rate tail sample, use the separate
+`BenchmarkJournalCatchupNormalRateSustained` experiment. It offers 3,810 records
+over thirty minutes at the same rate, retains all append samples for p95/p99,
+and reconciles the ten additional initial records. Select one subcase, for
+example `-bench '^BenchmarkJournalCatchupNormalRateSustained$/bytes=32768$/enabled=true$'`,
+with `-run '^$' -benchtime=1x -count=1`. Use an external watchdog of at least
+35 minutes and matched disabled/enabled runs on an otherwise idle host.
+Keep earlier short-run failures in the evidence; this larger sample does not
+retroactively turn them into passes or measure isolated stage dispatch.
+
 The HTTP fixture exercises production journal admission, batching, Azure
 envelope serialization, gzip, fsynced replay files, and loopback HTTP. It sends
 2,048 ~1 KiB synthetic records in 256-record waves, verifies delivery accounting
