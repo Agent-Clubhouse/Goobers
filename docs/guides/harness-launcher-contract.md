@@ -195,8 +195,14 @@ one owned headless process and one native SDK session for both the required
 `goobers-io` check and model turns. Startup and each readiness phase have a
 15-second cap within the invocation's total timeout. The adapter initializes
 that session's tools, checks the server's connection, and requires all five
-`goobers-io` tools in its inventory before sending the model prompt. A separate
-throwaway MCP connection is not readiness evidence for this session.
+`goobers-io` tools in its inventory before sending the model prompt. The CLI
+starts session MCP servers asynchronously, so while the server is still
+`pending`, or the session's MCP host has not yet initialized, the adapter
+re-lists every 250 ms within that same 15-second cap; any other status is
+judged immediately. A server still starting when the cap expires is reported
+as `required_tool_unavailable`, a retryable infrastructure failure, and no
+model turn is sent. A separate throwaway MCP connection is not readiness
+evidence for this session.
 
 The controlled session's permission handler permits only the declared tools,
 keeps file requests within the workspace and the sandbox's existing narrow

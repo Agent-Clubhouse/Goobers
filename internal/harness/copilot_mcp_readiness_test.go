@@ -25,6 +25,10 @@ type readinessSession struct {
 	wait        bool
 	modelCalls  int
 	probeCalls  int
+	// starting lists the startup snapshots ListMCP reports, in order, before
+	// the settled status: "pending" or "host-uninitialized" (#5397).
+	starting  []string
+	listCalls int
 }
 
 func (s *readinessSession) InitializeTools(ctx context.Context) error {
@@ -38,10 +42,18 @@ func (s *readinessSession) InitializeTools(ctx context.Context) error {
 	return ctx.Err()
 }
 func (s *readinessSession) ListMCP(context.Context) (*rpc.MCPServerList, error) {
-	if s.status == "absent" {
-		return &rpc.MCPServerList{}, nil
+	status := s.status
+	if s.listCalls < len(s.starting) {
+		status = s.starting[s.listCalls]
 	}
-	return &rpc.MCPServerList{Servers: []rpc.MCPServer{{Name: goobersIOServerName, Status: rpc.MCPServerStatus(s.status)}}}, nil
+	s.listCalls++
+	switch status {
+	case "host-uninitialized":
+		return &rpc.MCPServerList{}, nil
+	case "absent":
+		return &rpc.MCPServerList{Host: &rpc.MCPHostState{}}, nil
+	}
+	return &rpc.MCPServerList{Host: &rpc.MCPHostState{}, Servers: []rpc.MCPServer{{Name: goobersIOServerName, Status: rpc.MCPServerStatus(status)}}}, nil
 }
 func (s *readinessSession) ListMCPTools(context.Context, string) (*rpc.MCPListToolsResult, error) {
 	tools := &rpc.MCPListToolsResult{}
@@ -91,6 +103,8 @@ func TestRequiredMCPReadinessPrecedesActualAdapterModelDispatch(t *testing.T) {
 		{name: "ready", session: readinessSession{status: "connected"}, category: "ready", calls: 1},
 		{name: "legacy native authorization unobservable", session: readinessSession{status: "connected", unsupported: true}, category: "check_unobservable", calls: 1},
 		{name: "absent", session: readinessSession{status: "absent"}, category: "required_tool_unavailable", infra: true},
+		{name: "starting then connected", session: readinessSession{status: "connected", starting: []string{"host-uninitialized", "pending", "pending"}}, category: "ready", calls: 1},
+		{name: "failed", session: readinessSession{status: "failed"}, category: "required_tool_unavailable", infra: true},
 		{name: "connected unauthorized", session: readinessSession{status: "connected", denied: true}, category: "tool_authorization_failure"},
 		{name: "authentication", session: readinessSession{status: "needs-auth"}, category: "authentication_failure"},
 		{name: "missing required tool", session: readinessSession{status: "connected", missingTool: true}, category: "required_tool_unavailable", infra: true},
@@ -160,6 +174,29 @@ func TestRequiredMCPReadinessTransientRetryDoesNotSpendModelTurn(t *testing.T) {
 	}
 	if unavailable.modelCalls != 0 || available.modelCalls != 1 || len(reports) != 2 {
 		t.Fatalf("calls=%d,%d reports=%v", unavailable.modelCalls, available.modelCalls, reports)
+	}
+}
+
+// #5397: a server that never leaves startup within the probe window is a
+// bounded, retryable infrastructure failure reported before any model turn.
+func TestRequiredMCPReadinessStartupThatNeverSettlesIsBoundedInfrastructure(t *testing.T) {
+	for _, stuck := range []string{"pending", "host-uninitialized"} {
+		t.Run(stuck, func(t *testing.T) {
+			session := &readinessSession{status: stuck}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*requiredMCPSettlePoll)
+			defer cancel()
+			started := time.Now()
+			report, err := probeRequiredMCPSession(ctx, session)
+			if !errors.Is(err, errRequiredMCPUnavailable) || report.Category != "required_tool_unavailable" || report.Connection != "unobservable" {
+				t.Fatalf("report=%+v error=%v", report, err)
+			}
+			if session.listCalls < 2 || session.probeCalls != 0 {
+				t.Fatalf("list calls=%d probe calls=%d; startup was not re-observed or was probed", session.listCalls, session.probeCalls)
+			}
+			if elapsed := time.Since(started); elapsed > requiredMCPProbeTimeout {
+				t.Fatalf("probe outlived its window: %s", elapsed)
+			}
+		})
 	}
 }
 
