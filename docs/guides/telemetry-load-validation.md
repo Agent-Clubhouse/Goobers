@@ -196,7 +196,9 @@ bin/telemetry-load -bin bin/goobers -out /tmp/telemetry-enabled -scenario enable
 
 Use a **new or empty** output directory each time. On Windows use `.exe` paths
 and explicitly add `-windows-insecure-demo`: the bundled deterministic,
-credential-free demo has no native Windows network isolation. This does not
+credential-free demo has no native Windows network isolation. This flag supplies
+both scaffolding consent and the trusted-local execution environment opt-out
+only to the fixture's child processes. This does not
 change the deployment's sandbox policy or certify isolation. Do not substitute
 untrusted workflows. Child processes have ambient provider/telemetry credential
 variables removed. On Linux make the daemon executable readable/executable by
@@ -230,7 +232,7 @@ retain simultaneous burst submissions. Ten concurrent CLI mutations can hit
 the API's four-request admission guard even with telemetry disabled; preserve
 those rejected-request results as API-pressure evidence, not telemetry losses.
 Result JSON stays in the output directory. Disk size is logical file bytes,
-not filesystem allocation. Unix `ps` CPU values are lifetime averages; Windows
+not filesystem allocation. Unix CPU values use platform-dependent `ps` estimates; Windows
 PowerShell uses interval process CPU and itself has sampling overhead. Final
 process CPU seconds are also recorded. Normal daemon heartbeats remain enabled
 and capture heap/retained memory, goroutines and container pressure in the daemon

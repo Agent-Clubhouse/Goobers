@@ -65,6 +65,11 @@ func env() []string {
 func cmd(ctx context.Context, args ...string) *exec.Cmd {
 	c := exec.CommandContext(ctx, bin, args...)
 	c.Env = env()
+	if runtime.GOOS == "windows" && windowsInsecureDemo {
+		// The explicit fixture flag covers both scaffolding and execution.
+		// Never inherit this opt-out from the caller's ambient environment.
+		c.Env = append(c.Env, "GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1")
+	}
 	if azureConnectionEnv != "" {
 		c.Env = append(c.Env, azureConnectionEnv+"="+os.Getenv(azureConnectionEnv))
 	}
@@ -138,6 +143,7 @@ func setup(name, url string, enabled bool) (string, string) {
 	}
 	args = append(args, root)
 	b, err := cmd(context.Background(), args...).CombinedOutput()
+	write(filepath.Join(out, name+"-init.log"), string(b))
 	if err != nil {
 		panic(string(b))
 	}
