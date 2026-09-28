@@ -417,7 +417,7 @@ func (g *giteaCommentWatchFake) handler(t *testing.T) http.HandlerFunc {
 		case r.URL.Path == "/api/v1/repos/o/r/issues/1/comments" && r.Method == http.MethodGet:
 			t1 := time.Now().UTC().Add(-2 * time.Hour)
 			writeGiteaJSON(t, w, []map[string]interface{}{
-				{"id": 1, "body": "on it", "created_at": t1, "user": map[string]string{"login": "goobers-bot"}},
+				{"id": 1, "body": stampOwnFixtureBody("on it", "comment"), "created_at": t1, "user": map[string]string{"login": "goobers-bot"}},
 				{"id": 2, "body": "please fix", "created_at": t1.Add(time.Hour), "user": map[string]string{"login": "gneitzke"}},
 			})
 		case r.URL.Path == "/api/v1/repos/o/r/labels" && r.Method == http.MethodGet:

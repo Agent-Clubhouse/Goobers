@@ -23,7 +23,9 @@ const reportPRStatusHelp = "Usage: goobers report-pr-status [path]\n\n" +
 	"Inputs (Task.Inputs / inputsFrom): prNumber (required, from open-pr),\n" +
 	"statusName (default \"validation\"), statusGenre (default \"goobers\"),\n" +
 	"state (succeeded|failed|pending, default succeeded), description,\n" +
-	"targetUrl (default the PR url), resultFile (default status-result.json).\n" +
+	"targetUrl (default the PR url), headSha (optional: the commit the evidence\n" +
+	"covers; Gitea posts the status on it, Azure DevOps refuses when the PR\n" +
+	"head has moved past it), resultFile (default status-result.json).\n" +
 	"Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.\n"
 
 // reportPRStatusPublisher is the narrow surface report-pr-status needs. Only
@@ -87,6 +89,7 @@ func runReportPRStatus(args []string, stdout, stderr io.Writer) int {
 		State:       state,
 		Description: providerInput("description", "goobers validation passed (review + local CI)"),
 		TargetURL:   providerInput("targetUrl", providerInput("pull-request-url", "")),
+		HeadSHA:     providerInput("headSha", ""),
 	}
 
 	ctx, cancel := providerCommandContext()

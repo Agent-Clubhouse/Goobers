@@ -257,11 +257,14 @@ stage routes to and selects its credential: `github:issues:*` and
 `github:pr:write`, `github:pr:review` and `github:branch:delete` to the
 project provider (PR threads, labels, statuses, branch deletion), and
 `github:pr:merge` is the landing authority (completion or auto-complete).
-`ado:pr:complete` and `ado:pr:status` are optional and honoured when declared.
-`ado:code:read`, `ado:pr:comment`, `ado:pr:write` and `ado:work-items:write`
-(outside `open-pr`) have no DSL 2.0 consumer: validation accepts them with the
-strict-neutral warning `CAP006`, which names the `github:*` capability to
-declare instead.
+`ado:pr:complete` is optional and honoured when declared on `merge-pr` or
+`merge-queue-poll`; `ado:work-items:write` is optional and consumed by
+`open-pr` (native work-item link); `ado:pr:status` is accepted on
+`report-pr-status` but harmless. `ado:code:read`, `ado:pr:comment`,
+`ado:pr:write` and `ado:work-items:write` (outside `open-pr`) have no
+built-in DSL 2.0 consumer: validation accepts them with the strict-neutral
+warning `CAP006`, which names the `github:*` capability to declare instead
+(on a custom command it only notes that no built-in stage consumes the name).
 
 ## Pre-validation checklist
 

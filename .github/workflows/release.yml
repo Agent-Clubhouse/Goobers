@@ -99,6 +99,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           previous_tag=""
           release_commit="$(git rev-list --parents -n 1 "$TAG")"
           if [[ "$release_commit" == *" "* ]]; then
@@ -113,16 +114,16 @@ jobs:
             echo "first=true" >> "$GITHUB_OUTPUT"
             echo "path=" >> "$GITHUB_OUTPUT"
           else
-            mkdir -p .release-baseline
+            baseline_dir="$(mktemp -d "$RUNNER_TEMP/goobers-release-baseline.XXXXXX")"
             gh release download "$previous_tag" \
               --pattern feature-registry.json \
               --pattern dsl-support-matrix.json \
-              --dir .release-baseline
-            test -s .release-baseline/feature-registry.json
-            test -s .release-baseline/dsl-support-matrix.json
+              --dir "$baseline_dir"
+            test -s "$baseline_dir/feature-registry.json"
+            test -s "$baseline_dir/dsl-support-matrix.json"
             echo "first=false" >> "$GITHUB_OUTPUT"
-            echo "path=.release-baseline/feature-registry.json" >> "$GITHUB_OUTPUT"
-            echo "support-path=.release-baseline/dsl-support-matrix.json" >> "$GITHUB_OUTPUT"
+            echo "path=$baseline_dir/feature-registry.json" >> "$GITHUB_OUTPUT"
+            echo "support-path=$baseline_dir/dsl-support-matrix.json" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build release artifacts
@@ -132,8 +133,10 @@ jobs:
           FIRST_FEATURE_SNAPSHOT: ${{ steps.feature-baseline.outputs.first }}
           PREVIOUS_FEATURES: ${{ steps.feature-baseline.outputs.path }}
           PREVIOUS_SUPPORT_MATRIX: ${{ steps.feature-baseline.outputs.support-path }}
+          IMAGE_CONTEXTS: ${{ runner.temp }}/original-image-inputs
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           if [[ "$FIRST_FEATURE_SNAPSHOT" == "true" ]]; then
             baseline=(-first-feature-snapshot)
           else
@@ -147,9 +150,10 @@ jobs:
           go run ./release \
             -version "$TAG" \
             -commit "$commit" \
+            -source-commit "$COMMIT_SHA" \
             -date "$date" \
             -output dist \
-            -image-contexts original-image-inputs \
+            -image-contexts "$IMAGE_CONTEXTS" \
             -image-targets linux/amd64,linux/arm64,windows/amd64 \
             "${baseline[@]}"
           portal_version="${TAG#v}"
@@ -181,7 +185,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: original-image-inputs
-          path: original-image-inputs/
+          path: ${{ runner.temp }}/original-image-inputs/
           include-hidden-files: true
           retention-days: 1
           if-no-files-found: error

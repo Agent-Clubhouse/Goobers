@@ -595,6 +595,9 @@ func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) 
 	// friends) stops being re-fetched. The probe is mirror-scoped, not
 	// flag-scoped, so a full mirror that predates the option keeps its
 	// full-mirror fetch untouched.
+	if err := ensureMirrorInvariants(ctx, dir); err != nil {
+		return "", err
+	}
 	if err := m.fetchMirror(ctx, repoURL, dir, narrow || m.partialClone && mirrorIsPartial(ctx, dir)); err != nil {
 		return "", fmt.Errorf("worktree: fetch %s: %w", repoURL, err)
 	}
@@ -896,8 +899,17 @@ func ForegroundMaintenanceArgs() []string {
 // maintainMirror performs the housekeeping disabled by ForegroundMaintenanceArgs.
 // The caller must hold the mirror's per-repository lock so maintenance cannot
 // overlap a teardown or another operation that mutates the object store.
+//
+// Maintenance is opportunistic: when another git process already holds the
+// mirror's gc or lockfile, the pass is skipped with a warning and the next
+// refresh does it (#5653). Never --force: that would override a lock doing
+// its job. Every other failure stays fatal.
 func maintainMirror(ctx context.Context, dir string) error {
 	if err := runGit(ctx, dir, "maintenance", "run"); err != nil {
+		if isMaintenanceLockContention(err) {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: worktree: skipped maintenance of managed mirror %s: another git process holds its lock: %v\n", dir, err)
+			return nil
+		}
 		return fmt.Errorf("worktree: maintain mirror %s: %w", dir, err)
 	}
 	return nil

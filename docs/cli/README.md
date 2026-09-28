@@ -1651,8 +1651,8 @@ $ goobers engine-start default-implement
 list escalated runs newest first
 
 ~~~text
-Usage: goobers escalations [--json] [path]
-       goobers escalations show [--json] [--include-verdict] <run-id> [path]
+Usage: goobers escalations [--json] [--api=<url>] [path]
+       goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
        goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
@@ -1701,7 +1701,7 @@ $ goobers escalations resolve --resolution deny --rationale="not worth it" <run-
 show escalation cause, verdict, and per-stage artifact timeline
 
 ~~~text
-Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]
+Usage: goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
 
 Show an escalation's structured cause and per-stage artifact timeline.
 Use --include-verdict to include reviewer verdict rationale and findings.
@@ -1845,6 +1845,10 @@ and evidence; this stage dedupes by body marker against every issue
 carrying the nominated label, excludes anything flake-watch already
 fingerprints, enforces maxPerRun, and creates issues with a retry-safe
 idempotency key.
+
+file-issues files GitHub issues only. It refuses any other repository
+provider (Azure DevOps, Gitea) with an error, so work nomination is not
+available there.
 
 goobers:approved (the SEC-047 trust label) is applied on one condition
 only (decision 004): the nomination's evidence names a finding — a go
@@ -2236,7 +2240,8 @@ select the repository's Resource owner, choose Only select repositories, and
 grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=standard non-interactively seeds backlog-curation and implementation
 with their three canonical personas by default. Use --workflows to select
-implementation, backlog-curation, merge-review, and/or work-nomination.
+implementation, backlog-curation, merge-review (Azure DevOps only), and/or
+work-nomination.
 --repo accepts a GitHub owner/name or Azure DevOps identity; --branch
 defaults to main.
 Implementation requires either --pr-ci or an explicit --ci-command JSON argv
@@ -2246,7 +2251,8 @@ Use --provider=ado for Azure DevOps placeholders; the default provider is
 github. On Azure DevOps the default modules also include merge-review,
 work-nomination is refused (file-issues is GitHub-only), and
 --repo-auth-kind defaults to azure-cli (also workload-identity,
-managed-identity, or pat, which reads GOOBERS_ADO_TOKEN). See
+managed-identity, or pat, which reads GOOBERS_ADO_TOKEN). --repo-token-env
+without --repo-auth-kind selects pat; with another kind it is refused. See
 docs/guides/ado-authentication.md and docs/guides/ado-limitations.md.
 It creates placeholders: configure repository identity and credential refs
 before running. It does not start workflows and refuses configured targets.
@@ -2391,7 +2397,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CAP006, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -2683,8 +2689,12 @@ empty value is not an override — every empty input falls back.
 
 itemID explicitly identifies a selected backlog item when the workflow
 read it without claiming. If a claimed item also exists, the IDs must
-match. On ADO, native work-item linking separately requires the
-ado:work-items:write capability; GitHub never resolves that capability.
+match. On ADO, native work-item linking separately uses the
+ado:work-items:write capability, which the ADO repository credential backs
+when the stage declares it. Without it the pull request still opens, with
+a text reference and a note that the item is not linked natively; a
+delivered credential that ADO rejects fails the stage. GitHub never
+resolves that capability.
 
 Body precedence: an explicitly set non-empty body is used as given and
 bypasses structured rendering; otherwise a structured body is rendered
@@ -2966,8 +2976,8 @@ check whether the configured credential can push this run's branch namespace, wi
 Usage: goobers preflight-repo-write [path]
 
 Check, without mutating any repository state, whether the configured
-repository credential can push this run's branch namespace. Reads two
-provider endpoints (repository permissions, branch ruleset policy) and
+repository credential can push this run's branch namespace. Reads repository
+roles and branch rules, with Git push-service discovery when needed, and
 reports one of four distinct outcomes: unreachable/unauthorized,
 authenticated without push permission, a branch ruleset denying the
 namespace, or ruleset introspection unavailable for this credential —
@@ -3301,7 +3311,9 @@ gate both pass, so the default published state is `succeeded`.
 Inputs (Task.Inputs / inputsFrom): prNumber (required, from open-pr),
 statusName (default "validation"), statusGenre (default "goobers"),
 state (succeeded|failed|pending, default succeeded), description,
-targetUrl (default the PR url), resultFile (default status-result.json).
+targetUrl (default the PR url), headSha (optional: the commit the evidence
+covers; Gitea posts the status on it, Azure DevOps refuses when the PR
+head has moved past it), resultFile (default status-result.json).
 Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.
 ~~~
 
@@ -3486,6 +3498,9 @@ Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
 back to files. --no-api explicitly selects local execution/file delegation
 and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.
+Without a live daemon, workflows with an effective runControls.maxRunDuration
+are rejected before dispatch, including inherited limits and --no-wait runs.
+Start `goobers up` for that instance and submit through the daemon instead.
 Targeted --pr runs currently require --no-api from the instance root.
 --github-progress publishes the versioned hosted-progress contract to one
 GitHub Check Run whenever the journal sequence advances. It requires
@@ -3604,6 +3619,9 @@ list runs and report per-run disk usage
 ~~~text
 Usage: goobers runs <command> [flags] [path]
 
+A flag in place of <command> (for example `goobers runs --api=<url>`)
+runs the run table, as `runs list` does.
+
 Commands:
   list    alias for the goobers status run table (same flags)
   du      report per-run journal and artifact bytes, largest first
@@ -3633,7 +3651,7 @@ $ goobers runs du --json
 alias for the status run table (same flags, no --watch)
 
 ~~~text
-Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
+Usage: goobers runs list [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
 
 Alias for the goobers status run table, with the same flags (minus --daemon/--watch).
 Validate active config, show warnings, and list runs under an instance's
@@ -4238,7 +4256,7 @@ $ goobers stats --since 24h --json
 validate config, show warnings, list runs, report daemon health, or list live agentic stages
 
 ~~~text
-Usage: goobers status [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--api=<url>] [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
@@ -4559,7 +4577,7 @@ $ goobers telemetry-query --window 24h --format candidate-findings
 show a run's journal events or review verdicts, follow a live run, or show transcripts
 
 ~~~text
-Usage: goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
+Usage: goobers trace [--api=<url>] [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
 
 Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,
@@ -4693,7 +4711,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CAP006, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable

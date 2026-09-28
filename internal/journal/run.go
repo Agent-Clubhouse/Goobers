@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/platform/activetime"
 )
 
 // ErrClosed is returned by writer operations after Close.
@@ -47,8 +48,11 @@ type Run struct {
 	branches     []BranchCursor
 	reason       string
 	lastActivity time.Time
-	appendErr    error
-	closed       bool
+	// lastActivityMark is taken with lastActivity so IfLastActivityBefore can
+	// discount time the host spent suspended since then (#5875).
+	lastActivityMark activetime.Mark
+	appendErr        error
+	closed           bool
 }
 
 // acquireRunLock takes a blocking exclusive lock on dir's lock file,
@@ -707,9 +711,15 @@ func (r *Run) append(ev Event) error {
 		r.appendErr = err
 	} else {
 		r.lastActivity = stamped.Time
+		r.lastActivityMark = activetime.NewMark()
 	}
 	return err
 }
+
+// suspendedSince reports how long the host was suspended since mark was taken.
+// It is a variable only so tests can model a suspend the test host cannot
+// perform.
+var suspendedSince = activetime.Mark.SuspendedSince
 
 // IfLastActivityBefore runs claim while holding the writer mutex only when no
 // event has been appended at or after cutoff. It lets a live owner atomically
@@ -735,13 +745,21 @@ func (r *Run) append(ev Event) error {
 // of inactivity, and the cost of the two mistakes is not symmetric: declining
 // to escalate delays detection of a genuinely hung run, while escalating on an
 // unknown kills healthy work and cannot be configured away.
+//
+// Time the host spent SUSPENDED since the last activity is not inactivity
+// either (#5875). Go's monotonic clock already excludes it on Linux and macOS,
+// but on Windows it keeps counting through a sleep, so a stage that went
+// quiet shortly before a suspend longer than the stall timeout was escalated
+// on the first sweep after resume. The comparison therefore shifts
+// lastActivity forward by the suspended interval; activetime reports zero on
+// platforms where there is nothing to subtract, so they are unchanged.
 func (r *Run) IfLastActivityBefore(cutoff time.Time, claim func(time.Time)) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.lastActivity.IsZero() {
 		return false
 	}
-	if !r.lastActivity.Before(cutoff) {
+	if !r.lastActivity.Add(suspendedSince(r.lastActivityMark)).Before(cutoff) {
 		return false
 	}
 	claim(r.lastActivity)
@@ -757,6 +775,7 @@ func (r *Run) ObserveActivity() {
 	now := r.now()
 	if r.lastActivity.Before(now) {
 		r.lastActivity = now
+		r.lastActivityMark = activetime.NewMark()
 	}
 }
 

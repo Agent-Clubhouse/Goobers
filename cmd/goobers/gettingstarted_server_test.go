@@ -898,6 +898,27 @@ func TestGuidedStandardInitArgvCarriesAllConfiguration(t *testing.T) {
 	}
 }
 
+// TestGuidedStandardInitArgvDropsADOTokenEnvWithoutPAT pins that the wizard's
+// repository token variable reaches init on Azure DevOps only with PAT auth:
+// init refuses a token variable named alongside a token-free kind.
+func TestGuidedStandardInitArgvDropsADOTokenEnvWithoutPAT(t *testing.T) {
+	for _, test := range []struct{ kind, want string }{
+		{kind: "azure-cli", want: "--repo-token-env="},
+		{kind: "", want: "--repo-token-env="},
+		{kind: "pat", want: "--repo-token-env=REPO_TOKEN"},
+		{kind: " pat ", want: "--repo-token-env=REPO_TOKEN"},
+	} {
+		input := &guidedInitOptionsInput{
+			Branch: "main", Workflows: []string{"backlog-curation"}, IssueScope: "all", Harness: "copilot",
+			RepoTokenEnv: "REPO_TOKEN", AuthKind: test.kind,
+		}
+		got := guidedStandardInitArgv("example-org/example-project/widgets", "ado", "", "/instance", input)
+		if !slices.Contains(got, test.want) {
+			t.Errorf("kind %q: argv = %v, want %s", test.kind, got, test.want)
+		}
+	}
+}
+
 func TestGettingStartedGuidedInitReportsCLIRefusalWithoutChangingInstance(t *testing.T) {
 	server := newTestGuidedServer(t, t.TempDir())
 	original := server.instancePath

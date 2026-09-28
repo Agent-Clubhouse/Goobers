@@ -477,7 +477,10 @@ func TestResolveGateOutcome(t *testing.T) {
 		}
 	})
 
-	t.Run("pass-driven re-entry consumes the target budget", func(t *testing.T) {
+	// #5942: a pass re-entering a completed stage is a forward step. It
+	// charges nothing and is never converted into an escalation, even with the
+	// target's budget already spent by genuine repasses.
+	t.Run("pass-driven re-entry charges no target budget", func(t *testing.T) {
 		passBack := crGate("review", map[string]string{"pass": "implement", "fail": wf.TargetAbort})
 		budget := gate.RepassBudget{
 			Attempts:       map[string]int{"review": 2},
@@ -487,8 +490,11 @@ func TestResolveGateOutcome(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
-		if !gr.Escalated || gr.Attempt != 2 || gr.RepassTarget != "implement" || gr.Target != wf.TargetEscalate {
-			t.Fatalf("result = %+v, want pass-driven target-stage escalation", gr)
+		if gr.Escalated || gr.Attempt != 0 || gr.RepassTarget != "" || gr.Target != "implement" {
+			t.Fatalf("result = %+v, want an uncharged pass routed to implement", gr)
+		}
+		if got := budget.RepassAttempts["implement"]; got != 1 {
+			t.Fatalf("implement budget = %d, want 1 — a pass must not charge it", got)
 		}
 	})
 

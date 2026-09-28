@@ -16,7 +16,10 @@
 // unacceptably broad false-positive net.
 package secretpattern
 
-import "regexp"
+import (
+	"bytes"
+	"regexp"
+)
 
 // Redacted is the placeholder that replaces scrubbed secret material. It is
 // stable so digests over scrubbed bytes are reproducible across runners.
@@ -86,8 +89,23 @@ func NewScrubber() *Scrubber {
 // authorization expression.
 func (s *Scrubber) Scrub(b []byte) []byte {
 	out := b
+	copied := false
 	for _, p := range s.patterns {
+		// ReplaceAll copies even when nothing matches. Most journal/export
+		// bodies are already scrubbed. Use only the regexp engine's required
+		// literal prefix, not a full Match scan that repeats expensive work
+		// for real secrets. Prefixless patterns still take the original path.
+		prefix, _ := p.re.LiteralPrefix()
+		if prefix != "" && !bytes.Contains(out, []byte(prefix)) {
+			continue
+		}
 		out = p.re.ReplaceAll(out, []byte(p.replacement))
+		copied = true
+	}
+	if !copied && len(s.patterns) > 0 {
+		// Preserve the existing caller-owned result instead of introducing
+		// an input/output alias on the now allocation-light ordinary path.
+		return bytes.Clone(out)
 	}
 	return out
 }

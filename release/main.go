@@ -30,6 +30,7 @@ func main() {
 type options struct {
 	version               string
 	commit                string
+	sourceCommit          string
 	date                  string
 	outDir                string
 	imageContexts         string
@@ -48,6 +49,9 @@ type options struct {
 func run(args []string, stdout, stderr io.Writer) error {
 	opts, err := parseFlags(args, stderr)
 	if err != nil {
+		return err
+	}
+	if err := verifyReleaseSource(opts.sourceCommit); err != nil {
 		return err
 	}
 	if err := checkReleasePreflight(opts.version); err != nil {
@@ -87,6 +91,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	archives, skipped, err := buildReleaseTargets(opts, ldflags, releaseDocsDir, images, stdout)
 	if err != nil {
+		return err
+	}
+	if err := verifyReleaseSource(opts.sourceCommit); err != nil {
 		return err
 	}
 
@@ -186,6 +193,9 @@ func buildReleaseTargets(opts options, ldflags, releaseDocsDir string, images *i
 				"target to compile (windows is gated on the #633 CI leg going green); "+
 				"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)
 		}
+		if err := verifyReleaseBinary(binPath, opts.sourceCommit, buildPackage, t); err != nil {
+			return nil, nil, err
+		}
 		archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
 		if err != nil {
 			return nil, nil, err
@@ -207,6 +217,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	var (
 		version          = fs.String("version", "", "release version (default: nearest v[0-9]* product tag from git describe)")
 		commit           = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
+		sourceCommit     = fs.String("source-commit", "", "require clean source and compiled Git metadata matching this full commit (required by the official publisher)")
 		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
 		outDir           = fs.String("output", "dist", "output directory for release assets")
 		imageContexts    = fs.String("image-contexts", "", "prepare Linux or Windows base-image build inputs in a new directory (requires explicit supported -targets or -image-targets; does not build or publish images)")
@@ -227,6 +238,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	}
 
 	opts := options{
+		sourceCommit:          *sourceCommit,
 		outDir:                *outDir,
 		imageContexts:         *imageContexts,
 		imageArtifacts:        *imageArtifacts,
@@ -242,6 +254,12 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	opts.version = firstNonEmpty(*version, os.Getenv("GOOBERS_VERSION"), gitOutput("describe", "--tags", "--match", "v[0-9]*", "--always", "--dirty"), "dev")
 	opts.commit = firstNonEmpty(*commit, gitOutput("rev-parse", "--short", "HEAD"), "none")
 	opts.date = firstNonEmpty(*date, gitOutput("show", "-s", "--format=%cI", "HEAD"), "unknown")
+	if opts.sourceCommit != "" {
+		if !fullSourceCommit.MatchString(opts.sourceCommit) ||
+			(opts.commit != opts.sourceCommit && opts.commit != opts.sourceCommit[:12]) || opts.skipUnbuildable {
+			return options{}, fmt.Errorf("-source-commit requires a full lowercase Git SHA, matching full or 12-character -commit, and no -skip-unbuildable")
+		}
+	}
 
 	if err := validateImageImportFlags(opts, fs); err != nil {
 		return options{}, err

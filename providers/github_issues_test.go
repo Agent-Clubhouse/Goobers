@@ -1198,6 +1198,7 @@ func TestGitHubReconcileOrphanedClaimClosesEpochAndExplainsLabels(t *testing.T) 
 		"7",
 		[]string{LabelClaimed, LabelReady},
 		"Removed drifted claim and ready labels.",
+		"historical-run",
 	)
 	if err != nil {
 		t.Fatalf("ReconcileOrphanedWorkItemClaim: %v", err)
@@ -1215,6 +1216,84 @@ func TestGitHubReconcileOrphanedClaimClosesEpochAndExplainsLabels(t *testing.T) 
 	last := m.comments[len(m.comments)-1]["body"].(string)
 	if !strings.Contains(last, "Removed drifted claim and ready labels.") {
 		t.Fatalf("last comment = %q, want explanation", last)
+	}
+}
+
+func attributedClaimBreadcrumb(t *testing.T, runID, instanceID string) string {
+	t.Helper()
+	body, err := withAttribution(claimBreadcrumb(runID), Attribution{
+		InstanceID: instanceID, Gaggle: "goobers", Workflow: "implementation",
+		Task: "claim", Goober: "deterministic", Run: runID,
+	}, "claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// #5311: another instance's live claim must survive a reconciliation that
+// only established ownership of some other epoch (or of none).
+func TestGitHubReconcileOrphanedClaimRefusesEpochItDoesNotOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		author     string
+		ownedRunID string
+	}{
+		{name: "same-login foreign epoch, caller owns none", author: "goobers", ownedRunID: ""},
+		{name: "same-login foreign epoch, caller owns another run", author: "goobers", ownedRunID: "own-run"},
+		{name: "other-login epoch", author: "someone-else", ownedRunID: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newIssueMock()
+			m.labels = append(m.labels, LabelClaimed)
+			m.comments = append(m.comments, map[string]interface{}{
+				"id":   int64(1),
+				"body": attributedClaimBreadcrumb(t, "foreign-run", "0123456789abcdef0123456789abcdef"),
+				"user": map[string]string{"login": tc.author},
+			})
+			m.nextID = 1
+			p, repo := newIssueProvider(t, m)
+
+			_, err := p.ReconcileOrphanedWorkItemClaim(context.Background(), repo, "7",
+				[]string{LabelClaimed}, "Removed drifted claim label.", tc.ownedRunID)
+			if !errors.Is(err, ErrClaimEpochNotOwned) {
+				t.Fatalf("ReconcileOrphanedWorkItemClaim error = %v, want ErrClaimEpochNotOwned", err)
+			}
+			if len(m.comments) != 1 {
+				t.Fatalf("comments = %d, want the foreign claim alone (no release breadcrumb)", len(m.comments))
+			}
+			if !containsString(m.labels, LabelClaimed) {
+				t.Fatalf("labels = %v, want %q kept", m.labels, LabelClaimed)
+			}
+		})
+	}
+}
+
+func TestScanClaimEpochsTracksEachAuthorAndAttribution(t *testing.T) {
+	const instanceID = "0123456789abcdef0123456789abcdef"
+	comment := func(id int64, author, body string) restComment {
+		return restComment{ID: id, Body: body, User: githubUser{Login: author}}
+	}
+	epochs := scanClaimEpochs([]restComment{
+		comment(1, "bot", claimBreadcrumb("closed-run")),
+		comment(2, "other", claimBreadcrumb("other-run")),
+		// A trusted release never ends another author's epoch.
+		comment(3, "bot", claimReleaseBreadcrumb("other-run")),
+		comment(4, "bot", claimReleaseBreadcrumb("closed-run")),
+		comment(5, "Bot", attributedClaimBreadcrumb(t, "live-run", instanceID)),
+		comment(6, "bot", claimBreadcrumb("losing-racer")),
+	}, "BOT")
+	want := []ClaimEpoch{
+		{Author: "other", Trusted: false, RunID: "other-run"},
+		{Author: "Bot", Trusted: true, RunID: "live-run", InstanceID: instanceID},
+	}
+	if len(epochs) != len(want) {
+		t.Fatalf("epochs = %#v, want %#v", epochs, want)
+	}
+	for i := range want {
+		if epochs[i] != want[i] {
+			t.Fatalf("epochs[%d] = %#v, want %#v", i, epochs[i], want[i])
+		}
 	}
 }
 

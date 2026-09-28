@@ -74,6 +74,9 @@ func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber i
 				"id": i + 1, "user": map[string]string{"login": login},
 				"body": comment, "created_at": createdAt,
 			}
+			if login == "goobers-bot" {
+				out[i]["body"] = stampOwnFixtureBody(comment, "comment")
+			}
 		}
 		writeFakeJSON(w, out)
 	})

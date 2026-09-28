@@ -331,7 +331,7 @@ var commands = map[string]Command{
 		ResultFile: "pr-result.json",
 		Capabilities: []CapabilityUse{
 			required(capability.ProviderPRWrite, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
-			optional(capability.ADOWorkItemsWrite, "the separately brokered Azure Boards credential is required at runtime only when an ADO pull request is linked to its work item"),
+			optional(capability.ADOWorkItemsWrite, "optional on Azure DevOps: when declared, the pull request is also linked natively to its claimed work item; without it the pull request opens with a text reference only"),
 			// Topology (b) (docs/design/ado-parity-dsl-2-0.md §7.2): the
 			// claimed-issue staleness re-check reads the backlog provider with
 			// an issue credential; without one it is skipped with a warning.

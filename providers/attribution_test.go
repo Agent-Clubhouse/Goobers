@@ -198,3 +198,51 @@ func TestAttributionDisabledWithoutRun(t *testing.T) {
 		t.Fatalf("body = %q, want unchanged %q", got, body)
 	}
 }
+
+func TestStripAttributionRecoversTheWrittenBody(t *testing.T) {
+	nanoAIU := int64(2_500_000_000)
+	attribution := Attribution{
+		Instance: "example-instance", Gaggle: "example-gaggle", Workflow: "decomposition",
+		Task: "publish-batch", Goober: "deterministic", Run: "run-strip-1",
+		Cost: &CostReceipt{JournalSequence: 1, NanoAIU: &nanoAIU},
+	}
+	written := "Child body.\n\n<!-- goobers-action:v1 key=YXBp -->\n<!-- goobers-action-digest:v1 sha256:00 -->\n"
+	stamped, err := StampAttribution(written, attribution, "issue-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := ParseAttribution(stamped); err != nil || !found {
+		t.Fatalf("StampAttribution body has no attribution: found=%v err=%v body=%q", found, err, stamped)
+	}
+	if got, want := StripAttribution(stamped), strings.TrimSpace(written); got != want {
+		t.Fatalf("StripAttribution(stamped) = %q, want %q", got, want)
+	}
+	if got := StripAttribution("  " + written); got != strings.TrimSpace(written) {
+		t.Fatalf("StripAttribution(unattributed) = %q, want trimmed input", got)
+	}
+	restamped, err := StampAttribution(stamped, attribution, "issue-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restamped != stamped {
+		t.Fatalf("re-stamp changed body:\n%q\nwant\n%q", restamped, stamped)
+	}
+	unchanged, err := StampAttribution(written, Attribution{}, "issue-create")
+	if err != nil || unchanged != written {
+		t.Fatalf("StampAttribution with zero attribution = %q, %v; want input unchanged", unchanged, err)
+	}
+}
+
+func TestStripAttributionKeepsTextAddedAfterTheFooterOnItsOwnLine(t *testing.T) {
+	stamped, err := StampAttribution("Body.\n<!-- goobers-action-digest:v1 sha256:00 -->", Attribution{
+		Gaggle: "example-gaggle", Workflow: "decomposition", Task: "publish-batch", Goober: "deterministic", Run: "run-strip-2",
+	}, "issue-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := StripAttribution(stamped + "\nEdited later.")
+	want := "Body.\n<!-- goobers-action-digest:v1 sha256:00 -->\nEdited later."
+	if got != want {
+		t.Fatalf("StripAttribution = %q, want %q", got, want)
+	}
+}

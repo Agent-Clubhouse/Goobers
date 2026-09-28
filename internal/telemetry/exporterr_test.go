@@ -32,6 +32,10 @@ func TestIsCollectorUnreachable(t *testing.T) {
 		{"real local exporter error", realLocal, false},
 		{"join all transient", errors.Join(context.DeadlineExceeded, status.Error(codes.Unavailable, "x")), true},
 		{"join with a real error still surfaces", errors.Join(context.DeadlineExceeded, realLocal), false},
+		{"wrapped join with local error", fmt.Errorf("shutdown: %w", errors.Join(context.DeadlineExceeded, realLocal)), false},
+		{"Azure delivery failure", &azureMonitorDeliveryError{cause: errors.New("connectex: target actively refused")}, true},
+		{"wrapped Azure failure", fmt.Errorf("shutdown: %w", &azureMonitorDeliveryError{cause: errors.New("HTTP 503")}), true},
+		{"Azure joined with local error", fmt.Errorf("shutdown: %w", errors.Join(&azureMonitorDeliveryError{cause: errors.New("HTTP 503")}, realLocal)), false},
 		{"empty join", errors.Join(), false},
 	}
 	for _, tc := range tests {

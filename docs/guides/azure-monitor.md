@@ -74,9 +74,13 @@ telemetry:
 ```
 
 `maxAge` accepts 1h through 720h; `maxBytes` accepts 1 MiB through 10 GiB.
-When either bound is reached, the oldest batches are removed first and the
+When either bound is reached, the oldest non-sending batches are removed first and the
 pruned-record counters make that loss visible. Set `replay.enabled: false` only
 when live-forward-only delivery is intentional.
+
+A batch currently uploading remains charged against the cap and is protected
+from concurrent pruning until that attempt finishes. If those bytes leave no
+room, a new batch can be rejected instead of evicting the in-flight batch.
 
 `collectionProfile` is optional and defaults to `standard`. Its v1 contract is:
 
@@ -98,6 +102,20 @@ Exported resources carry the effective choice as
 
 Records remain structured JSON. Goobers does not base64-wrap workflow bodies,
 prompts, credentials, or arbitrary raw payloads as a telemetry escape hatch.
+
+Service-health journal bodies are an operational projection, not a raw copy of
+the local observation. Journal collectors receive no machine/account names,
+recovery filesystem paths, or arbitrary extra health payloads. Explicitly
+consented identity remains available through the diagnostic signal and Azure
+resource attributes. The authoritative local journal is unchanged, as are the
+exported journal sequence and stable record ID. Previously queued Azure journal
+batches receive the same projection before HTTP upload, including old spool
+files. Ordinary journal bodies retain their existing secret-scrubbed content;
+this is not a general-purpose personal-data scrubber for user-authored text.
+Malformed health bodies are replaced by a JSON `telemetryBodyRedacted` marker,
+with correlation metadata retained. Malformed candidate Azure envelopes fail
+closed and remain pending rather than sending an unfiltered payload.
+This projection does not alter records already ingested by a destination.
 
 Set the environment variable in the account/environment of the Goobers daemon
 and restart the service. A private file or declared secret store is also valid:
@@ -138,14 +156,113 @@ then send them. Failed batches retry with bounded backoff and replay on the next
 process start without waiting for a new workflow. Local journals and diagnostic
 history remain authoritative.
 
+Journal exports coalesce for up to 100 ms when idle and drain batches of up to
+128 records / 256 KiB of charged input (an individually valid larger record
+travels alone). This is not an encoded HTTP-body size limit. The original
+1,024-record / 8 MiB queue includes the in-flight batch; no second lossy queue
+is added. Atomic reservations prevent worker-mutex contention from dropping
+records. Queue overflow still drops exported copies, not local journal data.
+
+When Azure journal replay and an instance journal root are configured, the
+authoritative journal is also the durable source queue. The commit callback
+only offers a bounded wake-up hint. A background reader resumes retained run
+and scheduler journals from persisted cursors, recovering records lost before
+spool admission after a crash. Deferred hints are counted separately from lost
+records; paced discovery finds them again. Readers use committed watermarks or
+brief writer locks, released before encoding or spool I/O. Each read is bounded
+to 128 records / roughly 256 KiB, except a single larger record.
+
+First enrollment excludes earlier journal events. Enrollment persists: after
+disabling and re-enabling export, retained events since that enrollment,
+including disabled intervals, are eligible within the replay-age window.
+Disabling export stops emission, not local journal recording. Review this
+catch-up consent behavior before enabling collection. Removing the private
+cursor database resets enrollment and may discard pending catch-up; it is not
+a routine troubleshooting step. Cursor rows are pruned every minute to the
+age window and the most recently touched 100,000 journals. Cursor DB/WAL
+storage is additional to the spool byte cap.
+
+Catch-up is not unlimited lossless storage: local retention, compaction gaps,
+oversized records, replay age/byte pruning, and unavailable disks can prevent
+complete reconstruction. With both Azure and OTLP journal destinations, the
+shared pipeline also sends catch-up to OTLP; either destination's admission
+failure prevents cursor advancement and can duplicate already accepted copies.
+
+The default local journal policy is separately **90 days / 500 runs across the
+instance**, with automatic pruning enabled. Either bound can select terminal
+runs for removal; local retention does not wait for Azure export cursors or
+remote receipt. Records already admitted to replay can survive source pruning,
+but records not yet copied cannot be reconstructed after their journal is gone.
+An entirely missing source journal is not an export-failure increment: inspect
+the retention summary and policy as well as exporter health counters.
+
+The first over-policy candidates start a seven-day dry-run grace period. A
+first real enforcement that would remove more than half the history also needs
+acknowledgement; grace expiry alone is not a hard disk-usage ceiling. Fresh
+24-hour tests therefore do not establish mature-policy pruning behavior.
+For sizing, ten actual runs every three minutes is about 200 runs/hour, so
+500 runs represent roughly 2.5 hours at that illustrative rate, not 90 days.
+Sweeps, custody holds and polls finding no work affect actual history. Size
+local retention, replay storage and disk/inodes together; increasing only the
+replay byte cap does not extend source retention. Successfully ingested cloud
+history follows the tenant's Azure retention settings independently.
+
+With replay enabled, an export call acknowledges **local durable admission**,
+not Azure receipt. Inspect replay `Delivered`, `Retried`, and pending/pruning
+counters for remote delivery; journal `ExportFailures` now reports admission
+failures, not background HTTP failures. Flush settles the journal queue into
+the spool; it is not a remote-ingestion barrier. One worker per stream owns
+delivery, new arrivals respect its retry backoff, and HTTP holds no shared
+spool lock. Each replay pass sends at most 32 batches within its context;
+shutdown makes a bounded best-effort pass and leaves remaining files for restart.
+
+Replay combines small persisted files into requests of up to 128 records and
+1 MiB (an existing larger valid batch travels alone). Claims and acknowledgements
+are bulk operations. A private SQLite manifest caches file metadata and aggregate
+counts across processes; ordinary admission and health checks do not enumerate
+the backlog. New/changed directories reconcile after an interrupted update or
+an older writer. Legacy payloads are read for metadata during reconciliation,
+not on every admission. The NDJSON files remain authoritative. The manifest
+also records a shared audit cadence: once a minute, the next replay operation
+checks all file metadata even if directory timestamps have not changed. This
+catches timestamp-coalesced external changes without scanning on every batch.
+Initial indexing runs in the background; unavailable accounting is explicitly reported, not
+interpreted as an empty spool. Initialization retries transient storage failures.
+An obstructed or unavailable spool does not abort daemon startup; background
+health reports degradation.
+Once initialization has failed, admissions fail promptly and are counted until
+the background retry succeeds. A final shutdown drain is skipped while the
+manifest is still unavailable; existing replay files remain for the next start.
+
+Upload claims expire after 30 seconds if a process dies. HTTP attempts are
+limited to five seconds; local acknowledgement cleanup has a separate bounded
+five-second allowance. Files remain charged while claimed. The byte cap applies
+to replay files, not filesystem overhead, the rebuildable manifest/WAL, local
+health files, or authoritative journals. Leave disk headroom for those.
+
+The manifest uses SQLite WAL and OS file locks. A deployment volume must support
+those semantics; do not assume every network filesystem does. Kubernetes still
+requires one active instance owner and validation on its actual PVC class.
+Stop old-version owners before upgrading; simultaneous mixed-version writers
+do not share the new manifest/claim protocol.
+
+See [Telemetry load and v0.5.0 validation](telemetry-load-validation.md) for
+automated checks, platform release gates, and the remaining large-backlog risk.
+
 Delivery is **at least once**: a process can stop after Azure accepts a batch
 but before its local acknowledgement is removed. Every envelope therefore has
 a stable `goobers.telemetry.record_id` custom dimension that survives retries.
+Journal IDs are derived from instance, journal kind, journal identity and
+sequence, so they also survive reconstruction from the authoritative journal.
 Queries which count unique events should deduplicate on that value. Service and
 fleet health records expose pending record/byte counts, oldest pending age,
 retry attempts, age/byte pruning, and malformed-file losses. Spool files are
 private, atomically published, bounded, and contain the same scrubbed envelopes
 sent to Azure—not connection strings or an unsanitized copy of the journal.
+Unix files request owner-only permissions. On Windows, protection depends on
+the inherited instance-root ACL; Unix mode bits do not secure an NTFS file.
+Restrict that root to the intended service account and privileged administrators,
+and verify inherited ACLs during Windows deployment validation.
 
 The directory is relative to the configured instance root on every operating
 system. For example, an instance at `C:\goobers` uses
@@ -156,6 +273,32 @@ a persistent volume. An `emptyDir` preserves retries across a container restart
 in the same pod but loses them when the pod is replaced. Budget disk capacity
 per replica from `replay.maxBytes`; 150 instances at the default cap have a
 worst-case configured ceiling of 75 GiB, before filesystem overhead.
+
+## Emergency export-health warnings
+
+With replay enabled, each process samples export health every ten seconds.
+Warnings bypass the journal and all exporters: they go directly to stderr and
+`telemetry-export/azure-monitor/health-{journal,diagnostics,traces}.jsonl`.
+Each stream keeps at most a 1 MiB current file and one rotated `.jsonl.1` file.
+An unwritable health file falls back to stderr. These are best-effort operational
+warnings, not a new durable audit journal.
+
+Fixed causes identify unavailable accounting, a spool at 80% of its byte cap,
+pending records older than 30 seconds, growing record backlog over two sample
+intervals, and newly observed losses/export failures. Warnings repeat at most
+once per minute per process/stream; a recovery transition is emitted when the
+alert conditions clear. Recovery does not restore previously dropped records.
+Reports contain aggregate counts and admission/delivery rates, never envelope
+content, user/machine names, connection strings, paths, or raw exception text.
+
+Journal and diagnostic queue drops, failed local admission, age/byte pruning,
+and malformed files are visible. These counters can overlap and must not be
+summed into a claimed loss total. Trace SDK losses before spooling are not
+covered by the journal/diagnostic queue counters. Counters are process-local;
+pending totals are shared. Service/fleet health also includes pending file count,
+`azureReplayAccountingReady`, `azureReplayAdmissionFailures`,
+`azureReplayQueueDropped`, and `azureReplayExportFailures` for tenant-side alerts
+when transport works. During an outage, use the independent local warnings.
 
 An Application Insights connection string identifies the destination. When
 the resource permits local authentication, ingestion uses the instrumentation
@@ -203,8 +346,26 @@ messages retain the scrubbed JSON committed locally up to Application Insights'
 32 KiB message limit. Larger messages carry
 `goobers.azure_monitor.truncated=true`; the complete record remains in the local
 journal (and in native OTLP Logs when configured). Diagnostic messages use their
-stable event name. This query joins both streams by durable instance and run
-identity:
+stable event name. Both pipelines publish `goobers.instance.id` (the durable
+journal-attribution identity) and `goobers.root.id` (the separate durable
+root-lifecycle identity), when their existing identity files are readable.
+Service-health's older `instanceId` field refers to the root-lifecycle identity;
+it is **not** interchangeable with `goobers.instance.id`. Neither identity is
+created, repaired, or rotated by telemetry observation. Daemon setup publishes its
+journal-attribution identity before constructing exporters and the scheduler
+journal, so first-boot scheduler records use the same identity as later runs
+and restarts. Each resource key is omitted when its corresponding durable
+identity cannot be read by a standalone observer. Older records without these common
+resource attributes cannot safely be joined merely by coalescing the two IDs.
+
+With the diagnostic profile's explicit identity consent, Azure envelopes also
+include `host.name`. This is independent of `cloud_RoleInstance`, which can be
+an opaque process identifier rather than a machine name. Service-health's
+`machineName` and `accountName` remain consented fields; account means the
+daemon account, not necessarily the human who requested a run. Standard
+collection and the connectivity probe do not add hostname context.
+
+This query correlates both streams by durable instance and run identity:
 
 ```kusto
 traces
@@ -212,14 +373,14 @@ traces
 | where cloud_RoleName == "goobers"
 | extend stream=tostring(customDimensions["goobers.telemetry.stream"]),
          recordId=tostring(customDimensions["goobers.telemetry.record_id"]),
-         instanceId=coalesce(
-             tostring(customDimensions["goobers.instance.id"]),
-             tostring(customDimensions["instanceId"])),
+         instanceId=tostring(customDimensions["goobers.instance.id"]),
+         rootId=coalesce(tostring(customDimensions["goobers.root.id"]),
+                         tostring(customDimensions["instanceId"])),
          runId=tostring(customDimensions["goobers.run.id"]),
          gaggle=tostring(customDimensions["goobers.gaggle"])
 | where isnotempty(recordId)
 | summarize arg_max(timestamp, *) by recordId
-| project timestamp, recordId, stream, instanceId, gaggle, runId, message, customDimensions
+| project timestamp, recordId, stream, instanceId, rootId, gaggle, runId, message, customDimensions
 | order by timestamp asc
 ```
 

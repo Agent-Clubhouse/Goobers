@@ -89,7 +89,7 @@ func TestGiteaOriginDispatchCheckout(t *testing.T) {
 					}
 					ws := t.TempDir()
 					var stderr strings.Builder
-					if err := checkoutRepoWorkspace(context.Background(), ws, &stderr, nil); err != nil {
+					if err := checkoutRepoWorkspace(context.Background(), ws, &stderr, nil, ""); err != nil {
 						t.Fatalf("checkout: %v\n%s", err, stderr.String())
 					}
 					if got := os.Getenv("GOOBERS_REPO_BASE_URL"); got != baseURL {

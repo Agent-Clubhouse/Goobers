@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
@@ -91,16 +93,31 @@ func buildADOProviderForStage(routed providers.RepositoryRef, credential provide
 // scheme is never guessed from the token. A token with no scheme is sent as
 // Basic: that is the historical personal-access-token behaviour a standalone
 // invocation (GOOBERS_CRED_<cap> set by hand) relies on.
+//
+// The expiry the daemon delivered beside the token
+// (GOOBERS_CREDENTIAL_EXPIRES_<cap>, #5905) lets a 401 say whether the token
+// expired or was revoked. A missing or unreadable expiry is ignored: it only
+// sharpens that error.
 func stageADOCredentialSource(cap capability.Capability, token string) (providers.ADOCredentialSource, error) {
 	kind, err := stageADOCredentialKind()
 	if err != nil {
 		return nil, err
 	}
-	return providers.NewADODeliveredCredentialSource(kind, token, string(cap))
+	expiresAt, _ := capability.ParseCredentialExpiry(os.Getenv(capability.CredentialExpiryEnvVar(string(cap))))
+	return providers.NewADODeliveredCredentialSourceWithExpiry(kind, token, string(cap), expiresAt)
 }
 
 func stageADOCredentialKind() (string, error) {
-	scheme := strings.TrimSpace(os.Getenv(executor.RepoAuthSchemeEnvVar))
+	return adoCredentialKindForScheme(os.Getenv(executor.RepoAuthSchemeEnvVar))
+}
+
+// adoCredentialKindForScheme maps the authorization scheme the daemon stated
+// for an Azure DevOps repository credential (GOOBERS_REPO_AUTH_SCHEME for a
+// stage, the credential plane's repoAuthScheme for a pod checkout) to the
+// credential kind that sends it: "basic", or no stated scheme, is a PAT and
+// "bearer" a Microsoft Entra token.
+func adoCredentialKindForScheme(scheme string) (string, error) {
+	scheme = strings.TrimSpace(scheme)
 	switch strings.ToLower(scheme) {
 	case "", adoauth.SchemeBasic:
 		return providers.ADOCredentialKindPAT, nil
@@ -135,9 +152,36 @@ func backlogRepoRefForStage(root string, routed providers.RepositoryRef) provide
 	}
 	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
 	if err != nil || report == nil || set == nil {
+		warnStageGaggleConfigUnavailable("the backlog project override", gaggle, err)
 		return routed
 	}
 	return applyBacklogProject(set, gaggle, routed)
+}
+
+// stageGaggleConfigWarnings is where warnStageGaggleConfigUnavailable writes;
+// a var so tests can capture it.
+var stageGaggleConfigWarnings io.Writer = os.Stderr
+
+// stageGaggleConfigWarned remembers the settings already warned about, so a
+// stage that resolves the same setting many times warns once.
+var stageGaggleConfigWarned sync.Map
+
+// warnStageGaggleConfigUnavailable warns, once per process and setting, that
+// a stage names a gaggle (GOOBERS_GAGGLE) whose instance config it cannot
+// read, so setting silently falls back to its default. This is the case in a
+// brokered or Goobernetes stage pod, which carries no instance config: a
+// stricter backlog.doneStates, or a separate backlog project, is not applied
+// there.
+func warnStageGaggleConfigUnavailable(setting, gaggle string, err error) {
+	if _, warned := stageGaggleConfigWarned.LoadOrStore(setting, struct{}{}); warned {
+		return
+	}
+	reason := "no instance config here"
+	if err != nil {
+		reason = err.Error()
+	}
+	pf(stageGaggleConfigWarnings, "warning: gaggle %q config cannot be read in this stage (%s); %s is not applied and its default is used\n",
+		gaggle, reason, setting)
 }
 
 // backlogRepoRefForGaggle is the daemon-side counterpart of
@@ -271,7 +315,8 @@ func backlogOnOtherProvider(routed, backlog providers.RepositoryRef) bool {
 // same way backlogRepoRefForStage does. When the gaggle, its config or the
 // setting cannot be resolved (for example in a stage pod, which has no
 // instance config), the provider keeps its default: the Resolved, Completed
-// and Removed categories.
+// and Removed categories. When a gaggle is named but its config cannot be
+// read, the stage warns on stderr rather than falling back silently.
 func applyGaggleDoneStates(root string, provider *providers.ADOProvider) {
 	gaggle := os.Getenv(executor.GaggleEnvVar)
 	if gaggle == "" {
@@ -279,6 +324,7 @@ func applyGaggleDoneStates(root string, provider *providers.ADOProvider) {
 	}
 	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
 	if err != nil || report == nil || set == nil {
+		warnStageGaggleConfigUnavailable("backlog.doneStates", gaggle, err)
 		return
 	}
 	if states, ok := gaggleADODoneStates(set, gaggle); ok {

@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -25,9 +26,24 @@ type readinessSession struct {
 	wait        bool
 	modelCalls  int
 	probeCalls  int
+	// starting lists the startup snapshots ListMCP reports, in order, before
+	// the settled status: "pending", "pending-connection" or
+	// "host-uninitialized" (#5397).
+	starting  []string
+	listCalls int
+	// failedReason makes the host record a goobers-io connection failure
+	// whose message must never reach the annotation.
+	failedReason bool
+	// connecting keeps goobers-io in the host's in-flight connections while
+	// it is listed with status.
+	connecting bool
+	// initDeadline and listDeadline record the deadline of the context each
+	// phase received.
+	initDeadline, listDeadline time.Time
 }
 
 func (s *readinessSession) InitializeTools(ctx context.Context) error {
+	s.initDeadline, _ = ctx.Deadline()
 	if s.wait {
 		<-ctx.Done()
 		return ctx.Err()
@@ -37,12 +53,36 @@ func (s *readinessSession) InitializeTools(ctx context.Context) error {
 	}
 	return ctx.Err()
 }
-func (s *readinessSession) ListMCP(context.Context) (*rpc.MCPServerList, error) {
-	if s.status == "absent" {
-		return &rpc.MCPServerList{}, nil
+func (s *readinessSession) ListMCP(ctx context.Context) (*rpc.MCPServerList, error) {
+	s.listDeadline, _ = ctx.Deadline()
+	status := s.status
+	if s.listCalls < len(s.starting) {
+		status = s.starting[s.listCalls]
 	}
-	return &rpc.MCPServerList{Servers: []rpc.MCPServer{{Name: goobersIOServerName, Status: rpc.MCPServerStatus(s.status)}}}, nil
+	s.listCalls++
+	host := &rpc.MCPHostState{}
+	if s.failedReason {
+		host.FailedServers = map[string]rpc.MCPServerFailureInfo{goobersIOServerName: {Message: readinessFailureMessage}}
+	}
+	if s.connecting {
+		host.PendingConnections = []string{goobersIOServerName}
+	}
+	switch status {
+	case "host-uninitialized":
+		return &rpc.MCPServerList{}, nil
+	case "absent":
+		return &rpc.MCPServerList{Host: host}, nil
+	case "pending-connection":
+		host.PendingConnections = []string{goobersIOServerName}
+		return &rpc.MCPServerList{Host: host}, nil
+	}
+	return &rpc.MCPServerList{Host: host, Servers: []rpc.MCPServer{{Name: goobersIOServerName, Status: rpc.MCPServerStatus(status)}}}, nil
 }
+
+// readinessFailureMessage stands in for a server failure text that could
+// carry a credential; it must never appear in a readiness annotation.
+const readinessFailureMessage = "connect failed token=ghp_secretvalue"
+
 func (s *readinessSession) ListMCPTools(context.Context, string) (*rpc.MCPListToolsResult, error) {
 	tools := &rpc.MCPListToolsResult{}
 	for _, name := range goobersIOTools {
@@ -91,6 +131,8 @@ func TestRequiredMCPReadinessPrecedesActualAdapterModelDispatch(t *testing.T) {
 		{name: "ready", session: readinessSession{status: "connected"}, category: "ready", calls: 1},
 		{name: "legacy native authorization unobservable", session: readinessSession{status: "connected", unsupported: true}, category: "check_unobservable", calls: 1},
 		{name: "absent", session: readinessSession{status: "absent"}, category: "required_tool_unavailable", infra: true},
+		{name: "starting then connected", session: readinessSession{status: "connected", starting: []string{"host-uninitialized", "pending", "pending"}}, category: "ready", calls: 1},
+		{name: "failed", session: readinessSession{status: "failed"}, category: "required_tool_unavailable", infra: true},
 		{name: "connected unauthorized", session: readinessSession{status: "connected", denied: true}, category: "tool_authorization_failure"},
 		{name: "authentication", session: readinessSession{status: "needs-auth"}, category: "authentication_failure"},
 		{name: "missing required tool", session: readinessSession{status: "connected", missingTool: true}, category: "required_tool_unavailable", infra: true},
@@ -160,6 +202,29 @@ func TestRequiredMCPReadinessTransientRetryDoesNotSpendModelTurn(t *testing.T) {
 	}
 	if unavailable.modelCalls != 0 || available.modelCalls != 1 || len(reports) != 2 {
 		t.Fatalf("calls=%d,%d reports=%v", unavailable.modelCalls, available.modelCalls, reports)
+	}
+}
+
+// #5397: a server that never leaves startup within the probe window is a
+// bounded, retryable infrastructure failure reported before any model turn.
+func TestRequiredMCPReadinessStartupThatNeverSettlesIsBoundedInfrastructure(t *testing.T) {
+	for _, stuck := range []string{"pending", "host-uninitialized"} {
+		t.Run(stuck, func(t *testing.T) {
+			session := &readinessSession{status: stuck}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*requiredMCPSettlePoll)
+			defer cancel()
+			started := time.Now()
+			report, err := probeRequiredMCPSession(ctx, session, 0)
+			if !errors.Is(err, errRequiredMCPUnavailable) || report.Category != "required_tool_unavailable" || report.Connection != "unobservable" {
+				t.Fatalf("report=%+v error=%v", report, err)
+			}
+			if session.listCalls < 2 || session.probeCalls != 0 {
+				t.Fatalf("list calls=%d probe calls=%d; startup was not re-observed or was probed", session.listCalls, session.probeCalls)
+			}
+			if elapsed := time.Since(started); elapsed > requiredMCPProbeTimeout {
+				t.Fatalf("probe outlived its window: %s", elapsed)
+			}
+		})
 	}
 }
 
@@ -296,5 +361,130 @@ func TestRequiredMCPUnobservableAdapterReportsBeforeDispatch(t *testing.T) {
 	}}, req)
 	if _, err := runner.Run(context.Background(), ProcessRequest{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// #5397: the durable annotation says which startup sub-state a check ended in
+// without carrying the host's failure message.
+func TestRequiredMCPReadinessAnnotationCarriesScrubbedDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		session  readinessSession
+		observed string
+		polls    int
+		failed   bool
+	}{
+		{name: "ready", session: readinessSession{status: "connected"}, observed: "connected", polls: 1},
+		{name: "settled after startup", session: readinessSession{status: "connected", starting: []string{"host-uninitialized", "pending-connection", "pending"}}, observed: "connected", polls: 4},
+		{name: "failed with recorded reason", session: readinessSession{status: "failed", failedReason: true}, observed: "failed", polls: 1, failed: true},
+		{name: "absent from initialized host", session: readinessSession{status: "absent"}, observed: "absent", polls: 1},
+		{name: "unrecognized status", session: readinessSession{status: "private-status token=secret"}, observed: "unknown", polls: 1},
+		{name: "transport before listing", session: readinessSession{transport: true}, observed: "unobserved"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &fakeRecorder{}
+			adapter := &CopilotAdapter{Command: []string{"copilot"}, SelfBin: "/test/goobers", Runner: &fakeProcessRunner{},
+				mcpSessionFactory: func(context.Context, ProcessRequest, *copilotControlledRunner) (copilotModelSession, error) {
+					return &tc.session, nil
+				}}
+			executor, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), rec, rec, rec, journal.NewPatternScrubber(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = executor.Invoke(context.Background(), testEnvelope(t.TempDir()))
+			var annotation map[string]any
+			for _, event := range rec.events {
+				if event.Runner["kind"] == "required-mcp-readiness" {
+					annotation = event.Runner
+				}
+			}
+			if annotation == nil {
+				t.Fatal("missing durable readiness report")
+			}
+			if annotation["schemaVersion"] != RequiredMCPReadinessSchemaVersion || annotation["observedStatus"] != tc.observed ||
+				annotation["polls"] != tc.polls || annotation["failedReasonPresent"] != tc.failed {
+				t.Fatalf("annotation=%+v", annotation)
+			}
+			if elapsed, ok := annotation["elapsedMs"].(int64); !ok || elapsed < 0 {
+				t.Fatalf("elapsedMs=%#v", annotation["elapsedMs"])
+			}
+			encoded, err := json.Marshal(annotation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "connect failed") {
+				t.Fatalf("annotation leaked server detail: %s", encoded)
+			}
+		})
+	}
+}
+
+// #5397: a goobers-io connection still in flight on the MCP host is startup,
+// not a settled failure, whether or not the server is listed yet.
+func TestRequiredMCPPendingConnectionIsStarting(t *testing.T) {
+	connecting := &rpc.MCPHostState{PendingConnections: []string{goobersIOServerName}}
+	listed := func(status rpc.MCPServerStatus, host *rpc.MCPHostState) *rpc.MCPServerList {
+		return &rpc.MCPServerList{Host: host, Servers: []rpc.MCPServer{{Name: goobersIOServerName, Status: status}}}
+	}
+	for name, tc := range map[string]struct {
+		servers  *rpc.MCPServerList
+		starting bool
+	}{
+		"unlisted, connection in flight":   {servers: &rpc.MCPServerList{Host: connecting}, starting: true},
+		"failed, reconnection in flight":   {servers: listed(rpc.MCPServerStatusFailed, connecting), starting: true},
+		"connected, stale in-flight entry": {servers: listed(rpc.MCPServerStatusConnected, connecting)},
+		"unlisted, other server in flight": {servers: &rpc.MCPServerList{Host: &rpc.MCPHostState{PendingConnections: []string{"other"}}}},
+		"failed, no connection in flight":  {servers: listed(rpc.MCPServerStatusFailed, &rpc.MCPHostState{})},
+		"pending without host state":       {servers: listed(rpc.MCPServerStatusPending, nil), starting: true},
+		"host uninitialized":               {servers: &rpc.MCPServerList{}, starting: true},
+		"no list":                          {},
+	} {
+		if got := requiredMCPStarting(tc.servers); got != tc.starting {
+			t.Errorf("%s: starting=%v want %v", name, got, tc.starting)
+		}
+	}
+	session := &readinessSession{status: "connected", starting: []string{"pending-connection", "pending-connection"}}
+	report, err := probeRequiredMCPSession(context.Background(), session, 0)
+	if err != nil || report.Category != "ready" || report.Polls != 3 || report.ObservedStatus != "connected" {
+		t.Fatalf("report=%+v error=%v", report, err)
+	}
+	stuck := &readinessSession{status: "pending-connection"}
+	report, err = probeRequiredMCPSession(context.Background(), stuck, 3*requiredMCPSettlePoll)
+	if !errors.Is(err, errRequiredMCPUnavailable) || report.Category != "required_tool_unavailable" || report.ObservedStatus != "pending-connection" || report.Polls < 2 {
+		t.Fatalf("report=%+v error=%v", report, err)
+	}
+}
+
+// #5397: the settle wait has its own budget. InitializeTools keeps its bounded
+// phase, the configured budget ends a startup that never settles with the
+// unchanged error class, and zero or negative values select the default.
+func TestRequiredMCPSettleBudgetIsSeparateAndBounded(t *testing.T) {
+	if requiredMCPSettleBudget(0) != DefaultRequiredMCPSettleTimeout || requiredMCPSettleBudget(-time.Second) != DefaultRequiredMCPSettleTimeout || requiredMCPSettleBudget(time.Minute) != time.Minute {
+		t.Fatal("settle budget resolution")
+	}
+	if DefaultRequiredMCPSettleTimeout <= requiredMCPProbeTimeout {
+		t.Fatalf("default settle budget %s must exceed the %s phase cap", DefaultRequiredMCPSettleTimeout, requiredMCPProbeTimeout)
+	}
+	session := &readinessSession{status: "connected"}
+	if _, err := probeRequiredMCPSession(context.Background(), session, 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if session.initDeadline.IsZero() || session.listDeadline.IsZero() || session.listDeadline.Sub(session.initDeadline) < time.Hour {
+		t.Fatalf("settle wait shares the initialization deadline: init=%s list=%s", session.initDeadline, session.listDeadline)
+	}
+	for _, stuck := range []string{"pending", "host-uninitialized"} {
+		session := &readinessSession{status: stuck}
+		report, err := probeRequiredMCPSession(context.Background(), session, 3*requiredMCPSettlePoll)
+		if !errors.Is(err, errRequiredMCPUnavailable) || report.Category != "required_tool_unavailable" || session.probeCalls != 0 || report.Polls < 2 || report.Polls != session.listCalls {
+			t.Fatalf("%s: report=%+v calls=%d error=%v", stuck, report, session.listCalls, err)
+		}
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, RequiredMCPSettleTimeout: time.Minute, mcpSessionFactory: func(context.Context, ProcessRequest, *copilotControlledRunner) (copilotModelSession, error) {
+		return session, nil
+	}}
+	runner, closeRunner := adapter.prepareRequiredMCPRunner(RunRequest{GoobersIORegistered: true}, 1, "", "", nil, nil)
+	defer closeRunner()
+	if controlled, ok := runner.(*copilotControlledRunner); !ok || controlled.settleTimeout != time.Minute {
+		t.Fatalf("adapter settle budget not carried to the session runner: %#v", runner)
 	}
 }

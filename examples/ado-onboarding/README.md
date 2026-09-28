@@ -25,8 +25,10 @@ With `--provider=ado` (or an ADO `--repo`), `init` writes:
 - **Authentication.** The repository uses `azure-cli` by default, so no PAT or
   token variable is needed on a developer machine signed in with `az login`.
   `--repo-auth-kind` also accepts `workload-identity`, `managed-identity` and
-  `pat`; only `pat` records a token variable (`GOOBERS_ADO_TOKEN`). The
-  scaffold adds no `envPassthrough`.
+  `pat`; only `pat` records a token variable (`GOOBERS_ADO_TOKEN`).
+  `--repo-token-env=NAME` without `--repo-auth-kind` selects `pat` reading
+  `NAME`; with any other kind it is refused. The scaffold adds no
+  `envPassthrough`.
 - **Instructions.** The curator gets Azure Boards instructions: labels are
   work-item tags, dependencies are Predecessor links, and iterations are not
   managed (`set-milestone` is not used on ADO).

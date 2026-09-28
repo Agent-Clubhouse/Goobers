@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -134,6 +135,9 @@ func TestADOListWorkItemLabelTransitionsForItemFailsClosedAtRevisionCap(t *testi
 	if err == nil || !strings.Contains(err.Error(), "revision cap") {
 		t.Fatalf("ListWorkItemLabelTransitionsForItem = %+v, %v; want a revision-cap error", got, err)
 	}
+	if !errors.Is(err, ErrLabelHistoryIncomplete) {
+		t.Fatalf("revision-cap error = %v, want it to wrap ErrLabelHistoryIncomplete so a claim stage can skip the item", err)
+	}
 }
 
 // TestADOListWorkItemLabelTransitionsForItemRequiresChangedDate pins that a
@@ -148,9 +152,12 @@ func TestADOListWorkItemLabelTransitionsForItemRequiresChangedDate(t *testing.T)
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
-	if _, err := provider.ListWorkItemLabelTransitionsForItem(context.Background(),
-		RepositoryRef{Name: "repo", Project: "project"}, "42", LabelReady); err == nil ||
-		!strings.Contains(err.Error(), "System.ChangedDate") {
+	_, err := provider.ListWorkItemLabelTransitionsForItem(context.Background(),
+		RepositoryRef{Name: "repo", Project: "project"}, "42", LabelReady)
+	if err == nil || !strings.Contains(err.Error(), "System.ChangedDate") {
 		t.Fatalf("ListWorkItemLabelTransitionsForItem error = %v, want a missing System.ChangedDate error", err)
+	}
+	if !errors.Is(err, ErrLabelHistoryIncomplete) {
+		t.Fatalf("missing-ChangedDate error = %v, want it to wrap ErrLabelHistoryIncomplete", err)
 	}
 }

@@ -9,8 +9,8 @@ goobers preflight-repo-write \- check whether the configured credential can push
 Usage: goobers preflight-repo-write [path]
 
 Check, without mutating any repository state, whether the configured
-repository credential can push this run's branch namespace. Reads two
-provider endpoints (repository permissions, branch ruleset policy) and
+repository credential can push this run's branch namespace. Reads repository
+roles and branch rules, with Git push-service discovery when needed, and
 reports one of four distinct outcomes: unreachable/unauthorized,
 authenticated without push permission, a branch ruleset denying the
 namespace, or ruleset introspection unavailable for this credential —

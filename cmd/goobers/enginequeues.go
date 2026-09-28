@@ -30,6 +30,7 @@ import (
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 const engineQueuesHelp = "Usage: goobers engine-queues [flags] [path]\n\n" +
@@ -130,7 +131,12 @@ func runEngineQueues(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	c, err := dialEngineQueues(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
+	opts, err := temporaldial.Options(*hostPort, *namespace, engineConfig.TLS)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	c, err := dialEngineQueues(ctx, opts)
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
 		return 1

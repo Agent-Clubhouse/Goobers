@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -577,15 +578,37 @@ func (p *GitHubProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWork
 	return releaseRESTWorkItemClaim(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
 }
 
-// ReconcileOrphanedWorkItemClaim closes any historical provider claim epoch,
-// removes the requested drifted labels, and records why the ledger-authoritative
-// reconciliation changed the issue.
+// ErrClaimEpochNotOwned reports that ReconcileOrphanedWorkItemClaim found an
+// open provider claim epoch other than the one its caller established as its
+// own, and so changed nothing (#5311).
+var ErrClaimEpochNotOwned = errors.New("provider claim epoch is not owned by this reconciliation")
+
+// OpenClaimEpochs lists the issue's open provider claim epochs, including the
+// ones authored by identities the claim election does not trust.
+func (p *GitHubProvider) OpenClaimEpochs(ctx context.Context, repo RepositoryRef, id string) ([]ClaimEpoch, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, errIssueIDRequired
+	}
+	return openClaimEpochs(ctx, p, p.BaseURL, repo, id)
+}
+
+// ReconcileOrphanedWorkItemClaim closes the historical provider claim epoch
+// ownedRunID, removes the requested drifted labels, and records why the
+// ledger-authoritative reconciliation changed the issue. ownedRunID is the
+// trusted epoch the caller established this instance owns; empty asserts that
+// no epoch is open. Any other open epoch, trusted or not, may be a live claim
+// of another instance, so the call then returns ErrClaimEpochNotOwned without
+// writing anything (#5311).
 func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 	ctx context.Context,
 	repo RepositoryRef,
 	id string,
 	removeLabels []string,
 	comment string,
+	ownedRunID string,
 ) (WorkItem, error) {
 	if err := requireOwnerRepo(repo); err != nil {
 		return WorkItem{}, err
@@ -607,7 +630,7 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 		removeLabels = append(removeLabels, LabelClaimed)
 	}
 
-	winner, claimed, err := claimWinner(ctx, p, p.BaseURL, repo, id)
+	winner, claimed, err := ownedOrphanedClaimEpoch(ctx, p, repo, id, ownedRunID)
 	if err != nil {
 		return WorkItem{}, err
 	}
@@ -643,6 +666,27 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 		},
 	})
 	return final, nil
+}
+
+// ownedOrphanedClaimEpoch re-reads the open epochs at mutation time and
+// returns the trusted winner to release, refusing when any open epoch is not
+// ownedRunID. An epoch ownedRunID that has closed in the meantime is fine:
+// with nothing open, the label is plain drift.
+func ownedOrphanedClaimEpoch(ctx context.Context, p *GitHubProvider, repo RepositoryRef, id, ownedRunID string) (string, bool, error) {
+	epochs, err := openClaimEpochs(ctx, p, p.BaseURL, repo, id)
+	if err != nil {
+		return "", false, err
+	}
+	for _, epoch := range epochs {
+		if !epoch.Trusted || epoch.RunID != ownedRunID {
+			return "", false, fmt.Errorf("%w: issue #%s has an open claim by run %q (author %q, instance %q)",
+				ErrClaimEpochNotOwned, id, epoch.RunID, epoch.Author, epoch.InstanceID)
+		}
+	}
+	if len(epochs) == 0 {
+		return "", false, nil
+	}
+	return ownedRunID, true, nil
 }
 
 // restoreOwnedClaimLabel repairs a stripped marker for an existing epoch owner.

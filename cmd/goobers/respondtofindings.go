@@ -158,14 +158,14 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, err := remediationStageProviderWithRecorder(root, repo, token, false, sidecarMutationRecorder{kind: "pr"})
+	channel, err := newRemediationResponseChannel(root, repo, token)
 	if err != nil {
 		pf(stderr, "error: construct remediation provider: %v\n", err)
 		return 1
 	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	if err := reconcileRemediationResponseComment(ctx, provider, repo, selectedNumber, runID, comment); err != nil {
+	if err := reconcileRemediationResponseComment(ctx, channel, selectedNumber, runID, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post remediation response to PR #%d", selectedNumber), err, remediationResponseArtifactName)
 	}
 	result.Posted = true
@@ -491,61 +491,168 @@ func dispositionLabel(disposition string) string {
 	return "Addressed"
 }
 
+// remediationResponseChannel is where respond-to-findings keeps its one
+// run-scoped comment on a pull request: the PR conversation (issue comments)
+// on GitHub and Gitea, a pull-request thread on Azure DevOps.
+type remediationResponseChannel interface {
+	// authoredBySelf resolves the stage's own identity and reports whether a
+	// comment was written by it.
+	authoredBySelf(ctx context.Context) (func(providers.Comment) bool, error)
+	list(ctx context.Context, pullID string) ([]providers.Comment, error)
+	create(ctx context.Context, pullID, body string) error
+	update(ctx context.Context, commentID, body string) error
+	remove(ctx context.Context, commentID string) error
+}
+
+// newRemediationResponseChannel builds the channel from the stage's declared
+// github:issues:write credential, the capability respond-to-findings has
+// always declared for its pull-request comment. GitHub and Gitea use the broad
+// remediation factory as before; Azure DevOps, whose *ADOProvider does not
+// implement it, builds the narrow thread surface through
+// remediationStageSurface. Both record their mutations as kind "pr".
+func newRemediationResponseChannel(root string, repo providers.RepositoryRef, token string) (remediationResponseChannel, error) {
+	recorder := sidecarMutationRecorder{kind: "pr"}
+	if repo.Provider == providers.ProviderADO {
+		provider, err := remediationStageSurface[adoRemediationResponseThreads](root, repo, token,
+			withStageProviderCapability(capability.GitHubIssuesWrite), withStageProviderMutationRecorder(recorder))
+		if err != nil {
+			return nil, err
+		}
+		return threadRemediationResponseChannel{provider: provider, repo: repo}, nil
+	}
+	provider, err := remediationStageProviderWithRecorder(root, repo, token, false, recorder)
+	if err != nil {
+		return nil, err
+	}
+	return issueCommentRemediationResponseChannel{provider: provider, repo: repo}, nil
+}
+
+type issueCommentRemediationResponseChannel struct {
+	provider remediationProvider
+	repo     providers.RepositoryRef
+}
+
+func (c issueCommentRemediationResponseChannel) authoredBySelf(ctx context.Context) (func(providers.Comment) bool, error) {
+	author, err := c.provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func(comment providers.Comment) bool { return strings.EqualFold(comment.Author, author) }, nil
+}
+
+func (c issueCommentRemediationResponseChannel) list(ctx context.Context, pullID string) ([]providers.Comment, error) {
+	return c.provider.ListComments(ctx, c.repo, pullID)
+}
+
+func (c issueCommentRemediationResponseChannel) create(ctx context.Context, pullID, body string) error {
+	_, err := c.provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{Repository: c.repo, ID: pullID, Comment: body})
+	return err
+}
+
+func (c issueCommentRemediationResponseChannel) update(ctx context.Context, commentID, body string) error {
+	return c.provider.UpdateComment(ctx, c.repo, commentID, body)
+}
+
+func (c issueCommentRemediationResponseChannel) remove(ctx context.Context, commentID string) error {
+	return c.provider.DeleteComment(ctx, c.repo, commentID)
+}
+
+// adoRemediationResponseThreads is the Azure DevOps pull-request thread
+// surface respond-to-findings needs. Its comment is posted as a closed
+// (informational) thread, so it never trips a comment-resolution policy.
+type adoRemediationResponseThreads interface {
+	adoIdentityReader
+	ListPullRequestThreadComments(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.Comment, error)
+	PostPullRequestThreadComment(ctx context.Context, repo providers.RepositoryRef, pullID, body string) (providers.Comment, error)
+	UpdatePullRequestThreadComment(ctx context.Context, repo providers.RepositoryRef, commentID, body string) error
+	DeletePullRequestThreadComment(ctx context.Context, repo providers.RepositoryRef, commentID string) error
+}
+
+type threadRemediationResponseChannel struct {
+	provider adoRemediationResponseThreads
+	repo     providers.RepositoryRef
+}
+
+// authoredBySelf matches by identity GUID (ADO-N5): display names are not
+// unique on Azure DevOps.
+func (c threadRemediationResponseChannel) authoredBySelf(ctx context.Context) (func(providers.Comment) bool, error) {
+	self, err := c.provider.AuthenticatedIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func(comment providers.Comment) bool { return adoCommentAuthoredBy(comment, self) }, nil
+}
+
+func (c threadRemediationResponseChannel) list(ctx context.Context, pullID string) ([]providers.Comment, error) {
+	return c.provider.ListPullRequestThreadComments(ctx, c.repo, pullID)
+}
+
+func (c threadRemediationResponseChannel) create(ctx context.Context, pullID, body string) error {
+	_, err := c.provider.PostPullRequestThreadComment(ctx, c.repo, pullID, body)
+	return err
+}
+
+func (c threadRemediationResponseChannel) update(ctx context.Context, commentID, body string) error {
+	return c.provider.UpdatePullRequestThreadComment(ctx, c.repo, commentID, body)
+}
+
+func (c threadRemediationResponseChannel) remove(ctx context.Context, commentID string) error {
+	return c.provider.DeletePullRequestThreadComment(ctx, c.repo, commentID)
+}
+
 func reconcileRemediationResponseComment(
 	ctx context.Context,
-	provider remediationProvider,
-	repo providers.RepositoryRef,
+	channel remediationResponseChannel,
 	prNumber int,
 	runID, body string,
 ) error {
-	author, err := provider.AuthenticatedLogin(ctx)
+	authoredBySelf, err := channel.authoredBySelf(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve remediation response author: %w", err)
 	}
 	id := strconv.Itoa(prNumber)
-	comments, err := provider.ListComments(ctx, repo, id)
+	comments, err := channel.list(ctx, id)
 	if err != nil {
 		return fmt.Errorf("list remediation response comments: %w", err)
 	}
-	matches := remediationResponseComments(comments, author, runID)
+	matches := remediationResponseComments(comments, authoredBySelf, runID)
 	if len(matches) == 0 {
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo,
-			ID:         id,
-			Comment:    body,
-		}); err != nil {
+		if err := channel.create(ctx, id, body); err != nil {
 			return fmt.Errorf("create remediation response comment: %w", err)
 		}
-	} else if err := provider.UpdateComment(ctx, repo, matches[0].ID, body); err != nil {
+	} else if err := channel.update(ctx, matches[0].ID, body); err != nil {
 		return fmt.Errorf("update remediation response comment: %w", err)
 	}
 
-	comments, err = provider.ListComments(ctx, repo, id)
+	comments, err = channel.list(ctx, id)
 	if err != nil {
 		return fmt.Errorf("relist remediation response comments: %w", err)
 	}
-	matches = remediationResponseComments(comments, author, runID)
+	matches = remediationResponseComments(comments, authoredBySelf, runID)
 	if len(matches) == 0 {
 		return fmt.Errorf("remediation response comment disappeared during reconciliation")
 	}
-	if matches[0].Body != body {
-		if err := provider.UpdateComment(ctx, repo, matches[0].ID, body); err != nil {
+	// The stored body carries the provider's attribution footer whenever the
+	// stage runs with attribution, so only the text this stage wrote decides
+	// whether the canonical comment still needs an update.
+	if providers.StripAttribution(matches[0].Body) != strings.TrimSpace(body) {
+		if err := channel.update(ctx, matches[0].ID, body); err != nil {
 			return fmt.Errorf("update canonical remediation response comment: %w", err)
 		}
 	}
 	for _, duplicate := range matches[1:] {
-		if err := provider.DeleteComment(ctx, repo, duplicate.ID); err != nil {
+		if err := channel.remove(ctx, duplicate.ID); err != nil {
 			return fmt.Errorf("delete duplicate remediation response comment %s: %w", duplicate.ID, err)
 		}
 	}
 	return nil
 }
 
-func remediationResponseComments(comments []providers.Comment, author, runID string) []providers.Comment {
+func remediationResponseComments(comments []providers.Comment, authoredBySelf func(providers.Comment) bool, runID string) []providers.Comment {
 	marker := remediationResponseMarker(runID)
 	var matches []providers.Comment
 	for _, comment := range comments {
-		if strings.EqualFold(comment.Author, author) &&
+		if authoredBySelf(comment) &&
 			(comment.Body == marker || strings.HasPrefix(comment.Body, marker+"\n")) {
 			matches = append(matches, comment)
 		}

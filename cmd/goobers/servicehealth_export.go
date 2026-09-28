@@ -68,6 +68,7 @@ func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *
 		ServiceVersion: version.Get().Version, BuildCommit: version.Get().Commit,
 		Scrubber: journal.Chain(setup.SharedRegistry, journal.NewPatternScrubber()),
 	}
+	_, cfg.ResourceAttributes = telemetryInstanceIdentities(root)
 	if otlp.Enabled() {
 		if err := configureOTLP(ctx, &cfg, otlp, setup.SharedRegistry, stores); err != nil {
 			return nil, err
@@ -156,6 +157,11 @@ func addAzureReplayHealth(record *telemetry.DiagnosticRecord, root string) {
 	pending := telemetry.InspectAzureReplayRoot(filepath.Join(root, "telemetry-export", "azure-monitor"))
 	record.Attributes["azureReplayPendingRecords"] = pending.PendingRecords
 	record.Attributes["azureReplayPendingBytes"] = pending.PendingBytes
+	record.Attributes["azureReplayPendingFiles"] = pending.PendingFiles
+	record.Attributes["azureReplayAccountingReady"] = pending.AccountingReady
+	record.Attributes["azureReplayAdmissionFailures"] = int64(min(pending.AdmissionFailures, uint64(math.MaxInt64)))
+	record.Attributes["azureReplayQueueDropped"] = int64(min(pending.QueueDropped, uint64(math.MaxInt64)))
+	record.Attributes["azureReplayExportFailures"] = int64(min(pending.ExportFailures, uint64(math.MaxInt64)))
 	record.Attributes["azureReplayOldestPendingSeconds"] = int64(pending.OldestPendingAge.Seconds())
 	record.Attributes["azureReplayAccepted"] = int64(min(pending.Accepted, uint64(math.MaxInt64)))
 	record.Attributes["azureReplayDelivered"] = int64(min(pending.Delivered, uint64(math.MaxInt64)))

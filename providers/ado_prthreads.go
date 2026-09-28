@@ -36,6 +36,10 @@ const adoPRThreadCommentType = "text"
 // no PR-comment transport otherwise, so this is the keystone of the ADO
 // remediation handoff.
 //
+// The thread is opened with status "closed", not "active": an active thread
+// would count against a comment-resolution branch policy and hold the pull
+// request until someone resolved Goobers' own bookkeeping comment.
+//
 // The returned Comment.ID is the composite "<pullID>/<threadId>/<commentId>" so
 // UpdatePullRequestThreadComment can address the exact comment later with no
 // extra state — the ADO update endpoint needs all three, unlike GitHub's
@@ -144,6 +148,29 @@ func (p *ADOProvider) UpdatePullRequestThreadComment(ctx context.Context, repo R
 		return err
 	}
 	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"content": body}, nil); err != nil {
+		return err
+	}
+	p.recordMutation(ctx, "pr", pullID, "comment", repo)
+	return nil
+}
+
+// DeletePullRequestThreadComment deletes one pull-request thread comment — the
+// ADO analog of GitHub's DeleteComment, used to drop a duplicate of a
+// run-scoped comment a retry posted. commentID is the composite
+// "<pullID>/<threadId>/<commentId>" a prior Post/List returned.
+func (p *ADOProvider) DeletePullRequestThreadComment(ctx context.Context, repo RepositoryRef, commentID string) error {
+	if err := requireRepo(repo); err != nil {
+		return err
+	}
+	pullID, threadID, cID, err := parseADOThreadCommentID(commentID)
+	if err != nil {
+		return err
+	}
+	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads", threadID, "comments", cID)
+	if err != nil {
+		return err
+	}
+	if err := p.do(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
 		return err
 	}
 	p.recordMutation(ctx, "pr", pullID, "comment", repo)

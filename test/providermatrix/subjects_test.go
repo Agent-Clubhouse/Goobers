@@ -98,7 +98,8 @@ func setProviderShape(project, backlog map[string]any, provider apiv1.Provider) 
 // scaffoldVariant is one shape of `goobers init --template=standard`: every
 // guided workflow module, with pull-request CI or with a local CI command.
 // work-nomination is GitHub-only: init refuses it on Azure DevOps, so the ADO
-// scaffold is built without it.
+// scaffold is built without it. Guided merge-review is Azure DevOps-only:
+// init refuses it on GitHub, so the GitHub scaffold is built without it.
 type scaffoldVariant struct {
 	name      string
 	workflows []string
@@ -129,12 +130,11 @@ var scaffoldVariants = []scaffoldVariant{
 // scaffoldWorkflows is variant's module set as init accepts it on provider.
 func scaffoldWorkflows(provider apiv1.Provider, variant scaffoldVariant) []string {
 	workflows := append([]string(nil), variant.workflows...)
+	refused := instance.GuidedWorkflowMergeReview
 	if provider == apiv1.ProviderADO {
-		workflows = slices.DeleteFunc(workflows, func(name string) bool {
-			return name == instance.GuidedWorkflowWorkNomination
-		})
+		refused = instance.GuidedWorkflowWorkNomination
 	}
-	return workflows
+	return slices.DeleteFunc(workflows, func(name string) bool { return name == refused })
 }
 
 // scaffoldSubject seeds the standard scaffold natively for GitHub and ADO

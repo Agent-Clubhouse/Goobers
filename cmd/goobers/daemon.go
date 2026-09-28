@@ -290,6 +290,14 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, err
 	}
 	claimProviders := claimProvidersByGaggle(set)
+	// This daemon owns identity creation (workers and telemetry observers do
+	// not). Publish it before any exporter or scheduler journal captures its
+	// identity: creating it later in runner construction left first-boot
+	// scheduler records unidentified until restart and changed their replay
+	// identity inputs across those lifetimes.
+	if _, err := l.EnsureIdentity(ctx); err != nil {
+		return nil, fmt.Errorf("initialize daemon instance identity: %w", err)
+	}
 
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
 	// #129). tel/rollupDB stay nil in that case — every downstream use
@@ -1193,11 +1201,7 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		owner += "/" + project.Project
 	}
-	caps := make([]string, len(credentialedCapabilities))
-	for i, capability := range credentialedCapabilities {
-		caps[i] = string(capability)
-	}
-	grants := credentials.RunnerGrants(bindings, owner, project.Name, role, caps, overrides)
+	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, owner, project.Name, role, repoCredentialedCapabilityNames(), overrides))
 	envByCapability := make(map[string]string, len(grants))
 	for _, grant := range grants {
 		if env := envByRef[grant.Ref]; env != "" {
