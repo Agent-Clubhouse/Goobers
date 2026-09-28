@@ -394,7 +394,9 @@ Contract rules:
   agentic gate may override `maxRepasses`. The value bounds cumulative
   re-entries to a branch's target stage across all gates that route back to
   that stage; a pass at one gate does not reset that target's live budget.
-  Separate target stages can therefore have independent budgets. Stall
+  Only non-pass outcomes are charged: a `pass` branch into an already-completed
+  stage is a forward step, so each repair loop is bounded by the failure that
+  sent it back rather than by the passing validation that follows. Separate target stages can therefore have independent budgets. Stall
   detection does not have a task-level override: task/gate `timeoutSeconds`
   and retry policies already own per-attempt execution bounds, while the stall
   watchdog protects the run journal as a whole.
