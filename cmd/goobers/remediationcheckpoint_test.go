@@ -729,7 +729,7 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 		t.Fatalf("no-cause state = %+v, ok=%v, want cycle and digest with unchanged counters", state, ok)
 	}
 
-	t.Setenv("GOOBERS_RUN_ID", "run-364-repeat")
+	t.Setenv("GOOBERS_RUN_ID", "run-364-next") // a later remediation attempt is a new run (#6008)
 	code, stdout, stderr = runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {
 		t.Fatalf("repeat: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
@@ -1157,12 +1157,10 @@ func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
 		t.Fatalf("first cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
-	// Second cycle: the next remediation attempt (its own run) finds no new
-	// commits landed since — the diff is identical — so this must escalate
-	// even though the (default, liberal) budget is nowhere near exhausting its
-	// cause budget. A retry under the first cycle's run would instead
-	// re-derive that cycle (#6008).
-	t.Setenv("GOOBERS_RUN_ID", "run-364-second")
+	t.Setenv("GOOBERS_RUN_ID", "run-364-next") // a later remediation attempt is a new run (#6008)
+	// Second cycle: no new commits landed since — the diff is identical —
+	// so this must escalate even though the (default, liberal) budget is
+	// nowhere near exhausting its cause budget.
 	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {
 		t.Fatalf("second cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
@@ -1617,7 +1615,7 @@ func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.
 	if code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
 		t.Fatalf("first cycle: code = %d, stderr = %q", code, stderr)
 	}
-	t.Setenv("GOOBERS_RUN_ID", "run-364-second")
+	t.Setenv("GOOBERS_RUN_ID", "run-364-next") // a later remediation attempt is a new run (#6008)
 	if code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
 		t.Fatalf("second cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}

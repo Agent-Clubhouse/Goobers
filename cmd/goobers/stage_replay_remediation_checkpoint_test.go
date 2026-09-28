@@ -16,11 +16,11 @@ const replayRemediationCheckpointReviewerComment = "Please keep the empty-input 
 // stored with the attribution footer; run 2 must find that attributed comment
 // by its embedded payload and edit it in place rather than posting another.
 //
-// The diff does not change between the runs, but both run under the same run
-// ID at the same pushed head, so run 2 reads run 1's state back as this
-// attempt's own write rather than a previous cycle: it re-records cycle 1
-// and does not park the PR as a same-diff stall (#6008). The stall across
-// distinct attempts is TestRemediationCheckpointEscalatesOnSameDiff's.
+// The diff does not change between the runs, and run 2 is a retry of the
+// same run at the same head: it recognises run 1's record as its own earlier
+// write and reproduces it (#6008) instead of parking the PR as a same-diff
+// stall, which is reserved for a repeat across remediation attempts
+// (TestRemediationCheckpointEscalatesOnSameDiff).
 func replayRemediationCheckpointGitHub(t *testing.T) replayFixture {
 	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
 	st := &remediationCheckpointServerState{

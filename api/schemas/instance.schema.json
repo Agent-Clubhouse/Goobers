@@ -295,7 +295,7 @@
         },
         "name": { "type": "string", "minLength": 1, "description": "Repository name — the last segment of the identity." },
         "token": {
-          "description": "Where this repository's credential is read from. Required for PAT auth on every provider. It must be ABSENT for an auth kind that mints or borrows an identity (github-app, azure-cli, workload-identity, managed-identity): exactly one identity mechanism per repository, since a token alongside a minted one could only act as a silent fallback.",
+          "description": "Where this repository's credential is read from. Required for PAT auth and externally minted github-app-token auth. It must be ABSENT for an auth kind that mints or borrows an identity (github-app, azure-cli, workload-identity, managed-identity): exactly one identity mechanism per repository, since a token alongside a minted one could only act as a silent fallback.",
           "$ref": "#/$defs/tokenRef"
         },
         "auth": {
@@ -336,19 +336,32 @@
         {
           "if": { "properties": { "provider": { "const": "gitea" } }, "required": ["provider"] },
           "then": { "required": ["baseUrl"] }
+        },
+        {
+          "if": {
+            "required": ["auth"],
+            "properties": { "auth": { "required": ["kind"], "properties": { "kind": { "const": "github-app-token", "description": "Selects an externally minted GitHub App installation token." } } } }
+          },
+          "then": {
+            "required": ["token"],
+            "properties": {
+              "provider": { "const": "github" },
+              "token": { "not": { "required": ["githubCLI"] } }
+            }
+          }
         }
       ]
     },
     "repoAuth": {
-      "description": "Credential SOURCE selector for one repository — never credential material. Kind values are provider-specific: github accepts pat and github-app; ado accepts pat, azure-cli, workload-identity, and managed-identity; gitea accepts no auth block at all (static token only). Fields belonging to another provider's kinds are rejected at load rather than ignored.",
+      "description": "Credential SOURCE selector for one repository — never credential material. Kind values are provider-specific: github accepts pat, github-app and github-app-token; ado accepts pat, azure-cli, workload-identity, and managed-identity; gitea accepts no auth block at all (static token only). Fields belonging to another provider's kinds are rejected at load rather than ignored.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind"],
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["pat", "github-app", "azure-cli", "workload-identity", "managed-identity"],
-          "description": "Identity mechanism: `pat` reads the static token ref; `github-app` mints short-lived installation tokens (GitHub); `azure-cli` borrows the current local az login, `workload-identity` uses federated Azure workload identity, and `managed-identity` uses an Azure managed identity (all Azure DevOps). Every kind except `pat` forbids a token ref on the same repository."
+          "enum": ["pat", "github-app", "github-app-token", "azure-cli", "workload-identity", "managed-identity"],
+          "description": "Identity mechanism: `pat` reads the static token ref; `github-app-token` reads an externally minted installation token and requires its App slug; `github-app` mints short-lived installation tokens (GitHub); `azure-cli` borrows the current local az login, `workload-identity` uses federated Azure workload identity, and `managed-identity` uses an Azure managed identity (all Azure DevOps). Only `pat` and `github-app-token` accept a token ref on the same repository."
         },
         "tenant": { "type": "string", "minLength": 1, "description": "Pins Azure CLI authentication to one tenant. Azure DevOps only." },
         "clientId": { "type": "string", "minLength": 1, "description": "Selects a user-assigned identity. Valid with kind `workload-identity` or `managed-identity`; for workload identity it overrides the ambient AZURE_CLIENT_ID while reusing the projected federated token." },
@@ -366,13 +379,24 @@
         },
         "slug": {
           "type": "string",
-          "description": "The App's URL-safe handle (the part before `[bot]` in its GitHub login), for kind `github-app`. Installation tokens cannot call GET /user, so the identity behind trusted-comment checks — claim markers, verdicts, handoffs — must be declared here; without it those checks fail with `Resource not accessible by integration` the first time they run under App auth (#3343)."
+          "description": "The App's URL-safe handle (the part before `[bot]` in its GitHub login), for `github-app` or `github-app-token`. Required for `github-app-token`: the external issuer must bind this declared identity to the supplied token. Installation tokens cannot call GET /user, so trusted-comment checks use this declared identity (#3343)."
         }
       },
       "allOf": [
         {
           "if": { "properties": { "kind": { "const": "github-app" } }, "required": ["kind"] },
           "then": { "required": ["appId", "installationId", "privateKey"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "github-app-token" } }, "required": ["kind"] },
+          "then": {
+            "required": ["slug"],
+            "properties": {
+              "slug": { "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$" },
+              "appId": false, "installationId": false, "privateKey": false,
+              "tenant": false, "clientId": false
+            }
+          }
         }
       ]
     },
