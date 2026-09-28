@@ -1473,6 +1473,15 @@ type EngineConfig struct {
 	// Nil keeps the plaintext dial a local dev Temporal expects; every dial
 	// site builds its options through temporaldial.Options with this value.
 	TLS *temporaldial.TLS `json:"tls,omitempty" yaml:"tls,omitempty"`
+	// WorkerVersioning opts `goobers worker` into Temporal worker-deployment
+	// versioning (#5950): pollers register as deployment "goobers", version
+	// goobers.<build>, with Pinned as the default workflow behavior. It is
+	// OFF by default because nothing in the product sets the deployment's
+	// current version (#5407): a versioned worker whose build is not current
+	// receives no tasks, so every upgrade that changes the build ID would
+	// stall the engine until an operator ran set-current-version. Off, the
+	// worker polls unversioned, which is what a reference Temporal expects.
+	WorkerVersioning bool `json:"workerVersioning,omitempty" yaml:"workerVersioning,omitempty"`
 }
 
 // EngineHITLConfig is the instance's posture on holding an engine-driven run's
@@ -2164,6 +2173,7 @@ func (c *Config) resolveEngineConfig(lookupEnv func(string) (string, bool)) (Eng
 			resolved.TaskQueue = c.Engine.TaskQueue
 		}
 		resolved.TLS = c.Engine.TLS
+		resolved.WorkerVersioning = c.Engine.WorkerVersioning
 	}
 	var envResolution engineEnvResolution
 	overrides := []struct {

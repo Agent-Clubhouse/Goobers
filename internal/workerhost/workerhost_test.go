@@ -93,7 +93,7 @@ func TestNewRequiresTaskQueues(t *testing.T) {
 // configured drain window, stopped on context cancellation, clean exit when
 // nothing was in flight.
 func TestWorkerOptionsUseBuildIDVersioning(t *testing.T) {
-	h, err := New(Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: "v9.9.9-test"})
+	h, err := New(Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: "v9.9.9-test", Versioning: true})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -120,6 +120,7 @@ func TestRunServesEveryQueueAndDrains(t *testing.T) {
 		TaskQueues:   []string{"goobers-engine", "goobers-engine-web"},
 		DrainTimeout: 7 * time.Second,
 		BuildVersion: "v9.9.9-test",
+		Versioning:   true,
 	}, fleet)
 
 	ctx, cancel := context.WithCancel(context.Background())

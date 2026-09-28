@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -237,6 +238,37 @@ func TestRunWorkerServesDerivedDispatchQueuesAndWiresTheDispatcher(t *testing.T)
 // --dispatch-namespace without --instance has no runner inventory to derive
 // queues from, so it must refuse rather than start a worker that polls
 // nothing it was asked to.
+// #5950: engine.workerVersioning is the only switch that makes the worker poll
+// versioned; without it the worker host is built unversioned.
+func TestRunWorkerWorkerVersioningFollowsEngineConfig(t *testing.T) {
+	for _, optIn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("workerVersioning=%v", optIn), func(t *testing.T) {
+			root := initDemo(t)
+			layout := instance.NewLayout(root)
+			cfg, err := instance.LoadConfig(layout.ConfigFile())
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			cfg.Engine = &instance.EngineConfig{HostPort: "127.0.0.1:7233", Namespace: "default", TaskQueue: "goobers-engine", WorkerVersioning: optIn}
+			if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+				t.Fatalf("WriteConfig: %v", err)
+			}
+			got := captureWorkerHost(t)
+			var stdout, stderr bytes.Buffer
+			code := runWorker([]string{"--instance", root, "--work-root", filepath.Join(t.TempDir(), "work"), "--config-reload-interval", "0"}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0\nstderr: %s", code, stderr.String())
+			}
+			if got.Versioning != optIn {
+				t.Fatalf("workerhost.Config.Versioning = %v, want %v", got.Versioning, optIn)
+			}
+			if want := fmt.Sprintf("worker versioning %s", onOff(optIn)); !strings.Contains(stdout.String(), want) {
+				t.Fatalf("startup output does not say %q:\n%s", want, stdout.String())
+			}
+		})
+	}
+}
+
 func TestRunWorkerDispatchNamespaceRequiresInstance(t *testing.T) {
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
 	got := captureWorkerHost(t)
