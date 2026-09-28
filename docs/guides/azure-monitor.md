@@ -214,7 +214,10 @@ failures, not background HTTP failures. Flush settles the journal queue into
 the spool; it is not a remote-ingestion barrier. One worker per stream owns
 delivery, new arrivals respect its retry backoff, and HTTP holds no shared
 spool lock. Each replay pass sends at most 32 batches within its context;
-shutdown makes a bounded best-effort pass and leaves remaining files for restart.
+shutdown gives each stream's entire final remote pass at most one second (or
+the shorter caller deadline) and leaves unacknowledged files for restart. This
+is not a one-second bound on all daemon cleanup: local claim release, journal
+catch-up, and provider shutdown have their own budgets.
 
 Replay combines small persisted files into requests of up to 128 records and
 1 MiB (an existing larger valid batch travels alone). Claims and acknowledgements

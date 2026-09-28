@@ -21,6 +21,9 @@ load-test a production tenant without its approval.
 - HTTP holds no filesystem lock or database transaction. Each replay pass sends
   at most 32 requests with the worker's five-second context; acknowledgement
   cleanup has a separate maximum five-second allowance.
+  Each stream's final shutdown remote pass has a one-second budget (or the
+  shorter caller deadline), with unsent durable records retained for restart.
+  This bounds remote waiting, not stalled local filesystem cleanup.
 - Replay combines tiny files into bounded 128-record / 1 MiB requests, preserving
   stable identities and at-least-once delivery. Existing larger batches travel
   alone. Cross-process leases protect uploads from concurrent pruning/delivery.
@@ -417,8 +420,10 @@ It creates fresh matched disabled/enabled instances and alternates pair order.
 `startup-results.json` retains every raw launch-to-ready and shutdown duration,
 request counts, and actual pre/post replay file counts and bytes. Both `/readyz`
 and the instance API must answer successfully; readiness polling has 50 ms
-resolution. No workflows are submitted. Shutdown uses a 15-second drain setting;
-the larger watchdog is not the acceptance limit. Independently compare disabled
+resolution. No workflows are submitted. Shutdown uses a 15-second active-run
+drain setting, which is not an aggregate timeout for provider cleanup. The
+separate acceptance target below still measures the entire stop-to-process-exit
+duration; the larger watchdog is not the acceptance limit. Independently compare disabled
 and enabled p95 against the 250 ms added-startup budget, and each shutdown
 against 15.250 seconds. Use at least 20 samples per variant; the one-pair CI
 smoke exercises harness correctness only, never performance acceptance.

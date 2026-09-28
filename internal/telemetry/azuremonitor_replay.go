@@ -27,6 +27,10 @@ const (
 	azureReplayDrainLimit   = 32
 	azureReplayBatchRecords = 128
 	azureReplayBatchBytes   = 1 << 20
+	// Shutdown is a last-chance remote send, not a backlog recovery window.
+	// Each signal closes separately; ordinary five-second attempts otherwise
+	// accumulate into a long daemon shutdown while Azure Monitor is stalled.
+	azureReplayShutdownDrainTimeout = time.Second
 )
 
 var errAzureReplayYield = errors.New("azure monitor replay work budget exhausted")
@@ -533,7 +537,13 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 	var err error
 	select {
 	case <-s.index.ready:
-		err = s.drain(ctx)
+		// Keep the shorter caller deadline, and bound the entire final drain,
+		// not each request independently. Unacknowledged files stay durable
+		// for restart. Local claim cleanup retains its own bounded context;
+		// this limit is not a promise about a wedged local filesystem.
+		drainCtx, cancel := context.WithTimeout(ctx, azureReplayShutdownDrainTimeout)
+		err = s.drain(drainCtx)
+		cancel()
 	default:
 	}
 	_ = s.stats()
