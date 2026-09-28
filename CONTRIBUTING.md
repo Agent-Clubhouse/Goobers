@@ -230,6 +230,36 @@ their corresponding Make targets. The vulnerability target also runs daily from
 `.github/workflows/vulnerability-scan.yml`, so newly disclosed findings surface
 without a code change.
 
+#### Frozen candidate CI
+
+`ci.yml` also supports `workflow_dispatch` on a dedicated validation branch.
+It runs the same complete required matrix as a pull request, including the
+fail-closed `make ci` aggregate. This is useful for release qualification:
+successive pushes to `main` otherwise cancel CI for an earlier frozen candidate.
+
+With repository-write authorization, create a uniquely named, non-release branch
+(for example, `qualification/ci-<campaign-id>`) at the campaign's recorded full
+commit SHA. Verify that exact ref before dispatching:
+
+```sh
+gh workflow run ci.yml --repo Agent-Clubhouse/Goobers --ref 'qualification/ci-<campaign-id>'
+```
+
+Do not update or force-push that branch during the campaign. Checkout uses the
+event's SHA, not the latest `main`; concurrency is per ref, so activity on other
+branches does not cancel this run. Avoid duplicate dispatches on the same ref,
+which can cancel each other. Record the returned/discovered run ID and attempt;
+independently verify its `workflow_dispatch` event, branch, exact `head_sha`, and
+successful required jobs before admitting its result. A cancelled, skipped,
+incomplete, or wrong-SHA run is not a pass. Dispatch adds no candidate secrets or
+repository-write permissions to validation jobs; existing failure-only handlers
+retain their authority to cancel their own failing run.
+
+This source-validation run does not publish a build, create a release tag, or
+prove a soak passed. Artifact admission and live qualification must still bind
+to the same source SHA. Native macOS runtime coverage remains the separate tier
+described below.
+
 #### macOS runtime runs nightly
 
 No pull-request or push job uses a macOS runner. The macOS behavioural
