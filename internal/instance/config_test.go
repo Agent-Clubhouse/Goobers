@@ -4302,6 +4302,31 @@ engine:
 	}
 }
 
+// TestLoadConfigEngineWorkerVersioningIsOptIn pins #5950: worker versioning is
+// off unless engine.workerVersioning says otherwise, and the opt-in survives
+// the resolution LoadConfig applies, which rebuilds the engine block.
+func TestLoadConfigEngineWorkerVersioningIsOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{name: "omitted", yaml: "engine:\n  hostPort: localhost:7233\n", want: false},
+		{name: "opted in", yaml: "engine:\n  hostPort: localhost:7233\n  workerVersioning: true\n", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeInstanceYAML(t, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\n"+tc.yaml)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if got := cfg.EffectiveEngineConfig().WorkerVersioning; got != tc.want {
+				t.Fatalf("EffectiveEngineConfig().WorkerVersioning = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadConfigEngineTLSRejectsCertWithoutKey(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1

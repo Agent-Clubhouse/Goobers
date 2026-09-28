@@ -366,6 +366,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		TaskQueues:   queues,
 		DrainTimeout: *drain,
 		BuildVersion: version.Get().Version,
+		Versioning:   engineConfig.WorkerVersioning,
 		Deps:         engineRuntime.deps,
 	})
 	if err != nil {
@@ -397,8 +398,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	pf(stdout, "goobers worker: serving task queue(s) %s on %s (namespace %s); identity %s\n",
-		strings.Join(queues, ", "), *hostPort, *namespace, workerhost.Identity(version.Get().Version))
+	pf(stdout, "goobers worker: serving task queue(s) %s on %s (namespace %s); identity %s; worker versioning %s\n",
+		strings.Join(queues, ", "), *hostPort, *namespace, workerhost.Identity(version.Get().Version), onOff(engineConfig.WorkerVersioning))
 	err = runWorkerHost(ctx, host)
 	if errors.Is(err, workerhost.ErrAbandonedWork) {
 		pf(stderr, "error: %v\n", err)
@@ -410,6 +411,14 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "goobers worker: drained cleanly\n")
 	return 0
+}
+
+// onOff renders an opt-in's state for the worker's startup line.
+func onOff(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
 }
 
 // workerSignalContext joins recurring reconciliation to the worker's signal

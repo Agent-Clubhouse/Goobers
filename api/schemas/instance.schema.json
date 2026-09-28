@@ -742,6 +742,11 @@
         "tls": {
           "description": "Opt-in TLS or mTLS for the Temporal frontend connection, applied by every dial site: daemon, worker, engine commands, and the doctor preflight. Omitted keeps the plaintext dial a local dev Temporal expects. When set, a frontend that does not speak TLS fails the dial; there is no fallback to plaintext.",
           "$ref": "#/$defs/engineTLS"
+        },
+        "workerVersioning": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in Temporal worker-deployment versioning for `goobers worker`: pollers register as deployment `goobers`, version `goobers.<build>`, and pin each new workflow to that build. Off by default: the worker polls unversioned, which a reference Temporal expects. When on, the namespace must have worker versioning enabled and an operator must make each new build the deployment's current version after it rolls out (`temporal worker deployment set-current-version`); until then the new worker receives no tasks. In either mode the worker logs an error while the deployment's current version does not route to it."
         }
       }
     },

@@ -57,6 +57,13 @@ type Config struct {
 	// BuildVersion is stamped into the worker identity so Temporal visibility
 	// alone answers "which build serves this queue".
 	BuildVersion string
+	// Versioning opts the pollers into Temporal worker-deployment versioning
+	// as deployment "goobers", version BuildVersion (#5950). Off, the worker
+	// polls unversioned. It has no effect without a BuildVersion.
+	Versioning bool
+	// Logf receives the non-fatal deployment-routing health reports (#5950).
+	// Nil writes them to the process's stderr.
+	Logf func(format string, args ...any)
 	// Deps are the engine execution seams registered on every worker.
 	Deps bootstrap.EngineDeps
 }
@@ -76,6 +83,10 @@ type Host struct {
 	// registered worker per queue.
 	dial      func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error)
 	newWorker func(c client.Client, taskQueue string, opts worker.Options) managedWorker
+	// describeRouting and its cadence back the #5950 routing health check.
+	describeRouting func(ctx context.Context, c client.Client) (client.WorkerDeploymentRoutingConfig, error)
+	routingDelay    time.Duration
+	routingInterval time.Duration
 }
 
 // New validates cfg and builds a Host.
@@ -101,6 +112,9 @@ func New(cfg Config) (*Host, error) {
 		bootstrap.RegisterEngine(w, c, cfg.Deps)
 		return w
 	}
+	h.describeRouting = describeDeploymentRouting
+	h.routingDelay = routingCheckDelay
+	h.routingInterval = routingCheckInterval
 	return h, nil
 }
 
@@ -122,18 +136,23 @@ func (h *Host) workerOptions() worker.Options {
 		WorkerStopTimeout: h.cfg.DrainTimeout,
 		Interceptors:      []interceptor.WorkerInterceptor{h.tracker},
 	}
-	if h.cfg.BuildVersion == "" {
+	if !h.versioned() {
 		return opts
 	}
 	opts.DeploymentOptions = worker.DeploymentOptions{
 		UseVersioning: true,
 		Version: worker.WorkerDeploymentVersion{
-			DeploymentName: "goobers",
+			DeploymentName: DeploymentName,
 			BuildID:        h.cfg.BuildVersion,
 		},
 		DefaultVersioningBehavior: workflow.VersioningBehaviorPinned,
 	}
 	return opts
+}
+
+// versioned reports whether this process polls as a versioned worker.
+func (h *Host) versioned() bool {
+	return h.cfg.Versioning && h.cfg.BuildVersion != ""
 }
 
 // Run serves the configured task queues until ctx is cancelled (SIGTERM/
@@ -193,7 +212,16 @@ func (h *Host) Run(ctx context.Context) error {
 		started = append(started, w)
 	}
 
+	// #5950: a routing mismatch leaves every poll succeeding with nothing to
+	// do, so report it rather than let the engine stall silently.
+	routingDone := make(chan struct{})
+	go func() {
+		defer close(routingDone)
+		h.checkRoutingLoop(ctx, c)
+	}()
+
 	<-ctx.Done()
+	<-routingDone
 	stopAll()
 	if n := h.tracker.inFlight(); n > 0 {
 		return fmt.Errorf("%w: %d abandoned", ErrAbandonedWork, n)
