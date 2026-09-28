@@ -59,6 +59,10 @@ var declared = map[string]Dependency{
 		Name:        "go",
 		InstallHint: "install the Go toolchain pinned in go.mod",
 	},
+	"grep": {
+		Name:        "grep",
+		InstallHint: "install grep (Debian/Ubuntu: apt-get install grep)",
+	},
 	"head": {
 		Name:        "head",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
@@ -69,6 +73,10 @@ var declared = map[string]Dependency{
 	},
 	"mkdir": {
 		Name:        "mkdir",
+		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
+	},
+	"mktemp": {
+		Name:        "mktemp",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
 	},
 	"mvn": {

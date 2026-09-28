@@ -26,14 +26,14 @@ func TestReleaseBuildExportsOriginalImageInputsAndExactStamps(t *testing.T) {
 			archiveRun = step.Run
 		}
 		if step.With["name"] == "original-image-inputs" {
-			originalUpload = step.With["path"] == "original-image-inputs/" && step.With["include-hidden-files"] == "true" && step.With["if-no-files-found"] == "error"
+			originalUpload = step.With["path"] == "${{ runner.temp }}/original-image-inputs/" && step.With["include-hidden-files"] == "true" && step.With["if-no-files-found"] == "error"
 		}
 	}
 	if !originalUpload {
 		t.Fatal("original image contexts, including checksummed .dockerignore, must survive artifact transfer")
 	}
 	for _, required := range []string{
-		"-output dist", "-image-contexts original-image-inputs", "-image-targets linux/amd64,linux/arm64,windows/amd64",
+		"-output dist", `-image-contexts "$IMAGE_CONTEXTS"`, "-image-targets linux/amd64,linux/arm64,windows/amd64",
 		`echo "version=$TAG" >> "$GITHUB_OUTPUT"`, `echo "commit=$commit" >> "$GITHUB_OUTPUT"`, `echo "date=$date" >> "$GITHUB_OUTPUT"`,
 	} {
 		if !strings.Contains(archiveRun, required) {
