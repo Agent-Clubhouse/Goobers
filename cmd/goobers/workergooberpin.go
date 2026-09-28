@@ -443,6 +443,11 @@ func (w *workerSeams) seamsFromLocked(snapshot *workerConfigSnapshot, gaggle str
 	if err != nil {
 		return nil, err
 	}
+	if built.seams.degraded() {
+		// A harness failed preflight: serve this kit, but rebuild next time
+		// rather than pin a transient failure into the snapshot (#5949).
+		return built.seams, nil
+	}
 	updated := snapshot.withGaggle(gaggle, built)
 	if current := w.snapshot.Load(); current == snapshot {
 		w.snapshot.Store(updated)
