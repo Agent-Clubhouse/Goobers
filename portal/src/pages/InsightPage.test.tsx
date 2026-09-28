@@ -628,15 +628,26 @@ describe("Insight page", () => {
 
   it("provides an inspectable drill-through for instance errors", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getSignatures = client.getTelemetryErrorSignatures.bind(client);
+    let releaseSignatures!: () => void;
+    const signaturesReady = new Promise<void>((resolve) => {
+      releaseSignatures = resolve;
+    });
+    vi.spyOn(client, "getTelemetryErrorSignatures").mockImplementation(async (...args) => {
+      await signaturesReady;
+      return getSignatures(...args);
+    });
     const user = userEvent.setup();
     render(<App client={client} />);
 
+    // The heading comes from stats, before the independently fetched error
+    // signatures. Hold that response to exercise the real loading boundary.
     await screen.findByRole("heading", { name: "Failure reasons" });
-    await user.click(
-      screen.getByRole("link", {
-        name: "View 1 matching error for scheduler.storage",
-      }),
-    );
+    const linkName = "View 1 matching error for scheduler.storage";
+    expect(screen.queryByRole("link", { name: linkName })).not.toBeInTheDocument();
+    const drillThrough = screen.findByRole("link", { name: linkName });
+    await act(async () => releaseSignatures());
+    await user.click(await drillThrough);
 
     expect(await screen.findByText("Scheduler journal append failed.")).toBeInTheDocument();
     expect(screen.getByText("Instance scheduler")).toBeInTheDocument();
