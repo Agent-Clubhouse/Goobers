@@ -198,6 +198,7 @@ const (
 	replayGitHubLabelAdd      = "POST /repos/your-org/your-repo/issues/{n}/labels"
 	replayGitHubLabelRemove   = "DELETE /repos/your-org/your-repo/issues/{n}/labels/{label}"
 	replayGitHubIssueCreate   = "POST /repos/your-org/your-repo/issues"
+	replayGitHubIssueEdit     = "PATCH /repos/your-org/your-repo/issues/{n}"
 	replayGitHubReviewReply   = "POST /repos/your-org/your-repo/pulls/{n}/comments/{n}/replies"
 	replayGitHubGraphQL       = "POST /graphql"
 	replayGitHubReviewCreate  = "POST /repos/your-org/your-repo/pulls/{n}/reviews"
@@ -281,6 +282,134 @@ func stageReplayCases() []stageReplayCase {
 			},
 			replay:  map[string]int{},
 			creates: []string{replayGitHubCommentCreate},
+		},
+		{
+			// The retry of a feedback attempt that posted its evidence comment
+			// and failed to remove the ready label: the fixture runs that
+			// attempt, so run 1 here is the retry and creates nothing.
+			stage: "backlog-health", provider: providers.ProviderGitHub,
+			setup:   replayBacklogHealthFeedbackGitHub,
+			first:   map[string]int{replayGitHubLabelRemove: 1},
+			replay:  map[string]int{},
+			creates: []string{replayGitHubCommentCreate},
+		},
+		{
+			// Decomposition source selection claims through ClaimWorkItem and
+			// skips a parent carrying publish-batch's attributed marker.
+			stage: "select-source", provider: providers.ProviderGitHub,
+			setup:   replaySelectSourceGitHub,
+			first:   map[string]int{replayGitHubCommentCreate: 1, replayGitHubLabelAdd: 1},
+			replay:  map[string]int{},
+			creates: []string{replayGitHubCommentCreate},
+		},
+		{
+			// Run 1 files both children, links them under the parent and to
+			// each other, and posts the prepared record, the parent and child
+			// notes, the published record and the claim release. Run 2 finds
+			// the published record, re-verifies the attributed children, and
+			// writes nothing.
+			stage: "publish-batch", provider: providers.ProviderGitHub,
+			setup: replayPublishBatchGitHub,
+			first: map[string]int{
+				replayGitHubIssueCreate: 2, replayGitHubCommentCreate: 6, replayGitHubIssueEdit: 2,
+				replayGitHubLabelAdd: 3, replayGitHubLabelRemove: 4,
+				replayGitHubSubIssueAttach: 2, replayGitHubBlockedByAttach: 1,
+			},
+			replay: map[string]int{},
+			creates: []string{
+				replayGitHubIssueCreate, replayGitHubCommentCreate, replayGitHubSubIssueAttach, replayGitHubBlockedByAttach,
+			},
+		},
+		{
+			// The sticky demotion record is created once and edited in place:
+			// run 2 is a second refusal at the same head, so it accumulates.
+			stage: "record-merge-refusal", provider: providers.ProviderGitHub,
+			setup:   replayRecordMergeRefusalGitHub,
+			first:   map[string]int{replayGitHubCommentCreate: 1},
+			replay:  map[string]int{replayGitHubCommentEdit: 1},
+			creates: []string{replayGitHubCommentCreate},
+		},
+		{
+			// Run 2 retries after a crash between issue #42's close-out comment
+			// and its checkpoint; see replayReconcilePostMergeGitHub.
+			stage: "reconcile-post-merge", provider: providers.ProviderGitHub,
+			setup: replayReconcilePostMergeGitHub,
+			first: map[string]int{
+				replayGitHubCommentCreate: 2, replayGitHubBranchDelete: 1,
+				replayGitHubIssueEdit: 1, replayGitHubLabelAdd: 1,
+			},
+			replay:  map[string]int{},
+			creates: []string{replayGitHubCommentCreate},
+		},
+		{
+			// The close-out and cost summary are created once and deduped on
+			// a retry; the displaced sibling's remediation handoff is found
+			// by its marker and edited in place. Run 1 also closes issue 42
+			// and labels it done, and labels the sibling needs-remediation.
+			stage: "post-merge", provider: providers.ProviderGitHub,
+			setup: replayPostMergeGitHub,
+			first: map[string]int{
+				replayGitHubCommentCreate: 3, replayGitHubLabelAdd: 2, replayGitHubIssueEdit: 1,
+			},
+			replay:  map[string]int{replayGitHubCommentEdit: 1},
+			creates: []string{replayGitHubCommentCreate},
+		},
+		{
+			// update-behind-pr writes nothing of its own; it reads back the
+			// attributed merge-review status comment apply-verdict posted,
+			// and a substantive finding there must route the behind PR to
+			// full remediation on both runs, with no API branch update.
+			stage: "update-behind-pr", provider: providers.ProviderGitHub,
+			setup:  replayUpdateBehindPRGitHub,
+			first:  map[string]int{},
+			replay: map[string]int{},
+		},
+		{
+			// The unchanged-digest park edits its sticky remediation-state
+			// comment by id; run 2 finds the PR parked by that same comment.
+			stage: "gather-pr-context", provider: providers.ProviderGitHub,
+			setup: replayGatherPRContextGitHub,
+			first: map[string]int{
+				replayGitHubLabelAdd: 1, replayGitHubLabelRemove: 1, replayGitHubCommentEdit: 1,
+			},
+			replay:  map[string]int{},
+			creates: []string{replayGitHubCommentCreate},
+		},
+		{
+			// A legacy sibling-overlap handoff is migrated in place once; the
+			// retry reads its own attributed, migrated handoff back as current.
+			stage: "rebase-pr", provider: providers.ProviderGitHub,
+			setup:  replayRebasePRSiblingHandoffGitHub,
+			first:  map[string]int{replayGitHubCommentEdit: 1},
+			replay: map[string]int{},
+		},
+		{
+			// The sticky remediation-state comment is created once and edited
+			// in place on a retry. The retry sees the same diff, so it parks
+			// the PR: the label swap is budgeted, a second comment is not.
+			stage: "remediation-checkpoint", provider: providers.ProviderGitHub,
+			setup: replayRemediationCheckpointGitHub,
+			first: map[string]int{replayGitHubCommentCreate: 1},
+			replay: map[string]int{
+				replayGitHubCommentEdit: 1, replayGitHubLabelAdd: 1, replayGitHubLabelRemove: 1,
+			},
+			creates: []string{replayGitHubCommentCreate},
+		},
+		{
+			// push-remediated writes no comment: it reads back the attributed
+			// remediation-state comment for its lease and clears the label.
+			stage: "push-remediated", provider: providers.ProviderGitHub,
+			setup:   replayPushRemediatedGitHub,
+			first:   map[string]int{replayGitHubLabelRemove: 1},
+			replay:  map[string]int{replayGitHubLabelRemove: 1},
+			creates: []string{replayGitHubCommentCreate},
+		},
+		{
+			stage: "push-remediated", provider: providers.ProviderADO,
+			setup:   replayPushRemediatedADO,
+			first:   map[string]int{replayADOPullRequestLabelClear: 1},
+			replay:  map[string]int{},
+			creates: []string{replayADOThreadCreate, replayADOThreadReply},
 		},
 		{
 			stage: "file-issues", provider: providers.ProviderGitHub,
@@ -633,18 +762,15 @@ func replayFileIssuesGitHub(t *testing.T) replayFixture {
 //
 //   - "read-only:" the stage makes no provider write;
 //   - "no read-back:" it writes, but never reads back or dedupes against text
-//     it wrote, so the attribution footer cannot change what it decides;
-//   - "not yet a case:" it writes and reads back its own text; its replay case
-//     is still to be added, and the reason names where its retry behaviour is
-//     tested today.
+//     it wrote, so the attribution footer cannot change what it decides.
+//
+// There is no deferral class: a stage that reads back text Goobers wrote,
+// its own or another stage's, is a replay case.
 var replayExempt = map[string]string{
 	"recovery-resume":        "read-only: re-attaches a recovered run's branch; local state only",
 	"backlog-dedupe":         "read-only: scores candidate duplicates into its result file (footer-free similarity: backlogdedupeattribution_test.go)",
 	"backlog-assignment":     "no read-back: assigns items without a comment",
-	"backlog-health":         "not yet a case: dedupes its feedback comment by marker containment (backloghealth_test.go)",
-	"select-source":          "not yet a case: claims through ClaimWorkItem, the claim path the backlog-query case replays",
 	"validate-plan":          "read-only: validates the plan artifact",
-	"publish-batch":          "not yet a case: the fake GitHub server has no sub-issue or blocked-by writes; attributed Publish is replayed by internal/decomposition TestPublisherVerifiesChildrenStoredWithProviderAttribution",
 	"reconcile-branches":     "no read-back: reconciles git branches, no provider text",
 	"push-branch":            "no read-back: pushes a git branch",
 	"preflight-repo-write":   "no read-back: probes push permission with a scratch ref",
@@ -654,10 +780,7 @@ var replayExempt = map[string]string{
 	"gate-removal-guard":     "no read-back: labels and comments on a guard hit without reading its comment back",
 	"set-milestone":          "no read-back: sets a milestone field",
 	"merge-pr":               "no read-back: merges; refusals are recorded by record-merge-refusal",
-	"record-merge-refusal":   "not yet a case: updates its sticky demotion comment by id (recordmergerefusal950_test.go)",
 	"merge-queue-poll":       "no read-back: labels and comments on a queue failure",
-	"reconcile-post-merge":   "not yet a case: dedupes the cost summary by marker (costpublication_provider_test.go)",
-	"post-merge":             "not yet a case: dedupes close-out and cost summary comments by marker (postmergeretick2492_test.go)",
 	"security-alerts-query":  "read-only: lists security alerts",
 	"telemetry-query":        "read-only: queries local telemetry",
 	"docs-churn":             "read-only: analyses local git history",
@@ -668,21 +791,16 @@ var replayExempt = map[string]string{
 	"gather-sibling-context": "read-only: gathers sibling pull request context and the cached verdict",
 	gatherContextID:          "read-only: gathers implementation context",
 	"elect-lander":           "read-only: elects a lander from the verdict and sibling state",
-	"update-behind-pr":       "not yet a case: reads pull request comments before updating a behind branch (updatebehindpr_test.go)",
 	"pr-claim":               "read-only: polls the pull request and keeps the local claim",
-	"gather-pr-context":      "no read-back: escalation only swaps labels",
 	"gather-review-threads":  "read-only: gathers review threads",
 	"gather-issue-context":   "read-only: gathers issue context",
 	"pr-comment-watch":       "no read-back: labels pull requests; its own comments are recognised by author, not text",
 	"gather-ci-failures":     "read-only: gathers CI failure logs",
-	"rebase-pr":              "not yet a case: updates its sticky handoff comment (rebasepr_test.go)",
-	"remediation-checkpoint": "not yet a case: reads back and updates its sticky state comment (remediationcheckpoint_test.go)",
-	"push-remediated":        "not yet a case: records the pushed head in a comment remediation-checkpoint reads back (pushremediated_ado_test.go)",
 	"mcp-io":                 "read-only: serves the stage MCP bridge",
 }
 
 // replayExemptClasses are the reason prefixes a replayExempt entry may use.
-var replayExemptClasses = []string{"read-only: ", "no read-back: ", "not yet a case: "}
+var replayExemptClasses = []string{"read-only: ", "no read-back: "}
 
 // TestStageReplayRoster requires every registered stage command to be a
 // replay case or a classified replayExempt entry, and neither list to name a
