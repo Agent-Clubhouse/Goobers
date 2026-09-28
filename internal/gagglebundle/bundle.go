@@ -105,16 +105,19 @@ func Export(configDir, name string, now time.Time) (apiv1.GaggleBundle, error) {
 			workflows = append(workflows, sanitizeWorkflow(workflow))
 		}
 	}
+	referencedGoobers := workflowGooberReferences(workflows)
 	var goobers []apiv1.Goober
 	for _, goober := range set.Goobers {
-		if goober.Spec.Gaggle == name {
+		if goober.Spec.Gaggle == name || (goober.Spec.Gaggle == "" && referencedGoobers[goober.Name]) {
 			if len(goober.Spec.HarnessOptions) != 0 {
 				return apiv1.GaggleBundle{}, fmt.Errorf(
 					"%w: goober %q declares opaque harnessOptions; portable export cannot prove opaque values exclude credentials, environment values, or local paths",
 					ErrInvalidBundle, goober.Name,
 				)
 			}
-			goobers = append(goobers, sanitizeGoober(goober))
+			portable := sanitizeGoober(goober)
+			portable.Spec.Gaggle = name
+			goobers = append(goobers, portable)
 		}
 	}
 	sort.Slice(workflows, func(i, j int) bool { return workflows[i].Name < workflows[j].Name })
@@ -435,7 +438,31 @@ func validateReferences(definition apiv1.GaggleBundleDefinition) error {
 			}
 		}
 	}
+	for _, workflow := range definition.Workflows {
+		for goober := range workflowGooberReferences([]apiv1.Workflow{workflow}) {
+			if !goobers[goober] {
+				return fmt.Errorf("workflow %q references missing goober %q", workflow.Name, goober)
+			}
+		}
+	}
 	return nil
+}
+
+func workflowGooberReferences(workflows []apiv1.Workflow) map[string]bool {
+	references := map[string]bool{}
+	for _, workflow := range workflows {
+		for _, task := range workflow.Spec.Tasks {
+			if task.Goober != "" {
+				references[task.Goober] = true
+			}
+		}
+		for _, gate := range workflow.Spec.Gates {
+			if gate.Agentic != nil && gate.Agentic.Goober != "" {
+				references[gate.Agentic.Goober] = true
+			}
+		}
+	}
+	return references
 }
 
 func validateSanitizedDefinition(definition apiv1.GaggleBundleDefinition) error {

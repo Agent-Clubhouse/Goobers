@@ -92,6 +92,75 @@ func TestExportAndImportPreserveSafeDeclarativeMetadata(t *testing.T) {
 	}
 }
 
+func TestExportAndImportLocalizeReferencedSharedGoober(t *testing.T) {
+	source := newBundleSource(t)
+	gaggleGooberDir := filepath.Join(source.ConfigDir(), "gaggles", "example", "goobers", "coder")
+	sharedGooberDir := filepath.Join(filepath.Dir(source.ConfigDir()), "goobers", "coder")
+	if err := os.MkdirAll(filepath.Dir(sharedGooberDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(gaggleGooberDir, sharedGooberDir); err != nil {
+		t.Fatal(err)
+	}
+	gooberPath := filepath.Join(sharedGooberDir, "goober.yaml")
+	var shared apiv1.Goober
+	if err := yaml.UnmarshalStrict(readFile(t, gooberPath), &shared); err != nil {
+		t.Fatal(err)
+	}
+	shared.Spec.Gaggle = ""
+	data, err := yaml.Marshal(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gooberPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, report, err := instance.LoadConfigDir(source.ConfigDir()); err != nil {
+		t.Fatalf("load source with shared Goober: %v report=%+v", err, report)
+	}
+
+	bundle, err := Export(source.ConfigDir(), "example", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Definition.Goobers) != 1 || bundle.Definition.Goobers[0].Name != "coder" {
+		t.Fatalf("exported Goobers = %+v, want referenced shared coder", bundle.Definition.Goobers)
+	}
+	if bundle.Definition.Goobers[0].Spec.Gaggle != "example" {
+		t.Fatalf("exported shared Goober gaggle = %q, want localized example", bundle.Definition.Goobers[0].Spec.Gaggle)
+	}
+
+	destination := newEmptyBundleDestination(t, source)
+	swap, err := PrepareImport(destination, "copied-example", bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := swap.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	set, report, err := instance.LoadConfigDir(destination.ConfigDir())
+	if err != nil {
+		t.Fatalf("load imported config: %v report=%+v", err, report)
+	}
+	if len(set.Goobers) != 1 || set.Goobers[0].Name != "coder" || set.Goobers[0].Spec.Gaggle != "copied-example" {
+		t.Fatalf("imported Goobers = %+v, want destination-localized coder", set.Goobers)
+	}
+}
+
+func TestValidateRejectsMissingWorkflowGoober(t *testing.T) {
+	source := newBundleSource(t)
+	bundle, err := Export(source.ConfigDir(), "example", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.Definition.Goobers = nil
+	bundle.Definition.Files = nil
+	refreshBundleDigest(t, &bundle)
+	if err := Validate(bundle); err == nil || !strings.Contains(err.Error(), "references missing goober") {
+		t.Fatalf("Validate error = %v, want missing workflow Goober", err)
+	}
+}
+
 func TestExportRejectsExplicitEnvironmentValues(t *testing.T) {
 	source := newBundleSource(t)
 	path := filepath.Join(source.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
