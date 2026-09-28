@@ -117,6 +117,11 @@ func NewDiagnosticExporter(cfg Config) (*DiagnosticExporter, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &DiagnosticExporter{queue: make(chan diagnosticBatch, DiagnosticQueueLimit), done: make(chan struct{}), cancel: cancel, conn: conn, client: client, azure: azure, scrubber: cfg.Scrubber}
+	if azure != nil {
+		azure.setReplayLossSource(func() replayLossCounters {
+			return replayLossCounters{Dropped: d.dropped.Load(), ExportFailures: d.failures.Load()}
+		})
+	}
 	d.ctx = metadata.NewOutgoingContext(ctx, metadata.New(cfg.OTLPHeaders))
 	resourceAttributes := []*commonpb.KeyValue{
 		d.field("service.name", "goobers"), d.field("service.version", cfg.ServiceVersion), d.field("goobers.build.commit", cfg.BuildCommit), d.field("goobers.telemetry.stream", "diagnostics"),

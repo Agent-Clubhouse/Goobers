@@ -290,6 +290,14 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, err
 	}
 	claimProviders := claimProvidersByGaggle(set)
+	// This daemon owns identity creation (workers and telemetry observers do
+	// not). Publish it before any exporter or scheduler journal captures its
+	// identity: creating it later in runner construction left first-boot
+	// scheduler records unidentified until restart and changed their replay
+	// identity inputs across those lifetimes.
+	if _, err := l.EnsureIdentity(ctx); err != nil {
+		return nil, fmt.Errorf("initialize daemon instance identity: %w", err)
+	}
 
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
 	// #129). tel/rollupDB stay nil in that case — every downstream use

@@ -1,7 +1,11 @@
 package telemetry
 
 import (
+	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,7 +74,8 @@ func (h *exportErrorHandler) Handle(err error) {
 
 // classify records the occurrence and reports whether it should be logged now.
 func (h *exportErrorHandler) classify(err error) (string, []any, bool) {
-	key := err.Error()
+	detail := err.Error()
+	key := exportErrorSignature(err, detail)
 	now := h.now()
 
 	h.mu.Lock()
@@ -85,17 +90,30 @@ func (h *exportErrorHandler) classify(err error) (string, []any, bool) {
 			h.seen = make(map[string]*exportErrorRecord)
 		}
 		h.seen[key] = &exportErrorRecord{lastEmit: now}
-		return "telemetry export failed", appendHint([]any{"error", key}, err), true
+		return "telemetry export failed", appendHint([]any{"error", detail}, err), true
 	}
 
 	record.suppressed++
 	if now.Sub(record.lastEmit) < h.window {
 		return "", nil, false
 	}
-	args := []any{"error", key, "repeats", record.suppressed, "window", h.window.String()}
+	args := []any{"error", detail, "repeats", record.suppressed, "window", h.window.String()}
 	record.suppressed = 0
 	record.lastEmit = now
 	return "telemetry export still failing", appendHint(args, err), true
+}
+
+// Atomic replay writes use a fresh temporary basename for every attempt. A
+// full/unwritable filesystem must not turn that incidental detail into a new
+// error signature on every retry (and repeatedly reset the bounded table).
+// Preserve the directory/signal, operation and cause in the key, and retain
+// the complete raw error in emitted diagnostics. Other paths stay distinct.
+func exportErrorSignature(err error, detail string) string {
+	var pathError *os.PathError
+	if errors.As(err, &pathError) && strings.HasPrefix(filepath.Base(pathError.Path), ".pending-") {
+		return strings.ReplaceAll(detail, pathError.Path, filepath.Join(filepath.Dir(pathError.Path), ".pending-<temporary>"))
+	}
+	return detail
 }
 
 func appendHint(args []any, err error) []any {

@@ -43,11 +43,7 @@ func buildTelemetryClient(
 	// Only the durable identity is trustworthy; legacy roots remain unidentified.
 	// Carry it on every signal as a resource attribute so operators can correlate
 	// process restarts with the same customer-managed instance and its journals.
-	if instanceID, err := l.ReadIdentity(); err == nil {
-		cfg.JournalInstanceID = instanceID
-		cfg.ResourceAttributes = append(cfg.ResourceAttributes,
-			attribute.String("goobers.instance.id", instanceID))
-	}
+	cfg.JournalInstanceID, cfg.ResourceAttributes = telemetryInstanceIdentities(l.Root)
 	if telemetryConfig.OTLP != nil {
 		if err := configureOTLP(ctx, &cfg, *telemetryConfig.OTLP, registry, stores); err != nil {
 			return nil, err

@@ -455,7 +455,7 @@ func TestJournalLogsQueueBoundsAndOwnership(t *testing.T) {
 	}
 }
 
-func TestJournalLogsRejectLargeRecordsAndContention(t *testing.T) {
+func TestJournalLogsRejectLargeRecordsButNotContention(t *testing.T) {
 	client := journalTestClient(t, &journalTestExporter{})
 	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: make([]byte, journalLogRecordLimit+1)})
 	client.Commit(journal.CommittedEvent{JournalID: strings.Repeat("x", journalLogRecordLimit+1)})
@@ -464,7 +464,7 @@ func TestJournalLogsRejectLargeRecordsAndContention(t *testing.T) {
 	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	client.journalLogs.mu.Unlock()
 	stats := client.JournalExportStats()
-	if stats.Accepted != 0 || stats.Dropped != 3 || stats.QueuedBytes != 0 {
+	if stats.Accepted != 1 || stats.Dropped != 2 || stats.DroppedLockContention != 0 {
 		t.Fatalf("stats = %+v", stats)
 	}
 }
@@ -775,10 +775,11 @@ func TestJournalLogsShutdownDeadlineAccountsAbandonedBacklog(t *testing.T) {
 
 	// The first record parks the worker inside Export; the rest queue behind it.
 	const queued = 6
-	for range queued {
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	waitJournalStarted(t, exporter.started)
+	for range queued - 1 {
 		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	}
-	<-exporter.started
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -806,14 +807,9 @@ func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
 	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
 	defer close(exporter.release)
 
-	// Park the worker inside Export before anything else. The worker takes the
-	// queue lock whenever it is woken (every drop wakes it), so a commit racing
-	// it loses TryLock and is charged to lock_contention; filling while it was
-	// live let enough of those losses eat the small overflow margin that
-	// queue_full never fired. The constructor returns with the worker idle and
-	// unlocked, and once parked it holds no lock, so only this goroutine
-	// touches the queue from here on. The test exporter ignores its context so
-	// a slow stress runner cannot release it during the bounded-queue check.
+	// Park one in-flight batch so the worker cannot free reservations while
+	// this test fills the bounded queue. The exporter ignores its context so
+	// a slow runner cannot release it during the overflow check.
 	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	waitJournalStarted(t, exporter.started)
 
@@ -864,10 +860,11 @@ func TestJournalLogsShutdownDropsAreChargedToShutdown(t *testing.T) {
 	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
 
 	const queued = 6
-	for range queued {
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	waitJournalStarted(t, exporter.started)
+	for range queued - 1 {
 		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	}
-	<-exporter.started
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -903,10 +900,11 @@ func TestClientShutdownExportsFinalJournalDropCauses(t *testing.T) {
 	client.journalLogs.observeDrops = client.journalExportDropped
 
 	const accepted = 4
-	for range accepted {
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	waitJournalStarted(t, logExporter.started)
+	for range accepted - 1 {
 		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	}
-	<-logExporter.started
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
