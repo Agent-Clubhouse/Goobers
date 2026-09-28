@@ -91,8 +91,9 @@ func TestCopilotPreflightFallbackAuthProbeDisablesRemoteExport(t *testing.T) {
 }
 
 // TestCopilotPreflightNamesMinimumVersionWhenFlagUnknown: a CLI older than
-// 1.0.52 rejects the flag as an unknown option; preflight must say to upgrade
-// rather than blame sign-in.
+// 1.0.52 rejects the flag as an unknown option. Preflight fails closed (those
+// CLIs can still export sessions via user configuration, so dropping the flag
+// is not privacy-equivalent) and says to upgrade rather than blame sign-in.
 func TestCopilotPreflightNamesMinimumVersionWhenFlagUnknown(t *testing.T) {
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: []byte("GitHub Copilot CLI 1.0.51.\n")},
@@ -112,7 +113,12 @@ func TestCopilotPreflightNamesMinimumVersionWhenFlagUnknown(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected preflight to fail when the CLI rejects the export opt-out")
 	}
-	if !strings.Contains(err.Error(), copilotNoRemoteExportMinVersion) || strings.Contains(err.Error(), "sign in") {
-		t.Fatalf("error should name the minimum Copilot CLI version, not sign-in: %v", err)
+	for _, want := range []string{"GitHub Copilot CLI 1.0.51.", copilotNoRemoteExportMinVersion, copilotNoRemoteExportFlag, "upgrade"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q should contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "sign in") {
+		t.Fatalf("error should name the minimum Copilot CLI version, not blame sign-in: %v", err)
 	}
 }

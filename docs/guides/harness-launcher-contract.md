@@ -52,7 +52,9 @@ re-enable exporting agent sessions to GitHub web and mobile, and a forwarding
 launcher must pass the flag through to the Copilot CLI. A version-2
 `authProbe` starts no session and receives its declared arguments unchanged.
 There is no opt-in to session export. The flag requires Copilot CLI 1.0.52 or
-newer; an older CLI fails the startup preflight with an upgrade message.
+newer. An older CLI fails the startup preflight with an upgrade message rather
+than running without the flag: those releases can already export sessions
+through the user's Copilot configuration and have no per-invocation opt-out.
 
 ## Environment isolation
 

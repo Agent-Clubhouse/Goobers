@@ -692,6 +692,9 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		})
 		if err != nil || res.ExitCode != 0 {
+			if copilotRemoteExportUnsupported(res) {
+				return PreflightInfo{}, copilotRemoteExportUnsupportedError(version)
+			}
 			return PreflightInfo{}, copilotAuthProbeError(ctx, authProbe, res, err)
 		}
 		if sessionTranscript != "" {
@@ -713,8 +716,6 @@ func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResu
 		return preflightProbeError(probe, result, errors.Join(ErrTimeout, context.DeadlineExceeded), "")
 	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		return preflightProbeError(probe, result, errors.Join(ErrCanceled, context.Canceled), "")
-	case copilotRemoteExportUnsupported(result):
-		return preflightProbeError(probe, result, runErr, copilotRemoteExportUpgradeHint())
 	default:
 		return preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
 	}

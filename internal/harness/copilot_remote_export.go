@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bytes"
+	"fmt"
 	"slices"
 )
 
@@ -36,10 +37,16 @@ func copilotRemoteExportUnsupported(result ProcessResult) bool {
 	return bytes.Contains(result.Transcript, marker) || bytes.Contains(result.Stderr, marker)
 }
 
-// copilotRemoteExportUpgradeHint is the actionable diagnostic for a CLI that
-// rejects copilotNoRemoteExportFlag.
-func copilotRemoteExportUpgradeHint() string {
-	return "the installed Copilot CLI does not accept " + copilotNoRemoteExportFlag +
-		", which Goobers passes to every Copilot session so agent sessions are never exported to GitHub; " +
-		"upgrade the Copilot CLI to " + copilotNoRemoteExportMinVersion + " or newer"
+// copilotRemoteExportUnsupportedError fails preflight for a CLI that predates
+// copilotNoRemoteExportFlag. Launching without the flag is not a safe
+// fallback: those releases already export sessions to GitHub (Mission
+// Control / cross-device session sync) when the user's Copilot configuration
+// enables it, and offer no per-invocation switch to turn export off.
+func copilotRemoteExportUnsupportedError(version string) error {
+	if version == "" {
+		version = "(unknown version)"
+	}
+	return fmt.Errorf("harness: copilot-cli: %s is too old: Goobers requires Copilot CLI %s or newer so it can "+
+		"disable session export with %s; upgrade the Copilot CLI (for example `copilot update`) and restart",
+		version, copilotNoRemoteExportMinVersion, copilotNoRemoteExportFlag)
 }
