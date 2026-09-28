@@ -172,6 +172,45 @@ func TestAuditFaultDomainsPostFixProductRecurrenceUsesChangedGoober(t *testing.T
 	}
 }
 
+func TestAuditFaultDomainsPostFixExternalRecoveryAndRecurrenceAllowSameVersion(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	beforeOne := auditObservation("before-one", "one", "v1", "stage", "provider credential failure", ClassEnvironment, 0.9, "stage")
+	beforeTwo := auditObservation("before-two", "two", "v1", "stage", "provider credential failure", ClassEnvironment, 0.9, "stage")
+	beforeOne.ObservedAt = now.Add(-2 * time.Hour)
+	beforeTwo.ObservedAt = now.Add(-2 * time.Hour)
+	initial := AuditFaultDomains([]AttributionObservation{beforeOne, beforeTwo}, FaultAuditConfig{Now: now, SampleFloor: 2})
+	if len(initial.ExternalFindings) != 1 {
+		t.Fatalf("initial report = %+v, want one external finding", initial)
+	}
+	id := initial.ExternalFindings[0].ID
+	fixedAt := now.Add(-time.Hour)
+
+	healthyOne := auditObservation("healthy-one", "one", "v1", "stage", "", ClassUnknown, 0.9, "stage")
+	healthyTwo := auditObservation("healthy-two", "two", "v1", "stage", "", ClassUnknown, 0.9, "stage")
+	for _, healthy := range []*AttributionObservation{&healthyOne, &healthyTwo} {
+		healthy.ObservedAt = now
+		healthy.Attribution.Causes = nil
+		healthy.Evidence = nil
+	}
+	recovered := AuditFaultDomains(
+		[]AttributionObservation{beforeOne, beforeTwo, healthyOne, healthyTwo},
+		FaultAuditConfig{Now: now, SampleFloor: 2, FixesAppliedAt: map[string]time.Time{id: fixedAt}},
+	)
+	if got := recovered.ExternalFindings[0].Verification; got != VerificationRecovered {
+		t.Fatalf("verification = %q, want recovered for same-version external repair", got)
+	}
+
+	repeated := auditObservation("repeated", "one", "v1", "stage", "provider credential failure", ClassEnvironment, 0.9, "stage")
+	repeated.ObservedAt = now
+	recurrence := AuditFaultDomains(
+		[]AttributionObservation{beforeOne, beforeTwo, repeated},
+		FaultAuditConfig{Now: now, SampleFloor: 2, FixesAppliedAt: map[string]time.Time{id: fixedAt}},
+	)
+	if got := recurrence.ExternalFindings[0].Verification; got != VerificationRepeated {
+		t.Fatalf("verification = %q, want repeated for same-version external recurrence", got)
+	}
+}
+
 func TestAuditFaultDomainsPostFixVerificationRequiresMatchingCohort(t *testing.T) {
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	fixedAt := now.Add(-time.Hour)

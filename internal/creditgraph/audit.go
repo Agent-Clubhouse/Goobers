@@ -459,8 +459,7 @@ func verificationVersionMatches(observation, affected AttributionObservation, do
 		return observation.EffectiveVersion != affected.EffectiveVersion
 	case FaultDomainExternal:
 		return sameOptionalValue(observation.WorkflowDigest, affected.WorkflowDigest) &&
-			sameOptionalValue(observation.GooberDigest, affected.GooberDigest) &&
-			observation.EffectiveVersion != affected.EffectiveVersion
+			sameOptionalValue(observation.GooberDigest, affected.GooberDigest)
 	default:
 		return observation.EffectiveVersion == affected.EffectiveVersion
 	}
