@@ -43,6 +43,11 @@ load-test a production tenant without its approval.
   filenames cannot bypass suppression or churn its bounded table; emitted
   diagnostics still retain the actual error path. Failure counters continue
   counting every occurrence independently of log suppression.
+- Local stream health does not declare recovery merely because an idle stream
+  stops producing new failures. It retains a rate-limited `recovery_unconfirmed`
+  warning until delivery advances after the last observed problem and active
+  warning causes clear. This is conservative: no-traffic recovery remains
+  unconfirmed rather than being treated as a successful end-to-end probe.
 - A persisted, one-minute full-audit cadence supplements directory timestamps
   on the next replay operation. This finds external/interrupted file changes
   even when a filesystem coalesces timestamps. Short-lived CLI processes share

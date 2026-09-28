@@ -53,6 +53,7 @@ type replayHealthState struct {
 	warning          bool
 	reportedLoss     uint64
 	reportedDeferred uint64
+	problemDelivered uint64
 }
 
 func (h *replayHealthState) sample(now time.Time, stats AzureReplayStats, loss replayLossCounters, capBytes int64) *replayHealthEvent {
@@ -82,6 +83,15 @@ func (h *replayHealthState) sample(now time.Time, stats AzureReplayStats, loss r
 	}
 	if loss.CatchupDeferred > h.reportedDeferred {
 		causes = append(causes, "journal_catchup_deferred")
+	}
+	if len(causes) > 0 {
+		// Record this even when the warning is rate-limited: delivery before
+		// the latest observed problem cannot prove that problem has cleared.
+		h.problemDelivered = stats.Delivered
+	} else if h.warning && stats.Delivered <= h.problemDelivered {
+		// A quiet stream may have no pending spool records because admission
+		// failed. Silence alone does not prove that storage or upload works.
+		causes = append(causes, "recovery_unconfirmed")
 	}
 	event := &replayHealthEvent{Time: now.UTC(), Event: "telemetry.export.health", Status: "warning", Causes: causes,
 		PendingRecords: stats.PendingRecords, PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,

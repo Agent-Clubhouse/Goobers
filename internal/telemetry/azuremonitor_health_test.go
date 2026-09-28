@@ -83,6 +83,37 @@ func TestAzureReplayHealthOldBacklogHighWaterAndUnavailableAccounting(t *testing
 	}
 }
 
+func TestAzureReplayHealthIdleStreamDoesNotProveRecovery(t *testing.T) {
+	now := time.Now()
+	state := replayHealthState{}
+	stats := AzureReplayStats{AccountingReady: true, AdmissionFailures: 1}
+	if got := state.sample(now, stats, replayLossCounters{}, 1000); got == nil || got.Status != "warning" {
+		t.Fatalf("missing initial failure: %+v", got)
+	}
+	// A quiet stream has not tested either storage admission or remote delivery.
+	if got := state.sample(now.Add(10*time.Second), stats, replayLossCounters{}, 1000); got != nil {
+		t.Fatalf("idle stream falsely recovered: %+v", got)
+	}
+	got := state.sample(now.Add(time.Minute), stats, replayLossCounters{}, 1000)
+	if got == nil || got.Status != "warning" || !slices.Contains(got.Causes, "recovery_unconfirmed") {
+		t.Fatalf("unconfirmed recovery must remain visible: %+v", got)
+	}
+	// A delivery concurrent with another failure is not evidence that the
+	// failure has cleared; require subsequent delivery with no active causes.
+	stats.Delivered = 1
+	stats.AdmissionFailures++
+	state.sample(now.Add(70*time.Second), stats, replayLossCounters{}, 1000)
+	state.sample(now.Add(120*time.Second), stats, replayLossCounters{}, 1000)
+	if got = state.sample(now.Add(130*time.Second), stats, replayLossCounters{}, 1000); got != nil {
+		t.Fatalf("delivery before latest failure falsely recovered: %+v", got)
+	}
+	stats.Delivered++
+	got = state.sample(now.Add(140*time.Second), stats, replayLossCounters{}, 1000)
+	if got == nil || got.Status != "recovered" {
+		t.Fatalf("subsequent successful delivery did not recover: %+v", got)
+	}
+}
+
 func TestAzureReplayHealthFileIsPrivateBoundedAndIndependent(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "health-journal.jsonl")
