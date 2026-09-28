@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -100,11 +101,17 @@ func TestExternalAppTokenBacklogClaimAndRelease(t *testing.T) {
 					t.Fatalf("wrong App identity trusted a claim: %s", stdout)
 				}
 			} else {
-				if code != 0 {
+				if code != 0 || !strings.Contains(stdout, "claimed 7") {
 					t.Fatalf("claim: code=%d stdout=%s stderr=%s", code, stdout, stderr)
 				}
+				server.mu.Lock()
+				claimedBeforeRelease := hasAnyLabel(server.issues[7].labels, []string{providers.LabelClaimed})
+				server.mu.Unlock()
+				if !claimedBeforeRelease {
+					t.Fatal("claim never acquired the provider marker")
+				}
 				code, stdout, stderr = runArgs(t, "backlog-query", "--release", root)
-				if code != 0 {
+				if code != 0 || !strings.Contains(stdout, "released 7") {
 					t.Fatalf("release: code=%d stdout=%s stderr=%s", code, stdout, stderr)
 				}
 				server.mu.Lock()
@@ -138,6 +145,9 @@ func TestExternalAppTokenTerminalReleaseUsesStaticTokenAndIdentity(t *testing.T)
 	called := false
 	newTerminalClaimMarkerProvider = func(source providers.TokenSource, opts ...func(*providers.GitHubProvider)) workItemClaimReleaser {
 		called = true
+		if token, err := source.Token(context.Background()); err != nil || token != "externally-minted-token" {
+			t.Fatalf("terminal credential = %q, %v", token, err)
+		}
 		forge := newRecordingForge(t, "")
 		p := providers.NewGitHubProvider("", opts...)
 		p.BaseURL = forge.server.URL
