@@ -29,13 +29,13 @@ const maxRemoteReadBody = 32 << 20
 // OfflineRuns means rendering and filtering do not fork between local and
 // remote operation.
 type remoteRuns struct {
-	endpoint   string
-	client     *http.Client
-	instanceID string
-	// instance is the identity snapshot prepareRemoteReads validated. Every
-	// rendering of the remote root uses this same snapshot, so the identity
-	// that was checked is the identity that is shown.
-	instance readservice.Instance
+	endpoint string
+	client   *http.Client
+	// instanceID and instanceRoot are the identity prepareRemoteReads
+	// validated. confirmIdentity requires every later snapshot to match both,
+	// so the instance that was checked is the instance that is rendered.
+	instanceID   string
+	instanceRoot string
 }
 
 func newRemoteRuns(endpoint string) *remoteRuns {
@@ -74,11 +74,15 @@ func (r *remoteRuns) request(ctx context.Context, routeID apicontract.RouteID, v
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var envelope apicontract.ErrorEnvelope
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxRemoteTriggerResponseBody)).Decode(&envelope); err != nil {
-		return nil, fmt.Errorf("daemon %s API returned HTTP %d", routeID, resp.StatusCode)
-	}
+	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxRemoteTriggerResponseBody)).Decode(&envelope)
+	// A 404 means not found whether or not the body is the daemon's error
+	// envelope (a proxy in front of it may answer plainly); callers such as
+	// run-ID resolution rely on telling "absent" apart from a failed read.
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("%w: %s", readservice.ErrNotFound, envelope.Error.Message)
+		return nil, fmt.Errorf("%w: daemon %s API: %s", readservice.ErrNotFound, routeID, envelope.Error.Message)
+	}
+	if decodeErr != nil {
+		return nil, fmt.Errorf("daemon %s API returned HTTP %d", routeID, resp.StatusCode)
 	}
 	return nil, fmt.Errorf("daemon %s API: %s", routeID, envelope.Error.Message)
 }
@@ -164,8 +168,12 @@ func (r *remoteRuns) RunMetadata(ctx context.Context, id string) (journal.RunIde
 	if err != nil {
 		return journal.RunIdentity{}, nil, err
 	}
+	// Only fields the run detail actually carries are set. The journal's
+	// machine cursor, branches and the rest of the run identity are not served
+	// over the API, and CurrentStage is a display label rather than the machine
+	// state, so they stay empty instead of being approximated.
 	identity := journal.RunIdentity{InstanceID: r.instanceID, RunID: detail.ID, Workflow: detail.Workflow, WorkflowVersion: detail.WorkflowVersion, WorkflowDigest: detail.WorkflowDigest, Gaggle: detail.Gaggle, Trigger: detail.Trigger}
-	state := &journal.State{RunID: detail.ID, Phase: detail.Phase, MachineState: detail.CurrentStage, LastSeq: detail.LastSeq, UpdatedAt: detail.LastActivityAt}
+	state := &journal.State{RunID: detail.ID, Phase: detail.Phase, LastSeq: detail.LastSeq, UpdatedAt: detail.LastActivityAt}
 	return identity, state, nil
 }
 
@@ -346,7 +354,7 @@ func prepareRemoteReads(ctx context.Context, endpoint, root string, rootExplicit
 		return nil, fmt.Errorf("daemon at --api belongs to another instance than %s; refusing the read", root)
 	}
 	reads.instanceID = remote.RootIdentity.ID
-	reads.instance = remote
+	reads.instanceRoot = remote.InstanceRoot
 	if _, err := fmt.Fprintf(diagnostic, "Remote instance root: %q; instance ID: %q\n", remote.InstanceRoot, reads.instanceID); err != nil {
 		return nil, fmt.Errorf("display remote read target: %w", err)
 	}
@@ -365,13 +373,20 @@ func (r *remoteRuns) confirmIdentity(ctx context.Context) (readservice.Instance,
 	if err := validateRemoteRoot(remote.InstanceRoot, remote.RootIdentity); err != nil {
 		return readservice.Instance{}, err
 	}
-	if remote.RootIdentity.ID != r.instanceID {
-		return readservice.Instance{}, fmt.Errorf("daemon instance changed during the read (was %s, now %s); refusing to render", r.instanceID, remote.RootIdentity.ID)
+	if remote.RootIdentity.ID != r.instanceID || remote.InstanceRoot != r.instanceRoot {
+		return readservice.Instance{}, fmt.Errorf("daemon instance changed during the read (was %s at %q, now %s at %q); refusing to render", r.instanceID, r.instanceRoot, remote.RootIdentity.ID, remote.InstanceRoot)
 	}
 	return remote, nil
 }
 
 func resolveRemoteRunID(ctx context.Context, reads readservice.OfflineRuns, arg string) (string, error) {
+	// A full run ID resolves with one detail read; only a prefix needs the
+	// paged run list.
+	if detail, err := reads.GetRun(ctx, arg); err == nil && detail.ID == arg {
+		return arg, nil
+	} else if err != nil && !errors.Is(err, readservice.ErrNotFound) {
+		return "", err
+	}
 	ids, err := reads.RunIDs(ctx)
 	if err != nil {
 		return "", err
@@ -404,12 +419,14 @@ func remoteStatusRuns(ctx context.Context, reads *remoteRuns) ([]runSummary, err
 	var runs []runSummary
 	cursor := ""
 	for {
-		page, err := reads.ListRuns(ctx, readservice.RunListOptions{Limit: 200, Cursor: cursor})
+		// Local status includes no-work runs (readservice status uses
+		// IncludeNoWork), so the remote table asks for them too.
+		page, err := reads.ListRuns(ctx, readservice.RunListOptions{Limit: 200, Cursor: cursor, ShowNoWork: true})
 		if err != nil {
 			return nil, err
 		}
 		for _, run := range page.Runs {
-			runs = append(runs, runSummary{EngineFallback: run.EngineFallback, RunID: run.ID, Workflow: run.Workflow, Gaggle: run.Gaggle, Phase: run.Phase, StartedAt: run.StartedAt, LastActivityAt: run.LastActivityAt, Operator: run.Operator})
+			runs = append(runs, runSummary{EngineFallback: run.EngineFallback, RunID: run.ID, Workflow: run.Workflow, Gaggle: run.Gaggle, Phase: run.Phase, StartedAt: run.StartedAt, LastActivityAt: run.LastActivityAt, Operator: run.Operator, Lineage: run.Lineage})
 		}
 		if page.NextCursor == "" {
 			return runs, nil
@@ -478,8 +495,15 @@ func maybeRunRemoteRunTable(api, root string, rootExplicit, supportsWatch bool, 
 		return 0, false
 	}
 	if supportsWatch && (*daemon || *agents) {
-		pf(stderr, "error: --api cannot be combined with --daemon or --agents\n")
-		return 2, true
+		// --daemon and --agents probe this host's own process, so an explicit
+		// --api conflicts with them. An inherited $GOOBERS_DAEMON_API (worker
+		// pods export it) must not break the local probe, so it falls back to
+		// the local path instead.
+		if strings.TrimSpace(api) != "" {
+			pf(stderr, "error: --api cannot be combined with --daemon or --agents\n")
+			return 2, true
+		}
+		return 0, false
 	}
 	remoteWatch, remoteInterval := false, defaultStatusWatchInterval
 	if supportsWatch {
@@ -493,7 +517,7 @@ func maybeRunRemoteRunTable(api, root string, rootExplicit, supportsWatch bool, 
 // the scheduler, fleet, queue, recovery or per-workflow detail the local status
 // assembles from the instance root.
 const remoteStatusOmissionNote = "note: over --api, status shows the root identity, maintenance state and run table only; " +
-	"scheduler, fleet, queue, recovery and per-workflow detail are not served by the daemon API yet\n"
+	"scheduler, fleet, queue, recovery and per-workflow detail are not served by the daemon API yet (#5985)\n"
 
 // confirmRemoteReadIdentity runs confirmIdentity when reads is the remote
 // adapter and is a no-op for the filesystem-backed reader.
@@ -511,7 +535,7 @@ func confirmRemoteReadIdentity(ctx context.Context, reads readservice.OfflineRun
 // credit attribution have no daemon read route, so a remote trace omits them
 // rather than rendering them empty as if the run had none.
 const remoteTraceOmissionNote = "note: over --api, trace omits spans, agent progress, the escalation's needs-changes rationale, " +
-	"recovery state and attribution; the daemon API does not serve them yet\n"
+	"recovery state, attribution, the journal machine state and journal-only event fields; the daemon API does not serve them yet (#5985)\n"
 
 func remoteStatusRoot(remote readservice.Instance) *statusRootIdentity {
 	root := &statusRootIdentity{Path: remote.InstanceRoot, DaemonState: "healthy"}

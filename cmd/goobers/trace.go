@@ -122,7 +122,7 @@ func runTraceWithFactories(
 	}
 
 	l := instance.NewLayout(root)
-	endpoint, reads, runID, err := traceReadSource(context.Background(), *api, root, fs.NArg() == 2, runID, l, stderr, newOfflineRuns)
+	endpoint, reads, runID, err := traceReadSource(context.Background(), *api, root, fs.NArg() == 2, *follow, runID, l, stderr, newOfflineRuns)
 	if errors.Is(err, iofs.ErrNotExist) {
 		pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", fs.Arg(0), root)
 		return 1
@@ -202,15 +202,7 @@ func runTraceWithFactories(
 		transcripts = nil
 	}
 	now := time.Now()
-	// Recovery and attribution are read from the instance root, which a
-	// remote trace does not have: `l` is the local [path], not the daemon's
-	// root, so reading it would mix another instance's records into this run.
-	var recoveryState *recoveryView
-	var attribution *creditgraph.RunRecord
-	if endpoint == "" {
-		recoveryState = runRecoveryView(ctx, l, runID, now)
-		attribution = loadTraceAttribution(l, runID)
-	}
+	recoveryState, attribution := traceRootEnrichment(ctx, endpoint, l, runID, now)
 	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, telemetryAttempts, now)
 	terminal := terminalCause(detail, ledger.Events)
 	verdicts := loadVerdictViews(ctx, reads, runID, ledger.Events)
@@ -219,12 +211,9 @@ func runTraceWithFactories(
 		pf(stderr, "error: agent progress: %v\n", err)
 		return 2
 	}
-	if err := confirmRemoteReadIdentity(ctx, reads); err != nil {
+	if err := confirmRemoteTrace(ctx, endpoint, reads, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
-	}
-	if endpoint != "" {
-		pf(stderr, "%s", remoteTraceOmissionNote)
 	}
 	if *jsonOutput {
 		result := traceJSONResult{
@@ -297,6 +286,30 @@ func runTraceWithFactories(
 	return 0
 }
 
+// traceRootEnrichment reads recovery state and credit attribution from the
+// instance root. A remote trace has no instance root: `l` is the local [path],
+// not the daemon's root, so reading it would mix another instance's records
+// into this run. Remote traces get neither (see remoteTraceOmissionNote).
+func traceRootEnrichment(ctx context.Context, endpoint string, l instance.Layout, runID string, now time.Time) (*recoveryView, *creditgraph.RunRecord) {
+	if endpoint != "" {
+		return nil, nil
+	}
+	return runRecoveryView(ctx, l, runID, now), loadTraceAttribution(l, runID)
+}
+
+// confirmRemoteTrace re-checks the daemon identity before a remote trace
+// renders and states what the remote trace omits. It is a no-op locally.
+func confirmRemoteTrace(ctx context.Context, endpoint string, reads readservice.OfflineRuns, stderr io.Writer) error {
+	if endpoint == "" {
+		return nil
+	}
+	if err := confirmRemoteReadIdentity(ctx, reads); err != nil {
+		return err
+	}
+	pf(stderr, "%s", remoteTraceOmissionNote)
+	return nil
+}
+
 func maybePrintTraceTranscripts(
 	ctx context.Context,
 	reads readservice.OfflineRuns,
@@ -312,6 +325,10 @@ func maybePrintTraceTranscripts(
 		pf(stderr, "error: %v in run %q\n", err, runID)
 		return true, 2
 	}
+	if err := confirmRemoteReadIdentity(ctx, reads); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return true, 2
+	}
 	if err := printTranscripts(stdout, transcripts, selectedStage); err != nil {
 		pf(stderr, "error: %v in run %q\n", err, runID)
 		if errors.Is(err, errTranscriptNotFound) {
@@ -322,10 +339,15 @@ func maybePrintTraceTranscripts(
 	return true, 0
 }
 
-func traceReadSource(ctx context.Context, api, root string, rootExplicit bool, runID string, layout instance.Layout, diagnostic io.Writer, newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error)) (string, readservice.OfflineRuns, string, error) {
+func traceReadSource(ctx context.Context, api, root string, rootExplicit, follow bool, runID string, layout instance.Layout, diagnostic io.Writer, newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error)) (string, readservice.OfflineRuns, string, error) {
 	endpoint, err := remoteDaemonAPIBase(api)
 	if err != nil {
 		return "", nil, "", err
+	}
+	if endpoint != "" && follow {
+		// followTrace polls without re-checking the daemon's identity, so a
+		// remote follow could stream another instance's events under this one.
+		return "", nil, "", errors.New("--follow is not supported with --api yet; rerun without --follow for a point-in-time trace")
 	}
 	var reads readservice.OfflineRuns
 	if endpoint != "" {
@@ -1085,6 +1107,24 @@ func traceJournalEvent(event readservice.RunEvent) journal.Event {
 		Workflow:        event.Workflow,
 		RunID:           event.RunID,
 		Reason:          event.Reason,
+		// The fields below are carried by the read API's RunEvent, so a
+		// remote trace renders them exactly as a local one does.
+		Escalated:           event.Escalated,
+		Action:              event.Action,
+		Decision:            event.Decision,
+		Rationale:           event.Rationale,
+		Complete:            event.Complete,
+		InstructionAddendum: event.InstructionAddendum,
+		Agent:               event.Agent,
+		Progress:            event.Progress,
+		PeerMessage:         event.PeerMessage,
+		Parallel:            event.Parallel,
+		BranchName:          event.BranchName,
+		BranchStatus:        event.BranchStatus,
+		Completeness:        event.Completeness,
+	}
+	for _, artifact := range event.Artifacts {
+		projected.Artifacts = append(projected.Artifacts, journal.Ref{Digest: artifact.Digest, Size: artifact.Size, MediaType: artifact.MediaType})
 	}
 	if event.Artifact != nil {
 		projected.Ref = &journal.Ref{

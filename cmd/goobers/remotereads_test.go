@@ -132,7 +132,10 @@ func remoteReadTestServer(t *testing.T, id string) *httptest.Server {
 		case strings.ReplaceAll(apicontract.RunDetailPath, "{run}", id):
 			_ = json.NewEncoder(w).Encode(readservice.RunDetail{RunSummary: summary, Escalation: &readservice.EscalationCause{RepassCount: 2}})
 		case strings.ReplaceAll(apicontract.RunEventsPath, "{run}", id):
-			_ = json.NewEncoder(w).Encode(readservice.EventList{RunID: id, Events: []readservice.RunEvent{{Schema: journal.EventSchema, Seq: 1, Type: journal.EventRunStarted, KnownSchema: true, Time: started}}})
+			_ = json.NewEncoder(w).Encode(readservice.EventList{RunID: id, Events: []readservice.RunEvent{
+				{Schema: journal.EventSchema, Seq: 1, Type: journal.EventRunStarted, KnownSchema: true, Time: started},
+				{Schema: journal.EventSchema, Seq: 2, Type: journal.EventGateOverridden, KnownSchema: true, Time: started, Gate: "review", Verdict: "approve", Actor: "operator", Rationale: "operator approved"},
+			}})
 		default:
 			http.NotFound(w, req)
 		}
@@ -199,15 +202,46 @@ func TestRemoteTranscriptRefusesAnotherSequence(t *testing.T) {
 }
 
 func TestRemoteReadRefusesDaemonIdentityChangeMidRead(t *testing.T) {
-	const swapped = "fedcba9876543210fedcba9876543210"
-	inner := remoteReadTestServer(t, remoteReadTestID)
-	defer inner.Close()
+	for _, tc := range []struct {
+		name string
+		args func(api string) []string
+		run  func([]string, io.Writer, io.Writer) int
+	}{
+		{"escalations", func(api string) []string { return []string{"--api", api, "--json"} }, runEscalations},
+		{"escalations show", func(api string) []string { return []string{"--api", api, "--json", remoteReadTestID} }, runEscalationShow},
+		{"status", func(api string) []string { return []string{"--api", api, "--json"} }, runStatus},
+		{"trace", func(api string) []string { return []string{"--api", api, "--json", remoteReadTestID} }, runTrace},
+		{"trace transcripts", func(api string) []string { return []string{"--api", api, "--transcripts", remoteReadTestID} }, runTrace},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := remoteReadProxy(t, remoteReadTestServer(t, remoteReadTestID), true, nil)
+			var stdout, stderr bytes.Buffer
+			if code := tc.run(tc.args(server.URL), &stdout, &stderr); code != 2 {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 || !strings.Contains(stderr.String(), "changed during the read") {
+				t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+// remoteReadProxy forwards to inner. With swapIdentity it answers every
+// /instance read after the first as a different instance, standing in for a
+// daemon replaced behind the endpoint after the command validated it. observe,
+// when set, sees every request path.
+func remoteReadProxy(t *testing.T, inner *httptest.Server, swapIdentity bool, observe func(path string)) *httptest.Server {
+	t.Helper()
+	t.Cleanup(inner.Close)
 	instanceCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if observe != nil {
+			observe(req.URL.Path)
+		}
 		if req.URL.Path == apicontract.InstancePath {
 			instanceCalls++
-			if instanceCalls > 1 {
-				_ = json.NewEncoder(w).Encode(readservice.Instance{InstanceRoot: "/srv/other", RootIdentity: &readservice.RootIdentity{ID: swapped}, Ready: true})
+			if swapIdentity && instanceCalls > 1 {
+				_ = json.NewEncoder(w).Encode(readservice.Instance{InstanceRoot: "/srv/other", RootIdentity: &readservice.RootIdentity{ID: "fedcba9876543210fedcba9876543210"}, Ready: true})
 				return
 			}
 		}
@@ -217,16 +251,84 @@ func TestRemoteReadRefusesDaemonIdentityChangeMidRead(t *testing.T) {
 			return
 		}
 		defer func() { _ = proxy.Body.Close() }()
+		for key, values := range proxy.Header {
+			w.Header()[key] = values
+		}
 		w.WriteHeader(proxy.StatusCode)
 		_, _ = io.Copy(w, proxy.Body)
 	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestRemoteTraceRefusesFollow(t *testing.T) {
+	server := remoteReadTestServer(t, remoteReadTestID)
 	defer server.Close()
 	var stdout, stderr bytes.Buffer
-	if code := runEscalations([]string{"--api", server.URL, "--json"}, &stdout, &stderr); code != 2 {
-		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	if code := runTrace([]string{"--api", server.URL, "--follow", remoteReadTestID}, &stdout, &stderr); code != 2 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 	}
-	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "changed during the read") {
-		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
+	if !strings.Contains(stderr.String(), "--follow is not supported with --api") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRemoteTraceCarriesServedEventFields(t *testing.T) {
+	server := remoteReadTestServer(t, remoteReadTestID)
+	defer server.Close()
+	var stdout, stderr bytes.Buffer
+	if code := runTrace([]string{"--api", server.URL, "--json", remoteReadTestID}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	var result struct {
+		Events []struct {
+			Rationale string `json:"rationale"`
+		} `json:"events"`
+		State *struct {
+			MachineState string `json:"machineState"`
+		} `json:"state"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode trace: %v\n%s", err, stdout.String())
+	}
+	var found bool
+	for _, event := range result.Events {
+		found = found || event.Rationale == "operator approved"
+	}
+	if !found {
+		t.Fatalf("events = %+v, want the served rationale carried through", result.Events)
+	}
+	if result.State != nil && result.State.MachineState != "" {
+		t.Fatalf("machineState = %q; the API does not serve it, so it must not be approximated", result.State.MachineState)
+	}
+}
+
+func TestRemoteRunIDResolvesFullIDWithoutPagingRuns(t *testing.T) {
+	listed := false
+	server := remoteReadProxy(t, remoteReadTestServer(t, remoteReadTestID), false, func(path string) {
+		listed = listed || path == apicontract.RunsPath
+	})
+	reads := newRemoteRuns(server.URL)
+	id, err := resolveRemoteRunID(context.Background(), reads, remoteReadTestID)
+	if err != nil || id != remoteReadTestID || listed {
+		t.Fatalf("id = %q, err = %v, listed = %v", id, err, listed)
+	}
+	id, err = resolveRemoteRunID(context.Background(), reads, remoteReadTestID[:8])
+	if err != nil || id != remoteReadTestID {
+		t.Fatalf("prefix resolution: id = %q, err = %v", id, err)
+	}
+}
+
+func TestInheritedDaemonAPIDoesNotBreakLocalDaemonProbe(t *testing.T) {
+	t.Setenv("GOOBERS_DAEMON_API", "http://127.0.0.1:1")
+	var stdout, stderr bytes.Buffer
+	_ = runStatus([]string{"--daemon", t.TempDir()}, &stdout, &stderr)
+	if strings.Contains(stderr.String(), "--api cannot be combined") {
+		t.Fatalf("an inherited $GOOBERS_DAEMON_API must not refuse the local --daemon probe: %q", stderr.String())
+	}
+	stderr.Reset()
+	if code := runStatus([]string{"--api", "http://127.0.0.1:1", "--daemon"}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "--api cannot be combined") {
+		t.Fatalf("an explicit --api with --daemon must still be refused: code = %d, stderr = %q", code, stderr.String())
 	}
 }
 
