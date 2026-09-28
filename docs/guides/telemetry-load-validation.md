@@ -58,6 +58,7 @@ go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayBacklogAdmis
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexedStats$' -benchtime=100x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexAudit$' -benchtime=3x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupAcknowledgedHistory$' -benchtime=14400x -count=3 -timeout=3m
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupRetainedDirectorySweep$' -benchtime=3x -count=1 -timeout=45m
 ```
 
 The commands also work in PowerShell. Benchmarks are measurements, not hard
@@ -79,6 +80,14 @@ and retry backoff under continued admission.
 The indexed-spool tests also cover cross-connection claims, interrupted updates,
 expired leases, initialization recovery, successful work-budget continuation,
 and deterministic handoff to a waiting producer before a hot drainer reenters.
+`TestAzureReplayNetworkFaultRecovery` exercises real envelope encoding, gzip,
+HTTP and durable replay across 429/503 rejection, connection closure before
+acceptance, and acceptance followed by a lost acknowledgement. DNS failure and
+DNS timeout are injected at the HTTP transport's dial boundary, without public
+DNS dependencies. It checks retained/retried accounting, continued admission,
+and exact stable identities after recovery; the ambiguous case must produce
+two copies of the first ID and one of the second. These short deterministic
+checks do not replace the duration and workflow-latency network gates below.
 
 The benchmark's `commit-p95-ns` samples Commit only. Its `ns/op` includes
 periodic drain waits and coalescing, so it is not a maximum throughput estimate.
@@ -104,6 +113,14 @@ metadata; it is a cache, not an integrity signature. External edits/restores
 must publish changed size/mtime. Appends invalidate the cache. Scheduler
 generation/identity checks are not skipped. Cursor schema migration preserves
 enrollment and acknowledged positions; older entries validate before caching.
+The separate retained-directory benchmark creates **14,400 actual run
+directories**, each with a journal and acknowledged persisted cursor. One
+operation visits all 14,400 directories; `actual-14400-sweep-ms` is measured,
+not extrapolated from 128 fixtures. Setup/enrollment/first fingerprint pass
+are excluded, and fixture creation itself can take minutes on fsynced storage.
+Place the Go test temporary directory on the filesystem being validated.
+This remains a warm reader/cursor-path measurement, not a cold-cache guarantee,
+paced discovery timing, or concurrent daemon latency measurement.
 
 ## Local evidence, not fleet certification
 

@@ -141,6 +141,20 @@ func TestJournalCatchupCursorV1Migration(t *testing.T) {
 // Model already-acknowledged, enrolled history. Pre-enrollment or expired
 // fixtures take an earlier mtime shortcut and do not exercise this path.
 func BenchmarkJournalCatchupAcknowledgedHistory(b *testing.B) {
+	benchmarkJournalCatchupHistory(b, 128, 1)
+}
+
+// Unlike the small warm-cache model above, this creates 14,400 distinct run
+// directories and measures a complete acknowledged-history sweep per operation.
+// Fixture creation, enrollment and the initial fingerprint pass are excluded.
+// It measures the reader/cursor path, not the paced discovery goroutine or a
+// daemon's concurrent workflow latency. Run explicitly with -benchtime=3x.
+func BenchmarkJournalCatchupRetainedDirectorySweep(b *testing.B) {
+	benchmarkJournalCatchupHistory(b, 14400, 14400)
+}
+
+func benchmarkJournalCatchupHistory(b *testing.B, fixtureCount, visitsPerOperation int) {
+	b.Helper()
 	path, spool := b.TempDir(), b.TempDir()
 	root, err := os.OpenRoot(path)
 	if err != nil {
@@ -160,7 +174,6 @@ func BenchmarkJournalCatchupAcknowledgedHistory(b *testing.B) {
 		_ = pipeline.shutdown(ctx)
 	}()
 	source := &journalCatchup{pipeline: pipeline, root: path, spool: spool, since: since, maxAge: 72 * time.Hour}
-	const fixtureCount = 128
 	hints := make([]journalCatchupHint, fixtureCount)
 	for i := range hints {
 		id := fmt.Sprintf("%032x", i+1)
@@ -192,13 +205,19 @@ func BenchmarkJournalCatchupAcknowledgedHistory(b *testing.B) {
 	b.ResetTimer()
 	started := time.Now()
 	for i := range b.N {
-		if more, err := source.processBatch(b.Context(), root, db, hints[i%fixtureCount]); err != nil || more {
-			b.Fatalf("unchanged history: more=%v err=%v", more, err)
+		for j := range visitsPerOperation {
+			if more, err := source.processBatch(b.Context(), root, db, hints[(i*visitsPerOperation+j)%fixtureCount]); err != nil || more {
+				b.Fatalf("unchanged history: more=%v err=%v", more, err)
+			}
 		}
 	}
 	elapsed := time.Since(started)
 	b.StopTimer()
-	b.ReportMetric(float64(elapsed.Nanoseconds())/float64(max(b.N, 1))*14400/1e6, "estimated-14400-sweep-ms")
+	metric := "estimated-14400-sweep-ms"
+	if visitsPerOperation == fixtureCount {
+		metric = "actual-14400-sweep-ms"
+	}
+	b.ReportMetric(float64(elapsed.Nanoseconds())/float64(max(b.N, 1)*visitsPerOperation)*14400/1e6, metric)
 	if pipeline.accepted.Load() != 0 {
 		b.Fatal("acknowledged history was replayed")
 	}
