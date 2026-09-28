@@ -134,3 +134,73 @@ func TestExportReaderRejectsEscapingDirectory(t *testing.T) {
 		t.Fatal("accepted escaping journal directory")
 	}
 }
+
+func TestExportReaderFingerprintTracksMetadata(t *testing.T) {
+	path := t.TempDir()
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	id := testIdentity()
+	run, err := Create(filepath.Join(path, "runs"), id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join("runs", id.RunID)
+	fingerprint := func() string {
+		t.Helper()
+		info, err := root.Stat(filepath.Join(dir, fileEvents))
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err := ExportRunFingerprint(t.Context(), root, dir, info)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	previous := fingerprint()
+	for _, name := range []string{fileEvents, fileRunYAML, fileSchema} {
+		info, err := root.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		changed := info.ModTime().Add(time.Hour)
+		if err = os.Chtimes(filepath.Join(path, dir, name), changed, changed); err != nil {
+			t.Fatal(err)
+		}
+		next := fingerprint()
+		if next == previous {
+			t.Fatalf("same-size %s change was hidden", name)
+		}
+		previous = next
+	}
+	info, err := root.Stat(filepath.Join(dir, fileEvents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ExportRunFingerprint(t.Context(), root, "../outside", info); err == nil {
+		t.Fatal("accepted escaping metadata")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err = ExportRunFingerprint(ctx, root, dir, info); err == nil {
+		t.Fatal("ignored cancellation")
+	}
+	if _, err = ExportRunFingerprint(t.Context(), root, dir, nil); err == nil {
+		t.Fatal("accepted missing event metadata")
+	}
+	if err = os.Remove(filepath.Join(path, dir, fileSchema)); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(filepath.Join(path, dir, fileSchema), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ExportRunFingerprint(t.Context(), root, dir, info); err == nil {
+		t.Fatal("accepted nonregular metadata")
+	}
+}

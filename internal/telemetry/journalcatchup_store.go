@@ -21,10 +21,16 @@ CREATE TABLE IF NOT EXISTS cursors(path TEXT PRIMARY KEY, identity TEXT NOT NULL
  offset INTEGER NOT NULL, seq INTEGER NOT NULL, touched INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS cursors_touched ON cursors(touched);`
 
+var journalCursorMigrations = []string{
+	journalCursorSchema,
+	`ALTER TABLE cursors ADD COLUMN fingerprint TEXT NOT NULL DEFAULT '';`,
+}
+
 type journalCursor struct {
 	identity, generation string
 	offset               int64
 	seq                  uint64
+	fingerprint          string
 }
 
 func openJournalCursorStore(ctx context.Context, root string, since time.Time) (*sql.DB, time.Time, error) {
@@ -47,7 +53,7 @@ func openJournalCursorStore(ctx context.Context, root string, since time.Time) (
 	}
 	db.SetMaxOpenConns(1)
 	fail := func(err error) (*sql.DB, time.Time, error) { _ = db.Close(); return nil, time.Time{}, err }
-	if err = sqliteschema.Migrate(ctx, db, "journal-export-cursors", []string{journalCursorSchema}); err != nil {
+	if err = sqliteschema.Migrate(ctx, db, "journal-export-cursors", journalCursorMigrations); err != nil {
 		return fail(err)
 	}
 	if _, err = db.ExecContext(ctx, "INSERT OR IGNORE INTO enrollment VALUES(1,?)", since.UnixNano()); err != nil {
@@ -62,8 +68,8 @@ func openJournalCursorStore(ctx context.Context, root string, since time.Time) (
 
 func loadJournalCursor(ctx context.Context, db *sql.DB, path string) (journalCursor, error) {
 	var cursor journalCursor
-	err := db.QueryRowContext(ctx, "SELECT identity,generation,offset,seq FROM cursors WHERE path=?", path).
-		Scan(&cursor.identity, &cursor.generation, &cursor.offset, &cursor.seq)
+	err := db.QueryRowContext(ctx, "SELECT identity,generation,offset,seq,fingerprint FROM cursors WHERE path=?", path).
+		Scan(&cursor.identity, &cursor.generation, &cursor.offset, &cursor.seq, &cursor.fingerprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
 	}
@@ -71,9 +77,9 @@ func loadJournalCursor(ctx context.Context, db *sql.DB, path string) (journalCur
 }
 
 func saveJournalCursor(ctx context.Context, db *sql.DB, path string, cursor journalCursor) error {
-	_, err := db.ExecContext(ctx, `INSERT INTO cursors VALUES(?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET
- identity=excluded.identity,generation=excluded.generation,offset=excluded.offset,seq=excluded.seq,touched=excluded.touched`,
-		path, cursor.identity, cursor.generation, cursor.offset, cursor.seq, time.Now().UnixNano())
+	_, err := db.ExecContext(ctx, `INSERT INTO cursors(path,identity,generation,offset,seq,touched,fingerprint) VALUES(?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET
+ identity=excluded.identity,generation=excluded.generation,offset=excluded.offset,seq=excluded.seq,touched=excluded.touched,fingerprint=excluded.fingerprint`,
+		path, cursor.identity, cursor.generation, cursor.offset, cursor.seq, time.Now().UnixNano(), cursor.fingerprint)
 	return err
 }
 

@@ -42,6 +42,36 @@ type ExportBatch struct {
 	Gap      bool // Retention/compaction removed a previously unconsumed sequence.
 }
 
+// ExportRunFingerprint is an incremental-read cache key, not an integrity
+// signature. Include identity/schema metadata so changing either invalidates
+// an EOF cache even if the event stream itself did not change. Journal writers
+// publish changes with new size/mtime; restored or externally edited files must
+// do the same. The rooted regular-file checks still apply on a cache hit.
+func ExportRunFingerprint(ctx context.Context, root *os.Root, dir string, events os.FileInfo) (string, error) {
+	buffer := make([]byte, 0, 128)
+	for i, name := range []string{fileEvents, fileRunYAML, fileSchema} {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		info := events
+		if i != 0 {
+			var err error
+			info, err = root.Stat(dir + string(os.PathSeparator) + name)
+			if err != nil {
+				return "", err
+			}
+		}
+		if info == nil || !info.Mode().IsRegular() {
+			return "", errors.New("journal: export metadata must be regular")
+		}
+		buffer = strconv.AppendInt(buffer, info.Size(), 10)
+		buffer = append(buffer, ':')
+		buffer = strconv.AppendInt(buffer, info.ModTime().UnixNano(), 10)
+		buffer = append(buffer, ';')
+	}
+	return string(buffer), nil
+}
+
 func readExportMetadata(root *os.Root, name string, limit int64) ([]byte, error) {
 	f, err := safeopen.OpenRegularInRoot(root, name)
 	if err != nil {

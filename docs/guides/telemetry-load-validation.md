@@ -44,6 +44,7 @@ go test -race ./internal/telemetry -run 'TestJournalLogs|TestAzureReplay|TestAzu
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalLogsDurableHTTP$' -benchtime=4096x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayBacklogAdmission$' -benchtime=5x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexedStats$' -benchtime=100x -count=3
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupAcknowledgedHistory$' -benchtime=14400x -count=3 -timeout=3m
 ```
 
 The commands also work in PowerShell. Benchmarks are measurements, not hard
@@ -73,6 +74,17 @@ by one file per measured iteration; use the fixed iteration count above when
 comparing results.
 The indexed-stats benchmark compares empty and 12,000-file manifests after
 initialization. Fixture creation is excluded; it is not a cold-start benchmark.
+The acknowledged-history benchmark repeatedly visits 128 warm, enrolled run
+journals and scales the per-visit measurement to 14,400 visits (ten runs every
+three minutes across a 72-hour retention window). It is not an actual
+14,400-directory cold-cache scan. On the same local host, an EOF fingerprint
+reduced this estimate from 2.21–2.28 seconds to 1.16–1.23 seconds and allocations
+from about 35.5 KB to 3.2 KB per visit. Native filesystem results still matter.
+The persisted fingerprint checks size/mtime of events, run identity and schema
+metadata; it is a cache, not an integrity signature. External edits/restores
+must publish changed size/mtime. Appends invalidate the cache. Scheduler
+generation/identity checks are not skipped. Cursor schema migration preserves
+enrollment and acknowledged positions; older entries validate before caching.
 
 ## Local evidence, not fleet certification
 

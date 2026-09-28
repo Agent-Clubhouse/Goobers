@@ -157,7 +157,7 @@ func TestJournalCatchupCursorCountBoundAndNewerSchema(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	_, err = db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS
  (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100010)
- INSERT INTO cursors SELECT CAST(x AS TEXT),'identity','events',0,x,?+x FROM n`, time.Now().UnixNano())
+ INSERT INTO cursors(path,identity,generation,offset,seq,touched) SELECT CAST(x AS TEXT),'identity','events',0,x,?+x FROM n`, time.Now().UnixNano())
 	if err != nil {
 		t.Fatal(err)
 	}

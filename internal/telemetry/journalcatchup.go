@@ -206,6 +206,7 @@ func (s *journalCatchup) processBatch(ctx context.Context, root *os.Root, db *sq
 	if s.since.After(cutoff) {
 		cutoff = s.since
 	}
+	var runFile os.FileInfo
 	if dir != "scheduler" {
 		info, err := root.Stat(filepath.Join(dir, "events.jsonl"))
 		if err != nil {
@@ -214,6 +215,7 @@ func (s *journalCatchup) processBatch(ctx context.Context, root *os.Root, db *sq
 		if info.ModTime().Before(cutoff) {
 			return false, nil
 		}
+		runFile = info
 	}
 	lock, err := platformlock.TryAcquire(filepath.Join(s.spool, ".journal-cursors.lock"))
 	if err != nil {
@@ -226,6 +228,10 @@ func (s *journalCatchup) processBatch(ctx context.Context, root *os.Root, db *sq
 	}
 	if hint.seq > 0 && cursor.identity == hint.identity && cursor.seq >= hint.seq {
 		return false, nil
+	}
+	fingerprint, unchanged, err := unchangedJournalRun(ctx, root, dir, runFile, cursor)
+	if err != nil || unchanged {
+		return false, err
 	}
 	batch, err := s.readBatch(ctx, root, hint, cursor)
 	if err != nil {
@@ -260,11 +266,20 @@ func (s *journalCatchup) processBatch(ctx context.Context, root *os.Root, db *sq
 		return false, errors.New("journal batch was not durably admitted")
 	}
 	next := journalCursor{identity: batch.Position.Identity, generation: batch.Position.Generation,
-		offset: batch.Position.Offset, seq: batch.Position.Seq}
+		offset: batch.Position.Offset, seq: batch.Position.Seq, fingerprint: fingerprint}
 	if next != cursor {
 		err = saveJournalCursor(ctx, db, dir, next)
 	}
 	return batch.More, err
+}
+
+func unchangedJournalRun(ctx context.Context, root *os.Root, dir string, info os.FileInfo, cursor journalCursor) (string, bool, error) {
+	if info == nil {
+		return "", false, nil
+	} // Scheduler generation/identity must always be read.
+	fingerprint, err := journal.ExportRunFingerprint(ctx, root, dir, info)
+	unchanged := err == nil && cursor.identity == filepath.Base(dir) && cursor.offset == info.Size() && cursor.fingerprint == fingerprint
+	return fingerprint, unchanged, err
 }
 
 func (s *journalCatchup) readBatch(ctx context.Context, root *os.Root, hint journalCatchupHint, cursor journalCursor) (journal.ExportBatch, error) {
