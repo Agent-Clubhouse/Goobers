@@ -168,7 +168,11 @@ func (c *azureMonitorClient) export(ctx context.Context, items []appinsights.Tel
 }
 
 func (c *azureMonitorClient) sendPayload(ctx context.Context, raw []byte) error {
-	if err := c.sendPayloadRequest(ctx, raw); err != nil {
+	projected, err := azureJournalHealthPayload(raw)
+	if err != nil {
+		return err
+	}
+	if err := c.sendPayloadRequest(ctx, projected); err != nil {
 		return &azureMonitorDeliveryError{cause: err}
 	}
 	return nil

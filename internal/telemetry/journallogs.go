@@ -655,7 +655,7 @@ func (p *journalLogPipeline) emit(e journal.CommittedEvent) {
 	var record apilog.Record
 	record.SetTimestamp(e.Time)
 	record.SetObservedTimestamp(e.ObservedTime)
-	record.SetBody(attribute.StringValue(string(e.Body)))
+	record.SetBody(attribute.StringValue(string(journalExportBody(e.Body))))
 	record.AddAttributes(
 		attribute.Int("goobers.journal.schema_version", 1),
 		attribute.String("goobers.telemetry.stream", "journal"),

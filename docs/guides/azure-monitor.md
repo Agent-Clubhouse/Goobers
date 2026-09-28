@@ -103,6 +103,19 @@ Exported resources carry the effective choice as
 Records remain structured JSON. Goobers does not base64-wrap workflow bodies,
 prompts, credentials, or arbitrary raw payloads as a telemetry escape hatch.
 
+Service-health journal bodies are an operational projection, not a raw copy of
+the local observation. Journal collectors receive no machine/account names,
+recovery filesystem paths, or arbitrary extra health payloads. Explicitly
+consented identity remains available through the diagnostic signal and Azure
+resource attributes. The authoritative local journal is unchanged, as are the
+exported journal sequence and stable record ID. Previously queued Azure journal
+batches receive the same projection before HTTP upload, including old spool
+files. Ordinary journal bodies retain their existing secret-scrubbed content;
+this is not a general-purpose personal-data scrubber for user-authored text.
+Malformed health bodies are replaced by a JSON `telemetryBodyRedacted` marker,
+with correlation metadata retained. Malformed candidate Azure envelopes fail
+closed and remain pending rather than sending an unfiltered payload.
+
 Set the environment variable in the account/environment of the Goobers daemon
 and restart the service. A private file or declared secret store is also valid:
 

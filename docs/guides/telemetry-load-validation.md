@@ -56,6 +56,12 @@ load-test a production tenant without its approval.
   on the next replay operation. This finds external/interrupted file changes
   even when a filesystem coalesces timestamps. Short-lived CLI processes share
   that cadence. A locally rolled-back mutation forces the next reconciliation.
+- Service-health journal export uses only operational fields from the already
+  scrubbed bytes; host/account names and recovery paths remain local to that
+  journal. Identity consent is applied through the independent diagnostics
+  channel. The HTTP boundary also projects old queued Azure envelopes, so replay
+  cannot bypass this protection. Tests must inspect JSON message bodies as well
+  as top-level dimensions; field-only privacy assertions are insufficient.
 
 These are background goroutines, **not an OS low-priority scheduling class**.
 Asynchronous work still consumes CPU, memory, disk bandwidth, and filesystem
