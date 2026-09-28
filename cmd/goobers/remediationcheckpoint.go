@@ -744,7 +744,7 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 // same-diff comparison: the digest it would compare against is the one this
 // attempt recorded moments ago, not evidence from a previous attempt (#6008).
 func settlePriorRemediationCycle(in *remediationCheckpointDecisionInput) (int, bool) {
-	if remediationCheckpointSameAttempt(in.Prior, in.RunID, in.HeadSHA) {
+	if !in.Forced && remediationCheckpointSameAttempt(in.Prior, in.RunID, in.HeadSHA) {
 		return unwindSameAttemptCycle(in), true
 	}
 	return settleInfrastructureVoidedCycle(in), false
@@ -752,11 +752,15 @@ func settlePriorRemediationCycle(in *remediationCheckpointDecisionInput) (int, b
 
 // remediationCheckpointSameAttempt reports whether prior was recorded by this
 // very remediation attempt: an advancing cycle stamped with the current run
-// for the current pushed head. Each remediation attempt is its own run, so a
-// matching run at an unchanged head can only be a retry of this stage after
-// it had already written its state (for example after a transient failure
-// later in the stage). A different run, a moved head, an escalation record,
-// an infrastructure-voided cycle, or a record without a run all read as a
+// for the current pushed head. Each remediation attempt is its own run, and a
+// non-forced checkpoint only re-enters within a run when the stage is retried
+// after it had already written its state (for example after a transient
+// failure later in the stage). A forced (--escalate) call is never a retry:
+// the park stages invoke it in the same run, at the same head, right after
+// this attempt's own checkpoint, and it must keep the attempt's charge so the
+// escalation attributes what was attempted (#4074); settlePriorRemediationCycle
+// excludes it. A different run, a moved head, an escalation record, an
+// infrastructure-voided cycle, or a record without a run all read as a
 // previous attempt, so the same-diff stall still fires across attempts.
 func remediationCheckpointSameAttempt(prior remediationState, runID, headSHA string) bool {
 	return runID != "" && headSHA != "" &&

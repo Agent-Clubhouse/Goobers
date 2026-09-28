@@ -162,3 +162,91 @@ func TestRemediationCheckpointSameRunRetryDoesNotEscalate(t *testing.T) {
 		t.Fatalf("labels = %v, want %s on a repeat across attempts", st.labels, remediationEscalatedLabel)
 	}
 }
+
+// TestForcedEscalationInSameRunKeepsAttemptCharge pins that a forced
+// (--escalate) checkpoint is never read as a same-attempt retry. The reference
+// workflow's park stages invoke it in the same run, at the same head, right
+// after this attempt's own checkpoint; unwinding that record would refund the
+// attempt's charge and lose the #4074 cause attribution (a rejected first-cycle
+// rebase would stay parked with no base-advance exit).
+func TestForcedEscalationInSameRunKeepsAttemptCharge(t *testing.T) {
+	advance := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+		Causes:  []remediationCause{remediationCauseConflict},
+		Budgets: remediationBudgets{Conflict: 2},
+		Digest:  "sha256:rebase",
+		HeadSHA: "head",
+		BaseSHA: "base",
+		RunID:   "run-x",
+	})
+	if advance.Escalated || advance.State.AttemptsByCause.Conflict != 1 {
+		t.Fatalf("advance = %+v, want an advancing cycle charging conflict once", advance)
+	}
+
+	forced := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+		Prior:         advance.State,
+		Causes:        []remediationCause{remediationCauseConflict},
+		Budgets:       remediationBudgets{Conflict: 2},
+		Forced:        true,
+		ForcedReason:  "the in-run reviewer returned a terminal `fail` verdict on this remediation attempt",
+		ForcedOutcome: remediationOutcomeDidNotConverge,
+		Digest:        "sha256:rebase",
+		HeadSHA:       "head",
+		BaseSHA:       "base",
+		RunID:         "run-x",
+	})
+	if !forced.Escalated {
+		t.Fatal("escalated = false, want true — a forced escalation always escalates")
+	}
+	want := []remediationCause{remediationCauseConflict}
+	if forced.State.AttemptsByCause.Conflict != 1 {
+		t.Fatalf("attempts = %+v, want the attempt's conflict charge kept", forced.State.AttemptsByCause)
+	}
+	if !reflect.DeepEqual(forced.State.AttemptedCauses, want) {
+		t.Fatalf("attempted causes = %v, want %v", forced.State.AttemptedCauses, want)
+	}
+	if !reflect.DeepEqual(forced.State.EscalationCauses, want) {
+		t.Fatalf("escalation causes = %v, want %v", forced.State.EscalationCauses, want)
+	}
+	if !escalationBaseAdvanceUnparks(forced.State) {
+		t.Fatal("base advance unparks = false, want true for a rejected rebase")
+	}
+}
+
+// TestRemediationCheckpointEscalateInSameRunKeepsAttemptCharge drives the
+// stage the way the reference workflow does: remediation-checkpoint, then a
+// park stage's remediation-checkpoint --escalate under the same GOOBERS_RUN_ID
+// at an unchanged head.
+func TestRemediationCheckpointEscalateInSameRunKeepsAttemptCharge(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{number: 77, headSHA: headSHA, baseSHA: baseSHA, labels: []string{needsRemediationLabel}}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "conflict")
+
+	if code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
+		t.Fatalf("checkpoint: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--escalate", "reviewer rejected", instanceRoot); code != 0 {
+		t.Fatalf("escalate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var state remediationState
+	found := false
+	for _, body := range st.comments {
+		if parsed, ok := parseRemediationStateComment(body); ok {
+			state, found = parsed, true
+		}
+	}
+	if !found || !state.Escalated {
+		t.Fatalf("state = %+v (found=%v), want an escalated state record", state, found)
+	}
+	want := []remediationCause{remediationCauseConflict}
+	if state.AttemptsByCause.Conflict != 1 || !reflect.DeepEqual(state.EscalationCauses, want) {
+		t.Fatalf("state = %+v, want the attempt's conflict charge kept and attributed", state)
+	}
+	if !escalationBaseAdvanceUnparks(state) {
+		t.Fatal("base advance unparks = false, want true for a rejected rebase")
+	}
+}
