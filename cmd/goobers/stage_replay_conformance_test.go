@@ -321,6 +321,7 @@ func replayResolveReviewThreadsGitHub(t *testing.T) replayFixture {
 		owned: func(t *testing.T) map[string][]string {
 			owned := map[string][]string{}
 			for id, state := range threads {
+				owned[id] = nil
 				for _, reply := range state.replies {
 					owned[id] = append(owned[id], reply["body"].(string))
 				}
@@ -367,8 +368,10 @@ func replayResolveReviewThreadsADO(t *testing.T) replayFixture {
 			defer fake.mu.Unlock()
 			owned := map[string][]string{}
 			for id, thread := range fake.threads {
+				slot := "thread " + strconv.Itoa(id)
+				owned[slot] = nil
 				for _, reply := range thread.replies {
-					owned["thread "+strconv.Itoa(id)] = append(owned["thread "+strconv.Itoa(id)], reply["content"].(string))
+					owned[slot] = append(owned[slot], reply["content"].(string))
 				}
 			}
 			return owned
