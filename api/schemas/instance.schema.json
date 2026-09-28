@@ -340,13 +340,13 @@
         {
           "if": {
             "required": ["auth"],
-            "properties": { "auth": { "required": ["kind"], "properties": { "kind": { "const": "github-app-token" } } } }
+            "properties": { "auth": { "required": ["kind"], "properties": { "kind": { "const": "github-app-token", "description": "Selects an externally minted GitHub App installation token." } } } }
           },
           "then": {
             "required": ["token"],
             "properties": {
               "provider": { "const": "github" },
-              "token": { "properties": { "githubCLI": false } }
+              "token": { "not": { "required": ["githubCLI"] } }
             }
           }
         }
