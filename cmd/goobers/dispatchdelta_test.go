@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
 // fakeBlobPlane is the smallest thing that behaves like the blob plane: a
@@ -645,6 +647,12 @@ func TestRefusedDeltaNamesTheCheckedOutAndReboundBranch(t *testing.T) {
 				t.Errorf("refusal %q does not contain %q; a reader of a rebound run cannot tell which line of history the two SHAs belong to", err, want)
 			}
 		}
+		// #5948: the fetch succeeded, so this delta is on the checkout's own
+		// line of history; the pre-rebind explanation belongs to the fetch
+		// refusal only.
+		if strings.Contains(err.Error(), "produced before the rebind") {
+			t.Errorf("refusal %q blames a pre-rebind delta for an ancestry divergence on the rebound branch", err)
+		}
 	})
 
 	t.Run("an unrebound run is named its branch and nothing more", func(t *testing.T) {
@@ -656,4 +664,158 @@ func TestRefusedDeltaNamesTheCheckedOutAndReboundBranch(t *testing.T) {
 			t.Errorf("refusal %q claims a rebind for a run that never rebound; an unconditional clause sends every reader hunting a rebind that did not happen", err)
 		}
 	})
+}
+
+// #5948: the pr-remediation sequence that failed twice on a production
+// instance (PRs #5506 and #5861), replayed through the real pod seam. The run
+// rebinds onto the PR head, rebase-pr rebases it onto an advanced base without
+// pushing, implement lands that rebase (the #4175 arm) and commits on top, and
+// the next stage — the reviewer gate's pod — clones the PR head and applies
+// implement's delta.
+//
+// Both arms are asserted together because the fix must not change which of
+// them lands. Undisturbed, the run's own rebase-plus-implement delta lands on
+// the rebound branch. When a person pushes to the PR while the run is working
+// (what both PR timelines show), the guard still refuses: landing the delta
+// would discard that push. What the refusal must NOT do is blame "a delta
+// produced before the rebind" — the delta was produced on the rebound branch,
+// after the rebind — and it must name the commit that moved the branch and
+// surrender as not retryable, because a fresh pod clones the same moved branch
+// and derives the identical refusal.
+func TestReboundBranchMovedUnderTheRunIsRefusedAndNamed(t *testing.T) {
+	const prBranch = "e2e/implementation/pr-5948"
+
+	type replay struct {
+		origin     string
+		stage      func(t *testing.T, digest string) (string, error)
+		implDigest string
+		implTip    string
+	}
+	// setup replays gather-pr-context's rebind, rebase-pr and implement.
+	setup := func(t *testing.T) replay {
+		t.Helper()
+		origin := initBareOrigin(t)
+		endpoint, _ := fakeBlobPlane(t)
+		prev := checkoutCloneURL
+		checkoutCloneURL = func(apiv1.RepoRef) (string, error) { return origin, nil }
+		t.Cleanup(func() { checkoutCloneURL = prev })
+
+		// The PR: one commit on a branch cut from main, pushed; then main
+		// advances past it, so rebase-pr has something to rewrite.
+		author := filepath.Join(t.TempDir(), "author")
+		runGitT(t, filepath.Dir(author), "clone", "--branch", "main", origin, author)
+		runGitT(t, author, "config", "user.name", "author")
+		runGitT(t, author, "config", "user.email", "author@example.com")
+		runGitT(t, author, "checkout", "-b", prBranch)
+		writeCommitT(t, author, "pr.txt", "pr\n", "the PR's own change")
+		runGitT(t, author, "push", origin, prBranch)
+		runGitT(t, author, "checkout", "main")
+		writeCommitT(t, author, "newmain.txt", "new\n", "base advances past the PR")
+		runGitT(t, author, "push", origin, "main")
+
+		stage := func(t *testing.T, digest string) (string, error) {
+			t.Helper()
+			t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+			t.Setenv(dispatcher.EnvPodToken, "pod-token")
+			t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+			t.Setenv(executor.RepoProviderEnvVar, string(apiv1.ProviderGitHub))
+			t.Setenv(executor.RepoOwnerEnvVar, "acme")
+			t.Setenv(executor.RepoNameEnvVar, "widget")
+			t.Setenv(executor.BranchNamespaceEnvVar, "e2e/")
+			t.Setenv(executor.BaseBranchEnvVar, "main")
+			t.Setenv(dispatcher.EnvWorkflow, "pr-remediation")
+			t.Setenv(dispatcher.EnvRunID, "run-5948")
+			// gather-pr-context's rebind: every later stage is stamped the PR head.
+			t.Setenv(dispatcher.EnvWorkspaceBranch, prBranch)
+			t.Setenv(dispatcher.EnvWorkspaceDelta, digest)
+			ws := t.TempDir()
+			var errOut strings.Builder
+			if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
+				return ws, err
+			}
+			runGitT(t, ws, "config", "user.name", "stage")
+			runGitT(t, ws, "config", "user.email", "stage@example.com")
+			return ws, nil
+		}
+
+		// rebase-pr: rebases the PR onto the advanced base and does not push.
+		rebaseWS, err := stage(t, "")
+		if err != nil {
+			t.Fatalf("rebase-pr checkout: %v", err)
+		}
+		runGitT(t, rebaseWS, "rebase", "origin/main")
+		rebased, err := publishWorkspaceDelta(context.Background(), rebaseWS, os.Stderr)
+		if err != nil || rebased.Digest == "" {
+			t.Fatalf("rebase-pr publish = %+v, %v; want a delta carrying the rebase", rebased, err)
+		}
+
+		// implement: lands the rebase on the un-rebased PR head, then commits.
+		implWS, err := stage(t, rebased.Digest)
+		if err != nil {
+			t.Fatalf("implement could not land rebase-pr's delta on the rebound branch: %v", err)
+		}
+		writeCommitT(t, implWS, "impl.txt", "impl\n", "implement's remediation")
+		impl, err := publishWorkspaceDelta(context.Background(), implWS, os.Stderr)
+		if err != nil || impl.Digest == "" {
+			t.Fatalf("implement publish = %+v, %v; want a delta carrying its commit", impl, err)
+		}
+		return replay{origin: origin, stage: stage, implDigest: impl.Digest, implTip: impl.Tip}
+	}
+
+	t.Run("undisturbed: the run's own post-rebind delta lands on the rebound branch", func(t *testing.T) {
+		r := setup(t)
+		ws, err := r.stage(t, r.implDigest)
+		if err != nil {
+			t.Fatalf("the reviewer's pod refused the run's own post-rebind delta: %v", err)
+		}
+		if got := strings.TrimSpace(runGitOutputT(t, ws, "rev-parse", "HEAD")); got != r.implTip {
+			t.Fatalf("HEAD = %s, want implement's tip %s", got, r.implTip)
+		}
+	})
+
+	t.Run("a push to the PR mid-run is refused, named, and not retried", func(t *testing.T) {
+		r := setup(t)
+		person := filepath.Join(t.TempDir(), "person")
+		runGitT(t, filepath.Dir(person), "clone", "--branch", prBranch, r.origin, person)
+		runGitT(t, person, "config", "user.name", "person")
+		runGitT(t, person, "config", "user.email", "person@example.com")
+		writeCommitT(t, person, "human.txt", "human\n", "a person's push while the run works")
+		runGitT(t, person, "push", r.origin, prBranch)
+
+		_, err := r.stage(t, r.implDigest)
+		if err == nil {
+			t.Fatal("the reviewer's pod landed a delta over a push it does not carry; that discards the person's commit")
+		}
+		var diverged *workspacedelta.DivergedError
+		if !errors.As(err, &diverged) {
+			t.Fatalf("refusal = %v, want a *workspacedelta.DivergedError", err)
+		}
+		msg := err.Error()
+		for _, want := range []string{
+			`the workspace is on branch "` + prBranch + `"`,
+			`this run rebound its workspace branch to "` + prBranch + `" before the delta was produced`,
+			"the ref carries 1 commit(s) the delta lacks",
+			"a person's push while the run works",
+		} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("refusal %q does not contain %q", msg, want)
+			}
+		}
+		if strings.Contains(msg, "produced before the rebind") {
+			t.Errorf("refusal %q blames a pre-rebind delta; the delta was produced on the rebound branch and the branch moved", msg)
+		}
+		if substrateRetryable(err) {
+			t.Error("substrateRetryable = true for a diverged delta; a fresh pod clones the same moved branch and refuses identically")
+		}
+	})
+}
+
+// writeCommitT writes file and commits it with message in the clone at dir.
+func writeCommitT(t *testing.T, dir, file, content, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", file, err)
+	}
+	runGitT(t, dir, "add", file)
+	runGitT(t, dir, "commit", "-m", message)
 }
