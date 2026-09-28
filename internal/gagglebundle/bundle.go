@@ -528,6 +528,17 @@ func validatePortableMetadata(subject string, labels, annotations map[string]str
 }
 
 func collectFiles(configDir string, set *instance.ConfigSet, gaggle string, goobers []apiv1.Goober) ([]apiv1.GaggleBundleFile, error) {
+	paths, err := collectCompanionPaths(configDir, set, gaggle, goobers)
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) > maxCompanionFiles {
+		return nil, fmt.Errorf("%w: companion file count %d exceeds limit %d", ErrInvalidBundle, len(paths), maxCompanionFiles)
+	}
+	return encodeCompanionFiles(paths)
+}
+
+func collectCompanionPaths(configDir string, set *instance.ConfigSet, gaggle string, goobers []apiv1.Goober) (map[string]string, error) {
 	root := filepath.Join(configDir, "gaggles", gaggle)
 	paths := map[string]string{}
 	for _, goober := range goobers {
@@ -545,50 +556,55 @@ func collectFiles(configDir string, set *instance.ConfigSet, gaggle string, goob
 			paths[portable] = filepath.Join(sourceDir, instructions)
 		}
 		for _, skill := range goober.Spec.Skills {
-			if skill == "" || strings.ContainsAny(skill, `/\`) || skill == "." || skill == ".." {
-				return nil, fmt.Errorf("goober %q has non-portable skill name %q", goober.Name, skill)
-			}
-			skillDir := filepath.Join(root, "skills", skill)
-			info, err := os.Stat(skillDir)
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return nil, fmt.Errorf("inspect gaggle skill package %q: %w", skill, err)
-			}
-			if err != nil || !info.IsDir() {
-				skillDir = filepath.Join(filepath.Dir(configDir), "skills", skill)
-			}
-			info, err = os.Stat(skillDir)
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return nil, fmt.Errorf("inspect shared skill package %q: %w", skill, err)
-			}
-			if err != nil || !info.IsDir() {
-				return nil, fmt.Errorf("goober %q references missing skill package %q", goober.Name, skill)
-			}
-			if err := filepath.WalkDir(skillDir, func(path string, entry fs.DirEntry, walkErr error) error {
-				if walkErr != nil {
-					return walkErr
-				}
-				if entry.Type()&os.ModeSymlink != 0 {
-					return fmt.Errorf("referenced skill path %s is a symlink", path)
-				}
-				if entry.IsDir() {
-					return nil
-				}
-				rel, err := filepath.Rel(skillDir, path)
-				if err != nil {
-					return err
-				}
-				portable := filepath.ToSlash(filepath.Join("skills", skill, rel))
-				paths[portable] = path
-				return nil
-			}); err != nil {
+			if err := collectSkillPaths(configDir, root, goober.Name, skill, paths); err != nil {
 				return nil, err
 			}
 		}
 	}
-	var files []apiv1.GaggleBundleFile
-	if len(paths) > maxCompanionFiles {
-		return nil, fmt.Errorf("%w: companion file count %d exceeds limit %d", ErrInvalidBundle, len(paths), maxCompanionFiles)
+	return paths, nil
+}
+
+func collectSkillPaths(configDir, gaggleRoot, gooberName, skill string, paths map[string]string) error {
+	if skill == "" || strings.ContainsAny(skill, `/\`) || skill == "." || skill == ".." {
+		return fmt.Errorf("goober %q has non-portable skill name %q", gooberName, skill)
 	}
+	skillDir := filepath.Join(gaggleRoot, "skills", skill)
+	info, err := os.Stat(skillDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("inspect gaggle skill package %q: %w", skill, err)
+	}
+	if err != nil || !info.IsDir() {
+		skillDir = filepath.Join(filepath.Dir(configDir), "skills", skill)
+	}
+	info, err = os.Stat(skillDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("inspect shared skill package %q: %w", skill, err)
+	}
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("goober %q references missing skill package %q", gooberName, skill)
+	}
+	return filepath.WalkDir(skillDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("referenced skill path %s is a symlink", path)
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(skillDir, path)
+		if err != nil {
+			return err
+		}
+		portable := filepath.ToSlash(filepath.Join("skills", skill, rel))
+		paths[portable] = path
+		return nil
+	})
+}
+
+func encodeCompanionFiles(paths map[string]string) ([]apiv1.GaggleBundleFile, error) {
+	var files []apiv1.GaggleBundleFile
 	totalBytes := int64(0)
 	for rel, path := range paths {
 		info, err := os.Lstat(path)
