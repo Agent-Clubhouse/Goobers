@@ -385,14 +385,13 @@ func stageReplayCases() []stageReplayCase {
 		},
 		{
 			// The sticky remediation-state comment is created once and edited
-			// in place on a retry. The retry sees the same diff, so it parks
-			// the PR: the label swap is budgeted, a second comment is not.
+			// in place on a retry. The retry reads back its own run's write for
+			// the same head, so it is idempotent (#6008): no escalation label
+			// swap and no second comment.
 			stage: "remediation-checkpoint", provider: providers.ProviderGitHub,
-			setup: replayRemediationCheckpointGitHub,
-			first: map[string]int{replayGitHubCommentCreate: 1},
-			replay: map[string]int{
-				replayGitHubCommentEdit: 1, replayGitHubLabelAdd: 1, replayGitHubLabelRemove: 1,
-			},
+			setup:   replayRemediationCheckpointGitHub,
+			first:   map[string]int{replayGitHubCommentCreate: 1},
+			replay:  map[string]int{replayGitHubCommentEdit: 1},
 			creates: []string{replayGitHubCommentCreate},
 		},
 		{

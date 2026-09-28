@@ -78,7 +78,9 @@ func requiredMCPObservation(event journal.Event) (RequiredMCPCondition, bool) {
 		SchemaVersion int `json:"schemaVersion"`
 		RequiredMCPCondition
 	}
-	if json.Unmarshal(data, &payload) != nil || payload.SchemaVersion != 1 {
+	// Version 2 adds producer diagnostics (#5397) that this projection does
+	// not retain; version 1 journals stay readable.
+	if json.Unmarshal(data, &payload) != nil || payload.SchemaVersion < 1 || payload.SchemaVersion > 2 {
 		return result, false
 	}
 	result = payload.RequiredMCPCondition

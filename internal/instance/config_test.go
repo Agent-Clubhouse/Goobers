@@ -1536,6 +1536,35 @@ func TestDaemonLivenessTimeout(t *testing.T) {
 	}
 }
 
+// #5397: the required-MCP settle budget is optional (zero keeps the harness
+// default), loads from instance.yaml, and fails closed when malformed.
+func TestRequiredMCPSettleTimeout(t *testing.T) {
+	if got, err := (RunnerConfig{}).RequiredMCPSettleTimeoutDuration(); err != nil || got != 0 {
+		t.Fatalf("unset RequiredMCPSettleTimeoutDuration = %s, %v; want 0", got, err)
+	}
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+runner:
+  requiredMCPSettleTimeout: 90s
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got, err := cfg.Runner.RequiredMCPSettleTimeoutDuration(); err != nil || got != 90*time.Second {
+		t.Fatalf("RequiredMCPSettleTimeoutDuration = %s, %v; want 90s", got, err)
+	}
+	for _, value := range []string{"not-a-duration", "0s", "-1m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Config{Runner: RunnerConfig{RequiredMCPSettleTimeout: value}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "runner.requiredMCPSettleTimeout") {
+				t.Fatalf("Validate() error = %v, want runner.requiredMCPSettleTimeout error", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigAPIListenAddress(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1

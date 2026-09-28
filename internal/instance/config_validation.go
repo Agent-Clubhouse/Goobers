@@ -3,6 +3,7 @@ package instance
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -533,9 +534,32 @@ func (r RepoRef) validateGitHub(i int, stores map[string]bool, envPassthrough []
 		return nil
 	case GitHubAuthApp:
 		return r.validateGitHubApp(i, stores, envPassthrough)
+	case GitHubAuthAppToken:
+		return r.validateGitHubAppToken(i)
 	default:
-		return fmt.Errorf("repos[%d] (%s/%s): unsupported GitHub auth kind %q (supported: %q, %q)", i, r.Owner, r.Name, kind, GitHubAuthPAT, GitHubAuthApp)
+		return fmt.Errorf("repos[%d] (%s/%s): unsupported GitHub auth kind %q (supported: %q, %q, %q)", i, r.Owner, r.Name, kind, GitHubAuthPAT, GitHubAuthApp, GitHubAuthAppToken)
 	}
+}
+
+// Match the login vocabulary accepted by dispatcher-owned stage identity.
+// Do not infer an App identity from token prefixes or an ambient gh session.
+var githubAppTokenSlugPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+
+func (r RepoRef) validateGitHubAppToken(i int) error {
+	where := fmt.Sprintf("repos[%d] (%s/%s): auth kind %q", i, r.Owner, r.Name, GitHubAuthAppToken)
+	if r.Auth.AppID != "" || r.Auth.InstallationID != "" || r.Auth.PrivateKey != nil {
+		return fmt.Errorf("%s must not configure auth.appId, auth.installationId, or auth.privateKey — token minting is external", where)
+	}
+	if r.Auth.Tenant != "" || r.Auth.ClientID != "" {
+		return fmt.Errorf("%s: auth.tenant and auth.clientId are only valid for ADO auth kinds", where)
+	}
+	if r.Token.sourceCount() != 1 || r.Token.GitHubCLI != nil {
+		return fmt.Errorf("%s requires exactly one token.env, token.file, token.keychain, or token.store reference to an externally minted installation token; githubCLI user identity is not supported", where)
+	}
+	if !githubAppTokenSlugPattern.MatchString(r.Auth.Slug) {
+		return fmt.Errorf("%s requires auth.slug: 1-39 ASCII letters, digits or hyphens, starting with a letter or digit, without the [bot] suffix", where)
+	}
+	return nil
 }
 
 func (r RepoRef) validateGitHubApp(i int, stores map[string]bool, envPassthrough []string) error {
@@ -869,7 +893,7 @@ func (c RunnerConfig) validate() error {
 			return fmt.Errorf("runner.capabilities[%d]: %w", i, err)
 		}
 	}
-	if _, err := c.LivenessTimeoutDuration(); err != nil {
+	if err := c.validateTimeouts(); err != nil {
 		return err
 	}
 	for i, name := range c.EnvPassthrough {
@@ -897,6 +921,14 @@ func (c RunnerConfig) validate() error {
 		return err
 	}
 	return c.validateHarnessPreflightArgs()
+}
+
+func (c RunnerConfig) validateTimeouts() error {
+	if _, err := c.LivenessTimeoutDuration(); err != nil {
+		return err
+	}
+	_, err := c.RequiredMCPSettleTimeoutDuration()
+	return err
 }
 
 func (c RunnerConfig) validateHarnessSessionArgs() error {

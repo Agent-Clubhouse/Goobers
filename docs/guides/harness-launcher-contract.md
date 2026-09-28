@@ -206,17 +206,21 @@ are surfaced as capture errors rather than silently advancing the source cursor.
 
 Direct Copilot invocations with the default arguments on macOS and Linux use
 one owned headless process and one native SDK session for both the required
-`goobers-io` check and model turns. Startup and each readiness phase have a
-15-second cap within the invocation's total timeout. The adapter initializes
-that session's tools, checks the server's connection, and requires all five
-`goobers-io` tools in its inventory before sending the model prompt. The CLI
-starts session MCP servers asynchronously, so while the server is still
-`pending`, or the session's MCP host has not yet initialized, the adapter
-re-lists every 250 ms within that same 15-second cap; any other status is
-judged immediately. A server still starting when the cap expires is reported
-as `required_tool_unavailable`, a retryable infrastructure failure, and no
-model turn is sent. A separate throwaway MCP connection is not readiness
-evidence for this session.
+`goobers-io` check and model turns. Startup, tool initialization, and the
+inventory and authorization checks each have a 15-second cap within the
+invocation's total timeout. The adapter initializes that session's tools,
+checks the server's connection, and requires all five `goobers-io` tools in
+its inventory before sending the model prompt. The CLI starts session MCP
+servers asynchronously, so while the server is still `pending`, is listed
+among the MCP host's in-flight connections without having connected, or the
+session's MCP host has not yet initialized, the adapter re-lists every 250 ms.
+That wait has its own budget, 30 seconds by default, set with
+`runner.requiredMCPSettleTimeout` in `instance.yaml`; a slow tool
+initialization does not shorten it, and the invocation's total timeout still
+applies. Any other status is judged immediately. A server still starting when
+the budget expires is reported as `required_tool_unavailable`, a retryable
+infrastructure failure, and no model turn is sent. A separate throwaway MCP
+connection is not readiness evidence for this session.
 
 The controlled session's permission handler permits only the declared tools,
 keeps file requests within the workspace and the sandbox's existing narrow
@@ -228,8 +232,22 @@ permission requests fail closed in this unattended session.
 
 A `runner.annotation` with kind `required-mcp-readiness` records the `server`,
 `source`, `category`, `connection`, `inventory`, and `authorization` observations
-with phase `before-model`, schema version 1, and the adapter identity. Server
-errors, tool responses, credentials, and task content are excluded. Bounded
+with phase `before-model`, schema version 2, and the adapter identity. Version 2
+adds diagnostics that say which startup state a check ended in:
+
+- `observedStatus` is the last observed `goobers-io` status (`connected`,
+  `pending`, `failed`, `stopped`, `needs-auth`, `disabled` or `not_configured`),
+  `unknown` for a status this build does not recognize, `pending-connection`
+  when the server is only in the host's in-flight connections,
+  `host-uninitialized`, `absent` from an initialized host, or `unobserved` when
+  no server list was obtained.
+- `polls` is the number of server lists taken while waiting for startup.
+- `elapsedMs` is the time from the start of the check to its result.
+- `failedReasonPresent` records whether the MCP host holds a connection failure
+  for `goobers-io`. The failure message itself is never recorded.
+
+Readers accept schema versions 1 and 2. Server errors, tool responses,
+credentials, and task content are excluded. Bounded
 per-stage conditions are projected into the existing read model and status run
 summaries without opening journals. A verified recovery clears an active
 condition; unobservable authorization cannot clear an earlier authorization

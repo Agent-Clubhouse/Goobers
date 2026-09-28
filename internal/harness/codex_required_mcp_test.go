@@ -69,8 +69,8 @@ func TestCodexRequiredGoobersIOStartupFailureIsInfrastructure(t *testing.T) {
 		t.Fatalf("classified error = %v, want stage error code %q", classified, ErrorCodeRequiredMCPUnavailable)
 	}
 	want := []MCPReadiness{
-		{Server: goobersIOServerName, Category: "check_unobservable", Source: codexMCPReadinessSource, Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"},
-		{Server: goobersIOServerName, Category: "transport_failure", Source: codexMCPReadinessSource, Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"},
+		{Server: goobersIOServerName, Category: "check_unobservable", Source: codexMCPReadinessSource, Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable", ObservedStatus: mcpObservedUnobserved},
+		{Server: goobersIOServerName, Category: "transport_failure", Source: codexMCPReadinessSource, Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable", ObservedStatus: mcpObservedUnobserved},
 	}
 	if !slices.Equal(reports, want) {
 		t.Fatalf("readiness reports = %+v, want %+v", reports, want)
@@ -171,8 +171,8 @@ func TestCodexRequiredMCPStartupFailed(t *testing.T) {
 // records: the check_unobservable made before the CLI runs, then the
 // availability evidence the started session supplies.
 var codexStartedSessionReports = []MCPReadiness{
-	{Server: goobersIOServerName, Category: "check_unobservable", Source: codexMCPReadinessSource, Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"},
-	{Server: goobersIOServerName, Category: "check_unobservable", Source: codexMCPReadinessSource, Connection: "ready", Inventory: "ready", Authorization: "unobservable"},
+	{Server: goobersIOServerName, Category: "check_unobservable", Source: codexMCPReadinessSource, Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable", ObservedStatus: mcpObservedUnobserved},
+	{Server: goobersIOServerName, Category: "check_unobservable", Source: codexMCPReadinessSource, Connection: "ready", Inventory: "ready", Authorization: "unobservable", ObservedStatus: mcpObservedUnobserved},
 }
 
 // codexStartupStep is one scripted codex invocation: stdout feeds the JSONL

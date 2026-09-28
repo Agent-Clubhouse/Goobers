@@ -165,6 +165,7 @@ runner:
   capabilities: [dotnet@8, os=windows]
   envPassthrough: [NUGET_CONFIG_FILE, MSBUILDDISABLENODEREUSE]
   defaultStageTimeout: 25m
+  requiredMCPSettleTimeout: 45s
   harnessCommand:
     copilot: [agency, copilot]
   harnessPreflightArgs:

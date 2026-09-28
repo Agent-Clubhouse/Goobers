@@ -358,6 +358,7 @@ func TestRemediationCheckpointEscalationCommentIsSticky(t *testing.T) {
 	if code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
 		t.Fatalf("first cycle: code = %d, stderr = %q", code, stderr)
 	}
+	t.Setenv("GOOBERS_RUN_ID", "run-364-next") // a later remediation attempt is a new run (#6008)
 	// Second cycle: same diff -> escalates, editing the cycle-1 comment.
 	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {

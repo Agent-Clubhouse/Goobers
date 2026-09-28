@@ -355,6 +355,13 @@ type RunnerConfig struct {
 	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
 	// the daemon is reported unhealthy. Empty defaults to two minutes.
 	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`
+	// RequiredMCPSettleTimeout bounds how long the Copilot adapter's pre-model
+	// readiness check waits for the required goobers-io MCP server to leave its
+	// startup state (#5397). It is separate from the check's other bounded
+	// phases, and the invocation timeout still applies. Empty keeps the
+	// adapter's default (30s); a server still starting when it expires is
+	// reported as unavailable, exactly as before.
+	RequiredMCPSettleTimeout string `json:"requiredMCPSettleTimeout,omitempty" yaml:"requiredMCPSettleTimeout,omitempty"`
 	// DefaultStageTimeout is the baseline deadline for a deterministic stage
 	// that declares no timeoutSeconds of its own. Empty keeps the built-in
 	// executor.DefaultTimeout, so an unconfigured instance is unchanged.
@@ -805,12 +812,16 @@ const (
 	// short-lived, installation-scoped tokens exchanged for a signed App JWT
 	// per resolve, replacing a static PAT with no rotation machinery.
 	GitHubAuthApp = "github-app"
+	// GitHubAuthAppToken reads an externally minted installation token from
+	// token and declares its App identity without access to the App private key.
+	// The external issuer owns renewal and must bind the token to Slug.
+	GitHubAuthAppToken = "github-app-token"
 )
 
 // RepoAuthConfig selects a repository credential source without embedding
 // credential material in configuration. Kind values are provider-specific:
 // ADO accepts pat/azure-cli/workload-identity/managed-identity, GitHub
-// accepts pat/github-app; fields beyond Kind belong to one provider's kinds
+// accepts pat/github-app/github-app-token; fields beyond Kind belong to one provider's kinds
 // and are rejected elsewhere at load.
 type RepoAuthConfig struct {
 	Kind string `json:"kind" yaml:"kind"`
@@ -832,7 +843,8 @@ type RepoAuthConfig struct {
 	// in-process; stages receive minted installation tokens, never the key.
 	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
 	// Slug is the App's URL-safe handle (the part before "[bot]" in its
-	// GitHub login, e.g. "my-app" for "my-app[bot]") for kind github-app.
+	// GitHub login, e.g. "my-app" for "my-app[bot]") for github-app and
+	// github-app-token. Required for externally minted installation tokens.
 	// Installation tokens cannot call GET /user, so the provider identity's
 	// login — which every trusted-comment check (claim markers, verdicts,
 	// handoffs) compares against — must be declared here (#3343). Without it
@@ -842,11 +854,11 @@ type RepoAuthConfig struct {
 }
 
 // BotLogin returns the GitHub login this auth block authenticates as, when
-// declarable: the App slug plus "[bot]" for kind github-app with Slug set,
+// declarable: the App slug plus "[bot]" for either App kind with Slug set,
 // otherwise empty (a PAT's login is discoverable via GET /user at runtime and
 // needs no declaration).
 func (a *RepoAuthConfig) BotLogin() string {
-	if a == nil || a.Kind != GitHubAuthApp || strings.TrimSpace(a.Slug) == "" {
+	if a == nil || (a.Kind != GitHubAuthApp && a.Kind != GitHubAuthAppToken) || strings.TrimSpace(a.Slug) == "" {
 		return ""
 	}
 	return strings.TrimSpace(a.Slug) + "[bot]"
@@ -2065,6 +2077,23 @@ func (c RunnerConfig) LivenessTimeoutDuration() (time.Duration, error) {
 	}
 	if timeout < MinimumDaemonLivenessTimeout {
 		return 0, fmt.Errorf("runner.livenessTimeout must be at least %s, got %s", MinimumDaemonLivenessTimeout, timeout)
+	}
+	return timeout, nil
+}
+
+// RequiredMCPSettleTimeoutDuration resolves the required-MCP settle budget.
+// Zero means unset: the harness keeps its own default, so the fallback stays
+// owned by the adapter that applies it.
+func (c RunnerConfig) RequiredMCPSettleTimeoutDuration() (time.Duration, error) {
+	if c.RequiredMCPSettleTimeout == "" {
+		return 0, nil
+	}
+	timeout, err := time.ParseDuration(c.RequiredMCPSettleTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("runner.requiredMCPSettleTimeout %q: %w", c.RequiredMCPSettleTimeout, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("runner.requiredMCPSettleTimeout must be positive, got %s", timeout)
 	}
 	return timeout, nil
 }

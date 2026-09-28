@@ -66,6 +66,8 @@ func observeCodexRequiredMCPStartup(req RunRequest, result ProcessResult, sessio
 			Connection:    "ready",
 			Inventory:     "ready",
 			Authorization: "unobservable",
+			// No server list is taken: startup is inferred, not observed.
+			ObservedStatus: mcpObservedUnobserved,
 		}, err)
 	}
 	if err == nil || !codexRequiredMCPStartupFailed(result.Stderr, goobersIOServerName) {
@@ -75,12 +77,13 @@ func observeCodexRequiredMCPStartup(req RunRequest, result ProcessResult, sessio
 		"%w: codex refused to start the session because the required %s MCP server failed to initialize",
 		errRequiredMCPUnavailable, goobersIOServerName), err)
 	return readinessReportedError(req, MCPReadiness{
-		Server:        goobersIOServerName,
-		Category:      "transport_failure",
-		Source:        codexMCPReadinessSource,
-		Connection:    "unobservable",
-		Inventory:     "unobservable",
-		Authorization: "unobservable",
+		Server:         goobersIOServerName,
+		Category:       "transport_failure",
+		Source:         codexMCPReadinessSource,
+		Connection:     "unobservable",
+		Inventory:      "unobservable",
+		Authorization:  "unobservable",
+		ObservedStatus: mcpObservedUnobserved,
 	}, classified)
 }
 

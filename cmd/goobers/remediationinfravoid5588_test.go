@@ -220,3 +220,56 @@ func TestFailedHandlerVoidsRemediationChargeOnInfrastructureTerminal(t *testing.
 		})
 	}
 }
+
+// TestDecideRemediationCheckpointRetryOfOwnWriteIsIdempotent pins #6008: a
+// stage retry that reads back the state comment its own run wrote for the
+// same head and base is not a no-progress repeat and does not charge twice.
+func TestDecideRemediationCheckpointRetryOfOwnWriteIsIdempotent(t *testing.T) {
+	first := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+		Prior:   remediationState{Cycles: 1, AttemptsByCause: remediationAttempts{FailingCI: 1}, LastDiffDigest: "sha256:older", HeadSHA: "head", BaseSHA: "base"},
+		Causes:  []remediationCause{remediationCauseFailingCI},
+		Budgets: remediationBudgets{FailingCI: 2},
+		Digest:  "sha256:now", HeadSHA: "head", BaseSHA: "base", RunID: "run-now",
+	})
+	if first.Escalated || first.State.AttemptsByCause.FailingCI != 2 {
+		t.Fatalf("first attempt = %+v, want an advancing cycle charging failing-ci to 2/2", first)
+	}
+
+	retry := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+		Prior:   first.State,
+		Causes:  []remediationCause{remediationCauseFailingCI},
+		Budgets: remediationBudgets{FailingCI: 2},
+		Digest:  "sha256:now", HeadSHA: "head", BaseSHA: "base", RunID: "run-now",
+	})
+	if retry.Escalated {
+		t.Fatalf("retry of the run's own write escalated: %+v", retry.Escalation)
+	}
+	if retry.State.AttemptsByCause != first.State.AttemptsByCause || retry.State.Cycles != first.State.Cycles ||
+		retry.State.LastDiffDigest != first.State.LastDiffDigest {
+		t.Fatalf("retry state = %+v, want the first attempt's state %+v reproduced", retry.State, first.State)
+	}
+
+	t.Run("a different run on the same head and diff still stalls", func(t *testing.T) {
+		got := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+			Prior:   first.State,
+			Causes:  []remediationCause{remediationCauseFailingCI},
+			Budgets: remediationBudgets{FailingCI: 3},
+			Digest:  "sha256:now", HeadSHA: "head", BaseSHA: "base", RunID: "run-next",
+		})
+		if !got.Escalated || got.Escalation.Outcome != remediationOutcomeDidNotConverge {
+			t.Fatalf("decision = %+v, want did-not-converge across remediation attempts", got.Escalation)
+		}
+	})
+
+	t.Run("the same run after the head moved is judged normally", func(t *testing.T) {
+		got := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+			Prior:   first.State,
+			Causes:  []remediationCause{remediationCauseFailingCI},
+			Budgets: remediationBudgets{FailingCI: 2},
+			Digest:  "sha256:next", HeadSHA: "head-2", BaseSHA: "base", RunID: "run-now",
+		})
+		if !got.Escalated || got.Escalation.Outcome != remediationOutcomeBudgetExhausted {
+			t.Fatalf("decision = %+v, want budget-exhausted once the head moved", got.Escalation)
+		}
+	})
+}
