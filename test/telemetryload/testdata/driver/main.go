@@ -39,6 +39,7 @@ var azureConnectionEnv string
 var collectionProfile string
 var sampleInterval time.Duration
 var windowsInsecureDemo bool
+var settleTimeout time.Duration
 var journalKeys sync.Map
 var checkpointIDs []string
 var client = &http.Client{Timeout: 3 * time.Second}
@@ -71,6 +72,7 @@ func cmd(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 type Result struct {
+	CatchupWaitMS                                       float64
 	MetricSampleErrors                                  int
 	ExternalReceiver                                    bool
 	Name                                                string
@@ -191,6 +193,7 @@ func main() {
 	flag.DurationVar(&sampleInterval, "sample-interval", time.Second, "process and health sampling interval; use 10s for long soaks")
 	flag.StringVar(&collectionProfile, "profile", "standard", "health, standard or diagnostic collection profile")
 	flag.BoolVar(&windowsInsecureDemo, "windows-insecure-demo", false, "explicitly allow the bundled credential-free demo without network isolation on Windows")
+	flag.DurationVar(&settleTimeout, "settle-timeout", 2*time.Minute, "maximum journal reconciliation wait after workload ends, before shutdown")
 	flag.StringVar(&azureConnectionEnv, "azure-connection-env", "", "explicit connection-string environment reference; only with -scenario azure (no volume prefills)")
 	flag.Parse()
 	if azureConnectionEnv != "" && (selected != "azure" || os.Getenv(azureConnectionEnv) == "") {
@@ -199,7 +202,7 @@ func main() {
 	if selected == "azure" && azureConnectionEnv == "" {
 		panic("-scenario azure requires -azure-connection-env")
 	}
-	if workers < 1 || workers > 256 || duration <= 0 || pollInterval < 0 || sampleInterval < time.Second {
+	if workers < 1 || workers > 256 || duration <= 0 || pollInterval < 0 || sampleInterval < time.Second || settleTimeout < 0 {
 		panic("invalid load limits")
 	}
 	if collectionProfile != "health" && collectionProfile != "standard" && collectionProfile != "diagnostic" {
@@ -503,6 +506,24 @@ func run(name, root, api string, duration time.Duration) Result {
 	if name != "crash-outage" {
 		mode.Store(0)
 	}
+	if name != "baseline" && name != "crash-outage" && collectionProfile != "health" && azureConnectionEnv == "" {
+		started := time.Now()
+		keys := expectedJournalKeys(root)
+		deadline := started.Add(settleTimeout)
+		for time.Now().Before(deadline) {
+			missing := 0
+			for _, key := range keys {
+				if _, ok := journalKeys.Load(key); !ok {
+					missing++
+				}
+			}
+			if missing == 0 {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		result.CatchupWaitMS = float64(time.Since(started).Microseconds()) / 1000
+	}
 	result.Replay = telemetry.InspectAzureReplayRoot(spool(root))
 	result.RunP50MS = percentile(runLatency, .5)
 	result.RunP95MS = percentile(runLatency, .95)
@@ -621,4 +642,24 @@ func logicalDiskKiB(root string) int64 {
 		return nil
 	}))
 	return (total + 1023) / 1024
+}
+
+func expectedJournalKeys(root string) []string {
+	paths, err := filepath.Glob(filepath.Join(root, "gaggles", "*", "runs", "*", "events.jsonl"))
+	must(err)
+	var keys []string
+	for _, path := range paths {
+		f, err := os.Open(path)
+		must(err)
+		scan := bufio.NewScanner(f)
+		scan.Buffer(make([]byte, 4096), 8<<20)
+		for scan.Scan() {
+			var event struct{ Seq uint64 }
+			must(json.Unmarshal(scan.Bytes(), &event))
+			keys = append(keys, fmt.Sprintf("%s:%d", filepath.Base(filepath.Dir(path)), event.Seq))
+		}
+		must(scan.Err())
+		must(f.Close())
+	}
+	return keys
 }

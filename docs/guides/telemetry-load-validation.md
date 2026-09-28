@@ -212,6 +212,15 @@ errors, measurement errors, shutdown over 20 seconds, or unexplained missing
 run/spool records in eligible loopback scenarios. Burst overload tests need a
 separate explicitly justified loss policy, not silently relaxed assertions.
 
+After workload submission stops, eligible scenarios wait up to `-settle-timeout`
+(default two minutes) for all authoritative run sequence keys before shutdown.
+`CatchupWaitMS` reports that time separately. An empty replay spool is not a
+catch-up barrier: source discovery may still have retained journals to read.
+A 90-second storage-obstruction trial without this wait ended with 456 pending
+run records; a repeated trial with reconciliation allowed recovered all 3,496
+records, including 3.3 seconds of post-workload catch-up. The first trial remains
+a failed immediate-shutdown reconciliation, not evidence of permanent loss.
+
 For a 24-hour representative run use `-duration 24h -workers 10 -poll-interval 3m
 -sample-interval 10s`. This exercises actual runs, so it overstates a deployment
 where most polls find no work. Sample JSONL, authoritative journals, daemon logs,
