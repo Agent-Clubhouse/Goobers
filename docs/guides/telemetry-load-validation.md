@@ -38,6 +38,11 @@ load-test a production tenant without its approval.
   in mixed error chains. A known failed replay initialization rejects admission
   promptly and counts the failure while background initialization keeps retrying.
   Shutdown does not wait for an unavailable manifest to attempt a final upload.
+- Repeated filesystem failures while writing replay temporary files share one
+  error-log signature per directory/operation/cause. Random `.pending-*`
+  filenames cannot bypass suppression or churn its bounded table; emitted
+  diagnostics still retain the actual error path. Failure counters continue
+  counting every occurrence independently of log suppression.
 - A persisted, one-minute full-audit cadence supplements directory timestamps
   on the next replay operation. This finds external/interrupted file changes
   even when a filesystem coalesces timestamps. Short-lived CLI processes share
