@@ -96,6 +96,26 @@ const (
 	ErrCodeNoWorkUnsubstantiated = "NO_WORK_UNSUBSTANTIATED"
 )
 
+// Substrate codes an agentic stage reports when it never got an agent turn
+// (#5638): the harness's required MCP control process never became ready, or
+// the stage pod could not resolve its credential, provision its workspace,
+// materialize its context, fetch its kit, or build its executor. Nothing the
+// work item contains makes any of these fail, so they classify as infra and
+// never accumulate failure-streak strikes against the item. The literals are
+// owned by internal/harness (HARNESS_REQUIRED_MCP_UNAVAILABLE),
+// internal/dispatcher (agentic_kit_*) and the pod entrypoint in cmd/goobers;
+// they are spelled here, like the codes above, so this package imports none
+// of them.
+const (
+	ErrCodeHarnessRequiredMCPUnavailable = "HARNESS_REQUIRED_MCP_UNAVAILABLE"
+	ErrCodeCredentialResolveFailed       = "credential_resolve_failed"
+	ErrCodeWorkspaceProvisionFailed      = "workspace_provision_failed"
+	ErrCodeContextMaterializeFailed      = "context_materialize_failed"
+	ErrCodeAgenticExecutorUnavailable    = "agentic_executor_unavailable"
+	ErrCodeAgenticKitMissing             = "agentic_kit_missing"
+	ErrCodeAgenticKitUnavailable         = "agentic_kit_unavailable"
+)
+
 // Agent-authored item-judgment codes (#3363). Spelled here so the runner's
 // routing policy, the journal surface, and the rollup's disposition split all
 // share one vocabulary (#3364) instead of three hand-synced literals.
@@ -130,6 +150,14 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	// The run's evidence contract, not the work: the claim did not hold up
 	// against what the journal says its upstream produced.
 	ErrCodeNoWorkUnsubstantiated: ErrorClassValidation,
+	// No agent turn happened: the substrate, not the work, failed (#5638).
+	ErrCodeHarnessRequiredMCPUnavailable: ErrorClassInfra,
+	ErrCodeCredentialResolveFailed:       ErrorClassInfra,
+	ErrCodeWorkspaceProvisionFailed:      ErrorClassInfra,
+	ErrCodeContextMaterializeFailed:      ErrorClassInfra,
+	ErrCodeAgenticExecutorUnavailable:    ErrorClassInfra,
+	ErrCodeAgenticKitMissing:             ErrorClassInfra,
+	ErrCodeAgenticKitUnavailable:         ErrorClassInfra,
 }
 
 // InfraFault reports whether c names an infrastructure fault — a failure of

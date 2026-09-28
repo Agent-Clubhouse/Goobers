@@ -410,7 +410,7 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		// #3363) are likewise not work failures. Timeout deliberately still
 		// counts: a recurring harness session timeout is this circuit
 		// breaker's motivating case (#1054).
-		if class := telemetry.ClassifyError(o.Code); class.InfraFault() || class == telemetry.ErrorClassItemJudgment {
+		if failureStreakExempt(o) {
 			return nil
 		}
 		// #4417: o.RepoRef is the run's dispatch-time gaggle project, not
@@ -421,6 +421,21 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		runURL, _ := failureRunURL(l, cfg, o.RunID)
 		return applyCircuitBreaker(ctx, poster, l, o.RunID, o.Stage, runURL)
 	}
+}
+
+// failureStreakExempt reports whether a failed terminal must stay out of the
+// failure streak. The runner's own classification wins (#5638): a dispatch
+// that exhausted its infrastructure retry budget is infra whatever code it
+// surfaced under — a no-agent-turn harness startup failure carried a code
+// ClassifyError could only call executor/unknown. Only an explicit class
+// exempts that way; an unclassified terminal is judged by its code, so a
+// bare session timeout still counts (#1054).
+func failureStreakExempt(o runner.FailedOutcome) bool {
+	class := o.FaultClass
+	if class == "" {
+		class = telemetry.ClassifyError(o.Code)
+	}
+	return class.InfraFault() || class == telemetry.ErrorClassItemJudgment
 }
 
 const failureStreakThreshold = 3
