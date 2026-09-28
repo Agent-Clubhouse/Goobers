@@ -41,6 +41,7 @@ var collectionProfile string
 var sampleInterval time.Duration
 var windowsInsecureDemo bool
 var settleTimeout time.Duration
+var diskFullVolume string
 var journalKeys sync.Map
 var checkpointIDs []string
 var client = &http.Client{Timeout: 3 * time.Second}
@@ -90,6 +91,8 @@ type Result struct {
 	Requests, Records, Rejected, Duplicates             int64
 	Streams                                             map[string]int
 	NetworkModes                                        map[string]int64
+	DiskFullConfirmed                                   bool
+	DiskFullBytes                                       int64
 	Replay                                              telemetry.AzureReplayStats
 	DiskKiB                                             int64
 	ExpectedRunEvents, MissingRunEvents                 int
@@ -203,7 +206,14 @@ func main() {
 	flag.BoolVar(&windowsInsecureDemo, "windows-insecure-demo", false, "explicitly allow the bundled credential-free demo without network isolation on Windows")
 	flag.DurationVar(&settleTimeout, "settle-timeout", 2*time.Minute, "maximum journal reconciliation wait after workload ends, before shutdown")
 	flag.StringVar(&azureConnectionEnv, "azure-connection-env", "", "explicit connection-string environment reference; only with -scenario azure (no volume prefills)")
+	flag.StringVar(&diskFullVolume, "disk-full-volume", "", "dedicated empty Linux tmpfs <=64MiB, containing only .goobers-telemetry-load-volume; only with -scenario disk-full")
 	flag.Parse()
+	if (selected == "disk-full") != (diskFullVolume != "") {
+		panic("disk-full requires an explicit dedicated -disk-full-volume, and that flag is only allowed for disk-full")
+	}
+	if diskFullVolume != "" {
+		must(validateDiskFullVolume(diskFullVolume))
+	}
 	if azureConnectionEnv != "" && (selected != "azure" || os.Getenv(azureConnectionEnv) == "") {
 		panic("Azure validation requires -scenario azure and a nonempty connection-string environment reference")
 	}
@@ -216,7 +226,7 @@ func main() {
 	if collectionProfile != "health" && collectionProfile != "standard" && collectionProfile != "diagnostic" {
 		panic("invalid collection profile")
 	}
-	if !strings.Contains("|all|baseline|enabled|outage-recovery|network-faults|near-cap|tiny-files|legacy|spool-failure|azure|crash|", "|"+selected+"|") {
+	if !strings.Contains("|all|baseline|enabled|outage-recovery|network-faults|disk-full|near-cap|tiny-files|legacy|spool-failure|azure|crash|", "|"+selected+"|") {
 		panic("unknown scenario")
 	}
 	bin, _ = filepath.Abs(bin)
@@ -301,12 +311,20 @@ func main() {
 	if selected == "network-faults" {
 		scenarios = []string{"network-faults"}
 	}
+	if selected == "disk-full" {
+		scenarios = []string{"disk-full"}
+	}
 	for _, name := range scenarios {
 		if selected != "all" && selected != name {
 			continue
 		}
 		mode.Store(0)
 		root, api := setup(name, server.URL, name != "baseline")
+		if name == "disk-full" {
+			// Only the exporter is on the small fault volume; authoritative
+			// journals and workflow state remain on the instance filesystem.
+			must(os.Symlink(diskFullVolume, filepath.Join(root, "telemetry-export")))
+		}
 		if name == "network-faults" {
 			mode.Store(networkFaultMode(0, duration))
 		}
@@ -334,6 +352,9 @@ func main() {
 }
 
 func validate(r Result) {
+	if r.Name == "disk-full" && (!r.DiskFullConfirmed || r.DiskFullBytes == 0) {
+		panic("disk-full fixture did not confirm ENOSPC")
+	}
 	if r.Name == "network-faults" {
 		for _, name := range networkModeNames {
 			if r.NetworkModes[name] == 0 {
@@ -479,6 +500,12 @@ func run(name, root, api string, duration time.Duration) Result {
 	defer ticker.Stop()
 	phase := time.Now()
 	obstructionRepaired := false
+	var full *diskFullFixture
+	defer func() {
+		if full != nil {
+			must(full.restore())
+		}
+	}()
 	for ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
@@ -486,6 +513,16 @@ func run(name, root, api string, duration time.Duration) Result {
 		case <-ticker.C:
 		}
 		elapsed := time.Since(phase)
+		if name == "disk-full" && full == nil && elapsed >= duration/3 {
+			full, err = fillDiskFullVolume(diskFullVolume)
+			must(err)
+			result.DiskFullConfirmed, result.DiskFullBytes = true, full.bytes
+			fmt.Printf("DISK full confirmed=ENOSPC bytes=%d elapsed=%s\n", full.bytes, elapsed.Round(time.Second))
+		}
+		if full != nil && !full.restored && elapsed >= 2*duration/3 {
+			must(full.restore())
+			fmt.Printf("DISK restored elapsed=%s\n", elapsed.Round(time.Second))
+		}
 		if name == "network-faults" {
 			next := networkFaultMode(elapsed, duration)
 			if mode.Swap(next) != next {

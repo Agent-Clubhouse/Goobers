@@ -331,6 +331,24 @@ too short for retry backoff may legitimately fail phase coverage. This tests
 loopback HTTP faults, not real DNS outages, WAN behavior or a 30-minute outage
 for each individual fault; dial-level DNS errors have separate unit coverage.
 
+For actual filesystem exhaustion on Linux, `-scenario disk-full` additionally
+requires `-disk-full-volume /absolute/path`. Prepare a **dedicated** empty
+tmpfs (for example a Kubernetes memory-backed `emptyDir` with a 16Mi limit)
+containing only a regular file named `.goobers-telemetry-load-volume`. The
+driver rejects ordinary filesystems, unmarked/nonempty directories, symlink
+roots, and tmpfs volumes over 64MiB. Keep the instance and result directory on
+a different filesystem. Only `telemetry-export` is linked to this fault volume.
+During the middle third of a 30-minute run, an exclusively created filler
+forces real `ENOSPC`; the final third removes only that same owned filler and
+checks normal journal reconciliation. `DiskFullConfirmed` must be true and
+`DiskFullBytes` positive. Deferred cleanup also removes the owned filler on an
+ordinary failure. Preserve the result and independent daemon warnings.
+`DiskKiB` does not follow this export-directory symlink, so it excludes the
+fault filesystem; collect its `df` usage and replay statistics separately.
+This tests exporter failure isolation/recovery, not persistent tmpfs delivery,
+slow disk behavior, or Windows disk-full behavior. Never fill a general-purpose
+disk to emulate this fixture.
+
 ## Establish the representative workload
 
 Start with two gaggles per instance and five polling workflows per gaggle,
