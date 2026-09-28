@@ -328,6 +328,9 @@ func validate(r Result) {
 	if r.Runs == 0 || r.Failures != 0 || r.HealthFailures != 0 || r.MetricSampleErrors != 0 || r.ShutdownMS > 20000 {
 		panic("daemon health/workflow/measurement/shutdown invariant failed; inspect result JSON")
 	}
+	if r.Name != "baseline" && !r.Replay.AccountingReady {
+		panic("replay accounting unavailable; build the driver from the candidate source and inspect storage health")
+	}
 	if r.Name != "baseline" && r.Name != "crash-outage" && collectionProfile != "health" && !r.ExternalReceiver && (r.ExpectedRunEvents == 0 || r.MissingRunEvents != 0 || r.MissingPersistedRecords != 0) {
 		panic("journal reconciliation failed; inspect result JSON")
 	}
@@ -519,7 +522,7 @@ func run(name, root, api string, duration time.Duration) Result {
 		fmt.Fprintln(samples, string(b))
 		if int(elapsed.Seconds())%15 == 0 {
 			mu.Lock()
-			fmt.Printf("%s t=%.0fs runs=%d failed=%d rss=%dKiB cpu=%.1f spool=%dB records=%d\n", name, elapsed.Seconds(), result.Runs, result.Failures, rss, cpu, stat.PendingBytes, stat.PendingRecords)
+			fmt.Printf("%s t=%.0fs runs=%d failed=%d rss=%dKiB cpu=%.1f accounting=%t spool=%dB records=%d\n", name, elapsed.Seconds(), result.Runs, result.Failures, rss, cpu, stat.AccountingReady, stat.PendingBytes, stat.PendingRecords)
 			mu.Unlock()
 		}
 	}

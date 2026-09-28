@@ -62,9 +62,13 @@ func TestIntegrationTelemetryDaemonReconcilesJournal(t *testing.T) {
 	var result struct {
 		Runs, Failures, HealthFailures, ExpectedRunEvents, MissingRunEvents, MetricSampleErrors int
 		ShutdownMS                                                                              float64
+		Replay                                                                                  struct{ AccountingReady bool }
 	}
 	if err = json.Unmarshal(data, &result); err != nil {
 		t.Fatal(err)
+	}
+	if !result.Replay.AccountingReady {
+		t.Fatal("enabled fixture completed without usable replay accounting")
 	}
 	if result.Runs < 2 || result.Failures != 0 || result.HealthFailures != 0 || result.ExpectedRunEvents == 0 || result.MissingRunEvents != 0 || result.MetricSampleErrors != 0 || result.ShutdownMS > 20000 {
 		t.Fatalf("release invariant failed: %s\n%s", data, output)

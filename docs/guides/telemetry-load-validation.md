@@ -62,6 +62,9 @@ go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupAcknowled
 
 The commands also work in PowerShell. Benchmarks are measurements, not hard
 wall-clock CI assertions. Keep their text output with the release evidence.
+Build the driver from the candidate source when replay schemas change. Its
+progress output distinguishes unavailable accounting from zero backlog, and
+an enabled scenario cannot pass with unavailable final accounting.
 The journal/replay correctness tests are selected by the Windows CI gate and
 its coverage contract; this does not substitute for native deployment testing.
 
