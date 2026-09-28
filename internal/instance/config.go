@@ -2174,6 +2174,7 @@ func (c *Config) resolveEngineConfig(lookupEnv func(string) (string, bool)) (Eng
 		if c.Engine.TaskQueue != "" {
 			resolved.TaskQueue = c.Engine.TaskQueue
 		}
+		resolved.HITL = c.Engine.HITL
 		resolved.TLS = c.Engine.TLS
 		resolved.WorkerVersioning = c.Engine.WorkerVersioning
 	}
