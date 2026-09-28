@@ -27,13 +27,27 @@ import (
 // Use -benchtime=1x; -count=3 repeats the baseline/enabled comparisons.
 // It measures journal append + catch-up/replay, not workflow stage dispatch.
 func BenchmarkJournalCatchupRateControlledBurst(b *testing.B) {
+	benchmarkJournalRateCases(b, 212*60)
+}
+
+// Representative-rate component experiment: 127 records/minute approximates
+// ten workflows producing 38 records each every three minutes. This measures
+// durable journal Append directly, separately from workflow/polling latency.
+// It does not include the daemon's other signals or prove stage-dispatch tails.
+// Use -benchtime=1x and repeat matched baseline/enabled cases on the target host.
+func BenchmarkJournalCatchupNormalRate(b *testing.B) {
+	benchmarkJournalRateCases(b, 127)
+}
+
+func benchmarkJournalRateCases(b *testing.B, count int) {
+	b.Helper()
 	for _, size := range []int{1024, 32 << 10} {
 		for _, enabled := range []bool{false, true} {
 			b.Run(fmt.Sprintf("bytes=%d/enabled=%t", size, enabled), func(b *testing.B) {
 				if b.N != 1 {
 					b.Fatal("use -benchtime=1x for the fixed 60-second experiment")
 				}
-				benchmarkJournalBurst(b, size, enabled)
+				benchmarkJournalRate(b, size, enabled, count)
 			})
 		}
 	}
@@ -114,10 +128,9 @@ func (s *burstReceiver) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 	w.WriteHeader(http.StatusOK)
 }
 
-func benchmarkJournalBurst(b *testing.B, size int, enabled bool) {
+func benchmarkJournalRate(b *testing.B, size int, enabled bool, count int) {
 	b.Helper()
-	const rate, seconds, writers = 212, 60, 10
-	const count = rate * seconds
+	const window, writers = time.Minute, 10
 	root, spool := b.TempDir(), b.TempDir()
 	receiver := &burstReceiver{keys: make(map[string]string)}
 	server := httptest.NewServer(receiver)
@@ -165,7 +178,7 @@ func benchmarkJournalBurst(b *testing.B, size int, enabled bool) {
 		go func() {
 			defer wg.Done()
 			for i := worker; i < count; i += writers {
-				time.Sleep(time.Until(start.Add(time.Duration(i) * time.Second / rate)))
+				time.Sleep(time.Until(start.Add(time.Duration(i) * window / time.Duration(count))))
 				appendStart := time.Now()
 				if err := runs[worker].Append(event); err != nil {
 					errors <- err
@@ -190,7 +203,7 @@ func benchmarkJournalBurst(b *testing.B, size int, enabled bool) {
 		all = append(all, latencies[i]...)
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
-	b.ReportMetric(float64(rate), "offered-records/s")
+	b.ReportMetric(float64(count)/window.Seconds(), "offered-records/s")
 	b.ReportMetric(float64(count)/producing.Seconds(), "achieved-records/s")
 	b.ReportMetric(float64(all[(len(all)-1)*95/100].Nanoseconds()), "append-p95-ns")
 	b.ReportMetric(float64(all[(len(all)-1)*99/100].Nanoseconds()), "append-p99-ns")

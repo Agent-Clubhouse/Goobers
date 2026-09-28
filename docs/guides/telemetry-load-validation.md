@@ -84,10 +84,18 @@ go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupAcknowled
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupRetainedDirectorySweep$' -benchtime=3x -count=1 -timeout=45m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupCommitHint$' -benchtime=100000x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupRateControlledBurst$' -benchtime=1x -count=3 -timeout=30m
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupNormalRate$' -benchtime=1x -count=3
 ```
 
 The commands also work in PowerShell. Benchmarks are measurements, not hard
 wall-clock CI assertions. Keep their text output with the release evidence.
+The Go test timeout does not bound benchmark-only execution: the testing
+package stops its test alarm before running benchmarks. Use an external process
+watchdog on load hosts, retain timed-out output, and verify the actual child
+exit code. Do not treat a successful remote-command submission as a test pass.
+The normal-rate component benchmark offers 127 records/minute across ten
+durable journals and measures Append p95/p99 directly. It is a one-minute
+component measurement, not the 30-minute real-daemon or stage-dispatch gate.
 Build the driver from the candidate source when replay schemas change. Its
 progress output distinguishes unavailable accounting from zero backlog, and
 an enabled scenario cannot pass with unavailable final accounting.
