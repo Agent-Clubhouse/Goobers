@@ -20,6 +20,12 @@ import (
 // It exercises actual configured retention and export with synthetic local
 // journals, not an elapsed seven-day daemon or a capacity/performance claim.
 func TestJournalCatchupRetentionBoundary(t *testing.T) {
+	// TestMain disables journal fsync for ordinary command fixtures. This
+	// durability boundary deliberately restores it for these small cases.
+	t.Setenv("GOOBERS_DISABLE_FSYNC", "0")
+	if journal.FsyncDisabled() {
+		t.Fatal("retention replay boundary requires real journal fsync")
+	}
 	for _, tc := range []struct {
 		name               string
 		mature, obstructed bool
