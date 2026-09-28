@@ -698,6 +698,11 @@
           "$ref": "#/$defs/duration",
           "examples": ["2m"]
         },
+        "requiredMCPSettleTimeout": {
+          "description": "How long the Copilot adapter's pre-model readiness check waits for the required goobers-io MCP server to leave its startup state. It is separate from the check's other bounded phases, and the invocation timeout still applies. Empty keeps the default of 30 seconds; a server still starting when it expires is reported as unavailable.",
+          "$ref": "#/$defs/duration",
+          "examples": ["30s", "2m"]
+        },
         "harnessCommand": {
           "description": "Overrides the base CLI invocation (argv[0..]) launched for a harness, keyed by harness name. Unset keys keep the built-in default. This is the adopter escape hatch for running the same engine CLI through a wrapper — the wrapper name lives only in this file, never in the harness enum. It replaces the launch prefix only, so it is safe solely for a launcher that honors the same CLI contract (session capture, completion-file readback) as the harness it overrides.",
           "type": "object",

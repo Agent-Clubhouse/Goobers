@@ -286,11 +286,15 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, bac
 var copilotModelLister harness.CopilotModelLister
 
 func harnessEnvironmentPolicy(cfg instance.RunnerConfig) harness.EnvironmentConfig {
+	// Validated at load; an unparseable value cannot reach here, and zero
+	// keeps the adapter default.
+	settle, _ := cfg.RequiredMCPSettleTimeoutDuration()
 	return harness.EnvironmentConfig{
-		ExtraAllowlist: cfg.EnvPassthrough,
-		Unset:          cfg.HarnessEnvUnset,
-		SessionArgs:    cfg.HarnessSessionArgs,
-		PreflightArgs:  cfg.HarnessPreflightArgs,
+		ExtraAllowlist:           cfg.EnvPassthrough,
+		Unset:                    cfg.HarnessEnvUnset,
+		SessionArgs:              cfg.HarnessSessionArgs,
+		PreflightArgs:            cfg.HarnessPreflightArgs,
+		RequiredMCPSettleTimeout: settle,
 	}
 }
 
@@ -329,6 +333,8 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 		DeferDiscovery:      deferModelDiscovery,
 		ModelCredential:     modelCredential,
 		EphemeralTmp:        ephemeralTmp,
+
+		RequiredMCPSettleTimeout: environment.RequiredMCPSettleTimeout,
 	}
 	if customLauncher {
 		copilotAdapter.RequiredTools = []string{"task_complete"}

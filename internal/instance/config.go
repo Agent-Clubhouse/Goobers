@@ -355,6 +355,13 @@ type RunnerConfig struct {
 	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
 	// the daemon is reported unhealthy. Empty defaults to two minutes.
 	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`
+	// RequiredMCPSettleTimeout bounds how long the Copilot adapter's pre-model
+	// readiness check waits for the required goobers-io MCP server to leave its
+	// startup state (#5397). It is separate from the check's other bounded
+	// phases, and the invocation timeout still applies. Empty keeps the
+	// adapter's default (30s); a server still starting when it expires is
+	// reported as unavailable, exactly as before.
+	RequiredMCPSettleTimeout string `json:"requiredMCPSettleTimeout,omitempty" yaml:"requiredMCPSettleTimeout,omitempty"`
 	// DefaultStageTimeout is the baseline deadline for a deterministic stage
 	// that declares no timeoutSeconds of its own. Empty keeps the built-in
 	// executor.DefaultTimeout, so an unconfigured instance is unchanged.
@@ -2065,6 +2072,23 @@ func (c RunnerConfig) LivenessTimeoutDuration() (time.Duration, error) {
 	}
 	if timeout < MinimumDaemonLivenessTimeout {
 		return 0, fmt.Errorf("runner.livenessTimeout must be at least %s, got %s", MinimumDaemonLivenessTimeout, timeout)
+	}
+	return timeout, nil
+}
+
+// RequiredMCPSettleTimeoutDuration resolves the required-MCP settle budget.
+// Zero means unset: the harness keeps its own default, so the fallback stays
+// owned by the adapter that applies it.
+func (c RunnerConfig) RequiredMCPSettleTimeoutDuration() (time.Duration, error) {
+	if c.RequiredMCPSettleTimeout == "" {
+		return 0, nil
+	}
+	timeout, err := time.ParseDuration(c.RequiredMCPSettleTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("runner.requiredMCPSettleTimeout %q: %w", c.RequiredMCPSettleTimeout, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("runner.requiredMCPSettleTimeout must be positive, got %s", timeout)
 	}
 	return timeout, nil
 }
