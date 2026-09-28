@@ -23,6 +23,37 @@ var ErrTokenRefNotFound = errors.New("credentials: token ref not found")
 // treated as misconfiguration, not a valid (empty) secret.
 var ErrTokenRefEmpty = errors.New("credentials: token ref resolved to an empty value")
 
+// ErrTransientProvider marks a credential failure caused by the provider being
+// temporarily unable to answer (#5596): a network error, HTTP 429 or 5xx, or a
+// 403 that says the account's rate limit is exhausted. Retrying the same
+// credential later can succeed. Any other refusal, including a plain 401/403,
+// is not transient and keeps failing closed. Test with errors.Is; the wrapped
+// error's message is unchanged.
+var ErrTransientProvider = errors.New("credentials: transient provider failure")
+
+type transientProviderError struct{ err error }
+
+func (e *transientProviderError) Error() string        { return e.err.Error() }
+func (e *transientProviderError) Unwrap() error        { return e.err }
+func (e *transientProviderError) Is(target error) bool { return target == ErrTransientProvider }
+
+// transientProvider wraps err so errors.Is(err, ErrTransientProvider) holds.
+func transientProvider(err error) error { return &transientProviderError{err: err} }
+
+// githubStatusTransient reports whether a GitHub API response is a refusal
+// that clears on its own: 429, 5xx, or a 403 carrying the primary
+// (X-RateLimit-Remaining: 0) or secondary (Retry-After) rate-limit signal.
+func githubStatusTransient(resp *http.Response) bool {
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode >= 500:
+		return true
+	case resp.StatusCode == http.StatusForbidden:
+		return strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")) == "0" ||
+			strings.TrimSpace(resp.Header.Get("Retry-After")) != ""
+	}
+	return false
+}
+
 // TokenRef names one secret source: exactly one of Env, File, Keychain, or
 // Store must be set. Env/File/Keychain are the tiers 1-2 shape of
 // instance.yaml's token refs (docs/ARCHITECTURE.md §6); Store is the tier-3
@@ -364,11 +395,15 @@ var githubCLIIdentity = func(ctx context.Context, hostname, token string) (strin
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("verify GitHub identity: %w", err)
+		return "", transientProvider(fmt.Errorf("verify GitHub identity: %w", err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("verify GitHub identity: status %s", resp.Status)
+		err := fmt.Errorf("verify GitHub identity: status %s", resp.Status)
+		if githubStatusTransient(resp) {
+			return "", transientProvider(err)
+		}
+		return "", err
 	}
 	var identity struct {
 		Login string `json:"login"`

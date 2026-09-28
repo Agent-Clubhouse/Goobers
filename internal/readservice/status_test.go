@@ -622,6 +622,57 @@ func TestSchedulerStatusProjectsLatestProviderQuotaPause(t *testing.T) {
 	}
 }
 
+// #5596: a rejected config reload leaves the previous config in force, and
+// status must say so until a reload is accepted or the daemon restarts.
+func TestSchedulerStatusProjectsLatestConfigReloadRejection(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected := func(digest, message string) journal.Event {
+		return journal.Event{
+			Type:   journal.EventConfigReloadRejected,
+			Error:  &journal.ErrorDetail{Code: "config_reload_rejected", Message: message},
+			Runner: map[string]any{"oldDigest": "applied", "newDigest": digest},
+		}
+	}
+	for _, step := range []struct {
+		event       journal.Event
+		wantDigest  string
+		wantMessage string
+	}{
+		{event: rejected("first", "status 403 Forbidden"), wantDigest: "first", wantMessage: "status 403 Forbidden"},
+		{event: rejected("second", "config directory invalid"), wantDigest: "second", wantMessage: "config directory invalid"},
+		{event: journal.Event{Type: journal.EventConfigReloaded}},
+		{event: rejected("third", "status 429 Too Many Requests"), wantDigest: "third", wantMessage: "status 429 Too Many Requests"},
+		{event: journal.Event{Type: journal.EventDaemonStarted}},
+	} {
+		if err := log.Append(step.event); err != nil {
+			t.Fatal(err)
+		}
+		status, err := service.SchedulerStatus(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := status.ConfigReloadRejection
+		if step.wantDigest == "" {
+			if got != nil {
+				t.Fatalf("after %s ConfigReloadRejection = %+v, want nil", step.event.Type, got)
+			}
+			continue
+		}
+		if got == nil || got.Digest != step.wantDigest || got.Message != step.wantMessage || got.At.IsZero() {
+			t.Fatalf("after %s ConfigReloadRejection = %+v, want digest %q message %q", step.event.Type, got, step.wantDigest, step.wantMessage)
+		}
+	}
+}
+
 func TestSchedulerStatusProjectsRefillOccupancyAndBlockingCondition(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
