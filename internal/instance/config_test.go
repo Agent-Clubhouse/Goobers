@@ -4327,6 +4327,24 @@ func TestLoadConfigEngineWorkerVersioningIsOptIn(t *testing.T) {
 	}
 }
 
+// TestLoadConfigEngineHITLSurvivesResolution pins that engine.hitl reaches
+// EffectiveEngineConfig: LoadConfig rebuilds the engine block from defaults
+// and overrides, and that rebuild used to drop HITL, so an instance that
+// opted into the #3883 operator-hold protocol silently ran without it.
+func TestLoadConfigEngineHITLSurvivesResolution(t *testing.T) {
+	path := writeInstanceYAML(t, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: localhost:7233\n  hitl:\n    enabled: true\n    window: 4h\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.EngineHITLEnabled() {
+		t.Fatal("EngineHITLEnabled() = false, want the engine.hitl opt-in to survive LoadConfig")
+	}
+	if got := cfg.EffectiveEngineConfig().HITL; got == nil || got.Window != "4h" {
+		t.Fatalf("EffectiveEngineConfig().HITL = %+v, want window 4h", got)
+	}
+}
+
 func TestLoadConfigEngineTLSRejectsCertWithoutKey(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
