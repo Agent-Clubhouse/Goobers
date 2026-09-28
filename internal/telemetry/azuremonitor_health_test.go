@@ -83,6 +83,86 @@ func TestAzureReplayHealthOldBacklogHighWaterAndUnavailableAccounting(t *testing
 	}
 }
 
+func TestAzureReplayHealthBusyAccountingKeepsBacklogAndRecoversAfterDelivery(t *testing.T) {
+	now := time.Now()
+	s := testAzureReplaySpool(t, t.TempDir(), now)
+	const payload = "{\"id\":\"busy-accounting\"}\n"
+	if err := s.submit(t.Context(), []byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	before := s.stats()
+	if !before.AccountingReady || before.PendingRecords != 1 || before.PendingFiles != 1 || before.PendingBytes == 0 {
+		t.Fatalf("initial accounting: %+v", before)
+	}
+	state := replayHealthState{}
+	if event := state.sample(now, before, replayLossCounters{}, s.cfg.maxBytes); event != nil {
+		t.Fatalf("unexpected initial warning: %+v", event)
+	}
+
+	// Hold the sole connection, rather than relying on nondeterministic load
+	// to overlap a writer with a health sample. This is not a storage failure.
+	conn, err := s.index.db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	_, err = s.index.stats(ctx, s.stream, now)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("busy connection should exhaust the query budget: %v", err)
+	}
+	done := make(chan AzureReplayStats, 1)
+	go func() { done <- s.stats() }()
+	var busy AzureReplayStats
+	select {
+	case busy = <-done:
+	case <-time.After(2 * time.Second):
+		_ = conn.Close()
+		t.Fatal("health snapshot waited for the busy writer instead of its bounded deadline")
+	}
+	if busy.AccountingReady || busy.PendingRecords != before.PendingRecords || busy.PendingFiles != before.PendingFiles || busy.PendingBytes != before.PendingBytes {
+		t.Fatalf("unavailable accounting discarded the last known backlog: %+v", busy)
+	}
+	if busy.AdmissionFailures != 0 || busy.ExportFailures != 0 || busy.QueueDropped != 0 || busy.PrunedAge != 0 || busy.PrunedBytes != 0 || busy.Malformed != 0 {
+		t.Fatalf("health query timeout was incorrectly counted as record loss: %+v", busy)
+	}
+	event := state.sample(now.Add(10*time.Second), busy, replayLossCounters{}, s.cfg.maxBytes)
+	if event == nil || event.Status != "warning" || !slices.Equal(event.Causes, []string{"accounting_unavailable"}) {
+		t.Fatalf("unavailable accounting must remain visible: %+v", event)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ready := s.stats()
+	if !ready.AccountingReady || ready.PendingRecords != 1 {
+		t.Fatalf("accounting did not become available after writer released: %+v", ready)
+	}
+	if event := state.sample(now.Add(20*time.Second), ready, replayLossCounters{}, s.cfg.maxBytes); event != nil && event.Status == "recovered" {
+		t.Fatalf("fresh accounting alone falsely proved delivery recovery: %+v", event)
+	}
+	if !state.warning {
+		t.Fatal("warning cleared before subsequent delivery")
+	}
+	s.send = func(_ context.Context, body []byte) error {
+		if string(body) != payload {
+			t.Errorf("retained replay payload changed: %q", body)
+		}
+		return nil
+	}
+	if err := s.drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	after := s.stats()
+	if !after.AccountingReady || after.PendingRecords != 0 || after.PendingFiles != 0 || after.Delivered != 1 || after.AdmissionFailures != 0 || after.ExportFailures != 0 {
+		t.Fatalf("delivery after accounting recovery: %+v", after)
+	}
+	event = state.sample(now.Add(30*time.Second), after, replayLossCounters{}, s.cfg.maxBytes)
+	if event == nil || event.Status != "recovered" {
+		t.Fatalf("successful subsequent delivery did not clear accounting warning: %+v", event)
+	}
+}
+
 func TestAzureReplayHealthIdleStreamDoesNotProveRecovery(t *testing.T) {
 	now := time.Now()
 	state := replayHealthState{}

@@ -294,6 +294,17 @@ alert conditions clear. Recovery does not restore previously dropped records.
 Reports contain aggregate counts and admission/delivery rates, never envelope
 content, user/machine names, connection strings, paths, or raw exception text.
 
+An `accounting_unavailable` sample means the process could not obtain a current
+manifest snapshot. The lookup has a 100 ms budget and shares the manifest's
+single database connection with replay work, so a busy connection can cause a
+temporary warning without a failed admission or upload. When available, the
+last successful backlog snapshot is retained but marked unavailable; its counts
+are not a fresh measurement or proof of an empty spool. The warning alone does
+not establish record loss. Inspect loss counters, subsequent delivery, and
+journal sequence coverage rather than suppressing it. Recovery requires both
+cleared warning conditions and delivery advancing after the last observed
+problem; fresh accounting alone does not prove end-to-end delivery recovered.
+
 Journal and diagnostic queue drops, failed local admission, age/byte pruning,
 and malformed files are visible. These counters can overlap and must not be
 summed into a claimed loss total. Trace SDK losses before spooling are not
