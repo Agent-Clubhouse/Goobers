@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
 // dispatchagentic.go is the pod half of the agentic claim check.
@@ -208,13 +209,21 @@ func reviewSubstrateFailure(code string) bool {
 // anything, a pod-local harness-construction fault (agentic_executor_
 // unavailable's own errors never wrap a plane response at all) — is
 // transport- or infra-shaped, exactly what a fresh pod's retry exists to
-// ride out, so it keeps the historical Retryable=true.
+// ride out, so it keeps the historical Retryable=true. A
+// *workspacedelta.DivergedError is deterministic too (#5948) and is not
+// retried.
 func substrateRetryable(err error) bool {
 	var refusal *dispatcher.CredentialResolveRefusal
 	if errors.As(err, &refusal) {
 		return !refusal.Deterministic()
 	}
-	return true
+	// The workspace-delta ancestry guard's refusal is deterministic in the
+	// same sense (#5948): the branch carries commits the delta lacks, and a
+	// fresh pod clones that same branch and fetches that same delta, so a
+	// retry re-derives the identical refusal. Marking it retryable spent the
+	// gate's evaluator retry bound on it and then failed the run anyway.
+	var diverged *workspacedelta.DivergedError
+	return !errors.As(err, &diverged)
 }
 
 // fetchAgenticKit reads the kit from the blob plane and verifies it against the
