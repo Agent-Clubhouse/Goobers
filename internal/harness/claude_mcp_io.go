@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/goobers/goobers/internal/mcpio"
 )
@@ -123,6 +124,16 @@ func claudeMCPServerFailures(req RunRequest, capture transcriptCapture) []MCPSer
 		switch {
 		case !ok:
 			failures = append(failures, MCPServerFailure{Server: name, Status: "absent"})
+		case status == claudeMCPStatusPending && capture.mcpServersUsed[name]:
+			// The init report caught the server mid-handshake, and the turn
+			// later called one of its tools successfully: it connected, just
+			// after init (#5397). The same startup race the Copilot
+			// pre-model probe waits out.
+		case status == claudeMCPStatusPending:
+			// Still mid-handshake at init and never proven usable: report it
+			// as an incomplete handshake, a server fault that may clear on
+			// the next attempt, rather than as the CLI's transient word.
+			failures = append(failures, MCPServerFailure{Server: name, Status: copilotMCPStatusHandshakeIncomplete})
 		case status != claudeMCPStatusConnected:
 			failures = append(failures, MCPServerFailure{Server: name, Status: status})
 		}
@@ -134,3 +145,59 @@ func claudeMCPServerFailures(req RunRequest, capture transcriptCapture) []MCPSer
 // system/init mcp_servers entry for a server whose subprocess started and
 // completed the MCP handshake.
 const claudeMCPStatusConnected = "connected"
+
+// claudeMCPStatusPending is the status the claude CLI reports in its
+// system/init mcp_servers entry for a server whose handshake had not finished
+// when init was emitted. The CLI keeps connecting it during the turn.
+const claudeMCPStatusPending = "pending"
+
+// claudeMCPToolUseTracker records which MCP servers a claude-code turn
+// demonstrably reached: a tool_use naming one of the server's tools
+// (mcp__<server>__<tool>) followed by a tool_result for that call that is not
+// an error. A failed call proves nothing, since the CLI answers a call to an
+// unconnected server's tool with an error result too.
+type claudeMCPToolUseTracker struct {
+	calls map[string]string
+	used  map[string]bool
+}
+
+func newClaudeMCPToolUseTracker() *claudeMCPToolUseTracker {
+	return &claudeMCPToolUseTracker{calls: make(map[string]string)}
+}
+
+func (t *claudeMCPToolUseTracker) observe(events []transcriptEvent) {
+	for _, event := range events {
+		call := event.ToolCall
+		if call == nil || call.ID == "" {
+			continue
+		}
+		if event.Role == "assistant" {
+			if server, ok := claudeMCPToolServer(call.Name); ok {
+				t.calls[call.ID] = server
+			}
+			continue
+		}
+		server, ok := t.calls[call.ID]
+		if event.Role != "tool" || !ok || call.Success == nil || !*call.Success {
+			continue
+		}
+		if t.used == nil {
+			t.used = make(map[string]bool)
+		}
+		t.used[server] = true
+	}
+}
+
+// claudeMCPToolServer returns the server segment of a claude MCP tool name
+// ("mcp__<server>__<tool>").
+func claudeMCPToolServer(tool string) (string, bool) {
+	rest, ok := strings.CutPrefix(tool, "mcp__")
+	if !ok {
+		return "", false
+	}
+	server, _, ok := strings.Cut(rest, "__")
+	if !ok || server == "" {
+		return "", false
+	}
+	return server, true
+}

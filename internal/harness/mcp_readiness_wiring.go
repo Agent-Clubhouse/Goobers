@@ -32,15 +32,22 @@ func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex in
 }
 
 type mcpUnobservableRunner struct {
-	base     ProcessRunner
-	request  RunRequest
+	base    ProcessRunner
+	request RunRequest
+	// source names why the check is unobservable; empty means the default
+	// "adapter-limitation".
+	source   string
 	reported bool
 }
 
 func (r *mcpUnobservableRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
 	if !r.reported {
 		r.reported = true
-		if err := emitMCPReadiness(r.request, MCPReadiness{Server: goobersIOServerName, Category: "check_unobservable", Source: "adapter-limitation", Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"}); err != nil {
+		source := r.source
+		if source == "" {
+			source = "adapter-limitation"
+		}
+		if err := emitMCPReadiness(r.request, MCPReadiness{Server: goobersIOServerName, Category: "check_unobservable", Source: source, Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"}); err != nil {
 			return ProcessResult{ExitCode: -1}, err
 		}
 	}
@@ -70,8 +77,15 @@ func readinessReportedError(req RunRequest, report MCPReadiness, err error) erro
 }
 
 func withUnobservableMCP(base ProcessRunner, req RunRequest) ProcessRunner {
+	return withUnobservableMCPSource(base, req, "")
+}
+
+// withUnobservableMCPSource is withUnobservableMCP with an explicit readiness
+// source. The returned runner reports once however many invocations (initial
+// turn, completion repair) it carries.
+func withUnobservableMCPSource(base ProcessRunner, req RunRequest, source string) ProcessRunner {
 	if req.GoobersIORegistered {
-		return &mcpUnobservableRunner{base: base, request: req}
+		return &mcpUnobservableRunner{base: base, request: req, source: source}
 	}
 	return base
 }

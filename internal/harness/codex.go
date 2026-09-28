@@ -345,9 +345,10 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		}
 	}()
 
+	runner := withUnobservableMCPSource(c.runner(), req, codexMCPReadinessSource)
 	started := time.Now()
 	result, parsed, processErr := runCodexInvocation(
-		ctx, c.runner(), req, argv, env, prompt, req.Timeout, 1, agentTelemetry.activityObserver(),
+		ctx, runner, req, argv, env, prompt, req.Timeout, 1, agentTelemetry.activityObserver(),
 	)
 	out = Outcome{
 		Transcript:             result.Transcript,
@@ -386,7 +387,7 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 		recoveryArgv := buildCodexResumeArgv(argv, prepared.execIndex, parsed.threadID)
 		recovery, recoveryParsed, recoveryErr := runCodexInvocation(
-			ctx, c.runner(), req, recoveryArgv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(),
+			ctx, runner, req, recoveryArgv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(),
 		)
 		mergeCodexMetrics(parsed.metrics, recoveryParsed.metrics)
 		out.Metrics = parsed.metrics
@@ -573,7 +574,7 @@ func runCodexInvocation(
 		Activity:                     activity,
 	})
 	if err != nil {
-		return result, codexParseResult{}, err
+		return result, codexParseResult{}, codexRequiredMCPStartupError(req, result, err)
 	}
 	parsed, err := stdout.result()
 	if !stdout.hasData() {

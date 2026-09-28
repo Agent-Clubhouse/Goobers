@@ -27,7 +27,7 @@ type claudeStreamMessage struct {
 	TotalCostUSD *float64                    `json:"total_cost_usd"`
 	// MCPServers is the per-server connection report carried by the
 	// system/init event: every server registered via --mcp-config appears
-	// here with its live status ("connected"/"failed"). A registered server
+	// here with its live status ("connected"/"failed"/"pending"). A registered server
 	// that failed to start is reported here and nowhere else — the CLI
 	// otherwise proceeds silently without that server's tools (#3356). A
 	// pointer so an init event that omits the field entirely (an older CLI
@@ -250,6 +250,7 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 	models := make(map[string]*claudeUsageAccumulator)
 	var mcpServersReported bool
 	var mcpServerStatus map[string]string
+	mcpToolUse := newClaudeMCPToolUseTracker()
 
 	writeEvents := func(events ...transcriptEvent) bool {
 		for _, event := range events {
@@ -312,6 +313,7 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 				}
 			}
 			events, recognized := convertClaudeMessage(native)
+			mcpToolUse.observe(events)
 			if !recognized {
 				continue
 			}
@@ -407,6 +409,7 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 		droppedBytes:       dropped,
 		mcpServersReported: mcpServersReported,
 		mcpServerStatus:    mcpServerStatus,
+		mcpServersUsed:     mcpToolUse.used,
 	}, true
 }
 

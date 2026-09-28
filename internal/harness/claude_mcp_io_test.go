@@ -413,3 +413,88 @@ func TestClaudeMCPServerFailuresCoversDeclaredServers(t *testing.T) {
 		t.Fatalf("no registered servers must produce no failures, got %+v", got)
 	}
 }
+
+// TestClaudeAdapterToleratesGoobersIOPendingAtInitWhenLaterUsed is the
+// claude-code side of #5397: the CLI's system/init event can catch goobers-io
+// mid-handshake ("pending") and finish connecting it during the turn, the
+// startup race the Copilot pre-model probe waits out. A later successful
+// goobers-io tool call proves the server was usable, so it is not a failure.
+// Without that proof the report is an incomplete handshake (a retryable
+// server fault), never the CLI's transient word.
+func TestClaudeAdapterToleratesGoobersIOPendingAtInitWhenLaterUsed(t *testing.T) {
+	const (
+		pendingInit = `{"type":"system","subtype":"init","model":"claude-sonnet-4-6","mcp_servers":[{"name":"goobers-io","status":"pending"}]}`
+		ioToolUse   = `{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"toolu_1","name":"mcp__goobers-io__get_run_info","input":{}}]}}`
+		otherUse    = `{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}]}}`
+		okResult    = `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}`
+		errResult   = `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"No such tool available"}]}}`
+		resultLine  = `{"type":"result","subtype":"success","result":"done"}`
+	)
+	incomplete := []MCPServerFailure{{Server: goobersIOServerName, Status: copilotMCPStatusHandshakeIncomplete}}
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  []MCPServerFailure
+	}{
+		{name: "pending then a successful goobers-io call", lines: []string{pendingInit, ioToolUse, okResult}, want: nil},
+		{name: "pending and never used", lines: []string{pendingInit}, want: incomplete},
+		{name: "pending then a failed goobers-io call", lines: []string{pendingInit, ioToolUse, errResult}, want: incomplete},
+		{name: "pending then only a non-MCP call", lines: []string{pendingInit, otherUse, okResult}, want: incomplete},
+		{name: "pending then a goobers-io call with no result", lines: []string{pendingInit, ioToolUse}, want: incomplete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubClaudeCredentialsHome(t)
+			workspace := t.TempDir()
+			stream := strings.Join(append(tc.lines, resultLine), "\n") + "\n"
+			runner := &fakeProcessRunner{
+				result: ProcessResult{ExitCode: 0, Transcript: []byte(stream)},
+				act: func(req ProcessRequest) error {
+					return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{
+						Status: apiv1.ResultSuccess,
+					})
+				},
+			}
+			adapter := &ClaudeAdapter{
+				Command: []string{"claude"},
+				Runner:  runner,
+				SelfBin: "/usr/local/bin/goobers",
+			}
+			out, err := adapter.Run(context.Background(), RunRequest{
+				Envelope:       testEnvelope(workspace),
+				Workspace:      workspace,
+				CompletionPath: DefaultResultPath,
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !slices.Equal(out.MCPServerFailures, tc.want) {
+				t.Fatalf("MCPServerFailures = %+v, want %+v", out.MCPServerFailures, tc.want)
+			}
+			if tc.want == nil {
+				return
+			}
+			// The unproven pending server still fails the stage as a
+			// retryable required-MCP fault, not as a policy rejection.
+			result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
+			refuseWhenRequiredMCPUnavailable(&result, out.MCPServerFailures)
+			if result.Error == nil || result.Error.Code != ErrorCodeRequiredMCPUnavailable || !result.Error.Retryable {
+				t.Fatalf("result error = %+v, want retryable %s", result.Error, ErrorCodeRequiredMCPUnavailable)
+			}
+		})
+	}
+}
+
+func TestClaudeMCPToolServer(t *testing.T) {
+	for tool, want := range map[string]string{
+		"mcp__goobers-io__get_run_info": goobersIOServerName,
+		"mcp__github__search":           "github",
+		"Read":                          "",
+		"mcp__goobers-io":               "",
+		"mcp____tool":                   "",
+	} {
+		got, ok := claudeMCPToolServer(tool)
+		if got != want || ok != (want != "") {
+			t.Errorf("claudeMCPToolServer(%q) = %q, %v; want %q", tool, got, ok, want)
+		}
+	}
+}

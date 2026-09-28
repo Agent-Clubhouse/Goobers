@@ -261,15 +261,29 @@ requires a successful native authorization probe.
 
 Claude, Windows Copilot, custom Copilot launchers, and custom Copilot arguments
 retain their existing execution paths and explicitly report
-`check_unobservable`. Their existing post-turn checks remain in place. Direct
-controlled Copilot sessions also inspect their actual server list after the
-turn, because CLI-global lifecycle logs do not reliably describe SDK sessions.
-After any completion-recovery turn, a bounded five-second finalization collects
-session usage and gracefully shuts down the native session before reading
-native captures. The usage RPC preserves per-model accounting even when a
-persistent headless session has not yet written its ordinary CLI shutdown
-record. Missing or invalid usage is not invented; capture/finalization errors
-remain visible to the stage.
+`check_unobservable`. Their existing post-turn checks remain in place. The
+Claude post-turn check reads the CLI's init report. A server that report shows
+as `pending` counts as connected when the turn later made a successful call to
+one of its tools. Without such a call it is reported as `started-no-handshake`,
+which fails the stage as a retryable required-MCP fault. Direct controlled
+Copilot sessions also inspect their actual server list after the turn, because
+CLI-global lifecycle logs do not reliably describe SDK sessions. After any
+completion-recovery turn, a bounded five-second finalization collects session
+usage and gracefully shuts down the native session before reading native
+captures. The usage RPC preserves per-model accounting even when a persistent
+headless session has not yet written its ordinary CLI shutdown record. Missing
+or invalid usage is not invented; capture/finalization errors remain visible to
+the stage.
+
+Codex also reports `check_unobservable`, with source `startup-required`.
+Goobers registers goobers-io with `required = true`, so the Codex CLI refuses
+to start a session without it. When the CLI exits before the model turn
+because goobers-io failed to initialize, the adapter records
+`transport_failure` from the same source. The stage then fails with
+`HARNESS_REQUIRED_MCP_UNAVAILABLE` as an infrastructure failure, the same as a
+failed Copilot pre-model probe. A declared server's required-startup failure
+keeps the ordinary harness error. Neither the annotation nor the error copies
+the CLI's server error text.
 
 The opt-in read-only live checks send no model prompt:
 
