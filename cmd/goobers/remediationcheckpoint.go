@@ -752,11 +752,15 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 // write: refund what it charged, forget its digest (the first attempt already
 // passed the stall check against the cycle before it) and undo its cycle
 // count. The decision below then reproduces the first attempt's advancing
-// state. Returns whether it rewound, and the consecutive-infrastructure count
-// the rewound record carried so the rewrite preserves it.
+// state. A forced (--escalate) call is never a retry: the park stages invoke
+// it in the same run, at the same head, right after this attempt's own
+// checkpoint, and it must keep the attempt's charge so the escalation
+// attributes what was attempted (#4074). Returns whether it rewound, and the
+// consecutive-infrastructure count the rewound record carried so the rewrite
+// preserves it.
 func rewindOwnCheckpointWrite(in *remediationCheckpointDecisionInput) (bool, int) {
 	prior := in.Prior
-	if in.RunID == "" || prior.RunID != in.RunID || prior.Escalated || prior.InfrastructureVoided ||
+	if in.Forced || in.RunID == "" || prior.RunID != in.RunID || prior.Escalated || prior.InfrastructureVoided ||
 		prior.HeadSHA != in.HeadSHA || prior.BaseSHA != in.BaseSHA {
 		return false, 0
 	}
