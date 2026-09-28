@@ -281,7 +281,7 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		}
 		out := make([]map[string]interface{}, len(st.comments))
 		for i, c := range st.comments {
-			entry := map[string]interface{}{"id": i + 1, "user": map[string]string{"login": "goobers-bot"}, "body": c}
+			entry := map[string]interface{}{"id": i + 1, "user": map[string]string{"login": "goobers-bot"}, "body": stampOwnFixtureBody(c, "comment")}
 			createdAt := "2026-07-15T00:00:00Z"
 			if i < len(st.commentCreatedAt) {
 				createdAt = st.commentCreatedAt[i]
@@ -303,7 +303,7 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 			for i, comment := range sibling.comments {
 				out[i] = map[string]interface{}{
 					"id": i + 1, "user": map[string]string{"login": "goobers-bot"},
-					"body": comment, "created_at": sibling.updatedAt.Format(time.RFC3339),
+					"body": stampOwnFixtureBody(comment, "comment"), "created_at": sibling.updatedAt.Format(time.RFC3339),
 				}
 			}
 			writeFakeJSON(w, out)

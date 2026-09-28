@@ -243,7 +243,7 @@ func TestGatherPRContextExcludesEscalatedNeedsRemediationPR(t *testing.T) {
 		t.Fatalf("remediationStateComment: %v", err)
 	}
 	srv.comments = []map[string]interface{}{
-		{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stateComment, "created_at": "2026-07-16T00:00:00Z"},
+		{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stampOwnFixtureBody(stateComment, "comment"), "created_at": "2026-07-16T00:00:00Z"},
 	}
 	server := srv.start(t)
 
@@ -301,7 +301,7 @@ func TestGatherPRContextSelfHealsOnBaseAdvance(t *testing.T) {
 		headSHA: headSHA, baseSHA: baseSHA, // base moved since escalation
 		labels: []string{needsRemediationLabel, remediationEscalatedLabel},
 		comments: []map[string]interface{}{
-			{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stateComment, "created_at": "2026-07-16T00:00:00Z"},
+			{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stampOwnFixtureBody(stateComment, "comment"), "created_at": "2026-07-16T00:00:00Z"},
 		},
 	}
 	server := srv.start(t)
@@ -429,7 +429,7 @@ func TestGatherPRContextDigestShortCircuitsOnClearedLabel(t *testing.T) {
 		headSHA: headSHA, baseSHA: baseSHA,
 		labels: []string{needsRemediationLabel}, // merge-escalated cleared by a human
 		comments: []map[string]interface{}{
-			{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stateComment, "created_at": "2026-07-16T00:00:00Z"},
+			{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stampOwnFixtureBody(stateComment, "comment"), "created_at": "2026-07-16T00:00:00Z"},
 		},
 	}
 	server := srv.start(t)
