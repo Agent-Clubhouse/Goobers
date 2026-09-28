@@ -61,12 +61,11 @@ func seedReviewThreadResolutionRunWithComments(t *testing.T, root, runID, respon
 	}
 }
 
-// setDaemonStageAttributionEnv sets the remaining stage env a daemon injects
-// into a goobers CLI stage, so the stage provider stamps its writes with run
-// attribution exactly as it does in a real run.
+// setDaemonStageAttributionEnv names the stage's task the way the daemon does,
+// so the attribution the suite stamps by default (defaultTestStageAttribution)
+// carries resolve-review-threads rather than the placeholder task.
 func setDaemonStageAttributionEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	t.Setenv(executor.TaskEnvVar, "resolve-review-threads")
 }
 
