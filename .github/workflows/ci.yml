@@ -50,8 +50,11 @@ name: CI
 # green for the required `make ci` check (the required-ci aggregator, whose NAME
 # is pinned by the branch ruleset) to pass.
 #
-# Pull requests and merge groups run that complete matrix. A push to main also
-# validates the exact landed SHA with checks, lint, the Linux race shards, the
+# Pull requests, merge groups, and manual dispatches run that complete matrix.
+# For a frozen candidate, dispatch on a dedicated, never-updated validation
+# branch; its ref-scoped concurrency cannot be cancelled by pushes to main.
+# A push to main also validates the exact landed SHA with checks, lint, the Linux
+# race shards, the
 # darwin cross-compile gate, shipped-workflow contracts, and the Windows gate.
 # Failures on the landed tree are automatically escalated as critical issues.
 #
@@ -60,6 +63,7 @@ name: CI
 # inventoried in docs/reference/workflow-inventory.md.
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
