@@ -80,4 +80,5 @@ func TestIntegrationTelemetryDaemonReconcilesJournal(t *testing.T) {
 		t.Fatalf("release invariant failed: %s\n%s", data, output)
 	}
 	t.Logf("reconciled %d journal events across %d workflows", result.ExpectedRunEvents, result.Runs)
+	checkStartupProbe(t, ctx, root, artifact, daemon, driver)
 }

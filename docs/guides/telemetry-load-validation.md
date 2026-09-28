@@ -393,6 +393,49 @@ gates below. It does not automatically certify every table entry. Replay
 inspection supplies pending counts, not other processes' cumulative loss counters;
 use daemon health warnings and journals for those, not zero-valued inspector fields.
 
+### Repeated startup and shutdown measurement
+
+Use the separate `startup` scenario for idle daemon lifecycle comparisons:
+
+```sh
+bin/telemetry-load -bin bin/goobers -out /tmp/telemetry-startup-half-cold-stalled -scenario startup -startup-rounds 20 -startup-prefill half -startup-index cold -startup-endpoint stalled
+```
+
+Run this only on an otherwise idle validation host, with an external watchdog.
+It creates fresh matched disabled/enabled instances and alternates pair order.
+`startup-results.json` retains every raw launch-to-ready and shutdown duration,
+request counts, and actual pre/post replay file counts and bytes. Both `/readyz`
+and the instance API must answer successfully; readiness polling has 50 ms
+resolution. No workflows are submitted. Shutdown uses a 15-second drain setting;
+the larger watchdog is not the acceptance limit. Independently compare disabled
+and enabled p95 against the 250 ms added-startup budget, and each shutdown
+against 15.250 seconds. Use at least 20 samples per variant; the one-pair CI
+smoke exercises harness correctness only, never performance acceptance.
+
+Prefills are `empty`, `half` (256 MiB), `near-cap` (460 MiB), `cap` (512 MiB),
+`tiny-files` (12,000 single-record files), or `legacy` (64 MiB without header
+record counts). Byte prefills stop after a complete file, so inspect actual
+occupancy rather than assuming an exact size. These are separate file-shape
+cases, not every combination of payload size and file count. Warm priming can
+prune an over-cap seed; actual measurement-start occupancy is recorded.
+
+`cold` requires a missing replay manifest. `warm` first runs and cleanly stops
+the daemon against a rejecting endpoint, waiting for usable accounting when
+export is enabled, then restarts the same instance without copying its index.
+The measured endpoint is either healthy or stalled for seven seconds, longer
+than the exporter request deadline. Five seconds of idle settling separates
+preparation from timing (`-startup-settle` overrides it). Seed file writes are
+synced before measurement. **Neither mode means OS-cache-cold**; the driver does
+not flush shared machine caches. Credentials cannot direct this scenario to an
+external Azure endpoint, and it refuses a present `GOOBERS_DISABLE_FSYNC`.
+
+After each child exits and occupancy is captured, the driver removes only its
+marked instance's known synthetic seed payload files to bound fixture disk
+growth. Logs, manifests, local journals, and timings remain. Those post-cleanup
+fixtures are deliberately **not delivery-reconciliation evidence**. Failed
+samples retain their fixture for inspection; a command success or final empty
+spool does not certify all lifecycle budgets or crash durability.
+
 Only the explicit `azure` scenario accepts `-azure-connection-env NAME`, with
 the connection string already in that environment variable. It never uploads
 volume prefills. It reports `MissingRunEvents: -1` until a separate Azure query

@@ -207,7 +207,9 @@ func main() {
 	flag.DurationVar(&settleTimeout, "settle-timeout", 2*time.Minute, "maximum journal reconciliation wait after workload ends, before shutdown")
 	flag.StringVar(&azureConnectionEnv, "azure-connection-env", "", "explicit connection-string environment reference; only with -scenario azure (no volume prefills)")
 	flag.StringVar(&diskFullVolume, "disk-full-volume", "", "dedicated empty Linux tmpfs <=64MiB, containing only .goobers-telemetry-load-volume; only with -scenario disk-full")
+	registerStartupFlags()
 	flag.Parse()
+	must(startupOptions.validate(selected))
 	if (selected == "disk-full") != (diskFullVolume != "") {
 		panic("disk-full requires an explicit dedicated -disk-full-volume, and that flag is only allowed for disk-full")
 	}
@@ -226,7 +228,7 @@ func main() {
 	if collectionProfile != "health" && collectionProfile != "standard" && collectionProfile != "diagnostic" {
 		panic("invalid collection profile")
 	}
-	if !strings.Contains("|all|baseline|enabled|outage-recovery|network-faults|disk-full|near-cap|tiny-files|legacy|spool-failure|azure|crash|", "|"+selected+"|") {
+	if !strings.Contains("|all|baseline|enabled|outage-recovery|network-faults|disk-full|near-cap|tiny-files|legacy|spool-failure|azure|crash|startup|", "|"+selected+"|") {
 		panic("unknown scenario")
 	}
 	bin, _ = filepath.Abs(bin)
@@ -291,6 +293,10 @@ func main() {
 		}
 	}))
 	defer server.Close()
+	if selected == "startup" {
+		runStartupPairs(server.URL)
+		return
+	}
 	if selected == "crash" {
 		root, api := setup("crash", server.URL, true)
 		mode.Store(1)
