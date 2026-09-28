@@ -134,7 +134,7 @@ spec:
         - review
         - local-ci
       goal: >-
-        Implement the claimed issue end to end: read the issue and its
+        Implement the code change for the claimed issue: read the issue and its
         acceptance criteria, plan, implement, verify with fast, targeted
         tests for what you changed, and commit to the run's branch (push is a
         separate deterministic stage — see push-branch below). Do NOT run the
@@ -143,9 +143,18 @@ spec:
         it here only burns the session's wall-clock budget on test execution
         that is about to run again anyway (#724). On a repass, first read the
         reviewer rationale or local-CI failure evidence attached as context and
-        address it before making further changes. Treat a provider-side
-        acceptance step such as an issue comment or report as satisfied only
-        when attached context proves it was already completed. Otherwise fail
+        address it before making further changes. Normal lifecycle actions
+        belong to later deterministic stages: push-branch publishes the run
+        branch; open-pr creates or updates the PR and links the claimed issue;
+        close-out posts the standard completion comment, marks the issue
+        in-review, and releases its claim. Leave those actions pending for their
+        named stages; do not attempt them or claim they already happened. Their
+        pending state is not an implement-stage failure: return success once
+        your code deliverable is complete. This handoff covers only those named
+        lifecycle actions, not an arbitrary requested comment, report, release,
+        merge, or external update. Treat any other provider-side acceptance
+        step as satisfied only when attached context proves it was already
+        completed. Otherwise fail
         explicitly with PROVIDER_ACTION_REQUIRED rather than attempting the
         mutation or reporting MISSING_CAPABILITY.
       capabilities:
