@@ -41,7 +41,7 @@ func probeRequiredMCPSession(ctx context.Context, session requiredMCPSession) (M
 	if err := session.InitializeTools(ctx); err != nil {
 		return mcpProbeFailure(report, "transport_failure", errRequiredMCPUnavailable)
 	}
-	servers, err := session.ListMCP(ctx)
+	servers, err := awaitRequiredMCPSettled(ctx, session)
 	if err != nil {
 		return mcpProbeFailure(report, "transport_failure", errRequiredMCPUnavailable)
 	}
@@ -68,6 +68,50 @@ func probeRequiredMCPSession(ctx context.Context, session requiredMCPSession) (M
 		return probeRequiredMCPTools(ctx, session, report)
 	}
 	return mcpProbeFailure(report, "required_tool_unavailable", errRequiredMCPUnavailable)
+}
+
+// requiredMCPSettlePoll paces re-listing while the session is still starting
+// its MCP servers.
+const requiredMCPSettlePoll = 250 * time.Millisecond
+
+// awaitRequiredMCPSettled lists the session's MCP servers until goobers-io has
+// left its startup state or the probe window closes (#5397).
+//
+// The CLI starts session MCP servers asynchronously: a list taken straight
+// after session creation can report the server "pending", or report no
+// servers at all before the MCP host has initialized. Treating that first
+// snapshot as final failed stages whose server came up moments later, and
+// under load that was most of the observed "required_tool_unavailable"
+// failures. Only those two startup states are waited on; every settled status,
+// including absence from an initialized host, is returned for the caller to
+// judge exactly as before, and a window that closes while still starting
+// returns the last snapshot, which the caller reports as unavailable.
+func awaitRequiredMCPSettled(ctx context.Context, session requiredMCPSession) (*rpc.MCPServerList, error) {
+	for {
+		servers, err := session.ListMCP(ctx)
+		if err != nil || !requiredMCPStarting(servers) {
+			return servers, err
+		}
+		timer := time.NewTimer(requiredMCPSettlePoll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return servers, nil
+		case <-timer.C:
+		}
+	}
+}
+
+func requiredMCPStarting(servers *rpc.MCPServerList) bool {
+	if servers == nil {
+		return false
+	}
+	for _, server := range servers.Servers {
+		if server.Name == goobersIOServerName {
+			return server.Status == rpc.MCPServerStatusPending
+		}
+	}
+	return servers.Host == nil
 }
 
 func probeRequiredMCPTools(ctx context.Context, session requiredMCPSession, report MCPReadiness) (MCPReadiness, error) {
