@@ -22,7 +22,8 @@ import (
 func TestADOBacklogQueryClaimDerivesReadyAtFromTagHistory(t *testing.T) {
 	readyAt := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	var comments []map[string]any
-	tags := "goobers:approved; GOOBERS:READY"
+	tags := "goobers:approved; goobers:ready"
+	historyTags := "goobers:approved; GOOBERS:READY"
 	revision := 3
 	workItem := func() map[string]any {
 		return map[string]any{
@@ -58,7 +59,7 @@ func TestADOBacklogQueryClaimDerivesReadyAtFromTagHistory(t *testing.T) {
 				"System.ChangedDate": map[string]any{"newValue": readyAt.Add(-time.Hour).Format(time.RFC3339)},
 			}},
 			{"id": 2, "fields": map[string]any{
-				"System.Tags":        map[string]any{"oldValue": "goobers:approved", "newValue": tags},
+				"System.Tags":        map[string]any{"oldValue": "goobers:approved", "newValue": historyTags},
 				"System.ChangedDate": map[string]any{"newValue": readyAt.Format(time.RFC3339)},
 			}},
 		}})

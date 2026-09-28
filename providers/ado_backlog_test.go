@@ -126,7 +126,7 @@ func adoTestFirstWriterTags(existing, written string) string {
 				break
 			}
 		}
-		if !adoHasLabel(out, tag) {
+		if !adoContainsLabelFold(out, tag) {
 			out = append(out, tag)
 		}
 	}
@@ -283,6 +283,7 @@ func TestADOReleaseWorkItemClaimPreservesNewerOwner(t *testing.T) {
 		t.Fatalf("newer-owner refusal performed %d provider mutation(s), want none", mutations)
 	}
 }
+
 // TestADOFindPullRequestByBranch pins the exact source-branch match the
 // idempotent OpenPullRequest and issue-close-out linking rely on: a prefix
 // collision ("run-1" vs "run-10") must not resolve the wrong PR.

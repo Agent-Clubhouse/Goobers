@@ -115,8 +115,8 @@ func adoLabelTransition(update adoWorkItemUpdate, id, label string) (WorkItemLab
 	if !ok {
 		return WorkItemLabelTransition{}, false, nil
 	}
-	had := adoHasLabel(adoLabels(adoFieldString(tags.OldValue)), label)
-	has := adoHasLabel(adoLabels(adoFieldString(tags.NewValue)), label)
+	had := adoContainsLabelFold(adoLabels(adoFieldString(tags.OldValue)), label)
+	has := adoContainsLabelFold(adoLabels(adoFieldString(tags.NewValue)), label)
 	if had == has {
 		return WorkItemLabelTransition{}, false, nil
 	}
@@ -131,6 +131,15 @@ func adoLabelTransition(update adoWorkItemUpdate, id, label string) (WorkItemLab
 		Added:      has,
 		OccurredAt: changed,
 	}, true, nil
+}
+
+func adoContainsLabelFold(labels []string, label string) bool {
+	for _, candidate := range labels {
+		if strings.EqualFold(candidate, label) {
+			return true
+		}
+	}
+	return false
 }
 
 // adoUpdateChangedDate returns the time an update was made, from its
