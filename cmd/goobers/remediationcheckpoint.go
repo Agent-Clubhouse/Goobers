@@ -615,7 +615,11 @@ type remediationCheckpointDecision struct {
 }
 
 func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediationCheckpointDecision {
+	retry, retryInfraFailures := rewindOwnCheckpointWrite(&in)
 	infraFailures := settleInfrastructureVoidedCycle(&in)
+	if retry {
+		infraFailures = retryInfraFailures
+	}
 	stalled := remediationStalled(in.Prior, in.Digest, in.BaseSHA)
 	exhaustedCause, exceeded := exhaustedRemediationCause(in.Prior.AttemptsByCause, in.Causes, in.Budgets)
 	structuralCollision := len(in.StructuralCollisions) > 0
@@ -735,6 +739,36 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 			InfrastructureFailures: infraFailures,
 		},
 	}
+}
+
+// rewindOwnCheckpointWrite makes a retry of the same checkpoint attempt
+// idempotent (#6008). remediation-checkpoint writes its sticky state (the
+// charged causes and this cycle's diff digest) before the agent runs, so a
+// stage retry after that write reads its OWN record back as the prior cycle:
+// the byte-identical digest tripped the same-diff stall and parked a PR that
+// was making progress, and the causes were charged a second time (which could
+// also trip budget-exhausted). When the prior advancing record was written by
+// this same run at the same head and base, rewind it to the state before that
+// write: refund what it charged, forget its digest (the first attempt already
+// passed the stall check against the cycle before it) and undo its cycle
+// count. The decision below then reproduces the first attempt's advancing
+// state. Returns whether it rewound, and the consecutive-infrastructure count
+// the rewound record carried so the rewrite preserves it.
+func rewindOwnCheckpointWrite(in *remediationCheckpointDecisionInput) (bool, int) {
+	prior := in.Prior
+	if in.RunID == "" || prior.RunID != in.RunID || prior.Escalated || prior.InfrastructureVoided ||
+		prior.HeadSHA != in.HeadSHA || prior.BaseSHA != in.BaseSHA {
+		return false, 0
+	}
+	for _, cause := range prior.ChargedCauses {
+		prior.AttemptsByCause.refund(cause)
+	}
+	prior.LastDiffDigest = ""
+	if prior.Cycles > 0 {
+		prior.Cycles--
+	}
+	in.Prior = prior
+	return true, prior.InfrastructureFailures
 }
 
 // settleInfrastructureVoidedCycle settles the prior cycle's provisional
