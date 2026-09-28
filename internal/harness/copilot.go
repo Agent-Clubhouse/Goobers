@@ -658,6 +658,12 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		}
 		defer authCleanup()
 		authCommand := append(command, authCheckArgs...)
+		if sessionContract.AuthProbe == nil {
+			// The fallback probe is a real prompt session, so it gets the same
+			// export opt-out as a stage. A v2 launcher's declared probe starts no
+			// agent session and receives its arguments exactly as declared.
+			authCommand = withCopilotNoRemoteExport(authCommand)
+		}
 		sessionTranscript := ""
 		sessionCleanup := func() {}
 		if verifyAdapterManagedSession {
@@ -686,6 +692,9 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		})
 		if err != nil || res.ExitCode != 0 {
+			if copilotRemoteExportUnsupported(res) {
+				return PreflightInfo{}, copilotRemoteExportUnsupportedError(version)
+			}
 			return PreflightInfo{}, copilotAuthProbeError(ctx, authProbe, res, err)
 		}
 		if sessionTranscript != "" {
@@ -959,6 +968,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		argv = append(argv, "--reasoning-effort", value)
 	}
 	argv = append(argv, extra...)
+	argv = withCopilotNoRemoteExport(argv)
 	if completionInResponse {
 		if copilotDeclaresTool(req.Tools, "github") {
 			argv = append(argv, "--add-github-mcp-toolset=issues")

@@ -871,6 +871,12 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	if copilot.Name() != "copilot-cli" {
 		t.Fatalf("adapter Name = %q, want existing diagnostic identity copilot-cli", copilot.Name())
 	}
+	// The launcher prefix stays the bare CLI: --no-remote-export is enforced
+	// on every final session argv by the adapter, not carried in the prefix
+	// an operator override could replace.
+	if got, want := strings.Join(copilot.Command, " "), "copilot"; got != want {
+		t.Fatalf("copilot launcher = %q, want built-in default %q", got, want)
+	}
 	if copilot.EnvCapabilities[string(capability.AgentModel)] != copilotModelEnv {
 		t.Fatalf("agent:model env = %q, want %q", copilot.EnvCapabilities[string(capability.AgentModel)], copilotModelEnv)
 	}

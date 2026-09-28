@@ -398,7 +398,9 @@ type RunnerConfig struct {
 	StageMemoryLimit string `json:"stageMemoryLimit,omitempty" yaml:"stageMemoryLimit,omitempty"`
 	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
 	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
-	// keep the built-in default (["copilot"] / ["claude"]).
+	// keep the built-in default (["copilot"] / ["claude"]). Whatever the
+	// Copilot prefix, the adapter appends --no-remote-export to every Copilot
+	// session it launches, so an override cannot re-enable session export.
 	//
 	// The launcher was always data on the adapter (harness.CopilotAdapter.Command)
 	// but hardcoded at the composition root, so pointing a harness at a
