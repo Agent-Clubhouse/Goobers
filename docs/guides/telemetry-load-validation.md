@@ -61,6 +61,15 @@ These are background goroutines, **not an OS low-priority scheduling class**.
 Asynchronous work still consumes CPU, memory, disk bandwidth, and filesystem
 operations. Local authoritative journal fsync remains a separate cost.
 
+Redaction skips replacement only when the regexp engine's required literal
+prefix is absent; credential patterns and their ordering are unchanged.
+This avoids copying ordinary payloads once per pattern without a second full
+regex scan for actual secrets. Differential tests cover the original behavior,
+including Unicode/capture replacements, and paired benchmarks include secrets
+near the end of large payloads. The allocation budget runs without `-race`:
+the race runtime deliberately discards regexp pool entries. Security/ownership
+tests still run under the race detector.
+
 ## Run the automated checks
 
 From the repository root, with the pinned Go toolchain:

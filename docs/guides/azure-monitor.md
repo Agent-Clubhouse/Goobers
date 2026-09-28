@@ -313,8 +313,22 @@ messages retain the scrubbed JSON committed locally up to Application Insights'
 32 KiB message limit. Larger messages carry
 `goobers.azure_monitor.truncated=true`; the complete record remains in the local
 journal (and in native OTLP Logs when configured). Diagnostic messages use their
-stable event name. This query joins both streams by durable instance and run
-identity:
+stable event name. Both pipelines publish `goobers.instance.id` (the durable
+journal-attribution identity) and `goobers.root.id` (the separate durable
+root-lifecycle identity), when their existing identity files are readable.
+Service-health's older `instanceId` field refers to the root-lifecycle identity;
+it is **not** interchangeable with `goobers.instance.id`. Neither identity is
+created, repaired, or rotated by export. Older records without these common
+resource attributes cannot safely be joined merely by coalescing the two IDs.
+
+With the diagnostic profile's explicit identity consent, Azure envelopes also
+include `host.name`. This is independent of `cloud_RoleInstance`, which can be
+an opaque process identifier rather than a machine name. Service-health's
+`machineName` and `accountName` remain consented fields; account means the
+daemon account, not necessarily the human who requested a run. Standard
+collection and the connectivity probe do not add hostname context.
+
+This query correlates both streams by durable instance and run identity:
 
 ```kusto
 traces
@@ -322,14 +336,14 @@ traces
 | where cloud_RoleName == "goobers"
 | extend stream=tostring(customDimensions["goobers.telemetry.stream"]),
          recordId=tostring(customDimensions["goobers.telemetry.record_id"]),
-         instanceId=coalesce(
-             tostring(customDimensions["goobers.instance.id"]),
-             tostring(customDimensions["instanceId"])),
+         instanceId=tostring(customDimensions["goobers.instance.id"]),
+         rootId=coalesce(tostring(customDimensions["goobers.root.id"]),
+                         tostring(customDimensions["instanceId"])),
          runId=tostring(customDimensions["goobers.run.id"]),
          gaggle=tostring(customDimensions["goobers.gaggle"])
 | where isnotempty(recordId)
 | summarize arg_max(timestamp, *) by recordId
-| project timestamp, recordId, stream, instanceId, gaggle, runId, message, customDimensions
+| project timestamp, recordId, stream, instanceId, rootId, gaggle, runId, message, customDimensions
 | order by timestamp asc
 ```
 

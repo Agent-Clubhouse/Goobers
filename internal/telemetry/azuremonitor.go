@@ -220,6 +220,12 @@ func (c *azureMonitorClient) sendPayloadRequest(ctx context.Context, raw []byte)
 }
 
 func (c *azureMonitorClient) envelope(item appinsights.Telemetry) *contracts.Envelope {
+	// The OTel process-instance tag can override Azure's default hostname role
+	// tag. Preserve a queryable machine name independently, but only when this
+	// Azure destination explicitly consented to host identity at construction.
+	if host := c.defaultTags[contracts.DeviceId]; host != "" && item.GetProperties() != nil {
+		item.GetProperties()["host.name"] = host
+	}
 	dataContract := item.TelemetryData()
 	warnings := dataContract.Sanitize()
 	if len(warnings) != 0 && item.GetProperties() != nil {

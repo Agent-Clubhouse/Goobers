@@ -68,6 +68,7 @@ func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *
 		ServiceVersion: version.Get().Version, BuildCommit: version.Get().Commit,
 		Scrubber: journal.Chain(setup.SharedRegistry, journal.NewPatternScrubber()),
 	}
+	_, cfg.ResourceAttributes = telemetryInstanceIdentities(root)
 	if otlp.Enabled() {
 		if err := configureOTLP(ctx, &cfg, otlp, setup.SharedRegistry, stores); err != nil {
 			return nil, err

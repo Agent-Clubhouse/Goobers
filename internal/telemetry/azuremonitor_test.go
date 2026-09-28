@@ -80,7 +80,7 @@ func TestAzureMonitorConnectivityProbeIsAcceptedAndIdentityFree(t *testing.T) {
 			t.Errorf("payload missing %q: %s", want, body)
 		}
 	}
-	for _, forbidden := range []string{"goobers.instance.id", "goobers.gaggle", "goobers.run.id", "cloud.roleInstance", "ai.device.id"} {
+	for _, forbidden := range []string{"goobers.instance.id", "goobers.root.id", "goobers.gaggle", "goobers.run.id", "cloud.roleInstance", "ai.device.id", "host.name"} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("identity-free probe contains %q: %s", forbidden, body)
 		}
