@@ -653,12 +653,27 @@ func loadPRSelectSafetyGateState(
 	liveSiblingBlockers := make(map[int][]int)
 	// #5602: a recorded blocker this instance cannot land never holds a PR.
 	unlandable := unlandableSiblingSet(openPRs, headPrefixes, expectedAuthorLogin)
+	recordedBlockers := make(map[int][]int, len(openPRs))
 	for _, pr := range openPRs {
 		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
 		if err != nil {
 			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
-		blockers = withoutDemoted(blockers, unlandable)
+		recordedBlockers[pr.Number] = blockers
+	}
+	// A recorded blocker the election has dropped from candidacy (demoted,
+	// parked needs-human, or escalated with a park that still blocks) can
+	// never be crowned, so it must not hold its successors either. Without
+	// this, elect-lander crowns the next FIFO member while pr-select keeps that
+	// member held behind the parked blocker, and the cluster never drains.
+	// Only PRs actually named as live blockers are resolved, so the common
+	// no-hold path costs no extra provider reads.
+	excluded, err := blockerElectionExclusions(blockerScanCtx, provider, repo, openPRs, recordedBlockers, unlandable, stderr)
+	if err != nil {
+		return state, failProviderStage(stderr, "resolve election exclusions for recorded sibling blockers", err, "selected-pr.json")
+	}
+	for _, pr := range openPRs {
+		blockers := withoutDemoted(recordedBlockers[pr.Number], excluded)
 		liveSiblingBlockers[pr.Number] = blockers
 		for _, blocker := range blockers {
 			state.blockedDependents[blocker]++
@@ -666,7 +681,7 @@ func loadPRSelectSafetyGateState(
 		// #3095: selection asks the fail-closed question, which also covers the
 		// PR that holds the label with no readable blocker record — the shape
 		// liveBlockedOnSiblingBlockers reports as unblocked by design.
-		held, reason, err := blockedOnSiblingSelectionHold(blockerScanCtx, provider, repo, pr, unlandable)
+		held, reason, err := blockedOnSiblingSelectionHold(blockerScanCtx, provider, repo, pr, excluded)
 		if err != nil {
 			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
