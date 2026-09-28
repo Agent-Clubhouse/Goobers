@@ -2674,6 +2674,12 @@ func reconcileClosedUnmergedInReview(
 	return nil
 }
 
+// linkedImplementationPullIDs returns the pull requests named by author's
+// issue-close-out "Implementation complete: <url> is open for merge-review."
+// comments on repo. issue-close-out posts that comment through
+// UpdateWorkItemStatus, which stores it with the provider attribution footer
+// whenever the stage runs with run attribution (every daemon run), so the
+// footer is removed before the prefix and suffix are matched.
 func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, comments []providers.Comment) []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -2681,7 +2687,7 @@ func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, co
 		if !strings.EqualFold(comment.Author, author) {
 			continue
 		}
-		body := strings.TrimSpace(comment.Body)
+		body := providers.StripAttribution(comment.Body)
 		if !strings.HasPrefix(body, implementationInReviewCommentPrefix) ||
 			!strings.HasSuffix(body, implementationInReviewCommentSuffix) {
 			continue

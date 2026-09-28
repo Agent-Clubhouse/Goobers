@@ -71,7 +71,7 @@ func TestIssueCloseOutCommentsClosesAndReleasesClaim(t *testing.T) {
 	if issue.state != "closed" {
 		t.Fatalf("issue state = %q, want closed", issue.state)
 	}
-	if len(issue.comments) != 1 || !strings.Contains(issue.comments[0], "https://example/pull/1") {
+	if len(issue.comments) != 1 || !strings.Contains(issue.comments[0], "https://github.com/your-org/your-repo/pull/1") {
 		t.Fatalf("issue comments = %+v, want exactly one linking pull/1", issue.comments)
 	}
 	var recordedClose bool
