@@ -40,6 +40,14 @@ type stalledSweepDeps struct {
 	// otherwise, which is what manufactured four "stuck for weeks" runs on the
 	// cloud instance and hid the genuinely stalled ones among them.
 	JournalAdvanced func(runID string, seq uint64)
+	// DrainedDowntime is every interval the daemon was down after a graceful
+	// drain (#5601), read once at startup by cleanDaemonDowntime. A drained
+	// run is parked at a stage boundary on purpose and nothing can progress it
+	// until the next daemon starts, so that interval is not the run's own
+	// inactivity: the stall check extends each run's timeout by the part of
+	// these intervals that falls after its last activity. Time the daemon was
+	// up, and downtime after a crash or a forced drain, still count.
+	DrainedDowntime []daemonDowntime
 }
 
 func (d *stalledSweepDeps) prepareTerminal() stalledTerminalPreparer {
@@ -54,6 +62,55 @@ func (d *stalledSweepDeps) journalAdvanced() func(string, uint64) {
 		return nil
 	}
 	return d.JournalAdvanced
+}
+
+// drainedDowntimeSince returns how much graceful-drain downtime falls after
+// lastActivity. A zero lastActivity credits every interval; the runner still
+// refuses to escalate a run whose activity it cannot date.
+func (d *stalledSweepDeps) drainedDowntimeSince(lastActivity time.Time) time.Duration {
+	if d == nil {
+		return 0
+	}
+	var total time.Duration
+	for _, window := range d.DrainedDowntime {
+		from := window.from
+		if from.Before(lastActivity) {
+			from = lastActivity
+		}
+		if window.to.After(from) {
+			total += window.to.Sub(from)
+		}
+	}
+	return total
+}
+
+// daemonDowntime is one interval between a daemon.clean_shutdown and the next
+// daemon.started.
+type daemonDowntime struct {
+	from, to time.Time
+}
+
+// cleanDaemonDowntime pairs each clean shutdown with the daemon start that
+// follows it. A dirty restart, or a start with no clean shutdown before it,
+// contributes nothing: when a crashed daemon stopped is unknown, so that gap
+// keeps counting toward the stall timeout exactly as before.
+func cleanDaemonDowntime(events []journal.Event) []daemonDowntime {
+	var windows []daemonDowntime
+	var shutdownAt time.Time
+	for _, event := range events {
+		switch event.Type {
+		case journal.EventDaemonCleanShutdown:
+			shutdownAt = event.Time
+		case journal.EventDaemonStarted:
+			if !shutdownAt.IsZero() && event.Time.After(shutdownAt) {
+				windows = append(windows, daemonDowntime{from: shutdownAt, to: event.Time})
+			}
+			shutdownAt = time.Time{}
+		case journal.EventDaemonDirtyRestart:
+			shutdownAt = time.Time{}
+		}
+	}
+	return windows
 }
 
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
@@ -385,6 +442,7 @@ func sweepStalledRuns(
 			continue
 		}
 		durationExceeded := runMaxDuration > 0 && identity.StartedAt.Before(now.Add(-runMaxDuration))
+		stallWindow := runTimeout
 		if !durationExceeded {
 			events, eventsErr := reader.Events()
 			if eventsErr != nil {
@@ -405,7 +463,9 @@ func sweepStalledRuns(
 			if journal.ParkedAtGate(events) {
 				continue
 			}
-			if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
+			lastActivity := events[len(events)-1].Time
+			stallWindow = runTimeout + deps.drainedDowntimeSince(lastActivity)
+			if !lastActivity.Before(now.Add(-stallWindow)) {
 				continue
 			}
 		}
@@ -478,7 +538,7 @@ func sweepStalledRuns(
 		if durationExceeded {
 			result, terminated, err = runRunner.ExpireRun(identity.RunID, now, identity.StartedAt, runMaxDuration)
 		} else {
-			result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, runTimeout)
+			result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, stallWindow)
 		}
 		if terminated {
 			if release != nil {
