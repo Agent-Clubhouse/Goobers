@@ -227,9 +227,14 @@ where most polls find no work. Sample JSONL, authoritative journals, daemon logs
 and result JSON stay in the output directory. Disk size is logical file bytes,
 not filesystem allocation. Unix `ps` CPU values are lifetime averages; Windows
 PowerShell uses interval process CPU and itself has sampling overhead. Final
-process CPU seconds are also recorded. The driver is not a heap, goroutine,
-handle, disk-latency, or stage-dispatch profiler; collect those separately for
-the proposed gates below. It does not automatically certify every table entry.
+process CPU seconds are also recorded. Normal daemon heartbeats remain enabled
+and capture heap/retained memory, goroutines and container pressure in the daemon
+log. Samples include Windows handle counts or Linux file descriptors (`-1` on
+macOS). These are trend samples, not allocation/stack profiles or disk-latency
+and stage-dispatch instrumentation; collect those separately for the proposed
+gates below. It does not automatically certify every table entry. Replay
+inspection supplies pending counts, not other processes' cumulative loss counters;
+use daemon health warnings and journals for those, not zero-valued inspector fields.
 
 Only the explicit `azure` scenario accepts `-azure-connection-env NAME`, with
 the connection string already in that environment variable. It never uploads

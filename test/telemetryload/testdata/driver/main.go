@@ -339,7 +339,9 @@ func run(name, root, api string, duration time.Duration) Result {
 	log, err := os.Create(filepath.Join(out, name+"-daemon.log"))
 	must(err)
 	defer log.Close()
-	c := cmd(context.Background(), "up", "--quiet", "--drain-timeout", "15s", root)
+	// Keep the normal heartbeat: it captures Go heap/retained memory,
+	// goroutines and cgroup CPU/memory pressure without extra instrumentation.
+	c := cmd(context.Background(), "up", "--drain-timeout", "15s", root)
 	c.Env = append(c.Env, "GODEBUG=gctrace=1")
 	c.Stdout = log
 	c.Stderr = log
@@ -494,7 +496,7 @@ func run(name, root, api string, duration time.Duration) Result {
 		result.MaxRSSKiB = max(result.MaxRSSKiB, rss)
 		cpus = append(cpus, cpu)
 		stat := telemetry.InspectAzureReplayRoot(spool(root))
-		b, _ := json.Marshal(map[string]any{"elapsed": elapsed.Seconds(), "rssKiB": rss, "cpu": cpu, "healthMS": ms, "mode": mode.Load(), "replay": stat})
+		b, _ := json.Marshal(map[string]any{"elapsed": elapsed.Seconds(), "rssKiB": rss, "cpu": cpu, "openHandlesOrFDs": sampler.handles, "healthMS": ms, "mode": mode.Load(), "replay": stat})
 		fmt.Fprintln(samples, string(b))
 		if int(elapsed.Seconds())%15 == 0 {
 			mu.Lock()
