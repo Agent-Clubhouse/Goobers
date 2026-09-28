@@ -250,6 +250,7 @@ func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]b
 }
 
 func duplicateSignals(a, b providers.WorkItem, internalRefPrefixes map[string]bool) dedupeSignals {
+	a.Body, b.Body = dedupeAuthoredBody(a.Body), dedupeAuthoredBody(b.Body)
 	return dedupeSignals{
 		TitleSimilarity:          dedupeTextSimilarity(a.Title, b.Title),
 		BodySimilarity:           dedupeTextSimilarity(a.Body, b.Body),
@@ -278,6 +279,20 @@ func duplicateCandidateScore(signals dedupeSignals) (int, bool) {
 		likely = true
 	}
 	return score, likely
+}
+
+// dedupeAuthoredBody returns the part of a backlog item's body that its author
+// wrote. Items Goobers files carry a provider attribution footer and, when the
+// create had a run id, a run-id footer; every Goobers-filed item shares those
+// tokens, so comparing them would score unrelated siblings as duplicates.
+func dedupeAuthoredBody(body string) string {
+	body = providers.StripAttribution(body)
+	start := strings.LastIndex("\n"+body, "\n"+providers.RunIDFooterPrefix)
+	if start < 0 || strings.Contains(body[start:], "\n") {
+		return body
+	}
+	head := strings.TrimRight(body[:start], " \t\r\n")
+	return strings.TrimSpace(strings.TrimSuffix(head, "---"))
 }
 
 func dedupeTextSimilarity(a, b string) int {
