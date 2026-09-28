@@ -44,17 +44,18 @@ const (
 
 // FaultAuditConfig bounds an audit and supplies durable cooldown and fix state.
 type FaultAuditConfig struct {
-	Now               time.Time
-	Since             time.Time
-	Until             time.Time
-	SampleFloor       int
-	MaxObservations   int
-	MaxFindings       int
-	MaxRunsPerFinding int
-	MaxEvidence       int
-	Cooldown          time.Duration
-	PreviousReports   map[string]time.Time
-	FixesAppliedAt    map[string]time.Time
+	Now                  time.Time
+	Since                time.Time
+	Until                time.Time
+	SampleFloor          int
+	MaxObservations      int
+	MaxFindings          int
+	MaxRunsPerFinding    int
+	MaxEvidence          int
+	Cooldown             time.Duration
+	PreviousReports      map[string]time.Time
+	FixesAppliedAt       map[string]time.Time
+	BaselineObservations map[string][]AttributionObservation
 }
 
 // FaultFinding describes one evidence-backed failure signature and its likely owner.
@@ -79,17 +80,18 @@ type FaultFinding struct {
 
 // FaultAuditReport groups findings by ownership boundary.
 type FaultAuditReport struct {
-	Schema              string         `json:"schema"`
-	Mode                string         `json:"mode"`
-	Since               time.Time      `json:"since"`
-	Until               time.Time      `json:"until"`
-	ObservationsScanned int            `json:"observationsScanned"`
-	ProductFindings     []FaultFinding `json:"productReliabilityFindings,omitempty"`
-	ExternalFindings    []FaultFinding `json:"externalFindings,omitempty"`
-	WorkflowFindings    []FaultFinding `json:"workflowFindings,omitempty"`
-	UnknownFindings     []FaultFinding `json:"mixedOrUnknownFindings,omitempty"`
-	Suppressed          int            `json:"suppressed"`
-	Truncated           bool           `json:"truncated,omitempty"`
+	Schema               string                              `json:"schema"`
+	Mode                 string                              `json:"mode"`
+	Since                time.Time                           `json:"since"`
+	Until                time.Time                           `json:"until"`
+	ObservationsScanned  int                                 `json:"observationsScanned"`
+	ProductFindings      []FaultFinding                      `json:"productReliabilityFindings,omitempty"`
+	ExternalFindings     []FaultFinding                      `json:"externalFindings,omitempty"`
+	WorkflowFindings     []FaultFinding                      `json:"workflowFindings,omitempty"`
+	UnknownFindings      []FaultFinding                      `json:"mixedOrUnknownFindings,omitempty"`
+	Suppressed           int                                 `json:"suppressed"`
+	Truncated            bool                                `json:"truncated,omitempty"`
+	BaselineObservations map[string][]AttributionObservation `json:"-"`
 }
 
 type faultSignal struct {
@@ -112,10 +114,28 @@ func AuditFaultDomains(observations []AttributionObservation, config FaultAuditC
 	selected := selectAuditObservations(observations, config)
 	report.ObservationsScanned = len(selected)
 	groups := map[string][]faultSignal{}
+	selectedRuns := map[string]bool{}
 	for _, observation := range selected {
+		selectedRuns[observation.RunID] = true
 		for _, cause := range observation.Attribution.Causes {
 			signal := makeFaultSignal(observation, cause)
 			groups[signal.signature] = append(groups[signal.signature], signal)
+		}
+	}
+	for id, baseline := range config.BaselineObservations {
+		if _, fixed := config.FixesAppliedAt[id]; !fixed {
+			continue
+		}
+		for _, observation := range baseline {
+			if selectedRuns[observation.RunID] {
+				continue
+			}
+			for _, cause := range observation.Attribution.Causes {
+				signal := makeFaultSignal(observation, cause)
+				if faultFindingID(signal.signature) == id {
+					groups[signal.signature] = append(groups[signal.signature], signal)
+				}
+			}
 		}
 	}
 	signatures := make([]string, 0, len(groups))
@@ -135,6 +155,12 @@ func AuditFaultDomains(observations []AttributionObservation, config FaultAuditC
 			report.Truncated = true
 			continue
 		}
+		if report.BaselineObservations == nil {
+			report.BaselineObservations = map[string][]AttributionObservation{}
+		}
+		report.BaselineObservations[finding.ID] = baselineObservations(
+			groups[signature], config.FixesAppliedAt[finding.ID], config.MaxRunsPerFinding,
+		)
 		switch finding.Domain {
 		case FaultDomainProductRuntime:
 			report.ProductFindings = append(report.ProductFindings, finding)
@@ -228,9 +254,13 @@ func makeFaultSignal(observation AttributionObservation, cause CauseFinding) fau
 	return faultSignal{observation: observation, cause: cause, signature: signature, path: path, evidence: evidence}
 }
 
+func faultFindingID(signature string) string {
+	return "backprop-" + fmt.Sprintf("%x", sha256.Sum256([]byte(signature)))[:20]
+}
+
 func classifyFaultGroup(signature string, signals []faultSignal, all []AttributionObservation, config FaultAuditConfig) FaultFinding {
 	finding := FaultFinding{
-		ID:        "backprop-" + fmt.Sprintf("%x", sha256.Sum256([]byte(signature)))[:20],
+		ID:        faultFindingID(signature),
 		Signature: signature, Verification: VerificationOpen,
 	}
 	classificationSignals := signals
@@ -318,6 +348,26 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 	finding.Rationale, finding.AlternativeDomains, finding.RecommendedOwner, finding.RecommendedAction = explainFaultFinding(finding, len(classificationSignals))
 	finding.Verification = verificationState(finding, signals, all, config)
 	return finding
+}
+
+func baselineObservations(signals []faultSignal, fixedAt time.Time, limit int) []AttributionObservation {
+	seen := map[string]bool{}
+	baseline := make([]AttributionObservation, 0, len(signals))
+	for _, signal := range signals {
+		observation := signal.observation
+		if !fixedAt.IsZero() && observation.ObservedAt.After(fixedAt) {
+			continue
+		}
+		if seen[observation.RunID] {
+			continue
+		}
+		seen[observation.RunID] = true
+		baseline = append(baseline, observation)
+		if len(baseline) >= limit {
+			break
+		}
+	}
+	return baseline
 }
 
 func signalDomain(signal faultSignal) FaultDomain {

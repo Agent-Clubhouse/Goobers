@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +111,28 @@ func TestStoredFaultAuditDegradesFailedRecordWhenJournalIsMissing(t *testing.T) 
 	}
 }
 
+func TestStoredFaultAuditRejectsMalformedPersistedBaseline(t *testing.T) {
+	root := t.TempDir()
+	path := faultAuditStatePath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{
+		"schema":"goobers.dev/backprop/fault-audit-state/v1",
+		"baselineObservations":{"backprop-00000000000000000000":[{"runId":""}]}
+	}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := StoredFaultAudit(
+		context.Background(), root, &pagedAttributionReader{pages: []readmodel.ListPage{{}}},
+		StoredAttributionQuery{}, creditgraph.FaultAuditConfig{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "decode fault audit state: baseline finding") {
+		t.Fatalf("error = %v, want explicit malformed baseline error", err)
+	}
+}
+
 func TestStoredFaultAuditPersistsCooldownAndPostFixVerification(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
@@ -164,6 +187,76 @@ func TestStoredFaultAuditPersistsCooldownAndPostFixVerification(t *testing.T) {
 	}
 	if len(repeated.WorkflowFindings) != 1 || repeated.WorkflowFindings[0].Verification != creditgraph.VerificationRepeated {
 		t.Fatalf("repeated report = %+v, want repeated verification", repeated)
+	}
+}
+
+func TestStoredFaultAuditPersistsFindingAfterBaselineLeavesWindow(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	writeAuditRecordWithEnvironment(t, root, "before", "v1", true, "windows")
+	reader := &pagedAttributionReader{pages: []readmodel.ListPage{{
+		Runs: []readmodel.RunRow{terminalAuditRow("before", now.Add(-time.Hour))},
+	}}}
+	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1}
+	initial, err := StoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(initial.WorkflowFindings) != 1 {
+		t.Fatalf("initial report = %+v, want workflow finding", initial)
+	}
+	id := initial.WorkflowFindings[0].ID
+	fixedAt := now.Add(time.Hour)
+	if err := RecordFaultAuditFix(context.Background(), root, id, fixedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	writeAuditRecordWithEnvironment(t, root, "healthy", "v2", false, "windows")
+	healthyAt := fixedAt.Add(time.Hour)
+	healthyRow := terminalAuditRow("healthy", healthyAt)
+	healthyRow.Phase = journal.PhaseFailed
+	reader.pages[0].Runs = []readmodel.RunRow{healthyRow}
+	config.Now = healthyAt.Add(time.Hour)
+	pending, err := StoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{
+		Since: fixedAt,
+	}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending.WorkflowFindings) != 1 ||
+		pending.WorkflowFindings[0].ID != id ||
+		pending.WorkflowFindings[0].Verification != creditgraph.VerificationPending {
+		t.Fatalf("pending report = %+v, want durable pending finding", pending)
+	}
+
+	reader.pages[0].Runs = []readmodel.RunRow{terminalAuditRow("healthy", healthyAt)}
+	config.Now = healthyAt.Add(2 * time.Hour)
+	recovered, err := StoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{
+		Since: fixedAt,
+	}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered.WorkflowFindings) != 1 ||
+		recovered.WorkflowFindings[0].ID != id ||
+		recovered.WorkflowFindings[0].Verification != creditgraph.VerificationRecovered {
+		t.Fatalf("recovered report = %+v, want durable recovered finding", recovered)
+	}
+
+	writeAuditRecordWithEnvironment(t, root, "repeated", "v2", true, "windows")
+	repeatedAt := healthyAt.Add(time.Hour)
+	reader.pages[0].Runs = []readmodel.RunRow{terminalAuditRow("repeated", repeatedAt)}
+	config.Now = repeatedAt.Add(time.Hour)
+	repeated, err := StoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{
+		Since: fixedAt,
+	}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeated.WorkflowFindings) != 1 ||
+		repeated.WorkflowFindings[0].ID != id ||
+		repeated.WorkflowFindings[0].Verification != creditgraph.VerificationRepeated {
+		t.Fatalf("repeated report = %+v, want durable repeated finding", repeated)
 	}
 }
 

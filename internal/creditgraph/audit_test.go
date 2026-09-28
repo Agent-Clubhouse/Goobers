@@ -126,6 +126,30 @@ func TestAuditFaultDomainsCooldownAndPostFixVerification(t *testing.T) {
 	}
 }
 
+func TestAuditFaultDomainsPostFixVerificationUsesDurableBaseline(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	before := auditObservation("before", "one", "v1", "stage", "weak workflow instructions", ClassWeakInstructions, 0.8, "stage")
+	before.ObservedAt = now.Add(-2 * time.Hour)
+	initial := AuditFaultDomains([]AttributionObservation{before}, FaultAuditConfig{Now: now, SampleFloor: 1})
+	finding := initial.WorkflowFindings[0]
+
+	healthy := auditObservation("after", "one", "v2", "stage", "", ClassUnknown, 0.8, "stage")
+	healthy.ObservedAt = now.Add(2 * time.Hour)
+	healthy.Attribution.Causes = nil
+	healthy.Evidence = nil
+	recovered := AuditFaultDomains([]AttributionObservation{healthy}, FaultAuditConfig{
+		Now: now.Add(3 * time.Hour), Since: now.Add(time.Hour), SampleFloor: 1,
+		FixesAppliedAt:       map[string]time.Time{finding.ID: now.Add(time.Hour)},
+		BaselineObservations: initial.BaselineObservations,
+	})
+	if len(recovered.WorkflowFindings) != 1 {
+		t.Fatalf("report = %+v, want durable workflow finding", recovered)
+	}
+	if got := recovered.WorkflowFindings[0].Verification; got != VerificationRecovered {
+		t.Fatalf("verification = %q, want recovered", got)
+	}
+}
+
 func TestAuditFaultDomainsPostFixWorkflowRecurrenceUsesChangedVersion(t *testing.T) {
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	before := auditObservation("before", "one", "v1", "stage", "weak workflow instructions", ClassWeakInstructions, 0.8, "stage")

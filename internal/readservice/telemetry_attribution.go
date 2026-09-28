@@ -87,6 +87,10 @@ func StoredFaultAudit(
 	}
 	config.PreviousReports = mergeAuditTimes(previousReportsForScope(state.PreviousReports, query), config.PreviousReports)
 	config.FixesAppliedAt = mergeAuditTimes(state.FixesAppliedAt, config.FixesAppliedAt)
+	config.BaselineObservations = mergeAuditBaselines(
+		baselinesForScope(state.BaselineObservations, query),
+		config.BaselineObservations,
+	)
 	report := creditgraph.AuditFaultDomains(observations, config)
 	if err := recordFaultAuditReports(ctx, root, query, config.Now, report); err != nil {
 		return creditgraph.FaultAuditReport{}, err
@@ -161,9 +165,10 @@ func storedAttributionObservationsLimit(
 }
 
 type faultAuditState struct {
-	Schema          string               `json:"schema"`
-	PreviousReports map[string]time.Time `json:"previousReports,omitempty"`
-	FixesAppliedAt  map[string]time.Time `json:"fixesAppliedAt,omitempty"`
+	Schema               string                                          `json:"schema"`
+	PreviousReports      map[string]time.Time                            `json:"previousReports,omitempty"`
+	FixesAppliedAt       map[string]time.Time                            `json:"fixesAppliedAt,omitempty"`
+	BaselineObservations map[string][]creditgraph.AttributionObservation `json:"baselineObservations,omitempty"`
 }
 
 func faultAuditStatePath(root string) string {
@@ -172,7 +177,8 @@ func faultAuditStatePath(root string) string {
 
 func readFaultAuditState(root string) (faultAuditState, error) {
 	state := faultAuditState{
-		Schema: faultAuditStateSchema, PreviousReports: map[string]time.Time{}, FixesAppliedAt: map[string]time.Time{},
+		Schema: faultAuditStateSchema, PreviousReports: map[string]time.Time{},
+		FixesAppliedAt: map[string]time.Time{}, BaselineObservations: map[string][]creditgraph.AttributionObservation{},
 	}
 	data, err := os.ReadFile(faultAuditStatePath(root))
 	if errors.Is(err, os.ErrNotExist) {
@@ -193,7 +199,34 @@ func readFaultAuditState(root string) (faultAuditState, error) {
 	if state.FixesAppliedAt == nil {
 		state.FixesAppliedAt = map[string]time.Time{}
 	}
+	if state.BaselineObservations == nil {
+		state.BaselineObservations = map[string][]creditgraph.AttributionObservation{}
+	}
+	if err := validateFaultAuditBaselines(state.BaselineObservations); err != nil {
+		return faultAuditState{}, fmt.Errorf("decode fault audit state: %w", err)
+	}
 	return state, nil
+}
+
+func validateFaultAuditBaselines(stored map[string][]creditgraph.AttributionObservation) error {
+	for key, observations := range stored {
+		findingID := key
+		if separator := strings.LastIndexByte(key, ':'); separator >= 0 {
+			findingID = key[separator+1:]
+		}
+		if !faultAuditFindingIDPattern.MatchString(findingID) {
+			return fmt.Errorf("invalid baseline finding key %q", key)
+		}
+		if len(observations) == 0 {
+			return fmt.Errorf("baseline finding %q has no observations", findingID)
+		}
+		for index, observation := range observations {
+			if strings.TrimSpace(observation.RunID) == "" || len(observation.Attribution.Causes) == 0 {
+				return fmt.Errorf("baseline finding %q observation %d is incomplete", findingID, index)
+			}
+		}
+	}
+	return nil
 }
 
 func mergeAuditTimes(stored, supplied map[string]time.Time) map[string]time.Time {
@@ -203,6 +236,19 @@ func mergeAuditTimes(stored, supplied map[string]time.Time) map[string]time.Time
 	}
 	for id, at := range supplied {
 		merged[id] = at
+	}
+	return merged
+}
+
+func mergeAuditBaselines(
+	stored, supplied map[string][]creditgraph.AttributionObservation,
+) map[string][]creditgraph.AttributionObservation {
+	merged := make(map[string][]creditgraph.AttributionObservation, len(stored)+len(supplied))
+	for id, observations := range stored {
+		merged[id] = observations
+	}
+	for id, observations := range supplied {
+		merged[id] = observations
 	}
 	return merged
 }
@@ -225,6 +271,28 @@ func previousReportsForScope(stored map[string]time.Time, query StoredAttributio
 		}
 	}
 	return reports
+}
+
+func baselinesForScope(
+	stored map[string][]creditgraph.AttributionObservation,
+	query StoredAttributionQuery,
+) map[string][]creditgraph.AttributionObservation {
+	baselines := map[string][]creditgraph.AttributionObservation{}
+	if strings.TrimSpace(query.Gaggle) == "" && strings.TrimSpace(query.Workflow) == "" {
+		for key, observations := range stored {
+			if strings.HasPrefix(key, "backprop-") {
+				baselines[key] = observations
+			}
+		}
+		return baselines
+	}
+	prefix := faultAuditScopePrefix(query)
+	for key, observations := range stored {
+		if strings.HasPrefix(key, prefix) {
+			baselines[strings.TrimPrefix(key, prefix)] = observations
+		}
+	}
+	return baselines
 }
 
 func faultAuditScopePrefix(query StoredAttributionQuery) string {
@@ -251,7 +319,11 @@ func recordFaultAuditReports(ctx context.Context, root string, query StoredAttri
 	}
 	return updateFaultAuditState(ctx, root, func(state *faultAuditState) {
 		for _, id := range ids {
-			state.PreviousReports[faultAuditReportKey(query, id)] = now
+			key := faultAuditReportKey(query, id)
+			state.PreviousReports[key] = now
+			if baseline := report.BaselineObservations[id]; len(baseline) > 0 {
+				state.BaselineObservations[key] = baseline
+			}
 		}
 	})
 }
