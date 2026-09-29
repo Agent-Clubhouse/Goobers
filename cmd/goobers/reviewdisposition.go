@@ -81,3 +81,22 @@ func hasActionableOrOrderingFinding(findings []apiv1.Finding) bool {
 	}
 	return false
 }
+
+// reviewGateVerdictFromPublished turns a published merge-review verdict back
+// into the reviewer outcome the review gate routes (#6061). apply-verdict
+// publishes an ordering-only needs-changes as "defer" (orderingDeferralVerdict,
+// or a typed no-lander deferral), and gather-sibling-context replays the
+// published verdict as the gate's cache hit. The DSL 2.0 review gate has no
+// defer branch, so a replayed "defer" failed the run closed (GT-002) without a
+// model call. Replaying it as needs-changes with the same findings sends it
+// through elect-lander and apply-verdict, which deterministically re-derive the
+// deferral (or crown the PR if the cluster has moved).
+func reviewGateVerdictFromPublished(v apiv1.Verdict) apiv1.Verdict {
+	if v.Decision != apiv1.VerdictDefer {
+		return v
+	}
+	v.Decision = apiv1.VerdictNeedsChanges
+	v.ReasonCode = ""
+	v.Elected = false
+	return v
+}
