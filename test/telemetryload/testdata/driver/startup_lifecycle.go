@@ -133,7 +133,7 @@ func consumeStartupReplay(w http.ResponseWriter, decoded io.Reader, responseMode
 func measureStartup(name, root, api string, waitForIndex bool, postReady time.Duration) startupTiming {
 	log, err := os.Create(filepath.Join(out, name+"-daemon.log"))
 	must(err)
-	defer func() { must(log.Close()) }()
+	defer func() { _ = log.Close() }()
 	c := cmd(context.Background(), "up", "--drain-timeout", "15s", root)
 	c.Stdout, c.Stderr = log, log
 	c.Env = append(c.Env, "GODEBUG=gctrace=1")
@@ -191,6 +191,7 @@ func measureStartup(name, root, api string, waitForIndex bool, postReady time.Du
 	result.ShutdownMS = float64(time.Since(stopStarted).Nanoseconds()) / 1e6
 	result.FinishedUTC = time.Now().UTC()
 	result.Requests, result.Rejected = requests.Load()-rq, rejects.Load()-rejected
+	must(log.Close()) // Release the writer before rereading on Windows.
 	result.Health, err = auditStartupHealth(filepath.Join(out, name+"-daemon.log"))
 	must(err)
 	return result
