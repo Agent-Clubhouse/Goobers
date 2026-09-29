@@ -168,6 +168,50 @@ spec:
 	}
 }
 
+func TestMigrateTransformEditsFlowAutomatedMapping(t *testing.T) {
+	tests := []struct {
+		name            string
+		automated       string
+		wantAutomated   string
+		wantPollSeconds int
+	}{
+		{
+			name:            "non-empty flow",
+			automated:       "{check: ci-status}",
+			wantAutomated:   "automated: {check: ci-status, pollIntervalSeconds: 10}",
+			wantPollSeconds: 10,
+		},
+		{
+			name:            "empty flow",
+			automated:       "{}",
+			wantAutomated:   "automated: {pollIntervalSeconds: 10}",
+			wantPollSeconds: 10,
+		},
+		{
+			name:            "existing poll interval",
+			automated:       "{check: ci-status, pollIntervalSeconds: 0}",
+			wantAutomated:   "automated: {check: ci-status, pollIntervalSeconds: 10}",
+			wantPollSeconds: 10,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := workflowWithAutomatedMapping(test.automated)
+
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if got := decodeWorkflow(t, result.After); got.DSLVersion != "2.0" || got.PollIntervalSeconds != test.wantPollSeconds {
+				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds %d\n%s", got, test.wantPollSeconds, result.After)
+			}
+			if !strings.Contains(result.After, test.wantAutomated) {
+				t.Fatalf("flow automated mapping was not preserved/edited precisely; missing %q in:\n%s", test.wantAutomated, result.After)
+			}
+		})
+	}
+}
+
 func TestMigrateLeavesExplicitPositivePollIntervalUntouched(t *testing.T) {
 	result, err := Migrate([]byte(workflowWithPinnedCIPoll), "2.0")
 	if err != nil {
@@ -194,6 +238,30 @@ func TestMigrateBumpsVersionEvenWithoutCIPollTasks(t *testing.T) {
 	if after.DSLVersion != "2.0" {
 		t.Fatalf("after dslVersion = %q, want 2.0", after.DSLVersion)
 	}
+}
+
+func workflowWithAutomatedMapping(automated string) string {
+	return `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: flow-automated
+spec:
+  gaggle: golden
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      inputs:
+        kind: "ci-poll"
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+      automated: ` + automated + `
+      branches:
+        pass: ""
+`
 }
 
 func TestMigratePinOnlyPreservesOriginalBytes(t *testing.T) {

@@ -1,11 +1,14 @@
 package dslmigrate
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+var errSourcePreserveUnsupported = errors.New("source-preserving edit unsupported")
 
 const (
 	taskKindInput  = "kind"
@@ -71,6 +74,9 @@ func applyV14ToV20SourcePreserving(source []byte, root *yaml.Node, versionNode *
 		if tasks, _ := mapValue(spec, "tasks"); tasks != nil {
 			for _, task := range tasks.Content {
 				edit, note, ok, err := ciPollIntervalSourceEdit(source, task, gatesByName)
+				if errors.Is(err, errSourcePreserveUnsupported) {
+					return renderV14ToV20(source, root, to)
+				}
 				if err != nil {
 					return nil, nil, err
 				}
@@ -88,6 +94,19 @@ func applyV14ToV20SourcePreserving(source []byte, root *yaml.Node, versionNode *
 		}
 	}
 	return applySourceEdits(source, edits), notes, nil
+}
+
+func renderV14ToV20(source []byte, root *yaml.Node, to string) ([]byte, []string, error) {
+	_, notes, err := applyV14ToV20(source, root)
+	if err != nil {
+		return nil, nil, err
+	}
+	setScalar(root, "dslVersion", to, "!!str")
+	rendered, err := marshalDocument(&yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}})
+	if err != nil {
+		return nil, nil, err
+	}
+	return []byte(rendered), notes, nil
 }
 
 func pinCIPollInterval(task *yaml.Node, gatesByName map[string]*yaml.Node) (string, bool) {
@@ -193,6 +212,9 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 	if mapping == nil || mapping.Kind != yaml.MappingNode {
 		return sourceEdit{}, fmt.Errorf("target mapping for %s is not a YAML mapping", line)
 	}
+	if mapping.Style&yaml.FlowStyle != 0 {
+		return insertFlowMappingScalarEdit(source, mapping, line)
+	}
 	eol := sourceEOL(source)
 	if len(mapping.Content) == 0 {
 		if mapping.Line < 1 || mapping.Column < 1 {
@@ -226,6 +248,70 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 		insertion = append(append([]byte{}, eol...), insertion...)
 	}
 	return sourceEdit{start: offset, end: offset, replacement: insertion}, nil
+}
+
+func insertFlowMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (sourceEdit, error) {
+	if mapping.Line < 1 || mapping.Column < 1 {
+		return sourceEdit{}, fmt.Errorf("flow target mapping for %s has no source position", line)
+	}
+	start, err := sourceOffset(source, mapping.Line, mapping.Column)
+	if err != nil {
+		return sourceEdit{}, err
+	}
+	if start >= len(source) || source[start] != '{' {
+		return sourceEdit{}, fmt.Errorf("%w: flow target mapping for %s does not start at an opening brace", errSourcePreserveUnsupported, line)
+	}
+	closeOffset, err := sameLineFlowMappingClose(source, start)
+	if err != nil {
+		return sourceEdit{}, err
+	}
+	replacement := []byte(", " + line)
+	if len(mapping.Content) == 0 {
+		replacement = []byte(line)
+	}
+	return sourceEdit{start: closeOffset, end: closeOffset, replacement: replacement}, nil
+}
+
+func sameLineFlowMappingClose(source []byte, openOffset int) (int, error) {
+	inSingle := false
+	inDouble := false
+	for i := openOffset + 1; i < len(source); i++ {
+		switch source[i] {
+		case '\r', '\n':
+			return 0, fmt.Errorf("%w: multi-line flow mappings are not edited in place", errSourcePreserveUnsupported)
+		case '#':
+			if !inSingle && !inDouble {
+				return 0, fmt.Errorf("%w: commented flow mappings are not edited in place", errSourcePreserveUnsupported)
+			}
+		case '\'':
+			if !inDouble {
+				if inSingle && i+1 < len(source) && source[i+1] == '\'' {
+					i++
+					continue
+				}
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				backslashes := 0
+				for j := i - 1; j > openOffset && source[j] == '\\'; j-- {
+					backslashes++
+				}
+				if backslashes%2 == 0 {
+					inDouble = !inDouble
+				}
+			}
+		case '{', '[':
+			if !inSingle && !inDouble {
+				return 0, fmt.Errorf("%w: nested flow collections are not edited in place", errSourcePreserveUnsupported)
+			}
+		case '}':
+			if !inSingle && !inDouble {
+				return i, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("%w: unterminated flow mapping", errSourcePreserveUnsupported)
 }
 
 func maxNodeLine(node *yaml.Node) int {
