@@ -204,6 +204,43 @@ func TestServiceStatusReportsQueryError(t *testing.T) {
 	}
 }
 
+func TestServiceTaskStatusReportsLastFailureAndDaemonLog(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := identityTaskManager{&fakeDaemonServiceManager{status: daemonservice.Status{
+		Installed:   true,
+		State:       "ready",
+		Account:     `CONTOSO\alice`,
+		LastFailure: "0x00000001",
+	}}}
+	useFakeScheduledTaskManager(t, manager)
+
+	code, stdout, stderr := runArgs(t, "service", "task-status", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"last failure: 0x00000001", instance.NewLayout(root).DaemonLogFile()} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, missing %q", stdout, want)
+		}
+	}
+}
+
+func TestServiceTaskStartReportsDaemonLogOnStartupFailure(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := identityTaskManager{&fakeDaemonServiceManager{startErr: errors.New("service failed while starting: 0x00000001")}}
+	useFakeScheduledTaskManager(t, manager)
+
+	code, _, stderr := runArgs(t, "service", "task-start", root)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"service failed while starting: 0x00000001", instance.NewLayout(root).DaemonLogFile()} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, missing %q", stderr, want)
+		}
+	}
+}
+
 func serviceTestInstance(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -233,5 +270,16 @@ func useFakeDaemonServiceManager(t *testing.T, manager daemonServiceManager) {
 	}
 	t.Cleanup(func() {
 		newDaemonServiceManager = previous
+	})
+}
+
+func useFakeScheduledTaskManager(t *testing.T, manager scheduledTaskManager) {
+	t.Helper()
+	previous := newScheduledTaskManager
+	newScheduledTaskManager = func(string) (scheduledTaskManager, error) {
+		return manager, nil
+	}
+	t.Cleanup(func() {
+		newScheduledTaskManager = previous
 	})
 }

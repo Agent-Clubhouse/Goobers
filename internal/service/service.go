@@ -646,10 +646,12 @@ func quotePowerShellLiteral(value string) string {
 }
 
 func windowsScheduledTaskAction(executable, instanceRoot string) (string, string) {
+	logFile := instance.NewLayout(instanceRoot).DaemonLogFile()
 	command := fmt.Sprintf(
-		`$ErrorActionPreference='Stop'; & %s __service-supervise %s; exit $LASTEXITCODE`,
+		`$ErrorActionPreference='Stop'; & %s __service-supervise %s *>> %s; exit $LASTEXITCODE`,
 		quotePowerShellLiteral(executable),
 		quotePowerShellLiteral(instanceRoot),
+		quotePowerShellLiteral(logFile),
 	)
 	arguments := strings.Join([]string{
 		"-NoLogo",
@@ -982,7 +984,7 @@ func waitUntilRunning(ctx context.Context, status func(context.Context) (Status,
 		if !current.Installed {
 			return Status{}, errors.New("service registration disappeared while starting")
 		}
-		if current.State == "stopped" && current.LastFailure != "" {
+		if !current.Running && current.LastFailure != "" {
 			return Status{}, fmt.Errorf("service failed while starting: %s", current.LastFailure)
 		}
 		if current.Running {

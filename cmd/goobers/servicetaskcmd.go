@@ -78,7 +78,7 @@ func runServiceTaskStart(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err != nil {
-		pf(stderr, "error: start scheduled task: %v\n", err)
+		pf(stderr, "error: start scheduled task: %v; inspect daemon log %s\n", err, instance.NewLayout(root).DaemonLogFile())
 		return 1
 	}
 	pf(stdout, "scheduled task running as %s\n", status.Account)
@@ -117,7 +117,11 @@ func runServiceTaskStatus(args []string, stdout, stderr io.Writer) int {
 	} else if !status.Installed {
 		pln(stdout, "scheduled task is not installed")
 	} else {
-		pf(stdout, "scheduled task is %s as %s\n", status.State, status.Account)
+		pf(stdout, "scheduled task is %s as %s", status.State, status.Account)
+		if status.LastFailure != "" {
+			pf(stdout, " (last failure: %s; inspect daemon log %s)", status.LastFailure, instance.NewLayout(root).DaemonLogFile())
+		}
+		pln(stdout, "")
 	}
 	if status.Running {
 		return 0

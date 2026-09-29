@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 type commandCall struct {
@@ -290,6 +292,7 @@ func TestWindowsScheduledTaskActionIsHiddenSynchronousAndSafelyQuoted(t *testing
 		`-Command "`,
 		`& 'C:\Program Files\O''Brien''s Goobers\goobers.exe'`,
 		`__service-supervise 'C:\Users\O''Brien\Goobers Instance\'`,
+		`*>> ` + quotePowerShellLiteral(instance.NewLayout(`C:\Users\O'Brien\Goobers Instance\`).DaemonLogFile()),
 		`exit $LASTEXITCODE`,
 	} {
 		if !strings.Contains(arguments, want) {
@@ -300,6 +303,26 @@ func TestWindowsScheduledTaskActionIsHiddenSynchronousAndSafelyQuoted(t *testing
 		if strings.Contains(arguments, forbidden) {
 			t.Fatalf("arguments = %q, contains detached launcher %q", arguments, forbidden)
 		}
+	}
+}
+
+func TestWindowsScheduledTaskStartReportsImmediateChildFailure(t *testing.T) {
+	runner := &fakeRunner{responses: []commandResponse{
+		{output: "Run As User: CONTOSO\\alice\nStatus: Ready\nLast Result: 0\n"},
+		{},
+		{output: "Run As User: CONTOSO\\alice\nStatus: Ready\nLast Result: 1\n"},
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "windows",
+		Executable:   `C:\goobers.exe`,
+		InstanceRoot: `C:\Users\alice\AppData\Local\Goobers`,
+		UserName:     `CONTOSO\alice`,
+		Runner:       runner,
+	})
+
+	_, err := manager.StartTask(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "service failed while starting: 0x00000001") {
+		t.Fatalf("StartTask error = %v, want immediate child failure", err)
 	}
 }
 
