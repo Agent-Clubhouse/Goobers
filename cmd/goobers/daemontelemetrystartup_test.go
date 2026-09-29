@@ -56,7 +56,11 @@ func TestSchedulerTelemetryReplayStartCoversAllStreams(t *testing.T) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			defer gz.Close()
+			defer func() {
+				if err := gz.Close(); err != nil {
+					t.Errorf("close upload decoder: %v", err)
+				}
+			}()
 			reader = gz
 		}
 		body, err := io.ReadAll(io.LimitReader(reader, 2<<20))
