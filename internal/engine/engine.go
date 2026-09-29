@@ -134,6 +134,12 @@ type RunInput struct {
 	// these fields existed — is a no-op, byte for byte as before.
 	BacklogQueryAssignedTo    string `json:"backlogQueryAssignedTo,omitempty"`
 	BacklogQueryRequireLabels string `json:"backlogQueryRequireLabels,omitempty"`
+	// BacklogQueryBacklogLabels and BacklogQueryLabelPredicate pin the
+	// gaggle's spec.backlog label scope for backlog-query stages. They are
+	// conjoined with task-local selectors so a persisted run never re-reads
+	// gaggle configuration mid-flight.
+	BacklogQueryBacklogLabels  string `json:"backlogQueryBacklogLabels,omitempty"`
+	BacklogQueryLabelPredicate string `json:"backlogQueryLabelPredicate,omitempty"`
 	// GooberDigest is the content digest of the goober kit this run's stages
 	// are meant to execute, pinned at start exactly as the local scheduler
 	// stamps it onto a runner-driven StartRequest
@@ -937,6 +943,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// data, so it is replay-deterministic; a no-op for a gaggle that
 	// configures neither.
 	inputs = backlogdefaults.Apply(t, inputs, in.BacklogQueryAssignedTo, in.BacklogQueryRequireLabels)
+	inputs = backlogdefaults.ApplyBacklogScope(t, inputs, in.BacklogQueryBacklogLabels, in.BacklogQueryLabelPredicate)
 	limits, err := wf.TaskLimits(machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)

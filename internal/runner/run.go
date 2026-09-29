@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -639,6 +640,12 @@ type Config struct {
 	// replaces it (never merged); empty leaves every task's own requireLabels
 	// (or its absence) untouched.
 	BacklogQueryRequireLabels string
+	// BacklogQueryBacklogLabels and BacklogQueryLabelPredicate are the
+	// gaggle's spec.backlog.labels / labelPredicate scope. They are conjoined
+	// with backlog-query task inputs and cannot be replaced by task-local
+	// selectors.
+	BacklogQueryBacklogLabels  string
+	BacklogQueryLabelPredicate string
 }
 
 func banditConfig(machine *workflow.Machine, task apiv1.Task) (bandit.Config, bool, error) {
@@ -5056,6 +5063,73 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 	return resolved
 }
 
+func defaultBacklogQueryBacklogScope(task apiv1.Task, inputs map[string]string, backlogLabels, backlogLabelPredicate string) map[string]string {
+	if backlogLabels == "" && backlogLabelPredicate == "" {
+		return inputs
+	}
+	if task.Run == nil || len(task.Run.Command) < 2 ||
+		filepath.Base(task.Run.Command[0]) != "goobers" ||
+		(task.Run.Command[1] != "backlog-query" && task.Run.Command[1] != "backlog-health") {
+		return inputs
+	}
+	resolved := make(map[string]string, len(inputs)+2)
+	for key, value := range inputs {
+		resolved[key] = value
+	}
+	if labels := splitDefaultLabelList(backlogLabels); len(labels) > 0 {
+		resolved["requireLabels"] = strings.Join(uniqueDefaultLabels(append(labels, splitDefaultLabelList(resolved["requireLabels"])...)), ",")
+	}
+	if backlogLabelPredicate != "" {
+		resolved["labelPredicate"] = conjoinDefaultLabelPredicates(backlogLabelPredicate, resolved["labelPredicate"])
+	}
+	return resolved
+}
+
+func splitDefaultLabelList(value string) []string {
+	parts := strings.Split(value, ",")
+	labels := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if label := strings.TrimSpace(part); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
+}
+
+func uniqueDefaultLabels(labels []string) []string {
+	seen := make(map[string]struct{}, len(labels))
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if label == "" {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func conjoinDefaultLabelPredicates(expressions ...string) string {
+	terms := make([]string, 0, len(expressions))
+	for _, expression := range expressions {
+		if expression == "" {
+			continue
+		}
+		terms = append(terms, "("+expression+")")
+	}
+	return strings.Join(terms, " && ")
+}
+
+func (r *Runner) defaultBacklogQueryInputs(task apiv1.Task, inputs map[string]string) map[string]string {
+	inputs = defaultBacklogQueryAssignedTo(task, inputs, r.cfg.BacklogQueryAssignedTo)
+	inputs = defaultBacklogQueryRequireLabels(task, inputs, r.cfg.BacklogQueryRequireLabels)
+	return defaultBacklogQueryBacklogScope(task, inputs, r.cfg.BacklogQueryBacklogLabels, r.cfg.BacklogQueryLabelPredicate)
+}
+
 // dispatchTask provisions one attempt's workspace and invokes the task's
 // executor. It never journals its own result/err — runTask owns attempt/
 // retry journaling so a retried attempt is never mistaken for the run's
@@ -5097,8 +5171,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err)
 	}
-	taskInputs = defaultBacklogQueryAssignedTo(t, taskInputs, r.cfg.BacklogQueryAssignedTo)
-	taskInputs = defaultBacklogQueryRequireLabels(t, taskInputs, r.cfg.BacklogQueryRequireLabels)
+	taskInputs = r.defaultBacklogQueryInputs(t, taskInputs)
 	var experiment bandit.Config
 	var assignment bandit.Assignment
 	var experimentObservations []bandit.Observation

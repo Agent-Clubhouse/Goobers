@@ -37,6 +37,8 @@ package backlogdefaults
 
 import (
 	"path/filepath"
+	"sort"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -47,6 +49,9 @@ const (
 	// RequireLabelsInput is the backlog-query input carrying the required
 	// label list (the claim partition).
 	RequireLabelsInput = "requireLabels"
+	// LabelPredicateInput is the backlog-query input carrying the label CEL
+	// predicate.
+	LabelPredicateInput = "labelPredicate"
 )
 
 // Apply injects both gaggle defaults into a backlog-query task's inputs, in
@@ -59,6 +64,42 @@ const (
 func Apply(task apiv1.Task, inputs map[string]string, assignedTo, requireLabels string) map[string]string {
 	inputs = AssignedTo(task, inputs, assignedTo)
 	return RequireLabels(task, inputs, requireLabels)
+}
+
+// ApplyBacklogScope conjoins the gaggle backlog label selector with a
+// backlog-query or backlog-health task's own selector. Unlike RequireLabels,
+// spec.backlog.labels and spec.backlog.labelPredicate are not task defaults:
+// they scope the gaggle's backlog itself, so task-local inputs can only narrow
+// them, never replace them.
+func ApplyBacklogScope(task apiv1.Task, inputs map[string]string, backlogLabels, backlogLabelPredicate string) map[string]string {
+	if backlogLabels == "" && backlogLabelPredicate == "" {
+		return inputs
+	}
+	if !isBacklogQueryOrHealth(task) {
+		return inputs
+	}
+	resolved := cloneInputs(inputs)
+	if labels := splitLabelList(backlogLabels); len(labels) > 0 {
+		resolved[RequireLabelsInput] = joinLabels(uniqueSortedLabels(append(labels, splitLabelList(resolved[RequireLabelsInput])...)))
+	}
+	if backlogLabelPredicate != "" {
+		resolved[LabelPredicateInput] = LabelPredicateConjunction(backlogLabelPredicate, resolved[LabelPredicateInput])
+	}
+	return resolved
+}
+
+// LabelPredicateConjunction returns a CEL expression requiring every non-empty
+// expression to match. Empty-string expressions mean "not configured"; blank
+// whitespace is preserved so the downstream compiler still fails closed.
+func LabelPredicateConjunction(expressions ...string) string {
+	terms := make([]string, 0, len(expressions))
+	for _, expression := range expressions {
+		if expression == "" {
+			continue
+		}
+		terms = append(terms, "("+expression+")")
+	}
+	return strings.Join(terms, " && ")
 }
 
 // AssignedTo injects the instance's self identity (#1820, COORD-2) into a
@@ -115,6 +156,46 @@ func RequireLabels(task apiv1.Task, inputs map[string]string, requireLabels stri
 	}
 	resolved[RequireLabelsInput] = requireLabels
 	return resolved
+}
+
+func cloneInputs(inputs map[string]string) map[string]string {
+	resolved := make(map[string]string, len(inputs)+2)
+	for key, value := range inputs {
+		resolved[key] = value
+	}
+	return resolved
+}
+
+func splitLabelList(value string) []string {
+	parts := strings.Split(value, ",")
+	labels := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if label := strings.TrimSpace(part); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
+}
+
+func uniqueSortedLabels(labels []string) []string {
+	seen := make(map[string]struct{}, len(labels))
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if label == "" {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func joinLabels(labels []string) string {
+	return strings.Join(labels, ",")
 }
 
 // IsBacklogQuery reports whether task runs the `goobers backlog-query`

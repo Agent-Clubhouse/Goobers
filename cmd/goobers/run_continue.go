@@ -572,12 +572,12 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 		if trigger.Type != apiv1.TriggerBacklogItem {
 			continue
 		}
-		labels := make([]string, 0, len(trigger.Selector))
+		labels := append([]string(nil), gaggle.Spec.Backlog.Labels...)
 		for label := range trigger.Selector {
 			labels = append(labels, label)
 		}
-		sort.Strings(labels)
-		labelFilter, err := labelpredicate.Compile(trigger.LabelPredicate, labels, nil)
+		labels = uniqueSortedLabels(labels)
+		labelFilter, err := labelpredicate.Compile(backlogdefaults.LabelPredicateConjunction(gaggle.Spec.Backlog.LabelPredicate, trigger.LabelPredicate), labels, nil)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q backlog label predicate: %w", definition.Name, err)
 		}
@@ -597,6 +597,7 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 			continue
 		}
 		inputs := backlogdefaults.Apply(task, task.Inputs, instance.EffectiveSelfIdentity(cfg, gaggle), strings.Join(gaggle.Spec.RequireLabels, ","))
+		inputs = backlogdefaults.ApplyBacklogScope(task, inputs, strings.Join(gaggle.Spec.Backlog.Labels, ","), gaggle.Spec.Backlog.LabelPredicate)
 		requireLabels := splitLabelList(inputs["requireLabels"])
 		excludeLabels := splitLabelList(inputs["excludeLabels"])
 		labelFilter, excludeLabels, err := compileBacklogLabelSelection(inputs["labelPredicate"], requireLabels, excludeLabels, inputs["parkLabels"], inputs["filterParkLabels"])
