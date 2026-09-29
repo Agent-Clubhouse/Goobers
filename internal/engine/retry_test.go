@@ -65,6 +65,18 @@ func retrySpec(retry *apiv1.RetryPolicy) apiv1.WorkflowSpec {
 	}
 }
 
+func agenticRetrySpec(retry *apiv1.RetryPolicy) apiv1.WorkflowSpec {
+	return apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a declared artifact",
+			Retry: retry,
+		}},
+	}
+}
+
 func executeRetryWorkflow(t *testing.T, name string, retry *apiv1.RetryPolicy, det invoke.Deterministic) error {
 	t.Helper()
 	var ts testsuite.WorkflowTestSuite
@@ -103,6 +115,35 @@ func TestTaskRetryPolicyBoundsAndRecovers(t *testing.T) {
 	}
 	if got := det.callCount(); got != 3 {
 		t.Fatalf("dispatches = %d, want 3 (two policy retries, then success)", got)
+	}
+}
+
+func TestAgenticMissingDeclaredArtifactConsumesPolicyRetry(t *testing.T) {
+	var calls int
+	goober := &fakeInvoker{invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+		calls++
+		if calls == 1 {
+			return apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:      "missing_declared_artifact",
+					Message:   "declared artifact file missing: output/result.json",
+					Retryable: true,
+				},
+			}, nil
+		}
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "artifact produced"}, nil
+	}}
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Goober: goober, Workspaces: testWorkspaces(t)})
+	env.ExecuteWorkflow(Run, runInput("agentic-declared-artifact-retry", agenticRetrySpec(&apiv1.RetryPolicy{MaxAttempts: 2})))
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("agentic dispatches = %d, want 2 (missing artifact retry plus success)", calls)
 	}
 }
 

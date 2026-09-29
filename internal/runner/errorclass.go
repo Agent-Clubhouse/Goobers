@@ -2,7 +2,9 @@ package runner
 
 import (
 	"errors"
+	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
@@ -28,6 +30,11 @@ const (
 	// explained, which after this classification means a genuine runner or
 	// executor defect rather than "something went wrong somewhere".
 	errCodeExecutor = "executor_error"
+)
+
+const (
+	missingDeclaredArtifactCode = "missing_declared_artifact"
+	invalidDeclaredArtifactSet  = "invalid_declared_artifact_set"
 )
 
 // Runner-namespace keys carrying a dispatch failure's typed cause on its
@@ -73,6 +80,42 @@ func codedStageFailure(code string, err error) error {
 		return err
 	}
 	return &codedStageError{code: code, err: err}
+}
+
+// DeclaredArtifactRetryFailure converts agent-authored declared-artifact
+// contract failures back into a policy-class dispatch failure so a stage's
+// retry.maxAttempts budget covers transient omitted or malformed artifacts.
+func DeclaredArtifactRetryFailure(result apiv1.ResultEnvelope) error {
+	if result.Status != apiv1.ResultFailure || result.Error == nil {
+		return nil
+	}
+	switch result.Error.Code {
+	case missingDeclaredArtifactCode, invalidDeclaredArtifactSet:
+	default:
+		return nil
+	}
+	message := strings.TrimSpace(result.Error.Message)
+	if message == "" {
+		message = strings.TrimSpace(result.Summary)
+	}
+	if message == "" {
+		message = result.Error.Code
+	}
+	return codedStageFailure(result.Error.Code, errors.New(message))
+}
+
+func declaredArtifactRetryFailureIfClean(err error, result apiv1.ResultEnvelope) error {
+	if err != nil {
+		return err
+	}
+	if retryErr := DeclaredArtifactRetryFailure(result); retryErr != nil {
+		return retryErr
+	}
+	return nil
+}
+
+func declaredArtifactRetryResult(result apiv1.ResultEnvelope, err error) (apiv1.ResultEnvelope, error) {
+	return result, declaredArtifactRetryFailureIfClean(err, result)
 }
 
 // classifyDispatchFailure resolves the typed error code and class the runner

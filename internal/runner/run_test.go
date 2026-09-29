@@ -150,6 +150,32 @@ func (g *committingAssetlessGoober) Review(context.Context, apiv1.InvocationEnve
 	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 }
 
+type sequencedGoober struct {
+	mu      sync.Mutex
+	results []apiv1.ResultEnvelope
+	calls   int
+}
+
+func (g *sequencedGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	if g.calls <= len(g.results) {
+		return g.results[g.calls-1], nil
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *sequencedGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func (g *sequencedGoober) callCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
+}
+
 // committingStubDeterministic is stubDeterministic that first commits a real
 // (non-empty) change to the run branch, so a stage feeding an agentic review
 // gate produces a diff the reviewer can be invoked on — since #415 an empty
@@ -4050,6 +4076,70 @@ func TestRunnerRetriesTaskPerPolicy(t *testing.T) {
 		if e.AttemptClass != wantClasses[i] {
 			t.Errorf("start[%d].AttemptClass = %q, want %q", i, e.AttemptClass, wantClasses[i])
 		}
+	}
+}
+
+func TestRunnerRetriesMissingDeclaredAgentArtifactPerPolicy(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a declared artifact",
+			Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
+			Next:  workflow.TerminalComplete,
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "agentic-declared-artifact-retry", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	goober := &sequencedGoober{results: []apiv1.ResultEnvelope{
+		{
+			Status: apiv1.ResultFailure,
+			Error: &apiv1.ErrorInfo{
+				Code:      "missing_declared_artifact",
+				Message:   "declared artifact file missing: output/result.json",
+				Retryable: true,
+			},
+		},
+		{Status: apiv1.ResultSuccess, Summary: "artifact produced"},
+	}}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	r, err := New(Config{
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-agentic-declared-artifact-retry",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted || goober.callCount() != 2 {
+		t.Fatalf("result=%+v calls=%d, want completed on second attempt", res, goober.callCount())
+	}
+	events := readRunEvents(t, runsDir, "run-agentic-declared-artifact-retry")
+	var starts []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == "implement" {
+			starts = append(starts, event)
+		}
+	}
+	if len(starts) != 2 || starts[0].AttemptClass != "" || starts[1].AttemptClass != journal.AttemptPolicy {
+		t.Fatalf("stage starts = %+v, want initial attempt then policy retry", starts)
 	}
 }
 

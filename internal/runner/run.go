@@ -5290,7 +5290,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		result, err = agentInvocation.Invoke(ctx, env)
 		if err == nil {
-			result, err = r.finalizeOutbox(jr, env.Workspace, t, attempt, class, result)
+			result, err = declaredArtifactRetryResult(r.finalizeOutbox(jr, env.Workspace, t, attempt, class, result))
 		}
 		if err == nil && class == journal.AttemptInfra && result.Status == apiv1.ResultNoWork &&
 			*infraFailedAttemptCommittedWork && workspace.worktree != nil {

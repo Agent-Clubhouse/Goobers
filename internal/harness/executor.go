@@ -388,7 +388,7 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	if err != nil {
 		if code, summary, ok := declaredArtifactFailure(err); ok {
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{Code: code, Message: err.Error(), Retryable: false}
+			result.Error = &apiv1.ErrorInfo{Code: code, Message: err.Error(), Retryable: retryableDeclaredArtifactFailure(code)}
 			result.Summary = summary
 			return result, nil
 		}
@@ -451,6 +451,10 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 	default:
 		return "", "", false
 	}
+}
+
+func retryableDeclaredArtifactFailure(code string) bool {
+	return code == "missing_declared_artifact" || code == "invalid_declared_artifact_set"
 }
 
 // noWorkWithoutDeclaredArtifact reports whether a liftArtifacts error is only

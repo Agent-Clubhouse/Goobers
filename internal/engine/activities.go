@@ -588,6 +588,9 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	// routes on the rejection (contextNotInspectedRedispatch); this only
 	// decides whether there is one.
 	res = a.validateDependencyResult(ctx, env, res)
+	if err := runner.DeclaredArtifactRetryFailure(res); err != nil {
+		return stageActivityResult{}, classifySeamError(err)
+	}
 	result := stageActivityResult{ResultEnvelope: res}
 	// #3366: capture what the workspace is about to take to the grave. Taken
 	// BEFORE publishWorkspaceDelta so a stage that failed — the case where the
