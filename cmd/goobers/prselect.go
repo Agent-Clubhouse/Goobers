@@ -171,6 +171,7 @@ func runPRSelectCore(
 		return 1
 	}
 	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
+	targetedPullNumber, hasTargetedPullNumber := webhookhttp.PullNumberFromTriggerRef(triggerRef)
 	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
 	if err != nil {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
@@ -210,7 +211,8 @@ func runPRSelectCore(
 	exclusions.report.ObservedAt = now
 	exclusions.report.CompleteSnapshot = bool(completeness)
 	for _, pr := range prs {
-		if pr.State != "open" || pr.Base != base ||
+		matchesTargetedPull := hasTargetedPullNumber && strconv.Itoa(pr.Number) == targetedPullNumber
+		if pr.State != "open" || (!matchesTargetedPull && pr.Base != base) ||
 			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
 			continue
 		}

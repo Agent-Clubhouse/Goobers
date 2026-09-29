@@ -36,6 +36,30 @@ func TestPRSelectConsumesWebhookTargetBeforePollingFallback(t *testing.T) {
 		}
 	})
 
+	t.Run("webhook target on release branch", func(t *testing.T) {
+		root := initDemo(t)
+		server := newFakeGitHubServer(t, "your-org", "your-repo")
+		server.addIssue(12, "Release branch PR")
+		server.addOpenPR(12, "goobers/implementation/run-12", "release/v0.4", "head12", "releasebase", false, nil, nil)
+		providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-webhook-release")
+		t.Setenv(executor.TriggerRefEnvVar, webhookhttp.TriggerRef(webhookhttp.Delivery{
+			Event:      "pull_request",
+			PullNumber: 12,
+		}))
+
+		dir := t.TempDir()
+		t.Chdir(dir)
+		if code, stdout, stderr := runArgs(t, "pr-select", root); code != 0 {
+			t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		if got := selectedPullNumber(t, filepath.Join(dir, "selected-pr.json")); got != "12" {
+			t.Fatalf("selected pull request = %q, want release-branch webhook target 12", got)
+		}
+		if got := selectedPullField(t, filepath.Join(dir, "selected-pr.json"), "base"); got != "release/v0.4" {
+			t.Fatalf("selected base = %q, want release/v0.4", got)
+		}
+	})
+
 	t.Run("scheduled polling fallback", func(t *testing.T) {
 		root := initDemo(t)
 		server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -73,6 +97,11 @@ func TestProviderRepoPrefersRoutedRunRepository(t *testing.T) {
 
 func selectedPullNumber(t *testing.T, path string) string {
 	t.Helper()
+	return selectedPullField(t, path, "number")
+}
+
+func selectedPullField(t *testing.T, path, field string) string {
+	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -81,5 +110,5 @@ func selectedPullNumber(t *testing.T, path string) string {
 	if err := decodePRSelectionTestResult(data, &result); err != nil {
 		t.Fatal(err)
 	}
-	return result["number"]
+	return result[field]
 }
