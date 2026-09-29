@@ -5191,3 +5191,27 @@ func TestBuildDeterministicExecutorRefusesGuardedCredentialPath(t *testing.T) {
 		t.Fatalf("script result = %+v, want a credential_read_refused failure", result)
 	}
 }
+
+// TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot is
+// #6058: `goobers up .` passes a relative instance root. The replay spool root
+// must still be absolute, because the journal-export cursor store and replay
+// index open SQLite through sqliteuri.File, which only accepts absolute paths.
+func TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("GOOBERS_TEST_RELATIVE_ROOT_CONNECTION", connectionString)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var cfg telemetry.Config
+	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_RELATIVE_ROOT_CONNECTION"},
+	}, instance.TelemetryProfileStandard, ".", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(cfg.AzureMonitorReplayRoot) {
+		t.Fatalf("AzureMonitorReplayRoot = %q, want an absolute path for a relative instance root", cfg.AzureMonitorReplayRoot)
+	}
+	if !strings.HasSuffix(cfg.AzureMonitorReplayRoot, filepath.Join("telemetry-export", "azure-monitor")) {
+		t.Fatalf("AzureMonitorReplayRoot = %q, want it under the instance root's telemetry-export/azure-monitor", cfg.AzureMonitorReplayRoot)
+	}
+}
