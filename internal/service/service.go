@@ -62,6 +62,8 @@ type Status struct {
 	Trigger     string `json:"trigger,omitempty"`
 	TaskName    string `json:"taskName,omitempty"`
 	LastFailure string `json:"lastFailure,omitempty"`
+	LastRunTime string `json:"lastRunTime,omitempty"`
+	lastResult  string
 }
 
 // CommandRunner executes native supervisor commands.
@@ -274,7 +276,7 @@ func (m *Manager) StartTask(ctx context.Context) (Status, error) {
 	if err := m.runRequired(ctx, "schtasks.exe", "/Run", "/TN", m.windowsTaskName()); err != nil {
 		return Status{}, err
 	}
-	return waitUntilRunning(ctx, m.statusTask)
+	return waitUntilTaskRunning(ctx, m.statusTask, status)
 }
 
 // TaskStatus reports the per-user Windows Scheduled Task state.
@@ -698,6 +700,8 @@ func (m *Manager) statusTask(ctx context.Context) (Status, error) {
 	if failure := windowsTaskLastFailure(firstProperty(values, "Last Result", "Last Run Result")); failure != "" {
 		status.LastFailure = failure
 	}
+	status.lastResult = firstProperty(values, "Last Result", "Last Run Result")
+	status.LastRunTime = firstProperty(values, "Last Run Time", "Last Run")
 	return status, nil
 }
 
@@ -964,6 +968,14 @@ func quoteWindowsCommandArg(value string) string {
 }
 
 func waitUntilRunning(ctx context.Context, status func(context.Context) (Status, error)) (Status, error) {
+	return waitUntilRunningAfter(ctx, status, Status{}, false)
+}
+
+func waitUntilTaskRunning(ctx context.Context, status func(context.Context) (Status, error), before Status) (Status, error) {
+	return waitUntilRunningAfter(ctx, status, before, true)
+}
+
+func waitUntilRunningAfter(ctx context.Context, status func(context.Context) (Status, error), before Status, requireNewTaskFailure bool) (Status, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, serviceStartupTimeout)
 	defer cancel()
 	ticker := time.NewTicker(serviceStatusInterval)
@@ -972,6 +984,7 @@ func waitUntilRunning(ctx context.Context, status func(context.Context) (Status,
 	consecutiveRunning := 0
 	readinessWindow := serviceReadinessWindow
 	var runningSince time.Time
+	observedRunning := false
 	for {
 		current, err := status(waitCtx)
 		if err != nil {
@@ -984,10 +997,11 @@ func waitUntilRunning(ctx context.Context, status func(context.Context) (Status,
 		if !current.Installed {
 			return Status{}, errors.New("service registration disappeared while starting")
 		}
-		if !current.Running && current.LastFailure != "" {
+		if !current.Running && current.LastFailure != "" && (!requireNewTaskFailure || taskFailureBelongsToStart(before, current, observedRunning)) {
 			return Status{}, fmt.Errorf("service failed while starting: %s", current.LastFailure)
 		}
 		if current.Running {
+			observedRunning = true
 			if consecutiveRunning == 0 {
 				runningSince = time.Now()
 			}
@@ -1007,6 +1021,22 @@ func waitUntilRunning(ctx context.Context, status func(context.Context) (Status,
 		case <-ticker.C:
 		}
 	}
+}
+
+func taskFailureBelongsToStart(before, current Status, observedRunning bool) bool {
+	if observedRunning {
+		return true
+	}
+	if before.LastRunTime != "" && current.LastRunTime != "" && current.LastRunTime != before.LastRunTime {
+		return true
+	}
+	if before.lastResult != "" && current.lastResult != "" && current.lastResult != before.lastResult {
+		return true
+	}
+	if before.LastFailure == "" && current.LastFailure != "" {
+		return true
+	}
+	return false
 }
 
 // Count-based probes remain the existing policy for the other supervisors.

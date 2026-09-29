@@ -326,6 +326,31 @@ func TestWindowsScheduledTaskStartReportsImmediateChildFailure(t *testing.T) {
 	}
 }
 
+func TestWindowsScheduledTaskStartIgnoresStaleLastFailureBeforeRunning(t *testing.T) {
+	staleFailure := "Run As User: CONTOSO\\alice\nStatus: Ready\nLast Result: 1\nLast Run Time: 9/29/2026 3:00:00 PM\n"
+	runner := &fakeRunner{responses: []commandResponse{
+		{output: staleFailure},
+		{},
+		{output: staleFailure},
+		{output: "Run As User: CONTOSO\\alice\nStatus: Running\nLast Result: 267009\nLast Run Time: 9/29/2026 4:00:00 PM\n", repeat: serviceReadinessChecks},
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "windows",
+		Executable:   `C:\goobers.exe`,
+		InstanceRoot: `C:\Users\alice\AppData\Local\Goobers`,
+		UserName:     `CONTOSO\alice`,
+		Runner:       runner,
+	})
+
+	status, err := manager.StartTask(context.Background())
+	if err != nil {
+		t.Fatalf("StartTask returned stale failure: %v", err)
+	}
+	if !status.Running {
+		t.Fatalf("status = %+v, want running", status)
+	}
+}
+
 func TestWindowsScheduledTaskStatusReportsLastFailure(t *testing.T) {
 	runner := &fakeRunner{responses: []commandResponse{{
 		output: "Run As User: CONTOSO\\alice\nStatus: Ready\nLast Result: 2147942402\n",
