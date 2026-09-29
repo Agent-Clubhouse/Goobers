@@ -588,9 +588,6 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	// routes on the rejection (contextNotInspectedRedispatch); this only
 	// decides whether there is one.
 	res = a.validateDependencyResult(ctx, env, res)
-	if err := runner.DeclaredArtifactRetryFailure(res); err != nil {
-		return stageActivityResult{}, classifySeamError(err)
-	}
 	result := stageActivityResult{ResultEnvelope: res}
 	// #3366: capture what the workspace is about to take to the grave. Taken
 	// BEFORE publishWorkspaceDelta so a stage that failed — the case where the
@@ -905,16 +902,21 @@ func selfStagePlacement() *journal.Placement {
 // publishWorkspaceDelta is the self arm's PUBLISH half (#3803): after a stage
 // SUCCEEDED on a writable repo workspace, ask the workspace to bundle what
 // the stage committed and stamp the digest on the result for the walk's
-// continuity record. Only success publishes — a failed stage's half-finished
-// commits are not a base for the next stage, and the engine retries it from
-// the last good delta — and only a workspace that implements DeltaPublisher
-// can (scratch and test fakes do not, and publish nothing).
+// continuity record. Success publishes for carry-forward. Declared-artifact
+// retry failures also publish so the failed attempt's work is preserved before
+// retry, but dispatchWithRetry still withholds that delta from downstream
+// continuity. Other failed stages do not publish their half-finished commits.
+// Only a workspace that implements DeltaPublisher can publish (scratch and
+// test fakes do not, and publish nothing).
 //
 // A publish FAILURE fails the stage: the commits exist and nothing else will
 // carry them to a pod, so reporting success would strand exactly the diff
 // this mechanism protects — the same rule the pod's dispatch-exec applies.
 func publishWorkspaceDelta(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode, result *stageActivityResult) error {
-	if result.Status != apiv1.ResultSuccess || !writableWorkspace(mode) {
+	if result.Status != apiv1.ResultSuccess && runner.DeclaredArtifactRetryFailure(result.ResultEnvelope) == nil {
+		return nil
+	}
+	if !writableWorkspace(mode) {
 		return nil
 	}
 	publisher, ok := ws.(DeltaPublisher)
