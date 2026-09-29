@@ -1,8 +1,11 @@
 package dslmigrate
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -75,7 +78,7 @@ func applyV14ToV20SourcePreserving(source []byte, root *yaml.Node, versionNode *
 			for _, task := range tasks.Content {
 				edit, note, ok, err := ciPollIntervalSourceEdit(source, task, gatesByName)
 				if errors.Is(err, errSourcePreserveUnsupported) {
-					return renderV14ToV20(source, root, to)
+					return renderV14ToV20(source, to)
 				}
 				if err != nil {
 					return nil, nil, err
@@ -93,20 +96,100 @@ func applyV14ToV20SourcePreserving(source []byte, root *yaml.Node, versionNode *
 			}
 		}
 	}
-	return applySourceEdits(source, edits), notes, nil
+	edited := applySourceEdits(source, edits)
+	ok, err := sourceEditMatchesV14ToV20(source, edited, to)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		return renderV14ToV20(source, to)
+	}
+	return edited, notes, nil
 }
 
-func renderV14ToV20(source []byte, root *yaml.Node, to string) ([]byte, []string, error) {
+func renderV14ToV20(source []byte, to string) ([]byte, []string, error) {
+	var doc yaml.Node
+	decoder := yaml.NewDecoder(bytes.NewReader(source))
+	if err := decoder.Decode(&doc); err != nil {
+		return nil, nil, fmt.Errorf("parse workflow for fallback render: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse trailing document for fallback render: %w", err)
+		}
+		return nil, nil, errors.New("multiple YAML documents are not supported")
+	}
+	root := documentRoot(&doc)
+	if root == nil || root.Kind != yaml.MappingNode {
+		return nil, nil, errors.New("workflow document has no top-level mapping")
+	}
 	_, notes, err := applyV14ToV20(source, root)
 	if err != nil {
 		return nil, nil, err
 	}
 	setScalar(root, "dslVersion", to, "!!str")
-	rendered, err := marshalDocument(&yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}})
+	rendered, err := marshalDocument(&doc)
 	if err != nil {
 		return nil, nil, err
 	}
 	return []byte(rendered), notes, nil
+}
+
+func sourceEditMatchesV14ToV20(source, edited []byte, to string) (bool, error) {
+	rendered, _, err := renderV14ToV20(source, to)
+	if err != nil {
+		return false, err
+	}
+	got, err := parseSemanticYAML(edited)
+	if err != nil {
+		return false, nil
+	}
+	want, err := parseSemanticYAML(rendered)
+	if err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(got, want), nil
+}
+
+type semanticYAML struct {
+	Kind     yaml.Kind
+	Tag      string
+	Value    string
+	Sequence []semanticYAML
+	Mapping  map[string]semanticYAML
+}
+
+func parseSemanticYAML(source []byte) (semanticYAML, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(source, &doc); err != nil {
+		return semanticYAML{}, err
+	}
+	return semanticNode(documentRoot(&doc), ""), nil
+}
+
+func semanticNode(node *yaml.Node, key string) semanticYAML {
+	if node == nil {
+		return semanticYAML{}
+	}
+	out := semanticYAML{Kind: node.Kind, Tag: node.Tag, Value: node.Value}
+	if node.Kind == yaml.ScalarNode && key == "dslVersion" {
+		out.Tag = "!!str"
+	}
+	switch node.Kind {
+	case yaml.MappingNode:
+		out.Mapping = map[string]semanticYAML{}
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			k := node.Content[i].Value
+			out.Mapping[k] = semanticNode(node.Content[i+1], k)
+		}
+	case yaml.SequenceNode:
+		out.Sequence = make([]semanticYAML, 0, len(node.Content))
+		for _, child := range node.Content {
+			out.Sequence = append(out.Sequence, semanticNode(child, ""))
+		}
+	}
+	return out
 }
 
 func pinCIPollInterval(task *yaml.Node, gatesByName map[string]*yaml.Node) (string, bool) {
@@ -215,6 +298,9 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 	if mapping.Style&yaml.FlowStyle != 0 {
 		return insertFlowMappingScalarEdit(source, mapping, line)
 	}
+	if hasSourceAmbiguousMultilineValue(mapping) {
+		return sourceEdit{}, fmt.Errorf("%w: block or multiline scalar in target mapping", errSourcePreserveUnsupported)
+	}
 	eol := sourceEOL(source)
 	if len(mapping.Content) == 0 {
 		if mapping.Line < 1 || mapping.Column < 1 {
@@ -248,6 +334,26 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 		insertion = append(append([]byte{}, eol...), insertion...)
 	}
 	return sourceEdit{start: offset, end: offset, replacement: insertion}, nil
+}
+
+func hasSourceAmbiguousMultilineValue(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == yaml.ScalarNode {
+		if node.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+			return true
+		}
+		if node.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) != 0 && strings.Contains(node.Value, "\n") {
+			return true
+		}
+	}
+	for _, child := range node.Content {
+		if hasSourceAmbiguousMultilineValue(child) {
+			return true
+		}
+	}
+	return false
 }
 
 func insertFlowMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (sourceEdit, error) {

@@ -212,6 +212,74 @@ func TestMigrateTransformEditsFlowAutomatedMapping(t *testing.T) {
 	}
 }
 
+func TestMigrateTransformFallsBackForMultilineAutomatedValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		automated string
+	}{
+		{
+			name: "direct literal block scalar",
+			automated: `        check: ci-status
+        description: |
+          first line
+          second line
+`,
+		},
+		{
+			name: "direct folded block scalar",
+			automated: `        check: ci-status
+        description: >
+          first line
+          second line
+`,
+		},
+		{
+			name: "nested literal block scalar",
+			automated: `        check: ci-status
+        params:
+          description: |
+            first line
+            second line
+`,
+		},
+		{
+			name: "nested folded block scalar",
+			automated: `        check: ci-status
+        params:
+          description: >
+            first line
+            second line
+`,
+		},
+		{
+			name: "multiline double quoted scalar",
+			automated: `        check: ci-status
+        description: "first line
+          second line"
+`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := workflowWithAutomatedBlock(test.automated)
+
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			got := decodeWorkflow(t, result.After)
+			if got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
+				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
+			}
+			if strings.Contains(result.After, "description: |\n        pollIntervalSeconds") ||
+				strings.Contains(result.After, "description: >\n        pollIntervalSeconds") ||
+				strings.Contains(result.After, "description: \"first line\n        pollIntervalSeconds") {
+				t.Fatalf("pollIntervalSeconds was inserted inside a multiline scalar instead of falling back:\n%s", result.After)
+			}
+		})
+	}
+}
+
 func TestMigrateLeavesExplicitPositivePollIntervalUntouched(t *testing.T) {
 	result, err := Migrate([]byte(workflowWithPinnedCIPoll), "2.0")
 	if err != nil {
@@ -224,6 +292,30 @@ func TestMigrateLeavesExplicitPositivePollIntervalUntouched(t *testing.T) {
 	if after.PollIntervalSeconds != 7 {
 		t.Fatalf("after pollIntervalSeconds = %d, want unchanged 7", after.PollIntervalSeconds)
 	}
+}
+
+func workflowWithAutomatedBlock(automated string) string {
+	return `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: block-automated
+spec:
+  gaggle: golden
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      inputs:
+        kind: "ci-poll"
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+      automated:
+` + automated + `      branches:
+        pass: ""
+`
 }
 
 func TestMigrateBumpsVersionEvenWithoutCIPollTasks(t *testing.T) {
