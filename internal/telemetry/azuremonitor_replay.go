@@ -208,6 +208,15 @@ func (s *azureReplaySpool) submit(ctx context.Context, payload []byte) (submitEr
 	if err := s.ensureIndex(); err != nil {
 		return err
 	}
+	if s.cfg.start != nil {
+		select {
+		case <-s.index.ready:
+		default:
+			if err = s.submitBootstrap(ctx, name, now, payload); !errors.Is(err, errAzureBootstrapReady) {
+				return err
+			}
+		}
+	}
 	var rejected bool
 	err = s.index.withLock(ctx, func(tx *sql.Tx) error {
 		if s.closed.Load() {
@@ -250,7 +259,11 @@ func (s *azureReplaySpool) submit(ctx context.Context, payload []byte) (submitEr
 }
 
 func (s *azureReplaySpool) writeLocked(name string, createdAt time.Time, payload []byte) (string, error) {
-	tmp, err := os.CreateTemp(s.cfg.dir, ".pending-*")
+	return writeAzureReplayBatch(s.cfg.dir, name, createdAt, payload)
+}
+
+func writeAzureReplayBatch(dir, name string, createdAt time.Time, payload []byte) (string, error) {
+	tmp, err := os.CreateTemp(dir, ".pending-*")
 	if err != nil {
 		return "", fmt.Errorf("create Azure Monitor replay batch: %w", err)
 	}
@@ -278,7 +291,7 @@ func (s *azureReplaySpool) writeLocked(name string, createdAt time.Time, payload
 	if err := tmp.Close(); err != nil {
 		return "", fmt.Errorf("close Azure Monitor replay batch: %w", err)
 	}
-	destination := filepath.Join(s.cfg.dir, name)
+	destination := filepath.Join(dir, name)
 	if err := os.Rename(tmpName, destination); err != nil {
 		return "", fmt.Errorf("publish Azure Monitor replay batch: %w", err)
 	}

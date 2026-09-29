@@ -2,8 +2,9 @@ package telemetry
 
 // The replay files remain authoritative. This private, rebuildable SQLite
 // manifest caches their metadata and coordinates claims across processes. All
-// filesystem mutations and manifest changes run under one per-root OS lock;
-// HTTP never holds that lock. Directory stamps detect an interrupted mutation
+// indexed-stream filesystem mutations and manifest changes run under one
+// per-root OS lock. Bounded pre-index bootstrap files use a separate lock;
+// HTTP never holds either lock. Directory stamps detect an interrupted mutation
 // (or an older writer) and trigger reconciliation, not a scan on every batch.
 
 import (
@@ -27,6 +28,7 @@ import (
 const azureReplayIndexName = ".replay-index.db"
 
 const azureReplayIndexAuditInterval = time.Minute
+const azureReplayLargeColdBacklogFiles = 1024
 
 var azureReplayIndexes = struct {
 	sync.Mutex
@@ -36,6 +38,7 @@ var azureReplayIndexes = struct {
 type azureReplayIndex struct {
 	root         string
 	streams      []string
+	start        <-chan struct{}
 	db           *sql.DB
 	statsDB      *sql.DB
 	ready        chan struct{}
@@ -76,7 +79,7 @@ func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error
 		return index, stream, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, ready: make(chan struct{}), firstAttempt: make(chan struct{}), cancel: cancel, refs: 1}
+	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, start: cfg.start, ready: make(chan struct{}), firstAttempt: make(chan struct{}), cancel: cancel, refs: 1}
 	if stream == "" {
 		index.streams = []string{""}
 	}
@@ -89,9 +92,15 @@ func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error
 }
 
 func (x *azureReplayIndex) initialize(ctx context.Context) error {
+	if err := x.awaitLargeColdBacklogStart(ctx); err != nil {
+		return err
+	}
 	first := true
 	for {
 		err := x.open(ctx)
+		if err == nil {
+			err = x.migrateBootstrap(ctx)
+		}
 		if first {
 			x.firstErr = err
 			close(x.firstAttempt)
@@ -110,6 +119,44 @@ func (x *azureReplayIndex) initialize(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// Only a missing manifest with a large retained backlog is deferred. This
+// check inspects names, not per-file metadata or contents. Before readiness,
+// admission goes to the separately bounded, fsynced bootstrap area.
+func (x *azureReplayIndex) awaitLargeColdBacklogStart(ctx context.Context) error {
+	if x.start == nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(x.root, azureReplayIndexName)); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, stream := range x.streams {
+		entries, err := os.ReadDir(filepath.Join(x.root, stream))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		count := 0
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
+				count++
+			}
+		}
+		if count >= azureReplayLargeColdBacklogFiles {
+			select {
+			case <-x.start:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return nil
 }
 
 func (x *azureReplayIndex) release(ctx context.Context) error {

@@ -2,19 +2,49 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
-// Keep this as a deterministic admission invariant for a future cold-index
-// implementation: reconstruction may hold the root index lock, but a newly
-// emitted record must still be durably accepted on a separately bounded path.
-// The current implementation does not satisfy this test; do not land the test
-// alone or weaken its deadline to make an unsafe startup shortcut look green.
+func TestAzureReplayLargeMissingManifestDefersScanUntilReady(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "journal")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 1024 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%020d-seed.ndjson", i)), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := make(chan struct{})
+	x := &azureReplayIndex{root: root, streams: []string{"journal"}, start: start}
+	done := make(chan error, 1)
+	go func() { done <- x.awaitLargeColdBacklogStart(t.Context()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("large cold scan started before readiness: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(start)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ready signal did not release cold scan")
+	}
+}
+
+// Reconstruction may hold the root index lock, but a newly emitted daemon
+// record must still be durably accepted on a separately bounded path.
 func TestAzureReplayColdIndexLockDoesNotBlockDurableStartupAdmission(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "journal"), 0o700); err != nil {
@@ -25,7 +55,7 @@ func TestAzureReplayColdIndexLockDoesNotBlockDurableStartupAdmission(t *testing.
 		t.Fatal(err)
 	}
 	defer func() { _ = blocker.Release() }()
-	cfg := azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20}
+	cfg := azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20, start: make(chan struct{})}
 	s, err := newAzureReplaySpool(cfg, func(context.Context, []byte) error { return nil })
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +69,107 @@ func TestAzureReplayColdIndexLockDoesNotBlockDurableStartupAdmission(t *testing.
 	defer cancel()
 	if err := s.submit(ctx, []byte("{\"startup\":true}\n")); err != nil {
 		t.Fatalf("cold index lock blocked durable startup admission: %v", err)
+	}
+	entries, err := os.ReadDir(bootstrapDir(root, "journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durable int
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != azureReplayFileSuffix {
+			continue
+		}
+		_, payload, err := readAzureReplayFile(filepath.Join(bootstrapDir(root, "journal"), entry.Name()))
+		if err != nil || string(payload) != "{\"startup\":true}\n" {
+			t.Fatalf("bootstrap receipt is not durable: %q %v", payload, err)
+		}
+		durable++
+	}
+	if durable != 1 {
+		t.Fatalf("bootstrap files=%d want 1", durable)
+	}
+}
+
+func TestAzureReplayBootstrapSurvivesShutdownAndReplaysAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "journal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := platformlock.TryAcquire(filepath.Join(root, ".replay-index.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	cfg := azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20, start: start}
+	first, err := newAzureReplaySpool(cfg, func(context.Context, []byte) error { return nil })
+	if err != nil {
+		_ = blocker.Release()
+		t.Fatal(err)
+	}
+	payload := []byte("{\"restart\":true}\n")
+	if err := first.submit(t.Context(), payload); err != nil {
+		_ = blocker.Release()
+		t.Fatal(err)
+	}
+	closeCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	if err := first.close(closeCtx); err != nil {
+		cancel()
+		_ = blocker.Release()
+		t.Fatal(err)
+	}
+	cancel()
+	if err := blocker.Release(); err != nil {
+		t.Fatal(err)
+	}
+	close(start)
+	delivered := make(chan []byte, 1)
+	second, err := newAzureReplaySpool(cfg, func(_ context.Context, body []byte) error {
+		delivered <- append([]byte(nil), body...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.close(context.Background()) }()
+	select {
+	case got := <-delivered:
+		if string(got) != string(payload) {
+			t.Fatalf("replayed bootstrap payload=%q want=%q", got, payload)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bootstrap file was not migrated and delivered")
+	}
+}
+
+func TestAzureReplayBootstrapBoundRejectsAndCountsOverflow(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "journal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := platformlock.TryAcquire(filepath.Join(root, ".replay-index.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Release() }()
+	cfg := azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20, start: make(chan struct{})}
+	s, err := newAzureReplaySpool(cfg, func(context.Context, []byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.close(ctx)
+	}()
+	payload := []byte("{\"value\":\"" + strings.Repeat("x", 600<<10) + "\"}\n")
+	if err := s.submit(t.Context(), payload); err != nil {
+		t.Fatalf("first bounded bootstrap batch: %v", err)
+	}
+	if err := s.submit(t.Context(), payload); err == nil {
+		t.Fatal("bootstrap exceeded its byte bound")
+	}
+	if got := s.admissionFailures.Load(); got != 1 {
+		t.Fatalf("rejected bootstrap batch was not counted: %d", got)
 	}
 }
 
