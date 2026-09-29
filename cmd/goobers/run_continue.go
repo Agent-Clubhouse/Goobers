@@ -244,6 +244,7 @@ type continuationPullRequestProvider interface {
 
 type continuationEligibilityPolicy struct {
 	requireLabels   []string
+	routingLabels   []string
 	excludeLabels   []string
 	labelFilter     *labelpredicate.Predicate
 	fieldFilter     *fieldpredicate.Predicate
@@ -525,6 +526,11 @@ func validateContinuationEligibility(item providers.WorkItem, kind providers.Pro
 }
 
 func continuationLabelExclusionReason(item providers.WorkItem, policy *continuationEligibilityPolicy) string {
+	for _, label := range policy.routingLabels {
+		if !item.HasLabel(label) {
+			return fmt.Sprintf("missing required label %q", label)
+		}
+	}
 	for _, label := range policy.requireLabels {
 		if !item.HasLabel(label) {
 			return fmt.Sprintf("missing required label %q", label)
@@ -573,10 +579,13 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 			continue
 		}
 		labels := append([]string(nil), gaggle.Spec.Backlog.Labels...)
+		routingLabels := make([]string, 0, len(trigger.Selector))
 		for label := range trigger.Selector {
 			labels = append(labels, label)
+			routingLabels = append(routingLabels, label)
 		}
 		labels = uniqueSortedLabels(labels)
+		routingLabels = uniqueSortedLabels(routingLabels)
 		labelFilter, err := labelpredicate.Compile(backlogdefaults.LabelPredicateConjunction(gaggle.Spec.Backlog.LabelPredicate, trigger.LabelPredicate), labels, nil)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q backlog label predicate: %w", definition.Name, err)
@@ -587,6 +596,7 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 		}
 		return &continuationEligibilityPolicy{
 			requireLabels: labels,
+			routingLabels: routingLabels,
 			labelFilter:   labelFilter,
 			fieldFilter:   fieldFilter,
 		}, nil
@@ -597,6 +607,7 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 			continue
 		}
 		inputs := backlogdefaults.Apply(task, task.Inputs, instance.EffectiveSelfIdentity(cfg, gaggle), strings.Join(gaggle.Spec.RequireLabels, ","))
+		routingLabels := splitLabelList(inputs["requireLabels"])
 		inputs = backlogdefaults.ApplyBacklogScope(task, inputs, strings.Join(gaggle.Spec.Backlog.Labels, ","), gaggle.Spec.Backlog.LabelPredicate)
 		requireLabels := splitLabelList(inputs["requireLabels"])
 		excludeLabels := splitLabelList(inputs["excludeLabels"])
@@ -610,6 +621,7 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 		}
 		return &continuationEligibilityPolicy{
 			requireLabels:   requireLabels,
+			routingLabels:   routingLabels,
 			excludeLabels:   excludeLabels,
 			labelFilter:     labelFilter,
 			fieldFilter:     fieldFilter,
