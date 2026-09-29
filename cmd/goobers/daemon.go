@@ -375,7 +375,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}()
 	if cfg.TelemetryEnabled() {
 		reportStartupProgress(options.startupProgress, "opening telemetry state")
-		tel, err = buildTelemetryClientWithReplayStart(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores, options.telemetryReplayStart)
+		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores, options.telemetryReplayStart)
 		if err != nil {
 			if !errors.Is(err, telemetry.ErrOTLPUnavailable) {
 				return nil, err
