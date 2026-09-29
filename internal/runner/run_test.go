@@ -4143,6 +4143,67 @@ func TestRunnerRetriesMissingDeclaredAgentArtifactPerPolicy(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotRetryNonRetryableDeclaredAgentArtifactFailure(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a declared artifact",
+			Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
+			Next:  workflow.TerminalComplete,
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "agentic-declared-artifact-no-retry", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	goober := &sequencedGoober{results: []apiv1.ResultEnvelope{{
+		Status: apiv1.ResultFailure,
+		Error: &apiv1.ErrorInfo{
+			Code:      "missing_declared_artifact",
+			Message:   "declared artifact file missing: output/result.json",
+			Retryable: false,
+		},
+	}}}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	r, err := New(Config{
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-agentic-declared-artifact-no-retry",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed || goober.callCount() != 1 {
+		t.Fatalf("result=%+v calls=%d, want failed after one non-retryable attempt", res, goober.callCount())
+	}
+	events := readRunEvents(t, runsDir, "run-agentic-declared-artifact-no-retry")
+	var starts []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == "implement" {
+			starts = append(starts, event)
+		}
+	}
+	if len(starts) != 1 {
+		t.Fatalf("stage starts = %+v, want exactly one attempt", starts)
+	}
+}
+
 func TestRunnerRetriesInfrastructureFailureAndRecovers(t *testing.T) {
 	machine := retryFixtureMachine(t, 1)
 	cause := errors.New("status 503: provider unavailable")

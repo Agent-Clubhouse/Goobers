@@ -86,7 +86,7 @@ func codedStageFailure(code string, err error) error {
 // contract failures back into a policy-class dispatch failure so a stage's
 // retry.maxAttempts budget covers transient omitted or malformed artifacts.
 func DeclaredArtifactRetryFailure(result apiv1.ResultEnvelope) error {
-	if result.Status != apiv1.ResultFailure || result.Error == nil {
+	if result.Status != apiv1.ResultFailure || result.Error == nil || !result.Error.Retryable {
 		return nil
 	}
 	switch result.Error.Code {

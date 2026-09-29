@@ -147,6 +147,39 @@ func TestAgenticMissingDeclaredArtifactConsumesPolicyRetry(t *testing.T) {
 	}
 }
 
+func TestAgenticNonRetryableDeclaredArtifactFailureDoesNotRetry(t *testing.T) {
+	var calls int
+	goober := &fakeInvoker{invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+		calls++
+		return apiv1.ResultEnvelope{
+			Status: apiv1.ResultFailure,
+			Error: &apiv1.ErrorInfo{
+				Code:      "missing_declared_artifact",
+				Message:   "declared artifact file missing: output/result.json",
+				Retryable: false,
+			},
+		}, nil
+	}}
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Goober: goober, Workspaces: testWorkspaces(t)})
+	env.ExecuteWorkflow(Run, runInput("agentic-declared-artifact-no-retry", agenticRetrySpec(&apiv1.RetryPolicy{MaxAttempts: 2})))
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed without retry", result.Status)
+	}
+	if calls != 1 {
+		t.Fatalf("agentic dispatches = %d, want 1 because Retryable=false", calls)
+	}
+}
+
 // TestTaskRetryPolicyExhaustionFailsRun: exhausting the declared policy
 // budget fails the run with the same attempt-count accounting as the local
 // runner.
