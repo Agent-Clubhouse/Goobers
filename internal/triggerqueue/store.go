@@ -251,6 +251,17 @@ func (s *Store) RetryUnstarted(ctx context.Context, id string) error {
 	return changed(result, err)
 }
 
+// Requeue returns a dispatch attempt to the accepted queue after the scheduler
+// refused it for temporary capacity. The reason stays visible to status
+// readers while preserving the original acceptance ID and FIFO time.
+func (s *Store) Requeue(ctx context.Context, id, reason string) error {
+	if len(reason) > 1024 {
+		return ErrTransition
+	}
+	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET state='accepted',run_id='',reason=? WHERE id=? AND state='dispatching' AND finished_ns IS NULL", reason, id)
+	return changed(result, err)
+}
+
 // RecordDispatch records scheduler admission, not durable run creation. The
 // record stays unfinished and cannot be expired until execution is observed.
 func (s *Store) RecordDispatch(ctx context.Context, id, runID string) error {
