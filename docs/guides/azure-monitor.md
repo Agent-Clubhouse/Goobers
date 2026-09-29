@@ -287,17 +287,22 @@ An unwritable health file falls back to stderr. These are best-effort operationa
 warnings, not a new durable audit journal.
 
 Fixed causes identify unavailable accounting, a spool at 80% of its byte cap,
-pending records older than 30 seconds, growing record backlog over two sample
-intervals, and newly observed losses/export failures. Warnings repeat at most
+pending records older than 30 seconds, growing record backlog that persists
+across two sample intervals, and newly observed losses/export failures. Growth
+requires current accounting at both ends of each interval and an oldest pending
+record at least as old as that actual interval. Increasing counts of entirely
+fresh batches do not establish sustained pressure; high-water, age and loss
+warnings remain independent. Warnings repeat at most
 once per minute per process/stream; a recovery transition is emitted when the
 alert conditions clear. Recovery does not restore previously dropped records.
 Reports contain aggregate counts and admission/delivery rates, never envelope
 content, user/machine names, connection strings, paths, or raw exception text.
 
 An `accounting_unavailable` sample means the process could not obtain a current
-manifest snapshot. The lookup has a 100 ms budget and shares the manifest's
-single database connection with replay work, so a busy connection can cause a
-temporary warning without a failed admission or upload. When available, the
+manifest snapshot. The lookup has a 100 ms budget and uses a separate read-only
+connection instead of waiting for replay's writer connection. A busy health
+reader or unavailable database can still cause a temporary warning without a
+failed admission or upload. When available, the
 last successful backlog snapshot is retained but marked unavailable; its counts
 are not a fresh measurement or proof of an empty spool. The warning alone does
 not establish record loss. Inspect loss counters, subsequent delivery, and
