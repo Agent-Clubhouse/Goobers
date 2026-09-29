@@ -73,6 +73,12 @@ type Config struct {
 	AzureMonitorReplayRoot     string
 	AzureMonitorReplayMaxAge   time.Duration
 	AzureMonitorReplayMaxBytes int64
+	// AzureMonitorReplayStart, when non-nil, delays only background replay
+	// until the caller closes the channel (for example, after daemon readiness).
+	// Accounting, durable admission, and bounded shutdown remain active. Each
+	// caller owns its signal; closing an exporter never releases another one.
+	// Nil preserves immediate replay for one-shot commands and other callers.
+	AzureMonitorReplayStart <-chan struct{}
 	// JournalLogs enables live export of committed journal events as OTLP Logs.
 	// It has no effect without ExporterOTLP and an explicit endpoint.
 	JournalLogs bool

@@ -57,6 +57,8 @@ func TestStartupConfiguration(t *testing.T) {
 		func(c *startupConfig) { c.Endpoint = "external" },
 		func(c *startupConfig) { c.Settle = -time.Second },
 		func(c *startupConfig) { c.Settle = 61 * time.Second },
+		func(c *startupConfig) { c.PostReady = -time.Second },
+		func(c *startupConfig) { c.PostReady = 61 * time.Second },
 	} {
 		c := base
 		change(&c)

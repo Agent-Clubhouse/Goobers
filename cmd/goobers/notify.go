@@ -81,6 +81,7 @@ type schedulerSetupOptions struct {
 	notifyOverride       notifyFlag
 	notificationWarnings io.Writer
 	startupProgress      func(string)
+	telemetryReplayStart <-chan struct{}
 	// claimRecoveryGate defers the setup-time expired-claim reap until the
 	// caller has rebuilt its renewal set (DS6; see withClaimRecoveryGate).
 	// Nil — the pure mode-1 one-shot paths — permits the reap unchanged.

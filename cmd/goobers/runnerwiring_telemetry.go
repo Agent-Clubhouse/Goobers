@@ -31,14 +31,29 @@ func buildTelemetryClient(
 	telemetryConfig instance.TelemetryConfig,
 	stores credentials.StoreResolver,
 ) (*telemetry.Client, error) {
+	return buildTelemetryClientWithReplayStart(ctx, l, scrubber, registry, telemetryConfig, stores, nil)
+}
+
+// The daemon supplies its own readiness signal. One-shot callers retain
+// immediate replay through buildTelemetryClient; recording is never gated.
+func buildTelemetryClientWithReplayStart(
+	ctx context.Context,
+	l instance.Layout,
+	scrubber journal.Scrubber,
+	registry *journal.RegistryScrubber,
+	telemetryConfig instance.TelemetryConfig,
+	stores credentials.StoreResolver,
+	replayStart <-chan struct{},
+) (*telemetry.Client, error) {
 	cfg := telemetry.Config{
-		ServiceName:    "goobers",
-		ServiceVersion: version.Get().Version,
-		BuildCommit:    version.Get().Commit,
-		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
-		Scrubber:       scrubber,
-		Batch:          true,
-		JournalRoot:    l.Root,
+		ServiceName:             "goobers",
+		ServiceVersion:          version.Get().Version,
+		BuildCommit:             version.Get().Commit,
+		SpanExporter:            telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
+		Scrubber:                scrubber,
+		Batch:                   true,
+		JournalRoot:             l.Root,
+		AzureMonitorReplayStart: replayStart,
 	}
 	// Only the durable identity is trustworthy; legacy roots remain unidentified.
 	// Carry it on every signal as a resource attribute so operators can correlate

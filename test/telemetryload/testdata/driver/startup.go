@@ -17,6 +17,7 @@ type startupConfig struct {
 	Prefill, Index string
 	Endpoint       string
 	Settle         time.Duration
+	PostReady      time.Duration
 }
 
 var startupOptions = startupConfig{Rounds: 20, Prefill: "empty", Index: "cold", Endpoint: "healthy", Settle: 5 * time.Second}
@@ -27,6 +28,7 @@ func registerStartupFlags() {
 	flag.StringVar(&startupOptions.Index, "startup-index", "cold", "startup only: cold (missing manifest) or warm (offline primed)")
 	flag.StringVar(&startupOptions.Endpoint, "startup-endpoint", "healthy", "startup only: healthy or stalled (seven-second response delay)")
 	flag.DurationVar(&startupOptions.Settle, "startup-settle", 5*time.Second, "idle time after fixture preparation, before each startup measurement")
+	flag.DurationVar(&startupOptions.PostReady, "startup-post-ready", 0, "optional post-ready API sampling window (up to 1m), with one real workflow; zero preserves idle startup measurements")
 }
 
 func (c startupConfig) validate(selected string) error {
@@ -38,7 +40,7 @@ func (c startupConfig) validate(selected string) error {
 		}
 		return nil
 	}
-	if c.Rounds < 1 || c.Rounds > 100 || c.Settle < 0 || c.Settle > time.Minute {
+	if c.Rounds < 1 || c.Rounds > 100 || c.Settle < 0 || c.Settle > time.Minute || c.PostReady < 0 || c.PostReady > time.Minute {
 		return fmt.Errorf("invalid startup repetitions or settle duration")
 	}
 	if c.Index != "cold" && c.Index != "warm" {
@@ -144,6 +146,9 @@ func runStartupPairs(url string) {
 			if enabled && sample.Measurement.Requests == 0 {
 				panic("startup fixture did not exercise the configured ingestion endpoint; inspect raw sample")
 			}
+			if post := sample.Measurement.PostReady; post != nil && !post.Successful() {
+				panic("post-ready response/workflow failure; raw startup sample retained")
+			}
 		}
 	}
 }
@@ -160,7 +165,7 @@ func runStartupSample(url string, round int, enabled bool) startupSample {
 	sample := startupSample{Round: round, Enabled: enabled, Name: name}
 	if startupOptions.Index == "warm" {
 		mode.Store(1) // Build accounting without draining the seeded backlog.
-		prime := measureStartup(name+"-prime", root, api, enabled)
+		prime := measureStartup(name+"-prime", root, api, enabled, 0)
 		sample.Prime = &prime
 		if enabled && !telemetry.InspectAzureReplayRoot(spool(root)).AccountingReady {
 			panic("warm startup fixture has no usable persisted replay accounting")
@@ -182,7 +187,7 @@ func runStartupSample(url string, round int, enabled bool) startupSample {
 		mode.Store(2)
 	}
 	time.Sleep(startupOptions.Settle)
-	sample.Measurement = measureStartup(name, root, api, false)
+	sample.Measurement = measureStartup(name, root, api, false, startupOptions.PostReady)
 	sample.After, err = startupDiskState(root)
 	must(err)
 	// Only the known, synthetic seed payload files are removed, after the child

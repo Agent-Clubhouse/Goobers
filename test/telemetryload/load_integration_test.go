@@ -97,6 +97,9 @@ func checkStartupProbe(t *testing.T, ctx context.Context, repo, artifact, daemon
 			}
 			dir := filepath.Join(artifact, "startup-"+index)
 			args := []string{"-bin", daemon, "-out", dir, "-scenario", "startup", "-startup-rounds", "1", "-startup-settle", "0s", "-startup-index", index, "-startup-endpoint", endpoint}
+			if index == "cold" {
+				args = append(args, "-startup-post-ready", "1s")
+			}
 			if runtime.GOOS == "windows" {
 				args = append(args, "-windows-insecure-demo")
 			}
@@ -129,6 +132,16 @@ func verifyStartupSmoke(t *testing.T, dir, index string) {
 			Measurement                           struct {
 				StartupMS, ShutdownMS float64
 				Requests              int64
+				PostReady             *struct {
+					FirstWorkflowCommandMS                           float64
+					FirstWorkflowError, SourceJournalError           string
+					SourceRunEvents, SourceRuns, SourceCompletedRuns int
+					DeliveryReconciled                               bool
+					Probes                                           []struct {
+						Status int
+						Error  string
+					}
+				}
 			}
 			Prime json.RawMessage
 		}
@@ -140,6 +153,19 @@ func verifyStartupSmoke(t *testing.T, dir, index string) {
 		t.Fatalf("invalid startup evidence: %s", data)
 	}
 	for i, sample := range result.Samples {
+		post := sample.Measurement.PostReady
+		if index == "cold" {
+			if post == nil || post.FirstWorkflowError != "" || post.SourceJournalError != "" || post.FirstWorkflowCommandMS <= 0 || post.SourceRunEvents == 0 || post.SourceRuns != 1 || post.SourceCompletedRuns != 1 || post.DeliveryReconciled || len(post.Probes) < 2 {
+				t.Fatalf("invalid post-ready smoke evidence: %s", data)
+			}
+			for _, probe := range post.Probes {
+				if probe.Status != 200 || probe.Error != "" {
+					t.Fatalf("post-ready response failed: %s", data)
+				}
+			}
+		} else if post != nil {
+			t.Fatal("idle warm measurement unexpectedly includes workflow work")
+		}
 		if sample.Enabled != (i == 1) || !sample.SeedPayloadsRemovedAfterward || sample.Measurement.StartupMS <= 0 || sample.Measurement.ShutdownMS <= 0 {
 			t.Fatalf("invalid startup sample: %s", data)
 		}

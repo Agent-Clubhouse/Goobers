@@ -19,6 +19,7 @@ type startupTiming struct {
 	StartedUTC, FinishedUTC time.Time
 	StartupMS, ShutdownMS   float64
 	Requests, Rejected      int64
+	PostReady               *startupResponsiveness `json:",omitempty"`
 }
 
 // Startup probes need request/fault evidence, not a growing map of every seed
@@ -37,7 +38,7 @@ func consumeStartupReplay(w http.ResponseWriter, decoded io.Reader, responseMode
 	w.WriteHeader(http.StatusOK)
 }
 
-func measureStartup(name, root, api string, waitForIndex bool) startupTiming {
+func measureStartup(name, root, api string, waitForIndex bool, postReady time.Duration) startupTiming {
 	log, err := os.Create(filepath.Join(out, name+"-daemon.log"))
 	must(err)
 	defer func() { must(log.Close()) }()
@@ -70,11 +71,17 @@ func measureStartup(name, root, api string, waitForIndex bool) startupTiming {
 		time.Sleep(50 * time.Millisecond)
 	}
 	result.StartupMS = float64(time.Since(started).Nanoseconds()) / 1e6
+	if postReady > 0 {
+		// Start immediately after observed readiness, before index waits or the
+		// idle dwell can hide a replay burst. Baseline uses the same workload.
+		result.PostReady = measureStartupResponsiveness(name, root, api, postReady)
+	}
 	if waitForIndex {
 		waitStartupIndex(root)
 	}
-	// No workflow execution: this isolates idle lifecycle with queued replay.
-	// Both baseline and enabled retain the same post-readiness dwell.
+	// The default remains an idle lifecycle. Optional post-ready work above is
+	// explicitly recorded and is not comparable to the original idle grid.
+	// Both baseline and enabled retain the same final dwell.
 	time.Sleep(time.Second)
 	stopStarted := time.Now()
 	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
