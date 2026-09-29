@@ -476,7 +476,14 @@ bin/telemetry-load -bin bin/goobers -out /tmp/telemetry-startup-half-cold-stalle
 Run this only on an otherwise idle validation host, with an external watchdog.
 It creates fresh matched disabled/enabled instances and alternates pair order.
 `startup-results.json` retains every raw launch-to-ready and shutdown duration,
-request counts, and actual pre/post replay file counts and bytes. Both `/readyz`
+request counts, actual pre/post replay file counts and bytes, and per-stream
+maxima from the daemon's independent health events through process exit.
+The driver fails a healthy-endpoint sample for any counted admission failure,
+queue drop, export failure, age/byte prune, or malformed replay file. For a
+stalled endpoint it permits remote export failures, but still rejects local
+admission loss, queue drops, pruning, and malformed files. This catches
+short-lifecycle shutdown loss that can appear only after API readiness; these
+counters are not a remote-delivery reconciliation. Both `/readyz`
 and the instance API must answer successfully; readiness polling has 50 ms
 resolution. No workflows are submitted. Shutdown uses a 15-second active-run
 drain setting, which is not an aggregate timeout for provider cleanup. The

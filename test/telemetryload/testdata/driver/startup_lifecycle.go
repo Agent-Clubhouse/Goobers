@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +22,77 @@ type startupTiming struct {
 	StartupMS, ShutdownMS   float64
 	Requests, Rejected      int64
 	PostReady               *startupResponsiveness `json:",omitempty"`
+	Health                  startupHealthAudit
+}
+
+type startupHealthCounters struct {
+	Events, AdmissionFailures, QueueDropped, ExportFailures uint64
+	PrunedAge, PrunedBytes, MalformedFiles                  uint64
+}
+
+type startupHealthAudit struct {
+	Streams map[string]startupHealthCounters
+}
+
+func (a startupHealthAudit) clean(endpoint string) bool {
+	for _, counters := range a.Streams {
+		if counters.AdmissionFailures != 0 || counters.QueueDropped != 0 ||
+			counters.PrunedAge != 0 || counters.PrunedBytes != 0 || counters.MalformedFiles != 0 {
+			return false
+		}
+		if endpoint == "healthy" && counters.ExportFailures != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Parse the daemon's independent health channel after exit. A warning can be
+// emitted only at shutdown, after the startup timing sample has completed.
+// Counters are cumulative per stream, so retain maxima rather than summing
+// repeated snapshots.
+func auditStartupHealth(path string) (startupHealthAudit, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return startupHealthAudit{}, err
+	}
+	defer file.Close()
+	audit := startupHealthAudit{Streams: make(map[string]startupHealthCounters)}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 || line[0] != '{' || !strings.Contains(string(line), `"telemetry.export.health"`) {
+			continue
+		}
+		var event struct {
+			Event, Stream                          string
+			AdmissionFailures                      uint64
+			PrunedAge, PrunedBytes, MalformedFiles uint64
+			Queue                                  struct {
+				Dropped, ExportFailures uint64
+			}
+		}
+		if err := json.Unmarshal(line, &event); err != nil {
+			return audit, fmt.Errorf("decode startup health event: %w", err)
+		}
+		if event.Event != "telemetry.export.health" || event.Stream == "" {
+			return audit, fmt.Errorf("invalid startup health event: %s", line)
+		}
+		counters := audit.Streams[event.Stream]
+		counters.Events++
+		counters.AdmissionFailures = max(counters.AdmissionFailures, event.AdmissionFailures)
+		counters.QueueDropped = max(counters.QueueDropped, event.Queue.Dropped)
+		counters.ExportFailures = max(counters.ExportFailures, event.Queue.ExportFailures)
+		counters.PrunedAge = max(counters.PrunedAge, event.PrunedAge)
+		counters.PrunedBytes = max(counters.PrunedBytes, event.PrunedBytes)
+		counters.MalformedFiles = max(counters.MalformedFiles, event.MalformedFiles)
+		audit.Streams[event.Stream] = counters
+	}
+	if err := scanner.Err(); err != nil {
+		return audit, fmt.Errorf("scan startup daemon log: %w", err)
+	}
+	return audit, nil
 }
 
 // Startup probes need request/fault evidence, not a growing map of every seed
@@ -99,6 +172,8 @@ func measureStartup(name, root, api string, waitForIndex bool, postReady time.Du
 	result.ShutdownMS = float64(time.Since(stopStarted).Nanoseconds()) / 1e6
 	result.FinishedUTC = time.Now().UTC()
 	result.Requests, result.Rejected = requests.Load()-rq, rejects.Load()-rejected
+	result.Health, err = auditStartupHealth(filepath.Join(out, name+"-daemon.log"))
+	must(err)
 	return result
 }
 

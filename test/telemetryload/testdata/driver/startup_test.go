@@ -36,6 +36,51 @@ func TestStartupReceiverDoesNotRetainPayloadIdentities(t *testing.T) {
 	}
 }
 
+func TestStartupHealthAuditCatchesShutdownLoss(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	body := "startup complete\n" +
+		`{"event":"telemetry.export.health","stream":"journal","admissionFailures":0,"queue":{"dropped":0,"exportFailures":0}}` + "\n" +
+		"shutting down\n" +
+		`{"event":"telemetry.export.health","stream":"journal","admissionFailures":8,"queue":{"dropped":0,"exportFailures":2}}` + "\n" +
+		`{"event":"telemetry.export.health","stream":"diagnostics","admissionFailures":28,"queue":{"dropped":28,"exportFailures":2}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit, err := auditStartupHealth(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audit.clean("healthy") || audit.clean("stalled") {
+		t.Fatalf("shutdown loss passed: %+v", audit)
+	}
+	if journal := audit.Streams["journal"]; journal.Events != 2 || journal.AdmissionFailures != 8 || journal.ExportFailures != 2 {
+		t.Fatalf("cumulative journal counters were not retained: %+v", journal)
+	}
+	if diagnostics := audit.Streams["diagnostics"]; diagnostics.QueueDropped != 28 || diagnostics.AdmissionFailures != 28 {
+		t.Fatalf("diagnostic queue loss was missed: %+v", diagnostics)
+	}
+	if err := os.WriteFile(path, []byte(`{"event":"telemetry.export.health","stream":"journal","queue":{"exportFailures":2}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit, err = auditStartupHealth(path)
+	if err != nil || audit.clean("healthy") || !audit.clean("stalled") {
+		t.Fatalf("stalled endpoint policy confused remote failure with local loss: %+v %v", audit, err)
+	}
+	if err := os.WriteFile(path, []byte(`{"event":"telemetry.export.health","stream":"journal","prunedAge":1,"prunedBytes":2,"malformedFiles":3}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit, err = auditStartupHealth(path)
+	if err != nil || audit.clean("healthy") || audit.clean("stalled") {
+		t.Fatalf("retention/corruption loss passed: %+v %v", audit, err)
+	}
+	if err := os.WriteFile(path, []byte(`{"event":"telemetry.export.health","stream":"journal"`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auditStartupHealth(path); err == nil {
+		t.Fatal("malformed health event passed")
+	}
+}
+
 type startupBrokenReader struct{}
 
 func (startupBrokenReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
