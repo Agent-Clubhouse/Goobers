@@ -88,6 +88,26 @@ func TestCancelWildcardTLSSelectsFileDelegation(t *testing.T) {
 	}
 }
 
+func TestCancelWildcardTLSWithRequestIDRequiresAPI(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	configureWildcardTLSAPI(t, layout)
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	var stderr bytes.Buffer
+	handled, fileFallback, code := tryLocalAPICancel(layout, "run-1", "delivery", false, &bytes.Buffer{}, &stderr)
+	if !handled || fileFallback || code != 2 {
+		t.Fatalf("handled=%t fileFallback=%t code=%d stderr=%q", handled, fileFallback, code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "resolve daemon API") || strings.Contains(stderr.String(), "using same-root file delegation") {
+		t.Fatalf("stderr = %q, want API resolution error without file fallback", stderr.String())
+	}
+}
+
 func TestRunCancelAutomaticallyUsesLocalAPI(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		name := "accepted"
