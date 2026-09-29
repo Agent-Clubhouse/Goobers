@@ -40,6 +40,7 @@ type azureReplayConfig struct {
 	dir      string
 	maxAge   time.Duration
 	maxBytes int64
+	start    <-chan struct{}
 }
 
 func (c Config) azureReplayConfig(stream string) azureReplayConfig {
@@ -50,6 +51,7 @@ func (c Config) azureReplayConfig(stream string) azureReplayConfig {
 		root:   c.AzureMonitorReplayRoot,
 		dir:    filepath.Join(c.AzureMonitorReplayRoot, stream),
 		maxAge: c.AzureMonitorReplayMaxAge, maxBytes: c.AzureMonitorReplayMaxBytes,
+		start: c.AzureMonitorReplayStart,
 	}
 }
 
@@ -420,6 +422,13 @@ func (s *azureReplaySpool) signal() {
 
 func (s *azureReplaySpool) run(ctx context.Context) {
 	defer close(s.done)
+	if s.cfg.start != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.cfg.start:
+		}
+	}
 	delay := azureReplayRetryMinimum
 	retrying := false
 	for {

@@ -77,6 +77,15 @@ These are background goroutines, **not an OS low-priority scheduling class**.
 Asynchronous work still consumes CPU, memory, disk bandwidth, and filesystem
 operations. Local authoritative journal fsync remains a separate cost.
 
+The daemon supplies an instance-lifecycle startup signal to its Azure replay
+workers. Background uploads wait until API readiness; local recording, durable
+admission, manifest initialization and health accounting remain active. Each
+daemon owns its signal, including its independent diagnostic exporter. One-shot
+commands retain immediate replay. If startup fails, exporter cancellation stops
+waiting workers and the existing bounded final drain still runs; unacknowledged
+records remain durable. This is not an OS priority guarantee or a promise that
+replay consumes no resources after readiness.
+
 Azure uploads reuse at most four gzip compressors per process. Cache misses
 allocate rather than waiting; unused compressors above the bound are discarded.
 Request output buffers are not cached, and a compressor is released before HTTP
@@ -408,6 +417,43 @@ inspection supplies pending counts, not other processes' cumulative loss counter
 use daemon health warnings and journals for those, not zero-valued inspector fields.
 
 ### Repeated startup and shutdown measurement
+
+#### Post-ready responsiveness
+
+An upload-start change must not merely move work beyond the readiness marker.
+Use an additional matched experiment alongside (not instead of) the idle grid:
+
+```sh
+bin/telemetry-load -bin bin/goobers -out /tmp/telemetry-post-ready-half-cold-healthy -scenario startup -startup-rounds 20 -startup-prefill half -startup-index cold -startup-endpoint healthy -startup-post-ready 15s
+```
+
+The optional window starts immediately after the two readiness routes first
+succeed, before an accounting wait or idle dwell. It samples `/readyz` and
+`/api/v1/instance` at a 100 ms cadence and concurrently starts one real demo
+workflow. Raw per-request latency/status/errors, first-command latency, its
+output, and consecutive source-journal events with exactly one completed run
+are retained. Each HTTP call retains the driver's three-second timeout; the
+workflow command has a separate 45-second bound. Failed measurements are saved
+before the driver exits. Priming a warm manifest never runs this workload.
+The default zero window preserves the existing idle experiment unchanged.
+
+For release evidence use 20 alternating pairs, a 15-second window, at least
+100 observations per route per lifecycle, and first probe/workflow submission
+within 100 ms of observed readiness. Require zero HTTP/workflow/journal errors.
+Additional responsiveness gates, fixed before measuring this mode: each route's
+p95 <=250 ms and p99 <=1 second; added p95 <=max(50 ms, 20% of disabled baseline).
+For the first whole-workflow command, added p95 <=max(250 ms, 10% of baseline).
+Keep all maxima and outliers, and apply these comparisons per route and matched
+case, not pooled across platforms. These are supplemental end-to-end gates;
+they do not replace the stricter append/dispatch component budgets below.
+
+This mode explicitly does **not** reconcile remote delivery: the startup
+receiver still discards bulk synthetic seeds to bound receiver memory. Its
+`DeliveryReconciled` result stays false. Use the separate load/recovery scenarios
+for delivery and resource-overhead qualification. The one-pair, one-second CI
+smoke checks harness behavior only, never these release timing distributions.
+
+#### Idle lifecycle grid
 
 Use the separate `startup` scenario for idle daemon lifecycle comparisons:
 

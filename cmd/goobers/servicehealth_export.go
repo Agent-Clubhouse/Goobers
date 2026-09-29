@@ -66,7 +66,8 @@ func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *
 	}
 	cfg := telemetry.Config{
 		ServiceVersion: version.Get().Version, BuildCommit: version.Get().Commit,
-		Scrubber: journal.Chain(setup.SharedRegistry, journal.NewPatternScrubber()),
+		Scrubber:                journal.Chain(setup.SharedRegistry, journal.NewPatternScrubber()),
+		AzureMonitorReplayStart: setup.TelemetryReplayStart,
 	}
 	_, cfg.ResourceAttributes = telemetryInstanceIdentities(root)
 	if otlp.Enabled() {

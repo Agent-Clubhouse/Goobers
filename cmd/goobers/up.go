@@ -595,10 +595,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// has been rebuilt from ledger + liveness below.
 	claimRecoveryGate := localscheduler.NewRecoveryGate()
 	schedulerSetupStarted := time.Now()
+	// Keep queued uploads off the startup critical path. This signal belongs
+	// to this daemon only, including its independently initialized diagnostics.
+	// On failed startup the signal is never released; exporter shutdown
+	// cancels waiters and still makes its bounded final delivery attempt.
+	telemetryReplayStart := make(chan struct{})
 	setupOptions := []schedulerSetupOption{
 		withDesktopNotifications(notifications, stderr),
 		withStartupProgress(newSchedulerSetupProgress(stdout, schedulerSetupStarted, time.Now)),
 		withClaimRecoveryGate(claimRecoveryGate),
+		withTelemetryReplayStart(telemetryReplayStart),
 	}
 	buildSetup := buildSchedulerSetup
 	if *skipPreflight {
@@ -1796,6 +1802,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		tracker.completeBudget(time.Now())
 		ready.Store(true)
 		pf(stdout, "%s startup phase=ready status=done target=%q address=%s\n", startupTimestamp(), "api", apiServer.Address())
+		close(telemetryReplayStart)
 	}
 	// Now that the API is up and status/dashboard reads no longer block on
 	// it, run the broad retention sweep deferred above (#4373).
