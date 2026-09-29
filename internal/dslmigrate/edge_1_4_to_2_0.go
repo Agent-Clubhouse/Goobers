@@ -288,6 +288,9 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 		indent := strings.Repeat(" ", mapping.Column+1)
 		return sourceEdit{start: lineEnd, end: lineEnd, replacement: append(append([]byte{}, eol...), []byte(indent+line)...)}, nil
 	}
+	if edit, ok, err := insertAfterLastSingleLineScalarEdit(source, mapping, line, eol); err != nil || ok {
+		return edit, err
+	}
 	firstKey := mapping.Content[0]
 	if firstKey.Line < 1 || firstKey.Column < 1 {
 		return sourceEdit{}, fmt.Errorf("target mapping for %s has no source position", line)
@@ -300,6 +303,53 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 	insertion := append([]byte(line), eol...)
 	insertion = append(insertion, []byte(indent)...)
 	return sourceEdit{start: offset, end: offset, replacement: insertion}, nil
+}
+
+func insertAfterLastSingleLineScalarEdit(source []byte, mapping *yaml.Node, line string, eol []byte) (sourceEdit, bool, error) {
+	if len(mapping.Content) < 2 {
+		return sourceEdit{}, false, nil
+	}
+	lastKey := mapping.Content[len(mapping.Content)-2]
+	lastValue := mapping.Content[len(mapping.Content)-1]
+	if lastKey.Line < 1 || lastKey.Column < 1 || lastValue.Line < 1 {
+		return sourceEdit{}, false, nil
+	}
+	if lastValue.Kind != yaml.ScalarNode || lastValue.Line != lastKey.Line {
+		return sourceEdit{}, false, nil
+	}
+	if lastValue.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		return sourceEdit{}, false, nil
+	}
+	if (lastValue.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) != 0) && strings.Contains(lastValue.Value, "\n") {
+		return sourceEdit{}, false, nil
+	}
+	valueStart, err := sourceOffset(source, lastValue.Line, lastValue.Column)
+	if err != nil {
+		return sourceEdit{}, false, err
+	}
+	valueEnd, err := scalarEnd(source, valueStart, lastValue.Style)
+	if err != nil {
+		return sourceEdit{}, false, err
+	}
+	lineEnd, err := sourceLineEndOffset(source, lastValue.Line)
+	if err != nil {
+		return sourceEdit{}, false, err
+	}
+	if valueEnd > lineEnd {
+		return sourceEdit{}, false, nil
+	}
+	offset, hadLineBreak, err := sourceAfterLineOffset(source, lastValue.Line)
+	if err != nil {
+		return sourceEdit{}, false, err
+	}
+	indent := strings.Repeat(" ", lastKey.Column-1)
+	insertion := []byte(indent + line)
+	if hadLineBreak {
+		insertion = append(insertion, eol...)
+	} else {
+		insertion = append(append([]byte{}, eol...), insertion...)
+	}
+	return sourceEdit{start: offset, end: offset, replacement: insertion}, true, nil
 }
 
 func insertFlowMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (sourceEdit, error) {
@@ -330,4 +380,19 @@ func sourceLineEndOffset(source []byte, line int) (int, error) {
 		next++
 	}
 	return next, nil
+}
+
+func sourceAfterLineOffset(source []byte, line int) (int, bool, error) {
+	start, err := sourceOffset(source, line, 1)
+	if err != nil {
+		return 0, false, err
+	}
+	next := start
+	for next < len(source) && source[next] != '\n' {
+		next++
+	}
+	if next >= len(source) {
+		return len(source), false, nil
+	}
+	return next + 1, true, nil
 }

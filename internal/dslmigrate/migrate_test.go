@@ -150,8 +150,8 @@ spec:
     - name: ci
       evaluator: automated
       automated:
-        pollIntervalSeconds: 10
         check: ci-status
+        pollIntervalSeconds: 10
       branches:
         pass: ""
 `
