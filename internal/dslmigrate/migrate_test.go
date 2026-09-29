@@ -99,6 +99,75 @@ func TestMigratePinsUnsetPollInterval(t *testing.T) {
 	}
 }
 
+func TestMigrateTransformPreservesUnrelatedSourceBytes(t *testing.T) {
+	source := `# workflow docs must stay byte-stable
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4" # keep this comment
+
+metadata:
+  name: unpinned
+spec:
+  gaggle: golden
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      goal: >-
+        Keep this hand-wrapped text
+        on multiple source lines.
+      inputs:
+        kind: "ci-poll"
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+      automated:
+        check: ci-status
+      branches:
+        pass: ""
+`
+	want := `# workflow docs must stay byte-stable
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0" # keep this comment
+
+metadata:
+  name: unpinned
+spec:
+  gaggle: golden
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      goal: >-
+        Keep this hand-wrapped text
+        on multiple source lines.
+      inputs:
+        kind: "ci-poll"
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+      automated:
+        check: ci-status
+        pollIntervalSeconds: 10
+      branches:
+        pass: ""
+`
+
+	result, err := Migrate([]byte(source), "2.0")
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if result.After != want {
+		t.Fatalf("transform migration rewrote unrelated source bytes\nwant:\n%s\ngot:\n%s", want, result.After)
+	}
+	if len(result.Notes) != 1 || !strings.Contains(result.Notes[0], `gate "ci"`) {
+		t.Fatalf("Notes = %v, want one note naming gate \"ci\"", result.Notes)
+	}
+}
+
 func TestMigrateLeavesExplicitPositivePollIntervalUntouched(t *testing.T) {
 	result, err := Migrate([]byte(workflowWithPinnedCIPoll), "2.0")
 	if err != nil {

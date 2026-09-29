@@ -2,6 +2,7 @@ package dslmigrate
 
 import (
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -49,25 +50,49 @@ func applyV14ToV20(_ []byte, root *yaml.Node) (bool, []string, error) {
 	return changed, notes, nil
 }
 
+func applyV14ToV20SourcePreserving(source []byte, root *yaml.Node, versionNode *yaml.Node, to string) ([]byte, []string, error) {
+	versionEdit, err := versionPinEdit(source, versionNode, root, to)
+	if err != nil {
+		return nil, nil, err
+	}
+	edits := []sourceEdit{versionEdit}
+	var notes []string
+	gateEdited := map[*yaml.Node]bool{}
+	spec, _ := mapValue(root, "spec")
+	if spec != nil {
+		gatesByName := map[string]*yaml.Node{}
+		if gates, _ := mapValue(spec, "gates"); gates != nil {
+			for _, gate := range gates.Content {
+				if name, _ := mapValue(gate, "name"); name != nil {
+					gatesByName[name.Value] = gate
+				}
+			}
+		}
+		if tasks, _ := mapValue(spec, "tasks"); tasks != nil {
+			for _, task := range tasks.Content {
+				edit, note, ok, err := ciPollIntervalSourceEdit(source, task, gatesByName)
+				if err != nil {
+					return nil, nil, err
+				}
+				if !ok {
+					continue
+				}
+				gate, _ := ciPollTargetGate(task, gatesByName)
+				if gateEdited[gate] {
+					continue
+				}
+				gateEdited[gate] = true
+				edits = append(edits, edit)
+				notes = append(notes, note)
+			}
+		}
+	}
+	return applySourceEdits(source, edits), notes, nil
+}
+
 func pinCIPollInterval(task *yaml.Node, gatesByName map[string]*yaml.Node) (string, bool) {
-	inputs, _ := mapValue(task, "inputs")
-	if inputs == nil {
-		return "", false
-	}
-	kind, _ := mapValue(inputs, taskKindInput)
-	if kind == nil || kind.Value != ciPollTaskKind {
-		return "", false
-	}
-	next, _ := mapValue(task, "next")
-	if next == nil || next.Value == "" {
-		return "", false
-	}
-	gate, ok := gatesByName[next.Value]
-	if !ok {
-		return "", false
-	}
-	evaluator, _ := mapValue(gate, "evaluator")
-	if evaluator == nil || evaluator.Value != "automated" {
+	gate, note := ciPollTargetGate(task, gatesByName)
+	if gate == nil {
 		return "", false
 	}
 	automated, _ := mapValue(gate, "automated")
@@ -78,13 +103,167 @@ func pinCIPollInterval(task *yaml.Node, gatesByName map[string]*yaml.Node) (stri
 		return "", false
 	}
 	setScalar(automated, "pollIntervalSeconds", "10", "!!int")
+	return note, true
+}
+
+func ciPollTargetGate(task *yaml.Node, gatesByName map[string]*yaml.Node) (*yaml.Node, string) {
+	inputs, _ := mapValue(task, "inputs")
+	if inputs == nil {
+		return nil, ""
+	}
+	kind, _ := mapValue(inputs, taskKindInput)
+	if kind == nil || kind.Value != ciPollTaskKind {
+		return nil, ""
+	}
+	next, _ := mapValue(task, "next")
+	if next == nil || next.Value == "" {
+		return nil, ""
+	}
+	gate, ok := gatesByName[next.Value]
+	if !ok {
+		return nil, ""
+	}
+	evaluator, _ := mapValue(gate, "evaluator")
+	if evaluator == nil || evaluator.Value != "automated" {
+		return nil, ""
+	}
 	taskName, _ := mapValue(task, "name")
 	name := ciPollTaskKind
 	if taskName != nil {
 		name = taskName.Value
 	}
-	return fmt.Sprintf(
+	note := fmt.Sprintf(
 		"gate %q: pinned automated.pollIntervalSeconds: 10 explicitly — DSL 2.0's ci-poll input builder "+
 			"injects this default for task %q where DSL 1.4 left it unset", next.Value, name,
-	), true
+	)
+	return gate, note
+}
+
+func ciPollIntervalSourceEdit(source []byte, task *yaml.Node, gatesByName map[string]*yaml.Node) (sourceEdit, string, bool, error) {
+	gate, note := ciPollTargetGate(task, gatesByName)
+	if gate == nil {
+		return sourceEdit{}, "", false, nil
+	}
+	automated, _ := mapValue(gate, "automated")
+	if automated == nil {
+		return sourceEdit{}, "", false, nil
+	}
+	if poll, _ := mapValue(automated, "pollIntervalSeconds"); poll != nil {
+		if poll.Value != "" && poll.Value != "0" {
+			return sourceEdit{}, "", false, nil
+		}
+		edit, err := scalarReplacementEdit(source, poll, []byte("10"), "pollIntervalSeconds")
+		if err != nil {
+			return sourceEdit{}, "", false, err
+		}
+		return edit, note, true, nil
+	}
+	edit, err := insertMappingScalarEdit(source, automated, "pollIntervalSeconds: 10")
+	if err != nil {
+		return sourceEdit{}, "", false, err
+	}
+	return edit, note, true, nil
+}
+
+func scalarReplacementEdit(source []byte, node *yaml.Node, replacement []byte, field string) (sourceEdit, error) {
+	if node.Kind != yaml.ScalarNode || node.Line < 1 || node.Column < 1 {
+		return sourceEdit{}, fmt.Errorf("%s must be a scalar", field)
+	}
+	if node.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		return sourceEdit{}, fmt.Errorf("block-style %s is not supported for source-preserving migration", field)
+	}
+	if node.Style&yaml.TaggedStyle != 0 {
+		return sourceEdit{}, fmt.Errorf("tagged %s is not supported for source-preserving migration", field)
+	}
+	if node.Anchor != "" {
+		return sourceEdit{}, fmt.Errorf("anchored %s is not supported for source-preserving migration", field)
+	}
+	start, err := sourceOffset(source, node.Line, node.Column)
+	if err != nil {
+		return sourceEdit{}, err
+	}
+	end, err := scalarEnd(source, start, node.Style)
+	if err != nil {
+		return sourceEdit{}, err
+	}
+	return sourceEdit{start: start, end: end, replacement: replacement}, nil
+}
+
+func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (sourceEdit, error) {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return sourceEdit{}, fmt.Errorf("target mapping for %s is not a YAML mapping", line)
+	}
+	eol := sourceEOL(source)
+	if len(mapping.Content) == 0 {
+		if mapping.Line < 1 || mapping.Column < 1 {
+			return sourceEdit{}, fmt.Errorf("empty target mapping for %s has no source position", line)
+		}
+		lineEnd, err := sourceLineEndOffset(source, mapping.Line)
+		if err != nil {
+			return sourceEdit{}, err
+		}
+		indent := strings.Repeat(" ", mapping.Column+1)
+		return sourceEdit{start: lineEnd, end: lineEnd, replacement: append(append([]byte{}, eol...), []byte(indent+line)...)}, nil
+	}
+	lastLine := 0
+	for _, node := range mapping.Content {
+		if line := maxNodeLine(node); line > lastLine {
+			lastLine = line
+		}
+	}
+	if lastLine < 1 {
+		return sourceEdit{}, fmt.Errorf("target mapping for %s has no source position", line)
+	}
+	offset, hadLineBreak, err := sourceAfterLineOffset(source, lastLine)
+	if err != nil {
+		return sourceEdit{}, err
+	}
+	indent := strings.Repeat(" ", mapping.Content[0].Column-1)
+	insertion := []byte(indent + line)
+	if hadLineBreak {
+		insertion = append(insertion, eol...)
+	} else {
+		insertion = append(append([]byte{}, eol...), insertion...)
+	}
+	return sourceEdit{start: offset, end: offset, replacement: insertion}, nil
+}
+
+func maxNodeLine(node *yaml.Node) int {
+	if node == nil {
+		return 0
+	}
+	maxLine := node.Line
+	for _, child := range node.Content {
+		if line := maxNodeLine(child); line > maxLine {
+			maxLine = line
+		}
+	}
+	return maxLine
+}
+
+func sourceAfterLineOffset(source []byte, line int) (int, bool, error) {
+	start, err := sourceOffset(source, line, 1)
+	if err != nil {
+		return 0, false, err
+	}
+	next := start
+	for next < len(source) && source[next] != '\n' {
+		next++
+	}
+	if next >= len(source) {
+		return len(source), false, nil
+	}
+	return next + 1, true, nil
+}
+
+func sourceLineEndOffset(source []byte, line int) (int, error) {
+	start, err := sourceOffset(source, line, 1)
+	if err != nil {
+		return 0, err
+	}
+	next := start
+	for next < len(source) && source[next] != '\r' && source[next] != '\n' {
+		next++
+	}
+	return next, nil
 }
