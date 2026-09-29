@@ -679,6 +679,12 @@ func connectRewriteGaggleFile(path, owner, name string, replace bool) (bool, err
 	return true, nil
 }
 
+// connectRewriteGaggleDisplayName rewrites spec.displayName when it still
+// holds the repository-coordinate placeholder. Guided init (guidedGaggle in
+// internal/instance/guided.go) renders displayName from the placeholder
+// coordinates, so the embedded template defaults ("Example", "Quickstart",
+// "Starter") never reach a freshly initialized gaggle; any other value is a
+// user edit and is only replaced under --replace.
 func connectRewriteGaggleDisplayName(spec *yaml.Node, placeholder, target string, replace bool) bool {
 	node := yamlMapValue(spec, "displayName")
 	if node == nil || node.Value == target || (node.Value != placeholder && !replace) {
