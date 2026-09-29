@@ -700,7 +700,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			if copilotRemoteExportUnsupported(res) {
 				return PreflightInfo{}, copilotRemoteExportUnsupportedError(version)
 			}
-			return PreflightInfo{}, copilotAuthProbeError(ctx, authProbe, res, err)
+			return PreflightInfo{}, c.copilotAuthProbeError(ctx, authProbe, res, err)
 		}
 		if sessionTranscript != "" {
 			if err := verifyCopilotSessionTranscript(sessionTranscript); err != nil {
@@ -713,6 +713,18 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		}
 	}
 	return PreflightInfo{Version: version}, nil
+}
+
+func (c *CopilotAdapter) copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {
+	err := copilotAuthProbeError(ctx, probe, result, runErr)
+	if len(c.AuthProbeExtraArgs) == 0 {
+		return err
+	}
+	return fmt.Errorf(
+		"harness copilot preflight probe failed with configured runner.harnessPreflightArgs.copilot %q: %w; the installed CLI may no longer accept these flags — remove or update them in instance.yaml",
+		c.AuthProbeExtraArgs,
+		err,
+	)
 }
 
 func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {

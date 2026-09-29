@@ -189,6 +189,35 @@ func TestLauncherV2AuthProbeFailsClosed(t *testing.T) {
 	}
 }
 
+func TestLauncherV2RejectedPreflightArgNamesConfiguredHarnessPreflightArgs(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command:                 []string{program, preflightArgsLauncherArg},
+		RequireLauncherContract: true,
+		VersionArgs:             []string{"--version"},
+		AuthProbeExtraArgs:      []string{"--obsolete-preflight"},
+		Runner:                  ExecProcessRunner{},
+	}
+
+	_, err = adapter.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected rejected configured preflight argument")
+	}
+	for _, want := range []string{
+		"runner.harnessPreflightArgs.copilot",
+		"--obsolete-preflight",
+		"unknown flag: --obsolete-preflight",
+		"remove or update them in instance.yaml",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, missing %q", err, want)
+		}
+	}
+}
+
 func TestLauncherV1RetainsPromptSessionVerification(t *testing.T) {
 	program, err := os.Executable()
 	if err != nil {
