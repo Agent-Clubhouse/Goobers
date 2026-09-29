@@ -106,7 +106,7 @@ func TestAzureReplayIndexIndependentHandlesRespectClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(x.ready)
-	t.Cleanup(func() { _ = x.db.Close() })
+	t.Cleanup(func() { _ = x.closeDatabases() })
 	other := &azureReplaySpool{cfg: s.cfg, index: x, stream: "", now: time.Now, wake: make(chan struct{}, 1)}
 	if _, err = other.claimBatch(context.Background()); err == nil {
 		t.Fatal("second connection claimed in-flight file")
@@ -165,7 +165,7 @@ func TestAzureReplayIndexAuditRecoversUnchangedDirectoryStamp(t *testing.T) {
 	if err = other.open(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = other.db.Close() }()
+	defer func() { _ = other.closeDatabases() }()
 	var reopened int64
 	if err = other.db.QueryRowContext(t.Context(), `SELECT audited FROM reconciliation`).Scan(&reopened); err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestAzureReplayIndexV1AuditMigrationPreservesPayloads(t *testing.T) {
 	if err := other.open(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = other.db.Close() }()
+	defer func() { _ = other.closeDatabases() }()
 	var version int
 	if err := other.db.QueryRowContext(t.Context(), `SELECT version FROM schema_meta`).Scan(&version); err != nil || version != len(replayIndexMigrations) {
 		t.Fatalf("version=%d err=%v", version, err)

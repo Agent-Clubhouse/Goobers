@@ -37,6 +37,7 @@ type azureReplayIndex struct {
 	root         string
 	streams      []string
 	db           *sql.DB
+	statsDB      *sql.DB
 	ready        chan struct{}
 	cancel       context.CancelFunc
 	err          error
@@ -99,10 +100,8 @@ func (x *azureReplayIndex) initialize(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
-		if x.db != nil {
-			_ = x.db.Close()
-			x.db = nil
-		}
+		_ = x.closeDatabases()
+		x.db, x.statsDB = nil, nil
 		timer := time.NewTimer(time.Second)
 		select {
 		case <-timer.C:
@@ -127,19 +126,25 @@ func (x *azureReplayIndex) release(ctx context.Context) error {
 	}
 	select {
 	case <-x.ready:
-		if x.db != nil {
-			return x.db.Close()
-		}
+		return x.closeDatabases()
 	case <-ctx.Done():
 		go func() {
 			<-x.ready
-			if x.db != nil {
-				_ = x.db.Close()
-			}
+			_ = x.closeDatabases()
 		}()
 		return ctx.Err()
 	}
-	return nil
+}
+
+func (x *azureReplayIndex) closeDatabases() error {
+	var readerErr, writerErr error
+	if x.statsDB != nil {
+		readerErr = x.statsDB.Close()
+	}
+	if x.db != nil {
+		writerErr = x.db.Close()
+	}
+	return errors.Join(readerErr, writerErr)
 }
 
 func (x *azureReplayIndex) wait(ctx context.Context) error {
@@ -265,7 +270,20 @@ func (x *azureReplayIndex) open(ctx context.Context) error {
 	}
 	// A fresh manifest or changed directory is reconciled. Opening every short-
 	// lived CLI process must not rescan an already-current daemon manifest.
-	return x.transaction(ctx, func(tx *sql.Tx) error { return x.reconcile(ctx, tx, false) })
+	if err = x.transaction(ctx, func(tx *sql.Tx) error { return x.reconcile(ctx, tx, false) }); err != nil {
+		return err
+	}
+	// Durable publication and reconciliation can hold the sole writer connection
+	// across filesystem work. Read the last committed WAL state on a separate,
+	// bounded read-only connection, as the external inspector already does.
+	// Initialize it only after migrations and initial reconciliation complete.
+	// This does not change the writer, fsync, admission, or caller's stats budget.
+	x.statsDB, err = sql.Open("sqlite", sqliteuri.File(path)+"?mode=ro&_pragma=busy_timeout(50)")
+	if err != nil {
+		return err
+	}
+	x.statsDB.SetMaxOpenConns(1)
+	return x.statsDB.PingContext(ctx)
 }
 
 func (x *azureReplayIndex) transaction(ctx context.Context, f func(*sql.Tx) error) error {
@@ -490,10 +508,10 @@ func (x *azureReplayIndex) stats(ctx context.Context, stream string, now time.Ti
 	if err := x.wait(ctx); err != nil {
 		return AzureReplayStats{}, fmt.Errorf("replay accounting unavailable: %w", err)
 	}
-	return replayIndexStats(ctx, x.db, stream, now)
+	return replayIndexStats(ctx, x.statsDB, stream, now)
 }
 
-// A live root uses its shared connection; an external health command only
+// A live root uses its shared read-only pool; an external health command only
 // opens an existing manifest read-only. No scan or new exporter is started.
 func inspectReplayIndex(root string) (AzureReplayStats, bool) {
 	root, err := filepath.Abs(root)

@@ -99,9 +99,9 @@ func TestAzureReplayHealthBusyAccountingKeepsBacklogAndRecoversAfterDelivery(t *
 		t.Fatalf("unexpected initial warning: %+v", event)
 	}
 
-	// Hold the sole connection, rather than relying on nondeterministic load
-	// to overlap a writer with a health sample. This is not a storage failure.
-	conn, err := s.index.db.Conn(t.Context())
+	// Hold the health reader's sole connection to deterministically exhaust its
+	// own budget. Writer contention is covered separately and must not do this.
+	conn, err := s.index.statsDB.Conn(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestAzureReplayHealthBusyAccountingKeepsBacklogAndRecoversAfterDelivery(t *
 	case busy = <-done:
 	case <-time.After(2 * time.Second):
 		_ = conn.Close()
-		t.Fatal("health snapshot waited for the busy writer instead of its bounded deadline")
+		t.Fatal("health snapshot waited for the busy reader instead of its bounded deadline")
 	}
 	if busy.AccountingReady || busy.PendingRecords != before.PendingRecords || busy.PendingFiles != before.PendingFiles || busy.PendingBytes != before.PendingBytes {
 		t.Fatalf("unavailable accounting discarded the last known backlog: %+v", busy)
@@ -136,7 +136,7 @@ func TestAzureReplayHealthBusyAccountingKeepsBacklogAndRecoversAfterDelivery(t *
 	}
 	ready := s.stats()
 	if !ready.AccountingReady || ready.PendingRecords != 1 {
-		t.Fatalf("accounting did not become available after writer released: %+v", ready)
+		t.Fatalf("accounting did not become available after reader released: %+v", ready)
 	}
 	if event := state.sample(now.Add(20*time.Second), ready, replayLossCounters{}, s.cfg.maxBytes); event != nil && event.Status == "recovered" {
 		t.Fatalf("fresh accounting alone falsely proved delivery recovery: %+v", event)
