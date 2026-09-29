@@ -757,3 +757,52 @@ func TestApplyVerdictPreservesCacheHitVerdictDigestAndSourceRunID(t *testing.T) 
 		t.Fatalf("posted.SourceRunID = %q, want the original producer's run id preserved, not %q", posted.SourceRunID, runID)
 	}
 }
+
+// #6061: apply-verdict publishes an ordering-only needs-changes as "defer",
+// and the cache used to replay that published "defer" into the DSL 2.0 review
+// gate, which has no defer branch (GT-002 run failure, no model call). The
+// cache must hand the gate the reviewer outcome instead: needs-changes with the
+// same findings, so elect-lander and apply-verdict re-derive the deferral.
+func TestGatherSiblingContextReplaysPublishedDeferralAsNeedsChanges(t *testing.T) {
+	root, server, wantDigest := seedVerdictCacheFixture(t)
+	server.addComment(10, renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictDefer, ReasonCode: apiv1.VerdictReasonOrdering,
+		Rationale: "waits for sibling #11", Digest: wantDigest,
+		SourceRunID: "run-1", HeadSHA: "sha10head", BaseSHA: "shamainbase",
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityInfo, Message: "overlaps sibling PR #11",
+			Class: apiv1.FindingCrossPRBlocked, BlockingPRs: []int{11},
+		}},
+	}))
+
+	result := readSiblingContextResultAfterGather(t, root)
+	if result.CachedVerdictJSON == "" {
+		t.Fatal("cachedVerdictJson is empty, want the published deferral replayed as a gate outcome")
+	}
+	var got apiv1.Verdict
+	if err := json.Unmarshal([]byte(result.CachedVerdictJSON), &got); err != nil {
+		t.Fatalf("unmarshal cachedVerdictJson: %v", err)
+	}
+	if got.Decision != apiv1.VerdictNeedsChanges || got.ReasonCode != "" || got.Elected {
+		t.Fatalf("cached gate verdict = decision %q reason %q elected %v, want needs-changes with deferral fields cleared", got.Decision, got.ReasonCode, got.Elected)
+	}
+	if len(got.Findings) != 1 || got.Findings[0].Class != apiv1.FindingCrossPRBlocked || got.Digest != wantDigest || got.SourceRunID != "run-1" {
+		t.Fatalf("cached gate verdict = %+v, want the ordering finding and provenance preserved", got)
+	}
+}
+
+// #6061: a published escalation is not a review-gate outcome either; it is
+// never replayed, so the gate reviews afresh.
+func TestGatherSiblingContextDoesNotReplayPublishedEscalation(t *testing.T) {
+	root, server, wantDigest := seedVerdictCacheFixture(t)
+	server.addComment(10, renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictEscalate, ReasonCode: apiv1.VerdictReasonFindingOscillation,
+		Rationale: "finding-set oscillation", Digest: wantDigest,
+		SourceRunID: "run-1", HeadSHA: "sha10head", BaseSHA: "shamainbase",
+	}))
+
+	result := readSiblingContextResultAfterGather(t, root)
+	if result.CachedVerdictJSON != "" {
+		t.Fatalf("cachedVerdictJson = %q, want no replay of a published escalation", result.CachedVerdictJSON)
+	}
+}
