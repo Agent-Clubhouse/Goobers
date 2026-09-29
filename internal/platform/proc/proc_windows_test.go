@@ -4,6 +4,7 @@ package proc
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,6 +154,9 @@ func TestProcessTreeHelper(t *testing.T) {
 	pidMarker := os.Getenv("GOOBERS_PROC_HELPER_PID")
 	grandchildMarker := os.Getenv("GOOBERS_PROC_HELPER_GRANDCHILD")
 	switch role {
+	case "wsl":
+		runWSLProcessHelper(t, pidMarker)
+		return
 	case "marker":
 		if err := os.WriteFile(os.Getenv("GOOBERS_PROC_HELPER_MARKER"), []byte("started"), 0600); err != nil {
 			t.Fatal(err)
@@ -180,6 +184,35 @@ func TestProcessTreeHelper(t *testing.T) {
 		}
 	}
 	time.Sleep(90 * time.Second)
+}
+
+// runWSLProcessHelper keeps the real WSL launcher below a native test process.
+// PowerShell startup is not part of the process-containment contract; previous
+// failures exhausted readiness with that launcher alive and no PID or output.
+// Write milestones directly: testing.T buffers would be lost when the parent
+// deliberately terminates this helper before its test returns.
+func runWSLProcessHelper(t *testing.T, marker string) {
+	t.Helper()
+	_, _ = os.Stderr.WriteString("WSL helper: starting wsl.exe\n")
+	cmd := exec.Command("wsl.exe", "-e", "sh", "-c", "sleep 90")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start WSL launcher: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	_, _ = os.Stderr.WriteString("WSL helper: started launcher PID " + strconv.Itoa(cmd.Process.Pid) + "\n")
+	if err := os.WriteFile(marker, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
+		t.Fatalf("record WSL launcher PID: %v", err)
+	}
+	_, _ = os.Stderr.WriteString("WSL helper: recorded launcher PID\n")
+	// An early launcher exit is a setup failure, even if its exit code is zero.
+	// The parent must observe a live WSL subtree before testing termination.
+	err := cmd.Wait()
+	t.Fatalf("WSL launcher exited before tree termination: %v", err)
 }
 
 func TestKillTerminatesEscapedDescendants(t *testing.T) {
@@ -246,49 +279,90 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 		t.Skip("set GOOBERS_RUN_WSL_INTEGRATION_TEST=1 to run the disruptive WSL integration test")
 	}
 	if _, err := exec.LookPath("wsl.exe"); err != nil {
-		t.Skip("wsl.exe is not installed")
+		t.Fatalf("WSL integration was explicitly required but wsl.exe is unavailable: %v", err)
 	}
 
 	marker := filepath.Join(t.TempDir(), "wsl.pid")
-	cmd := exec.Command(
-		"powershell.exe",
-		"-NoLogo",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"$child = Start-Process wsl.exe -ArgumentList '-e','sh','-c','sleep 30' -WindowStyle Hidden -PassThru; Set-Content -LiteralPath $env:GOOBERS_WSL_PID -Value $child.Id; Start-Sleep -Seconds 30",
+	// Keep helper startup errors rather than reducing every setup failure to a
+	// missing PID. Read only after the launcher has stopped, and bound CI output.
+	launcherLogPath := filepath.Join(t.TempDir(), "wsl-launcher.log")
+	launcherLog, err := os.Create(launcherLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = launcherLog.Close()
+		if !t.Failed() {
+			return
+		}
+		log, openErr := os.Open(launcherLogPath)
+		if openErr != nil {
+			t.Logf("open WSL launcher diagnostics: %v", openErr)
+			return
+		}
+		defer func() { _ = log.Close() }()
+		data, readErr := io.ReadAll(io.LimitReader(log, 16*1024))
+		t.Logf("WSL launcher stdout/stderr (first 16 KiB, read error %v):\n%s", readErr, data)
+	})
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
+	cmd.Env = append(os.Environ(),
+		"GOOBERS_PROC_HELPER_ROLE=wsl",
+		"GOOBERS_PROC_HELPER_PID="+marker,
 	)
-	cmd.Env = append(os.Environ(), "GOOBERS_WSL_PID="+marker)
+	cmd.Stdout = launcherLog
+	cmd.Stderr = launcherLog
 	tree, err := Start(cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		_ = tree.Kill()
-		_ = cmd.Wait()
+		killErr := tree.Kill()
+		waitErr := cmd.Wait()
+		if t.Failed() {
+			t.Logf("WSL launcher cleanup: kill=%v, wait=%v", killErr, waitErr)
+		}
 	}()
 
 	var wslPID int
+	var markerData []byte
+	var markerErr error
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		data, readErr := os.ReadFile(marker)
-		if readErr == nil {
-			wslPID, err = strconv.Atoi(strings.TrimSpace(string(data)))
-			if err == nil {
+		markerData, markerErr = os.ReadFile(marker)
+		if markerErr == nil {
+			wslPID, markerErr = strconv.Atoi(strings.TrimSpace(string(markerData)))
+			if markerErr == nil && wslPID > 0 {
 				break
 			}
 		}
+		if !Alive(cmd.Process.Pid) {
+			t.Fatalf("WSL launcher %d exited before recording a valid PID: marker=%q, error=%v", cmd.Process.Pid, markerData, markerErr)
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if wslPID == 0 {
-		t.Fatal("WSL process did not record its pid")
+	if wslPID <= 0 {
+		t.Fatalf("WSL process did not record its pid within 10s: launcher=%d alive=%t, marker=%q, error=%v", cmd.Process.Pid, Alive(cmd.Process.Pid), markerData, markerErr)
 	}
 	if !Alive(wslPID) {
 		t.Fatalf("WSL process %d exited before tree termination", wslPID)
 	}
-	guestDescendants, snapshotErr := snapshotDescendants(wslPID)
-	if snapshotErr != nil {
-		t.Fatalf("snapshot WSL descendants: %v", snapshotErr)
+	// Starting wsl.exe and its brokered descendants are asynchronous. Wait for
+	// both within the original readiness deadline; do not rely on incidental
+	// PowerShell/marker overhead to give the WSL broker time to start.
+	var guestDescendants []processIdentity
+	for time.Now().Before(deadline) {
+		var snapshotErr error
+		guestDescendants, snapshotErr = snapshotDescendants(wslPID)
+		if snapshotErr != nil {
+			t.Fatalf("snapshot WSL descendants: %v", snapshotErr)
+		}
+		if len(guestDescendants) > 0 {
+			break
+		}
+		if !Alive(wslPID) {
+			t.Fatalf("WSL process %d exited before recording descendants", wslPID)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if len(guestDescendants) == 0 {
 		t.Fatal("WSL launcher did not retain a host or guest descendant")
