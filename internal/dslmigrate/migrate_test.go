@@ -2,6 +2,7 @@ package dslmigrate
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -288,6 +289,99 @@ func TestMigrateTransformPreservesMultilineAutomatedValues(t *testing.T) {
 			got := decodeWorkflow(t, result.After)
 			if got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
 				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
+			}
+		})
+	}
+}
+
+func TestMigrateTransformExistingPollIntervalUnsetAndExplicitValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name:   "block empty",
+			source: workflowWithAutomatedBlock("        pollIntervalSeconds:\n        check: ci-status\n"),
+			want:   workflowWithAutomatedBlock("        pollIntervalSeconds: 10\n        check: ci-status\n"),
+		},
+		{
+			name:   "block empty before comment",
+			source: workflowWithAutomatedBlock("        pollIntervalSeconds: # keep\n        check: ci-status\n"),
+			want:   workflowWithAutomatedBlock("        pollIntervalSeconds: 10 # keep\n        check: ci-status\n"),
+		},
+		{
+			name:   "block tilde null",
+			source: workflowWithAutomatedBlock("        pollIntervalSeconds: ~\n        check: ci-status\n"),
+			want:   workflowWithAutomatedBlock("        pollIntervalSeconds: 10\n        check: ci-status\n"),
+		},
+		{
+			name:   "block null literal",
+			source: workflowWithAutomatedBlock("        pollIntervalSeconds: null\n        check: ci-status\n"),
+			want:   workflowWithAutomatedBlock("        pollIntervalSeconds: 10\n        check: ci-status\n"),
+		},
+		{
+			name:   "flow empty before comma",
+			source: workflowWithAutomatedMapping("{pollIntervalSeconds: , check: ci-status}"),
+			want:   workflowWithAutomatedMapping("{pollIntervalSeconds: 10, check: ci-status}"),
+		},
+		{
+			name:   "flow empty only",
+			source: workflowWithAutomatedMapping("{pollIntervalSeconds:}"),
+			want:   workflowWithAutomatedMapping("{pollIntervalSeconds: 10}"),
+		},
+		{
+			name:   "flow null literal",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: null}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 10}"),
+		},
+		{
+			name:   "flow tilde null",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: ~}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 10}"),
+		},
+		{
+			name:   "block zero",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: 0\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: 10\n"),
+		},
+		{
+			name:   "flow zero",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 0}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 10}"),
+		},
+		{
+			name:   "negative stays explicit",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: -1\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: -1\n"),
+		},
+		{
+			name:   "non-numeric stays explicit",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: soon\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: soon\n"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := strings.Replace(test.want, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+
+			result, err := Migrate([]byte(test.source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("migration changed bytes beyond expected edits\nwant:\n%s\ngot:\n%s", want, result.After)
+			}
+			gotSem, err := parseSemanticYAML([]byte(result.After))
+			if err != nil {
+				t.Fatalf("parse migrated YAML: %v\n%s", err, result.After)
+			}
+			wantSem, err := expectedSemanticV14ToV20([]byte(test.source), "2.0")
+			if err != nil {
+				t.Fatalf("node-transform semantics: %v", err)
+			}
+			if !reflect.DeepEqual(gotSem, wantSem) {
+				t.Fatalf("source edit semantics differ from node transform\ngot:  %#v\nwant: %#v", gotSem, wantSem)
 			}
 		})
 	}

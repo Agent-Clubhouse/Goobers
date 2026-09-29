@@ -1,6 +1,7 @@
 package dslmigrate
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"reflect"
@@ -115,6 +116,7 @@ func sourceEditMatchesV14ToV20(source, edited []byte, to string) (bool, error) {
 }
 
 func expectedSemanticV14ToV20(source []byte, to string) (semanticYAML, error) {
+	source = normalizeValuelessFlowPollInterval(source)
 	var doc yaml.Node
 	if err := yaml.Unmarshal(source, &doc); err != nil {
 		return semanticYAML{}, fmt.Errorf("parse workflow for semantic check: %w", err)
@@ -128,6 +130,10 @@ func expectedSemanticV14ToV20(source []byte, to string) (semanticYAML, error) {
 	}
 	setScalar(root, "dslVersion", to, "!!str")
 	return semanticNode(root, ""), nil
+}
+
+func normalizeValuelessFlowPollInterval(source []byte) []byte {
+	return bytes.ReplaceAll(source, []byte("pollIntervalSeconds:}"), []byte("pollIntervalSeconds: }"))
 }
 
 type semanticYAML struct {
@@ -179,7 +185,7 @@ func pinCIPollInterval(task *yaml.Node, gatesByName map[string]*yaml.Node) (stri
 	if automated == nil {
 		return "", false
 	}
-	if poll, _ := mapValue(automated, "pollIntervalSeconds"); poll != nil && poll.Value != "" && poll.Value != "0" {
+	if poll, _ := mapValue(automated, "pollIntervalSeconds"); poll != nil && !isUnsetPollInterval(poll) {
 		return "", false
 	}
 	setScalar(automated, "pollIntervalSeconds", "10", "!!int")
@@ -228,11 +234,17 @@ func ciPollIntervalSourceEdit(source []byte, task *yaml.Node, gatesByName map[st
 	if automated == nil {
 		return sourceEdit{}, "", false, nil
 	}
-	if poll, _ := mapValue(automated, "pollIntervalSeconds"); poll != nil {
-		if poll.Value != "" && poll.Value != "0" {
+	if poll, pollIndex := mapValue(automated, "pollIntervalSeconds"); poll != nil {
+		if !isUnsetPollInterval(poll) {
 			return sourceEdit{}, "", false, nil
 		}
-		edit, err := scalarReplacementEdit(source, poll, []byte("10"), "pollIntervalSeconds")
+		var edit sourceEdit
+		var err error
+		if poll.Tag == "!!null" || poll.Value == "" {
+			edit, err = nullPollIntervalReplacementEdit(source, automated.Content[pollIndex-1], poll, []byte("10"))
+		} else {
+			edit, err = scalarReplacementEdit(source, poll, []byte("10"), "pollIntervalSeconds")
+		}
 		if err != nil {
 			return sourceEdit{}, "", false, err
 		}
@@ -243,6 +255,13 @@ func ciPollIntervalSourceEdit(source []byte, task *yaml.Node, gatesByName map[st
 		return sourceEdit{}, "", false, err
 	}
 	return edit, note, true, nil
+}
+
+func isUnsetPollInterval(node *yaml.Node) bool {
+	if node == nil {
+		return true
+	}
+	return node.Value == "" || node.Value == "0" || node.Tag == "!!null"
 }
 
 func scalarReplacementEdit(source []byte, node *yaml.Node, replacement []byte, field string) (sourceEdit, error) {
@@ -267,6 +286,54 @@ func scalarReplacementEdit(source []byte, node *yaml.Node, replacement []byte, f
 		return sourceEdit{}, err
 	}
 	return sourceEdit{start: start, end: end, replacement: replacement}, nil
+}
+
+func nullPollIntervalReplacementEdit(source []byte, key, value *yaml.Node, replacement []byte) (sourceEdit, error) {
+	if value.Value != "" {
+		return scalarReplacementEdit(source, value, replacement, "pollIntervalSeconds")
+	}
+	if key == nil || key.Line < 1 || key.Column < 1 {
+		return sourceEdit{}, errors.New("pollIntervalSeconds key has no source position")
+	}
+	lineEnd, err := sourceLineEndOffset(source, key.Line)
+	if err != nil {
+		return sourceEdit{}, err
+	}
+	keyStart, err := sourceOffset(source, key.Line, key.Column)
+	if err != nil {
+		return sourceEdit{}, err
+	}
+	searchEnd := lineEnd
+	if searchEnd < keyStart {
+		return sourceEdit{}, errors.New("pollIntervalSeconds key position is after its line end")
+	}
+	colonRel := bytes.IndexByte(source[keyStart:searchEnd], ':')
+	if colonRel < 0 {
+		return sourceEdit{}, errors.New("pollIntervalSeconds key has no colon on its source line")
+	}
+	colon := keyStart + colonRel
+	insert := colon + 1
+	for insert < lineEnd && (source[insert] == ' ' || source[insert] == '\t') {
+		insert++
+	}
+	if insert < lineEnd && source[insert] == '#' {
+		prefix := []byte{}
+		if insert == colon+1 {
+			prefix = []byte{' '}
+		}
+		return sourceEdit{start: insert, end: insert, replacement: append(append(prefix, replacement...), ' ')}, nil
+	}
+	if insert == colon+1 {
+		replacement = append([]byte{' '}, replacement...)
+	}
+	if value.Column > 0 {
+		valueStart, err := sourceOffset(source, value.Line, value.Column)
+		if err == nil && valueStart > colon && valueStart < lineEnd {
+			insert = valueStart
+			replacement = bytes.TrimLeft(replacement, " \t")
+		}
+	}
+	return sourceEdit{start: insert, end: insert, replacement: replacement}, nil
 }
 
 func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (sourceEdit, error) {
@@ -362,6 +429,19 @@ func insertFlowMappingScalarEdit(source []byte, mapping *yaml.Node, line string)
 	}
 	if start >= len(source) || source[start] != '{' {
 		return sourceEdit{}, fmt.Errorf("%w: flow target mapping for %s does not start at an opening brace", errSourcePreserveUnsupported, line)
+	}
+	closeRel := bytes.IndexByte(source[start+1:], '}')
+	if closeRel < 0 {
+		return sourceEdit{}, fmt.Errorf("%w: unterminated flow target mapping for %s", errSourcePreserveUnsupported, line)
+	}
+	closeOffset := start + 1 + closeRel
+	if strings.TrimSpace(string(source[start+1:closeOffset])) == "pollIntervalSeconds:" {
+		return sourceEdit{start: start + 1, end: closeOffset, replacement: []byte(line)}, nil
+	}
+	if len(mapping.Content) == 0 {
+		if strings.TrimSpace(string(source[start+1:closeOffset])) != "" {
+			return sourceEdit{start: start + 1, end: closeOffset, replacement: []byte(line)}, nil
+		}
 	}
 	replacement := []byte(line)
 	if len(mapping.Content) > 0 {
