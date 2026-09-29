@@ -122,3 +122,26 @@ func TestRunNoAPIFlagCanFollowWorkflow(t *testing.T) {
 		}
 	}
 }
+
+func TestRunWildcardTLSAutomaticallyUsesFileDelegation(t *testing.T) {
+	previousTimeout := triggerDelegationTimeout
+	triggerDelegationTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { triggerDelegationTimeout = previousTimeout })
+
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	configureWildcardTLSAPI(t, layout)
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	code, _, stderr := runArgs(t, "run", "default-implement", root)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "using same-root file delegation") || !strings.Contains(stderr, "timed out") {
+		t.Fatalf("stderr = %q, want explicit wildcard TLS fallback and delegation timeout", stderr)
+	}
+}

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,7 +14,79 @@ import (
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"go.yaml.in/yaml/v3"
 )
+
+func TestLocalDaemonAPIBaseRejectsWildcardTLSAddress(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	configureWildcardTLSAPI(t, layout)
+
+	_, err := localDaemonAPIBase(layout)
+	if !errors.Is(err, errWildcardTLSDaemonAPI) {
+		t.Fatalf("localDaemonAPIBase() error = %v, want wildcard TLS sentinel", err)
+	}
+}
+
+func configureWildcardTLSAPI(t *testing.T, layout instance.Layout) {
+	t.Helper()
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.API = instance.APIConfig{
+		Listen: "0.0.0.0:8080",
+		TLS:    &instance.APITLSConfig{CertFile: "/tls/server.crt", KeyFile: "/tls/server.key"},
+		Auth: &instance.APIAuthConfig{OIDC: &instance.OIDCAuthConfig{
+			Issuer:   "https://issuer.example",
+			Audience: "goobers",
+			Roles:    instance.OIDCRoleMapping{Operate: []string{"operator"}},
+		}},
+	}
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.ConfigFile(), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.SchedulerDir(), daemonAPIAddressFileName), []byte("[::]:8080\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWildcardDaemonAPIAddress(t *testing.T) {
+	for _, address := range []string{"0.0.0.0:8080", "[::]:8080", ":8080"} {
+		if !wildcardDaemonAPIAddress(address) {
+			t.Errorf("wildcardDaemonAPIAddress(%q) = false", address)
+		}
+	}
+	for _, address := range []string{"127.0.0.1:8080", "[::1]:8080", "daemon.example:8080"} {
+		if wildcardDaemonAPIAddress(address) {
+			t.Errorf("wildcardDaemonAPIAddress(%q) = true", address)
+		}
+	}
+}
+
+func TestCancelWildcardTLSSelectsFileDelegation(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	configureWildcardTLSAPI(t, layout)
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	var stderr bytes.Buffer
+	handled, fileFallback, code := tryLocalAPICancel(layout, "run-1", "", false, &bytes.Buffer{}, &stderr)
+	if handled || !fileFallback || code != 0 {
+		t.Fatalf("handled=%t fileFallback=%t code=%d stderr=%q", handled, fileFallback, code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "using same-root file delegation") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
 
 func TestRunCancelAutomaticallyUsesLocalAPI(t *testing.T) {
 	for _, fail := range []bool{false, true} {

@@ -37,6 +37,10 @@ func runLocalTriggerSubmission(ctx context.Context, layout instance.Layout, targ
 	}
 	endpoint, err := localDaemonAPIBase(layout)
 	if err != nil {
+		if errors.Is(err, errWildcardTLSDaemonAPI) && requestID == "" {
+			pf(stderr, "note: %v; using same-root file delegation\n", err)
+			return runDelegatedTrigger(ctx, layout, target, root, noWait, stdout, stderr)
+		}
 		pf(stderr, "error: resolve daemon API: %v; use --no-api for explicit file delegation\n", err)
 		return 2
 	}
