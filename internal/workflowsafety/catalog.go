@@ -56,31 +56,42 @@ func CommandEffects(t apiv1.Task) Effects {
 }
 
 func goobersCommandEffects(command string, args []string) Effects {
+	var effects Effects
 	switch command {
 	case "apply-verdict":
-		return verdictEffects(args)
+		effects = verdictEffects(args)
 	case "pr-select", "gather-pr-context", "gather-sibling-context", "update-behind-pr", "backlog-query":
-		return selectionEffects(command, args)
+		effects = selectionEffects(command, args)
 	case "push-branch", "push-remediated", "rebase-pr":
 		if len(args) == 0 {
-			return Effects{Known: true, Changes: true, CodeSubject: true}
+			effects = Effects{Known: true, Changes: true, CodeSubject: true}
 		}
-		return Effects{}
 	case "pr-claim":
 		if len(args) == 0 || slices.Equal(args, []string{"--release"}) {
-			return Effects{Known: true}
+			effects = Effects{Known: true}
 		}
-		return Effects{}
 	case "remediation-checkpoint":
-		if slices.Equal(args, []string{"--escalate"}) {
-			return Effects{Known: true, Parks: true}
-		}
-		return Effects{}
+		effects = remediationCheckpointEffects(args)
+	}
+	if effects.Known {
+		return effects
 	}
 	if builtincmd.Known(command) {
 		return Effects{Known: true}
 	}
 	return Effects{}
+}
+
+func remediationCheckpointEffects(args []string) Effects {
+	for i, arg := range args {
+		switch {
+		case arg == "--escalate" && i+1 < len(args) && args[i+1] != "":
+			return Effects{Known: true, Parks: true}
+		case strings.HasPrefix(arg, "--escalate=") && len(arg) > len("--escalate="):
+			return Effects{Known: true, Parks: true}
+		}
+	}
+	return Effects{Known: len(args) == 0 || knownFlagArgs(args, "budget", "escalation-outcome")}
 }
 
 func gitDiffEffects(cmd []string) Effects {
@@ -124,27 +135,40 @@ func selectionEffects(command string, args []string) Effects {
 			return Effects{Known: true, SelectsPR: true, NoWork: true, Changes: true}
 		}
 	case "backlog-query":
-		if len(args) == 0 || slices.Equal(args, []string{"--claim"}) {
+		if len(args) == 0 || flagEnabled(args, "claim") {
 			return Effects{Known: true, NoWork: true}
 		}
-		if backlogQueryArgsKnown(args) {
+		if knownFlagArgs(args, "read-only", "reconcile", "release", "resweep") {
 			return Effects{Known: true}
 		}
 	}
 	return Effects{}
 }
 
-func backlogQueryArgsKnown(args []string) bool {
+func flagEnabled(args []string, name string) bool {
 	for _, arg := range args {
-		switch arg {
-		case "--claim=false", "--claim=true",
-			"--reconcile", "--reconcile=false", "--reconcile=true",
-			"--release", "--release=false", "--release=true",
-			"--read-only", "--read-only=false", "--read-only=true":
-			continue
-		default:
-			return false
+		if arg == "--"+name || arg == "--"+name+"=true" {
+			return true
 		}
 	}
+	return false
+}
+
+func knownFlagArgs(args []string, names ...string) bool {
+	for _, arg := range args {
+		if knownFlagArg(arg, names) {
+			continue
+		}
+		return false
+	}
 	return len(args) > 0
+}
+
+func knownFlagArg(arg string, names []string) bool {
+	for _, name := range names {
+		if arg == "--"+name || strings.HasPrefix(arg, "--"+name+"=") {
+			return true
+		}
+	}
+	return false
 }

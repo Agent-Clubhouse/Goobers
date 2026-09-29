@@ -3,13 +3,18 @@ package workflowsafety
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/builtincmd"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/runcontrol"
 	wf "github.com/goobers/goobers/internal/workflow"
@@ -286,16 +291,18 @@ func TestSafetyBuiltInStageCommandsAreCovered(t *testing.T) {
 	}{
 		{name: "curation feedback", task: shell("check", "", "goobers", "backlog-health", "--feedback"), known: true},
 		{name: "backlog reconcile", task: shell("check", "", "goobers", "backlog-query", "--reconcile"), known: true},
+		{name: "backlog resweep claim", task: shell("check", "", "goobers", "backlog-query", "--claim", "--resweep"), known: true},
 		{name: "open pull request", task: shell("check", "", "goobers", "open-pr"), known: true},
 		{name: "close out issue", task: shell("check", "", "goobers", "issue-close-out"), known: true},
 		{name: "push branch remains subject-changing", task: shell("check", "", "goobers", "push-branch"), known: true, changes: true},
+		{name: "remediation escalation parks", task: shell("check", "", "goobers", "remediation-checkpoint", "--escalate", "review failed"), known: true},
 		{name: "ci poll kind", task: func() apiv1.Task {
 			task := shell("check", "", "goobers", "ci-poll")
 			task.Inputs = map[string]string{"kind": "ci-poll"}
 			return task
 		}(), known: true},
 		{name: "custom command", task: shell("check", "", "custom-evidence"), known: false},
-		{name: "malformed safety command", task: shell("check", "", "goobers", "apply-verdict", "--unknown"), known: false},
+		{name: "unmodeled built-in argv remains covered", task: shell("check", "", "goobers", "apply-verdict", "--unknown"), known: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := CommandEffects(tc.task)
@@ -303,6 +310,50 @@ func TestSafetyBuiltInStageCommandsAreCovered(t *testing.T) {
 				t.Fatalf("CommandEffects(%v) = %+v, want known=%v changes=%v", tc.task.Run.Command, got, tc.known, tc.changes)
 			}
 		})
+	}
+}
+
+func TestSafetyShippedBuiltInCommandsAreCovered(t *testing.T) {
+	roots := []string{
+		filepath.Join("..", "..", "reference-workflows", "gaggles"),
+		filepath.Join("..", "..", "config-examples", "gaggles"),
+		filepath.Join("..", "instance", "starter", "gaggles"),
+	}
+	var checked int
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || filepath.Base(filepath.Dir(path)) != "workflows" || filepath.Ext(path) != ".yaml" {
+				return nil
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			var workflow apiv1.Workflow
+			if err := yaml.Unmarshal(raw, &workflow); err != nil {
+				return fmt.Errorf("unmarshal %s: %w", path, err)
+			}
+			for _, task := range workflow.Spec.Tasks {
+				if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" ||
+					(!builtincmd.Known(task.Run.Command[1]) && task.Inputs["kind"] == "") {
+					continue
+				}
+				checked++
+				if effects := CommandEffects(task); !effects.Known {
+					t.Errorf("%s stage %q command %q would emit %s", path, task.Name, task.Run.Command, CoverageCode)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no shipped built-in stage commands checked")
 	}
 }
 
