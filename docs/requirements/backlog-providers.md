@@ -85,6 +85,13 @@ same abstraction, whose shape is unchanged.
 - **BL-033 (MUST):** *(V1)* The ADO provider MUST reach parity (work items + PRs +
   claiming markers) behind the same abstraction, with no change to workflow or goober
   definitions.
+  - *ADO ready-label timing:* a label's add/remove history (for example when
+    `goobers:ready` was added, which a claim records as `readyAt`) is read from
+    the work item's update history (`workItems/{id}/updates`, paged with
+    `$top`/`$skip`): each update that changes `System.Tags` is diffed old against
+    new, matching the label ignoring case, and timed by that update's
+    `System.ChangedDate`. A work item whose history reaches ADO's 10,000-revision
+    cap fails closed rather than returning a truncated history (`ADO-N21`).
 
 ### Triggering
 

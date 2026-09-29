@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -94,6 +95,192 @@ func TestADOClaimFailsWhenWrittenBreadcrumbIsNotVisible(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "not visible after write") {
 		t.Fatalf("ClaimWorkItem error = %v, want missing-breadcrumb failure", err)
+	}
+}
+
+const adoTestSelfID = "00000000-0000-0000-0000-0000000005e1"
+
+func handleADOTestConnectionData(t *testing.T, mux *http.ServeMux) {
+	t.Helper()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"authenticatedUser": map[string]interface{}{
+			"id": adoTestSelfID, "providerDisplayName": "Goobers Bot",
+		}})
+	})
+}
+
+type adoClaimFake struct {
+	mu       sync.Mutex
+	comments []map[string]interface{}
+	tags     string
+}
+
+func adoTestFirstWriterTags(existing, written string) string {
+	old := adoLabels(existing)
+	var out []string
+	for _, tag := range adoLabels(written) {
+		for _, have := range old {
+			if strings.EqualFold(have, tag) {
+				tag = have
+				break
+			}
+		}
+		if !adoContainsLabelFold(out, tag) {
+			out = append(out, tag)
+		}
+	}
+	return strings.Join(out, "; ")
+}
+
+func (f *adoClaimFake) seed(authorID, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.comments = append(f.comments, map[string]interface{}{
+		"commentId": len(f.comments) + 1,
+		"text":      text,
+		// A forger can pick any display name; only the id identifies them.
+		"createdBy": map[string]string{"id": authorID, "displayName": "Goobers Bot"},
+	})
+}
+
+func (f *adoClaimFake) server(t *testing.T, identity bool) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	if identity {
+		handleADOTestConnectionData(t, mux)
+	} else {
+		mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "unavailable", http.StatusUnauthorized)
+		})
+	}
+	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			f.mu.Lock()
+			comments := append([]map[string]interface{}(nil), f.comments...)
+			f.mu.Unlock()
+			writeJSON(t, w, map[string]interface{}{"comments": comments})
+		case http.MethodPost:
+			var body map[string]string
+			decodeJSON(t, r, &body)
+			f.seed(adoTestSelfID, body["text"])
+			writeJSON(t, w, map[string]interface{}{"commentId": 99, "text": body["text"]})
+		default:
+			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if r.Method == http.MethodPatch {
+			var ops []map[string]interface{}
+			decodeJSON(t, r, &ops)
+			for _, op := range ops {
+				if op["path"] == "/fields/System.Tags" {
+					value, _ := op["value"].(string)
+					f.tags = adoTestFirstWriterTags(f.tags, value)
+				}
+			}
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": 42, "rev": 1,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.State":        "New",
+				"System.Title":        "Claim candidate",
+				"System.Tags":         f.tags,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestADOReleaseWorkItemClaimRetiresEpochAndVisibleMarker pins ADO-N29:
+// releasing an ADO claim posts a release breadcrumb and clears the visible
+// claim label, ending the epoch so a later claimant is not stuck behind it.
+func TestADOReleaseWorkItemClaimRetiresEpochAndVisibleMarker(t *testing.T) {
+	fake := &adoClaimFake{tags: "goobers:approved; " + LabelClaimed}
+	fake.seed(adoTestSelfID, claimBreadcrumb("run-42"))
+	server := fake.server(t, true)
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Provider: ProviderADO, Name: "repo", Project: "project"}
+	released, err := provider.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "42",
+		RunID:      "run-42",
+	})
+	if err != nil {
+		t.Fatalf("ReleaseWorkItemClaim: %v", err)
+	}
+	fake.mu.Lock()
+	tags := fake.tags
+	fake.mu.Unlock()
+	if released.HasLabel(LabelClaimed) || strings.Contains(tags, LabelClaimed) {
+		t.Fatalf("released ADO item still has %q: item=%v raw tags=%q", LabelClaimed, released.Labels, tags)
+	}
+	winner, claimed, err := provider.adoClaimWinner(context.Background(), repo, "42")
+	if err != nil {
+		t.Fatalf("adoClaimWinner after release: %v", err)
+	}
+	if claimed || winner != "" {
+		t.Fatalf("ADO claim winner after release = (%q, %v), want no active epoch", winner, claimed)
+	}
+}
+
+// TestADOReleaseWorkItemClaimPreservesNewerOwner pins ADO-N29: a stale
+// terminal-cleanup release for a run that no longer owns the item must not
+// clobber a newer claimant's ownership, and must not write anything while
+// refusing.
+func TestADOReleaseWorkItemClaimPreservesNewerOwner(t *testing.T) {
+	comments := []map[string]interface{}{
+		{"commentId": 1, "text": claimBreadcrumb("old-run"), "createdBy": map[string]string{"id": adoTestSelfID}},
+		{"commentId": 2, "text": claimReleaseBreadcrumb("old-run"), "createdBy": map[string]string{"id": adoTestSelfID}},
+		{"commentId": 3, "text": claimBreadcrumb("new-run"), "createdBy": map[string]string{"id": adoTestSelfID}},
+	}
+	var mutations int
+
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	handleADOTestConnectionData(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations++
+		}
+		writeJSON(t, w, map[string]interface{}{"comments": comments})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations++
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": 42, "rev": 3,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "Reclaimed ADO item",
+				"System.State":        "Active",
+				"System.Tags":         LabelClaimed,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository: RepositoryRef{Provider: ProviderADO, Name: "repo", Project: "project"},
+		ID:         "42",
+		RunID:      "old-run",
+	})
+	if err == nil || !strings.Contains(err.Error(), `held by run "new-run"`) {
+		t.Fatalf("ReleaseWorkItemClaim error = %v, want newer-owner refusal", err)
+	}
+	if mutations != 0 {
+		t.Fatalf("newer-owner refusal performed %d provider mutation(s), want none", mutations)
 	}
 }
 
