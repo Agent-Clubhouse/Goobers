@@ -30,19 +30,7 @@ func buildTelemetryClient(
 	registry *journal.RegistryScrubber,
 	telemetryConfig instance.TelemetryConfig,
 	stores credentials.StoreResolver,
-) (*telemetry.Client, error) {
-	return buildTelemetryClientWithReplayStart(ctx, l, scrubber, registry, telemetryConfig, stores, nil)
-}
-
-// The daemon supplies its own readiness signal. One-shot callers retain
-// immediate replay through buildTelemetryClient; recording is never gated.
-func buildTelemetryClientWithReplayStart(
-	ctx context.Context,
-	l instance.Layout,
-	scrubber journal.Scrubber,
-	registry *journal.RegistryScrubber,
-	telemetryConfig instance.TelemetryConfig,
-	stores credentials.StoreResolver,
+	// Nil keeps one-shot setup immediate; the daemon supplies its readiness signal.
 	replayStart <-chan struct{},
 ) (*telemetry.Client, error) {
 	cfg := telemetry.Config{
