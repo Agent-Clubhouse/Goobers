@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
@@ -154,5 +155,33 @@ func TestAzureReplayHealthReaderFollowsSharedIndexLifetime(t *testing.T) {
 	stats, err := reopened.stats(t.Context(), "", time.Now())
 	if err != nil || !stats.AccountingReady {
 		t.Fatalf("reopened reader unavailable: stats=%+v err=%v", stats, err)
+	}
+}
+
+func TestAzureReplayHealthReaderRejectsFutureSchemaBeforeOpening(t *testing.T) {
+	root := t.TempDir()
+	writer := &azureReplayIndex{root: root, streams: []string{""}}
+	t.Cleanup(func() { _ = writer.closeDatabases() })
+	if err := writer.open(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	future := len(replayIndexMigrations) + 1
+	if _, err := writer.db.ExecContext(t.Context(), "UPDATE schema_meta SET version=?", future); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.closeDatabases(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := &azureReplayIndex{root: root, streams: []string{""}}
+	t.Cleanup(func() { _ = reopened.closeDatabases() })
+	if err := reopened.open(t.Context()); err == nil || !strings.Contains(err.Error(), "newer than this build supports") {
+		t.Fatalf("future schema was not rejected by writer policy: %v", err)
+	}
+	if reopened.statsDB != nil {
+		t.Fatal("read-only accounting pool opened before schema validation succeeded")
+	}
+	var version int
+	if err := reopened.db.QueryRowContext(t.Context(), "SELECT version FROM schema_meta").Scan(&version); err != nil || version != future {
+		t.Fatalf("failed open mutated future schema: version=%d err=%v", version, err)
 	}
 }
