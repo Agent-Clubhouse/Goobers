@@ -17,15 +17,35 @@ func remediationPullRequests(
 	base, headPrefix string,
 	target remediationTarget,
 ) ([]providers.PullRequestSummary, error) {
-	if !target.targeted {
-		return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-			Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
-		})
+	return remediationPullRequestCandidates(ctx, repo, base, headPrefix, target, provider.ListPullRequests, func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
+		return provider.GetPullRequest(ctx, repo, id)
+	})
+}
+
+func remediationPullRequestCandidates(
+	ctx context.Context,
+	repo providers.RepositoryRef,
+	base, headPrefix string,
+	target remediationTarget,
+	list func(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error),
+	get func(context.Context, string) (providers.PullRequestSummary, error),
+) ([]providers.PullRequestSummary, error) {
+	prs, err := list(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
+	})
+	if err != nil || !target.targeted {
+		return prs, err
 	}
-	pr, err := provider.GetPullRequest(ctx, repo, fmt.Sprint(target.number))
+	filtered := prs[:0]
+	for _, candidate := range prs {
+		if candidate.Number != target.number {
+			filtered = append(filtered, candidate)
+		}
+	}
+	pr, err := get(ctx, fmt.Sprint(target.number))
 	if err != nil {
 		if providers.IsNotFoundError(err) {
-			return nil, nil
+			return filtered, nil
 		}
 		return nil, fmt.Errorf("read targeted PR #%d: %w", target.number, err)
 	}
@@ -33,9 +53,9 @@ func remediationPullRequests(
 		return nil, fmt.Errorf("targeted PR lookup returned #%d, want #%d", pr.Number, target.number)
 	}
 	if pr.Merged || !strings.EqualFold(pr.State, "open") || (base != "" && pr.Base != base) {
-		return nil, nil
+		return filtered, nil
 	}
-	return []providers.PullRequestSummary{pr}, nil
+	return append(filtered, pr), nil
 }
 
 // remediationProvider is the narrow surface the pr-remediation lane needs.

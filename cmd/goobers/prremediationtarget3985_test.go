@@ -214,6 +214,35 @@ func TestUpdateBehindPRTargetBypassesBroadHeadPrefix(t *testing.T) {
 	}
 }
 
+func TestUpdateBehindPRTargetPreservesBroadEligibilityContext(t *testing.T) {
+	mergeable := true
+	state := &updateBehindServer{
+		mergeable:               &mergeable,
+		includeEarlierCandidate: true,
+		targetHead:              "backprop/fix-reviewed-pr",
+	}
+	root, workspace := setupUpdateBehindPRTest(t, state)
+	t.Setenv(executor.TriggerRefEnvVar, remediationTriggerRefFor(55))
+
+	code, stdout, stderr := runArgs(t, "update-behind-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "targeted PR #55 does not need remediation this cycle") {
+		t.Fatalf("stdout = %q, want uncrowned behind-base target refused in a multi-PR queue", stdout)
+	}
+	if state.updateCalls != 0 {
+		t.Fatalf("update-branch calls = %d, want 0", state.updateCalls)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "update-behind-result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"noWork":true`) {
+		t.Fatalf("result = %s, want explicit no-work", data)
+	}
+}
+
 // TestUpdateBehindPRRefusesUnselectableTarget covers the fail-closed half:
 // a targeted PR that is ineligible, or absent from the lane's scope entirely,
 // ends the run as an explicit no-work naming the reason. It must never fall
@@ -537,7 +566,9 @@ func TestGatherPRContextTargetBypassesBroadHeadPrefix(t *testing.T) {
 	adapter := gatherPRContextAdapter{
 		list: func(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error) {
 			listCalled = true
-			return nil, nil
+			return []providers.PullRequestSummary{{
+				Number: 70, State: "open", Base: "main", Head: "goobers/implementation/other",
+			}}, nil
 		},
 		get: func(_ context.Context, id string) (providers.PullRequestSummary, error) {
 			if id != "71" {
@@ -552,8 +583,8 @@ func TestGatherPRContextTargetBypassesBroadHeadPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if listCalled || len(prs) != 1 || prs[0].Head != "backprop/fix-reviewed-pr" {
-		t.Fatalf("listCalled = %t, prs = %+v, want exact targeted backprop PR", listCalled, prs)
+	if !listCalled || len(prs) != 2 || prs[1].Head != "backprop/fix-reviewed-pr" {
+		t.Fatalf("listCalled = %t, prs = %+v, want broad context plus exact targeted backprop PR", listCalled, prs)
 	}
 }
 

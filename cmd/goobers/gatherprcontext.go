@@ -335,23 +335,7 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 	return writeGatherPRContextResult(selected, behind, gatherPRVerdict(root, repo, selected.Number, comments, author), comments, stdout, stderr)
 }
 func gatherPRContextPullRequests(ctx context.Context, a gatherPRContextAdapter, repo providers.RepositoryRef, base, prefix string, target remediationTarget) ([]providers.PullRequestSummary, error) {
-	if !target.targeted {
-		return a.list(ctx, providers.ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: prefix, SkipCheckState: true})
-	}
-	pr, err := a.get(ctx, strconv.Itoa(target.number))
-	if err != nil {
-		if providers.IsNotFoundError(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read targeted PR #%d: %w", target.number, err)
-	}
-	if pr.Number != target.number {
-		return nil, fmt.Errorf("targeted PR lookup returned #%d, want #%d", pr.Number, target.number)
-	}
-	if pr.Merged || !strings.EqualFold(pr.State, "open") || (base != "" && pr.Base != base) {
-		return nil, nil
-	}
-	return []providers.PullRequestSummary{pr}, nil
+	return remediationPullRequestCandidates(ctx, repo, base, prefix, target, a.list, a.get)
 }
 func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter, ctx context.Context, pr providers.PullRequestSummary, comments []providers.Comment, stdout, stderr io.Writer) (bool, int) {
 	state, prior, ok := latestRemediationStateForPR(pr.Body, comments)
