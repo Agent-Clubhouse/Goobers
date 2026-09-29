@@ -635,7 +635,8 @@ func connectRewriteGaggleFile(path, owner, name string, replace bool) (bool, err
 		return false, fmt.Errorf("no spec mapping")
 	}
 
-	changed := false
+	targetDisplayName := owner + "/" + name
+	changed := connectRewriteGaggleDisplayName(spec, connectPlaceholderOwner+"/"+connectPlaceholderName, targetDisplayName, replace)
 	if project := yamlMapValue(spec, "project"); project != nil {
 		ownerNode := yamlMapValue(project, "owner")
 		nameNode := yamlMapValue(project, "name")
@@ -676,6 +677,15 @@ func connectRewriteGaggleFile(path, owner, name string, replace bool) (bool, err
 		return false, err
 	}
 	return true, nil
+}
+
+func connectRewriteGaggleDisplayName(spec *yaml.Node, placeholder, target string, replace bool) bool {
+	node := yamlMapValue(spec, "displayName")
+	if node == nil || node.Value == target || (node.Value != placeholder && !replace) {
+		return false
+	}
+	node.Value = target
+	return true
 }
 
 // yamlMapValue returns the value node for key in a yaml.v3 mapping node.
