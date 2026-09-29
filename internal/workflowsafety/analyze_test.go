@@ -302,7 +302,8 @@ func TestSafetyBuiltInStageCommandsAreCovered(t *testing.T) {
 			return task
 		}(), known: true},
 		{name: "custom command", task: shell("check", "", "custom-evidence"), known: false},
-		{name: "unmodeled built-in argv remains covered", task: shell("check", "", "goobers", "apply-verdict", "--unknown"), known: true},
+		{name: "unmodeled built-in valid argv remains covered", task: shell("check", "", "goobers", "docs-churn", "--since", "168h", "--buffer-multiplier", "3"), known: true},
+		{name: "unmodeled built-in invalid argv remains unknown", task: shell("check", "", "goobers", "apply-verdict", "--unknown"), known: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := CommandEffects(tc.task)

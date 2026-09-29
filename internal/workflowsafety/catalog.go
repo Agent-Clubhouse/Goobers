@@ -29,6 +29,27 @@ type Effects struct {
 	Parks             bool
 }
 
+type flagKind uint8
+
+const (
+	boolFlag flagKind = iota
+	valueFlag
+)
+
+var builtinFlagShapes = map[string]map[string]flagKind{
+	"apply-verdict":          {"gate": valueFlag},
+	"backlog-health":         {"feedback": boolFlag},
+	"backlog-query":          {"debug": boolFlag, "read-only": boolFlag, "claim": boolFlag, "resweep": boolFlag, "reconcile": boolFlag, "release": boolFlag},
+	"docs-churn":             {"since": valueFlag, "buffer-multiplier": valueFlag},
+	"gather-sibling-context": {"no-verdict-cache": boolFlag},
+	"remediation-checkpoint": {"budget": valueFlag, "escalate": valueFlag, "escalation-outcome": valueFlag},
+	"respond-to-findings":    {"check": boolFlag},
+	"security-alerts-query":  {"source": valueFlag, "ref": valueFlag, "severity": valueFlag, "max-results": valueFlag},
+	"self" + "-update":       {"include-prerelease": boolFlag},
+	"telemetry-query":        {"window": valueFlag, "workflow": valueFlag, "aggregate": valueFlag, "threshold": valueFlag, "format": valueFlag, "learning-action": valueFlag},
+	"validate":               {"source-tree": valueFlag},
+}
+
 // CommandEffects deliberately recognizes argv, never task names, shell text,
 // prompts, or capability grants.
 func CommandEffects(t apiv1.Task) Effects {
@@ -76,22 +97,64 @@ func goobersCommandEffects(command string, args []string) Effects {
 	if effects.Known {
 		return effects
 	}
-	if builtincmd.Known(command) {
+	if validBuiltInInvocation(command, args) {
 		return Effects{Known: true}
 	}
 	return Effects{}
 }
 
 func remediationCheckpointEffects(args []string) Effects {
-	for i, arg := range args {
+	for _, arg := range args {
 		switch {
-		case arg == "--escalate" && i+1 < len(args) && args[i+1] != "":
+		case arg == "--escalate":
 			return Effects{Known: true, Parks: true}
 		case strings.HasPrefix(arg, "--escalate=") && len(arg) > len("--escalate="):
 			return Effects{Known: true, Parks: true}
 		}
 	}
 	return Effects{Known: len(args) == 0 || knownFlagArgs(args, "budget", "escalation-outcome")}
+}
+
+func validBuiltInInvocation(command string, args []string) bool {
+	if !builtincmd.Known(command) {
+		return false
+	}
+	if len(args) == 0 {
+		return true
+	}
+	shape, ok := builtinFlagShapes[command]
+	if !ok {
+		return false
+	}
+	return flagsMatchShape(args, shape)
+}
+
+func flagsMatchShape(args []string, shape map[string]flagKind) bool {
+	for i := 0; i < len(args); i++ {
+		name, hasInlineValue, ok := splitLongFlag(args[i])
+		if !ok {
+			return false
+		}
+		kind, ok := shape[name]
+		if !ok {
+			return false
+		}
+		if kind == valueFlag && !hasInlineValue {
+			i++
+			if i >= len(args) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func splitLongFlag(arg string) (string, bool, bool) {
+	if !strings.HasPrefix(arg, "--") || arg == "--" {
+		return "", false, false
+	}
+	name, value, hasValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+	return name, value != "" || hasValue, name != ""
 }
 
 func gitDiffEffects(cmd []string) Effects {
