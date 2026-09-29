@@ -52,12 +52,15 @@ func CommandEffects(t apiv1.Task) Effects {
 	if len(cmd) < 2 || cmd[0] != "goobers" {
 		return Effects{}
 	}
-	args := cmd[2:]
-	switch cmd[1] {
+	return goobersCommandEffects(cmd[1], cmd[2:])
+}
+
+func goobersCommandEffects(command string, args []string) Effects {
+	switch command {
 	case "apply-verdict":
 		return verdictEffects(args)
 	case "pr-select", "gather-pr-context", "gather-sibling-context", "update-behind-pr", "backlog-query":
-		return selectionEffects(cmd[1], args)
+		return selectionEffects(command, args)
 	case "push-branch", "push-remediated", "rebase-pr":
 		if len(args) == 0 {
 			return Effects{Known: true, Changes: true, CodeSubject: true}
@@ -74,7 +77,7 @@ func CommandEffects(t apiv1.Task) Effects {
 		}
 		return Effects{}
 	}
-	if builtincmd.Known(cmd[1]) {
+	if builtincmd.Known(command) {
 		return Effects{Known: true}
 	}
 	return Effects{}
