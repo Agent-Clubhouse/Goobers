@@ -336,15 +336,73 @@ func decoratedScalarReplacementEdit(source []byte, node *yaml.Node, replacement 
 	if start > lineEnd {
 		return sourceEdit{}, fmt.Errorf("%s source position is after its line end", field)
 	}
-	line := source[start:lineEnd]
-	token := []byte(node.Value)
-	tokenStartRel := bytes.LastIndex(line, token)
-	if len(token) == 0 || tokenStartRel < 0 {
-		return sourceEdit{}, fmt.Errorf("%s value token %q was not found on its source line", field, node.Value)
+	tokenStart, tokenEnd, err := decoratedScalarTokenSpan(source, start, lineEnd, node, field)
+	if err != nil {
+		return sourceEdit{}, err
 	}
-	tokenStart := start + tokenStartRel
-	tokenEnd := tokenStart + len(token)
 	return sourceEdit{start: tokenStart, end: tokenEnd, replacement: replacement}, nil
+}
+
+func decoratedScalarTokenSpan(source []byte, start, lineEnd int, node *yaml.Node, field string) (int, int, error) {
+	pos := start
+	for pos < lineEnd {
+		pos = skipInlineYAMLSpaces(source, pos, lineEnd)
+		if pos >= lineEnd || source[pos] == '#' || source[pos] == ',' || source[pos] == '}' || source[pos] == ']' {
+			return 0, 0, fmt.Errorf("%s value token %q was not found before line/comment end", field, node.Value)
+		}
+		if source[pos] == '!' || source[pos] == '&' {
+			next := yamlTokenEnd(source, pos, lineEnd)
+			if next <= pos {
+				return 0, 0, fmt.Errorf("%s decoration token has no end", field)
+			}
+			pos = next
+			continue
+		}
+		end, err := scalarTokenEnd(source, pos, lineEnd)
+		if err != nil {
+			return 0, 0, err
+		}
+		return pos, end, nil
+	}
+	return 0, 0, fmt.Errorf("%s value token %q was not found", field, node.Value)
+}
+
+func skipInlineYAMLSpaces(source []byte, pos, limit int) int {
+	for pos < limit && (source[pos] == ' ' || source[pos] == '\t') {
+		pos++
+	}
+	return pos
+}
+
+func yamlTokenEnd(source []byte, pos, limit int) int {
+	for pos < limit && !plainScalarDelimiter(source[pos]) {
+		pos++
+	}
+	return pos
+}
+
+func scalarTokenEnd(source []byte, pos, limit int) (int, error) {
+	if pos >= limit {
+		return 0, errors.New("scalar token has no start")
+	}
+	if source[pos] == '"' || source[pos] == '\'' {
+		end, err := scalarEnd(source, pos, yamlStyleForQuote(source[pos]))
+		if err != nil {
+			return 0, err
+		}
+		if end > limit {
+			return 0, errors.New("quoted scalar token crosses the source line")
+		}
+		return end, nil
+	}
+	return yamlTokenEnd(source, pos, limit), nil
+}
+
+func yamlStyleForQuote(quote byte) yaml.Style {
+	if quote == '"' {
+		return yaml.DoubleQuotedStyle
+	}
+	return yaml.SingleQuotedStyle
 }
 
 func nullPollIntervalReplacementEdit(source []byte, key, value *yaml.Node, replacement []byte) (sourceEdit, error) {

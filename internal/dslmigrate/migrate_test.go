@@ -351,9 +351,24 @@ func TestMigrateTransformExistingPollIntervalUnsetAndExplicitValues(t *testing.T
 			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 10\n"),
 		},
 		{
+			name:   "block tagged zero with repeated comment value",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 0 # 0 means default\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 10 # 0 means default\n"),
+		},
+		{
+			name:   "block tagged quoted zero",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int \"0\" # 0 means default\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 10 # 0 means default\n"),
+		},
+		{
 			name:   "block anchored zero",
 			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 0\n"),
 			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 10\n"),
+		},
+		{
+			name:   "block anchored zero with repeated comment value",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 0 # 0 means default\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 10 # 0 means default\n"),
 		},
 		{
 			name:   "flow zero",
@@ -366,9 +381,24 @@ func TestMigrateTransformExistingPollIntervalUnsetAndExplicitValues(t *testing.T
 			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 10}"),
 		},
 		{
+			name:   "flow tagged zero with repeated comment value",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 0 # 0 means default\n      }"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 10 # 0 means default\n      }"),
+		},
+		{
+			name:   "flow tagged quoted zero",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int \"0\" # 0 means default\n      }"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 10 # 0 means default\n      }"),
+		},
+		{
 			name:   "flow anchored zero",
 			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 0}"),
 			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 10}"),
+		},
+		{
+			name:   "flow anchored zero with repeated comment value",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 0 # 0 means default\n      }"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 10 # 0 means default\n      }"),
 		},
 		{
 			name:   "negative stays explicit",
