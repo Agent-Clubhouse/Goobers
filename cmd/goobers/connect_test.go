@@ -181,6 +181,100 @@ func TestConnectReplacesPlaceholdersQuickstart(t *testing.T) {
 	}
 }
 
+func TestConnectRewritesGitHubPlaceholderDisplayName(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "github")
+	code, _, stderr := runArgs(t, "init", "--template=standard", "--ci-command=[\"make\",\"test\"]", "--required-capabilities=go@1.26", root)
+	if code != 0 {
+		t.Fatalf("init: %d %s", code, stderr)
+	}
+	code, _, stderr = runArgs(t, "connect", "contoso/widgets", root)
+	if code != 0 {
+		t.Fatalf("connect: %d %s", code, stderr)
+	}
+	gaggleFile := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	gaggleData, err := os.ReadFile(gaggleFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(gaggleData)
+	if got := connectTestGaggleDisplayName(t, gaggleFile); got != "contoso/widgets" || strings.Contains(text, "your-org/your-repo") {
+		t.Fatalf("gaggle displayName not rewritten:\n%s", text)
+	}
+	var out strings.Builder
+	if code := runValidate([]string{root}, &out, &out); code != 0 || strings.Contains(out.String(), placeholderFindingCode) {
+		t.Fatalf("validate after connect: code=%d output=%s", code, out.String())
+	}
+}
+
+func TestConnectPreservesCustomGitHubDisplayNameUnlessReplace(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "github")
+	code, _, stderr := runArgs(t, "init", "--template=standard", "--ci-command=[\"make\",\"test\"]", "--required-capabilities=go@1.26", root)
+	if code != 0 {
+		t.Fatalf("init: %d %s", code, stderr)
+	}
+	gaggleFile := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	connectTestSetGaggleDisplayName(t, gaggleFile, "Custom widgets")
+	code, _, stderr = runArgs(t, "connect", "contoso/widgets", root)
+	if code != 0 {
+		t.Fatalf("connect: %d %s", code, stderr)
+	}
+	connected, err := os.ReadFile(gaggleFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := connectTestGaggleDisplayName(t, gaggleFile); got != "Custom widgets" {
+		t.Fatalf("connect without --replace rewrote custom displayName:\n%s", connected)
+	}
+	code, _, stderr = runArgs(t, "connect", "fabrikam/gears", "--replace", root)
+	if code != 0 {
+		t.Fatalf("connect --replace: %d %s", code, stderr)
+	}
+	replaced, err := os.ReadFile(gaggleFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := connectTestGaggleDisplayName(t, gaggleFile); got != "fabrikam/gears" {
+		t.Fatalf("connect --replace did not rewrite displayName:\n%s", replaced)
+	}
+}
+
+func connectTestGaggleDisplayName(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "displayName:") {
+			value := strings.TrimSpace(strings.TrimPrefix(trimmed, "displayName:"))
+			return strings.Trim(value, `"`)
+		}
+	}
+	t.Fatalf("displayName not found in %s:\n%s", path, data)
+	return ""
+}
+
+func connectTestSetGaggleDisplayName(t *testing.T, path, value string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		if strings.HasPrefix(strings.TrimSpace(line), "displayName:") {
+			lines[i] = indent + `displayName: "` + value + `"`
+			if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatalf("displayName not found in %s:\n%s", path, data)
+}
+
 func TestConnectIdempotentRerun(t *testing.T) {
 	root := connectTestInstance(t, "quickstart")
 	if code, _, stderr := runArgs(t, "connect", "acme/web", root); code != 0 {
