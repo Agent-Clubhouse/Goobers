@@ -34,6 +34,12 @@ type journalCursor struct {
 }
 
 func openJournalCursorStore(ctx context.Context, root string, since time.Time) (*sql.DB, time.Time, error) {
+	// #6058: sqliteuri.File requires an absolute path; a relative spool root
+	// would resolve to the filesystem root and the store could never open.
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, time.Time{}, err
 	}
