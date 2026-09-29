@@ -116,7 +116,11 @@ func sourceEditMatchesV14ToV20(source, edited []byte, to string) (bool, error) {
 }
 
 func expectedSemanticV14ToV20(source []byte, to string) (semanticYAML, error) {
-	source = normalizeValuelessFlowPollInterval(source)
+	var normalizeErr error
+	source = normalizeValuelessFlowPollInterval(source, &normalizeErr)
+	if normalizeErr != nil {
+		return semanticYAML{}, normalizeErr
+	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(source, &doc); err != nil {
 		return semanticYAML{}, fmt.Errorf("parse workflow for semantic check: %w", err)
@@ -132,8 +136,47 @@ func expectedSemanticV14ToV20(source []byte, to string) (semanticYAML, error) {
 	return semanticNode(root, ""), nil
 }
 
-func normalizeValuelessFlowPollInterval(source []byte) []byte {
-	return bytes.ReplaceAll(source, []byte("pollIntervalSeconds:}"), []byte("pollIntervalSeconds: }"))
+func normalizeValuelessFlowPollInterval(source []byte, outErr *error) []byte {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(source, &doc); err != nil {
+		// Leave parse errors to the caller's real parse path.
+		return source
+	}
+	var edits []sourceEdit
+	collectValuelessFlowPollIntervalEdits(source, documentRoot(&doc), &edits, outErr)
+	if outErr != nil && *outErr != nil {
+		return source
+	}
+	if len(edits) == 0 {
+		return source
+	}
+	return applySourceEdits(source, edits)
+}
+
+func collectValuelessFlowPollIntervalEdits(source []byte, node *yaml.Node, edits *[]sourceEdit, outErr *error) {
+	if node == nil || (outErr != nil && *outErr != nil) {
+		return
+	}
+	if node.Kind == yaml.MappingNode && node.Style&yaml.FlowStyle != 0 && node.Line > 0 && node.Column > 0 {
+		start, err := sourceOffset(source, node.Line, node.Column)
+		if err != nil {
+			if outErr != nil {
+				*outErr = err
+			}
+			return
+		}
+		if start < len(source) && source[start] == '{' {
+			if closeRel := bytes.IndexByte(source[start+1:], '}'); closeRel >= 0 {
+				closeOffset := start + 1 + closeRel
+				if strings.TrimSpace(string(source[start+1:closeOffset])) == "pollIntervalSeconds:" {
+					*edits = append(*edits, sourceEdit{start: closeOffset, end: closeOffset, replacement: []byte(" ")})
+				}
+			}
+		}
+	}
+	for _, child := range node.Content {
+		collectValuelessFlowPollIntervalEdits(source, child, edits, outErr)
+	}
 }
 
 type semanticYAML struct {
@@ -271,21 +314,37 @@ func scalarReplacementEdit(source []byte, node *yaml.Node, replacement []byte, f
 	if node.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
 		return sourceEdit{}, fmt.Errorf("block-style %s is not supported for source-preserving migration", field)
 	}
-	if node.Style&yaml.TaggedStyle != 0 {
-		return sourceEdit{}, fmt.Errorf("tagged %s is not supported for source-preserving migration", field)
-	}
-	if node.Anchor != "" {
-		return sourceEdit{}, fmt.Errorf("anchored %s is not supported for source-preserving migration", field)
-	}
 	start, err := sourceOffset(source, node.Line, node.Column)
 	if err != nil {
 		return sourceEdit{}, err
+	}
+	if node.Style&yaml.TaggedStyle != 0 || node.Anchor != "" {
+		return decoratedScalarReplacementEdit(source, node, replacement, field, start)
 	}
 	end, err := scalarEnd(source, start, node.Style)
 	if err != nil {
 		return sourceEdit{}, err
 	}
 	return sourceEdit{start: start, end: end, replacement: replacement}, nil
+}
+
+func decoratedScalarReplacementEdit(source []byte, node *yaml.Node, replacement []byte, field string, start int) (sourceEdit, error) {
+	lineEnd, err := sourceLineEndOffset(source, node.Line)
+	if err != nil {
+		return sourceEdit{}, err
+	}
+	if start > lineEnd {
+		return sourceEdit{}, fmt.Errorf("%s source position is after its line end", field)
+	}
+	line := source[start:lineEnd]
+	token := []byte(node.Value)
+	tokenStartRel := bytes.LastIndex(line, token)
+	if len(token) == 0 || tokenStartRel < 0 {
+		return sourceEdit{}, fmt.Errorf("%s value token %q was not found on its source line", field, node.Value)
+	}
+	tokenStart := start + tokenStartRel
+	tokenEnd := tokenStart + len(token)
+	return sourceEdit{start: tokenStart, end: tokenEnd, replacement: replacement}, nil
 }
 
 func nullPollIntervalReplacementEdit(source []byte, key, value *yaml.Node, replacement []byte) (sourceEdit, error) {

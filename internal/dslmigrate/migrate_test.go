@@ -346,9 +346,29 @@ func TestMigrateTransformExistingPollIntervalUnsetAndExplicitValues(t *testing.T
 			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: 10\n"),
 		},
 		{
+			name:   "block tagged zero",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 0\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 10\n"),
+		},
+		{
+			name:   "block anchored zero",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 0\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 10\n"),
+		},
+		{
 			name:   "flow zero",
 			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 0}"),
 			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 10}"),
+		},
+		{
+			name:   "flow tagged zero",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 0}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 10}"),
+		},
+		{
+			name:   "flow anchored zero",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 0}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 10}"),
 		},
 		{
 			name:   "negative stays explicit",
@@ -382,6 +402,40 @@ func TestMigrateTransformExistingPollIntervalUnsetAndExplicitValues(t *testing.T
 			}
 			if !reflect.DeepEqual(gotSem, wantSem) {
 				t.Fatalf("source edit semantics differ from node transform\ngot:  %#v\nwant: %#v", gotSem, wantSem)
+			}
+		})
+	}
+}
+
+func TestMigrateTransformDoesNotNormalizeUnrelatedPollIntervalText(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "quoted scalar",
+			source: strings.Replace(workflowWithAutomatedBlock("        check: ci-status\n"),
+				"      type: deterministic\n",
+				"      type: deterministic\n      goal: \"literal pollIntervalSeconds:} text\"\n", 1),
+		},
+		{
+			name: "block scalar",
+			source: strings.Replace(workflowWithAutomatedBlock("        check: ci-status\n"),
+				"      type: deterministic\n",
+				"      type: deterministic\n      goal: |\n        literal pollIntervalSeconds:} text\n", 1),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := strings.Replace(test.source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+			want = strings.Replace(want, "        check: ci-status\n", "        check: ci-status\n        pollIntervalSeconds: 10\n", 1)
+
+			result, err := Migrate([]byte(test.source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("migration changed unrelated scalar content\nwant:\n%s\ngot:\n%s", want, result.After)
 			}
 		})
 	}
