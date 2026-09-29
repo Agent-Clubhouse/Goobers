@@ -150,8 +150,8 @@ spec:
     - name: ci
       evaluator: automated
       automated:
-        check: ci-status
         pollIntervalSeconds: 10
+        check: ci-status
       branches:
         pass: ""
 `
@@ -170,49 +170,62 @@ spec:
 
 func TestMigrateTransformEditsFlowAutomatedMapping(t *testing.T) {
 	tests := []struct {
-		name            string
-		automated       string
-		wantAutomated   string
-		wantPollSeconds int
+		name      string
+		automated string
+		want      string
 	}{
 		{
-			name:            "non-empty flow",
-			automated:       "{check: ci-status}",
-			wantAutomated:   "automated: {check: ci-status, pollIntervalSeconds: 10}",
-			wantPollSeconds: 10,
+			name:      "non-empty flow",
+			automated: "{check: ci-status}",
+			want:      "{pollIntervalSeconds: 10, check: ci-status}",
 		},
 		{
-			name:            "empty flow",
-			automated:       "{}",
-			wantAutomated:   "automated: {pollIntervalSeconds: 10}",
-			wantPollSeconds: 10,
+			name:      "empty flow",
+			automated: "{}",
+			want:      "{pollIntervalSeconds: 10}",
 		},
 		{
-			name:            "existing poll interval",
-			automated:       "{check: ci-status, pollIntervalSeconds: 0}",
-			wantAutomated:   "automated: {check: ci-status, pollIntervalSeconds: 10}",
-			wantPollSeconds: 10,
+			name:      "existing poll interval",
+			automated: "{check: ci-status, pollIntervalSeconds: 0}",
+			want:      "{check: ci-status, pollIntervalSeconds: 10}",
+		},
+		{
+			name:      "multi-line flow",
+			automated: "{\n        check: ci-status\n      }",
+			want:      "{pollIntervalSeconds: 10, \n        check: ci-status\n      }",
+		},
+		{
+			name:      "commented flow",
+			automated: "{ # keep comment\n        check: ci-status\n      }",
+			want:      "{pollIntervalSeconds: 10,  # keep comment\n        check: ci-status\n      }",
+		},
+		{
+			name:      "nested flow",
+			automated: "{check: ci-status, params: {description: keep}}",
+			want:      "{pollIntervalSeconds: 10, check: ci-status, params: {description: keep}}",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			source := workflowWithAutomatedMapping(test.automated)
+			want := strings.Replace(source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+			want = strings.Replace(want, "automated: "+test.automated, "automated: "+test.want, 1)
 
 			result, err := Migrate([]byte(source), "2.0")
 			if err != nil {
 				t.Fatalf("Migrate: %v", err)
 			}
-			if got := decodeWorkflow(t, result.After); got.DSLVersion != "2.0" || got.PollIntervalSeconds != test.wantPollSeconds {
-				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds %d\n%s", got, test.wantPollSeconds, result.After)
+			if result.After != want {
+				t.Fatalf("flow transform changed bytes beyond the version/poll edits\nwant:\n%s\ngot:\n%s", want, result.After)
 			}
-			if !strings.Contains(result.After, test.wantAutomated) {
-				t.Fatalf("flow automated mapping was not preserved/edited precisely; missing %q in:\n%s", test.wantAutomated, result.After)
+			if got := decodeWorkflow(t, result.After); got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
+				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
 			}
 		})
 	}
 }
 
-func TestMigrateTransformFallsBackForMultilineAutomatedValues(t *testing.T) {
+func TestMigrateTransformPreservesMultilineAutomatedValues(t *testing.T) {
 	tests := []struct {
 		name      string
 		automated string
@@ -262,19 +275,19 @@ func TestMigrateTransformFallsBackForMultilineAutomatedValues(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			source := workflowWithAutomatedBlock(test.automated)
+			want := strings.Replace(source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+			want = strings.Replace(want, "      automated:\n        ", "      automated:\n        pollIntervalSeconds: 10\n        ", 1)
 
 			result, err := Migrate([]byte(source), "2.0")
 			if err != nil {
 				t.Fatalf("Migrate: %v", err)
 			}
+			if result.After != want {
+				t.Fatalf("multiline transform changed bytes beyond the version/poll edits\nwant:\n%s\ngot:\n%s", want, result.After)
+			}
 			got := decodeWorkflow(t, result.After)
 			if got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
 				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
-			}
-			if strings.Contains(result.After, "description: |\n        pollIntervalSeconds") ||
-				strings.Contains(result.After, "description: >\n        pollIntervalSeconds") ||
-				strings.Contains(result.After, "description: \"first line\n        pollIntervalSeconds") {
-				t.Fatalf("pollIntervalSeconds was inserted inside a multiline scalar instead of falling back:\n%s", result.After)
 			}
 		})
 	}

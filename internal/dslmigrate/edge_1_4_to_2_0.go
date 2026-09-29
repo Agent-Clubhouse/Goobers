@@ -1,10 +1,8 @@
 package dslmigrate
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
 	"strings"
 
@@ -77,9 +75,6 @@ func applyV14ToV20SourcePreserving(source []byte, root *yaml.Node, versionNode *
 		if tasks, _ := mapValue(spec, "tasks"); tasks != nil {
 			for _, task := range tasks.Content {
 				edit, note, ok, err := ciPollIntervalSourceEdit(source, task, gatesByName)
-				if errors.Is(err, errSourcePreserveUnsupported) {
-					return renderV14ToV20(source, to)
-				}
 				if err != nil {
 					return nil, nil, err
 				}
@@ -102,54 +97,37 @@ func applyV14ToV20SourcePreserving(source []byte, root *yaml.Node, versionNode *
 		return nil, nil, err
 	}
 	if !ok {
-		return renderV14ToV20(source, to)
+		return nil, nil, errors.New("source-preserving migration produced YAML with different semantics than the node-tree transform")
 	}
 	return edited, notes, nil
 }
 
-func renderV14ToV20(source []byte, to string) ([]byte, []string, error) {
-	var doc yaml.Node
-	decoder := yaml.NewDecoder(bytes.NewReader(source))
-	if err := decoder.Decode(&doc); err != nil {
-		return nil, nil, fmt.Errorf("parse workflow for fallback render: %w", err)
-	}
-	var extra yaml.Node
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err != nil {
-			return nil, nil, fmt.Errorf("parse trailing document for fallback render: %w", err)
-		}
-		return nil, nil, errors.New("multiple YAML documents are not supported")
-	}
-	root := documentRoot(&doc)
-	if root == nil || root.Kind != yaml.MappingNode {
-		return nil, nil, errors.New("workflow document has no top-level mapping")
-	}
-	_, notes, err := applyV14ToV20(source, root)
-	if err != nil {
-		return nil, nil, err
-	}
-	setScalar(root, "dslVersion", to, "!!str")
-	rendered, err := marshalDocument(&doc)
-	if err != nil {
-		return nil, nil, err
-	}
-	return []byte(rendered), notes, nil
-}
-
 func sourceEditMatchesV14ToV20(source, edited []byte, to string) (bool, error) {
-	rendered, _, err := renderV14ToV20(source, to)
-	if err != nil {
-		return false, err
-	}
 	got, err := parseSemanticYAML(edited)
 	if err != nil {
 		return false, nil
 	}
-	want, err := parseSemanticYAML(rendered)
+	want, err := expectedSemanticV14ToV20(source, to)
 	if err != nil {
 		return false, err
 	}
 	return reflect.DeepEqual(got, want), nil
+}
+
+func expectedSemanticV14ToV20(source []byte, to string) (semanticYAML, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(source, &doc); err != nil {
+		return semanticYAML{}, fmt.Errorf("parse workflow for semantic check: %w", err)
+	}
+	root := documentRoot(&doc)
+	if root == nil || root.Kind != yaml.MappingNode {
+		return semanticYAML{}, errors.New("workflow document has no top-level mapping")
+	}
+	if _, _, err := applyV14ToV20(source, root); err != nil {
+		return semanticYAML{}, err
+	}
+	setScalar(root, "dslVersion", to, "!!str")
+	return semanticNode(root, ""), nil
 }
 
 type semanticYAML struct {
@@ -298,9 +276,6 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 	if mapping.Style&yaml.FlowStyle != 0 {
 		return insertFlowMappingScalarEdit(source, mapping, line)
 	}
-	if hasSourceAmbiguousMultilineValue(mapping) {
-		return sourceEdit{}, fmt.Errorf("%w: block or multiline scalar in target mapping", errSourcePreserveUnsupported)
-	}
 	eol := sourceEOL(source)
 	if len(mapping.Content) == 0 {
 		if mapping.Line < 1 || mapping.Column < 1 {
@@ -313,47 +288,18 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 		indent := strings.Repeat(" ", mapping.Column+1)
 		return sourceEdit{start: lineEnd, end: lineEnd, replacement: append(append([]byte{}, eol...), []byte(indent+line)...)}, nil
 	}
-	lastLine := 0
-	for _, node := range mapping.Content {
-		if line := maxNodeLine(node); line > lastLine {
-			lastLine = line
-		}
-	}
-	if lastLine < 1 {
+	firstKey := mapping.Content[0]
+	if firstKey.Line < 1 || firstKey.Column < 1 {
 		return sourceEdit{}, fmt.Errorf("target mapping for %s has no source position", line)
 	}
-	offset, hadLineBreak, err := sourceAfterLineOffset(source, lastLine)
+	offset, err := sourceOffset(source, firstKey.Line, firstKey.Column)
 	if err != nil {
 		return sourceEdit{}, err
 	}
-	indent := strings.Repeat(" ", mapping.Content[0].Column-1)
-	insertion := []byte(indent + line)
-	if hadLineBreak {
-		insertion = append(insertion, eol...)
-	} else {
-		insertion = append(append([]byte{}, eol...), insertion...)
-	}
+	indent := strings.Repeat(" ", firstKey.Column-1)
+	insertion := append([]byte(line), eol...)
+	insertion = append(insertion, []byte(indent)...)
 	return sourceEdit{start: offset, end: offset, replacement: insertion}, nil
-}
-
-func hasSourceAmbiguousMultilineValue(node *yaml.Node) bool {
-	if node == nil {
-		return false
-	}
-	if node.Kind == yaml.ScalarNode {
-		if node.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
-			return true
-		}
-		if node.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) != 0 && strings.Contains(node.Value, "\n") {
-			return true
-		}
-	}
-	for _, child := range node.Content {
-		if hasSourceAmbiguousMultilineValue(child) {
-			return true
-		}
-	}
-	return false
 }
 
 func insertFlowMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (sourceEdit, error) {
@@ -367,85 +313,11 @@ func insertFlowMappingScalarEdit(source []byte, mapping *yaml.Node, line string)
 	if start >= len(source) || source[start] != '{' {
 		return sourceEdit{}, fmt.Errorf("%w: flow target mapping for %s does not start at an opening brace", errSourcePreserveUnsupported, line)
 	}
-	closeOffset, err := sameLineFlowMappingClose(source, start)
-	if err != nil {
-		return sourceEdit{}, err
+	replacement := []byte(line)
+	if len(mapping.Content) > 0 {
+		replacement = []byte(line + ", ")
 	}
-	replacement := []byte(", " + line)
-	if len(mapping.Content) == 0 {
-		replacement = []byte(line)
-	}
-	return sourceEdit{start: closeOffset, end: closeOffset, replacement: replacement}, nil
-}
-
-func sameLineFlowMappingClose(source []byte, openOffset int) (int, error) {
-	inSingle := false
-	inDouble := false
-	for i := openOffset + 1; i < len(source); i++ {
-		switch source[i] {
-		case '\r', '\n':
-			return 0, fmt.Errorf("%w: multi-line flow mappings are not edited in place", errSourcePreserveUnsupported)
-		case '#':
-			if !inSingle && !inDouble {
-				return 0, fmt.Errorf("%w: commented flow mappings are not edited in place", errSourcePreserveUnsupported)
-			}
-		case '\'':
-			if !inDouble {
-				if inSingle && i+1 < len(source) && source[i+1] == '\'' {
-					i++
-					continue
-				}
-				inSingle = !inSingle
-			}
-		case '"':
-			if !inSingle {
-				backslashes := 0
-				for j := i - 1; j > openOffset && source[j] == '\\'; j-- {
-					backslashes++
-				}
-				if backslashes%2 == 0 {
-					inDouble = !inDouble
-				}
-			}
-		case '{', '[':
-			if !inSingle && !inDouble {
-				return 0, fmt.Errorf("%w: nested flow collections are not edited in place", errSourcePreserveUnsupported)
-			}
-		case '}':
-			if !inSingle && !inDouble {
-				return i, nil
-			}
-		}
-	}
-	return 0, fmt.Errorf("%w: unterminated flow mapping", errSourcePreserveUnsupported)
-}
-
-func maxNodeLine(node *yaml.Node) int {
-	if node == nil {
-		return 0
-	}
-	maxLine := node.Line
-	for _, child := range node.Content {
-		if line := maxNodeLine(child); line > maxLine {
-			maxLine = line
-		}
-	}
-	return maxLine
-}
-
-func sourceAfterLineOffset(source []byte, line int) (int, bool, error) {
-	start, err := sourceOffset(source, line, 1)
-	if err != nil {
-		return 0, false, err
-	}
-	next := start
-	for next < len(source) && source[next] != '\n' {
-		next++
-	}
-	if next >= len(source) {
-		return len(source), false, nil
-	}
-	return next + 1, true, nil
+	return sourceEdit{start: start + 1, end: start + 1, replacement: replacement}, nil
 }
 
 func sourceLineEndOffset(source []byte, line int) (int, error) {
