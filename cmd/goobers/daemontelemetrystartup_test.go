@@ -17,8 +17,33 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry"
 )
+
+func TestSchedulerTelemetryReplayStartOptionsPreserveLifecycle(t *testing.T) {
+	recovery := localscheduler.NewRecoveryGate()
+	options, release := daemonStartupSetupOptions(notifyFlag{}, io.Discard, io.Discard, recovery)
+	var configured schedulerSetupOptions
+	for _, option := range options {
+		option(&configured)
+	}
+	if !configured.desktopNotifications || configured.startupProgress == nil || configured.claimRecoveryGate != recovery || configured.telemetryReplayStart == nil {
+		t.Fatal("startup helper lost existing scheduler setup options")
+	}
+	select {
+	case <-configured.telemetryReplayStart:
+		t.Fatal("startup options released replay before readiness")
+	default:
+	}
+	release()
+	release() // A repeated readiness signal cannot panic or reconfigure clients.
+	select {
+	case <-configured.telemetryReplayStart:
+	default:
+		t.Fatal("readiness did not release replay")
+	}
+}
 
 func TestSchedulerTelemetryReplayStartCoversAllStreams(t *testing.T) {
 	received := make(chan string, 64)
