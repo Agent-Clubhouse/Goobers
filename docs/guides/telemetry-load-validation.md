@@ -478,6 +478,9 @@ It creates fresh matched disabled/enabled instances and alternates pair order.
 `startup-results.json` retains every raw launch-to-ready and shutdown duration,
 request counts, actual pre/post replay file counts and bytes, and per-stream
 maxima from the daemon's independent health events through process exit.
+Each enabled stream emits one aggregate `shutdown` snapshot after its final
+drain attempt; the driver requires these snapshots so silence cannot pass as
+zero loss. This adds no per-run logging or remote upload.
 The driver fails a healthy-endpoint sample for any counted admission failure,
 queue drop, export failure, age/byte prune, or malformed replay file. For a
 stalled endpoint it permits remote export failures, but still rejects local

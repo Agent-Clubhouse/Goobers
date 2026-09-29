@@ -536,7 +536,11 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 	select {
 	case <-s.done:
 	case <-ctx.Done():
-		go func() { <-s.done; _ = s.stats(); _ = s.index.release(context.Background()) }()
+		go func() {
+			<-s.done
+			s.reportShutdownHealth(s.stats())
+			_ = s.index.release(context.Background())
+		}()
 		return ctx.Err()
 	}
 	// No batch can be admitted before indexing is ready. Do not wait for a
@@ -555,6 +559,6 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 		cancel()
 	default:
 	}
-	_ = s.stats()
+	s.reportShutdownHealth(s.stats())
 	return errors.Join(err, s.index.release(ctx))
 }

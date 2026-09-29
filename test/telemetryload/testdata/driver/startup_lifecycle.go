@@ -26,12 +26,28 @@ type startupTiming struct {
 }
 
 type startupHealthCounters struct {
-	Events, AdmissionFailures, QueueDropped, ExportFailures uint64
-	PrunedAge, PrunedBytes, MalformedFiles                  uint64
+	Events, ShutdownEvents, AdmissionFailures, QueueDropped, ExportFailures uint64
+	PrunedAge, PrunedBytes, MalformedFiles                                  uint64
 }
 
 type startupHealthAudit struct {
 	Streams map[string]startupHealthCounters
+}
+
+func (a startupHealthAudit) complete(enabled bool, profile string) bool {
+	if !enabled {
+		return true
+	}
+	streams := []string{"diagnostics"}
+	if profile != "health" {
+		streams = append(streams, "journal", "traces")
+	}
+	for _, stream := range streams {
+		if a.Streams[stream].ShutdownEvents != 1 {
+			return false
+		}
+	}
+	return true
 }
 
 func (a startupHealthAudit) clean(endpoint string) bool {
@@ -66,7 +82,7 @@ func auditStartupHealth(path string) (startupHealthAudit, error) {
 			continue
 		}
 		var event struct {
-			Event, Stream                          string
+			Event, Stream, Status                  string
 			AdmissionFailures                      uint64
 			PrunedAge, PrunedBytes, MalformedFiles uint64
 			Queue                                  struct {
@@ -81,6 +97,9 @@ func auditStartupHealth(path string) (startupHealthAudit, error) {
 		}
 		counters := audit.Streams[event.Stream]
 		counters.Events++
+		if event.Status == "shutdown" {
+			counters.ShutdownEvents++
+		}
 		counters.AdmissionFailures = max(counters.AdmissionFailures, event.AdmissionFailures)
 		counters.QueueDropped = max(counters.QueueDropped, event.Queue.Dropped)
 		counters.ExportFailures = max(counters.ExportFailures, event.Queue.ExportFailures)

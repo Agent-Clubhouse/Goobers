@@ -157,6 +157,32 @@ func (s *azureReplaySpool) reportHealth(state *replayHealthState) {
 	writeReplayHealth(root, *event)
 }
 
+// A final snapshot makes shutdown accounting explicit even when the stream
+// never warranted a warning. It is emitted after the final drain attempt, so
+// release validation need not mistake health-log silence for zero loss.
+func (s *azureReplaySpool) reportShutdownHealth(stats AzureReplayStats) {
+	loss := replayLossCounters{Dropped: stats.QueueDropped, ExportFailures: stats.ExportFailures}
+	if source := s.lossSource.Load(); source != nil {
+		loss.CatchupDeferred = source.sample().CatchupDeferred
+	}
+	stream := s.stream
+	if stream == "" {
+		stream = "export"
+	}
+	root := s.cfg.root
+	if root == "" {
+		root = s.cfg.dir
+	}
+	writeReplayHealth(root, replayHealthEvent{
+		Time: time.Now().UTC(), Event: "telemetry.export.health", Status: "shutdown",
+		Stream: stream, PID: os.Getpid(), PendingRecords: stats.PendingRecords,
+		PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
+		OldestSeconds: stats.OldestPendingAge.Seconds(), AdmissionFailures: stats.AdmissionFailures,
+		Retried: stats.Retried, PrunedAge: stats.PrunedAge, PrunedBytes: stats.PrunedBytes,
+		Malformed: stats.Malformed, Queue: loss,
+	})
+}
+
 func writeReplayHealth(root string, event replayHealthEvent) {
 	data, err := json.Marshal(event)
 	if err != nil {

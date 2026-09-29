@@ -35,6 +35,42 @@ func TestAzureReplayHealthRemoteCountersMatchLocalLossSource(t *testing.T) {
 	}
 }
 
+func TestAzureReplayShutdownEmitsFinalCounterSnapshot(t *testing.T) {
+	root := t.TempDir()
+	s, err := newAzureReplaySpool(azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20},
+		func(context.Context, []byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.index.wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	setReplayLossSource(&s.lossSource, func() replayLossCounters {
+		return replayLossCounters{Dropped: 2, ExportFailures: 1, CatchupDeferred: 3}
+	})
+	if err := s.close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "health-journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final replayHealthEvent
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		var event replayHealthEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Status == "shutdown" {
+			final = event
+		}
+	}
+	if final.Event != "telemetry.export.health" || final.Stream != "journal" || final.Queue.Dropped != 2 ||
+		final.Queue.ExportFailures != 1 || final.Queue.CatchupDeferred != 3 || final.AdmissionFailures != 0 {
+		t.Fatalf("incomplete final health snapshot: %+v", final)
+	}
+}
+
 func TestAzureReplayHealthGrowthLossRateLimitAndRecovery(t *testing.T) {
 	now := time.Now()
 	state := replayHealthState{}

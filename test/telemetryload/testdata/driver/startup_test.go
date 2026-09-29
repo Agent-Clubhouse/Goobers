@@ -53,6 +53,9 @@ func TestStartupHealthAuditCatchesShutdownLoss(t *testing.T) {
 	if audit.clean("healthy") || audit.clean("stalled") {
 		t.Fatalf("shutdown loss passed: %+v", audit)
 	}
+	if audit.complete(true, "standard") {
+		t.Fatal("warning-only audit mistaken for complete shutdown counters")
+	}
 	if journal := audit.Streams["journal"]; journal.Events != 2 || journal.AdmissionFailures != 8 || journal.ExportFailures != 2 {
 		t.Fatalf("cumulative journal counters were not retained: %+v", journal)
 	}
@@ -78,6 +81,16 @@ func TestStartupHealthAuditCatchesShutdownLoss(t *testing.T) {
 	}
 	if _, err := auditStartupHealth(path); err == nil {
 		t.Fatal("malformed health event passed")
+	}
+	if err := os.WriteFile(path, []byte(
+		`{"event":"telemetry.export.health","status":"shutdown","stream":"diagnostics"}`+"\n"+
+			`{"event":"telemetry.export.health","status":"shutdown","stream":"journal"}`+"\n"+
+			`{"event":"telemetry.export.health","status":"shutdown","stream":"traces"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit, err = auditStartupHealth(path)
+	if err != nil || !audit.complete(true, "standard") || !audit.complete(true, "health") || !audit.clean("healthy") {
+		t.Fatalf("complete zero-loss shutdown audit rejected: %+v %v", audit, err)
 	}
 }
 

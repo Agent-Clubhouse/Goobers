@@ -149,8 +149,8 @@ func runStartupPairs(url string) {
 			if post := sample.Measurement.PostReady; post != nil && !post.Successful() {
 				panic("post-ready response/workflow failure; raw startup sample retained")
 			}
-			if !sample.Measurement.Health.clean(startupOptions.Endpoint) {
-				panic(fmt.Sprintf("startup telemetry loss in %s; inspect retained health audit and raw daemon log", sample.Name))
+			if !sample.Measurement.Health.complete(enabled, collectionProfile) || !sample.Measurement.Health.clean(startupOptions.Endpoint) {
+				panic(fmt.Sprintf("startup telemetry shutdown audit incomplete or lossy in %s; inspect retained health audit and raw daemon log", sample.Name))
 			}
 		}
 	}
