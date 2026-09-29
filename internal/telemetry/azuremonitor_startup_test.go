@@ -6,7 +6,41 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
+
+// Keep this as a deterministic admission invariant for a future cold-index
+// implementation: reconstruction may hold the root index lock, but a newly
+// emitted record must still be durably accepted on a separately bounded path.
+// The current implementation does not satisfy this test; do not land the test
+// alone or weaken its deadline to make an unsafe startup shortcut look green.
+func TestAzureReplayColdIndexLockDoesNotBlockDurableStartupAdmission(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "journal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := platformlock.TryAcquire(filepath.Join(root, ".replay-index.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Release() }()
+	cfg := azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20}
+	s, err := newAzureReplaySpool(cfg, func(context.Context, []byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.close(ctx)
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	if err := s.submit(ctx, []byte("{\"startup\":true}\n")); err != nil {
+		t.Fatalf("cold index lock blocked durable startup admission: %v", err)
+	}
+}
 
 func TestAzureReplayUnavailableStorageStartsAndRecovers(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "obstructed")
