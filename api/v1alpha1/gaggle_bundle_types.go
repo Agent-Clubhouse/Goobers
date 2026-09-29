@@ -132,7 +132,8 @@ type GaggleBundleImportRequest struct {
 // GaggleBundleImportResult reports the created destination gaggle and retained
 // source provenance.
 type GaggleBundleImportResult struct {
-	Name       string             `json:"name"`
-	Source     GaggleBundleSource `json:"source"`
-	ImportedAt time.Time          `json:"importedAt"`
+	Name            string             `json:"name"`
+	Source          GaggleBundleSource `json:"source"`
+	ImportedAt      time.Time          `json:"importedAt"`
+	RestartRequired bool               `json:"restartRequired"`
 }

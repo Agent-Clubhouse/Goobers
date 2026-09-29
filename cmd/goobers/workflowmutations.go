@@ -195,6 +195,14 @@ func (s *workflowMutationService) ImportGaggle(_ context.Context, input apiv1.Ga
 		return apiv1.GaggleBundleImportResult{}, errors.Join(fmt.Errorf("reload config after gaggle import: %w", pollErr), rollbackErr)
 	}
 	if rejected != "" {
+		if rejected == engineTopologyRestartMessage {
+			if err := swap.Commit(); err != nil {
+				return apiv1.GaggleBundleImportResult{}, fmt.Errorf("commit imported gaggle pending daemon restart: %w", err)
+			}
+			return apiv1.GaggleBundleImportResult{
+				Name: input.Name, Source: input.Bundle.Source, ImportedAt: time.Now().UTC(), RestartRequired: true,
+			}, nil
+		}
 		rollbackErr := swap.Rollback()
 		return apiv1.GaggleBundleImportResult{}, errors.Join(
 			fmt.Errorf("%w: daemon rejected imported configuration: %s", gagglebundle.ErrInvalidBundle, rejected),
@@ -205,7 +213,7 @@ func (s *workflowMutationService) ImportGaggle(_ context.Context, input apiv1.Ga
 		return apiv1.GaggleBundleImportResult{}, fmt.Errorf("commit imported gaggle: %w", err)
 	}
 	return apiv1.GaggleBundleImportResult{
-		Name: input.Name, Source: input.Bundle.Source, ImportedAt: time.Now().UTC(),
+		Name: input.Name, Source: input.Bundle.Source, ImportedAt: time.Now().UTC(), RestartRequired: false,
 	}, nil
 }
 

@@ -621,11 +621,12 @@ func openAPIOperationSchemas(authenticated bool) map[string]any {
 			},
 		},
 		"GaggleBundleImportResult": map[string]any{
-			"type": "object", "required": []string{"name", "source", "importedAt"}, "additionalProperties": false,
+			"type": "object", "required": []string{"name", "source", "importedAt", "restartRequired"}, "additionalProperties": false,
 			"properties": map[string]any{
-				"name":       map[string]any{"type": "string"},
-				"source":     schemaRef("GaggleBundleSource"),
-				"importedAt": map[string]any{"type": "string", "format": "date-time"},
+				"name":            map[string]any{"type": "string"},
+				"source":          schemaRef("GaggleBundleSource"),
+				"importedAt":      map[string]any{"type": "string", "format": "date-time"},
+				"restartRequired": map[string]any{"type": "boolean"},
 			},
 		},
 		"ErrorEnvelope": map[string]any{

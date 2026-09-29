@@ -92,6 +92,12 @@ Invalid schema, digest, reference, content, name conflict, missing
 authorization, validation failure, write failure, or daemon reload rejection
 returns an explicit error and leaves no partial gaggle.
 
+When the daemon engine is enabled, adding a gaggle changes boot-pinned journal
+and projection topology. The daemon route commits the validated bundle and
+returns `"restartRequired": true`; the imported gaggle becomes active after a
+daemon restart. Imports that do not change boot-pinned topology return
+`"restartRequired": false` and are applied immediately.
+
 The destination receives a new local gaggle name and destination-derived
 isolation namespace. `bundle-source.json` records the retained public source
 identity, digest, export timestamp, import timestamp, and exporter provenance.
