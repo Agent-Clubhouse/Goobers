@@ -150,7 +150,7 @@
       "properties": {
         "path": {
           "type": "string",
-          "pattern": "^[^/\\\\][^\\\\]*$",
+          "pattern": "^(?:[^./\\\\][^/\\\\]*|\\.[^./\\\\][^/\\\\]*|\\.\\.[^/\\\\]+)(?:/(?:[^./\\\\][^/\\\\]*|\\.[^./\\\\][^/\\\\]*|\\.\\.[^/\\\\]+))*$",
           "description": "Slash-separated path relative to the gaggle directory. Absolute paths, backslashes, and traversal are forbidden."
         },
         "contentBase64": {

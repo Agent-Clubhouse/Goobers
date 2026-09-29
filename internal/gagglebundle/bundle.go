@@ -415,6 +415,9 @@ func validateReferences(definition apiv1.GaggleBundleDefinition) error {
 	gaggle := definition.Gaggle.Name
 	workflows := make(map[string]bool, len(definition.Workflows))
 	for _, workflow := range definition.Workflows {
+		if !portableName(workflow.Name) {
+			return fmt.Errorf("workflow name %q must use lowercase letters, digits, and interior hyphens", workflow.Name)
+		}
 		if workflow.Spec.Gaggle != gaggle {
 			return fmt.Errorf("workflow %q references gaggle %q, want %q", workflow.Name, workflow.Spec.Gaggle, gaggle)
 		}
@@ -425,6 +428,12 @@ func validateReferences(definition apiv1.GaggleBundleDefinition) error {
 	}
 	goobers := make(map[string]bool, len(definition.Goobers))
 	for _, goober := range definition.Goobers {
+		if !portableName(goober.Name) {
+			return fmt.Errorf("goober name %q must use lowercase letters, digits, and interior hyphens", goober.Name)
+		}
+		if goober.Spec.Instructions != "" && !portableRelativePath(goober.Spec.Instructions) {
+			return fmt.Errorf("goober %q instructions path %q must be a canonical relative slash-separated path", goober.Name, goober.Spec.Instructions)
+		}
 		if goober.Spec.Gaggle != gaggle {
 			return fmt.Errorf("goober %q references gaggle %q, want %q", goober.Name, goober.Spec.Gaggle, gaggle)
 		}
@@ -575,10 +584,10 @@ func collectCompanionPaths(configDir string, set *instance.ConfigSet, gaggle str
 		}
 		sourceDir := filepath.Dir(filepath.Join(configDir, filepath.FromSlash(source)))
 		if goober.Spec.Instructions != "" {
-			instructions := filepath.Clean(filepath.FromSlash(goober.Spec.Instructions))
-			if filepath.IsAbs(instructions) || instructions == ".." || strings.HasPrefix(instructions, ".."+string(filepath.Separator)) {
+			if !portableRelativePath(goober.Spec.Instructions) {
 				return nil, fmt.Errorf("goober %q instructions path %q is not contained", goober.Name, goober.Spec.Instructions)
 			}
+			instructions := filepath.Clean(filepath.FromSlash(goober.Spec.Instructions))
 			portable := filepath.ToSlash(filepath.Join("goobers", goober.Name, instructions))
 			paths[portable] = filepath.Join(sourceDir, instructions)
 		}
@@ -998,6 +1007,14 @@ func portableName(name string) bool {
 		}
 	}
 	return true
+}
+
+func portableRelativePath(path string) bool {
+	if path == "" || filepath.IsAbs(path) || strings.Contains(path, `\`) {
+		return false
+	}
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+	return clean == path && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
 }
 
 func firstAbsoluteString(value any) (string, string) {

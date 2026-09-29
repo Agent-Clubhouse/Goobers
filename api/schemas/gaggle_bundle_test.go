@@ -50,4 +50,19 @@ func TestGaggleBundleSchemaAcceptsExport(t *testing.T) {
 	if err := schema.Validate(document); err != nil {
 		t.Fatalf("exported bundle does not satisfy public schema: %v", err)
 	}
+
+	pathSchema, err := compiler.Compile(schemas.BaseURI + schemas.GaggleBundle + "#/$defs/file/properties/path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"goobers/coder/instructions.md", ".config", "...", "skills/review/README.md"} {
+		if err := pathSchema.Validate(path); err != nil {
+			t.Errorf("valid companion path %q rejected: %v", path, err)
+		}
+	}
+	for _, path := range []string{"../file.txt", "goobers/../file.txt", "./file.txt", "goobers/./file.txt", "/file.txt", `goobers\file.txt`, "goobers//file.txt"} {
+		if err := pathSchema.Validate(path); err == nil {
+			t.Errorf("unsafe companion path %q accepted", path)
+		}
+	}
 }

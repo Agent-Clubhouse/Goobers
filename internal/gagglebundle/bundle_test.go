@@ -486,6 +486,30 @@ func TestPrepareImportValidatesBeforeMutation(t *testing.T) {
 			want: ErrInvalidBundle,
 		},
 		{
+			name: "workflow name traversal",
+			mutate: func(bundle *apiv1.GaggleBundle) {
+				bundle.Definition.Workflows[0].Name = "../../outside"
+				refreshBundleDigest(t, bundle)
+			},
+			want: ErrInvalidBundle,
+		},
+		{
+			name: "goober name traversal",
+			mutate: func(bundle *apiv1.GaggleBundle) {
+				bundle.Definition.Goobers[0].Name = "../outside"
+				refreshBundleDigest(t, bundle)
+			},
+			want: ErrInvalidBundle,
+		},
+		{
+			name: "goober instruction traversal",
+			mutate: func(bundle *apiv1.GaggleBundle) {
+				bundle.Definition.Goobers[0].Spec.Instructions = "../../workflows/default-implement.yaml"
+				refreshBundleDigest(t, bundle)
+			},
+			want: ErrInvalidBundle,
+		},
+		{
 			name: "unreferenced companion file",
 			mutate: func(bundle *apiv1.GaggleBundle) {
 				bundle.Definition.Files[0].Path = "gaggle.yaml"
@@ -558,6 +582,14 @@ func TestPrepareImportValidatesBeforeMutation(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(destination.ConfigDir(), "gaggles", "copied-example")); !os.IsNotExist(err) {
 				t.Fatalf("invalid bundle left partial gaggle: %v", err)
+			}
+			for _, escaped := range []string{
+				filepath.Join(destination.ConfigDir(), "gaggles", "outside.yaml"),
+				filepath.Join(destination.ConfigDir(), "gaggles", "copied-example", "outside", "goober.yaml"),
+			} {
+				if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+					t.Fatalf("invalid bundle wrote outside its generated paths: %s: %v", escaped, err)
+				}
 			}
 		})
 	}
