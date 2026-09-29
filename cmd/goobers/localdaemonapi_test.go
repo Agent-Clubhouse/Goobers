@@ -14,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+
 	"go.yaml.in/yaml/v3"
 )
 
