@@ -938,12 +938,11 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// The gaggle's claim partition (#3873, MIRC-2), applied where the local
 	// runner applies it: on the projected inputs, BEFORE the inputsFrom
 	// overlay below, so a stage that binds requireLabels/assignedTo from an
-	// upstream output still wins — the same precedence dispatchTask has
-	// (internal/runner/run.go:4413-4414). Pure function of pinned RunInput
-	// data, so it is replay-deterministic; a no-op for a gaggle that
-	// configures neither.
+	// upstream output still wins. Gaggle backlog scope is stricter: it is
+	// re-applied after inputsFrom so upstream bindings can only narrow it.
+	// Pure function of pinned RunInput data, so it is replay-deterministic; a
+	// no-op for a gaggle that configures neither.
 	inputs = backlogdefaults.Apply(t, inputs, in.BacklogQueryAssignedTo, in.BacklogQueryRequireLabels)
-	inputs = backlogdefaults.ApplyBacklogScope(t, inputs, in.BacklogQueryBacklogLabels, in.BacklogQueryLabelPredicate)
 	limits, err := wf.TaskLimits(machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
@@ -1000,6 +999,10 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 			return apiv1.ResultEnvelope{}, inputsFromError(t.Name, inputKey, outputKey, upstreamResult, completed, qualifiedInputs)
 		}
 		env.Inputs[inputKey] = v
+	}
+	env.Inputs, err = backlogdefaults.ApplyBacklogScopeToInvocation(t, env.Inputs, in.BacklogQueryBacklogLabels, in.BacklogQueryLabelPredicate)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q backlog scope: %w", t.Name, err)
 	}
 	// Mode-3 routing (#3588): a stage whose PINNED placement resolved to a
 	// non-self runner dispatches through ActDispatchStage on its pinned

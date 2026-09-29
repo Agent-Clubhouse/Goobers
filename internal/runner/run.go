@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/creditgraph"
@@ -5064,70 +5064,28 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 }
 
 func defaultBacklogQueryBacklogScope(task apiv1.Task, inputs map[string]string, backlogLabels, backlogLabelPredicate string) map[string]string {
-	if backlogLabels == "" && backlogLabelPredicate == "" {
-		return inputs
-	}
-	if task.Run == nil || len(task.Run.Command) < 2 ||
-		filepath.Base(task.Run.Command[0]) != "goobers" ||
-		(task.Run.Command[1] != "backlog-query" && task.Run.Command[1] != "backlog-health") {
-		return inputs
-	}
-	resolved := make(map[string]string, len(inputs)+2)
-	for key, value := range inputs {
-		resolved[key] = value
-	}
-	if labels := splitDefaultLabelList(backlogLabels); len(labels) > 0 {
-		resolved["requireLabels"] = strings.Join(uniqueDefaultLabels(append(labels, splitDefaultLabelList(resolved["requireLabels"])...)), ",")
-	}
-	if backlogLabelPredicate != "" {
-		resolved["labelPredicate"] = conjoinDefaultLabelPredicates(backlogLabelPredicate, resolved["labelPredicate"])
-	}
-	return resolved
-}
-
-func splitDefaultLabelList(value string) []string {
-	parts := strings.Split(value, ",")
-	labels := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if label := strings.TrimSpace(part); label != "" {
-			labels = append(labels, label)
-		}
-	}
-	return labels
-}
-
-func uniqueDefaultLabels(labels []string) []string {
-	seen := make(map[string]struct{}, len(labels))
-	out := make([]string, 0, len(labels))
-	for _, label := range labels {
-		if label == "" {
-			continue
-		}
-		if _, ok := seen[label]; ok {
-			continue
-		}
-		seen[label] = struct{}{}
-		out = append(out, label)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func conjoinDefaultLabelPredicates(expressions ...string) string {
-	terms := make([]string, 0, len(expressions))
-	for _, expression := range expressions {
-		if expression == "" {
-			continue
-		}
-		terms = append(terms, "("+expression+")")
-	}
-	return strings.Join(terms, " && ")
+	return backlogdefaults.ApplyBacklogScope(task, inputs, backlogLabels, backlogLabelPredicate)
 }
 
 func (r *Runner) defaultBacklogQueryInputs(task apiv1.Task, inputs map[string]string) map[string]string {
 	inputs = defaultBacklogQueryAssignedTo(task, inputs, r.cfg.BacklogQueryAssignedTo)
-	inputs = defaultBacklogQueryRequireLabels(task, inputs, r.cfg.BacklogQueryRequireLabels)
-	return defaultBacklogQueryBacklogScope(task, inputs, r.cfg.BacklogQueryBacklogLabels, r.cfg.BacklogQueryLabelPredicate)
+	return defaultBacklogQueryRequireLabels(task, inputs, r.cfg.BacklogQueryRequireLabels)
+}
+
+func (r *Runner) applyInvocationBacklogQueryBacklogScope(task apiv1.Task, inputs map[string]interface{}) (map[string]interface{}, error) {
+	return backlogdefaults.ApplyBacklogScopeToInvocation(task, inputs, r.cfg.BacklogQueryBacklogLabels, r.cfg.BacklogQueryLabelPredicate)
+}
+
+func (r *Runner) finalizeInvocationInputs(task apiv1.Task, env *apiv1.InvocationEnvelope, fanIn *parallelExec) error {
+	inputs, err := r.applyInvocationBacklogQueryBacklogScope(task, env.Inputs)
+	if err != nil {
+		return fmt.Errorf("stage %q backlog scope: %w", task.Name, err)
+	}
+	env.Inputs = inputs
+	if fanIn != nil && task.Name == fanIn.spec.Join {
+		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	}
+	return nil
 }
 
 // dispatchTask provisions one attempt's workspace and invokes the task's
@@ -5160,7 +5118,9 @@ func (r *Runner) defaultBacklogQueryInputs(task apiv1.Task, inputs map[string]st
 // upstreamResult.Outputs fails the stage closed, since InputsFrom is a
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
-// open read).
+// open read). Gaggle backlog labels/predicate are then conjoined onto the
+// resolved inputs so upstream bindings can narrow but never replace gaggle
+// scope.
 func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, cleanup func(bool) error, err error) {
 	jr, in, ex, t := tf.jr, tf.in, tf.ex, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
@@ -5317,8 +5277,8 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		env.Inputs[inputKey] = v
 	}
-	if fanIn != nil && t.Name == fanIn.spec.Join {
-		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	if err := r.finalizeInvocationInputs(t, &env, fanIn); err != nil {
+		return apiv1.ResultEnvelope{}, nil, nil, err
 	}
 
 	switch t.Type {
