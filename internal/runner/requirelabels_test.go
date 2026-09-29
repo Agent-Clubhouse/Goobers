@@ -81,24 +81,3 @@ func TestDefaultBacklogQueryRequireLabels(t *testing.T) {
 		t.Fatalf("declared task inputs were mutated: %#v", declared)
 	}
 }
-
-func TestDefaultBacklogQueryBacklogScopeConjoinsDeclaredSelectors(t *testing.T) {
-	backlogQuery := apiv1.Task{
-		Run: &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
-	}
-	declared := map[string]string{
-		"requireLabels":  "goobers:ready",
-		"labelPredicate": `"size:s" in labels`,
-	}
-	got := defaultBacklogQueryBacklogScope(backlogQuery, declared, "area:web,goobers:ready", `"team:web" in labels`)
-	want := map[string]string{
-		"requireLabels":  "area:web,goobers:ready",
-		"labelPredicate": `("team:web" in labels) && ("size:s" in labels)`,
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("inputs = %#v, want %#v", got, want)
-	}
-	if !reflect.DeepEqual(declared, map[string]string{"requireLabels": "goobers:ready", "labelPredicate": `"size:s" in labels`}) {
-		t.Fatalf("declared task inputs were mutated: %#v", declared)
-	}
-}

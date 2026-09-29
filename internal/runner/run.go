@@ -5063,10 +5063,6 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 	return resolved
 }
 
-func defaultBacklogQueryBacklogScope(task apiv1.Task, inputs map[string]string, backlogLabels, backlogLabelPredicate string) map[string]string {
-	return backlogdefaults.ApplyBacklogScope(task, inputs, backlogLabels, backlogLabelPredicate)
-}
-
 func (r *Runner) defaultBacklogQueryInputs(task apiv1.Task, inputs map[string]string) map[string]string {
 	inputs = defaultBacklogQueryAssignedTo(task, inputs, r.cfg.BacklogQueryAssignedTo)
 	return defaultBacklogQueryRequireLabels(task, inputs, r.cfg.BacklogQueryRequireLabels)
