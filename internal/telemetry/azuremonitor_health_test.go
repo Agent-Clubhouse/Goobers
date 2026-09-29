@@ -44,32 +44,125 @@ func TestAzureReplayHealthGrowthLossRateLimitAndRecovery(t *testing.T) {
 	}
 	stats.PendingRecords = 10
 	stats.Accepted = 10
+	stats.OldestPendingAge = 10 * time.Second
 	if got := state.sample(now.Add(10*time.Second), stats, replayLossCounters{}, 10000); got != nil {
 		t.Fatalf("transient growth warning: %+v", got)
 	}
 	stats.PendingRecords = 20
 	stats.Accepted = 20
+	stats.OldestPendingAge = 20 * time.Second
 	got := state.sample(now.Add(20*time.Second), stats, replayLossCounters{}, 10000)
 	if got == nil || !slices.Contains(got.Causes, "ingress_exceeds_delivery") || got.AdmittedPerSecond != 1 || got.DeliveredPerSecond != 0 {
 		t.Fatalf("growth warning=%+v", got)
 	}
 	stats.PendingRecords = 30
 	stats.PrunedBytes = 1
+	stats.OldestPendingAge = 30 * time.Second
 	if got = state.sample(now.Add(30*time.Second), stats, replayLossCounters{Dropped: 7}, 10000); got != nil {
 		t.Fatal("warning not suppressed")
 	}
+	stats.OldestPendingAge = 80 * time.Second
 	got = state.sample(now.Add(80*time.Second), stats, replayLossCounters{Dropped: 7}, 10000)
 	if got == nil || !slices.Contains(got.Causes, "loss_or_export_failure") || got.Queue.Dropped != 7 || got.PrunedBytes != 1 {
 		t.Fatalf("loss not retained through suppression: %+v", got)
 	}
 	stats.PendingRecords = 0
 	stats.Delivered = 30
+	stats.OldestPendingAge = 0
 	got = state.sample(now.Add(90*time.Second), stats, replayLossCounters{Dropped: 7}, 10000)
 	if got == nil || got.Status != "recovered" {
 		t.Fatalf("recovery=%+v", got)
 	}
 	if got = state.sample(now.Add(100*time.Second), stats, replayLossCounters{Dropped: 7}, 10000); got != nil {
 		t.Fatal("recovery repeated")
+	}
+}
+
+func TestAzureReplayHealthFreshBatchesAreNotSustainedBacklog(t *testing.T) {
+	now := time.Now()
+	state := replayHealthState{}
+	// Reproduce the Windows accelerated run's sampling alias: counts rise at
+	// successive samples, but all previously pending records have already left.
+	// The oldest record at the observed warning was only 80.4855 ms old.
+	for i, pending := range []int{0, 5, 11, 0} {
+		stats := AzureReplayStats{
+			AccountingReady:  true,
+			PendingRecords:   pending,
+			Accepted:         uint64(i * 200),
+			Delivered:        uint64(i*200 - pending),
+			OldestPendingAge: 80485500 * time.Nanosecond,
+		}
+		if pending == 0 {
+			stats.OldestPendingAge = 0
+		}
+		if got := state.sample(now.Add(time.Duration(i)*replayHealthInterval), stats, replayLossCounters{}, 1<<20); got != nil {
+			t.Fatalf("fresh batch produced a sustained-pressure warning at sample %d: %+v", i, got)
+		}
+	}
+}
+
+func TestAzureReplayHealthFreshBacklogKeepsIndependentWarnings(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stats AzureReplayStats
+		loss  replayLossCounters
+		cause string
+	}{
+		{"high_water", AzureReplayStats{AccountingReady: true, PendingBytes: 900}, replayLossCounters{}, "spool_high_water"},
+		{"admission", AzureReplayStats{AccountingReady: true, AdmissionFailures: 1}, replayLossCounters{}, "loss_or_export_failure"},
+		{"queue_loss", AzureReplayStats{AccountingReady: true}, replayLossCounters{Dropped: 1}, "loss_or_export_failure"},
+		{"deferred", AzureReplayStats{AccountingReady: true}, replayLossCounters{CatchupDeferred: 1}, "journal_catchup_deferred"},
+		{"accounting", AzureReplayStats{}, replayLossCounters{}, "accounting_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := replayHealthState{}
+			stats := tc.stats
+			stats.PendingRecords = 11
+			stats.OldestPendingAge = time.Millisecond
+			got := state.sample(time.Now(), stats, tc.loss, 1000)
+			if got == nil || !slices.Contains(got.Causes, tc.cause) {
+				t.Fatalf("independent %s warning suppressed: %+v", tc.cause, got)
+			}
+		})
+	}
+}
+
+func TestAzureReplayHealthBacklogContinuityUsesActualSampleInterval(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name     string
+		elapsed  time.Duration
+		age      time.Duration
+		ready    bool
+		previous bool
+		growing  int
+	}{
+		{"persistent_regular", 10 * time.Second, 10 * time.Second, true, true, 2},
+		{"persistent_short", 5 * time.Second, 5 * time.Second, true, true, 2},
+		{"persistent_delayed", 20 * time.Second, 20 * time.Second, true, true, 2},
+		{"replaced_delayed", 20 * time.Second, 15 * time.Second, true, true, 0},
+		{"fresh_batch", 10 * time.Second, time.Millisecond, true, true, 0},
+		{"unknown_age", 10 * time.Second, 0, true, true, 0},
+		{"stale_current", 10 * time.Second, 20 * time.Second, false, true, 0},
+		{"stale_previous", 10 * time.Second, 20 * time.Second, true, false, 0},
+		{"same_instant", 0, 20 * time.Second, true, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := replayHealthState{
+				at:       now,
+				previous: AzureReplayStats{AccountingReady: tc.previous, PendingRecords: 5},
+				growing:  1,
+			}
+			stats := AzureReplayStats{AccountingReady: tc.ready, PendingRecords: 11, OldestPendingAge: tc.age}
+			got := state.sample(now.Add(tc.elapsed), stats, replayLossCounters{}, 1<<20)
+			if state.growing != tc.growing {
+				t.Fatalf("growth streak=%d, want %d; event=%+v", state.growing, tc.growing, got)
+			}
+			warned := got != nil && slices.Contains(got.Causes, "ingress_exceeds_delivery")
+			if warned != (tc.growing >= 2) {
+				t.Fatalf("sustained-growth warning=%t, event=%+v", warned, got)
+			}
+		})
 	}
 }
 
