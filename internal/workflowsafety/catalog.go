@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/builtincmd"
 )
 
 // CatalogVersion identifies the supported effects and diagnostic contract.
@@ -35,6 +36,9 @@ func CommandEffects(t apiv1.Task) Effects {
 		return Effects{Changes: t.EffectiveWorkspace() == "" || t.EffectiveWorkspace() == apiv1.WorkspaceRepo}
 	}
 	kind := strings.TrimSpace(t.Inputs["kind"])
+	if kind == "ci-poll" || kind == "external-telemetry" {
+		return Effects{Known: true}
+	}
 	if t.Run == nil || t.Run.Script != "" || (kind != "" && kind != "shell") {
 		return Effects{}
 	}
@@ -58,14 +62,20 @@ func CommandEffects(t apiv1.Task) Effects {
 		if len(args) == 0 {
 			return Effects{Known: true, Changes: true, CodeSubject: true}
 		}
+		return Effects{}
 	case "pr-claim":
 		if len(args) == 0 || slices.Equal(args, []string{"--release"}) {
 			return Effects{Known: true}
 		}
+		return Effects{}
 	case "remediation-checkpoint":
 		if slices.Equal(args, []string{"--escalate"}) {
 			return Effects{Known: true, Parks: true}
 		}
+		return Effects{}
+	}
+	if builtincmd.Known(cmd[1]) {
+		return Effects{Known: true}
 	}
 	return Effects{}
 }
@@ -114,6 +124,24 @@ func selectionEffects(command string, args []string) Effects {
 		if len(args) == 0 || slices.Equal(args, []string{"--claim"}) {
 			return Effects{Known: true, NoWork: true}
 		}
+		if backlogQueryArgsKnown(args) {
+			return Effects{Known: true}
+		}
 	}
 	return Effects{}
+}
+
+func backlogQueryArgsKnown(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "--claim=false", "--claim=true",
+			"--reconcile", "--reconcile=false", "--reconcile=true",
+			"--release", "--release=false", "--release=true",
+			"--read-only", "--read-only=false", "--read-only=true":
+			continue
+		default:
+			return false
+		}
+	}
+	return len(args) > 0
 }

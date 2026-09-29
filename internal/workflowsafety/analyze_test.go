@@ -277,6 +277,35 @@ func TestSafetyCustomBoundaryAndInspectableSuppression(t *testing.T) {
 	}
 }
 
+func TestSafetyBuiltInStageCommandsAreCovered(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		task    apiv1.Task
+		known   bool
+		changes bool
+	}{
+		{name: "curation feedback", task: shell("check", "", "goobers", "backlog-health", "--feedback"), known: true},
+		{name: "backlog reconcile", task: shell("check", "", "goobers", "backlog-query", "--reconcile"), known: true},
+		{name: "open pull request", task: shell("check", "", "goobers", "open-pr"), known: true},
+		{name: "close out issue", task: shell("check", "", "goobers", "issue-close-out"), known: true},
+		{name: "push branch remains subject-changing", task: shell("check", "", "goobers", "push-branch"), known: true, changes: true},
+		{name: "ci poll kind", task: func() apiv1.Task {
+			task := shell("check", "", "goobers", "ci-poll")
+			task.Inputs = map[string]string{"kind": "ci-poll"}
+			return task
+		}(), known: true},
+		{name: "custom command", task: shell("check", "", "custom-evidence"), known: false},
+		{name: "malformed safety command", task: shell("check", "", "goobers", "apply-verdict", "--unknown"), known: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CommandEffects(tc.task)
+			if got.Known != tc.known || got.Changes != tc.changes {
+				t.Fatalf("CommandEffects(%v) = %+v, want known=%v changes=%v", tc.task.Run.Command, got, tc.known, tc.changes)
+			}
+		})
+	}
+}
+
 func TestSafetyEquivalentRulesAcrossDSLVersions(t *testing.T) {
 	for _, version := range []string{"2.0", "3.0"} {
 		t.Run(version, func(t *testing.T) {
