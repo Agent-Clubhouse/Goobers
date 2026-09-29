@@ -112,12 +112,24 @@ go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalLogsDurableHTTP$
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayBacklogAdmission$' -benchtime=5x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexedStats$' -benchtime=100x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexAudit$' -benchtime=3x -count=3
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexOpen$' -benchtime=3x -count=3 -timeout=20m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupAcknowledgedHistory$' -benchtime=14400x -count=3 -timeout=3m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupRetainedDirectorySweep$' -benchtime=3x -count=1 -timeout=45m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupCommitHint$' -benchtime=100000x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupRateControlledBurst$' -benchtime=1x -count=3 -timeout=30m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupNormalRate$' -benchtime=1x -count=3
 ```
+
+`BenchmarkAzureReplayIndexOpen` isolates opening a missing versus current
+manifest with zero or 12,000 tiny replay files. Preparation uses the production
+file publication/fsync path; preparation, priming, close and correctness checks
+are excluded from timing. Cold iterations reset only the private fixture's
+manifest, never its authoritative payloads. Warm iterations refresh the audit
+timestamp outside timing and verify it did not change during open; expired
+audits have their own benchmark above. Report source, Go version, OS, storage,
+antivirus and the full repeated results. These are warm-OS-cache component
+measurements, not daemon startup or delivery qualification. Run them only on
+an idle host, separately from whole-daemon load/soak measurements.
 
 The commands also work in PowerShell. Benchmarks are measurements, not hard
 wall-clock CI assertions. Keep their text output with the release evidence.
