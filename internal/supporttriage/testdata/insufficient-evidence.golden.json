@@ -1,0 +1,13 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "insufficient_evidence",
+  "confidence": "low",
+  "nextAction": "Request reproduction steps or a fresh diagnostics bundle with the failing run selected.",
+  "case": {
+    "fingerprint": ""
+  },
+  "cluster": {
+    "fingerprint": "",
+    "occurrenceCount": 0
+  }
+}

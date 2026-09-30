@@ -614,6 +614,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "output", takesArg: true, desc: "Archive path to write"},
 		{name: "json", desc: "Write the machine-readable document to stdout"},
 	},
+	"diagnostics triage": {
+		{name: "run", takesArg: true, desc: "Run id to classify"},
+		{name: "json", desc: "Write the machine-readable support-triage contract"},
+	},
 	"security-alerts-query": {
 		{name: "source", takesArg: true, values: []string{"code-scanning", "dependabot"}, desc: "Alert feed to read"},
 		{name: "state", takesArg: true, values: []string{"open", "dismissed", "fixed", "auto_dismissed", "all"}, desc: "Alert state filter (default open)"},

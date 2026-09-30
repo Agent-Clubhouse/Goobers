@@ -1,0 +1,29 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "external_dependency",
+  "confidence": "high",
+  "nextAction": "Route to the external provider or wait for provider recovery; do not file a Goobers defect yet.",
+  "evidence": [
+    {
+      "kind": "error",
+      "subject": "run-provider",
+      "detail": "provider_rate_limit: provider rate limit"
+    }
+  ],
+  "case": {
+    "runIds": [
+      "run-provider"
+    ],
+    "workflows": [
+      "workflow"
+    ],
+    "gaggles": [
+      "gaggle"
+    ],
+    "fingerprint": "failed|provider rate limit|provider_rate_limit|stage|workflow"
+  },
+  "cluster": {
+    "fingerprint": "failed|provider rate limit|provider_rate_limit|stage|workflow",
+    "occurrenceCount": 1
+  }
+}

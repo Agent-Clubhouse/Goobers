@@ -128,7 +128,7 @@ Advanced operator commands:
   claims release    force-release a claim through the live daemon or claims.lock
   config            inspect, materialize, and compare instance configuration
   config-seed       seed a private worker instance from a rendered configuration mirror
-  diagnostics       collect a portable, redacted support bundle
+  diagnostics       collect redacted support evidence or classify one run
   doctor            preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
   e2e kill-inject   perform one live S6 kill-matrix cell (pod-kill) against a real cluster
   e2e verify        verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
@@ -831,6 +831,8 @@ for reading a Goobers incident.
 Subcommands:
   bundle  write a redacted diagnostics archive (or --json to stdout)
 
+  triage  classify one run before filing a Goobers defect
+
 Default path is ".".
 
 ### diagnostics bundle
@@ -860,6 +862,20 @@ stdout instead. Two collections of the same instance state produce identical
 bytes apart from the collection timestamp.
 
 Exit codes: 0 = bundle written, 1 = collection failed, 2 = usage error.
+
+### diagnostics triage
+Usage: goobers diagnostics triage --run <id> [--json] [path]
+
+Classify one failed run from the redacted diagnostics evidence Goobers can
+collect from an instance directory. The output is a provider-neutral support
+case verdict for intake surfaces; it does not file, comment on, or mutate any
+issue. Ambiguous, contradictory, or incomplete evidence fails closed to
+`insufficient_evidence` rather than becoming a Goobers defect candidate.
+
+--json writes the versioned support-triage contract. Without --json, a short
+human-readable verdict is printed.
+
+Exit codes: 0 = triage written, 1 = collection failed, 2 = usage error.
 
 ### docs-churn
 Usage: goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] [--since <duration>] [--buffer-multiplier <float>] [--format churn-digest] [path]

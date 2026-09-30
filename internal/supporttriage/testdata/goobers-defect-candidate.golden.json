@@ -1,0 +1,29 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "goobers_defect_candidate",
+  "confidence": "medium",
+  "nextAction": "Ask for explicit confirmation before filing a sanitized Goobers issue.",
+  "evidence": [
+    {
+      "kind": "error",
+      "subject": "run-goobers",
+      "detail": "goobers_internal: goobers invariant violation reproduced on supported version"
+    }
+  ],
+  "case": {
+    "runIds": [
+      "run-goobers"
+    ],
+    "workflows": [
+      "workflow"
+    ],
+    "gaggles": [
+      "gaggle"
+    ],
+    "fingerprint": "failed|goobers invariant violation reproduced on supported version|goobers_internal|stage|workflow"
+  },
+  "cluster": {
+    "fingerprint": "failed|goobers invariant violation reproduced on supported version|goobers_internal|stage|workflow",
+    "occurrenceCount": 1
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "transient_failure",
+  "confidence": "high",
+  "nextAction": "Retry or gather repeated failures before filing a Goobers defect.",
+  "evidence": [
+    {
+      "kind": "error",
+      "subject": "run-transient",
+      "detail": "timeout: temporary timeout, try again"
+    }
+  ],
+  "case": {
+    "runIds": [
+      "run-transient"
+    ],
+    "workflows": [
+      "workflow"
+    ],
+    "gaggles": [
+      "gaggle"
+    ],
+    "fingerprint": "failed|stage|temporary timeout, try again|timeout|workflow"
+  },
+  "cluster": {
+    "fingerprint": "failed|stage|temporary timeout, try again|timeout|workflow",
+    "occurrenceCount": 1
+  }
+}

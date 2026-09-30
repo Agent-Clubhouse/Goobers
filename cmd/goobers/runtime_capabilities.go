@@ -113,6 +113,29 @@ func gaggleCLICommand() cliCommand {
 		withExamples("goobers gaggle export example", "goobers gaggle import --name copied-example example.bundle.json")
 }
 
+func diagnosticsCLICommand() cliCommand {
+	return groupCommand(
+		"diagnostics",
+		runDiagnostics,
+		subcommand("diagnostics bundle", "bundle", apicontract.ActionReadOnlyNavigation, runDiagnosticsBundle).
+			withHelp("write a portable, redacted support bundle", diagnosticsBundleHelp).
+			withExamples(
+				"goobers diagnostics bundle ./my-instance",
+				"goobers diagnostics bundle --run 8f2c --output /tmp/incident.tar.gz ./my-instance",
+				"goobers diagnostics bundle --pr 4123 --json ./my-instance",
+			),
+		subcommand("diagnostics triage", "triage", apicontract.ActionReadOnlyNavigation, runDiagnosticsTriage).
+			withHelp("classify one run before filing a Goobers defect", diagnosticsTriageHelp).
+			withExamples(
+				"goobers diagnostics triage --run 8f2c --json ./my-instance",
+				"goobers diagnostics triage --run 8f2c ./my-instance",
+			),
+	).
+		withSynopsis(synopsisByID["diagnostics"]).
+		withHelp("collect redacted support evidence or classify one run", diagnosticsHelp).
+		withExamples("goobers diagnostics bundle ./my-instance", "goobers diagnostics triage --run 8f2c --json ./my-instance")
+}
+
 func init() {
 	cliCommands = []cliCommand{
 		groupCommand("roots", runRoots,
@@ -227,20 +250,7 @@ func init() {
 			withHelp("scaffold a goober, workflow, or gaggle", scaffoldHelp).
 			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow", "goobers scaffold gaggle ledger --from example"),
 		gaggleCLICommand(),
-		groupCommand(
-			"diagnostics",
-			runDiagnostics,
-			subcommand("diagnostics bundle", "bundle", apicontract.ActionReadOnlyNavigation, runDiagnosticsBundle).
-				withHelp("write a portable, redacted support bundle", diagnosticsBundleHelp).
-				withExamples(
-					"goobers diagnostics bundle ./my-instance",
-					"goobers diagnostics bundle --run 8f2c --output /tmp/incident.tar.gz ./my-instance",
-					"goobers diagnostics bundle --pr 4123 --json ./my-instance",
-				),
-		).
-			withSynopsis(synopsisByID["diagnostics"]).
-			withHelp("collect a portable, redacted support bundle", diagnosticsHelp).
-			withExamples("goobers diagnostics bundle ./my-instance"),
+		diagnosticsCLICommand(),
 		groupCommand(
 			"agent-kit",
 			runAgentKit,
