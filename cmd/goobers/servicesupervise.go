@@ -59,6 +59,9 @@ func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps servi
 			Stderr:    supervisorStderr,
 		})
 		if err != nil {
+			if logErr := appendServiceFatalStartup(layout, err); logErr != nil {
+				pf(supervisorStderr, "error: append daemon startup log %s: %v\n", layout.DaemonLogFile(), logErr)
+			}
 			pf(supervisorStderr, "error: supervise daemon: %v\n", err)
 			return 1
 		}

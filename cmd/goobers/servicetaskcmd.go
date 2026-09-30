@@ -78,7 +78,12 @@ func runServiceTaskStart(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err != nil {
-		pf(stderr, "error: start scheduled task: %v; inspect daemon log %s\n", err, instance.NewLayout(root).DaemonLogFile())
+		layout := instance.NewLayout(root)
+		pf(stderr, "error: start scheduled task: %v", err)
+		if diagnostic := latestServiceFatalStartup(layout.DaemonLogFile()); diagnostic != "" {
+			pf(stderr, "; last startup failure: %s", diagnostic)
+		}
+		pf(stderr, "; inspect daemon log %s\n", layout.DaemonLogFile())
 		return 1
 	}
 	pf(stdout, "scheduled task running as %s\n", status.Account)
@@ -119,7 +124,12 @@ func runServiceTaskStatus(args []string, stdout, stderr io.Writer) int {
 	} else {
 		pf(stdout, "scheduled task is %s as %s", status.State, status.Account)
 		if status.LastFailure != "" {
-			pf(stdout, " (last failure: %s; inspect daemon log %s)", status.LastFailure, instance.NewLayout(root).DaemonLogFile())
+			layout := instance.NewLayout(root)
+			pf(stdout, " (last failure: %s", status.LastFailure)
+			if diagnostic := latestServiceFatalStartup(layout.DaemonLogFile()); diagnostic != "" {
+				pf(stdout, "; last startup failure: %s", diagnostic)
+			}
+			pf(stdout, "; inspect daemon log %s)", layout.DaemonLogFile())
 		}
 		pln(stdout, "")
 	}

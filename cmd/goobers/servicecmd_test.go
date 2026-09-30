@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/selfupdate"
 	daemonservice "github.com/goobers/goobers/internal/service"
 )
 
@@ -219,6 +221,56 @@ func TestServiceTaskStatusReportsLastFailureAndDaemonLog(t *testing.T) {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 	for _, want := range []string{"last failure: 0x00000001", instance.NewLayout(root).DaemonLogFile()} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, missing %q", stdout, want)
+		}
+	}
+}
+
+func TestExistingScheduledTaskStartupFailureIsCapturedInDaemonLogAndStatus(t *testing.T) {
+	root := serviceTestInstance(t)
+	diagnostic := `harness copilot preflight probe failed with configured runner.harnessPreflightArgs.copilot ["--obsolete-preflight"]: unknown flag: --obsolete-preflight; the installed CLI may no longer accept these flags`
+	deps := serviceSuperviseDeps{
+		runSupervisor: func(context.Context, selfupdate.SupervisorOptions) error {
+			return errors.New(diagnostic)
+		},
+		isWindowsService: func() (bool, error) { return false, nil },
+		runWindowsService: func(string, func(context.Context) int) (int, error) {
+			t.Fatal("Windows service runner called by scheduled-task supervisor path")
+			return 0, nil
+		},
+		setupSignalContext: func() (context.Context, func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel
+		},
+	}
+	code := runServiceSuperviseWith([]string{root}, io.Discard, io.Discard, deps)
+	if code != 1 {
+		t.Fatalf("service supervisor code = %d, want startup failure", code)
+	}
+	logPath := instance.NewLayout(root).DaemonLogFile()
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read daemon log: %v", err)
+	}
+	for _, want := range []string{serviceFatalStartupMarker, diagnostic} {
+		if !strings.Contains(string(log), want) {
+			t.Fatalf("daemon log = %q, missing %q", log, want)
+		}
+	}
+
+	manager := identityTaskManager{&fakeDaemonServiceManager{status: daemonservice.Status{
+		Installed:   true,
+		State:       "ready",
+		Account:     `CONTOSO\alice`,
+		LastFailure: "0x00000001",
+	}}}
+	useFakeScheduledTaskManager(t, manager)
+	code, stdout, stderr := runArgs(t, "service", "task-status", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("task-status code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"last startup failure", diagnostic, logPath} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, missing %q", stdout, want)
 		}
