@@ -389,11 +389,22 @@ untrusted workflows. Child processes have ambient provider/telemetry credential
 variables removed. On Linux make the daemon executable readable/executable by
 the workload identity, not just the host root user.
 
+The demo gaggle contains GitHub-shaped project/backlog names, but the synthetic
+load driver configures no repository connections and calls only the bundled
+`__demo-provider` in scratch workspaces. All four stages request `network: none`
+on platforms that support that sandbox. The driver now refuses to start if the
+demo acquires a repository connection, networked/non-demo stage or stage
+capability. Thus the workload does not call the GitHub API; GitHub Actions may
+still contact GitHub to run CI, and the Windows test host is not packet-isolated.
+
 Scenarios: `baseline`, `enabled`, `outage-recovery` (503 and stalled requests),
-`tiny-files`, `near-cap`, `legacy`, `spool-failure`, and `crash` (two lifetimes).
-`all` runs the first seven sequentially. `-recovery-after 60s` sets restoration
-time for prefills; use at least three minutes for their initial drain checks.
-`-profile health|standard|diagnostic` selects collection. Health-only and disabled
+`near-cap`, `tiny-files`, `legacy`, `spool-failure`, `network-faults`,
+`disk-full` (requires an explicit dedicated `-disk-full-volume`), `crash`
+(two lifetimes), `startup`, and `azure` (requires an explicit connection-string
+environment reference). `all` runs the first seven sequentially.
+`-recovery-after 60s` sets restoration time for prefills; use at least three
+minutes for their initial drain checks. `-profile health|journal|standard|diagnostic`
+selects collection. Health-only and disabled
 profiles do not assert run-journal export. The driver fails on workflow/health
 errors, measurement errors, shutdown over 20 seconds, or unexplained missing
 run/spool records in eligible loopback scenarios. Burst overload tests need a
