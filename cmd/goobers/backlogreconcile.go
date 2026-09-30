@@ -289,6 +289,7 @@ func reconcileBacklogMetadataPhase(
 	}
 	stopCursor := cursor.Cursor
 	wrapped := false
+	skippedDeferred := false
 	seen := map[string]bool{}
 	phaseStartSpent := budget.Spent()
 	for budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
@@ -323,24 +324,42 @@ func reconcileBacklogMetadataPhase(
 		if len(items) == 0 {
 			if !pageInfo.HasNext {
 				if result.Cursor.Cursor != "" && !wrapped && budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
-					result.Cursor = backlogScanCursor{}
+					result.Cursor = backlogScanCursor{Deferred: result.Cursor.Deferred}
 					wrapped = true
 					continue
 				}
-				return result, nil
+				return finishBacklogReconcilePhase(result, skippedDeferred), nil
 			}
-			result.Cursor = next
+			result.Cursor = carryDeferredBacklogCursor(result.Cursor, next)
 			continue
 		}
 		item := items[0]
 		if seen[item.ID] || (wrapped && backlogReconcileCursorReached(next.Cursor, stopCursor)) {
 			result.Cursor = backlogScanCursor{}
-			return result, nil
+			return finishBacklogReconcilePhase(result, skippedDeferred), nil
+		}
+		if result.Cursor.Deferred == item.ID {
+			skippedDeferred = true
+			result.Examined++
+			result.Cursor = next
+			if !pageInfo.HasNext {
+				result.Cursor = backlogScanCursor{}
+				return finishBacklogReconcilePhase(result, skippedDeferred), nil
+			}
+			continue
 		}
 		seen[item.ID] = true
+		if budget.Spent()-phaseStartSpent >= phaseBudget || !budget.Available() {
+			result.Examined++
+			result.Cursor = deferredBacklogScanCursor(next, item.ID)
+			result.Truncated = true
+			return result, errBacklogReconcileBudgetExhausted
+		}
 		reconciled, err := reconcileBacklogMetadataItem(ctx, l, provider, repo, item, observedAt, stalenessPolicy, blockedRecords, botLogin, budget, now)
 		if err != nil {
 			if errors.Is(err, errBacklogReconcileBudgetExhausted) {
+				result.Examined++
+				result.Cursor = deferredBacklogScanCursor(next, item.ID)
 				result.Truncated = true
 			}
 			return result, err
@@ -349,15 +368,15 @@ func reconcileBacklogMetadataPhase(
 		if reconciled {
 			result.Reconciled++
 		}
-		result.Cursor = next
+		result.Cursor = carryDeferredBacklogCursor(result.Cursor, next)
 		if !pageInfo.HasNext {
 			if cursor.Cursor != "" && !wrapped && budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
-				result.Cursor = backlogScanCursor{}
+				result.Cursor = backlogScanCursor{Deferred: result.Cursor.Deferred}
 				wrapped = true
 				continue
 			}
 			result.Cursor = backlogScanCursor{}
-			return result, nil
+			return finishBacklogReconcilePhase(result, skippedDeferred), nil
 		}
 	}
 	result.Truncated = true
@@ -365,6 +384,23 @@ func reconcileBacklogMetadataPhase(
 		return result, errBacklogReconcileBudgetExhausted
 	}
 	return result, nil
+}
+
+func finishBacklogReconcilePhase(result backlogReconcilePhaseResult, skippedDeferred bool) backlogReconcilePhaseResult {
+	if skippedDeferred {
+		result.Truncated = true
+	}
+	return result
+}
+
+func deferredBacklogScanCursor(next backlogScanCursor, itemID string) backlogScanCursor {
+	next.Deferred = itemID
+	return next
+}
+
+func carryDeferredBacklogCursor(current, next backlogScanCursor) backlogScanCursor {
+	next.Deferred = current.Deferred
+	return next
 }
 
 func reconcileBacklogMetadataItem(

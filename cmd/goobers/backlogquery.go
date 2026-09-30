@@ -80,7 +80,8 @@ const backlogScanPageSize = 100
 const backlogEligibilityQuotaFloor = 0.10
 
 type backlogScanCursor struct {
-	Cursor string `json:"cursor,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
+	Deferred string `json:"deferred,omitempty"`
 }
 
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"

@@ -350,6 +350,65 @@ func TestReconcileBacklogMetadataRequestBudgetPersistsProgress(t *testing.T) {
 	}
 }
 
+func TestReconcileBacklogMetadataDefersOverBudgetTrackingInspection(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_INPUT_RECONCILESCANLIMIT", "10")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	now := time.Now().UTC()
+	server.addIssue(7, "Tracking parent with many checklist children", "goobers:approved", providers.LabelTracking, providers.LabelReady)
+	var body strings.Builder
+	for id := 100; id < 112; id++ {
+		server.addIssue(id, fmt.Sprintf("Closed child %d", id))
+		server.setIssueState(id, "closed")
+		fmt.Fprintf(&body, "- [x] #%d\n", id)
+	}
+	server.addIssue(8, "Later open drift", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.addIssue(9, "Later closed drift", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.setIssueState(9, "closed")
+	server.setIssueUpdatedAt(9, now.Add(-time.Hour))
+	server.mu.Lock()
+	server.issues[7].body = body.String()
+	server.mu.Unlock()
+
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	first, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if first.Reconciled != 0 || first.Scan.Complete || !first.Scan.WorkRemaining || first.Scan.OpenExamined != 1 {
+		t.Fatalf("first result = %#v, want over-budget tracking item deferred without pinning completion", first)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelTracking, providers.LabelReady}, nil)
+
+	second, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		func() time.Time { return now.Add(time.Minute) },
+	)
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if second.Reconciled != 2 || second.Scan.OpenExamined == 0 || second.Scan.ClosedExamined == 0 {
+		t.Fatalf("second result = %#v, want later open items and the closed phase serviced after restart", second)
+	}
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	assertFakeIssueLabels(t, server, 9, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelTracking, providers.LabelReady}, nil)
+}
+
 func TestReconcileBacklogMetadataElapsedDeadlinePersistsProgress(t *testing.T) {
 	root := initDemo(t)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
@@ -514,7 +573,6 @@ func TestReconcileBacklogMetadataCursorResumeWrapsAcrossRestarts(t *testing.T) {
 	if third.Reconciled == 0 || third.Scan.OpenExamined == 0 || third.Scan.Spent > third.Scan.Budget {
 		t.Fatalf("third result = %#v, want bounded open reservation progress", third)
 	}
-	assertFakeIssueLabels(t, server, 10, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 	assertFakeIssueLabels(t, server, 11, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 
 	fourth, err := reconcileBacklogMetadataDetailed(
@@ -532,6 +590,7 @@ func TestReconcileBacklogMetadataCursorResumeWrapsAcrossRestarts(t *testing.T) {
 	if fourth.Scan.OpenExamined == 0 || fourth.Scan.Spent > fourth.Scan.Budget {
 		t.Fatalf("fourth result = %#v, want open cursor to keep moving fairly", fourth)
 	}
+	assertFakeIssueLabels(t, server, 10, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 }
 
 func TestReconcileBacklogMetadataCleansClosedClaimWithinWindow(t *testing.T) {
