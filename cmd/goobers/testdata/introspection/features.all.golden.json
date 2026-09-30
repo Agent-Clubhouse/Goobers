@@ -605,6 +605,41 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.artifactInputs",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
+      "name": "task.artifactInputs.from",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
+      "name": "task.artifactSlots",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
+      "name": "task.artifactSlots.maxSize",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
+      "name": "task.artifactSlots.mediaType",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
+      "name": "task.artifactSlots.name",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
+      "name": "task.artifactSlots.schemaPath",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
       "name": "task.capabilities",
       "stability": "ga",
       "sinceVersion": "dev"
