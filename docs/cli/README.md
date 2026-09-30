@@ -3005,7 +3005,12 @@ $ goobers pr-select
 check WSL full-isolation readiness and optionally hand off a command
 
 ~~~text
-Usage: goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
+Usage: goobers preflight [--instance <path> --workflow <name> [--execution-identity actual] [--json]]
+       goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
+
+With --instance and --workflow, emit the versioned runtime preflight report for
+one workflow without provider mutation, package installation, repository writes,
+model execution, or external credential/harness probes.
 
 On Windows, verify that the selected or default WSL distro can run the full
 isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
