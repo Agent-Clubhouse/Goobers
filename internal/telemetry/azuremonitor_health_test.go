@@ -71,6 +71,107 @@ func TestAzureReplayShutdownEmitsFinalCounterSnapshot(t *testing.T) {
 	}
 }
 
+func TestAzureReplayInspectLiveRootFallsBackWhenManifestBusy(t *testing.T) {
+	root := t.TempDir()
+	s, err := newAzureReplaySpool(azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20}, func(context.Context, []byte) error { return errors.New("offline") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = s.close(ctx)
+	})
+	if err = s.submit(context.Background(), []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := s.index.statsDB.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := InspectAzureReplayRoot(root)
+	if err = conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !stats.AccountingReady || stats.PendingRecords != 1 || stats.PendingFiles != 1 || stats.Accepted != 1 {
+		t.Fatalf("busy manifest inspection lost ready accounting: %+v", stats)
+	}
+}
+
+func TestAzureReplayInspectBusyRootDoesNotMarkPartialScanReady(t *testing.T) {
+	root := t.TempDir()
+	index, _, err := acquireReplayIndex(azureReplayConfig{root: root, dir: filepath.Join(root, "journal")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = index.release(ctx)
+	})
+	if err = index.wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "journal", "00000000000000000000-poison.ndjson")
+	if err = os.WriteFile(path, []byte("not a replay file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unlockReplayFile := lockReplayFileForTest(t, path)
+	defer unlockReplayFile()
+	conn, err := index.statsDB.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := InspectAzureReplayRoot(root)
+	if err = conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if stats.AccountingReady {
+		t.Fatalf("partial busy-manifest scan reported ready accounting: %+v", stats)
+	}
+}
+
+func TestAzureReplayInspectBusyRootPreservesBootstrapNotReady(t *testing.T) {
+	root := t.TempDir()
+	index, _, err := acquireReplayIndex(azureReplayConfig{root: root, dir: filepath.Join(root, "journal")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = index.release(ctx)
+	})
+	if err = index.wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockBootstrap(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := bootstrapDir(root, "journal")
+	if err = ensureBootstrapStream(dir); err != nil {
+		unlock()
+		t.Fatal(err)
+	}
+	if _, err = writeAzureReplayBatch(dir, "external.ndjson", time.Now(), []byte("{\"external\":true}\n")); err != nil {
+		unlock()
+		t.Fatal(err)
+	}
+	unlock()
+	conn, err := index.statsDB.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := InspectAzureReplayRoot(root)
+	if err = conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if stats.AccountingReady {
+		t.Fatalf("busy manifest inspection missed unindexed bootstrap batch: %+v", stats)
+	}
+}
+
 func TestAzureReplayHealthGrowthLossRateLimitAndRecovery(t *testing.T) {
 	now := time.Now()
 	state := replayHealthState{}
