@@ -192,3 +192,94 @@ func TestCheckIssueStalenessADODetectsStaleAndDoesNotWriteRemediationLabel(t *te
 		t.Fatalf("stdout = %q, want warning about ADO remediation write being skipped", stdout)
 	}
 }
+
+func TestCheckIssueStalenessADOUnchangedAcceptanceCriteriaIsNotStale(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_INPUT_PULLNUMBER", "361")
+
+	snapshotAt := time.Now().UTC().Truncate(time.Second)
+	description := "Implement the requested behavior."
+	criteria := "- Preserve acceptance criteria."
+	pin := formatIssueSpecPin(
+		"1458",
+		snapshotAt.Format(time.RFC3339),
+		"Unchanged criteria item",
+		providers.ComposeWorkItemBody(description, criteria),
+	)
+
+	prBase := "/" + repo.Owner + "/" + repo.Project + "/_apis/git/repositories/" + repo.Name + "/pullrequests"
+	mux := http.NewServeMux()
+	mux.HandleFunc(prBase+"/361", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{
+			"pullRequestId":         361,
+			"status":                "active",
+			"description":           "Implements PBI 1458\n\nFixes #1458\n" + pin,
+			"sourceRefName":         "refs/heads/goobers/tb-ado-implementation/run-361",
+			"targetRefName":         "refs/heads/main",
+			"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
+			"lastMergeTargetCommit": map[string]string{"commitId": "base-sha"},
+			"repository": map[string]interface{}{
+				"id": "repo-guid", "name": repo.Name,
+				"project": map[string]string{"id": "proj-guid", "name": repo.Project},
+			},
+		})
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitemtypes/Issue/states", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{"value": []map[string]interface{}{{"name": "Active", "category": "Proposed"}}})
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/1458", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected method %s on workitems/1458", r.Method)
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSONResp(t, w, map[string]interface{}{
+			"id":  1458,
+			"rev": 1,
+			"url": "https://dev.azure.com/example/project/_apis/wit/workitems/1458",
+			"fields": map[string]interface{}{
+				"System.WorkItemType":                      "Issue",
+				"System.Title":                             "Unchanged criteria item",
+				"System.Description":                       description,
+				"Microsoft.VSTS.Common.AcceptanceCriteria": criteria,
+				"System.ChangedDate":                       snapshotAt.Format(time.RFC3339),
+				"System.State":                             "Active",
+			},
+		})
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/361", func(_ http.ResponseWriter, r *http.Request) {
+		t.Fatalf("wit/workitems/361 %s — unchanged ADO criteria should not trigger stale mutation", r.Method)
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	original := newADOProviderForStage
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
+			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = original })
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	code, stdout, stderr := runArgs(t, "check-issue-staleness", root)
+	if code != 0 {
+		t.Fatalf("check-issue-staleness: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readIssueStalenessResult(t, dir)
+	if result["issueStale"] != "false" {
+		t.Fatalf("result = %+v, want issueStale=false for unchanged ADO acceptance criteria", result)
+	}
+	if result["number"] != "361" {
+		t.Fatalf("result = %+v, want number=361", result)
+	}
+}

@@ -123,10 +123,11 @@ func listADOSeedItems(ctx context.Context, seeder connectADOSeeder, repo provide
 			return "", fmt.Errorf("azure Boards seed scan exceeded its page limit")
 		}
 		for _, item := range items {
-			if bodies.Len()+len(item.Body) > 4*1024*1024 {
+			body := item.BodyWithAcceptanceCriteria()
+			if bodies.Len()+len(body) > 4*1024*1024 {
 				return "", fmt.Errorf("azure Boards seed scan exceeded its size limit")
 			}
-			bodies.WriteString(item.Body)
+			bodies.WriteString(body)
 			bodies.WriteByte('\n')
 		}
 		if !page.HasNext {

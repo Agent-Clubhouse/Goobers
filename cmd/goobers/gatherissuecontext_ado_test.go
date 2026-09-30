@@ -44,10 +44,11 @@ func adoIssueContextServer(t *testing.T, repo providers.RepositoryRef, status, t
 		writeJSONResp(t, w, map[string]any{
 			"id": 945,
 			"fields": map[string]any{
-				"System.WorkItemType": "Task",
-				"System.Title":        "Originating work item",
-				"System.State":        "Active",
-				"System.Description":  "## Acceptance criteria\n\n- Include this body.",
+				"System.WorkItemType":                      "Task",
+				"System.Title":                             "Originating work item",
+				"System.State":                             "Active",
+				"System.Description":                       "Implement the requested behavior.",
+				"Microsoft.VSTS.Common.AcceptanceCriteria": "- Include this body.",
 			},
 		})
 	})
@@ -123,7 +124,8 @@ func TestGatherIssueContextOnADO(t *testing.T) {
 		t.Fatalf("issue context = %#v, want the one resolvable closing work item", got.GatherIssueContext)
 	}
 	issue := got.GatherIssueContext.Issues[0]
-	if issue.Number != "945" || issue.Title != "Originating work item" || issue.Body != "## Acceptance criteria\n\n- Include this body." {
+	if issue.Number != "945" || issue.Title != "Originating work item" ||
+		issue.Body != "Implement the requested behavior.\n\n## Acceptance Criteria\n\n- Include this body." {
 		t.Fatalf("issue = %#v", issue)
 	}
 	if got.SelectedNumber != "77" || got.GatherPRContext.HeadSHA != "head-sha" {

@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	adoCommentPageSize = 200
-	adoWIQLPageSize    = 20000
-	adoClaimRetries    = 4
-	adoLinkRetries     = 4
-	adoMaxTagLength    = 400
-	adoClaimTagPrefix  = "goobers:claim-run:"
+	adoCommentPageSize         = 200
+	adoWIQLPageSize            = 20000
+	adoClaimRetries            = 4
+	adoLinkRetries             = 4
+	adoMaxTagLength            = 400
+	adoClaimTagPrefix          = "goobers:claim-run:"
+	adoAcceptanceCriteriaField = "Microsoft.VSTS.Common.AcceptanceCriteria"
 
 	// adoRequirementCategory is the process-agnostic category ADO-N27 resolves
 	// a default create type from: its defaultWorkItemType is "User Story" on
@@ -1019,29 +1020,31 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 	labels := canonicalADOLabels(adoVisibleLabels(adoRawTags(item)), nil)
 	parent, links, hierarchy := adoHierarchy(item.Relations)
 	updated := timeField(item.Fields, "System.ChangedDate")
+	acceptanceCriteria := stringField(item.Fields, adoAcceptanceCriteriaField)
 	return WorkItem{
-		Provider:        ProviderADO,
-		ID:              strconv.Itoa(item.ID),
-		ExternalID:      strconv.Itoa(item.Rev),
-		Revision:        strconv.Itoa(item.Rev),
-		Type:            stringField(item.Fields, "System.WorkItemType"),
-		Title:           stringField(item.Fields, "System.Title"),
-		Body:            stringField(item.Fields, "System.Description"),
-		Labels:          labels,
-		State:           state,
-		Status:          statusFromLabels(labels, string(status)),
-		Assignee:        stringField(item.Fields, "System.AssignedTo"),
-		AssigneeAliases: identityAliases(item.Fields, "System.AssignedTo"),
-		Links:           links,
-		Parent:          parent,
-		Hierarchy:       hierarchy,
-		URL:             item.URL,
-		CreatedAt:       timeField(item.Fields, "System.CreatedDate"),
-		UpdatedAt:       updated,
-		Fields:          adoWorkItemFields(item),
-		BlockedByCount:  adoBlockedByCount(item.Relations),
-		Raw:             item,
-		Integrity:       apiintegrity.Unapproved,
+		Provider:           ProviderADO,
+		ID:                 strconv.Itoa(item.ID),
+		ExternalID:         strconv.Itoa(item.Rev),
+		Revision:           strconv.Itoa(item.Rev),
+		Type:               stringField(item.Fields, "System.WorkItemType"),
+		Title:              stringField(item.Fields, "System.Title"),
+		Body:               ComposeWorkItemBody(stringField(item.Fields, "System.Description"), acceptanceCriteria),
+		AcceptanceCriteria: acceptanceCriteria,
+		Labels:             labels,
+		State:              state,
+		Status:             statusFromLabels(labels, string(status)),
+		Assignee:           stringField(item.Fields, "System.AssignedTo"),
+		AssigneeAliases:    identityAliases(item.Fields, "System.AssignedTo"),
+		Links:              links,
+		Parent:             parent,
+		Hierarchy:          hierarchy,
+		URL:                item.URL,
+		CreatedAt:          timeField(item.Fields, "System.CreatedDate"),
+		UpdatedAt:          updated,
+		Fields:             adoWorkItemFields(item),
+		BlockedByCount:     adoBlockedByCount(item.Relations),
+		Raw:                item,
+		Integrity:          apiintegrity.Unapproved,
 	}
 }
 

@@ -117,14 +117,14 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 				return failProviderStage(stderr, fmt.Sprintf("read pinned issue #%s", pin.IssueID), issueErr, resultFile)
 			default:
 				refreshedTitle = item.Title
-				refreshedBody = item.Body
+				refreshedBody = item.BodyWithAcceptanceCriteria()
 				if item.UpdatedAt != nil {
 					refreshedUpdatedAt = item.UpdatedAt.Format(time.RFC3339)
 				} else {
 					refreshedUpdatedAt = pin.UpdatedAt
 				}
 				if pin.SpecDigest != "" {
-					stale = issueSpecDigest(item.Title, item.Body) != pin.SpecDigest
+					stale = issueSpecDigest(item.Title, item.BodyWithAcceptanceCriteria()) != pin.SpecDigest
 				} else {
 					stale = item.UpdatedAt != nil && item.UpdatedAt.After(pinnedAt)
 				}
