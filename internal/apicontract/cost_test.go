@@ -61,14 +61,6 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		if route.ID == RouteCredentialResolve {
 			continue
 		}
-		// Run cancellation is a CLI maintenance operation that synchronously
-		// waits through runner cancellation and terminalization grace. It does
-		// not use the Portal's ten-second JSON client, and the longer budget is
-		// what lets the server return the definitive cancel outcome instead of
-		// causing a client-side transport timeout.
-		if route.ID == RouteCancelRun {
-			continue
-		}
 		// Worker recovery uploads stream a bounded binary archive; they do
 		// not use the Portal's JSON client or its ten-second abort.
 		if route.ID == RouteRunRecoveryPublish {
@@ -235,19 +227,6 @@ func knownCostClass(class CostClass) bool {
 		return true
 	}
 	return false
-}
-
-func TestCancelRunBudgetUsesMutationContractBudget(t *testing.T) {
-	route, ok := V1Route(RouteCancelRun)
-	if !ok {
-		t.Fatal("cancel route is not registered")
-	}
-	if route.Budget != CancelBudget {
-		t.Fatalf("cancelRun budget = %s, want CancelBudget (%s)", route.Budget, CancelBudget)
-	}
-	if CancelBudget != MutationBudget {
-		t.Fatalf("CancelBudget = %s, want generic MutationBudget %s", CancelBudget, MutationBudget)
-	}
 }
 
 // TestBlobBudgetsExceedTheClientAbort documents a real mismatch rather than

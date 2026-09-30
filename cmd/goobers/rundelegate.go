@@ -409,13 +409,13 @@ func triggerRequestQueueDeadline(req triggerRequest, staleLegacyMissingDeadline 
 		if staleLegacyMissingDeadline {
 			return req.CreatedAt.Add(triggerRequestTimeout(req)), true
 		}
-		return time.Time{}, false
+		return req.CreatedAt.Add(triggerResponseWait()), true
 	}
 	maxDeadline := req.CreatedAt.Add(triggerRequestTimeout(req))
 	if req.Deadline.Before(maxDeadline) {
 		return req.Deadline, true
 	}
-	return time.Time{}, false
+	return req.CreatedAt.Add(triggerResponseWait()), true
 }
 
 func triggerAttemptContext(ctx context.Context, req triggerRequest, startedAt time.Time) (context.Context, context.CancelFunc, time.Time) {

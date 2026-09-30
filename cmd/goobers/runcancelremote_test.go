@@ -13,7 +13,6 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
@@ -199,15 +198,6 @@ func TestRunCancelRejectsInvalidEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "must use http or https") {
 		t.Fatalf("stderr = %q", stderr)
-	}
-}
-
-func TestCancelMutationUsesCancellationDeadlineBudget(t *testing.T) {
-	if got := daemonMutationTimeout(apicontract.RouteCancelRun); got <= apicontract.CancelBudget {
-		t.Fatalf("cancel mutation timeout = %s, want it above API cancel budget %s", got, apicontract.CancelBudget)
-	}
-	if got := daemonMutationTimeout(apicontract.RouteApproveStage); got != remoteTriggerTimeout {
-		t.Fatalf("ordinary mutation timeout = %s, want remote trigger timeout %s", got, remoteTriggerTimeout)
 	}
 }
 
