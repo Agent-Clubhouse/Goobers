@@ -59,7 +59,7 @@ func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
 	if root == "" {
 		root, stream = cfg.dir, ""
 	}
-	absolute, err := filepath.Abs(root)
+	absolute, err := canonicalReplayRoot(root)
 	if err != nil {
 		return "", "", err
 	}
@@ -67,6 +67,17 @@ func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
 	// still coordinate aliases across index handles; initialization retries all
 	// filesystem work on its background goroutine.
 	return filepath.Clean(absolute), stream, nil
+}
+
+func canonicalReplayRoot(root string) (string, error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	if canonical, err := filepath.EvalSymlinks(absolute); err == nil {
+		absolute = canonical
+	}
+	return filepath.Clean(absolute), nil
 }
 
 func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error) {
@@ -578,12 +589,9 @@ func (x *azureReplayIndex) stats(ctx context.Context, stream string, now time.Ti
 // A live root uses its shared read-only pool; an external health command only
 // opens an existing manifest read-only. No scan or new exporter is started.
 func inspectReplayIndex(root string) (AzureReplayStats, bool) {
-	root, err := filepath.Abs(root)
+	root, err := canonicalReplayRoot(root)
 	if err != nil {
 		return AzureReplayStats{}, false
-	}
-	if canonical, err := filepath.EvalSymlinks(root); err == nil {
-		root = canonical
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -591,8 +599,17 @@ func inspectReplayIndex(root string) (AzureReplayStats, bool) {
 	x := azureReplayIndexes.roots[root]
 	azureReplayIndexes.Unlock()
 	if x != nil {
-		stats, _ := x.stats(ctx, "*", time.Now())
-		return stats, true
+		if stats, err := x.stats(ctx, "*", time.Now()); err == nil {
+			return stats, true
+		}
+		select {
+		case <-x.ready:
+			if x.err == nil {
+				return AzureReplayStats{AccountingReady: !x.hasBootstrapFiles()}, false
+			}
+		default:
+		}
+		return AzureReplayStats{}, false
 	}
 	path := filepath.Join(root, azureReplayIndexName)
 	if _, err = os.Stat(path); err != nil {
