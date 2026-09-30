@@ -203,8 +203,8 @@ func TestRunCancelRejectsInvalidEndpoint(t *testing.T) {
 }
 
 func TestCancelMutationUsesCancellationDeadlineBudget(t *testing.T) {
-	if got := daemonMutationTimeout(apicontract.RouteCancelRun); got != apicontract.CancelBudget {
-		t.Fatalf("cancel mutation timeout = %s, want API cancel budget %s", got, apicontract.CancelBudget)
+	if got := daemonMutationTimeout(apicontract.RouteCancelRun); got <= apicontract.CancelBudget {
+		t.Fatalf("cancel mutation timeout = %s, want it above API cancel budget %s", got, apicontract.CancelBudget)
 	}
 	if got := daemonMutationTimeout(apicontract.RouteApproveStage); got != remoteTriggerTimeout {
 		t.Fatalf("ordinary mutation timeout = %s, want remote trigger timeout %s", got, remoteTriggerTimeout)

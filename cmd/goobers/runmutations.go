@@ -276,7 +276,7 @@ func callDaemonMutationAPIWithKey(
 
 func daemonMutationTimeout(routeID apicontract.RouteID) time.Duration {
 	if routeID == apicontract.RouteCancelRun {
-		return apicontract.CancelBudget
+		return remoteTriggerTimeout
 	}
 	return remoteTriggerTimeout
 }
