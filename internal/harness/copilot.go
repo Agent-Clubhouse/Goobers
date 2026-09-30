@@ -690,17 +690,14 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			probeKind = "launcher authentication probe"
 		}
 		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (%s)", bin, authCheckArgs, probeKind)
-		res, err := c.runner().Run(ctx, ProcessRequest{
+		authReq := ProcessRequest{
 			Command:            authCommand,
 			Dir:                authDir,
 			Env:                authEnv,
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
-		})
-		if err != nil || res.ExitCode != 0 {
-			if copilotRemoteExportUnsupported(res) {
-				return PreflightInfo{}, copilotRemoteExportUnsupportedError(version)
-			}
-			return PreflightInfo{}, c.copilotAuthProbeError(ctx, authProbe, res, err)
+		}
+		if err := c.runCopilotAuthProbe(ctx, authProbe, authReq, version, sessionContract.AuthProbe != nil); err != nil {
+			return PreflightInfo{}, err
 		}
 		if sessionTranscript != "" {
 			if err := verifyCopilotSessionTranscript(sessionTranscript); err != nil {
@@ -715,8 +712,29 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	return PreflightInfo{Version: version}, nil
 }
 
-func (c *CopilotAdapter) copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {
-	err := copilotAuthProbeError(ctx, probe, result, runErr)
+func (c *CopilotAdapter) runCopilotAuthProbe(ctx context.Context, probe string, req ProcessRequest, version string, launcherProbe bool) error {
+	res, err := c.runner().Run(ctx, req)
+	if err == nil && res.ExitCode == 0 {
+		return nil
+	}
+	if copilotRemoteExportUnsupported(res) {
+		return copilotRemoteExportUnsupportedError(version)
+	}
+	if !shouldRetryCopilotLauncherAuthProbe(ctx, res, err, launcherProbe) {
+		return c.copilotAuthProbeError(ctx, probe, res, err, launcherProbe)
+	}
+	retryRes, retryErr := c.runner().Run(ctx, req)
+	if retryErr == nil && retryRes.ExitCode == 0 {
+		return nil
+	}
+	if copilotRemoteExportUnsupported(retryRes) {
+		return copilotRemoteExportUnsupportedError(version)
+	}
+	return c.copilotAuthProbeError(ctx, probe, retryRes, retryErr, launcherProbe)
+}
+
+func (c *CopilotAdapter) copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error, launcherProbe bool) error {
+	err := copilotAuthProbeError(ctx, probe, result, runErr, launcherProbe)
 	// A timeout or cancellation says nothing about flag compatibility, so
 	// only a probe the CLI actually rejected names the configured args.
 	if len(c.AuthProbeExtraArgs) == 0 || errors.Is(err, ErrTimeout) || errors.Is(err, ErrCanceled) {
@@ -729,12 +747,14 @@ func (c *CopilotAdapter) copilotAuthProbeError(ctx context.Context, probe string
 	)
 }
 
-func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {
+func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error, launcherProbe bool) error {
 	switch {
 	case errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return preflightProbeError(probe, result, errors.Join(ErrTimeout, context.DeadlineExceeded), "")
 	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		return preflightProbeError(probe, result, errors.Join(ErrCanceled, context.Canceled), "")
+	case launcherProbe && copilotLauncherAuthProbeLooksTransient(ctx, result, runErr):
+		return preflightProbeError(probe, result, runErr, "a forwarding launcher failed before completing its lightweight authentication check; inspect the launcher/session bootstrap diagnostics")
 	default:
 		return preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
 	}
