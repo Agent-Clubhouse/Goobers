@@ -555,6 +555,38 @@ func TestSweepRefusesStaleRequestAndJournalsNote(t *testing.T) {
 	t.Fatalf("stale-request refusal was not journaled: %+v", events)
 }
 
+func TestStartupSweepRefusesLegacyNoDeadlineRequestAsStale(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}})
+	now := time.Date(2026, 9, 29, 23, 30, 0, 0, time.UTC)
+	const requestID = "legacy-stale"
+	writeTriggerRequestFixture(t, schedulerDir, requestID, triggerRequest{
+		Workflow:  "no-such-workflow",
+		CreatedAt: now.Add(-triggerDelegationTimeout - time.Second),
+	})
+
+	err := sweepPendingTriggersWithOptions(context.Background(), schedulerDir, nil, sched, func() time.Time { return now }, triggerSweepOptions{
+		staleLegacyMissingDeadline: true,
+	})
+	if err != nil {
+		t.Fatalf("sweepPendingTriggersWithOptions: %v", err)
+	}
+	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait)
+	if err == nil || !strings.Contains(err.Error(), "stale trigger request") {
+		t.Fatalf("pollTriggerResponse error = %v, want stale trigger request", err)
+	}
+	if strings.Contains(err.Error(), "unknown workflow") {
+		t.Fatalf("startup stale request resolved workflow before stale refusal: %v", err)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter calls = %d, want 0", starter.count())
+	}
+}
+
 func TestSweepGivesQueuedTargetedValidationAFreshAttemptBudget(t *testing.T) {
 	oldTimeout := triggerDelegationTimeout
 	triggerDelegationTimeout = 500 * time.Millisecond

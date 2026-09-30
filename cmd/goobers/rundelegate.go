@@ -401,11 +401,14 @@ func triggerRequestDeadline(req triggerRequest) time.Time {
 	return maxDeadline
 }
 
-func triggerRequestQueueDeadline(req triggerRequest) (time.Time, bool) {
+func triggerRequestQueueDeadline(req triggerRequest, staleLegacyMissingDeadline bool) (time.Time, bool) {
 	if req.Priority {
 		return triggerRequestDeadline(req), true
 	}
 	if req.Deadline.IsZero() {
+		if staleLegacyMissingDeadline {
+			return req.CreatedAt.Add(triggerRequestTimeout(req)), true
+		}
 		return time.Time{}, false
 	}
 	maxDeadline := req.CreatedAt.Add(triggerRequestTimeout(req))
@@ -417,11 +420,15 @@ func triggerRequestQueueDeadline(req triggerRequest) (time.Time, bool) {
 
 func triggerAttemptContext(ctx context.Context, req triggerRequest, startedAt time.Time) (context.Context, context.CancelFunc, time.Time) {
 	deadline := startedAt.UTC().Add(triggerRequestTimeout(req))
-	if queueDeadline, ok := triggerRequestQueueDeadline(req); ok && queueDeadline.Before(deadline) {
+	if queueDeadline, ok := triggerRequestQueueDeadline(req, false); ok && queueDeadline.Before(deadline) {
 		deadline = queueDeadline
 	}
 	requestCtx, cancel := context.WithDeadline(ctx, deadline)
 	return requestCtx, cancel, deadline
+}
+
+type triggerSweepOptions struct {
+	staleLegacyMissingDeadline bool
 }
 
 // sweepPendingTriggers is the daemon-side half of #343's delegation
@@ -441,6 +448,10 @@ func triggerAttemptContext(ctx context.Context, req triggerRequest, startedAt ti
 // own trigger.fired-before-dispatch ordering already applies (see dispatch's
 // doc comment in scheduler.go).
 func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time) error {
+	return sweepPendingTriggersWithOptions(ctx, schedulerDir, log, sched, now, triggerSweepOptions{})
+}
+
+func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time, options triggerSweepOptions) error {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	entries, exists, err := readDirectory(reqDir)
 	if !exists {
@@ -534,7 +545,7 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal
 			)
 		default:
 			sweepTime := now()
-			if requestDeadline, ok := triggerRequestQueueDeadline(req); ok && !sweepTime.Before(requestDeadline) {
+			if requestDeadline, ok := triggerRequestQueueDeadline(req, options.staleLegacyMissingDeadline); ok && !sweepTime.Before(requestDeadline) {
 				requestLifetime := requestDeadline.Sub(req.CreatedAt)
 				resp.Error = fmt.Sprintf(
 					"delegate: stale trigger request %s reached its %s deadline (created at %s, lifetime %s); refusing to dispatch",
