@@ -1540,6 +1540,9 @@ func TestExecutorInvokeFailsClosedOnMissingDeclaredArtifactFile(t *testing.T) {
 	if result.Error == nil || result.Error.Code != "missing_declared_artifact" {
 		t.Fatalf("Error = %+v, want code missing_declared_artifact", result.Error)
 	}
+	if !result.Error.Retryable {
+		t.Fatalf("Error.Retryable = false, want true so the runner spends the stage retry budget")
+	}
 	if len(rec.artifacts) != 0 {
 		t.Fatalf("expected no artifact recorded, got %d", len(rec.artifacts))
 	}

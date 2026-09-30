@@ -4734,6 +4734,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 					dispatchErr = nil
 				}
 			}
+			dispatchErr = declaredArtifactRetryError(dispatchErr, result, policyAttempts < policyMaxAttempts)
 		}
 		if err := completeTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, cleanup); err != nil {
 			span.Fail(err)
