@@ -10,7 +10,8 @@ import (
 )
 
 func TestWorkerIdentityIsConfinedToConfigObservability(t *testing.T) {
-	paths := []string{apicontract.ConfigDigestPath, RunsPath, EventsPath, HealthPath, apicontract.ConfigDigestPath + "/", "/api/v1/unknown"}
+	paths := []string{apicontract.ConfigDigestPath, apicontract.WorkerConfigDivergencePath, RunsPath, EventsPath, HealthPath,
+		"/api/v1/runs/run-1/operator-messages", apicontract.ConfigDigestPath + "/", "/api/v1/unknown"}
 	for _, route := range podRouteTable() {
 		paths = append(paths, route.path)
 	}

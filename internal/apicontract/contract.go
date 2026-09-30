@@ -241,6 +241,11 @@ const (
 	// or deleted, run daemon-side instead of a pod opening another run's
 	// journal directly (#4344).
 	JournalBranchOwnershipPath = V1Prefix + "/journal/branch-ownership"
+
+	// RunOperatorMessagesPath accepts operator-visible messages for one run.
+	// The route stamps request identity and the authenticated principal; body
+	// fields are data only and cannot carry execution authority.
+	RunOperatorMessagesPath = RunsPath + "/{run}/operator-messages"
 )
 
 // DigestHeader names the content address of the body RunArtifactPath served.
@@ -345,6 +350,7 @@ const (
 	RouteJournalEscalationCandidates RouteID = "journalEscalationCandidates"
 	RouteJournalMergeAuthority       RouteID = "journalMergeAuthority"
 	RouteJournalBranchOwnership      RouteID = "journalBranchOwnership"
+	RouteOperatorMessageSubmit       RouteID = "operatorMessageSubmit"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -585,6 +591,7 @@ var v1Routes = []Route{
 	{ID: RouteJournalEscalationCandidates, Method: http.MethodPost, Path: JournalEscalationCandidatesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{

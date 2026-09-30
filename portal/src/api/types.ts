@@ -95,6 +95,69 @@ export interface CancelRunResult {
   code?: string;
   error?: string;
 }
+
+export interface OperatorMessageContent {
+  text?: string;
+  artifact?: {
+    path: string;
+    digest: string;
+    size: number;
+    mediaType?: string;
+  };
+}
+
+export interface OperatorMessageSubmitRequest {
+  gaggle: string;
+  targetAddress: string;
+  expiresAt?: string;
+  purpose: string;
+  content: OperatorMessageContent;
+  deliveryMode: string;
+}
+
+export interface OperatorMessageRequestRecord {
+  schema: string;
+  requestId: string;
+  idempotencyKey: string;
+  targetAddress: string;
+  principalRef: string;
+  requestedAt: string;
+  expiresAt?: string;
+  purpose: string;
+  content: OperatorMessageContent;
+  deliveryMode: string;
+}
+
+export interface OperatorMessageAcknowledgement {
+  schema: string;
+  requestId: string;
+  idempotencyKey: string;
+  principalRef: string;
+  acknowledgedAt: string;
+}
+
+export interface OperatorMessageOutcome {
+  schema: string;
+  requestId: string;
+  idempotencyKey: string;
+  completedAt: string;
+  status: "delivered" | "failed" | "rejected" | "expired";
+  code?: string;
+  detail?: string;
+  request?: OperatorMessageRequestRecord;
+}
+
+export interface OperatorMessageRecord {
+  request: OperatorMessageRequestRecord;
+  state: "accepted" | "acknowledged" | "delivered" | "failed" | "rejected" | "expired";
+  acknowledgement?: OperatorMessageAcknowledgement;
+  outcome?: OperatorMessageOutcome;
+}
+
+export interface OperatorMessageSubmitResponse {
+  accepted: boolean;
+  record: OperatorMessageRecord;
+}
 export type AttemptClass = "initial" | "policy" | "infra" | "human";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
 export type OutcomeFilter = "finished" | "terminal" | "success" | "failure" | "other";

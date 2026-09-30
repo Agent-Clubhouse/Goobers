@@ -707,6 +707,17 @@
       "budgetMs": 8000,
       "streaming": false,
       "recoverySafe": false
+    },
+    {
+      "id": "operatorMessageSubmit",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/operator-messages",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
     }
   ]
 }

@@ -65,6 +65,7 @@ export const apiRoutes = {
   "journalEscalationCandidates": { method: "POST", path: "/api/v1/journal/escalation-candidates", actionClass: "workflow-execution" },
   "journalMergeAuthority": { method: "POST", path: "/api/v1/journal/merge-authority", actionClass: "workflow-execution" },
   "journalBranchOwnership": { method: "POST", path: "/api/v1/journal/branch-ownership", actionClass: "workflow-execution" },
+  "operatorMessageSubmit": { method: "POST", path: "/api/v1/runs/{run}/operator-messages", actionClass: "workflow-execution" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];
