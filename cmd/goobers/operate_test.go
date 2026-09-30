@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -205,9 +207,8 @@ func testRunNoWaitCompletes(t *testing.T, worker bool) {
 		t.Fatalf("stdout = %q, --no-wait must not report a terminal phase", stdout)
 	}
 
-	runCtx, cancelRun := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelRun()
-	phase, err := waitForRunTerminal(runCtx, instance.NewLayout(root).RunsDir(), runID)
+	layout := instance.NewLayout(root)
+	phase, err := waitForRunTerminal(context.Background(), layout.RunsDir(), runID)
 	if err != nil {
 		t.Fatalf("wait for dispatched run: %v", err)
 	}
@@ -219,7 +220,13 @@ func testRunNoWaitCompletes(t *testing.T, worker bool) {
 	// begins; give lock release its own window, including the bounded shutdown.
 	lockCtx, cancelLock := context.WithTimeout(context.Background(), schedulerShutdownGrace+5*time.Second)
 	defer cancelLock()
-	lockPath := filepath.Join(instance.NewLayout(root).SchedulerDir(), "up.lock")
+	// A terminal run event lands before the no-wait cleanup goroutine finishes
+	// draining dispatch bookkeeping and closing setup-owned generation leases.
+	// Wait for the actual lease Windows TempDir cleanup would otherwise trip on.
+	if err := waitForRunConfigGenerationLeaseRelease(lockCtx, layout, runID); err != nil {
+		t.Fatalf("standalone run did not release its config generation lease: %v", err)
+	}
+	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
 	for {
 		release, err := acquireInstanceLock(lockPath)
 		if err == nil {
@@ -240,6 +247,39 @@ func testRunNoWaitCompletes(t *testing.T, worker bool) {
 	code, traceOut, stderr := runArgs(t, "trace", runID, root)
 	if code != 0 || !strings.Contains(traceOut, "run.finished status=completed") {
 		t.Fatalf("trace: code = %d, stdout = %q, stderr = %q", code, traceOut, stderr)
+	}
+}
+
+func waitForRunConfigGenerationLeaseRelease(ctx context.Context, layout instance.Layout, runID string) error {
+	runDir, err := layout.FindRunDir(runID)
+	if err != nil {
+		return err
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return err
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return err
+	}
+	if identity.ConfigGeneration == "" {
+		return nil
+	}
+	leasePath := filepath.Join(layout.Root, "config-generations", strings.TrimPrefix(identity.ConfigGeneration, "sha256:"), "lease.lock")
+	for {
+		lease, err := lock.TryAcquire(leasePath)
+		if err == nil {
+			return lease.Release()
+		}
+		if !errors.Is(err, lock.ErrHeld) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 
