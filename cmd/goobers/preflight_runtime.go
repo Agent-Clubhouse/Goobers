@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runnersolve"
@@ -46,15 +47,23 @@ type runtimePreflightWorkflow struct {
 
 type runtimePreflightExecution struct {
 	IdentityMode string                  `json:"identityMode"`
-	Runner       runtimePreflightRunner  `json:"runner"`
 	Source       runtimePreflightFactSrc `json:"source"`
 }
 
 type runtimePreflightRunner struct {
 	Name         string   `json:"name,omitempty"`
 	Kind         string   `json:"kind,omitempty"`
+	Host         string   `json:"host,omitempty"`
 	OS           string   `json:"os,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+type runtimePreflightStageRunner struct {
+	Outcome  string                   `json:"outcome"`
+	Selected *runtimePreflightRunner  `json:"selected,omitempty"`
+	Eligible []runtimePreflightRunner `json:"eligible,omitempty"`
+	Detail   string                   `json:"detail"`
+	Source   runtimePreflightFactSrc  `json:"source"`
 }
 
 type runtimePreflightFactSrc struct {
@@ -63,14 +72,15 @@ type runtimePreflightFactSrc struct {
 }
 
 type runtimePreflightStage struct {
-	Name                   string                  `json:"name"`
-	Kind                   string                  `json:"kind"`
-	Goober                 string                  `json:"goober,omitempty"`
-	Harness                string                  `json:"harness,omitempty"`
-	RequiredCapabilities   []string                `json:"requiredCapabilities,omitempty"`
-	CredentialCapabilities []string                `json:"credentialCapabilities,omitempty"`
-	RunsOn                 *apiv1.RunsOn           `json:"runsOn,omitempty"`
-	Source                 runtimePreflightFactSrc `json:"source"`
+	Name                   string                      `json:"name"`
+	Kind                   string                      `json:"kind"`
+	Goober                 string                      `json:"goober,omitempty"`
+	Harness                string                      `json:"harness,omitempty"`
+	RequiredCapabilities   []string                    `json:"requiredCapabilities,omitempty"`
+	CredentialCapabilities []string                    `json:"credentialCapabilities,omitempty"`
+	RunsOn                 *apiv1.RunsOn               `json:"runsOn,omitempty"`
+	Runner                 runtimePreflightStageRunner `json:"runner"`
+	Source                 runtimePreflightFactSrc     `json:"source"`
 }
 
 type runtimePreflightCheck struct {
@@ -195,16 +205,20 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 		return runtimePreflightReport{}, err
 	}
 	source, _ := set.WorkflowSource(wf.Spec.Gaggle, wf.Name)
-	runner := runtimePreflightRunnerFromConfig(cfg)
 	gaggle, err := runtimePreflightGaggleSpec(set, wf.Spec.Gaggle)
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}
-	placements, err := workflow.StagePlacements(machine.Def, gaggle, resolvedGoobers)
+	inventory := cfg.PlacementInventory(runnersolve.HostOS())
+	placements, err := workflow.IsolationStagePlacements(machine.Def, gaggle, resolvedGoobers, inventory.ClassMandates)
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}
-	stages := runtimePreflightStages(wf, resolvedGoobers, placements)
+	runnerFacts, err := runtimePreflightStageRunnerFacts(cfg, machine.Def, placements, inventory)
+	if err != nil {
+		return runtimePreflightReport{}, err
+	}
+	stages := runtimePreflightStages(wf, resolvedGoobers, placements, runnerFacts)
 	checks := runtimePreflightChecks(stages)
 	return runtimePreflightReport{
 		SchemaVersion: runtimePreflightSchemaVersion,
@@ -222,10 +236,9 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 		},
 		Execution: runtimePreflightExecution{
 			IdentityMode: identityMode,
-			Runner:       runner,
 			Source: runtimePreflightFactSrc{
 				Fidelity: "static",
-				Detail:   "instance.yaml runner declarations only; no host, provider, credential, sandbox, or harness probe was executed",
+				Detail:   "instance.yaml and config/ only; no host, provider, credential, sandbox, or harness probe was executed",
 			},
 		},
 		Stages: stages,
@@ -272,23 +285,6 @@ func selectRuntimePreflightWorkflow(set *instance.ConfigSet, name string) (apiv1
 	return matches[0], nil
 }
 
-func runtimePreflightRunnerFromConfig(cfg *instance.Config) runtimePreflightRunner {
-	runners := cfg.ResolvedRunners()
-	for _, runner := range runners {
-		if runner.Host == instance.RunnerHostSelfName {
-			caps := append([]string(nil), runner.Provides.Capabilities...)
-			sort.Strings(caps)
-			return runtimePreflightRunner{
-				Name:         runner.Name,
-				Kind:         "self",
-				OS:           string(runner.Provides.OS),
-				Capabilities: caps,
-			}
-		}
-	}
-	return runtimePreflightRunner{Kind: "unobservable"}
-}
-
 func runtimePreflightGaggleSpec(set *instance.ConfigSet, name string) (apiv1.GaggleSpec, error) {
 	for _, gaggle := range set.Gaggles {
 		if gaggle.Name == name {
@@ -298,7 +294,166 @@ func runtimePreflightGaggleSpec(set *instance.ConfigSet, name string) (apiv1.Gag
 	return apiv1.GaggleSpec{}, fmt.Errorf("workflow gaggle %q is not defined", name)
 }
 
-func runtimePreflightStages(wf apiv1.Workflow, goobers map[string]apiv1.GooberSpec, placements []runnersolve.StageRequirement) []runtimePreflightStage {
+func runtimePreflightStageRunnerFacts(cfg *instance.Config, def workflow.Definition, requirements []runnersolve.StageRequirement, inventory runnersolve.Inventory) (map[string]runtimePreflightStageRunner, error) {
+	facts := make(map[string]runtimePreflightStageRunner, len(requirements))
+	if cfg == nil || (len(cfg.Runners) == 0 && !cfg.HasIsolationMandates()) || (inventory.LocalMode() && !cfg.HasIsolationMandates()) {
+		for _, req := range requirements {
+			facts[req.Stage] = runtimePreflightRunnerUnobservable("stage has no pinned runner selection in the zero-declaration/local-mode execution path")
+		}
+		return facts, nil
+	}
+
+	specs, err := runtimePreflightRunnerSpecs(cfg, inventory)
+	if err != nil {
+		return nil, err
+	}
+	ledgerFor, err := runtimePreflightLedgerTouchingByStage(def)
+	if err != nil {
+		return nil, err
+	}
+	requirementFor := make(map[string]runnersolve.StageRequirement, len(requirements))
+	for _, requirement := range requirements {
+		if _, dup := requirementFor[requirement.Stage]; dup {
+			return nil, fmt.Errorf("workflow %q: placement requirements name stage %q twice; stage names must be unique for runner selection", def.Name, requirement.Stage)
+		}
+		requirementFor[requirement.Stage] = requirement
+	}
+	result := runnersolve.Solve(inventory, requirements)
+	for _, placement := range result.Stages {
+		if placement.Unsat != nil {
+			facts[placement.Stage] = runtimePreflightStageRunner{
+				Outcome: "unsupported",
+				Detail:  placement.Unsat.Diagnostic,
+				Source: runtimePreflightFactSrc{
+					Fidelity: "static",
+					Detail:   "shared runner solver found no eligible runner",
+				},
+			}
+			continue
+		}
+		if req := requirementFor[placement.Stage]; req.ControlPlane {
+			facts[placement.Stage] = runtimePreflightRunnerUnobservable("control-plane gate has no pinned runner selection")
+			continue
+		}
+		eligible := make([]dispatcher.RunnerSpec, 0, len(placement.Eligible))
+		for _, name := range placement.Eligible {
+			spec, ok := specs[name]
+			if !ok {
+				return nil, fmt.Errorf("workflow %q stage %q: solver named runner %q which the resolved inventory does not contain", def.Name, placement.Stage, name)
+			}
+			eligible = append(eligible, spec)
+		}
+		selected, err := dispatcher.SelectRunner(dispatcher.Attempt{
+			RunID: def.Name, Stage: placement.Stage, Number: 1, LedgerTouching: ledgerFor[placement.Stage],
+		}, eligible)
+		if err != nil {
+			facts[placement.Stage] = runtimePreflightStageRunner{
+				Outcome:  "unsupported",
+				Eligible: runtimePreflightRunnersFromSpecs(eligible),
+				Detail:   err.Error(),
+				Source: runtimePreflightFactSrc{
+					Fidelity: "static",
+					Detail:   "dispatcher runner selection rejected the solver-eligible set",
+				},
+			}
+			continue
+		}
+		selectedReport := runtimePreflightRunnerFromSpec(selected)
+		facts[placement.Stage] = runtimePreflightStageRunner{
+			Outcome:  "selected",
+			Selected: &selectedReport,
+			Eligible: runtimePreflightRunnersFromSpecs(eligible),
+			Detail:   "selected by the shared solver result and dispatcher.SelectRunner",
+			Source: runtimePreflightFactSrc{
+				Fidelity: "static",
+				Detail:   "instance runner inventory, workflow placement requirements, and deterministic dispatcher selection",
+			},
+		}
+	}
+	return facts, nil
+}
+
+func runtimePreflightRunnerSpecs(cfg *instance.Config, inventory runnersolve.Inventory) (map[string]dispatcher.RunnerSpec, error) {
+	solverRunners := make(map[string]runnersolve.Runner, len(inventory.Runners))
+	for _, runner := range inventory.Runners {
+		solverRunners[runner.Name] = runner
+	}
+	specs := make(map[string]dispatcher.RunnerSpec)
+	for _, entry := range cfg.ResolvedRunners() {
+		spec, err := dispatcher.SpecFromEntry(entry)
+		if err != nil {
+			return nil, err
+		}
+		if solverRunner, ok := solverRunners[spec.Name]; ok && solverRunner.Self && spec.OS == "" {
+			spec.OS = solverRunner.OS
+		}
+		specs[spec.Name] = spec
+	}
+	return specs, nil
+}
+
+func runtimePreflightRunnerUnobservable(detail string) runtimePreflightStageRunner {
+	return runtimePreflightStageRunner{
+		Outcome: "unobservable",
+		Detail:  detail,
+		Source: runtimePreflightFactSrc{
+			Fidelity: "unobservable",
+			Detail:   "no per-stage runner selection is pinned for this execution path",
+		},
+	}
+}
+
+func runtimePreflightLedgerTouchingByStage(def workflow.Definition) (map[string]bool, error) {
+	ledgerFor := make(map[string]bool, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	for _, task := range def.Spec.Tasks {
+		if _, dup := ledgerFor[task.Name]; dup {
+			return nil, fmt.Errorf("workflow %q: task name %q is declared twice; stage names must be unique for runner selection", def.Name, task.Name)
+		}
+		ledgerFor[task.Name] = runtimePreflightTaskLedgerTouching(task)
+	}
+	for _, gate := range def.Spec.Gates {
+		if _, dup := ledgerFor[gate.Name]; dup {
+			return nil, fmt.Errorf("workflow %q: stage name %q is declared more than once; stage names must be unique for runner selection", def.Name, gate.Name)
+		}
+		ledgerFor[gate.Name] = false
+	}
+	return ledgerFor, nil
+}
+
+func runtimePreflightTaskLedgerTouching(task apiv1.Task) bool {
+	for _, action := range task.PolicyActions {
+		switch action {
+		case "claim-backlog-items", "release-backlog-claim", "release-pr-claim":
+			return true
+		}
+	}
+	return false
+}
+
+func runtimePreflightRunnersFromSpecs(specs []dispatcher.RunnerSpec) []runtimePreflightRunner {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]runtimePreflightRunner, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, runtimePreflightRunnerFromSpec(spec))
+	}
+	return out
+}
+
+func runtimePreflightRunnerFromSpec(spec dispatcher.RunnerSpec) runtimePreflightRunner {
+	caps := append([]string(nil), spec.Capabilities...)
+	sort.Strings(caps)
+	return runtimePreflightRunner{
+		Name:         spec.Name,
+		Kind:         string(spec.HostKind),
+		Host:         spec.Host,
+		OS:           spec.OS,
+		Capabilities: caps,
+	}
+}
+
+func runtimePreflightStages(wf apiv1.Workflow, goobers map[string]apiv1.GooberSpec, placements []runnersolve.StageRequirement, runnerFacts map[string]runtimePreflightStageRunner) []runtimePreflightStage {
 	requirementsByStage := make(map[string][]string, len(placements))
 	for _, placement := range placements {
 		requirementsByStage[placement.Stage] = sortedStrings(placement.Capabilities)
@@ -312,6 +467,7 @@ func runtimePreflightStages(wf apiv1.Workflow, goobers map[string]apiv1.GooberSp
 			RequiredCapabilities:   requirementsByStage[task.Name],
 			CredentialCapabilities: sortedStrings(task.Capabilities),
 			RunsOn:                 task.RunsOn,
+			Runner:                 runtimePreflightRunnerFactForStage(runnerFacts, task.Name),
 			Source: runtimePreflightFactSrc{
 				Fidelity: "static",
 				Detail:   "workflow task definition",
@@ -334,6 +490,7 @@ func runtimePreflightStages(wf apiv1.Workflow, goobers map[string]apiv1.GooberSp
 			Kind:                 "gate:" + string(gate.Evaluator),
 			RequiredCapabilities: requirementsByStage[gate.Name],
 			RunsOn:               gate.RunsOn,
+			Runner:               runtimePreflightRunnerFactForStage(runnerFacts, gate.Name),
 			Source: runtimePreflightFactSrc{
 				Fidelity: "static",
 				Detail:   "workflow gate definition",
@@ -353,6 +510,13 @@ func runtimePreflightStages(wf apiv1.Workflow, goobers map[string]apiv1.GooberSp
 	}
 	sort.Slice(stages, func(i, j int) bool { return stages[i].Name < stages[j].Name })
 	return stages
+}
+
+func runtimePreflightRunnerFactForStage(facts map[string]runtimePreflightStageRunner, stage string) runtimePreflightStageRunner {
+	if fact, ok := facts[stage]; ok {
+		return fact
+	}
+	return runtimePreflightRunnerUnobservable("stage has no solver placement row")
 }
 
 func runtimePreflightChecks(stages []runtimePreflightStage) []runtimePreflightCheck {
@@ -432,6 +596,41 @@ func printRuntimePreflightReport(w io.Writer, report runtimePreflightReport) {
 			parts = append(parts, "required="+strings.Join(stage.RequiredCapabilities, ","))
 		}
 		pf(w, "    %s: %s\n", stage.Name, strings.Join(parts, " "))
+		pf(w, "      runner: %s", stage.Runner.Outcome)
+		if stage.Runner.Selected != nil {
+			pf(w, " selected=%s", runtimePreflightRunnerSummary(*stage.Runner.Selected))
+		}
+		if len(stage.Runner.Eligible) > 0 {
+			eligible := make([]string, 0, len(stage.Runner.Eligible))
+			for _, runner := range stage.Runner.Eligible {
+				eligible = append(eligible, runtimePreflightRunnerSummary(runner))
+			}
+			pf(w, " eligible=[%s]", strings.Join(eligible, ", "))
+		}
+		pf(w, " source=%s detail=%s\n", stage.Runner.Source.Fidelity, stage.Runner.Detail)
 	}
-	pf(w, "  checks: %d explicit unsupported/unobservable outcomes; no external probes or mutations performed\n", len(report.Checks))
+	pf(w, "  checks:\n")
+	for _, check := range report.Checks {
+		stage := ""
+		if check.Stage != "" {
+			stage = " stage=" + check.Stage
+		}
+		pf(w, "    %s/%s: %s%s source=%s detail=%s\n",
+			check.Category, check.Code, check.Outcome, stage, check.Source.Fidelity, check.Detail)
+	}
+	pf(w, "  no external probes or mutations performed\n")
+}
+
+func runtimePreflightRunnerSummary(runner runtimePreflightRunner) string {
+	parts := []string{runner.Name}
+	if runner.Kind != "" {
+		parts = append(parts, "kind="+runner.Kind)
+	}
+	if runner.Host != "" {
+		parts = append(parts, "host="+runner.Host)
+	}
+	if runner.OS != "" {
+		parts = append(parts, "os="+runner.OS)
+	}
+	return strings.Join(parts, " ")
 }
