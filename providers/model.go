@@ -124,6 +124,20 @@ type WorkItemLabel struct {
 	Description string `json:"description,omitempty"`
 }
 
+// ClaimMetadataDriftError reports that the authoritative provider claim
+// receipt/epoch was written, but the provider's label projection did not
+// converge before the bounded confirmation window ended.
+type ClaimMetadataDriftError struct {
+	Provider ProviderKind
+	ItemID   string
+	RunID    string
+	Label    string
+}
+
+func (e *ClaimMetadataDriftError) Error() string {
+	return fmt.Sprintf("claim metadata drift for %s item %s: run %s claim succeeded but label %q is not visible", e.Provider, e.ItemID, e.RunID, e.Label)
+}
+
 // EnsureWorkItemLabelsResult reports which labels were created or already present.
 type EnsureWorkItemLabelsResult struct {
 	Created []string `json:"created"`
