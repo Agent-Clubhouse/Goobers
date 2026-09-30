@@ -212,6 +212,11 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 		return stageResolution{}, credentialPlaneError(http.StatusForbidden, "credential_refresh_agentic_stage",
 			fmt.Sprintf("stage %q is not a deterministic task; mid-stage credential refresh serves deterministic stages only", request.Stage))
 	}
+	if mode.deterministicOnly {
+		// The checkout key is consumed by the pod, never delivered to the
+		// stage, so a stage's grant can never re-resolve it (#3770).
+		pinned.profile.implicitKeys = nil
+	}
 	requested, err := gateRequestedCapabilities(pinned.profile, request)
 	if err != nil {
 		return stageResolution{}, err

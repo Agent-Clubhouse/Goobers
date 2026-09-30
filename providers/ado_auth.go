@@ -259,7 +259,9 @@ func NewADORefreshingDeliveredCredentialSource(kind, label string, token ADORefr
 func (s *adoRefreshingDeliveredCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
 	secret, err := s.token.Token(ctx)
 	if err != nil {
-		return ADOCredential{}, err
+		// Token fails only when a rejected value could not be re-resolved:
+		// the request still ends as the delivered credential's rejection.
+		return ADOCredential{}, fmt.Errorf("%w: the credential delivered for %s was rejected and could not be re-resolved: %v", ErrADODeliveredCredentialRejected, s.label, err)
 	}
 	return ADOCredential{Kind: s.kind, Secret: secret, ExpiresAt: s.token.Expiry()}, nil
 }

@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/daemonclient"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
@@ -869,7 +870,13 @@ func (c podStageCredentials) env() []string {
 	if c.grant == nil || c.grant.Token == "" || daemonAPI == "" {
 		return env
 	}
-	return append(env, executor.CredentialEndpointEnvVar+"="+daemonAPI, executor.CredentialGrantEnvVar+"="+c.grant.Token)
+	env = append(env, executor.CredentialEndpointEnvVar+"="+daemonAPI, executor.CredentialGrantEnvVar+"="+c.grant.Token)
+	if ca := os.Getenv(daemonclient.CAEnv); strings.TrimSpace(ca) != "" {
+		// The child dials the same daemon, so it trusts the same CA; a
+		// default-deny runner class would otherwise drop the variable.
+		env = append(env, daemonclient.CAEnv+"="+ca)
+	}
+	return env
 }
 
 // withGrant adds the grant to the values the stage's scrubber redacts.

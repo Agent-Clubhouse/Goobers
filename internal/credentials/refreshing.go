@@ -27,6 +27,11 @@ const proactiveRetryInterval = time.Minute
 // valid value, so a slow control plane must not stall the request it serves.
 const proactiveRefreshTimeout = 15 * time.Second
 
+// ErrRejectedCredentialNotRefreshed reports that a value the provider
+// rejected (Invalidate) could not be re-resolved: the request it served is an
+// authentication failure, not a transport one.
+var ErrRejectedCredentialNotRefreshed = errors.New("credentials: a rejected credential could not be re-resolved")
+
 // RefreshFunc mints a fresh value and its stated expiry for one capability.
 type RefreshFunc func(ctx context.Context) (token string, expiresAt time.Time, err error)
 
@@ -95,7 +100,7 @@ func (t *RefreshingToken) Token(ctx context.Context) (string, error) {
 	}
 	if t.invalid {
 		if err := t.refreshLocked(ctx); err != nil {
-			return "", fmt.Errorf("re-resolve the credential for %s after it was rejected: %w", t.capability, err)
+			return "", fmt.Errorf("%w (%s): %v", ErrRejectedCredentialNotRefreshed, t.capability, err)
 		}
 		return t.token, nil
 	}

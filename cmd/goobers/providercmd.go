@@ -18,6 +18,7 @@ import (
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -515,7 +516,7 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if isADODeliveredCredentialRejection(err, message) {
 		return errorCodeProviderAuthFailed, false, nil
 	}
-	if providers.IsAuthenticationError(err) {
+	if providers.IsAuthenticationError(err) || isUnrefreshedRejection(err, message) {
 		return errorCodeAuthFailed, false, nil
 	}
 	if status, ok := statusCodeFrom(err); ok {
@@ -565,6 +566,13 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 func isADODeliveredCredentialRejection(err error, lowered string) bool {
 	return errors.Is(err, providers.ErrADODeliveredCredentialRejected) ||
 		strings.Contains(lowered, strings.ToLower(providers.ErrADODeliveredCredentialRejected.Error()))
+}
+
+// isUnrefreshedRejection recognizes a GitHub credential the provider rejected
+// and the stage's credential-refresh grant could not re-resolve (#6120).
+func isUnrefreshedRejection(err error, lowered string) bool {
+	return errors.Is(err, credentials.ErrRejectedCredentialNotRefreshed) ||
+		strings.Contains(lowered, strings.ToLower(credentials.ErrRejectedCredentialNotRefreshed.Error()))
 }
 
 // classifyLandingRefusal names the typed landing refusals (ADO-N9) ahead of
