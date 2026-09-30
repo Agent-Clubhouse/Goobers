@@ -499,6 +499,13 @@ const (
 	featureTaskTimeoutFail                FeatureID = "task.onTimeout.fail"
 	featureTaskTimeoutSalvage             FeatureID = "task.onTimeout.salvage"
 	featureTaskExpectedOutputs            FeatureID = "task.expectedOutputs"
+	featureTaskArtifactSlots              FeatureID = "task.artifactSlots"
+	featureTaskArtifactSlotsName          FeatureID = "task.artifactSlots.name"
+	featureTaskArtifactSlotsMediaType     FeatureID = "task.artifactSlots.mediaType"
+	featureTaskArtifactSlotsSchemaPath    FeatureID = "task.artifactSlots.schemaPath"
+	featureTaskArtifactSlotsMaxSize       FeatureID = "task.artifactSlots.maxSize"
+	featureTaskArtifactInputs             FeatureID = "task.artifactInputs"
+	featureTaskArtifactInputsFrom         FeatureID = "task.artifactInputs.from"
 	featureTaskContinueOnError            FeatureID = "task.continueOnError"
 	featureTaskNext                       FeatureID = "task.next"
 	featureTaskExperiment                 FeatureID = "task.experiment"
@@ -848,6 +855,37 @@ func currentFeatures(sinceVersion string) []Feature {
 			History: []SupportTransition{{
 				Level:        level,
 				SinceVersion: sinceVersion,
+			}},
+		})
+	}
+	return append(features, v31OnlyArtifactFeatures()...)
+}
+
+const v31ArtifactFeatureSinceVersion = "v0.5.0"
+
+func v31OnlyArtifactFeatures() []Feature {
+	ids := []FeatureID{
+		featureTaskArtifactSlots,
+		featureTaskArtifactSlotsName,
+		featureTaskArtifactSlotsMediaType,
+		featureTaskArtifactSlotsSchemaPath,
+		featureTaskArtifactSlotsMaxSize,
+		featureTaskArtifactInputs,
+		featureTaskArtifactInputsFrom,
+	}
+	features := make([]Feature, 0, len(ids))
+	for _, id := range ids {
+		features = append(features, Feature{
+			ID:           id,
+			Level:        SupportPreview,
+			SinceVersion: v31ArtifactFeatureSinceVersion,
+			DSLVersions: []DSLFeatureSupport{{
+				Version: supportmatrix.V31DSLVersion,
+				Level:   SupportPreview,
+			}},
+			History: []SupportTransition{{
+				Level:        SupportPreview,
+				SinceVersion: v31ArtifactFeatureSinceVersion,
 			}},
 		})
 	}

@@ -71,6 +71,7 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 			"workflow declares backprop, which requires dslVersion %q (this workflow pins %q); migrate with `goobers fix --to %s`",
 			supportmatrix.V3DSLVersion, version, supportmatrix.V3DSLVersion))
 	}
+	problems = append(problems, preV31ArtifactSurfaceProblems(def, version)...)
 	for _, task := range def.Spec.Tasks {
 		if task.RunsOn != nil {
 			problems = append(problems, fmt.Sprintf(
@@ -200,7 +201,7 @@ var v30Interpreter = versionedInterpreter{
 	checkPushBoundaries:             v30.CheckPushBoundaries,
 	checkRunsOnOSTokens:             v30.CheckRunsOnOSTokens,
 	checkRunsOnRestrictions:         v30.CheckRunsOnRestrictions,
-	checkRunsOnPlacement:            v30.CheckRunsOnPlacement,
+	checkRunsOnPlacement:            v30PlacementWithPreV31Surface,
 	stagePlacements:                 v30StagePlacements,
 	checkRepoHandoffs:               v30.CheckRepoHandoffs,
 	checkGateRunsOn:                 v30.CheckGateRunsOn,
@@ -219,6 +220,43 @@ var v30Interpreter = versionedInterpreter{
 	featuresForGoober:               featuresForV30Goober,
 	checkFeatureSupport:             checkV30FeatureSupport,
 	checkWorkflowFeatureSupport:     checkV30WorkflowFeatureSupport,
+	taskInvocationInputs:            v30.TaskInvocationInputs,
+	taskLimits:                      v30.TaskLimits,
+	gateLimits:                      v30.GateLimits,
+}
+
+// v31Interpreter carries DSL 3.0 forward and adds only the named-artifact
+// contract surface. Runtime lowering/resolution intentionally remains out of
+// scope for this version.
+var v31Interpreter = versionedInterpreter{
+	compile:                         compileV31,
+	checkWarnings:                   v30.CheckWarnings,
+	checkReachability:               v30.CheckReachability,
+	checkSchedules:                  v30.CheckSchedules,
+	checkTriggerFields:              v30.CheckTriggerFields,
+	checkWorkflowAdmission:          v30.CheckWorkflowAdmission,
+	checkPushBoundaries:             v30.CheckPushBoundaries,
+	checkRunsOnOSTokens:             v30.CheckRunsOnOSTokens,
+	checkRunsOnRestrictions:         v30.CheckRunsOnRestrictions,
+	checkRunsOnPlacement:            v31Placement,
+	stagePlacements:                 v30StagePlacements,
+	checkRepoHandoffs:               v30.CheckRepoHandoffs,
+	checkGateRunsOn:                 v30.CheckGateRunsOn,
+	checkGateParameters:             v30.CheckGateParameters,
+	checkGateOutcomes:               v30.CheckGateOutcomes,
+	checkStageRequiredInputs:        v30.CheckStageRequiredInputs,
+	checkStageContracts:             v31StageContracts,
+	checkStageContractWarnings:      v30.CheckStageContractWarnings,
+	checkStageTimeoutCoherence:      v30.CheckStageTimeoutCoherence,
+	checkSubprocessTimeoutCoherence: v30.CheckSubprocessTimeoutCoherence,
+	checkPathSimulation:             v30.CheckPathSimulation,
+	newFeatureRegistry:              newV31FeatureRegistry,
+	featuresAtDSLVersion:            v31FeaturesAtDSLVersion,
+	featuresForWorkflow:             featuresForV31Workflow,
+	featuresForGaggle:               featuresForV31Gaggle,
+	featuresForGoober:               featuresForV31Goober,
+	checkFeatureSupport:             checkV31FeatureSupport,
+	checkWorkflowFeatureSupport:     checkV31WorkflowFeatureSupport,
 	taskInvocationInputs:            v30.TaskInvocationInputs,
 	taskLimits:                      v30.TaskLimits,
 	gateLimits:                      v30.GateLimits,
@@ -389,6 +427,20 @@ func compileNext(def Definition, config compileConfig) (*Machine, error) {
 }
 
 func compileV30(def Definition, config compileConfig) (*Machine, error) {
+	if problems := preV31ArtifactSurfaceProblems(def, supportmatrix.V3DSLVersion); len(problems) > 0 {
+		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
+	return compileV30Base(def, config)
+}
+
+func compileV31(def Definition, config compileConfig) (*Machine, error) {
+	if problems := artifactContractProblems(def); len(problems) > 0 {
+		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
+	return compileV30Base(def, config)
+}
+
+func compileV30Base(def Definition, config compileConfig) (*Machine, error) {
 	// Check the legacy gaggle floor before routing: the interpreter receives
 	// only runsOn, so dropping requiredCapabilities here would lose constraints.
 	if _, err := v30.FeaturesForGaggle(apiv1.GaggleSpec{RequiredCapabilities: config.gaggleRequiredCapabilities}); err != nil {
@@ -414,6 +466,117 @@ func compileV30(def Definition, config compileConfig) (*Machine, error) {
 		opts = append(opts, v30.WithGaggleRunsOn(config.gaggleRunsOn))
 	}
 	return v30.Compile(def, opts...)
+}
+
+func v30PlacementWithPreV31Surface(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
+	problems := v30.CheckRunsOnPlacement(def, gaggleRunsOn)
+	return append(problems, preV31ArtifactSurfaceProblems(def, supportmatrix.V3DSLVersion)...)
+}
+
+func v31Placement(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
+	return v30.CheckRunsOnPlacement(def, gaggleRunsOn)
+}
+
+func v31StageContracts(def Definition) []string {
+	problems := v30.CheckStageContracts(def)
+	return append(problems, artifactContractProblems(def)...)
+}
+
+func preV31ArtifactSurfaceProblems(def Definition, version string) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.ArtifactSlots != nil {
+			problems = append(problems, fmt.Sprintf(
+				"task %q declares artifactSlots, which requires dslVersion %q (this workflow pins %q)",
+				task.Name, supportmatrix.V31DSLVersion, version))
+		}
+		if task.ArtifactInputs != nil {
+			problems = append(problems, fmt.Sprintf(
+				"task %q declares artifactInputs, which requires dslVersion %q (this workflow pins %q)",
+				task.Name, supportmatrix.V31DSLVersion, version))
+		}
+	}
+	return problems
+}
+
+func artifactContractProblems(def Definition) []string {
+	slotByTask := make(map[string]map[string]struct{}, len(def.Spec.Tasks))
+	taskNames := make(map[string]struct{}, len(def.Spec.Tasks))
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		taskNames[task.Name] = struct{}{}
+		slots := make(map[string]struct{}, len(task.ArtifactSlots))
+		for _, slot := range task.ArtifactSlots {
+			if !validArtifactContractName(slot.Name) {
+				problems = append(problems, fmt.Sprintf("task %q artifactSlots contains invalid slot name %q", task.Name, slot.Name))
+				continue
+			}
+			if _, exists := slots[slot.Name]; exists {
+				problems = append(problems, fmt.Sprintf("task %q artifactSlots repeats slot %q", task.Name, slot.Name))
+				continue
+			}
+			slots[slot.Name] = struct{}{}
+			if strings.TrimSpace(slot.MediaType) != slot.MediaType {
+				problems = append(problems, fmt.Sprintf("task %q artifact slot %q has a blank mediaType", task.Name, slot.Name))
+			}
+			if strings.TrimSpace(slot.SchemaPath) != slot.SchemaPath {
+				problems = append(problems, fmt.Sprintf("task %q artifact slot %q schemaPath must not have leading or trailing whitespace", task.Name, slot.Name))
+			}
+			if slot.MaxSize < 0 {
+				problems = append(problems, fmt.Sprintf("task %q artifact slot %q maxSize must be non-negative", task.Name, slot.Name))
+			}
+		}
+		if len(slots) > 0 {
+			slotByTask[task.Name] = slots
+		}
+	}
+	for _, task := range def.Spec.Tasks {
+		for local, ref := range task.ArtifactInputs {
+			if !validArtifactContractName(local) {
+				problems = append(problems, fmt.Sprintf("task %q artifactInputs contains invalid local input name %q", task.Name, local))
+			}
+			producer, slot, ok := splitArtifactInputRef(ref.From)
+			if !ok {
+				problems = append(problems, fmt.Sprintf("task %q artifact input %q must reference a producer slot as producer.slot", task.Name, local))
+				continue
+			}
+			if _, exists := taskNames[producer]; !exists {
+				problems = append(problems, fmt.Sprintf("task %q artifact input %q references unknown producer task %q", task.Name, local, producer))
+				continue
+			}
+			producerSlots := slotByTask[producer]
+			if _, exists := producerSlots[slot]; !exists {
+				problems = append(problems, fmt.Sprintf("task %q artifact input %q references unknown artifact slot %q on producer %q", task.Name, local, slot, producer))
+			}
+		}
+	}
+	return problems
+}
+
+func splitArtifactInputRef(ref string) (producer, slot string, ok bool) {
+	dot := strings.IndexByte(ref, '.')
+	if dot <= 0 || dot != strings.LastIndexByte(ref, '.') || dot == len(ref)-1 {
+		return "", "", false
+	}
+	producer, slot = ref[:dot], ref[dot+1:]
+	return producer, slot, producer != "" && !strings.Contains(producer, ".") && validArtifactContractName(slot)
+}
+
+func validArtifactContractName(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func interpreterForDefinition(def Definition) (*versionedInterpreter, error) {
@@ -457,6 +620,8 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 		return &v20Interpreter, nil
 	case v30.DSLVersion:
 		return &v30Interpreter, nil
+	case supportmatrix.V31DSLVersion:
+		return &v31Interpreter, nil
 	default:
 		return nil, fmt.Errorf("DSL version %q is declared %s but has no interpreter", version, support.Level)
 	}

@@ -187,6 +187,8 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"Task.Limits":               {"task.limits"},
 		"Task.OnTimeout":            {"task.onTimeout.fail", "task.onTimeout.salvage"},
 		"Task.ExpectedOutputs":      {"task.expectedOutputs"},
+		"Task.ArtifactSlots":        {"task.artifactSlots", "task.artifactSlots.name", "task.artifactSlots.mediaType", "task.artifactSlots.schemaPath", "task.artifactSlots.maxSize"},
+		"Task.ArtifactInputs":       {"task.artifactInputs", "task.artifactInputs.from"},
 		"Task.ContinueOnError":      {"task.continueOnError"},
 		"Task.InputsFrom":           {"task.inputsFrom"},
 		"Task.RequiredCapabilities": {"task.requiredCapabilities"},

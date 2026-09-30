@@ -64,7 +64,11 @@ func checkSupportMatrixForRelease(version string) error {
 	if !isFinalReleaseVersion(releaseLine) {
 		return nil
 	}
-	if err := supportmatrix.ValidateSupportPolicyForRelease(supportmatrix.GetDSL(), releaseLine); err != nil {
+	matrix, err := supportmatrix.GetDSLForRelease(releaseLine)
+	if err != nil {
+		return fmt.Errorf("DSL support matrix cannot ship in %s: %w", version, err)
+	}
+	if err := supportmatrix.ValidateSupportPolicyForRelease(matrix, releaseLine); err != nil {
 		return fmt.Errorf("DSL support matrix cannot ship in %s: %w", version, err)
 	}
 	return nil
@@ -92,7 +96,11 @@ func isFinalReleaseVersion(version string) bool {
 }
 
 func supportReleaseMetadata(version, previousPath string) (string, []byte, error) {
-	current, err := newSupportSnapshot(version, supportmatrix.GetDSL())
+	matrix, err := supportMatrixForReleaseMetadata(version)
+	if err != nil {
+		return "", nil, err
+	}
+	current, err := newSupportSnapshot(version, matrix)
 	if err != nil {
 		return "", nil, err
 	}
@@ -116,6 +124,15 @@ func supportReleaseMetadata(version, previousPath string) (string, []byte, error
 	}
 	snapshotJSON = append(snapshotJSON, '\n')
 	return notes, snapshotJSON, nil
+}
+
+func supportMatrixForReleaseMetadata(version string) (supportmatrix.SupportMatrix, error) {
+	version = strings.TrimSpace(version)
+	releaseLine, _, _ := strings.Cut(version, "-")
+	if !isFinalReleaseVersion(releaseLine) {
+		return supportmatrix.GetDSL(), nil
+	}
+	return supportmatrix.GetDSLForRelease(releaseLine)
 }
 
 func newSupportSnapshot(release string, matrix supportmatrix.SupportMatrix) (supportSnapshot, error) {

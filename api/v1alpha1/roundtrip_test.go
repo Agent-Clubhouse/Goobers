@@ -156,12 +156,18 @@ func TestWorkflowRoundTrip(t *testing.T) {
 					Retry:           &RetryPolicy{MaxAttempts: 2, BackoffSeconds: 30},
 					TimeoutSeconds:  1800,
 					Limits:          &Limits{MaxTokens: 2_000_000, MaxCostUSD: 5},
-					ExpectedOutputs: []string{"pull-request"}, Next: "tests",
+					ExpectedOutputs: []string{"pull-request"},
+					ArtifactSlots: []ArtifactSlot{{
+						Name: "patch", MediaType: "text/x-patch", SchemaPath: "schemas/patch.schema.json", MaxSize: 1_048_576,
+					}},
+					Next: "tests",
 				},
 				{
 					Name: "tests", Type: TaskDeterministic,
 					Run:  &DeterministicRun{Command: []string{"make", "test"}, Env: map[string]string{"CI": "true"}, SyncBase: true},
-					Goal: "Run the test suite.", ContinueOnError: true, Next: "ci-gate",
+					Goal: "Run the test suite.", ContinueOnError: true,
+					ArtifactInputs: map[string]ArtifactInputRef{"candidatePatch": {From: "implement.patch"}},
+					Next:           "ci-gate",
 				},
 			},
 			Gates: []Gate{
