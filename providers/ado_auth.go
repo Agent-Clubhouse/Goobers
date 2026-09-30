@@ -261,7 +261,7 @@ func (s *adoRefreshingDeliveredCredentialSource) Credential(ctx context.Context)
 	if err != nil {
 		// Token fails only when a rejected value could not be re-resolved:
 		// the request still ends as the delivered credential's rejection.
-		return ADOCredential{}, fmt.Errorf("%w: the credential delivered for %s was rejected and could not be re-resolved: %v", ErrADODeliveredCredentialRejected, s.label, err)
+		return ADOCredential{}, fmt.Errorf("%w: the credential delivered for %s was rejected and could not be re-resolved: %w", ErrADODeliveredCredentialRejected, s.label, err)
 	}
 	return ADOCredential{Kind: s.kind, Secret: secret, ExpiresAt: s.token.Expiry()}, nil
 }

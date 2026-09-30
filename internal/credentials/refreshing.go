@@ -100,7 +100,7 @@ func (t *RefreshingToken) Token(ctx context.Context) (string, error) {
 	}
 	if t.invalid {
 		if err := t.refreshLocked(ctx); err != nil {
-			return "", fmt.Errorf("%w (%s): %v", ErrRejectedCredentialNotRefreshed, t.capability, err)
+			return "", fmt.Errorf("%w (%s): %w", ErrRejectedCredentialNotRefreshed, t.capability, err)
 		}
 		return t.token, nil
 	}
