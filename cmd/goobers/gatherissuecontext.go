@@ -142,7 +142,7 @@ func (o originatingIssue) remediationIssue() apiv1.RemediationIssue {
 	return apiv1.RemediationIssue{
 		Number:    o.number,
 		Title:     o.item.Title,
-		Body:      o.item.Body,
+		Body:      o.item.BodyWithAcceptanceCriteria(),
 		URL:       o.item.URL,
 		Integrity: o.item.Integrity,
 	}
