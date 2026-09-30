@@ -1,6 +1,9 @@
 package failureclass
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // windowsLockMarkers are distinctive substrings that Git, Node, and native
 // Windows file operations emit when a process — typically real-time
@@ -26,6 +29,10 @@ var windowsLockMarkers = []string{
 // omitted: an EPERM on open is common for a genuine authorization denial.
 var windowsLockErrnoOperations = []string{"unlink", "rename", "rmdir"}
 
+const windowsAbsolutePathPattern = `(?:[a-z]:\\|\\\\)(?:[^\\|;:\r\n]*\\)*[^\\\s|;:\r\n]+`
+
+var windowsLockAccessDeniedRenamePattern = regexp.MustCompile(`(?:^|:\s+)rename\s+` + windowsAbsolutePathPattern + `\s+` + windowsAbsolutePathPattern + `:\s+access is denied\.?\s*(?:\|\s|$)`)
+
 // IsWindowsSharingViolation reports whether message describes a transient
 // Windows file-lock/sharing-violation condition — the kind of host
 // contention real-time antivirus scanning causes — rather than a genuine
@@ -35,5 +42,6 @@ func IsWindowsSharingViolation(message string) bool {
 	if containsAny(message, windowsLockMarkers) {
 		return true
 	}
-	return strings.Contains(message, "eperm") && containsAny(message, windowsLockErrnoOperations)
+	return (strings.Contains(message, "eperm") && containsAny(message, windowsLockErrnoOperations)) ||
+		windowsLockAccessDeniedRenamePattern.MatchString(message)
 }
