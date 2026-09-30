@@ -90,6 +90,26 @@ func TestStartupPendingRecordIDs(t *testing.T) {
 	}
 }
 
+func TestStartupRecoveryReceiptAllowsNewShutdownRecords(t *testing.T) {
+	previous := collectionProfile
+	collectionProfile = "standard"
+	defer func() { collectionProfile = previous }()
+	r := &startupRecoveryReceipt{
+		Expected: 2, Seen: 2, Requests: 1, AccountingReady: true,
+		ShutdownMS: 100, AfterShutdownPendingRecords: 3,
+		Health: startupHealthAudit{Streams: map[string]startupHealthCounters{
+			"diagnostics": {ShutdownEvents: 1}, "journal": {ShutdownEvents: 1}, "traces": {ShutdownEvents: 1},
+		}},
+	}
+	if !r.Successful() {
+		t.Fatal("new records produced by the recovery shutdown invalidated prior replay delivery")
+	}
+	r.PendingRecords = 1
+	if r.Successful() {
+		t.Fatal("unreconciled records at delivery were accepted")
+	}
+}
+
 func TestStartupHealthAuditCatchesShutdownLoss(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.log")
 	body := "startup complete\n" +

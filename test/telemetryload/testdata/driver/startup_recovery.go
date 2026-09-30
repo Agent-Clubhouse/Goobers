@@ -27,17 +27,18 @@ var startupRecordID = regexp.MustCompile(`^(?:[a-f0-9]{32}|[a-f0-9]{64})$`)
 // separate restart of that stopped fixture, after synthetic seed files have
 // been removed, so deferred admission is not mistaken for lost telemetry.
 type startupRecoveryReceipt struct {
-	StartedUTC, FinishedUTC time.Time
-	Expected, Seen          int
-	Missing                 int
-	Requests                int64
-	Duplicates              int64
-	StartupMS, ShutdownMS   float64
-	AccountingReady         bool
-	PendingRecords          int
-	NoPending               bool
-	Health                  startupHealthAudit
-	Error                   string
+	StartedUTC, FinishedUTC     time.Time
+	Expected, Seen              int
+	Missing                     int
+	Requests                    int64
+	Duplicates                  int64
+	StartupMS, ShutdownMS       float64
+	AccountingReady             bool
+	PendingRecords              int
+	AfterShutdownPendingRecords int
+	NoPending                   bool
+	Health                      startupHealthAudit
+	Error                       string
 }
 
 func (r *startupRecoveryReceipt) Successful() bool {
@@ -261,7 +262,7 @@ func runStartupRecovery(r *startupRecoveryReceipt, name, root, api string, expec
 		return err
 	}
 	stats := telemetry.InspectAzureReplayRoot(spool(root))
-	r.AccountingReady, r.PendingRecords = stats.AccountingReady, stats.PendingRecords
+	r.AfterShutdownPendingRecords = stats.PendingRecords
 	if !r.Health.complete(true, collectionProfile) || !r.Health.clean("healthy") {
 		return errors.New("recovery shutdown health was incomplete or lossy")
 	}
