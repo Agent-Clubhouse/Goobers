@@ -21,8 +21,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/telemetry"
+	"gopkg.in/yaml.v3"
 )
 
 var mode atomic.Int32
@@ -85,6 +87,8 @@ type Result struct {
 	Name                                                string
 	StartupMS, ShutdownMS                               float64
 	Runs, Failures, HealthFailures                      int
+	FailureKinds                                        map[string]int
+	JournalStartedRuns, JournalFinishedRuns             int
 	RunP50MS, RunP95MS, HealthP95MS                     float64
 	MaxRSSKiB                                           int64
 	MeanCPU                                             float64
@@ -107,6 +111,24 @@ func percentile(a []float64, p float64) float64 {
 	sort.Float64s(a)
 	return a[int(float64(len(a)-1)*p)]
 }
+
+// Count every CLI error during burst diagnostics without retaining every
+// response body (which can be large and may contain host-specific details).
+// An accepted trigger with an unavailable status probe is distinct from a
+// request refused before admission: its authoritative run can still finish.
+func classifyRunFailure(output string, timedOut bool) string {
+	if strings.Contains(output, "remains accepted; could not observe dispatch") {
+		return "accepted_status_unavailable"
+	}
+	if strings.Contains(output, "class_saturated: ") {
+		return "class_saturated"
+	}
+	if timedOut {
+		return "cli_timeout"
+	}
+	return "other"
+}
+
 func spool(root string) string { return filepath.Join(root, "telemetry-export", "azure-monitor") }
 
 func prefill(root string, mb, tiny int, legacy bool) {
@@ -174,6 +196,7 @@ func setup(name, url string, enabled bool) (string, string) {
 	// Keep the existing demo definition, adding a second gaggle and five copies per gaggle.
 	raw, err := os.ReadFile(filepath.Join(root, "config/gaggles/demo/workflows/demo.yaml"))
 	must(err)
+	must(checkOfflineDemoFixture(cfg, raw))
 	gag, err := os.ReadFile(filepath.Join(root, "config/gaggles/demo/gaggle.yaml"))
 	must(err)
 	manifest, err := os.ReadFile(filepath.Join(root, "config/manifest.yaml"))
@@ -191,6 +214,32 @@ func setup(name, url string, enabled bool) (string, string) {
 	return root, "http://" + addr
 }
 
+// Keep the load fixture independent of GitHub even when the host can reach it
+// (notably the explicit Windows demo exception to network isolation). The
+// project/backlog labels in the demo gaggle are fixture data, not connections.
+func checkOfflineDemoFixture(cfg *instance.Config, raw []byte) error {
+	if len(cfg.Repos) != 0 {
+		return fmt.Errorf("synthetic demo configured %d repository connections", len(cfg.Repos))
+	}
+	var workflow apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		return fmt.Errorf("parse synthetic demo workflow: %w", err)
+	}
+	if len(workflow.Spec.Tasks) != 4 {
+		return fmt.Errorf("synthetic demo has %d stages, expected four offline stages", len(workflow.Spec.Tasks))
+	}
+	for _, task := range workflow.Spec.Tasks {
+		if task.Run == nil || task.Run.Network != apiv1.NetworkNone ||
+			task.Run.Workspace != apiv1.WorkspaceScratch || task.Run.Script != "" ||
+			len(task.Run.Command) != 3 || task.Run.Command[0] != "goobers" ||
+			task.Run.Command[1] != "__demo-provider" || task.Run.Command[2] != task.Name ||
+			len(task.Capabilities) != 0 {
+			return fmt.Errorf("synthetic demo stage %q is not an offline demo-provider command", task.Name)
+		}
+	}
+	return nil
+}
+
 func main() {
 	var duration time.Duration
 	var selected string
@@ -202,7 +251,7 @@ func main() {
 	flag.DurationVar(&recoveryAfter, "recovery-after", 0, "override recovery time for prefill scenarios")
 	flag.DurationVar(&pollInterval, "poll-interval", 0, "pause per worker between workflows; use 3m with 10 workers for representative polling")
 	flag.DurationVar(&sampleInterval, "sample-interval", time.Second, "process and health sampling interval; use 10s for long soaks")
-	flag.StringVar(&collectionProfile, "profile", "standard", "health, standard or diagnostic collection profile")
+	flag.StringVar(&collectionProfile, "profile", "standard", "health, journal, standard or diagnostic collection profile")
 	flag.BoolVar(&windowsInsecureDemo, "windows-insecure-demo", false, "explicitly allow the bundled credential-free demo without network isolation on Windows")
 	flag.DurationVar(&settleTimeout, "settle-timeout", 2*time.Minute, "maximum journal reconciliation wait after workload ends, before shutdown")
 	flag.StringVar(&azureConnectionEnv, "azure-connection-env", "", "explicit connection-string environment reference; only with -scenario azure (no volume prefills)")
@@ -225,7 +274,7 @@ func main() {
 	if workers < 1 || workers > 256 || duration <= 0 || pollInterval < 0 || sampleInterval < time.Second || settleTimeout < 0 {
 		panic("invalid load limits")
 	}
-	if collectionProfile != "health" && collectionProfile != "standard" && collectionProfile != "diagnostic" {
+	if collectionProfile != "health" && collectionProfile != "journal" && collectionProfile != "standard" && collectionProfile != "diagnostic" {
 		panic("invalid collection profile")
 	}
 	if !strings.Contains("|all|baseline|enabled|outage-recovery|network-faults|disk-full|near-cap|tiny-files|legacy|spool-failure|azure|crash|startup|", "|"+selected+"|") {
@@ -387,7 +436,7 @@ func validate(r Result) {
 }
 
 func run(name, root, api string, duration time.Duration) Result {
-	result := Result{Name: name}
+	result := Result{Name: name, FailureKinds: map[string]int{}}
 	streamMu.Lock()
 	streamStart := map[string]int{}
 	for k, v := range streams {
@@ -483,6 +532,7 @@ func run(name, root, api string, duration time.Duration) Result {
 				start := time.Now()
 				workctx, stop := context.WithTimeout(context.Background(), 45*time.Second)
 				b, err := cmd(workctx, "run", "--force", "--gaggle", g, fmt.Sprintf("load%d", worker%5), root).CombinedOutput()
+				timedOut := workctx.Err() == context.DeadlineExceeded
 				stop()
 				mu.Lock()
 				runLatency = append(runLatency, float64(time.Since(start).Microseconds())/1000)
@@ -490,6 +540,7 @@ func run(name, root, api string, duration time.Duration) Result {
 					result.Runs++
 				} else {
 					result.Failures++
+					result.FailureKinds[classifyRunFailure(string(b), timedOut)]++
 					if result.Failures < 5 {
 						write(filepath.Join(out, fmt.Sprintf("%s-failure-%d.txt", name, result.Failures)), string(b))
 					}
@@ -705,10 +756,20 @@ func run(name, root, api string, duration time.Duration) Result {
 		scan := bufio.NewScanner(f)
 		scan.Buffer(make([]byte, 4096), 2<<20)
 		id := filepath.Base(filepath.Dir(path))
+		started, finished := false, false
 		for scan.Scan() {
-			var e struct{ Seq uint64 }
+			var e struct {
+				Seq  uint64
+				Type string
+			}
 			if json.Unmarshal(scan.Bytes(), &e) == nil {
 				result.ExpectedRunEvents++
+				if e.Seq == 1 && e.Type == "run.started" {
+					started = true
+				}
+				if e.Type == "run.finished" {
+					finished = true
+				}
 				if _, ok := journalKeys.Load(fmt.Sprintf("%s:%d", id, e.Seq)); !ok {
 					result.MissingRunEvents++
 					if azureConnectionEnv == "" && name != "baseline" && name != "crash-outage" && collectionProfile != "health" && result.MissingRunEvents <= 20 {
@@ -719,6 +780,12 @@ func run(name, root, api string, duration time.Duration) Result {
 		}
 		must(scan.Err())
 		must(f.Close())
+		if started {
+			result.JournalStartedRuns++
+			if finished {
+				result.JournalFinishedRuns++
+			}
+		}
 	}
 	result.PersistedCheckpointRecords = len(checkpointIDs)
 	for _, id := range checkpointIDs {

@@ -30,15 +30,18 @@ func buildTelemetryClient(
 	registry *journal.RegistryScrubber,
 	telemetryConfig instance.TelemetryConfig,
 	stores credentials.StoreResolver,
+	// Nil keeps one-shot setup immediate; the daemon supplies its readiness signal.
+	replayStart <-chan struct{},
 ) (*telemetry.Client, error) {
 	cfg := telemetry.Config{
-		ServiceName:    "goobers",
-		ServiceVersion: version.Get().Version,
-		BuildCommit:    version.Get().Commit,
-		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
-		Scrubber:       scrubber,
-		Batch:          true,
-		JournalRoot:    l.Root,
+		ServiceName:             "goobers",
+		ServiceVersion:          version.Get().Version,
+		BuildCommit:             version.Get().Commit,
+		SpanExporter:            telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
+		Scrubber:                scrubber,
+		Batch:                   true,
+		JournalRoot:             l.Root,
+		AzureMonitorReplayStart: replayStart,
 	}
 	// Only the durable identity is trustworthy; legacy roots remain unidentified.
 	// Carry it on every signal as a resource attribute so operators can correlate

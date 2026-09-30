@@ -84,6 +84,83 @@ func TestIntegrationTelemetryDaemonReconcilesJournal(t *testing.T) {
 	checkStartupProbe(t, ctx, root, artifact, daemon, driver)
 }
 
+// Smoke the two lower collection profiles through the real daemon and local
+// receiver. The normal-rate release comparison remains a separate matched
+// 35-minute experiment; these assertions protect the profile signal boundary.
+func TestIntegrationTelemetryLowerCollectionProfiles(t *testing.T) {
+	testdep.Require(t, "go", "git")
+	if runtime.GOOS == "windows" {
+		testdep.Require(t, "powershell.exe")
+	} else {
+		testdep.Require(t, "ps")
+	}
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := t.TempDir()
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+	daemon, driver := filepath.Join(artifact, "goobers"+ext), filepath.Join(artifact, "load"+ext)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	for _, build := range []struct{ output, pkg string }{{daemon, "./cmd/goobers"}, {driver, "./test/telemetryload/testdata/driver"}} {
+		command := exec.CommandContext(ctx, "go", "build", "-o", build.output, build.pkg)
+		command.Dir = repo
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", build.pkg, err, output)
+		}
+	}
+	for _, profile := range []string{"health", "journal"} {
+		t.Run(profile, func(t *testing.T) {
+			outputRoot := filepath.Join(artifact, profile)
+			args := []string{"-bin", daemon, "-out", outputRoot, "-scenario", "enabled",
+				"-duration", "15s", "-workers", "2", "-profile", profile}
+			if runtime.GOOS == "windows" {
+				args = append(args, "-windows-insecure-demo")
+			}
+			command := exec.CommandContext(ctx, driver, args...)
+			command.Dir = repo
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s profile fixture: %v\n%s", profile, err, output)
+			}
+			data, err := os.ReadFile(filepath.Join(outputRoot, "enabled.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				Runs, Failures, HealthFailures, ExpectedRunEvents, MissingRunEvents, MetricSampleErrors int
+				ShutdownMS                                                                              float64
+				Records                                                                                 int64
+				Streams                                                                                 map[string]int
+				Replay                                                                                  struct{ AccountingReady bool }
+			}
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatal(err)
+			}
+			if !result.Replay.AccountingReady || result.Runs < 2 || result.Failures != 0 ||
+				result.HealthFailures != 0 || result.MetricSampleErrors != 0 ||
+				result.ShutdownMS > 20000 || result.ExpectedRunEvents == 0 ||
+				result.Streams["diagnostics"] == 0 || result.Records == 0 {
+				t.Fatalf("%s health/workflow/export invariant failed: %s\n%s", profile, data, output)
+			}
+			if result.Streams[""] != 0 {
+				t.Fatalf("%s emitted run/stage traces: %s", profile, data)
+			}
+			if profile == "health" {
+				if result.Streams["journal"] != 0 || result.MissingRunEvents != result.ExpectedRunEvents {
+					t.Fatalf("health exported run journals: %s", data)
+				}
+			} else if result.Streams["journal"] == 0 || result.MissingRunEvents != 0 {
+				t.Fatalf("journal-only profile did not reconcile run journals: %s", data)
+			}
+		})
+	}
+}
+
 // Reuse the daemon/driver built by the existing integration fixture. One pair
 // per mode checks the harness, not a release p95 distribution. The parent's
 // existing three-minute context remains the bound; no timeout is relaxed.
@@ -97,6 +174,9 @@ func checkStartupProbe(t *testing.T, ctx context.Context, repo, artifact, daemon
 			}
 			dir := filepath.Join(artifact, "startup-"+index)
 			args := []string{"-bin", daemon, "-out", dir, "-scenario", "startup", "-startup-rounds", "1", "-startup-settle", "0s", "-startup-index", index, "-startup-endpoint", endpoint}
+			if index == "cold" {
+				args = append(args, "-startup-post-ready", "1s")
+			}
 			if runtime.GOOS == "windows" {
 				args = append(args, "-windows-insecure-demo")
 			}
@@ -129,6 +209,16 @@ func verifyStartupSmoke(t *testing.T, dir, index string) {
 			Measurement                           struct {
 				StartupMS, ShutdownMS float64
 				Requests              int64
+				PostReady             *struct {
+					FirstWorkflowCommandMS                           float64
+					FirstWorkflowError, SourceJournalError           string
+					SourceRunEvents, SourceRuns, SourceCompletedRuns int
+					DeliveryReconciled                               bool
+					Probes                                           []struct {
+						Status int
+						Error  string
+					}
+				}
 			}
 			Prime json.RawMessage
 		}
@@ -140,6 +230,19 @@ func verifyStartupSmoke(t *testing.T, dir, index string) {
 		t.Fatalf("invalid startup evidence: %s", data)
 	}
 	for i, sample := range result.Samples {
+		post := sample.Measurement.PostReady
+		if index == "cold" {
+			if post == nil || post.FirstWorkflowError != "" || post.SourceJournalError != "" || post.FirstWorkflowCommandMS <= 0 || post.SourceRunEvents == 0 || post.SourceRuns != 1 || post.SourceCompletedRuns != 1 || post.DeliveryReconciled || len(post.Probes) < 2 {
+				t.Fatalf("invalid post-ready smoke evidence: %s", data)
+			}
+			for _, probe := range post.Probes {
+				if probe.Status != 200 || probe.Error != "" {
+					t.Fatalf("post-ready response failed: %s", data)
+				}
+			}
+		} else if post != nil {
+			t.Fatal("idle warm measurement unexpectedly includes workflow work")
+		}
 		if sample.Enabled != (i == 1) || !sample.SeedPayloadsRemovedAfterward || sample.Measurement.StartupMS <= 0 || sample.Measurement.ShutdownMS <= 0 {
 			t.Fatalf("invalid startup sample: %s", data)
 		}

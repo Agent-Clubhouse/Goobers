@@ -2,8 +2,9 @@ package telemetry
 
 // The replay files remain authoritative. This private, rebuildable SQLite
 // manifest caches their metadata and coordinates claims across processes. All
-// filesystem mutations and manifest changes run under one per-root OS lock;
-// HTTP never holds that lock. Directory stamps detect an interrupted mutation
+// indexed-stream filesystem mutations and manifest changes run under one
+// per-root OS lock. Bounded pre-index bootstrap files use a separate lock;
+// HTTP never holds either lock. Directory stamps detect an interrupted mutation
 // (or an older writer) and trigger reconciliation, not a scan on every batch.
 
 import (
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -27,6 +29,7 @@ import (
 const azureReplayIndexName = ".replay-index.db"
 
 const azureReplayIndexAuditInterval = time.Minute
+const azureReplayLargeColdBacklogFiles = 1024
 
 var azureReplayIndexes = struct {
 	sync.Mutex
@@ -34,18 +37,21 @@ var azureReplayIndexes = struct {
 }{roots: make(map[string]*azureReplayIndex)}
 
 type azureReplayIndex struct {
-	root         string
-	streams      []string
-	db           *sql.DB
-	ready        chan struct{}
-	cancel       context.CancelFunc
-	err          error
-	refs         int // guarded by azureReplayIndexes
-	lockOnce     sync.Once
-	localLock    chan struct{}
-	dirty        bool // guarded by the root lock; retry a rolled-back mutation eagerly
-	firstAttempt chan struct{}
-	firstErr     error // immutable after firstAttempt closes
+	root          string
+	streams       []string
+	start         <-chan struct{}
+	bootstrapOpen atomic.Bool
+	db            *sql.DB
+	statsDB       *sql.DB
+	ready         chan struct{}
+	cancel        context.CancelFunc
+	err           error
+	refs          int // guarded by azureReplayIndexes
+	lockOnce      sync.Once
+	localLock     chan struct{}
+	dirty         bool // guarded by the root lock; retry a rolled-back mutation eagerly
+	firstAttempt  chan struct{}
+	firstErr      error // immutable after firstAttempt closes
 }
 
 func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
@@ -75,7 +81,8 @@ func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error
 		return index, stream, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, ready: make(chan struct{}), firstAttempt: make(chan struct{}), cancel: cancel, refs: 1}
+	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, start: cfg.start, ready: make(chan struct{}), firstAttempt: make(chan struct{}), cancel: cancel, refs: 1}
+	index.bootstrapOpen.Store(cfg.start != nil)
 	if stream == "" {
 		index.streams = []string{""}
 	}
@@ -88,9 +95,15 @@ func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error
 }
 
 func (x *azureReplayIndex) initialize(ctx context.Context) error {
+	if err := x.awaitLargeColdBacklogStart(ctx); err != nil {
+		return err
+	}
 	first := true
 	for {
 		err := x.open(ctx)
+		if err == nil {
+			err = x.migrateBootstrap(ctx)
+		}
 		if first {
 			x.firstErr = err
 			close(x.firstAttempt)
@@ -99,10 +112,8 @@ func (x *azureReplayIndex) initialize(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
-		if x.db != nil {
-			_ = x.db.Close()
-			x.db = nil
-		}
+		_ = x.closeDatabases()
+		x.db, x.statsDB = nil, nil
 		timer := time.NewTimer(time.Second)
 		select {
 		case <-timer.C:
@@ -111,6 +122,44 @@ func (x *azureReplayIndex) initialize(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// Only a missing manifest with a large retained backlog is deferred. This
+// check inspects names, not per-file metadata or contents. Before readiness,
+// admission goes to the separately bounded, fsynced bootstrap area.
+func (x *azureReplayIndex) awaitLargeColdBacklogStart(ctx context.Context) error {
+	if x.start == nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(x.root, azureReplayIndexName)); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, stream := range x.streams {
+		entries, err := os.ReadDir(filepath.Join(x.root, stream))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		count := 0
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
+				count++
+			}
+		}
+		if count >= azureReplayLargeColdBacklogFiles {
+			select {
+			case <-x.start:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return nil
 }
 
 func (x *azureReplayIndex) release(ctx context.Context) error {
@@ -127,19 +176,25 @@ func (x *azureReplayIndex) release(ctx context.Context) error {
 	}
 	select {
 	case <-x.ready:
-		if x.db != nil {
-			return x.db.Close()
-		}
+		return x.closeDatabases()
 	case <-ctx.Done():
 		go func() {
 			<-x.ready
-			if x.db != nil {
-				_ = x.db.Close()
-			}
+			_ = x.closeDatabases()
 		}()
 		return ctx.Err()
 	}
-	return nil
+}
+
+func (x *azureReplayIndex) closeDatabases() error {
+	var readerErr, writerErr error
+	if x.statsDB != nil {
+		readerErr = x.statsDB.Close()
+	}
+	if x.db != nil {
+		writerErr = x.db.Close()
+	}
+	return errors.Join(readerErr, writerErr)
 }
 
 func (x *azureReplayIndex) wait(ctx context.Context) error {
@@ -269,7 +324,20 @@ func (x *azureReplayIndex) open(ctx context.Context) error {
 	}
 	// A fresh manifest or changed directory is reconciled. Opening every short-
 	// lived CLI process must not rescan an already-current daemon manifest.
-	return x.transaction(ctx, func(tx *sql.Tx) error { return x.reconcile(ctx, tx, false) })
+	if err = x.transaction(ctx, func(tx *sql.Tx) error { return x.reconcile(ctx, tx, false) }); err != nil {
+		return err
+	}
+	// Durable publication and reconciliation can hold the sole writer connection
+	// across filesystem work. Read the last committed WAL state on a separate,
+	// bounded read-only connection, as the external inspector already does.
+	// Initialize it only after migrations and initial reconciliation complete.
+	// This does not change the writer, fsync, admission, or caller's stats budget.
+	x.statsDB, err = sql.Open("sqlite", sqliteuri.File(path)+"?mode=ro&_pragma=busy_timeout(50)")
+	if err != nil {
+		return err
+	}
+	x.statsDB.SetMaxOpenConns(1)
+	return x.statsDB.PingContext(ctx)
 }
 
 func (x *azureReplayIndex) transaction(ctx context.Context, f func(*sql.Tx) error) error {
@@ -494,10 +562,20 @@ func (x *azureReplayIndex) stats(ctx context.Context, stream string, now time.Ti
 	if err := x.wait(ctx); err != nil {
 		return AzureReplayStats{}, fmt.Errorf("replay accounting unavailable: %w", err)
 	}
-	return replayIndexStats(ctx, x.db, stream, now)
+	stats, err := replayIndexStats(ctx, x.statsDB, stream, now)
+	if err != nil {
+		return stats, err
+	}
+	// A different process can publish a durable pre-index batch after this
+	// process reached readiness. Until its next sweep migrates that batch,
+	// manifest totals are only a subset of the authoritative replay files.
+	if x.hasBootstrapFiles() {
+		stats.AccountingReady = false
+	}
+	return stats, nil
 }
 
-// A live root uses its shared connection; an external health command only
+// A live root uses its shared read-only pool; an external health command only
 // opens an existing manifest read-only. No scan or new exporter is started.
 func inspectReplayIndex(root string) (AzureReplayStats, bool) {
 	root, err := filepath.Abs(root)
@@ -530,5 +608,8 @@ func inspectReplayIndex(root string) (AzureReplayStats, bool) {
 		return AzureReplayStats{}, true
 	}
 	stats, _ := replayIndexStats(ctx, db, "*", time.Now())
+	if (&azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}}).hasBootstrapFiles() {
+		stats.AccountingReady = false
+	}
 	return stats, true
 }
