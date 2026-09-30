@@ -17,7 +17,10 @@ journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
 instead when no daemon is running (that path finalizes a stuck run's
 journal directly).
 A live local daemon is contacted through its HTTP API automatically.
-API failures never silently fall back to file delegation. Use --no-api
+API failures never silently fall back to file delegation. When TLS
+publishes only a wildcard bind address, the CLI reports that no
+certificate-valid client endpoint exists and uses same-root file
+delegation. Use --no-api
 to explicitly select local cancellation/file delegation; this overrides
 $GOOBERS_DAEMON_API and cannot be combined with --api.
 API cancellation uses durable, actor-and-target-bound request identities.

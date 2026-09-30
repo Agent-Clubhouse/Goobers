@@ -3559,7 +3559,9 @@ escalated. The submission-only --no-wait mode exits 0 on durable API
 acceptance, before dispatch.
 Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
-back to files. --no-api explicitly selects local execution/file delegation
+back to files. When TLS publishes only a wildcard bind address, the CLI
+reports that no certificate-valid client endpoint exists and uses same-root
+file delegation. --no-api explicitly selects local execution/file delegation
 and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.
 Without a live daemon, workflows with an effective runControls.maxRunDuration
 are rejected before dispatch, including inherited limits and --no-wait runs.
@@ -3648,7 +3650,10 @@ journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
 instead when no daemon is running (that path finalizes a stuck run's
 journal directly).
 A live local daemon is contacted through its HTTP API automatically.
-API failures never silently fall back to file delegation. Use --no-api
+API failures never silently fall back to file delegation. When TLS
+publishes only a wildcard bind address, the CLI reports that no
+certificate-valid client endpoint exists and uses same-root file
+delegation. Use --no-api
 to explicitly select local cancellation/file delegation; this overrides
 $GOOBERS_DAEMON_API and cannot be combined with --api.
 API cancellation uses durable, actor-and-target-bound request identities.

@@ -787,8 +787,27 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("read stale marker: %w", markerErr)
 	default:
-		if err := m.prepareCleanup(ctx, path, runID, ""); err != nil {
-			return err
+		ownership, ownershipErr := readMarker(m.ownershipPath(key, filepath.Base(path)))
+		if ownershipErr == nil {
+			directory, err := ownership.directoryName()
+			if err != nil {
+				return fmt.Errorf("read stale ownership: %w", err)
+			}
+			if ownership.RunID != runID || directory != filepath.Base(path) {
+				return fmt.Errorf("worktree: stale ownership record does not match target")
+			}
+			if err := m.prepareMarkerCleanupWithRetention(ctx, key, path, markerPath, runID, ownership); err != nil {
+				return err
+			}
+			if err := m.restoreReservedBranchFromMarker(ctx, key, path, ownership); err != nil {
+				return fmt.Errorf("restore guarded branch for stale worktree: %w", err)
+			}
+		} else if os.IsNotExist(ownershipErr) {
+			if err := m.prepareCleanup(ctx, path, runID, ""); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("read stale ownership: %w", ownershipErr)
 		}
 	}
 	if err := retryOnFileLock(ctx, func() error {
