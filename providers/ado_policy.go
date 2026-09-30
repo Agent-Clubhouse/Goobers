@@ -19,6 +19,7 @@ const (
 	adoPolicyTypeRequiredReviewers   = "fd2167ab-b0be-447a-8ec8-39368250530e"
 	adoPolicyTypeCommentRequirements = "c6a1889d-b943-4856-b76f-9e46bb6b0df2"
 	adoPolicyTypeWorkItemLinking     = "40e92b44-2fe1-4dd6-b3d8-74a9c21d0c6e"
+	adoPolicyTypeMergeStrategy       = "fa4e907d-c16b-4a4c-9dfa-4916e5d171ab"
 )
 
 // adoPolicyKind is what an evaluation means to Goobers.
@@ -42,12 +43,17 @@ const (
 	// work item. It is not CI: open-pr's workItemRefs carry the link, so it
 	// never gates the CI state.
 	adoPolicyWorkItemLinking
+	// adoPolicyMergeStrategy ("Require a merge strategy") is settled by the
+	// completion's mergeStrategy, not by any code or pipeline, so it never
+	// gates the CI state or triggers CI remediation.
+	adoPolicyMergeStrategy
 )
 
 // gatesCI reports whether a policy of this kind drives the CI state. Reviewer,
-// comment-resolution and work-item-linking policies each have their own route
-// (a human, review threads, work-item refs), so none of them is a CI failure
-// that CI remediation could fix.
+// comment-resolution, work-item-linking and merge-strategy policies each have
+// their own route (a human, review threads, work-item refs, the completion's
+// merge strategy), so none of them is a CI failure that CI remediation could
+// fix.
 func (k adoPolicyKind) gatesCI() bool {
 	return k == adoPolicyCI || k == adoPolicyOther
 }
@@ -62,6 +68,8 @@ func adoPolicyKindOf(typeID string) adoPolicyKind {
 		return adoPolicyCommentResolution
 	case adoPolicyTypeWorkItemLinking:
 		return adoPolicyWorkItemLinking
+	case adoPolicyTypeMergeStrategy:
+		return adoPolicyMergeStrategy
 	default:
 		return adoPolicyOther
 	}
@@ -184,6 +192,11 @@ func (p *ADOProvider) adoPolicyCheckDetail(ev adoPolicyEvaluation, kind adoPolic
 		if state == CheckStateFailing {
 			detail.State = CheckStatePending
 			detail.Summary = "no linked work item"
+		}
+	case adoPolicyMergeStrategy:
+		if state == CheckStateFailing {
+			detail.State = CheckStatePending
+			detail.Summary = "settled by the completion's merge strategy"
 		}
 	}
 	return detail
