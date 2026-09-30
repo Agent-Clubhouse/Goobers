@@ -558,7 +558,17 @@ func (x *azureReplayIndex) stats(ctx context.Context, stream string, now time.Ti
 	if err := x.wait(ctx); err != nil {
 		return AzureReplayStats{}, fmt.Errorf("replay accounting unavailable: %w", err)
 	}
-	return replayIndexStats(ctx, x.statsDB, stream, now)
+	stats, err := replayIndexStats(ctx, x.statsDB, stream, now)
+	if err != nil {
+		return stats, err
+	}
+	// A different process can publish a durable pre-index batch after this
+	// process reached readiness. Until its next sweep migrates that batch,
+	// manifest totals are only a subset of the authoritative replay files.
+	if x.hasBootstrapFiles() {
+		stats.AccountingReady = false
+	}
+	return stats, nil
 }
 
 // A live root uses its shared read-only pool; an external health command only
@@ -594,5 +604,8 @@ func inspectReplayIndex(root string) (AzureReplayStats, bool) {
 		return AzureReplayStats{}, true
 	}
 	stats, _ := replayIndexStats(ctx, db, "*", time.Now())
+	if (&azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}}).hasBootstrapFiles() {
+		stats.AccountingReady = false
+	}
 	return stats, true
 }

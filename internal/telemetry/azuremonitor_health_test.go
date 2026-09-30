@@ -112,6 +112,9 @@ func TestAzureReplayHealthGrowthLossRateLimitAndRecovery(t *testing.T) {
 func TestAzureReplayHealthOldBacklogHighWaterAndUnavailableAccounting(t *testing.T) {
 	state := replayHealthState{}
 	got := state.sample(time.Now(), AzureReplayStats{PendingBytes: 900, OldestPendingAge: time.Minute}, replayLossCounters{}, 1000)
+	if got == nil || got.AccountingReady {
+		t.Fatalf("partial backlog was reported as fully accounted: %+v", got)
+	}
 	for _, cause := range []string{"accounting_unavailable", "spool_high_water", "backlog_old"} {
 		if got == nil || !slices.Contains(got.Causes, cause) {
 			t.Fatalf("missing %s: %+v", cause, got)

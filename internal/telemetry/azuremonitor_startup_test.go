@@ -239,8 +239,17 @@ func TestAzureReplayBootstrapLeftByOtherProcessIsMigrated(t *testing.T) {
 	if !s.index.hasBootstrapFiles() {
 		t.Fatal("cross-process bootstrap publication was invisible")
 	}
+	if stats := s.stats(); stats.AccountingReady {
+		t.Fatalf("unindexed cross-process bootstrap batch was reported as fully accounted: %+v", stats)
+	}
+	if stats := InspectAzureReplayRoot(root); stats.AccountingReady {
+		t.Fatalf("external replay inspection missed unindexed bootstrap batch: %+v", stats)
+	}
 	if err := s.index.migrateBootstrap(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+	if stats := s.stats(); !stats.AccountingReady || stats.PendingRecords != 1 {
+		t.Fatalf("migrated bootstrap batch was not accounted: %+v", stats)
 	}
 	s.signal()
 	select {
@@ -250,6 +259,37 @@ func TestAzureReplayBootstrapLeftByOtherProcessIsMigrated(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cross-process bootstrap file was not delivered")
+	}
+}
+
+func TestAzureReplayExternalInspectionMarksBootstrapAccountingPartial(t *testing.T) {
+	root := t.TempDir()
+	cfg := azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20}
+	s, err := newAzureReplaySpool(cfg, func(context.Context, []byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.index.wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if stats := InspectAzureReplayRoot(root); !stats.AccountingReady {
+		t.Fatalf("idle manifest was not ready: %+v", stats)
+	}
+	dir := bootstrapDir(root, "journal")
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureBootstrapStream(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeAzureReplayBatch(dir, "external.ndjson", time.Now(), []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if stats := InspectAzureReplayRoot(root); stats.AccountingReady {
+		t.Fatalf("external inspection treated a partial manifest as complete: %+v", stats)
 	}
 }
 

@@ -32,6 +32,7 @@ type replayHealthEvent struct {
 	Stream             string             `json:"stream"`
 	PID                int                `json:"pid"`
 	Causes             []string           `json:"causes"`
+	AccountingReady    bool               `json:"accountingReady"`
 	PendingRecords     int                `json:"pendingRecords"`
 	PendingFiles       int                `json:"pendingFiles"`
 	PendingBytes       int64              `json:"pendingBytes"`
@@ -94,6 +95,7 @@ func (h *replayHealthState) sample(now time.Time, stats AzureReplayStats, loss r
 		causes = append(causes, "recovery_unconfirmed")
 	}
 	event := &replayHealthEvent{Time: now.UTC(), Event: "telemetry.export.health", Status: "warning", Causes: causes,
+		AccountingReady: stats.AccountingReady,
 		PendingRecords: stats.PendingRecords, PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
 		OldestSeconds: stats.OldestPendingAge.Seconds(), AdmissionFailures: stats.AdmissionFailures, Retried: stats.Retried,
 		PrunedAge: stats.PrunedAge, PrunedBytes: stats.PrunedBytes, Malformed: stats.Malformed, Queue: loss}
@@ -175,7 +177,7 @@ func (s *azureReplaySpool) reportShutdownHealth(stats AzureReplayStats) {
 	}
 	writeReplayHealth(root, replayHealthEvent{
 		Time: time.Now().UTC(), Event: "telemetry.export.health", Status: "shutdown",
-		Stream: stream, PID: os.Getpid(), PendingRecords: stats.PendingRecords,
+		Stream: stream, PID: os.Getpid(), AccountingReady: stats.AccountingReady, PendingRecords: stats.PendingRecords,
 		PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
 		OldestSeconds: stats.OldestPendingAge.Seconds(), AdmissionFailures: stats.AdmissionFailures,
 		Retried: stats.Retried, PrunedAge: stats.PrunedAge, PrunedBytes: stats.PrunedBytes,
