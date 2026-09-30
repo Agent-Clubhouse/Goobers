@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -317,6 +318,64 @@ func TestRecoverySnapshotObservationsNilSafe(t *testing.T) {
 	noInstruments.SnapshotCaptured("delta", 1)
 	noInstruments.SnapshotFallback("no_base_ref")
 	noInstruments.SnapshotRestoreFailed("base_missing")
+}
+
+func TestSchedulerQueueSaturationMetricsRecordDepthAgeAndWorkerAvailability(t *testing.T) {
+	reader := metric.NewManualReader()
+	client := newMetricsClient(t, Config{MetricReader: reader})
+	observedAt := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+
+	client.RecordSchedulerQueueSaturation(context.Background(), []QueueSaturationSample{
+		{QueueKind: "schedule", OperatingSystem: runtime.GOOS, Depth: 0, ObservedAt: observedAt},
+		{QueueKind: "backlog", OperatingSystem: runtime.GOOS, Depth: 3, OldestEnqueuedAt: observedAt.Add(-5 * time.Minute), ObservedAt: observedAt},
+		{QueueKind: "refill", OperatingSystem: runtime.GOOS, Depth: 1, OldestEnqueuedAt: observedAt.Add(time.Minute), ObservedAt: observedAt},
+	}, &WorkerAvailabilitySample{OperatingSystem: runtime.GOOS, Available: 0})
+
+	collected := collectMetrics(t, reader)
+	depthPoints := metricPoints(t, collected, MetricQueueDepth)
+	if len(depthPoints) != 3 {
+		t.Fatalf("%s points = %+v, want schedule/backlog/refill", MetricQueueDepth, depthPoints)
+	}
+	if got := pointWith(t, depthPoints, MetricAttrQueueKind, "schedule"); got.value != 0 {
+		t.Fatalf("empty schedule depth = %v, want 0", got.value)
+	}
+	if got := pointWith(t, depthPoints, MetricAttrQueueKind, "backlog"); got.value != 3 {
+		t.Fatalf("growing backlog depth = %v, want 3", got.value)
+	}
+	if got := pointWith(t, depthPoints, MetricAttrQueueKind, "refill"); got.value != 1 {
+		t.Fatalf("draining refill depth = %v, want 1", got.value)
+	}
+	assertPointAttr(t, pointWith(t, depthPoints, MetricAttrQueueKind, "backlog"), MetricAttrOS, runtime.GOOS)
+
+	agePoints := metricPoints(t, collected, MetricQueueOldestAge)
+	if got := pointWith(t, agePoints, MetricAttrQueueKind, "schedule"); got.value != 0 {
+		t.Fatalf("empty schedule oldest age = %v, want 0", got.value)
+	}
+	if got := pointWith(t, agePoints, MetricAttrQueueKind, "backlog"); got.value != 300 {
+		t.Fatalf("stale backlog oldest age = %v, want 300", got.value)
+	}
+	if got := pointWith(t, agePoints, MetricAttrQueueKind, "refill"); got.value != 0 {
+		t.Fatalf("future enqueue age = %v, want clamped 0", got.value)
+	}
+
+	workerPoints := metricPoints(t, collected, MetricWorkersAvailable)
+	if len(workerPoints) != 1 || workerPoints[0].value != 0 {
+		t.Fatalf("%s points = %+v, want zero-capacity point", MetricWorkersAvailable, workerPoints)
+	}
+	assertPointAttr(t, workerPoints[0], MetricAttrOS, runtime.GOOS)
+}
+
+func TestSchedulerQueueSaturationMetricsOmitUnavailableWorkerCapacity(t *testing.T) {
+	reader := metric.NewManualReader()
+	client := newMetricsClient(t, Config{MetricReader: reader})
+
+	client.RecordSchedulerQueueSaturation(context.Background(), []QueueSaturationSample{
+		{QueueKind: "schedule", OperatingSystem: runtime.GOOS},
+	}, nil)
+
+	if points := metricPoints(t, collectMetrics(t, reader), MetricWorkersAvailable); len(points) != 0 {
+		t.Fatalf("%s points = %+v, want none when worker capacity is unobservable", MetricWorkersAvailable, points)
+	}
 }
 
 // The default provider-pattern net used by Redact is package-global. Metric

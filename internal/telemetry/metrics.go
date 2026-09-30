@@ -76,6 +76,15 @@ const (
 	// is a small, fixed, non-sensitive set of values, unlike the paths and
 	// error text MetricJournalAppendsDropped's doc explains staying off of.
 	MetricStorageHealthTierChanges = "goobers.storage.health.tier_changes"
+	// MetricQueueDepth reports scheduler-visible queued work by bounded queue
+	// kind and operating system.
+	MetricQueueDepth = "goobers.queue.depth"
+	// MetricQueueOldestAge reports the oldest scheduler-visible queue item age
+	// in seconds, by bounded queue kind and operating system.
+	MetricQueueOldestAge = "goobers.queue.oldest_age"
+	// MetricWorkersAvailable reports configured scheduler capacity that is not
+	// currently reserved. It is emitted only when capacity is observable.
+	MetricWorkersAvailable = "goobers.workers.available"
 )
 
 const (
@@ -102,6 +111,12 @@ const (
 	// "lock_contention", "queue_full", "stopping", "shutdown". Bounded and
 	// non-sensitive, so unlike a path or an error string it belongs in a label.
 	MetricAttrJournalDropCause = "goobers.journal.drop_cause"
+	// MetricAttrQueueKind labels queue saturation gauges with the fixed
+	// scheduler lane: "schedule", "backlog", or "refill".
+	MetricAttrQueueKind = "goobers.queue.kind"
+	// MetricAttrOS labels scheduler capacity and queue gauges with a bounded
+	// operating-system value such as "linux", "darwin", or "windows".
+	MetricAttrOS = "goobers.os"
 
 	metricNameAttribute = "goobers.metric.name"
 
@@ -141,6 +156,8 @@ var metricAttributeAllowlist = map[string]struct{}{
 	MetricAttrSpanKind:               {},
 	MetricAttrRecoverySnapshotFormat: {},
 	MetricAttrRecoveryReason:         {},
+	MetricAttrQueueKind:              {},
+	MetricAttrOS:                     {},
 }
 
 // instruments owns the process-wide Goobers metric instruments. A nil
@@ -167,6 +184,9 @@ type instruments struct {
 	recoveryRestoreFailures  apimetric.Int64Counter
 	storageFreeBytes         apimetric.Int64Gauge
 	storageHealthChanges     apimetric.Int64Counter
+	queueDepth               apimetric.Int64Gauge
+	queueOldestAge           apimetric.Int64Gauge
+	workersAvailable         apimetric.Int64Gauge
 	limiter                  *cardinalityLimiter
 }
 
@@ -220,6 +240,12 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	inst.storageFreeBytes, err = newInt64Gauge(meter, MetricStorageFreeBytes)
 	record(err)
 	inst.storageHealthChanges, err = newInt64Counter(meter, MetricStorageHealthTierChanges)
+	record(err)
+	inst.queueDepth, err = newInt64Gauge(meter, MetricQueueDepth)
+	record(err)
+	inst.queueOldestAge, err = newInt64Gauge(meter, MetricQueueOldestAge)
+	record(err)
+	inst.workersAvailable, err = newInt64Gauge(meter, MetricWorkersAvailable)
 	record(err)
 
 	if len(errs) != 0 {
