@@ -117,14 +117,18 @@ func TestLocalCIPollNoLongerSnapshotsItsToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, source, err := ciPollTokenSource(context.Background(), injector, "provider:pr:write", nil)
-	if err != nil || source == nil || token != minted.value(1) {
-		t.Fatalf("ciPollTokenSource = %q, %v, %v", token, source, err)
+	poller, err := localCIPollGitHubPoller(context.Background(), injector, "provider:pr:write", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, ok := poller.(*providers.GitHubProvider)
+	if !ok {
+		t.Fatalf("poller = %T", poller)
 	}
 	forge := &fakeExpiringForge{valid: minted.value(1)}
 	server := httptest.NewServer(http.HandlerFunc(forge.handler))
 	t.Cleanup(server.Close)
-	provider := providers.NewGitHubProvider(token, providers.WithTokenSource(source), func(p *providers.GitHubProvider) { p.BaseURL = server.URL })
+	provider.BaseURL = server.URL
 	if _, err := provider.AuthenticatedLogin(context.Background()); err != nil {
 		t.Fatalf("first poll: %v", err)
 	}

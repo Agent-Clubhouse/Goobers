@@ -686,11 +686,11 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	default:
 		// Not a snapshot (#3489, Goobers#6120): an expiring token is
 		// re-resolved through the injector near its expiry and after a 401.
-		token, source, err := ciPollTokenSource(ctx, e.injector, required, e.registrar)
+		githubPoller, err := localCIPollGitHubPoller(ctx, e.injector, required, e.registrar)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, err
 		}
-		poller = localCIPollGitHubPoller(token, source)
+		poller = githubPoller
 	}
 	ciPoll, err := executor.NewCIPollExecutor(poller, e.recorder)
 	if err != nil {

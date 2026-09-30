@@ -61,15 +61,20 @@ func materializeCapability(ctx context.Context, injector *credentials.Injector, 
 
 // localCIPollGitHubPoller is the local ci-poll's GitHub poller: through the
 // newPRPoller test seam when set, else a provider that resolves its token per
-// request from source (when the value expires) and re-resolves it once on 401.
-func localCIPollGitHubPoller(token string, source providers.TokenSource) executor.PRPoller {
+// request from the injector-backed refreshing source (when the value expires)
+// and re-resolves it once on 401.
+func localCIPollGitHubPoller(ctx context.Context, injector *credentials.Injector, capabilityName string, registrar credentials.SecretRegistrar) (executor.PRPoller, error) {
+	token, source, err := ciPollTokenSource(ctx, injector, capabilityName, registrar)
+	if err != nil {
+		return nil, err
+	}
 	if newPRPoller != nil {
-		return newPRPoller(token)
+		return newPRPoller(token), nil
 	}
 	if source == nil {
-		return providers.NewGitHubProvider(token)
+		return providers.NewGitHubProvider(token), nil
 	}
-	return providers.NewGitHubProvider(token, providers.WithTokenSource(source))
+	return providers.NewGitHubProvider(token, providers.WithTokenSource(source)), nil
 }
 
 // podCIPollTokenSource wraps the value the pod resolved at stage start in a

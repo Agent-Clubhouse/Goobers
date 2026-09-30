@@ -201,9 +201,11 @@ func TestCredentialRefreshNegativeCases(t *testing.T) {
 			ask: "repo:push", wantCode: "credential_grant_revoked",
 		},
 		{
-			name:  "not a grant",
-			grant: func(*testing.T, *daemonCredentialService, string) string { return "goobers-grant.bm90LWEtZ3JhbnQ.forged-mac-value" },
-			ask:   "repo:push", wantCode: "credential_grant_invalid",
+			name: "not a grant",
+			grant: func(*testing.T, *daemonCredentialService, string) string {
+				return "goobers-grant.bm90LWEtZ3JhbnQ.forged-mac-value"
+			},
+			ask: "repo:push", wantCode: "credential_grant_invalid",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
