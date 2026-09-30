@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/selfupdate"
@@ -244,7 +245,7 @@ func TestExistingScheduledTaskStartupFailureIsCapturedInDaemonLogAndStatus(t *te
 			return ctx, cancel
 		},
 	}
-	code := runServiceSuperviseWith([]string{root}, io.Discard, io.Discard, deps)
+	code := runServiceSuperviseWith([]string{serviceSuperviseDaemonLogFlag, root}, io.Discard, io.Discard, deps)
 	if code != 1 {
 		t.Fatalf("service supervisor code = %d, want startup failure", code)
 	}
@@ -313,7 +314,7 @@ func TestServiceSupervisorRecordsRuntimeFailureAfterReadiness(t *testing.T) {
 			return ctx, cancel
 		},
 	}
-	code := runServiceSuperviseWith([]string{root}, io.Discard, io.Discard, deps)
+	code := runServiceSuperviseWith([]string{serviceSuperviseDaemonLogFlag, root}, io.Discard, io.Discard, deps)
 	if code != 1 {
 		t.Fatalf("service supervisor code = %d, want runtime failure", code)
 	}
@@ -344,6 +345,75 @@ func TestServiceSupervisorRecordsRuntimeFailureAfterReadiness(t *testing.T) {
 	}
 	if strings.Contains(stdout, "last startup failure") {
 		t.Fatalf("runtime failure was reported as startup: %q", stdout)
+	}
+}
+
+func TestServiceSupervisorWithoutDaemonLogFlagLeavesDaemonLogAlone(t *testing.T) {
+	root := serviceTestInstance(t)
+	deps := serviceSuperviseDeps{
+		runSupervisor: func(context.Context, selfupdate.SupervisorOptions) error {
+			return errors.New("boom")
+		},
+		isWindowsService:  func() (bool, error) { return false, nil },
+		runWindowsService: func(string, func(context.Context) int) (int, error) { return 0, nil },
+		setupSignalContext: func() (context.Context, func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel
+		},
+	}
+	var stderr strings.Builder
+	if code := runServiceSuperviseWith([]string{root}, io.Discard, &stderr, deps); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "error: supervise daemon: boom") {
+		t.Fatalf("stderr = %q, want supervisor error", stderr.String())
+	}
+	if _, err := os.Stat(instance.NewLayout(root).DaemonLogFile()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("daemon log stat err = %v, want not exist (foreground/systemd/launchd keep their own streams)", err)
+	}
+}
+
+func TestServiceSupervisorDaemonLogRedactsAndCapturesChildOutput(t *testing.T) {
+	root := serviceTestInstance(t)
+	deps := serviceSuperviseDeps{
+		runSupervisor: func(_ context.Context, opts selfupdate.SupervisorOptions) error {
+			pf(opts.Stderr, "child stderr line\n")
+			return errors.New("probe failed: Authorization: Bearer sekret-token")
+		},
+		isWindowsService:  func() (bool, error) { return false, nil },
+		runWindowsService: func(string, func(context.Context) int) (int, error) { return 0, nil },
+		setupSignalContext: func() (context.Context, func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel
+		},
+	}
+	if code := runServiceSuperviseWith([]string{serviceSuperviseDaemonLogFlag, root}, io.Discard, io.Discard, deps); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	log, err := os.ReadFile(instance.NewLayout(root).DaemonLogFile())
+	if err != nil {
+		t.Fatalf("read daemon log: %v", err)
+	}
+	if !strings.Contains(string(log), "child stderr line") || strings.Contains(string(log), "sekret-token") {
+		t.Fatalf("daemon log = %q, want child output captured and credentials redacted", log)
+	}
+	if failure := latestServiceSupervisorFailure(instance.NewLayout(root).DaemonLogFile()); failure.Kind != serviceSupervisorFailureStartup {
+		t.Fatalf("latest failure = %+v, want startup failure", failure)
+	}
+}
+
+func TestServiceTaskStartIgnoresFailureLoggedBeforeThisStart(t *testing.T) {
+	root := serviceTestInstance(t)
+	stale := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano) + " " + serviceSupervisorFailureStartup + ": error: supervise daemon: stale diagnostic\n"
+	if err := os.WriteFile(instance.NewLayout(root).DaemonLogFile(), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := identityTaskManager{&fakeDaemonServiceManager{startErr: errors.New("service failed while starting: 0x00000001")}}
+	useFakeScheduledTaskManager(t, manager)
+
+	code, _, stderr := runArgs(t, "service", "task-start", root)
+	if code != 1 || strings.Contains(stderr, "stale diagnostic") {
+		t.Fatalf("code = %d, stderr = %q; want failure without the stale diagnostic", code, stderr)
 	}
 }
 

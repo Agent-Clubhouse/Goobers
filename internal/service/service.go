@@ -657,13 +657,20 @@ func quotePowerShellLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
+// SuperviseDaemonLogFlag tells __service-supervise to write the supervised
+// daemon's merged, redacted output to the instance daemon log itself.
+const SuperviseDaemonLogFlag = "--daemon-log"
+
+// windowsScheduledTaskAction deliberately avoids PowerShell stream
+// redirection: Windows PowerShell 5.1 turns redirected native stderr into
+// error records (terminating under ErrorActionPreference=Stop) and re-encodes
+// the output, so the supervisor writes the daemon log itself.
 func windowsScheduledTaskAction(executable, instanceRoot string) (string, string) {
-	logFile := instance.NewLayout(instanceRoot).DaemonLogFile()
 	command := fmt.Sprintf(
-		`$ErrorActionPreference='Stop'; & %s __service-supervise %s *>> %s; exit $LASTEXITCODE`,
+		`$ErrorActionPreference='Stop'; & %s __service-supervise %s %s; exit $LASTEXITCODE`,
 		quotePowerShellLiteral(executable),
+		SuperviseDaemonLogFlag,
 		quotePowerShellLiteral(instanceRoot),
-		quotePowerShellLiteral(logFile),
 	)
 	arguments := strings.Join([]string{
 		"-NoLogo",

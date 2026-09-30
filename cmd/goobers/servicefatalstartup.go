@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -10,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/goobers/goobers/internal/instance"
 	daemonservice "github.com/goobers/goobers/internal/service"
 )
 
@@ -18,6 +16,7 @@ const (
 	serviceSupervisorFailureStartup = "fatal-startup"
 	serviceSupervisorFailureRuntime = "supervisor-exit"
 	serviceReadinessLinePrefix      = "daemon started at "
+	serviceSuperviseDaemonLogFlag   = daemonservice.SuperviseDaemonLogFlag
 )
 
 type serviceSupervisorFailure struct {
@@ -37,18 +36,11 @@ func (f serviceSupervisorFailure) statusPayload() *daemonservice.SupervisorFailu
 	}
 }
 
-func appendServiceSupervisorFailure(layout instance.Layout, ready bool, err error) error {
-	kind := serviceSupervisorFailureStartup
+func serviceSupervisorFailureKind(ready bool) string {
 	if ready {
-		kind = serviceSupervisorFailureRuntime
+		return serviceSupervisorFailureRuntime
 	}
-	file, openErr := os.OpenFile(layout.DaemonLogFile(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if openErr != nil {
-		return openErr
-	}
-	defer func() { _ = file.Close() }()
-	_, writeErr := fmt.Fprintf(file, "%s %s: error: supervise daemon: %v\n", time.Now().UTC().Format(time.RFC3339Nano), kind, err)
-	return writeErr
+	return serviceSupervisorFailureStartup
 }
 
 func latestServiceSupervisorFailure(path string) serviceSupervisorFailure {

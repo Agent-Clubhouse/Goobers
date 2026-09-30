@@ -717,7 +717,9 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 
 func (c *CopilotAdapter) copilotAuthProbeError(ctx context.Context, probe string, result ProcessResult, runErr error) error {
 	err := copilotAuthProbeError(ctx, probe, result, runErr)
-	if len(c.AuthProbeExtraArgs) == 0 {
+	// A timeout or cancellation says nothing about flag compatibility, so
+	// only a probe the CLI actually rejected names the configured args.
+	if len(c.AuthProbeExtraArgs) == 0 || errors.Is(err, ErrTimeout) || errors.Is(err, ErrCanceled) {
 		return err
 	}
 	return fmt.Errorf(

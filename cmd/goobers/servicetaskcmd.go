@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/service"
@@ -72,6 +73,9 @@ func runServiceTaskStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	// A failure line already in the log from an earlier run must not be
+	// reported as the cause of this start; allow a little clock slack.
+	startedAt := time.Now().Add(-time.Second)
 	status, err := manager.StartTask(context.Background())
 	if errors.Is(err, service.ErrNotInstalled) {
 		pln(stdout, "scheduled task is not installed")
@@ -80,7 +84,7 @@ func runServiceTaskStart(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		layout := instance.NewLayout(root)
 		pf(stderr, "error: start scheduled task: %v", err)
-		if failure := latestServiceSupervisorFailure(layout.DaemonLogFile()); failure.Message != "" {
+		if failure := latestServiceSupervisorFailure(layout.DaemonLogFile()); failure.Message != "" && !failure.RecordedAt.Before(startedAt) {
 			pf(stderr, "; %s: %s", serviceSupervisorFailureLabel(failure.Kind), failure.Message)
 		}
 		pf(stderr, "; inspect daemon log %s\n", layout.DaemonLogFile())

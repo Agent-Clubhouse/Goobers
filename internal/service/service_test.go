@@ -8,8 +8,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/goobers/goobers/internal/instance"
 )
 
 type commandCall struct {
@@ -291,15 +289,16 @@ func TestWindowsScheduledTaskActionIsHiddenSynchronousAndSafelyQuoted(t *testing
 		"-ExecutionPolicy Bypass",
 		`-Command "`,
 		`& 'C:\Program Files\O''Brien''s Goobers\goobers.exe'`,
-		`__service-supervise 'C:\Users\O''Brien\Goobers Instance\'`,
-		`*>> ` + quotePowerShellLiteral(instance.NewLayout(`C:\Users\O'Brien\Goobers Instance\`).DaemonLogFile()),
+		`__service-supervise --daemon-log 'C:\Users\O''Brien\Goobers Instance\'`,
 		`exit $LASTEXITCODE`,
 	} {
 		if !strings.Contains(arguments, want) {
 			t.Fatalf("arguments = %q, missing %q", arguments, want)
 		}
 	}
-	for _, forbidden := range []string{"Start-Process", "start /b", "cmd.exe"} {
+	// PowerShell redirection (">", "*>>") of native stderr terminates the host under
+	// ErrorActionPreference=Stop in Windows PowerShell 5.1; the supervisor owns the log.
+	for _, forbidden := range []string{"Start-Process", "start /b", "cmd.exe", ">"} {
 		if strings.Contains(arguments, forbidden) {
 			t.Fatalf("arguments = %q, contains detached launcher %q", arguments, forbidden)
 		}
