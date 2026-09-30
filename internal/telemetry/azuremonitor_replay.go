@@ -457,6 +457,7 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 	defer sweep.Stop()
 	for {
 		var retry <-chan time.Time
+		var indexReady <-chan struct{}
 		wake := s.wake
 		periodic := sweep.C
 		sweepBootstrap := bootstrapRetry
@@ -468,6 +469,11 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 			periodic = nil
 			timer = time.NewTimer(jitterAzureReplayDelay(delay))
 			retry = timer.C
+			select {
+			case <-s.index.ready:
+			default:
+				indexReady = s.index.ready
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -482,6 +488,7 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 			}
 			sweepBootstrap = true
 		case <-retry:
+		case <-indexReady:
 		}
 		if timer != nil {
 			timer.Stop()
